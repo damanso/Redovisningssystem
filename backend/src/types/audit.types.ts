@@ -44,6 +44,7 @@ export type AuditAction =
   | 'invoice.send'
   | 'invoice.mark_paid'
   | 'invoice.mark_unpaid'
+  | 'invoice.cancel'
   // Customer actions
   | 'customer.create'
   | 'customer.update'
@@ -52,6 +53,10 @@ export type AuditAction =
   | 'supplier.create'
   | 'supplier.update'
   | 'supplier.delete'
+  // Article actions
+  | 'article.create'
+  | 'article.update'
+  | 'article.delete'
   // Receipt actions
   | 'receipt.create'
   | 'receipt.update'
@@ -74,6 +79,7 @@ export type EntityType =
   | 'invoice'
   | 'customer'
   | 'supplier'
+  | 'article'
   | 'receipt'
   | 'transaction'
   | 'settings'
