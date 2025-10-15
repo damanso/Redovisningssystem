@@ -77,49 +77,49 @@ export const getAuditLogs = async (filter: AuditLogFilter): Promise<AuditLog[]> 
   let paramCount = 1;
 
   if (filter.user_id) {
-    conditions.push(`user_id = $${paramCount}`);
+    conditions.push(`al.user_id = $${paramCount}`);
     values.push(filter.user_id);
     paramCount++;
   }
 
   if (filter.company_id) {
-    conditions.push(`company_id = $${paramCount}`);
+    conditions.push(`al.company_id = $${paramCount}`);
     values.push(filter.company_id);
     paramCount++;
   }
 
   if (filter.action) {
-    conditions.push(`action = $${paramCount}`);
+    conditions.push(`al.action = $${paramCount}`);
     values.push(filter.action);
     paramCount++;
   }
 
   if (filter.entity_type) {
-    conditions.push(`entity_type = $${paramCount}`);
+    conditions.push(`al.entity_type = $${paramCount}`);
     values.push(filter.entity_type);
     paramCount++;
   }
 
   if (filter.entity_id) {
-    conditions.push(`entity_id = $${paramCount}`);
+    conditions.push(`al.entity_id = $${paramCount}`);
     values.push(filter.entity_id);
     paramCount++;
   }
 
   if (filter.status) {
-    conditions.push(`status = $${paramCount}`);
+    conditions.push(`al.status = $${paramCount}`);
     values.push(filter.status);
     paramCount++;
   }
 
   if (filter.start_date) {
-    conditions.push(`created_at >= $${paramCount}`);
+    conditions.push(`al.created_at >= $${paramCount}`);
     values.push(filter.start_date);
     paramCount++;
   }
 
   if (filter.end_date) {
-    conditions.push(`created_at <= $${paramCount}`);
+    conditions.push(`al.created_at <= $${paramCount}`);
     values.push(filter.end_date);
     paramCount++;
   }

@@ -5,6 +5,8 @@ import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import companyRoutes from './routes/companies.js';
 import auditRoutes from './routes/audit.js';
+import customerRoutes from './routes/customers.js';
+import supplierRoutes from './routes/suppliers.js';
 
 const app = express();
 
@@ -34,6 +36,8 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/companies', companyRoutes);
 app.use('/api/v1/audit', auditRoutes);
+app.use('/api/v1/customers', customerRoutes);
+app.use('/api/v1/suppliers', supplierRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

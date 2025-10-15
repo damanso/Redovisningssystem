@@ -48,6 +48,10 @@ export type AuditAction =
   | 'customer.create'
   | 'customer.update'
   | 'customer.delete'
+  // Supplier actions
+  | 'supplier.create'
+  | 'supplier.update'
+  | 'supplier.delete'
   // Receipt actions
   | 'receipt.create'
   | 'receipt.update'
@@ -69,6 +73,7 @@ export type EntityType =
   | 'company'
   | 'invoice'
   | 'customer'
+  | 'supplier'
   | 'receipt'
   | 'transaction'
   | 'settings'
