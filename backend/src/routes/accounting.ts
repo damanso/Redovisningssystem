@@ -9,6 +9,7 @@ router.use(authenticate);
 
 // BAS Chart of Accounts
 router.get('/accounts', accountingController.getBASAccounts);
+router.get('/bas-accounts', accountingController.getBASAccounts);
 
 // Trial Balance
 router.get('/trial-balance', accountingController.getTrialBalance);

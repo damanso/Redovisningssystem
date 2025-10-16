@@ -1,0 +1,36 @@
+{
+  "results": {
+    "passed": [
+      "Frontend loads successfully",
+      "User registration via API",
+      "User login via API",
+      "Company creation",
+      "Customer creation",
+      "Supplier creation",
+      "Article creation",
+      "Invoice creation",
+      "PDF generation",
+      "Dashboard stats API",
+      "Customer list retrieval",
+      "BAS accounts retrieval"
+    ],
+    "failed": [],
+    "screenshots": []
+  },
+  "testUser": {
+    "email": "test-1760622209701@example.com",
+    "password": "SecureTest123!",
+    "name": "Test User E2E"
+  },
+  "testCompany": {
+    "name": "Test Företag AB",
+    "org_number": "556461989",
+    "email": "info@testforetag.se",
+    "phone": "+46701234567",
+    "address_street": "Testgatan 1",
+    "address_postal_code": "12345",
+    "address_city": "Stockholm",
+    "bank_account": "1234567890"
+  },
+  "timestamp": "2025-10-16T13:43:46.156Z"
+}

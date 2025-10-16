@@ -21,6 +21,7 @@ router.get('/:id', invoiceController.getInvoiceById);
 
 // Generate PDF for invoice
 router.get('/:id/pdf', invoiceController.generateInvoicePDF);
+router.post('/:id/generate-pdf', invoiceController.generateInvoicePDF);
 
 // Update invoice (draft only)
 router.put('/:id', invoiceController.updateInvoice);
