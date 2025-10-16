@@ -58,38 +58,10 @@ export interface CustomerContact {
   created_at: Date;
 }
 
-export interface CreateCustomerContactDto {
-  customer_id: string;
-  name: string;
-  title?: string;
-  email?: string;
-  phone?: string;
-  mobile?: string;
-  is_primary?: boolean;
-}
-
 export interface CustomerNote {
   id: string;
   customer_id: string;
   user_id: string;
   note: string;
   created_at: Date;
-}
-
-export interface CreateCustomerNoteDto {
-  customer_id: string;
-  note: string;
-}
-
-export interface CustomerFilters {
-  search?: string;
-  is_active?: boolean;
-  tags?: string[];
-  limit?: number;
-  offset?: number;
-}
-
-export interface CustomerListResponse {
-  customers: Customer[];
-  total: number;
 }
