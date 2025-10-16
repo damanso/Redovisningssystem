@@ -455,6 +455,52 @@ describe('Invoice API Integration Tests', () => {
     });
   });
 
+  describe('GET /api/v1/invoices/:id/pdf', () => {
+    it('should generate PDF for invoice', async () => {
+      const response = await axios.get(`${API_URL}/invoices/${invoiceId}/pdf`, {
+        params: { company_id: companyId },
+        headers: { Authorization: `Bearer ${authToken}` },
+        responseType: 'arraybuffer'
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toBe('application/pdf');
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(response.headers['content-disposition']).toContain('.pdf');
+      expect(response.data).toBeInstanceOf(Buffer);
+      expect(response.data.length).toBeGreaterThan(0);
+
+      // Verify PDF starts with PDF magic bytes
+      const pdfHeader = Buffer.from(response.data).toString('ascii', 0, 4);
+      expect(pdfHeader).toBe('%PDF');
+    });
+
+    it('should return 404 for non-existent invoice PDF', async () => {
+      try {
+        await axios.get(`${API_URL}/invoices/99999999-9999-9999-9999-999999999999/pdf`, {
+          params: { company_id: companyId },
+          headers: { Authorization: `Bearer ${authToken}` },
+          responseType: 'arraybuffer'
+        });
+        fail('Should have thrown error');
+      } catch (error: any) {
+        expect(error.response.status).toBe(404);
+      }
+    });
+
+    it('should fail without company_id', async () => {
+      try {
+        await axios.get(`${API_URL}/invoices/${invoiceId}/pdf`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+          responseType: 'arraybuffer'
+        });
+        fail('Should have thrown error');
+      } catch (error: any) {
+        expect(error.response.status).toBe(400);
+      }
+    });
+  });
+
   describe('DELETE /api/v1/invoices/:id', () => {
     it('should create a new draft invoice for deletion test', async () => {
       const invoiceData = {

@@ -9,6 +9,9 @@ import customerRoutes from './routes/customers.js';
 import supplierRoutes from './routes/suppliers.js';
 import articleRoutes from './routes/articles.js';
 import invoiceRoutes from './routes/invoices.js';
+import receiptRoutes from './routes/receipts.js';
+import accountingRoutes from './routes/accounting.js';
+import dashboardRoutes from './routes/dashboard.js';
 
 const app = express();
 
@@ -42,6 +45,9 @@ app.use('/api/v1/customers', customerRoutes);
 app.use('/api/v1/suppliers', supplierRoutes);
 app.use('/api/v1/articles', articleRoutes);
 app.use('/api/v1/invoices', invoiceRoutes);
+app.use('/api/v1/receipts', receiptRoutes);
+app.use('/api/v1/accounting', accountingRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

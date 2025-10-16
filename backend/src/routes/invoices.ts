@@ -19,11 +19,17 @@ router.get('/stats', invoiceController.getInvoiceStats);
 // Get invoice by ID
 router.get('/:id', invoiceController.getInvoiceById);
 
+// Generate PDF for invoice
+router.get('/:id/pdf', invoiceController.generateInvoicePDF);
+
 // Update invoice (draft only)
 router.put('/:id', invoiceController.updateInvoice);
 
-// Mark invoice as sent
-router.post('/:id/send', invoiceController.markInvoiceAsSent);
+// Send invoice via email (also marks as sent)
+router.post('/:id/send', invoiceController.sendInvoice);
+
+// Mark invoice as sent (without email)
+router.post('/:id/mark-sent', invoiceController.markInvoiceAsSent);
 
 // Mark invoice as paid
 router.post('/:id/mark-paid', invoiceController.markInvoiceAsPaid);

@@ -179,7 +179,6 @@ export const createInvoice = async (
     await auditService.logAction(userId, 'invoice.create', 'invoice', {
       companyId,
       entityId: invoice.id,
-      details: { invoice_number: invoiceNumber, customer_id: data.customer_id }
     });
 
     // Fetch complete invoice with lines
@@ -470,7 +469,6 @@ export const markInvoiceAsPaid = async (
   await auditService.logAction(userId, 'invoice.mark_paid', 'invoice', {
     companyId,
     entityId: invoiceId,
-    details: { paid_amount: paidAmount }
   });
 
   return await getInvoiceById(invoiceId, companyId);

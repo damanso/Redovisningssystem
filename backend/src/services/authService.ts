@@ -1,9 +1,9 @@
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
+import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import { query } from '../config/database.js';
 import * as auditService from './auditService.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret';
+const JWT_SECRET: Secret = process.env.JWT_SECRET || 'your-secret';
 
 export const register = async (email: string, password: string, name: string, ipAddress?: string, userAgent?: string) => {
   // Hash password
@@ -86,10 +86,14 @@ export const login = async (email: string, password: string, ipAddress?: string,
   });
 
   // Generate token
+  const expiresInValue = process.env.JWT_EXPIRES_IN || '24h';
+  const signOptions: SignOptions = {
+    expiresIn: isNaN(Number(expiresInValue)) ? expiresInValue as any : Number(expiresInValue)
+  };
   const token = jwt.sign(
     { userId: user.id, email: user.email, role: user.role },
     JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+    signOptions
   );
 
   return {

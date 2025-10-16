@@ -1,7 +1,10 @@
 import { Response } from 'express';
 import * as invoiceService from '../services/invoiceService.js';
+import * as pdfService from '../services/pdfService.js';
+import * as emailService from '../services/emailService.js';
 import { CreateInvoiceDto, UpdateInvoiceDto, MarkAsPaidDto } from '../types/invoice.types.js';
 import { AuthRequest } from '../middleware/authenticate.js';
+import { query } from '../config/database.js';
 
 export const createInvoice = async (req: AuthRequest, res: Response) => {
   try {
@@ -234,5 +237,170 @@ export const getInvoiceStats = async (req: AuthRequest, res: Response) => {
   } catch (error: any) {
     console.error('Get invoice stats error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const generateInvoicePDF = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { company_id } = req.query;
+
+    if (!company_id) {
+      return res.status(400).json({ error: 'company_id is required' });
+    }
+
+    // Get complete invoice data
+    const invoice = await invoiceService.getInvoiceById(id, company_id as string);
+
+    // Get company data
+    const companyRes = await query(
+      'SELECT * FROM companies WHERE id = $1',
+      [company_id]
+    );
+
+    if (companyRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+
+    const company = companyRes.rows[0];
+
+    // Get customer data
+    const customerRes = await query(
+      'SELECT * FROM customers WHERE id = $1',
+      [invoice.customer_id]
+    );
+
+    if (customerRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    const customer = customerRes.rows[0];
+
+    // Prepare PDF data
+    const pdfData = {
+      invoice: {
+        invoice_number: invoice.invoice_number,
+        invoice_date: new Date(invoice.invoice_date).toISOString().split('T')[0],
+        due_date: new Date(invoice.due_date).toISOString().split('T')[0],
+        ocr_number: invoice.ocr_number || '',
+        reference: invoice.reference,
+        notes: invoice.notes
+      },
+      company: {
+        name: company.name,
+        org_number: company.org_number,
+        address: company.address,
+        postal_code: company.postal_code,
+        city: company.city,
+        phone: company.phone,
+        email: company.email,
+        website: company.website,
+        vat_number: company.vat_number,
+        bank_account: company.bank_account
+      },
+      customer: {
+        name: customer.name,
+        org_number: customer.org_number,
+        address: customer.address_street,
+        postal_code: customer.address_postal_code,
+        city: customer.address_city
+      },
+      lines: (invoice.lines || []).map((line: any) => ({
+        description: line.description,
+        quantity: parseFloat(line.quantity),
+        unit: line.unit,
+        unit_price: parseFloat(line.unit_price),
+        vat_rate: parseFloat(line.vat_rate),
+        amount: parseFloat(line.amount)
+      })),
+      totals: {
+        subtotal: Number(invoice.subtotal),
+        vat_amount: Number(invoice.vat_amount),
+        total_amount: Number(invoice.total_amount)
+      }
+    };
+
+    // Generate PDF
+    const pdfResult = await pdfService.generateInvoicePDF(pdfData);
+
+    // Update invoice with PDF URL
+    await query(
+      'UPDATE invoices SET pdf_url = $1 WHERE id = $2',
+      [pdfResult.fileName, id]
+    );
+
+    // Send PDF as download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${pdfResult.fileName}"`);
+    res.send(pdfResult.buffer);
+
+  } catch (error: any) {
+    if (error.message === 'Invoice not found') {
+      return res.status(404).json({ error: error.message });
+    }
+    console.error('Generate invoice PDF error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+/**
+ * Send invoice via email
+ * POST /api/v1/invoices/:id/send
+ */
+export const sendInvoice = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const { id } = req.params;
+    const { company_id, recipient_email, recipient_name } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    if (!company_id) {
+      return res.status(400).json({ error: 'company_id is required' });
+    }
+
+    if (!recipient_email) {
+      return res.status(400).json({ error: 'recipient_email is required' });
+    }
+
+    // Get invoice to check it exists and get customer info if no recipient_name provided
+    const invoice = await invoiceService.getInvoiceById(id, company_id);
+
+    // Get customer name if not provided
+    let recipientName = recipient_name;
+    if (!recipientName) {
+      const customerRes = await query(
+        'SELECT name FROM customers WHERE id = $1',
+        [invoice.customer_id]
+      );
+      recipientName = customerRes.rows[0]?.name || 'Kund';
+    }
+
+    // Send email
+    await emailService.sendInvoiceEmail(
+      id,
+      company_id,
+      recipient_email,
+      recipientName
+    );
+
+    // Mark invoice as sent
+    await invoiceService.markInvoiceAsSent(id, company_id, userId);
+
+    res.json({
+      message: 'Invoice sent successfully',
+      sent_to: recipient_email
+    });
+  } catch (error: any) {
+    if (error.message === 'Invoice not found') {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message === 'Company not found') {
+      return res.status(404).json({ error: error.message });
+    }
+    console.error('Send invoice error:', error);
+    res.status(500).json({ error: 'Failed to send invoice email' });
   }
 };
