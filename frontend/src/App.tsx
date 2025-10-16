@@ -1,4 +1,7 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import CustomerListPage from './pages/customers/CustomerListPage'
+import CustomerFormPage from './pages/customers/CustomerFormPage'
+import CustomerDetailPage from './pages/customers/CustomerDetailPage'
 
 function App() {
   return (
@@ -17,6 +20,12 @@ function App() {
               </div>
             </div>
           } />
+
+          {/* Customer routes */}
+          <Route path="/customers" element={<CustomerListPage />} />
+          <Route path="/customers/new" element={<CustomerFormPage />} />
+          <Route path="/customers/:id" element={<CustomerDetailPage />} />
+          <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
         </Routes>
       </div>
     </Router>
