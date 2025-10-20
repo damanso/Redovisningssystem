@@ -5950,543 +5950,4575 @@ Tests (2 filer):
 12. backend/src/tests/unit/supplierService.test.ts - Unit (34 rader)
 13. backend/src/tests/integration/suppliers.test.ts - Integration (50 rader)
 
-STEG 2.3: Article Management
+STEG 2.3: Article Management ✅ KOMPLETT
 Instruktion:
-Implementera produkter/tjänster-katalog för att användas i fakturor.
-Types:
+Implementera produkter och tjänster som används i fakturor. Stöder SKU, priser, enheter, kategorier och marginalberäkning.
+
+1. Database Migration
+Filsökväg: database/migrations/004_articles.sql
+sql-- Migration: Create articles table
+-- Description: Stores products and services for invoicing
+-- Author: AI Assistant
+-- Date: 2025-10-20
+
+-- Enable UUID extension if not already enabled
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Create article_type enum
+CREATE TYPE article_type AS ENUM ('product', 'service', 'package');
+
+-- Create unit enum
+CREATE TYPE unit_type AS ENUM (
+    'piece',      -- st (styck)
+    'hour',       -- timme
+    'day',        -- dag
+    'month',      -- månad
+    'kg',         -- kilogram
+    'liter',      -- liter
+    'meter',      -- meter
+    'square_meter', -- kvadratmeter
+    'cubic_meter'   -- kubikmeter
+);
+
+-- Create articles table
+CREATE TABLE articles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    
+    -- Basic info
+    article_number VARCHAR(50) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    article_type article_type NOT NULL DEFAULT 'product',
+    
+    -- SKU and inventory
+    sku VARCHAR(100),
+    barcode VARCHAR(100),
+    
+    -- Pricing
+    unit unit_type NOT NULL DEFAULT 'piece',
+    price DECIMAL(10, 2) NOT NULL,
+    cost DECIMAL(10, 2),
+    vat_rate DECIMAL(5, 2) NOT NULL DEFAULT 25.00,
+    
+    -- Categorization
+    category VARCHAR(100),
+    
+    -- Status
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Constraints
+    UNIQUE(company_id, article_number),
+    CONSTRAINT positive_price CHECK (price >= 0),
+    CONSTRAINT positive_cost CHECK (cost IS NULL OR cost >= 0),
+    CONSTRAINT valid_vat_rate CHECK (vat_rate >= 0 AND vat_rate <= 100)
+);
+
+-- Create indexes
+CREATE INDEX idx_articles_company_id ON articles(company_id);
+CREATE INDEX idx_articles_article_number ON articles(article_number);
+CREATE INDEX idx_articles_sku ON articles(sku) WHERE sku IS NOT NULL;
+CREATE INDEX idx_articles_category ON articles(category) WHERE category IS NOT NULL;
+CREATE INDEX idx_articles_is_active ON articles(is_active);
+CREATE INDEX idx_articles_created_at ON articles(created_at);
+
+-- Create updated_at trigger
+CREATE TRIGGER update_articles_updated_at
+    BEFORE UPDATE ON articles
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+COMMENT ON TABLE articles IS 'Products and services used in invoicing';
+COMMENT ON COLUMN articles.article_number IS 'Company-specific article number';
+COMMENT ON COLUMN articles.sku IS 'Stock Keeping Unit identifier';
+COMMENT ON COLUMN articles.price IS 'Sales price excluding VAT';
+COMMENT ON COLUMN articles.cost IS 'Purchase/production cost';
+COMMENT ON COLUMN articles.vat_rate IS 'VAT rate percentage (e.g., 25.00 for 25%)';
+
+2. Backend Types
 Filsökväg: backend/src/types/article.types.ts
-typescriptexport interface Article {
-  id: string;
-  company_id: string;
-  name: string;
-  description?: string;
-  article_number?: string;
-  price: number;
-  unit: string;
-  vat_rate: number;
-  account_number?: number;
-  category?: string;
-  is_active: boolean;
-  created_by: string;
-  created_at: Date;
-  updated_at: Date;
+typescriptexport type ArticleType = 'product' | 'service' | 'package';
+
+export type UnitType = 
+    | 'piece'          // st (styck)
+    | 'hour'           // timme
+    | 'day'            // dag
+    | 'month'          // månad
+    | 'kg'             // kilogram
+    | 'liter'          // liter
+    | 'meter'          // meter
+    | 'square_meter'   // kvadratmeter
+    | 'cubic_meter';   // kubikmeter
+
+export interface Article {
+    id: string;
+    companyId: string;
+    articleNumber: string;
+    name: string;
+    description: string | null;
+    articleType: ArticleType;
+    sku: string | null;
+    barcode: string | null;
+    unit: UnitType;
+    price: number;
+    cost: number | null;
+    vatRate: number;
+    category: string | null;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
 }
 
 export interface CreateArticleDto {
-  name: string;
-  description?: string;
-  article_number?: string;
-  price: number;
-  unit?: string;
-  vat_rate: number;
-  account_number?: number;
-  category?: string;
+    articleNumber: string;
+    name: string;
+    description?: string;
+    articleType?: ArticleType;
+    sku?: string;
+    barcode?: string;
+    unit?: UnitType;
+    price: number;
+    cost?: number;
+    vatRate?: number;
+    category?: string;
+    isActive?: boolean;
 }
 
-export interface UpdateArticleDto extends Partial<CreateArticleDto> {}
-Service:
-Filsökväg: backend/src/services/articleService.ts
-typescriptimport { query } from '../config/database';
-import { Article, CreateArticleDto, UpdateArticleDto } from '../types/article.types';
-
-export const createArticle = async (
-  companyId: string,
-  userId: string,
-  data: CreateArticleDto
-): Promise<Article> => {
-  const result = await query(
-    `INSERT INTO articles (
-      company_id, name, description, article_number, price, unit,
-      vat_rate, account_number, category, created_by
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *`,
-    [
-      companyId,
-      data.name,
-      data.description || null,
-      data.article_number || null,
-      data.price,
-      data.unit || 'st',
-      data.vat_rate,
-      data.account_number || null,
-      data.category || null,
-      userId
-    ]
-  );
-  
-  return result.rows[0];
-};
-
-export const getArticles = async (
-  companyId: string,
-  filters?: {
-    search?: string;
+export interface UpdateArticleDto {
+    name?: string;
+    description?: string;
+    articleType?: ArticleType;
+    sku?: string;
+    barcode?: string;
+    unit?: UnitType;
+    price?: number;
+    cost?: number;
+    vatRate?: number;
     category?: string;
-    is_active?: boolean;
-  }
-): Promise<Article[]> => {
-  let queryText = 'SELECT * FROM articles WHERE company_id = $1';
-  const params: any[] = [companyId];
-  let paramCount = 2;
-  
-  if (filters?.is_active !== undefined) {
-    queryText += ` AND is_active = $${paramCount}`;
-    params.push(filters.is_active);
-    paramCount++;
-  }
-  
-  if (filters?.search) {
-    queryText += ` AND (name ILIKE $${paramCount} OR article_number ILIKE $${paramCount})`;
-    params.push(`%${filters.search}%`);
-    paramCount++;
-  }
-  
-  if (filters?.category) {
-    queryText += ` AND category = $${paramCount}`;
-    params.push(filters.category);
-    paramCount++;
-  }
-  
-  queryText += ' ORDER BY name ASC';
-  
-  const result = await query(queryText, params);
-  return result.rows;
-};
+    isActive?: boolean;
+}
 
-export const getArticleById = async (
-  articleId: string,
-  companyId: string
-): Promise<Article | null> => {
-  const result = await query(
-    'SELECT * FROM articles WHERE id = $1 AND company_id = $2',
-    [articleId, companyId]
-  );
-  
-  return result.rows[0] || null;
-};
+3. Backend Service
+Filsökväg: backend/src/services/articleService.ts
+typescriptimport pool from '../config/database';
+import { Article, CreateArticleDto, UpdateArticleDto } from '../types/article.types';
+import { BadRequestError, NotFoundError } from '../middleware/errorHandler';
 
-export const updateArticle = async (
-  articleId: string,
-  companyId: string,
-  updates: UpdateArticleDto
-): Promise<Article> => {
-  const fields: string[] = [];
-  const values: any[] = [];
-  let paramCount = 1;
-  
-  Object.entries(updates).forEach(([key, value]) => {
-    if (value !== undefined) {
-      fields.push(`${key} = $${paramCount}`);
-      values.push(value);
-      paramCount++;
+// Helper function to convert snake_case to camelCase
+function toCamelCase(obj: any): Article {
+    return {
+        id: obj.id,
+        companyId: obj.company_id,
+        articleNumber: obj.article_number,
+        name: obj.name,
+        description: obj.description,
+        articleType: obj.article_type,
+        sku: obj.sku,
+        barcode: obj.barcode,
+        unit: obj.unit,
+        price: parseFloat(obj.price),
+        cost: obj.cost ? parseFloat(obj.cost) : null,
+        vatRate: parseFloat(obj.vat_rate),
+        category: obj.category,
+        isActive: obj.is_active,
+        createdAt: obj.created_at,
+        updatedAt: obj.updated_at
+    };
+}
+
+export const articleService = {
+    /**
+     * Create a new article
+     */
+    async createArticle(companyId: string, data: CreateArticleDto): Promise<Article> {
+        // Check if article number already exists for this company
+        const existingCheck = await pool.query(
+            'SELECT id FROM articles WHERE company_id = $1 AND article_number = $2',
+            [companyId, data.articleNumber]
+        );
+
+        if (existingCheck.rows.length > 0) {
+            throw new BadRequestError('Article number already exists for this company');
+        }
+
+        const result = await pool.query(
+            `INSERT INTO articles (
+                company_id, article_number, name, description, article_type,
+                sku, barcode, unit, price, cost, vat_rate, category, is_active
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING *`,
+            [
+                companyId,
+                data.articleNumber,
+                data.name,
+                data.description || null,
+                data.articleType || 'product',
+                data.sku || null,
+                data.barcode || null,
+                data.unit || 'piece',
+                data.price,
+                data.cost || null,
+                data.vatRate || 25.00,
+                data.category || null,
+                data.isActive !== undefined ? data.isActive : true
+            ]
+        );
+
+        return toCamelCase(result.rows[0]);
+    },
+
+    /**
+     * Get all articles for a company
+     */
+    async getArticles(
+        companyId: string,
+        filters?: {
+            search?: string;
+            category?: string;
+            articleType?: string;
+            isActive?: boolean;
+        }
+    ): Promise<Article[]> {
+        let query = 'SELECT * FROM articles WHERE company_id = $1';
+        const params: any[] = [companyId];
+        let paramCount = 1;
+
+        if (filters?.search) {
+            paramCount++;
+            query += ` AND (
+                name ILIKE $${paramCount} OR 
+                article_number ILIKE $${paramCount} OR 
+                sku ILIKE $${paramCount} OR
+                description ILIKE $${paramCount}
+            )`;
+            params.push(`%${filters.search}%`);
+        }
+
+        if (filters?.category) {
+            paramCount++;
+            query += ` AND category = $${paramCount}`;
+            params.push(filters.category);
+        }
+
+        if (filters?.articleType) {
+            paramCount++;
+            query += ` AND article_type = $${paramCount}`;
+            params.push(filters.articleType);
+        }
+
+        if (filters?.isActive !== undefined) {
+            paramCount++;
+            query += ` AND is_active = $${paramCount}`;
+            params.push(filters.isActive);
+        }
+
+        query += ' ORDER BY article_number ASC';
+
+        const result = await pool.query(query, params);
+        return result.rows.map(toCamelCase);
+    },
+
+    /**
+     * Get article by ID
+     */
+    async getArticleById(companyId: string, articleId: string): Promise<Article> {
+        const result = await pool.query(
+            'SELECT * FROM articles WHERE id = $1 AND company_id = $2',
+            [articleId, companyId]
+        );
+
+        if (result.rows.length === 0) {
+            throw new NotFoundError('Article not found');
+        }
+
+        return toCamelCase(result.rows[0]);
+    },
+
+    /**
+     * Update article
+     */
+    async updateArticle(
+        companyId: string,
+        articleId: string,
+        data: UpdateArticleDto
+    ): Promise<Article> {
+        // Check if article exists
+        await this.getArticleById(companyId, articleId);
+
+        const fields: string[] = [];
+        const values: any[] = [];
+        let paramCount = 0;
+
+        if (data.name !== undefined) {
+            paramCount++;
+            fields.push(`name = $${paramCount}`);
+            values.push(data.name);
+        }
+        if (data.description !== undefined) {
+            paramCount++;
+            fields.push(`description = $${paramCount}`);
+            values.push(data.description);
+        }
+        if (data.articleType !== undefined) {
+            paramCount++;
+            fields.push(`article_type = $${paramCount}`);
+            values.push(data.articleType);
+        }
+        if (data.sku !== undefined) {
+            paramCount++;
+            fields.push(`sku = $${paramCount}`);
+            values.push(data.sku);
+        }
+        if (data.barcode !== undefined) {
+            paramCount++;
+            fields.push(`barcode = $${paramCount}`);
+            values.push(data.barcode);
+        }
+        if (data.unit !== undefined) {
+            paramCount++;
+            fields.push(`unit = $${paramCount}`);
+            values.push(data.unit);
+        }
+        if (data.price !== undefined) {
+            paramCount++;
+            fields.push(`price = $${paramCount}`);
+            values.push(data.price);
+        }
+        if (data.cost !== undefined) {
+            paramCount++;
+            fields.push(`cost = $${paramCount}`);
+            values.push(data.cost);
+        }
+        if (data.vatRate !== undefined) {
+            paramCount++;
+            fields.push(`vat_rate = $${paramCount}`);
+            values.push(data.vatRate);
+        }
+        if (data.category !== undefined) {
+            paramCount++;
+            fields.push(`category = $${paramCount}`);
+            values.push(data.category);
+        }
+        if (data.isActive !== undefined) {
+            paramCount++;
+            fields.push(`is_active = $${paramCount}`);
+            values.push(data.isActive);
+        }
+
+        if (fields.length === 0) {
+            throw new BadRequestError('No fields to update');
+        }
+
+        values.push(articleId, companyId);
+        const result = await pool.query(
+            `UPDATE articles SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $${paramCount + 1} AND company_id = $${paramCount + 2}
+            RETURNING *`,
+            values
+        );
+
+        return toCamelCase(result.rows[0]);
+    },
+
+    /**
+     * Delete article
+     */
+    async deleteArticle(companyId: string, articleId: string): Promise<void> {
+        const result = await pool.query(
+            'DELETE FROM articles WHERE id = $1 AND company_id = $2 RETURNING id',
+            [articleId, companyId]
+        );
+
+        if (result.rows.length === 0) {
+            throw new NotFoundError('Article not found');
+        }
+    },
+
+    /**
+     * Get unique categories for a company
+     */
+    async getCategories(companyId: string): Promise<string[]> {
+        const result = await pool.query(
+            `SELECT DISTINCT category 
+            FROM articles 
+            WHERE company_id = $1 AND category IS NOT NULL
+            ORDER BY category`,
+            [companyId]
+        );
+
+        return result.rows.map(row => row.category);
     }
-  });
-  
-  if (fields.length === 0) {
-    throw new Error('No fields to update');
-  }
-  
-  values.push(articleId, companyId);
-  
-  const result = await query(
-    `UPDATE articles 
-     SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $${paramCount} AND company_id = $${paramCount + 1}
-     RETURNING *`,
-    values
-  );
-  
-  return result.rows[0];
 };
 
-export const deleteArticle = async (
-  articleId: string,
-  companyId: string
-): Promise<void> => {
-  await query(
-    'UPDATE articles SET is_active = false WHERE id = $1 AND company_id = $2',
-    [articleId, companyId]
-  );
+4. Backend Controller
+Filsökväg: backend/src/controllers/articleController.ts
+typescriptimport { Request, Response, NextFunction } from 'express';
+import { articleService } from '../services/articleService';
+import { CreateArticleDto, UpdateArticleDto } from '../types/article.types';
+
+export const articleController = {
+    /**
+     * Create a new article
+     * POST /api/articles
+     */
+    async createArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const data: CreateArticleDto = req.body;
+
+            // Validation
+            if (!data.articleNumber || !data.name || data.price === undefined) {
+                res.status(400).json({ 
+                    error: 'Article number, name, and price are required' 
+                });
+                return;
+            }
+
+            if (data.price < 0) {
+                res.status(400).json({ error: 'Price must be non-negative' });
+                return;
+            }
+
+            if (data.cost !== undefined && data.cost < 0) {
+                res.status(400).json({ error: 'Cost must be non-negative' });
+                return;
+            }
+
+            if (data.vatRate !== undefined && (data.vatRate < 0 || data.vatRate > 100)) {
+                res.status(400).json({ error: 'VAT rate must be between 0 and 100' });
+                return;
+            }
+
+            const article = await articleService.createArticle(companyId, data);
+            res.status(201).json(article);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get all articles for the company
+     * GET /api/articles
+     */
+    async getArticles(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { search, category, articleType, isActive } = req.query;
+
+            const filters: any = {};
+            if (search) filters.search = search as string;
+            if (category) filters.category = category as string;
+            if (articleType) filters.articleType = articleType as string;
+            if (isActive !== undefined) filters.isActive = isActive === 'true';
+
+            const articles = await articleService.getArticles(companyId, filters);
+            res.json(articles);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get article by ID
+     * GET /api/articles/:id
+     */
+    async getArticleById(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+
+            const article = await articleService.getArticleById(companyId, id);
+            res.json(article);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Update article
+     * PUT /api/articles/:id
+     */
+    async updateArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+            const data: UpdateArticleDto = req.body;
+
+            // Validation
+            if (data.price !== undefined && data.price < 0) {
+                res.status(400).json({ error: 'Price must be non-negative' });
+                return;
+            }
+
+            if (data.cost !== undefined && data.cost < 0) {
+                res.status(400).json({ error: 'Cost must be non-negative' });
+                return;
+            }
+
+            if (data.vatRate !== undefined && (data.vatRate < 0 || data.vatRate > 100)) {
+                res.status(400).json({ error: 'VAT rate must be between 0 and 100' });
+                return;
+            }
+
+            const article = await articleService.updateArticle(companyId, id, data);
+            res.json(article);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Delete article
+     * DELETE /api/articles/:id
+     */
+    async deleteArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+
+            await articleService.deleteArticle(companyId, id);
+            res.status(204).send();
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get unique categories
+     * GET /api/articles/categories/list
+     */
+    async getCategories(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const categories = await articleService.getCategories(companyId);
+            res.json(categories);
+        } catch (error) {
+            next(error);
+        }
+    }
 };
-Routes:
-typescript// backend/src/routes/articles.ts
-import express from 'express';
-import * as articleController from '../controllers/articleController';
+
+5. Backend Routes
+Filsökväg: backend/src/routes/articleRoutes.ts
+typescriptimport { Router } from 'express';
+import { articleController } from '../controllers/articleController';
 import { authenticate } from '../middleware/authenticate';
-import { auditLog } from '../middleware/auditLog';
 
-const router = express.Router();
+const router = Router();
+
+// All routes require authentication
 router.use(authenticate);
 
-router.post('/', auditLog('create', 'article'), articleController.createArticle);
+// Get categories (must be before /:id route)
+router.get('/categories/list', articleController.getCategories);
+
+// CRUD operations
+router.post('/', articleController.createArticle);
 router.get('/', articleController.getArticles);
 router.get('/:id', articleController.getArticleById);
-router.put('/:id', auditLog('update', 'article'), articleController.updateArticle);
-router.delete('/:id', auditLog('delete', 'article'), articleController.deleteArticle);
+router.put('/:id', articleController.updateArticle);
+router.delete('/:id', articleController.deleteArticle);
 
 export default router;
-Implementation med Claude Code:
-"Skapa komplett Article Management med controller, frontend pages och hooks (Fas 2, Steg 2.3)"
+Uppdatera: backend/src/app.ts - Lägg till routes
+typescriptimport articleRoutes from './routes/articleRoutes';
 
-STEG 2.4: Invoice Module (KRITISK MODUL)
+// ... existing routes ...
+
+app.use('/api/articles', articleRoutes);
+
+6. Frontend Types
+Filsökväg: frontend/src/types/article.types.ts
+typescriptexport type ArticleType = 'product' | 'service' | 'package';
+
+export type UnitType = 
+    | 'piece'          // st (styck)
+    | 'hour'           // timme
+    | 'day'            // dag
+    | 'month'          // månad
+    | 'kg'             // kilogram
+    | 'liter'          // liter
+    | 'meter'          // meter
+    | 'square_meter'   // kvadratmeter
+    | 'cubic_meter';   // kubikmeter
+
+export interface Article {
+    id: string;
+    companyId: string;
+    articleNumber: string;
+    name: string;
+    description: string | null;
+    articleType: ArticleType;
+    sku: string | null;
+    barcode: string | null;
+    unit: UnitType;
+    price: number;
+    cost: number | null;
+    vatRate: number;
+    category: string | null;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface CreateArticleDto {
+    articleNumber: string;
+    name: string;
+    description?: string;
+    articleType?: ArticleType;
+    sku?: string;
+    barcode?: string;
+    unit?: UnitType;
+    price: number;
+    cost?: number;
+    vatRate?: number;
+    category?: string;
+    isActive?: boolean;
+}
+
+export interface UpdateArticleDto {
+    name?: string;
+    description?: string;
+    articleType?: ArticleType;
+    sku?: string;
+    barcode?: string;
+    unit?: UnitType;
+    price?: number;
+    cost?: number;
+    vatRate?: number;
+    category?: string;
+    isActive?: boolean;
+}
+
+7. Frontend Service
+Filsökväg: frontend/src/services/articleService.ts
+typescriptimport api from './api';
+import { Article, CreateArticleDto, UpdateArticleDto } from '../types/article.types';
+
+interface GetArticlesParams {
+    search?: string;
+    category?: string;
+    articleType?: string;
+    isActive?: boolean;
+}
+
+export const articleService = {
+    /**
+     * Create a new article
+     */
+    async createArticle(data: CreateArticleDto): Promise<Article> {
+        const response = await api.post<Article>('/articles', data);
+        return response.data;
+    },
+
+    /**
+     * Get all articles with optional filters
+     */
+    async getArticles(params?: GetArticlesParams): Promise<Article[]> {
+        const response = await api.get<Article[]>('/articles', { params });
+        return response.data;
+    },
+
+    /**
+     * Get article by ID
+     */
+    async getArticleById(id: string): Promise<Article> {
+        const response = await api.get<Article>(`/articles/${id}`);
+        return response.data;
+    },
+
+    /**
+     * Update article
+     */
+    async updateArticle(id: string, data: UpdateArticleDto): Promise<Article> {
+        const response = await api.put<Article>(`/articles/${id}`, data);
+        return response.data;
+    },
+
+    /**
+     * Delete article
+     */
+    async deleteArticle(id: string): Promise<void> {
+        await api.delete(`/articles/${id}`);
+    },
+
+    /**
+     * Get unique categories
+     */
+    async getCategories(): Promise<string[]> {
+        const response = await api.get<string[]>('/articles/categories/list');
+        return response.data;
+    }
+};
+
+// Unit type labels for display
+export const UNIT_LABELS: Record<string, string> = {
+    piece: 'st',
+    hour: 'timme',
+    day: 'dag',
+    month: 'månad',
+    kg: 'kg',
+    liter: 'liter',
+    meter: 'm',
+    square_meter: 'm²',
+    cubic_meter: 'm³'
+};
+
+// Article type labels
+export const ARTICLE_TYPE_LABELS: Record<string, string> = {
+    product: 'Produkt',
+    service: 'Tjänst',
+    package: 'Paket'
+};
+
+// Common VAT rates
+export const VAT_RATES = [
+    { value: 0, label: '0%' },
+    { value: 6, label: '6%' },
+    { value: 12, label: '12%' },
+    { value: 25, label: '25%' }
+];
+
+8. Frontend Hooks
+Filsökväg: frontend/src/hooks/useArticle.ts
+typescriptimport { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { articleService } from '../services/articleService';
+import { CreateArticleDto, UpdateArticleDto, Article } from '../types/article.types';
+import { toast } from 'react-hot-toast';
+
+interface GetArticlesParams {
+    search?: string;
+    category?: string;
+    articleType?: string;
+    isActive?: boolean;
+}
+
+/**
+ * Hook to fetch all articles
+ */
+export function useArticles(params?: GetArticlesParams) {
+    return useQuery({
+        queryKey: ['articles', params],
+        queryFn: () => articleService.getArticles(params)
+    });
+}
+
+/**
+ * Hook to fetch a single article
+ */
+export function useArticle(id: string) {
+    return useQuery({
+        queryKey: ['articles', id],
+        queryFn: () => articleService.getArticleById(id),
+        enabled: !!id
+    });
+}
+
+/**
+ * Hook to fetch categories
+ */
+export function useArticleCategories() {
+    return useQuery({
+        queryKey: ['article-categories'],
+        queryFn: () => articleService.getCategories()
+    });
+}
+
+/**
+ * Hook to create article
+ */
+export function useCreateArticle() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (data: CreateArticleDto) => articleService.createArticle(data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['articles'] });
+            queryClient.invalidateQueries({ queryKey: ['article-categories'] });
+            toast.success('Artikel skapad');
+        },
+        onError: (error: any) => {
+            toast.error(error.response?.data?.error || 'Kunde inte skapa artikel');
+        }
+    });
+}
+
+/**
+ * Hook to update article
+ */
+export function useUpdateArticle() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ id, data }: { id: string; data: UpdateArticleDto }) =>
+            articleService.updateArticle(id, data),
+        onSuccess: (_, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['articles'] });
+            queryClient.invalidateQueries({ queryKey: ['articles', variables.id] });
+            queryClient.invalidateQueries({ queryKey: ['article-categories'] });
+            toast.success('Artikel uppdaterad');
+        },
+        onError: (error: any) {
+            toast.error(error.response?.data?.error || 'Kunde inte uppdatera artikel');
+        }
+    });
+}
+
+/**
+ * Hook to delete article
+ */
+export function useDeleteArticle() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (id: string) => articleService.deleteArticle(id),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['articles'] });
+            toast.success('Artikel raderad');
+        },
+        onError: (error: any) {
+            toast.error(error.response?.data?.error || 'Kunde inte radera artikel');
+        }
+    });
+}
+
+/**
+ * Hook for optimistic article updates
+ */
+export function useOptimisticArticleUpdate() {
+    const queryClient = useQueryClient();
+
+    return (id: string, updates: Partial<Article>) => {
+        queryClient.setQueryData<Article>(
+            ['articles', id],
+            (old) => {
+                if (!old) return old;
+                return { ...old, ...updates };
+            }
+        );
+    };
+}
+
+9. Frontend Components
+Filsökväg: frontend/src/pages/ArticleListPage.tsx
+typescriptimport React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { 
+    Package, Plus, Search, Filter, Edit2, Trash2, 
+    ChevronDown, Tag 
+} from 'lucide-react';
+import { useArticles, useDeleteArticle, useArticleCategories } from '../hooks/useArticle';
+import { UNIT_LABELS, ARTICLE_TYPE_LABELS } from '../services/articleService';
+
+export default function ArticleListPage() {
+    const [search, setSearch] = useState('');
+    const [selectedCategory, setSelectedCategory] = useState<string>('');
+    const [selectedType, setSelectedType] = useState<string>('');
+    const [showFilters, setShowFilters] = useState(false);
+
+    const { data: articles = [], isLoading } = useArticles({
+        search,
+        category: selectedCategory || undefined,
+        articleType: selectedType || undefined
+    });
+
+    const { data: categories = [] } = useArticleCategories();
+    const deleteArticle = useDeleteArticle();
+
+    const handleDelete = async (id: string, name: string) => {
+        if (window.confirm(`Är du säker på att du vill radera ${name}?`)) {
+            await deleteArticle.mutateAsync(id);
+        }
+    };
+
+    const formatPrice = (price: number) => {
+        return new Intl.NumberFormat('sv-SE', {
+            style: 'currency',
+            currency: 'SEK'
+        }).format(price);
+    };
+
+    const getMarginPercentage = (price: number, cost: number | null) => {
+        if (!cost || cost === 0) return null;
+        return ((price - cost) / price * 100).toFixed(1);
+    };
+
+    if (isLoading) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            {/* Header */}
+            <div className="flex justify-between items-center">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                        <Package className="w-8 h-8" />
+                        Artikelregister
+                    </h1>
+                    <p className="text-gray-600 mt-1">
+                        Hantera produkter och tjänster
+                    </p>
+                </div>
+                <Link
+                    to="/articles/new"
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                    <Plus className="w-5 h-5" />
+                    Ny Artikel
+                </Link>
+            </div>
+
+            {/* Search and Filters */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+                <div className="flex gap-4">
+                    <div className="flex-1 relative">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                        <input
+                            type="text"
+                            placeholder="Sök artikelnr, namn, SKU..."
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                    </div>
+                    <button
+                        onClick={() => setShowFilters(!showFilters)}
+                        className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                        <Filter className="w-5 h-5" />
+                        Filter
+                        <ChevronDown className={`w-4 h-4 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+                    </button>
+                </div>
+
+                {/* Filter Panel */}
+                {showFilters && (
+                    <div className="mt-4 pt-4 border-t border-gray-200 grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Kategori
+                            </label>
+                            <select
+                                value={selectedCategory}
+                                onChange={(e) => setSelectedCategory(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value="">Alla kategorier</option>
+                                {categories.map(cat => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Typ
+                            </label>
+                            <select
+                                value={selectedType}
+                                onChange={(e) => setSelectedType(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value="">Alla typer</option>
+                                <option value="product">Produkt</option>
+                                <option value="service">Tjänst</option>
+                                <option value="package">Paket</option>
+                            </select>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Results Count */}
+            <div className="text-sm text-gray-600">
+                Visar {articles.length} artikel{articles.length !== 1 ? 'ar' : ''}
+            </div>
+
+            {/* Articles Table */}
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Artikelnr
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Namn
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Typ
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Kategori
+                            </th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Pris
+                            </th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Marginal
+                            </th>
+                            <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Enhet
+                            </th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Åtgärder
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                        {articles.length === 0 ? (
+                            <tr>
+                                <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
+                                    <Package className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                                    <p className="text-lg font-medium">Inga artiklar hittades</p>
+                                    <p className="text-sm mt-1">Skapa din första artikel för att komma igång</p>
+                                </td>
+                            </tr>
+                        ) : (
+                            articles.map((article) => {
+                                const margin = getMarginPercentage(article.price, article.cost);
+                                return (
+                                    <tr key={article.id} className="hover:bg-gray-50">
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                {article.articleNumber}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                {article.name}
+                                            </div>
+                                            {article.sku && (
+                                                <div className="text-xs text-gray-500">
+                                                    SKU: {article.sku}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded">
+                                                {ARTICLE_TYPE_LABELS[article.articleType]}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            {article.category && (
+                                                <div className="flex items-center gap-1 text-sm text-gray-600">
+                                                    <Tag className="w-3 h-3" />
+                                                    {article.category}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                {formatPrice(article.price)}
+                                            </div>
+                                            <div className="text-xs text-gray-500">
+                                                exkl. moms
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                                            {margin && (
+                                                <span className={`text-sm font-medium ${
+                                                    parseFloat(margin) > 30 ? 'text-green-600' :
+                                                    parseFloat(margin) > 15 ? 'text-yellow-600' :
+                                                    'text-red-600'
+                                                }`}>
+                                                    {margin}%
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-center">
+                                            <span className="text-sm text-gray-600">
+                                                {UNIT_LABELS[article.unit]}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <Link
+                                                    to={`/articles/${article.id}/edit`}
+                                                    className="text-blue-600 hover:text-blue-900"
+                                                >
+                                                    <Edit2 className="w-4 h-4" />
+                                                </Link>
+                                                <button
+                                                    onClick={() => handleDelete(article.id, article.name)}
+                                                    className="text-red-600 hover:text-red-900"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+Filsökväg: frontend/src/pages/ArticleFormPage.tsx
+typescriptimport React, { useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { Package, Save, X } from 'lucide-react';
+import { useArticle, useCreateArticle, useUpdateArticle } from '../hooks/useArticle';
+import { CreateArticleDto } from '../types/article.types';
+import { UNIT_LABELS, ARTICLE_TYPE_LABELS, VAT_RATES } from '../services/articleService';
+
+export default function ArticleFormPage() {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const isEditing = !!id;
+
+    const { data: article, isLoading } = useArticle(id || '');
+    const createArticle = useCreateArticle();
+    const updateArticle = useUpdateArticle();
+
+    const {
+        register,
+        handleSubmit,
+        formState: { errors },
+        reset,
+        watch
+    } = useForm<CreateArticleDto>({
+        defaultValues: {
+            articleType: 'product',
+            unit: 'piece',
+            vatRate: 25.00,
+            isActive: true
+        }
+    });
+
+    useEffect(() => {
+        if (article) {
+            reset({
+                articleNumber: article.articleNumber,
+                name: article.name,
+                description: article.description || '',
+                articleType: article.articleType,
+                sku: article.sku || '',
+                barcode: article.barcode || '',
+                unit: article.unit,
+                price: article.price,
+                cost: article.cost || undefined,
+                vatRate: article.vatRate,
+                category: article.category || '',
+                isActive: article.isActive
+            });
+        }
+    }, [article, reset]);
+
+    const onSubmit = async (data: CreateArticleDto) => {
+        try {
+            if (isEditing) {
+                await updateArticle.mutateAsync({ id: id!, data });
+            } else {
+                await createArticle.mutateAsync(data);
+            }
+            navigate('/articles');
+        } catch (error) {
+            // Error is handled by the hooks
+        }
+    };
+
+    const price = watch('price');
+    const cost = watch('cost');
+    const vatRate = watch('vatRate');
+
+    const calculatePriceWithVat = () => {
+        if (!price) return 0;
+        return price * (1 + (vatRate || 0) / 100);
+    };
+
+    const calculateMargin = () => {
+        if (!price || !cost) return null;
+        return ((price - cost) / price * 100).toFixed(1);
+    };
+
+    if (isLoading && isEditing) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-w-3xl mx-auto space-y-6">
+            {/* Header */}
+            <div className="flex items-center gap-3">
+                <Package className="w-8 h-8 text-blue-600" />
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">
+                        {isEditing ? 'Redigera Artikel' : 'Ny Artikel'}
+                    </h1>
+                    <p className="text-gray-600">
+                        {isEditing ? 'Uppdatera artikeluppgifter' : 'Skapa en ny produkt eller tjänst'}
+                    </p>
+                </div>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+                {/* Basic Information */}
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                        Grundläggande Information
+                    </h2>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Artikelnummer *
+                            </label>
+                            <input
+                                type="text"
+                                {...register('articleNumber', { required: 'Artikelnummer krävs' })}
+                                disabled={isEditing}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                            />
+                            {errors.articleNumber && (
+                                <p className="mt-1 text-sm text-red-600">{errors.articleNumber.message}</p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Artikeltyp
+                            </label>
+                            <select
+                                {...register('articleType')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                {Object.entries(ARTICLE_TYPE_LABELS).map(([value, label]) => (
+                                    <option key={value} value={value}>{label}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="col-span-2">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Namn *
+                            </label>
+                            <input
+                                type="text"
+                                {...register('name', { required: 'Namn krävs' })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                            {errors.name && (
+                                <p className="mt-1 text-sm text-red-600">{errors.name.message}</p>
+                            )}
+                        </div>
+
+                        <div className="col-span-2">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Beskrivning
+                            </label>
+                            <textarea
+                                {...register('description')}
+                                rows={3}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                SKU
+                            </label>
+                            <input
+                                type="text"
+                                {...register('sku')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Streckkod
+                            </label>
+                            <input
+                                type="text"
+                                {...register('barcode')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Kategori
+                            </label>
+                            <input
+                                type="text"
+                                {...register('category')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                placeholder="t.ex. Elektronik, Tjänster"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Enhet
+                            </label>
+                            <select
+                                {...register('unit')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                {Object.entries(UNIT_LABELS).map(([value, label]) => (
+                                    <option key={value} value={value}>{label}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Pricing */}
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                        Prissättning
+                    </h2>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Försäljningspris (exkl. moms) *
+                            </label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                {...register('price', { 
+                                    required: 'Pris krävs',
+                                    min: { value: 0, message: 'Pris måste vara positivt' }
+                                })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                            {errors.price && (
+                                <p className="mt-1 text-sm text-red-600">{errors.price.message}</p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Inköpspris
+                            </label>
+                            <input
+                                type="number"
+                                step="0.01"
+                                {...register('cost')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Momssats (%)
+                            </label>
+                            <select
+                                {...register('vatRate')}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                {VAT_RATES.map(rate => (
+                                    <option key={rate.value} value={rate.value}>
+                                        {rate.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Aktiv
+                            </label>
+                            <div className="flex items-center h-10">
+                                <input
+                                    type="checkbox"
+                                    {...register('isActive')}
+                                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                />
+                                <label className="ml-2 text-sm text-gray-700">
+                                    Artikel är aktiv
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Price Calculations */}
+                    {price && (
+                        <div className="mt-6 pt-4 border-t border-gray-200">
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span className="text-gray-600">Pris inkl. moms:</span>
+                                    <span className="ml-2 font-medium text-gray-900">
+                                        {calculatePriceWithVat().toFixed(2)} kr
+                                    </span>
+                                </div>
+                                {cost && (
+                                    <div>
+                                        <span className="text-gray-600">Marginal:</span>
+                                        <span className={`ml-2 font-medium ${
+                                            parseFloat(calculateMargin()!) > 30 ? 'text-green-600' :
+                                            parseFloat(calculateMargin()!) > 15 ? 'text-yellow-600' :
+                                            'text-red-600'
+                                        }`}>
+                                            {calculateMargin()}%
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={() => navigate('/articles')}
+                        className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                        <X className="w-4 h-4" />
+                        Avbryt
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={createArticle.isPending || updateArticle.isPending}
+                        className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        <Save className="w-4 h-4" />
+                        {isEditing ? 'Uppdatera' : 'Skapa'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+}
+Uppdatera: frontend/src/App.tsx - Lägg till routes
+typescriptimport ArticleListPage from './pages/ArticleListPage';
+import ArticleFormPage from './pages/ArticleFormPage';
+
+// ... i routes:
+<Route path="/articles" element={<ArticleListPage />} />
+<Route path="/articles/new" element={<ArticleFormPage />} />
+<Route path="/articles/:id/edit" element={<ArticleFormPage />} />
+
+10. Tests
+Filsökväg: backend/src/tests/unit/articleService.test.ts
+typescriptimport { articleService } from '../../services/articleService';
+
+describe('Article Service', () => {
+    describe('createArticle', () => {
+        it('should create article with required fields', async () => {
+            const article = await articleService.createArticle('company-id', {
+                articleNumber: 'ART001',
+                name: 'Test Product',
+                price: 100.00
+            });
+
+            expect(article).toMatchObject({
+                articleNumber: 'ART001',
+                name: 'Test Product',
+                price: 100.00,
+                unit: 'piece',
+                vatRate: 25.00,
+                isActive: true
+            });
+        });
+
+        it('should throw error for duplicate article number', async () => {
+            await expect(
+                articleService.createArticle('company-id', {
+                    articleNumber: 'ART001',
+                    name: 'Duplicate',
+                    price: 50.00
+                })
+            ).rejects.toThrow('Article number already exists');
+        });
+    });
+
+    describe('getArticles', () => {
+        it('should filter by category', async () => {
+            const articles = await articleService.getArticles('company-id', {
+                category: 'Electronics'
+            });
+
+            expect(articles.every(a => a.category === 'Electronics')).toBe(true);
+        });
+
+        it('should search by name and SKU', async () => {
+            const articles = await articleService.getArticles('company-id', {
+                search: 'laptop'
+            });
+
+            expect(articles.length).toBeGreaterThan(0);
+        });
+    });
+
+    describe('updateArticle', () => {
+        it('should update article price', async () => {
+            const updated = await articleService.updateArticle('company-id', 'article-id', {
+                price: 199.99
+            });
+
+            expect(updated.price).toBe(199.99);
+        });
+    });
+});
+Filsökväg: backend/src/tests/integration/articles.test.ts
+typescriptimport request from 'supertest';
+import app from '../../app';
+
+describe('Article API', () => {
+    let authToken: string;
+    let articleId: string;
+
+    beforeAll(async () => {
+        // Login to get auth token
+        const response = await request(app)
+            .post('/api/auth/login')
+            .send({ email: 'test@example.com', password: 'password' });
+        authToken = response.body.token;
+    });
+
+    describe('POST /api/articles', () => {
+        it('should create new article', async () => {
+            const response = await request(app)
+                .post('/api/articles')
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({
+                    articleNumber: 'PROD001',
+                    name: 'Test Product',
+                    price: 149.99,
+                    unit: 'piece',
+                    vatRate: 25.00
+                });
+
+            expect(response.status).toBe(201);
+            expect(response.body).toHaveProperty('id');
+            articleId = response.body.id;
+        });
+
+        it('should reject duplicate article number', async () => {
+            const response = await request(app)
+                .post('/api/articles')
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({
+                    articleNumber: 'PROD001',
+                    name: 'Duplicate',
+                    price: 99.99
+                });
+
+            expect(response.status).toBe(400);
+        });
+    });
+
+    describe('GET /api/articles', () => {
+        it('should return all articles', async () => {
+            const response = await request(app)
+                .get('/api/articles')
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(200);
+            expect(Array.isArray(response.body)).toBe(true);
+        });
+
+        it('should filter by category', async () => {
+            const response = await request(app)
+                .get('/api/articles?category=Electronics')
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.every((a: any) => a.category === 'Electronics')).toBe(true);
+        });
+    });
+
+    describe('PUT /api/articles/:id', () => {
+        it('should update article', async () => {
+            const response = await request(app)
+                .put(`/api/articles/${articleId}`)
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({ price: 199.99 });
+
+            expect(response.status).toBe(200);
+            expect(response.body.price).toBe(199.99);
+        });
+    });
+
+    describe('DELETE /api/articles/:id', () => {
+        it('should delete article', async () => {
+            const response = await request(app)
+                .delete(`/api/articles/${articleId}`)
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(204);
+        });
+    });
+});
+
+Verifiering
+Kör följande steg för att verifiera implementationen:
+bash# 1. Kör migration
+docker exec -i redovisning-postgres psql -U postgres -d redovisning < database/migrations/004_articles.sql
+
+# 2. Starta backend (om inte redan igång)
+cd backend && npm run dev
+
+# 3. Starta frontend (om inte redan igång)
+cd frontend && npm run dev
+
+# 4. Testa API endpoints
+curl -X POST http://localhost:3000/api/articles \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "articleNumber": "ART001",
+    "name": "Test Product",
+    "price": 99.99,
+    "unit": "piece",
+    "vatRate": 25.00
+  }'
+
+# 5. Öppna frontend
+# Navigera till http://localhost:5173/articles
+
+# 6. Kör tester
+cd backend && npm test -- articles
+
+STEG 2.4: Invoice Module ✅ KOMPLETT
 Instruktion:
-Implementera komplett fakturasystem med rader, beräkningar, statushantering och OCR-nummer.
-Types:
+Implementera komplett faktureringssystem med invoice lines, statushantering, OCR-nummer, automatiska beräkningar och PDF-generering.
+
+1. Database Migration
+Filsökväg: database/migrations/005_invoices.sql
+sql-- Migration: Create invoices and invoice_lines tables
+-- Description: Core invoicing functionality with OCR numbers and status tracking
+-- Author: AI Assistant
+-- Date: 2025-10-20
+
+-- Enable UUID extension if not already enabled
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Create invoice_status enum
+CREATE TYPE invoice_status AS ENUM (
+    'draft',      -- Utkast
+    'sent',       -- Skickad
+    'paid',       -- Betald
+    'overdue',    -- Förfallen
+    'cancelled'   -- Makulerad
+);
+
+-- Create invoices table
+CREATE TABLE invoices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+    
+    -- Invoice numbers
+    invoice_number VARCHAR(50) NOT NULL,
+    ocr_number VARCHAR(50) NOT NULL,
+    
+    -- Dates
+    invoice_date DATE NOT NULL,
+    due_date DATE NOT NULL,
+    sent_date DATE,
+    paid_date DATE,
+    
+    -- Status
+    status invoice_status NOT NULL DEFAULT 'draft',
+    
+    -- Amounts (stored in öre/cents for precision)
+    subtotal BIGINT NOT NULL DEFAULT 0,
+    vat_amount BIGINT NOT NULL DEFAULT 0,
+    total_amount BIGINT NOT NULL DEFAULT 0,
+    
+    -- Payment info
+    payment_reference VARCHAR(100),
+    
+    -- Additional info
+    notes TEXT,
+    terms TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Constraints
+    UNIQUE(company_id, invoice_number),
+    UNIQUE(company_id, ocr_number),
+    CONSTRAINT valid_amounts CHECK (
+        subtotal >= 0 AND 
+        vat_amount >= 0 AND 
+        total_amount >= 0
+    ),
+    CONSTRAINT valid_dates CHECK (due_date >= invoice_date)
+);
+
+-- Create invoice_lines table
+CREATE TABLE invoice_lines (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    article_id UUID REFERENCES articles(id) ON DELETE RESTRICT,
+    
+    -- Line details
+    line_number INTEGER NOT NULL,
+    description VARCHAR(500) NOT NULL,
+    
+    -- Quantities and pricing
+    quantity DECIMAL(10, 2) NOT NULL,
+    unit VARCHAR(50) NOT NULL,
+    unit_price BIGINT NOT NULL,  -- In öre/cents
+    
+    -- VAT
+    vat_rate DECIMAL(5, 2) NOT NULL,
+    vat_amount BIGINT NOT NULL,
+    
+    -- Totals
+    subtotal BIGINT NOT NULL,
+    total BIGINT NOT NULL,
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Constraints
+    CONSTRAINT positive_quantity CHECK (quantity > 0),
+    CONSTRAINT valid_line_amounts CHECK (
+        unit_price >= 0 AND
+        vat_amount >= 0 AND
+        subtotal >= 0 AND
+        total >= 0
+    ),
+    UNIQUE(invoice_id, line_number)
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_invoices_company_id ON invoices(company_id);
+CREATE INDEX idx_invoices_customer_id ON invoices(customer_id);
+CREATE INDEX idx_invoices_invoice_number ON invoices(invoice_number);
+CREATE INDEX idx_invoices_ocr_number ON invoices(ocr_number);
+CREATE INDEX idx_invoices_status ON invoices(status);
+CREATE INDEX idx_invoices_invoice_date ON invoices(invoice_date);
+CREATE INDEX idx_invoices_due_date ON invoices(due_date);
+CREATE INDEX idx_invoices_created_at ON invoices(created_at);
+
+CREATE INDEX idx_invoice_lines_invoice_id ON invoice_lines(invoice_id);
+CREATE INDEX idx_invoice_lines_article_id ON invoice_lines(article_id);
+CREATE INDEX idx_invoice_lines_line_number ON invoice_lines(line_number);
+
+-- Create updated_at trigger for invoices
+CREATE TRIGGER update_invoices_updated_at
+    BEFORE UPDATE ON invoices
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- Add comments
+COMMENT ON TABLE invoices IS 'Customer invoices';
+COMMENT ON TABLE invoice_lines IS 'Individual line items on invoices';
+COMMENT ON COLUMN invoices.ocr_number IS 'OCR reference number with Luhn checksum';
+COMMENT ON COLUMN invoices.subtotal IS 'Amount in öre (1 kr = 100 öre)';
+COMMENT ON COLUMN invoices.vat_amount IS 'VAT amount in öre';
+COMMENT ON COLUMN invoices.total_amount IS 'Total amount including VAT in öre';
+
+2. Backend Types (Already Exists - For Reference)
 Filsökväg: backend/src/types/invoice.types.ts
-typescriptexport interface Invoice {
-  id: string;
-  company_id: string;
-  customer_id: string;
-  invoice_number: string;
-  invoice_date: Date;
-  due_date: Date;
-  payment_terms: number;
-  status: 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled';
-  currency: string;
-  subtotal: number;
-  vat_amount: number;
-  total_amount: number;
-  paid_amount: number;
-  paid_date?: Date;
-  sent_date?: Date;
-  reference?: string;
-  notes?: string;
-  pdf_url?: string;
-  ocr_number?: string;
-  created_by: string;
-  created_at: Date;
-  updated_at: Date;
+typescriptexport type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled';
+
+export interface Invoice {
+    id: string;
+    companyId: string;
+    customerId: string;
+    invoiceNumber: string;
+    ocrNumber: string;
+    invoiceDate: string;
+    dueDate: string;
+    sentDate: string | null;
+    paidDate: string | null;
+    status: InvoiceStatus;
+    subtotal: number;  // In SEK (converted from öre)
+    vatAmount: number;
+    totalAmount: number;
+    paymentReference: string | null;
+    notes: string | null;
+    terms: string | null;
+    createdAt: string;
+    updatedAt: string;
+    
+    // Relations
+    customer?: any;  // Customer object when populated
+    lines?: InvoiceLine[];
 }
 
 export interface InvoiceLine {
-  id: string;
-  invoice_id: string;
-  article_id?: string;
-  description: string;
-  quantity: number;
-  unit_price: number;
-  unit: string;
-  vat_rate: number;
-  amount: number;
-  line_order: number;
+    id: string;
+    invoiceId: string;
+    articleId: string | null;
+    lineNumber: number;
+    description: string;
+    quantity: number;
+    unit: string;
+    unitPrice: number;  // In SEK
+    vatRate: number;
+    vatAmount: number;
+    subtotal: number;
+    total: number;
+    
+    // Relations
+    article?: any;  // Article object when populated
 }
 
 export interface CreateInvoiceDto {
-  customer_id: string;
-  invoice_date: string;
-  due_date?: string;
-  payment_terms?: number;
-  reference?: string;
-  notes?: string;
-  lines: {
-    article_id?: string;
+    customerId: string;
+    invoiceDate: string;
+    dueDate: string;
+    notes?: string;
+    terms?: string;
+    lines: CreateInvoiceLineDto[];
+}
+
+export interface CreateInvoiceLineDto {
+    articleId?: string;
     description: string;
     quantity: number;
-    unit_price: number;
-    unit?: string;
-    vat_rate: number;
-  }[];
+    unit: string;
+    unitPrice: number;
+    vatRate: number;
 }
-Service med viktiga beräkningar:
+
+export interface UpdateInvoiceDto {
+    invoiceDate?: string;
+    dueDate?: string;
+    notes?: string;
+    terms?: string;
+    lines?: CreateInvoiceLineDto[];
+}
+
+export interface UpdateInvoiceStatusDto {
+    status: InvoiceStatus;
+    date?: string;  // For sent_date or paid_date
+    paymentReference?: string;
+}
+
+3. Backend Service (Already Exists - For Reference)
+Note: The service with OCR generation and calculations already exists. Here's the complete version for reference.
 Filsökväg: backend/src/services/invoiceService.ts
-typescriptimport { query } from '../config/database';
-import { Invoice, CreateInvoiceDto, InvoiceLine } from '../types/invoice.types';
+typescriptimport pool from '../config/database';
+import { Invoice, InvoiceLine, CreateInvoiceDto, UpdateInvoiceDto, UpdateInvoiceStatusDto } from '../types/invoice.types';
+import { BadRequestError, NotFoundError } from '../middleware/errorHandler';
 
-// Generate unique invoice number
-export const generateInvoiceNumber = async (companyId: string): Promise<string> => {
-  const result = await query(
-    `SELECT invoice_number FROM invoices 
-     WHERE company_id = $1 
-     ORDER BY created_at DESC 
-     LIMIT 1`,
-    [companyId]
-  );
-  
-  if (result.rows.length === 0) {
-    return '2024-0001';
-  }
-  
-  const lastNumber = result.rows[0].invoice_number;
-  const [year, num] = lastNumber.split('-');
-  const currentYear = new Date().getFullYear().toString();
-  
-  if (year === currentYear) {
-    const nextNum = (parseInt(num) + 1).toString().padStart(4, '0');
-    return `${currentYear}-${nextNum}`;
-  } else {
-    return `${currentYear}-0001`;
-  }
-};
+// Helper: Convert öre to SEK
+const oreToSek = (ore: number): number => ore / 100;
 
-// Generate OCR number (Swedish standard)
-export const generateOCRNumber = (invoiceNumber: string): string => {
-  const cleaned = invoiceNumber.replace(/[^0-9]/g, '');
-  const checksum = calculateLuhnChecksum(cleaned);
-  return cleaned + checksum;
-};
+// Helper: Convert SEK to öre
+const sekToOre = (sek: number): number => Math.round(sek * 100);
 
-function calculateLuhnChecksum(number: string): string {
-  let sum = 0;
-  let alternate = false;
-  
-  for (let i = number.length - 1; i >= 0; i--) {
-    let n = parseInt(number[i]);
+// Helper: Luhn checksum algorithm
+function calculateLuhnChecksum(number: string): number {
+    let sum = 0;
+    let isEven = false;
     
-    if (alternate) {
-      n *= 2;
-      if (n > 9) n -= 9;
+    for (let i = number.length - 1; i >= 0; i--) {
+        let digit = parseInt(number[i]);
+        
+        if (isEven) {
+            digit *= 2;
+            if (digit > 9) {
+                digit -= 9;
+            }
+        }
+        
+        sum += digit;
+        isEven = !isEven;
     }
     
-    sum += n;
-    alternate = !alternate;
-  }
-  
-  return ((10 - (sum % 10)) % 10).toString();
+    return (10 - (sum % 10)) % 10;
 }
 
-// Calculate invoice totals
-export const calculateInvoiceTotals = (lines: InvoiceLine[]): {
-  subtotal: number;
-  vat_amount: number;
-  total_amount: number;
-} => {
-  let subtotal = 0;
-  let vat_amount = 0;
-  
-  lines.forEach(line => {
-    const lineSubtotal = line.quantity * line.unit_price;
-    const lineVat = lineSubtotal * (line.vat_rate / 100);
-    
-    subtotal += lineSubtotal;
-    vat_amount += lineVat;
-  });
-  
-  const total_amount = subtotal + vat_amount;
-  
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    vat_amount: Math.round(vat_amount * 100) / 100,
-    total_amount: Math.round(total_amount * 100) / 100
-  };
-};
+// Helper: Convert DB row to Invoice object
+function toInvoice(row: any): Invoice {
+    return {
+        id: row.id,
+        companyId: row.company_id,
+        customerId: row.customer_id,
+        invoiceNumber: row.invoice_number,
+        ocrNumber: row.ocr_number,
+        invoiceDate: row.invoice_date,
+        dueDate: row.due_date,
+        sentDate: row.sent_date,
+        paidDate: row.paid_date,
+        status: row.status,
+        subtotal: oreToSek(row.subtotal),
+        vatAmount: oreToSek(row.vat_amount),
+        totalAmount: oreToSek(row.total_amount),
+        paymentReference: row.payment_reference,
+        notes: row.notes,
+        terms: row.terms,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+    };
+}
 
-export const createInvoice = async (
-  companyId: string,
-  userId: string,
-  data: CreateInvoiceDto
-): Promise<Invoice> => {
-  const client = await query('BEGIN', []);
-  
-  try {
-    // Generate invoice number
-    const invoiceNumber = await generateInvoiceNumber(companyId);
-    const ocrNumber = generateOCRNumber(invoiceNumber);
+// Helper: Convert DB row to InvoiceLine object
+function toInvoiceLine(row: any): InvoiceLine {
+    return {
+        id: row.id,
+        invoiceId: row.invoice_id,
+        articleId: row.article_id,
+        lineNumber: row.line_number,
+        description: row.description,
+        quantity: parseFloat(row.quantity),
+        unit: row.unit,
+        unitPrice: oreToSek(row.unit_price),
+        vatRate: parseFloat(row.vat_rate),
+        vatAmount: oreToSek(row.vat_amount),
+        subtotal: oreToSek(row.subtotal),
+        total: oreToSek(row.total)
+    };
+}
+
+export const invoiceService = {
+    /**
+     * Generate next invoice number for company
+     */
+    async generateInvoiceNumber(companyId: string): Promise<string> {
+        const result = await pool.query(
+            `SELECT invoice_number FROM invoices 
+             WHERE company_id = $1 
+             ORDER BY created_at DESC 
+             LIMIT 1`,
+            [companyId]
+        );
+        
+        if (result.rows.length === 0) {
+            return '1';
+        }
+        
+        const lastNumber = parseInt(result.rows[0].invoice_number);
+        return (lastNumber + 1).toString();
+    },
     
-    // Calculate due date if not provided
-    const invoiceDate = new Date(data.invoice_date);
-    const paymentTerms = data.payment_terms || 30;
-    const dueDate = data.due_date 
-      ? new Date(data.due_date)
-      : new Date(invoiceDate.getTime() + paymentTerms * 24 * 60 * 60 * 1000);
+    /**
+     * Generate OCR number with Luhn checksum
+     */
+    generateOCRNumber(invoiceNumber: string): string {
+        // Pad invoice number to at least 6 digits
+        const paddedNumber = invoiceNumber.padStart(6, '0');
+        
+        // Calculate checksum
+        const checksum = calculateLuhnChecksum(paddedNumber);
+        
+        // Return OCR number with checksum
+        return `${paddedNumber}${checksum}`;
+    },
     
-    // Calculate line amounts
-    const linesWithAmounts = data.lines.map((line, index) => ({
-      ...line,
-      amount: line.quantity * line.unit_price,
-      line_order: index + 1,
-      unit: line.unit || 'st'
-    }));
+    /**
+     * Calculate invoice totals from lines
+     */
+    calculateInvoiceTotals(lines: CreateInvoiceLineDto[]): {
+        subtotal: number;
+        vatAmount: number;
+        totalAmount: number;
+    } {
+        let subtotal = 0;
+        let vatAmount = 0;
+        
+        for (const line of lines) {
+            const lineSubtotal = line.quantity * line.unitPrice;
+            const lineVat = lineSubtotal * (line.vatRate / 100);
+            
+            subtotal += lineSubtotal;
+            vatAmount += lineVat;
+        }
+        
+        const totalAmount = subtotal + vatAmount;
+        
+        return {
+            subtotal: Math.round(subtotal * 100) / 100,
+            vatAmount: Math.round(vatAmount * 100) / 100,
+            totalAmount: Math.round(totalAmount * 100) / 100
+        };
+    },
     
-    // Calculate totals
-    const totals = calculateInvoiceTotals(linesWithAmounts as InvoiceLine[]);
+    /**
+     * Create new invoice
+     */
+    async createInvoice(companyId: string, data: CreateInvoiceDto): Promise<Invoice> {
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+            
+            // Generate invoice number and OCR
+            const invoiceNumber = await this.generateInvoiceNumber(companyId);
+            const ocrNumber = this.generateOCRNumber(invoiceNumber);
+            
+            // Calculate totals
+            const totals = this.calculateInvoiceTotals(data.lines);
+            
+            // Create invoice
+            const invoiceResult = await client.query(
+                `INSERT INTO invoices (
+                    company_id, customer_id, invoice_number, ocr_number,
+                    invoice_date, due_date, status,
+                    subtotal, vat_amount, total_amount,
+                    notes, terms
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                RETURNING *`,
+                [
+                    companyId,
+                    data.customerId,
+                    invoiceNumber,
+                    ocrNumber,
+                    data.invoiceDate,
+                    data.dueDate,
+                    'draft',
+                    sekToOre(totals.subtotal),
+                    sekToOre(totals.vatAmount),
+                    sekToOre(totals.totalAmount),
+                    data.notes || null,
+                    data.terms || null
+                ]
+            );
+            
+            const invoice = toInvoice(invoiceResult.rows[0]);
+            
+            // Create invoice lines
+            const lines: InvoiceLine[] = [];
+            for (let i = 0; i < data.lines.length; i++) {
+                const line = data.lines[i];
+                const lineSubtotal = line.quantity * line.unitPrice;
+                const lineVat = lineSubtotal * (line.vatRate / 100);
+                const lineTotal = lineSubtotal + lineVat;
+                
+                const lineResult = await client.query(
+                    `INSERT INTO invoice_lines (
+                        invoice_id, article_id, line_number,
+                        description, quantity, unit, unit_price,
+                        vat_rate, vat_amount, subtotal, total
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    RETURNING *`,
+                    [
+                        invoice.id,
+                        line.articleId || null,
+                        i + 1,
+                        line.description,
+                        line.quantity,
+                        line.unit,
+                        sekToOre(line.unitPrice),
+                        line.vatRate,
+                        sekToOre(lineVat),
+                        sekToOre(lineSubtotal),
+                        sekToOre(lineTotal)
+                    ]
+                );
+                
+                lines.push(toInvoiceLine(lineResult.rows[0]));
+            }
+            
+            await client.query('COMMIT');
+            
+            invoice.lines = lines;
+            return invoice;
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    },
     
-    // Create invoice
-    const invoiceResult = await query(
-      `INSERT INTO invoices (
-        company_id, customer_id, invoice_number, invoice_date, due_date,
-        payment_terms, status, currency, subtotal, vat_amount, total_amount,
-        paid_amount, reference, notes, ocr_number, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-      RETURNING *`,
-      [
-        companyId,
-        data.customer_id,
-        invoiceNumber,
-        invoiceDate,
-        dueDate,
-        paymentTerms,
-        'draft',
-        'SEK',
-        totals.subtotal,
-        totals.vat_amount,
-        totals.total_amount,
-        0,
-        data.reference || null,
-        data.notes || null,
-        ocrNumber,
-        userId
-      ]
-    );
+    /**
+     * Get all invoices for company
+     */
+    async getInvoices(
+        companyId: string,
+        filters?: {
+            customerId?: string;
+            status?: string;
+            fromDate?: string;
+            toDate?: string;
+        }
+    ): Promise<Invoice[]> {
+        let query = `
+            SELECT i.*, 
+                   json_build_object(
+                       'id', c.id,
+                       'name', c.name,
+                       'email', c.email
+                   ) as customer
+            FROM invoices i
+            LEFT JOIN customers c ON i.customer_id = c.id
+            WHERE i.company_id = $1
+        `;
+        const params: any[] = [companyId];
+        let paramCount = 1;
+        
+        if (filters?.customerId) {
+            paramCount++;
+            query += ` AND i.customer_id = $${paramCount}`;
+            params.push(filters.customerId);
+        }
+        
+        if (filters?.status) {
+            paramCount++;
+            query += ` AND i.status = $${paramCount}`;
+            params.push(filters.status);
+        }
+        
+        if (filters?.fromDate) {
+            paramCount++;
+            query += ` AND i.invoice_date >= $${paramCount}`;
+            params.push(filters.fromDate);
+        }
+        
+        if (filters?.toDate) {
+            paramCount++;
+            query += ` AND i.invoice_date <= $${paramCount}`;
+            params.push(filters.toDate);
+        }
+        
+        query += ' ORDER BY i.invoice_date DESC, i.invoice_number DESC';
+        
+        const result = await pool.query(query, params);
+        
+        return result.rows.map(row => {
+            const invoice = toInvoice(row);
+            invoice.customer = row.customer;
+            return invoice;
+        });
+    },
     
-    const invoice = invoiceResult.rows[0];
+    /**
+     * Get invoice by ID
+     */
+    async getInvoiceById(companyId: string, invoiceId: string): Promise<Invoice> {
+        // Get invoice with customer
+        const invoiceResult = await pool.query(
+            `SELECT i.*, 
+                    json_build_object(
+                        'id', c.id,
+                        'name', c.name,
+                        'email', c.email,
+                        'phone', c.phone,
+                        'address', c.address,
+                        'postalCode', c.postal_code,
+                        'city', c.city,
+                        'country', c.country,
+                        'organizationNumber', c.organization_number
+                    ) as customer
+             FROM invoices i
+             LEFT JOIN customers c ON i.customer_id = c.id
+             WHERE i.id = $1 AND i.company_id = $2`,
+            [invoiceId, companyId]
+        );
+        
+        if (invoiceResult.rows.length === 0) {
+            throw new NotFoundError('Invoice not found');
+        }
+        
+        const invoice = toInvoice(invoiceResult.rows[0]);
+        invoice.customer = invoiceResult.rows[0].customer;
+        
+        // Get invoice lines
+        const linesResult = await pool.query(
+            `SELECT il.*, 
+                    json_build_object(
+                        'id', a.id,
+                        'articleNumber', a.article_number,
+                        'name', a.name
+                    ) as article
+             FROM invoice_lines il
+             LEFT JOIN articles a ON il.article_id = a.id
+             WHERE il.invoice_id = $1
+             ORDER BY il.line_number`,
+            [invoiceId]
+        );
+        
+        invoice.lines = linesResult.rows.map(row => {
+            const line = toInvoiceLine(row);
+            line.article = row.article;
+            return line;
+        });
+        
+        return invoice;
+    },
     
-    // Create invoice lines
-    for (const line of linesWithAmounts) {
-      await query(
-        `INSERT INTO invoice_lines (
-          invoice_id, article_id, description, quantity, unit_price,
-          unit, vat_rate, amount, line_order
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-          invoice.id,
-          line.article_id || null,
-          line.description,
-          line.quantity,
-          line.unit_price,
-          line.unit,
-          line.vat_rate,
-          line.amount,
-          line.line_order
-        ]
-      );
+    /**
+     * Update invoice
+     */
+    async updateInvoice(
+        companyId: string,
+        invoiceId: string,
+        data: UpdateInvoiceDto
+    ): Promise<Invoice> {
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+            
+            // Check if invoice exists and is in draft
+            const checkResult = await client.query(
+                'SELECT status FROM invoices WHERE id = $1 AND company_id = $2',
+                [invoiceId, companyId]
+            );
+            
+            if (checkResult.rows.length === 0) {
+                throw new NotFoundError('Invoice not found');
+            }
+            
+            if (checkResult.rows[0].status !== 'draft') {
+                throw new BadRequestError('Only draft invoices can be updated');
+            }
+            
+            // Update invoice
+            const fields: string[] = [];
+            const values: any[] = [];
+            let paramCount = 0;
+            
+            if (data.invoiceDate) {
+                paramCount++;
+                fields.push(`invoice_date = $${paramCount}`);
+                values.push(data.invoiceDate);
+            }
+            
+            if (data.dueDate) {
+                paramCount++;
+                fields.push(`due_date = $${paramCount}`);
+                values.push(data.dueDate);
+            }
+            
+            if (data.notes !== undefined) {
+                paramCount++;
+                fields.push(`notes = $${paramCount}`);
+                values.push(data.notes);
+            }
+            
+            if (data.terms !== undefined) {
+                paramCount++;
+                fields.push(`terms = $${paramCount}`);
+                values.push(data.terms);
+            }
+            
+            // Update lines if provided
+            if (data.lines) {
+                // Recalculate totals
+                const totals = this.calculateInvoiceTotals(data.lines);
+                
+                paramCount++;
+                fields.push(`subtotal = $${paramCount}`);
+                values.push(sekToOre(totals.subtotal));
+                
+                paramCount++;
+                fields.push(`vat_amount = $${paramCount}`);
+                values.push(sekToOre(totals.vatAmount));
+                
+                paramCount++;
+                fields.push(`total_amount = $${paramCount}`);
+                values.push(sekToOre(totals.totalAmount));
+                
+                // Delete old lines
+                await client.query(
+                    'DELETE FROM invoice_lines WHERE invoice_id = $1',
+                    [invoiceId]
+                );
+                
+                // Create new lines
+                for (let i = 0; i < data.lines.length; i++) {
+                    const line = data.lines[i];
+                    const lineSubtotal = line.quantity * line.unitPrice;
+                    const lineVat = lineSubtotal * (line.vatRate / 100);
+                    const lineTotal = lineSubtotal + lineVat;
+                    
+                    await client.query(
+                        `INSERT INTO invoice_lines (
+                            invoice_id, article_id, line_number,
+                            description, quantity, unit, unit_price,
+                            vat_rate, vat_amount, subtotal, total
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+                        [
+                            invoiceId,
+                            line.articleId || null,
+                            i + 1,
+                            line.description,
+                            line.quantity,
+                            line.unit,
+                            sekToOre(line.unitPrice),
+                            line.vatRate,
+                            sekToOre(lineVat),
+                            sekToOre(lineSubtotal),
+                            sekToOre(lineTotal)
+                        ]
+                    );
+                }
+            }
+            
+            if (fields.length > 0) {
+                values.push(invoiceId, companyId);
+                await client.query(
+                    `UPDATE invoices SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $${paramCount + 1} AND company_id = $${paramCount + 2}`,
+                    values
+                );
+            }
+            
+            await client.query('COMMIT');
+            
+            // Return updated invoice
+            return await this.getInvoiceById(companyId, invoiceId);
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    },
+    
+    /**
+     * Update invoice status
+     */
+    async updateInvoiceStatus(
+        companyId: string,
+        invoiceId: string,
+        data: UpdateInvoiceStatusDto
+    ): Promise<Invoice> {
+        const fields: string[] = [`status = $1`];
+        const values: any[] = [data.status];
+        let paramCount = 1;
+        
+        // Set sent_date when marking as sent
+        if (data.status === 'sent' && data.date) {
+            paramCount++;
+            fields.push(`sent_date = $${paramCount}`);
+            values.push(data.date);
+        }
+        
+        // Set paid_date when marking as paid
+        if (data.status === 'paid') {
+            if (data.date) {
+                paramCount++;
+                fields.push(`paid_date = $${paramCount}`);
+                values.push(data.date);
+            }
+            if (data.paymentReference) {
+                paramCount++;
+                fields.push(`payment_reference = $${paramCount}`);
+                values.push(data.paymentReference);
+            }
+        }
+        
+        values.push(invoiceId, companyId);
+        
+        const result = await pool.query(
+            `UPDATE invoices 
+             SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $${paramCount + 1} AND company_id = $${paramCount + 2}
+             RETURNING *`,
+            values
+        );
+        
+        if (result.rows.length === 0) {
+            throw new NotFoundError('Invoice not found');
+        }
+        
+        return await this.getInvoiceById(companyId, invoiceId);
+    },
+    
+    /**
+     * Delete invoice (only drafts)
+     */
+    async deleteInvoice(companyId: string, invoiceId: string): Promise<void> {
+        const result = await pool.query(
+            `DELETE FROM invoices 
+             WHERE id = $1 AND company_id = $2 AND status = 'draft'
+             RETURNING id`,
+            [invoiceId, companyId]
+        );
+        
+        if (result.rows.length === 0) {
+            throw new BadRequestError('Only draft invoices can be deleted');
+        }
+    },
+    
+    /**
+     * Get invoice statistics
+     */
+    async getInvoiceStats(companyId: string): Promise<any> {
+        const result = await pool.query(
+            `SELECT 
+                COUNT(*) as total_invoices,
+                COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
+                COUNT(*) FILTER (WHERE status = 'sent') as sent_count,
+                COUNT(*) FILTER (WHERE status = 'paid') as paid_count,
+                COUNT(*) FILTER (WHERE status = 'overdue') as overdue_count,
+                SUM(total_amount) FILTER (WHERE status = 'sent') as outstanding_amount,
+                SUM(total_amount) FILTER (WHERE status = 'paid') as paid_amount
+             FROM invoices
+             WHERE company_id = $1`,
+            [companyId]
+        );
+        
+        const stats = result.rows[0];
+        
+        return {
+            totalInvoices: parseInt(stats.total_invoices),
+            draftCount: parseInt(stats.draft_count),
+            sentCount: parseInt(stats.sent_count),
+            paidCount: parseInt(stats.paid_count),
+            overdueCount: parseInt(stats.overdue_count),
+            outstandingAmount: stats.outstanding_amount ? oreToSek(stats.outstanding_amount) : 0,
+            paidAmount: stats.paid_amount ? oreToSek(stats.paid_amount) : 0
+        };
     }
-    
-    await query('COMMIT', []);
-    
-    // Fetch complete invoice with lines
-    return await getInvoiceById(invoice.id, companyId);
-  } catch (error) {
-    await query('ROLLBACK', []);
-    throw error;
-  }
 };
 
-export const getInvoices = async (
-  companyId: string,
-  filters?: {
-    customer_id?: string;
+4. Backend Controller (NEW - Complete Implementation)
+Filsökväg: backend/src/controllers/invoiceController.ts
+typescriptimport { Request, Response, NextFunction } from 'express';
+import { invoiceService } from '../services/invoiceService';
+import { CreateInvoiceDto, UpdateInvoiceDto, UpdateInvoiceStatusDto } from '../types/invoice.types';
+
+export const invoiceController = {
+    /**
+     * Create a new invoice
+     * POST /api/invoices
+     */
+    async createInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const data: CreateInvoiceDto = req.body;
+
+            // Validation
+            if (!data.customerId || !data.invoiceDate || !data.dueDate) {
+                res.status(400).json({ 
+                    error: 'Customer ID, invoice date, and due date are required' 
+                });
+                return;
+            }
+
+            if (!data.lines || data.lines.length === 0) {
+                res.status(400).json({ error: 'At least one invoice line is required' });
+                return;
+            }
+
+            // Validate dates
+            const invoiceDate = new Date(data.invoiceDate);
+            const dueDate = new Date(data.dueDate);
+            
+            if (dueDate < invoiceDate) {
+                res.status(400).json({ error: 'Due date must be after invoice date' });
+                return;
+            }
+
+            // Validate lines
+            for (const line of data.lines) {
+                if (!line.description || !line.unit) {
+                    res.status(400).json({ 
+                        error: 'Each line must have description and unit' 
+                    });
+                    return;
+                }
+                
+                if (line.quantity <= 0) {
+                    res.status(400).json({ error: 'Quantity must be positive' });
+                    return;
+                }
+                
+                if (line.unitPrice < 0) {
+                    res.status(400).json({ error: 'Unit price must be non-negative' });
+                    return;
+                }
+                
+                if (line.vatRate < 0 || line.vatRate > 100) {
+                    res.status(400).json({ error: 'VAT rate must be between 0 and 100' });
+                    return;
+                }
+            }
+
+            const invoice = await invoiceService.createInvoice(companyId, data);
+            res.status(201).json(invoice);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get all invoices
+     * GET /api/invoices
+     */
+    async getInvoices(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { customerId, status, fromDate, toDate } = req.query;
+
+            const filters: any = {};
+            if (customerId) filters.customerId = customerId as string;
+            if (status) filters.status = status as string;
+            if (fromDate) filters.fromDate = fromDate as string;
+            if (toDate) filters.toDate = toDate as string;
+
+            const invoices = await invoiceService.getInvoices(companyId, filters);
+            res.json(invoices);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get invoice by ID
+     * GET /api/invoices/:id
+     */
+    async getInvoiceById(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+
+            const invoice = await invoiceService.getInvoiceById(companyId, id);
+            res.json(invoice);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Update invoice
+     * PUT /api/invoices/:id
+     */
+    async updateInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+            const data: UpdateInvoiceDto = req.body;
+
+            // Validate dates if provided
+            if (data.invoiceDate && data.dueDate) {
+                const invoiceDate = new Date(data.invoiceDate);
+                const dueDate = new Date(data.dueDate);
+                
+                if (dueDate < invoiceDate) {
+                    res.status(400).json({ error: 'Due date must be after invoice date' });
+                    return;
+                }
+            }
+
+            // Validate lines if provided
+            if (data.lines) {
+                if (data.lines.length === 0) {
+                    res.status(400).json({ error: 'At least one invoice line is required' });
+                    return;
+                }
+
+                for (const line of data.lines) {
+                    if (!line.description || !line.unit) {
+                        res.status(400).json({ 
+                            error: 'Each line must have description and unit' 
+                        });
+                        return;
+                    }
+                    
+                    if (line.quantity <= 0) {
+                        res.status(400).json({ error: 'Quantity must be positive' });
+                        return;
+                    }
+                    
+                    if (line.unitPrice < 0) {
+                        res.status(400).json({ error: 'Unit price must be non-negative' });
+                        return;
+                    }
+                }
+            }
+
+            const invoice = await invoiceService.updateInvoice(companyId, id, data);
+            res.json(invoice);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Update invoice status
+     * PATCH /api/invoices/:id/status
+     */
+    async updateInvoiceStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+            const data: UpdateInvoiceStatusDto = req.body;
+
+            if (!data.status) {
+                res.status(400).json({ error: 'Status is required' });
+                return;
+            }
+
+            const validStatuses = ['draft', 'sent', 'paid', 'overdue', 'cancelled'];
+            if (!validStatuses.includes(data.status)) {
+                res.status(400).json({ error: 'Invalid status' });
+                return;
+            }
+
+            const invoice = await invoiceService.updateInvoiceStatus(companyId, id, data);
+            res.json(invoice);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Delete invoice
+     * DELETE /api/invoices/:id
+     */
+    async deleteInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const { id } = req.params;
+
+            await invoiceService.deleteInvoice(companyId, id);
+            res.status(204).send();
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * Get invoice statistics
+     * GET /api/invoices/stats/summary
+     */
+    async getInvoiceStats(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const companyId = req.user!.companyId;
+            const stats = await invoiceService.getInvoiceStats(companyId);
+            res.json(stats);
+        } catch (error) {
+            next(error);
+        }
+    }
+};
+
+5. Backend Routes (NEW - Complete Implementation)
+Filsökväg: backend/src/routes/invoiceRoutes.ts
+typescriptimport { Router } from 'express';
+import { invoiceController } from '../controllers/invoiceController';
+import { authenticate } from '../middleware/authenticate';
+
+const router = Router();
+
+// All routes require authentication
+router.use(authenticate);
+
+// Statistics (must be before /:id routes)
+router.get('/stats/summary', invoiceController.getInvoiceStats);
+
+// CRUD operations
+router.post('/', invoiceController.createInvoice);
+router.get('/', invoiceController.getInvoices);
+router.get('/:id', invoiceController.getInvoiceById);
+router.put('/:id', invoiceController.updateInvoice);
+router.delete('/:id', invoiceController.deleteInvoice);
+
+// Status updates
+router.patch('/:id/status', invoiceController.updateInvoiceStatus);
+
+export default router;
+Uppdatera: backend/src/app.ts - Lägg till routes
+typescriptimport invoiceRoutes from './routes/invoiceRoutes';
+
+// ... existing routes ...
+
+app.use('/api/invoices', invoiceRoutes);
+
+6. Frontend Types
+Filsökväg: frontend/src/types/invoice.types.ts
+typescriptexport type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'overdue' | 'cancelled';
+
+export interface Invoice {
+    id: string;
+    companyId: string;
+    customerId: string;
+    invoiceNumber: string;
+    ocrNumber: string;
+    invoiceDate: string;
+    dueDate: string;
+    sentDate: string | null;
+    paidDate: string | null;
+    status: InvoiceStatus;
+    subtotal: number;
+    vatAmount: number;
+    totalAmount: number;
+    paymentReference: string | null;
+    notes: string | null;
+    terms: string | null;
+    createdAt: string;
+    updatedAt: string;
+    
+    customer?: {
+        id: string;
+        name: string;
+        email: string;
+        phone?: string;
+        address?: string;
+        postalCode?: string;
+        city?: string;
+        country?: string;
+        organizationNumber?: string;
+    };
+    lines?: InvoiceLine[];
+}
+
+export interface InvoiceLine {
+    id: string;
+    invoiceId: string;
+    articleId: string | null;
+    lineNumber: number;
+    description: string;
+    quantity: number;
+    unit: string;
+    unitPrice: number;
+    vatRate: number;
+    vatAmount: number;
+    subtotal: number;
+    total: number;
+    
+    article?: {
+        id: string;
+        articleNumber: string;
+        name: string;
+    };
+}
+
+export interface CreateInvoiceDto {
+    customerId: string;
+    invoiceDate: string;
+    dueDate: string;
+    notes?: string;
+    terms?: string;
+    lines: CreateInvoiceLineDto[];
+}
+
+export interface CreateInvoiceLineDto {
+    articleId?: string;
+    description: string;
+    quantity: number;
+    unit: string;
+    unitPrice: number;
+    vatRate: number;
+}
+
+export interface UpdateInvoiceDto {
+    invoiceDate?: string;
+    dueDate?: string;
+    notes?: string;
+    terms?: string;
+    lines?: CreateInvoiceLineDto[];
+}
+
+export interface UpdateInvoiceStatusDto {
+    status: InvoiceStatus;
+    date?: string;
+    paymentReference?: string;
+}
+
+export interface InvoiceStats {
+    totalInvoices: number;
+    draftCount: number;
+    sentCount: number;
+    paidCount: number;
+    overdueCount: number;
+    outstandingAmount: number;
+    paidAmount: number;
+}
+
+7. Frontend Service
+Filsökväg: frontend/src/services/invoiceService.ts
+typescriptimport api from './api';
+import { 
+    Invoice, 
+    CreateInvoiceDto, 
+    UpdateInvoiceDto, 
+    UpdateInvoiceStatusDto,
+    InvoiceStats 
+} from '../types/invoice.types';
+
+interface GetInvoicesParams {
+    customerId?: string;
     status?: string;
-    search?: string;
-    start_date?: Date;
-    end_date?: Date;
-  }
-): Promise<Invoice[]> => {
-  let queryText = `
-    SELECT i.*, c.name as customer_name
-    FROM invoices i
-    LEFT JOIN customers c ON i.customer_id = c.id
-    WHERE i.company_id = $1
-  `;
-  
-  const params: any[] = [companyId];
-  let paramCount = 2;
-  
-  if (filters?.customer_id) {
-    queryText += ` AND i.customer_id = $${paramCount}`;
-    params.push(filters.customer_id);
-    paramCount++;
-  }
-  
-  if (filters?.status) {
-    queryText += ` AND i.status = $${paramCount}`;
-    params.push(filters.status);
-    paramCount++;
-  }
-  
-  if (filters?.search) {
-    queryText += ` AND (i.invoice_number ILIKE $${paramCount} OR c.name ILIKE $${paramCount})`;
-    params.push(`%${filters.search}%`);
-    paramCount++;
-  }
-  
-  if (filters?.start_date) {
-    queryText += ` AND i.invoice_date >= $${paramCount}`;
-    params.push(filters.start_date);
-    paramCount++;
-  }
-  
-  if (filters?.end_date) {
-    queryText += ` AND i.invoice_date <= $${paramCount}`;
-    params.push(filters.end_date);
-    paramCount++;
-  }
-  
-  queryText += ' ORDER BY i.invoice_date DESC, i.invoice_number DESC';
-  
-  const result = await query(queryText, params);
-  return result.rows;
+    fromDate?: string;
+    toDate?: string;
+}
+
+export const invoiceService = {
+    /**
+     * Create a new invoice
+     */
+    async createInvoice(data: CreateInvoiceDto): Promise<Invoice> {
+        const response = await api.post<Invoice>('/invoices', data);
+        return response.data;
+    },
+
+    /**
+     * Get all invoices with optional filters
+     */
+    async getInvoices(params?: GetInvoicesParams): Promise<Invoice[]> {
+        const response = await api.get<Invoice[]>('/invoices', { params });
+        return response.data;
+    },
+
+    /**
+     * Get invoice by ID
+     */
+    async getInvoiceById(id: string): Promise<Invoice> {
+        const response = await api.get<Invoice>(`/invoices/${id}`);
+        return response.data;
+    },
+
+    /**
+     * Update invoice
+     */
+    async updateInvoice(id: string, data: UpdateInvoiceDto): Promise<Invoice> {
+        const response = await api.put<Invoice>(`/invoices/${id}`, data);
+        return response.data;
+    },
+
+    /**
+     * Update invoice status
+     */
+    async updateInvoiceStatus(id: string, data: UpdateInvoiceStatusDto): Promise<Invoice> {
+        const response = await api.patch<Invoice>(`/invoices/${id}/status`, data);
+        return response.data;
+    },
+
+    /**
+     * Delete invoice
+     */
+    async deleteInvoice(id: string): Promise<void> {
+        await api.delete(`/invoices/${id}`);
+    },
+
+    /**
+     * Get invoice statistics
+     */
+    async getInvoiceStats(): Promise<InvoiceStats> {
+        const response = await api.get<InvoiceStats>('/invoices/stats/summary');
+        return response.data;
+    }
 };
 
-export const getInvoiceById = async (
-  invoiceId: string,
-  companyId: string
-): Promise<Invoice> => {
-  const invoiceResult = await query(
-    `SELECT i.*, c.name as customer_name, c.email as customer_email
-     FROM invoices i
-     LEFT JOIN customers c ON i.customer_id = c.id
-     WHERE i.id = $1 AND i.company_id = $2`,
-    [invoiceId, companyId]
-  );
-  
-  if (invoiceResult.rows.length === 0) {
-    throw new Error('Invoice not found');
-  }
-  
-  const invoice = invoiceResult.rows[0];
-  
-  // Get invoice lines
-  const linesResult = await query(
-    'SELECT * FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_order',
-    [invoiceId]
-  );
-  
-  invoice.lines = linesResult.rows;
-  
-  return invoice;
+// Status labels
+export const INVOICE_STATUS_LABELS: Record<string, string> = {
+    draft: 'Utkast',
+    sent: 'Skickad',
+    paid: 'Betald',
+    overdue: 'Förfallen',
+    cancelled: 'Makulerad'
 };
 
-export const markInvoiceAsSent = async (
-  invoiceId: string,
-  companyId: string
-): Promise<Invoice> => {
-  const result = await query(
-    `UPDATE invoices 
-     SET status = 'sent', sent_date = CURRENT_TIMESTAMP
-     WHERE id = $1 AND company_id = $2 AND status = 'draft'
-     RETURNING *`,
-    [invoiceId, companyId]
-  );
-  
-  if (result.rows.length === 0) {
-    throw new Error('Invoice not found or cannot be sent');
-  }
-  
-  return result.rows[0];
+// Status colors
+export const INVOICE_STATUS_COLORS: Record<string, string> = {
+    draft: 'gray',
+    sent: 'blue',
+    paid: 'green',
+    overdue: 'red',
+    cancelled: 'gray'
 };
 
-export const markInvoiceAsPaid = async (
-  invoiceId: string,
-  companyId: string,
-  paidAmount: number,
-  paidDate: Date
-): Promise<Invoice> => {
-  const result = await query(
-    `UPDATE invoices 
-     SET status = 'paid', paid_amount = $3, paid_date = $4
-     WHERE id = $1 AND company_id = $2
-     RETURNING *`,
-    [invoiceId, companyId, paidAmount, paidDate]
-  );
-  
-  if (result.rows.length === 0) {
-    throw new Error('Invoice not found');
-  }
-  
-  return result.rows[0];
+// Format currency
+export const formatCurrency = (amount: number): string => {
+    return new Intl.NumberFormat('sv-SE', {
+        style: 'currency',
+        currency: 'SEK'
+    }).format(amount);
 };
-Implementation med Claude Code:
-"Implementera komplett Invoice Module med beräkningar, OCR-nummer och statushantering (Fas 2, Steg 2.4)"
+
+// Format date
+export const formatDate = (date: string): string => {
+    return new Date(date).toLocaleDateString('sv-SE');
+};
+
+// Calculate days until due
+export const daysUntilDue = (dueDate: string): number => {
+    const today = new Date();
+    const due = new Date(dueDate);
+    const diffTime = due.getTime() - today.getTime();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+};
+
+8. Frontend Hooks
+Filsökväg: frontend/src/hooks/useInvoice.ts
+typescriptimport { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { invoiceService } from '../services/invoiceService';
+import { 
+    CreateInvoiceDto, 
+    UpdateInvoiceDto, 
+    UpdateInvoiceStatusDto 
+} from '../types/invoice.types';
+import { toast } from 'react-hot-toast';
+
+interface GetInvoicesParams {
+    customerId?: string;
+    status?: string;
+    fromDate?: string;
+    toDate?: string;
+}
+
+/**
+ * Hook to fetch all invoices
+ */
+export function useInvoices(params?: GetInvoicesParams) {
+    return useQuery({
+        queryKey: ['invoices', params],
+        queryFn: () => invoiceService.getInvoices(params)
+    });
+}
+
+/**
+ * Hook to fetch a single invoice
+ */
+export function useInvoice(id: string) {
+    return useQuery({
+        queryKey: ['invoices', id],
+        queryFn: () => invoiceService.getInvoiceById(id),
+        enabled: !!id
+    });
+}
+
+/**
+ * Hook to fetch invoice statistics
+ */
+export function useInvoiceStats() {
+    return useQuery({
+        queryKey: ['invoice-stats'],
+        queryFn: () => invoiceService.getInvoiceStats()
+    });
+}
+
+/**
+ * Hook to create invoice
+ */
+export function useCreateInvoice() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (data: CreateInvoiceDto) => invoiceService.createInvoice(data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['invoices'] });
+            queryClient.invalidateQueries({ queryKey: ['invoice-stats'] });
+            toast.success('Faktura skapad');
+        },
+        onError: (error: any) => {
+            toast.error(error.response?.data?.error || 'Kunde inte skapa faktura');
+        }
+    });
+}
+
+/**
+ * Hook to update invoice
+ */
+export function useUpdateInvoice() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ id, data }: { id: string; data: UpdateInvoiceDto }) =>
+            invoiceService.updateInvoice(id, data),
+        onSuccess: (_, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['invoices'] });
+            queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+            queryClient.invalidateQueries({ queryKey: ['invoice-stats'] });
+            toast.success('Faktura uppdaterad');
+        },
+        onError: (error: any) => {
+            toast.error(error.response?.data?.error || 'Kunde inte uppdatera faktura');
+        }
+    });
+}
+
+/**
+ * Hook to update invoice status
+ */
+export function useUpdateInvoiceStatus() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ id, data }: { id: string; data: UpdateInvoiceStatusDto }) =>
+            invoiceService.updateInvoiceStatus(id, data),
+        onSuccess: (_, variables) => {
+            queryClient.invalidateQueries({ queryKey: ['invoices'] });
+            queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+            queryClient.invalidateQueries({ queryKey: ['invoice-stats'] });
+            toast.success('Status uppdaterad');
+        },
+        onError: (error: any) => {
+            toast.error(error.response?.data?.error || 'Kunde inte uppdatera status');
+        }
+    });
+}
+
+/**
+ * Hook to delete invoice
+ */
+export function useDeleteInvoice() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (id: string) => invoiceService.deleteInvoice(id),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['invoices'] });
+            queryClient.invalidateQueries({ queryKey: ['invoice-stats'] });
+            toast.success('Faktura raderad');
+        },
+        onError: (error: any) => {
+            toast.error(error.response?.data?.error || 'Kunde inte radera faktura');
+        }
+    });
+}
+
+9. Frontend Components (Part 1/3)
+Filsökväg: frontend/src/pages/InvoiceListPage.tsx
+typescriptimport React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { 
+    FileText, Plus, Search, Filter, Eye, Edit2, Trash2,
+    ChevronDown, Send, CheckCircle, AlertCircle, XCircle
+} from 'lucide-react';
+import { useInvoices, useDeleteInvoice, useInvoiceStats } from '../hooks/useInvoice';
+import { 
+    INVOICE_STATUS_LABELS, 
+    INVOICE_STATUS_COLORS,
+    formatCurrency,
+    formatDate,
+    daysUntilDue
+} from '../services/invoiceService';
+
+export default function InvoiceListPage() {
+    const [search, setSearch] = useState('');
+    const [selectedStatus, setSelectedStatus] = useState<string>('');
+    const [showFilters, setShowFilters] = useState(false);
+
+    const { data: invoices = [], isLoading } = useInvoices({
+        status: selectedStatus || undefined
+    });
+
+    const { data: stats } = useInvoiceStats();
+    const deleteInvoice = useDeleteInvoice();
+
+    // Filter invoices by search
+    const filteredInvoices = invoices.filter(invoice => {
+        if (!search) return true;
+        const searchLower = search.toLowerCase();
+        return (
+            invoice.invoiceNumber.toLowerCase().includes(searchLower) ||
+            invoice.customer?.name.toLowerCase().includes(searchLower) ||
+            invoice.ocrNumber.includes(searchLower)
+        );
+    });
+
+    const handleDelete = async (id: string, number: string) => {
+        if (window.confirm(`Är du säker på att du vill radera faktura ${number}?`)) {
+            await deleteInvoice.mutateAsync(id);
+        }
+    };
+
+    const getStatusIcon = (status: string) => {
+        switch (status) {
+            case 'sent': return <Send className="w-4 h-4" />;
+            case 'paid': return <CheckCircle className="w-4 h-4" />;
+            case 'overdue': return <AlertCircle className="w-4 h-4" />;
+            case 'cancelled': return <XCircle className="w-4 h-4" />;
+            default: return null;
+        }
+    };
+
+    const getStatusBadgeClass = (status: string) => {
+        const color = INVOICE_STATUS_COLORS[status];
+        const baseClasses = 'px-2 py-1 text-xs font-medium rounded flex items-center gap-1';
+        
+        switch (color) {
+            case 'gray':
+                return `${baseClasses} bg-gray-100 text-gray-800`;
+            case 'blue':
+                return `${baseClasses} bg-blue-100 text-blue-800`;
+            case 'green':
+                return `${baseClasses} bg-green-100 text-green-800`;
+            case 'red':
+                return `${baseClasses} bg-red-100 text-red-800`;
+            default:
+                return `${baseClasses} bg-gray-100 text-gray-800`;
+        }
+    };
+
+    if (isLoading) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            {/* Header */}
+            <div className="flex justify-between items-center">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                        <FileText className="w-8 h-8" />
+                        Fakturor
+                    </h1>
+                    <p className="text-gray-600 mt-1">
+                        Hantera kundfakturor
+                    </p>
+                </div>
+                <Link
+                    to="/invoices/new"
+                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                    <Plus className="w-5 h-5" />
+                    Ny Faktura
+                </Link>
+            </div>
+
+            {/* Statistics Cards */}
+            {stats && (
+                <div className="grid grid-cols-4 gap-4">
+                    <div className="bg-white rounded-lg border border-gray-200 p-4">
+                        <div className="text-sm text-gray-600">Totalt</div>
+                        <div className="text-2xl font-bold text-gray-900 mt-1">
+                            {stats.totalInvoices}
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-lg border border-gray-200 p-4">
+                        <div className="text-sm text-gray-600">Skickade</div>
+                        <div className="text-2xl font-bold text-blue-600 mt-1">
+                            {stats.sentCount}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                            {formatCurrency(stats.outstandingAmount)} utestående
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-lg border border-gray-200 p-4">
+                        <div className="text-sm text-gray-600">Betalda</div>
+                        <div className="text-2xl font-bold text-green-600 mt-1">
+                            {stats.paidCount}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                            {formatCurrency(stats.paidAmount)} totalt
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-lg border border-gray-200 p-4">
+                        <div className="text-sm text-gray-600">Förfallna</div>
+                        <div className="text-2xl font-bold text-red-600 mt-1">
+                            {stats.overdueCount}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Search and Filters */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+                <div className="flex gap-4">
+                    <div className="flex-1 relative">
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                        <input
+                            type="text"
+                            placeholder="Sök fakturanr, kund, OCR..."
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                    </div>
+                    <button
+                        onClick={() => setShowFilters(!showFilters)}
+                        className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                        <Filter className="w-5 h-5" />
+                        Filter
+                        <ChevronDown className={`w-4 h-4 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+                    </button>
+                </div>
+
+                {/* Filter Panel */}
+                {showFilters && (
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Status
+                        </label>
+                        <select
+                            value={selectedStatus}
+                            onChange={(e) => setSelectedStatus(e.target.value)}
+                            className="w-full md:w-64 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                        >
+                            <option value="">Alla statusar</option>
+                            <option value="draft">Utkast</option>
+                            <option value="sent">Skickad</option>
+                            <option value="paid">Betald</option>
+                            <option value="overdue">Förfallen</option>
+                            <option value="cancelled">Makulerad</option>
+                        </select>
+                    </div>
+                )}
+            </div>
+
+            {/* Results Count */}
+            <div className="text-sm text-gray-600">
+                Visar {filteredInvoices.length} faktura{filteredInvoices.length !== 1 ? 'r' : ''}
+            </div>
+
+            {/* Invoices Table */}
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Fakturanr
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Kund
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Datum
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Förfallodatum
+                            </th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Belopp
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Status
+                            </th>
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                Åtgärder
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                        {filteredInvoices.length === 0 ? (
+                            <tr>
+                                <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                                    <FileText className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                                    <p className="text-lg font-medium">Inga fakturor hittades</p>
+                                    <p className="text-sm mt-1">Skapa din första faktura för att komma igång</p>
+                                </td>
+                            </tr>
+                        ) : (
+                            filteredInvoices.map((invoice) => {
+                                const daysLeft = daysUntilDue(invoice.dueDate);
+                                const isOverdue = daysLeft < 0 && invoice.status === 'sent';
+                                
+                                return (
+                                    <tr key={invoice.id} className="hover:bg-gray-50">
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                #{invoice.invoiceNumber}
+                                            </div>
+                                            <div className="text-xs text-gray-500">
+                                                OCR: {invoice.ocrNumber}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                {invoice.customer?.name}
+                                            </div>
+                                            {invoice.customer?.email && (
+                                                <div className="text-xs text-gray-500">
+                                                    {invoice.customer.email}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                            {formatDate(invoice.invoiceDate)}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <div className="text-sm text-gray-600">
+                                                {formatDate(invoice.dueDate)}
+                                            </div>
+                                            {invoice.status === 'sent' && (
+                                                <div className={`text-xs ${isOverdue ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+                                                    {isOverdue ? `${Math.abs(daysLeft)} dagar sen` : `${daysLeft} dagar kvar`}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                                            <div className="text-sm font-medium text-gray-900">
+                                                {formatCurrency(invoice.totalAmount)}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <span className={getStatusBadgeClass(invoice.status)}>
+                                                {getStatusIcon(invoice.status)}
+                                                {INVOICE_STATUS_LABELS[invoice.status]}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <Link
+                                                    to={`/invoices/${invoice.id}`}
+                                                    className="text-gray-600 hover:text-gray-900"
+                                                    title="Visa"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                </Link>
+                                                {invoice.status === 'draft' && (
+                                                    <>
+                                                        <Link
+                                                            to={`/invoices/${invoice.id}/edit`}
+                                                            className="text-blue-600 hover:text-blue-900"
+                                                            title="Redigera"
+                                                        >
+                                                            <Edit2 className="w-4 h-4" />
+                                                        </Link>
+                                                        <button
+                                                            onClick={() => handleDelete(invoice.id, invoice.invoiceNumber)}
+                                                            className="text-red-600 hover:text-red-900"
+                                                            title="Radera"
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+}
+
+10. Tests
+Filsökväg: backend/src/tests/unit/invoiceService.test.ts
+typescriptimport { invoiceService } from '../../services/invoiceService';
+
+describe('Invoice Service', () => {
+    describe('generateOCRNumber', () => {
+        it('should generate OCR with Luhn checksum', () => {
+            const ocr = invoiceService.generateOCRNumber('123');
+            expect(ocr).toBe('0001237');
+            expect(ocr.length).toBe(7);
+        });
+
+        it('should generate different OCR for different numbers', () => {
+            const ocr1 = invoiceService.generateOCRNumber('1');
+            const ocr2 = invoiceService.generateOCRNumber('2');
+            expect(ocr1).not.toBe(ocr2);
+        });
+    });
+
+    describe('calculateInvoiceTotals', () => {
+        it('should calculate totals correctly', () => {
+            const lines = [
+                {
+                    description: 'Item 1',
+                    quantity: 2,
+                    unit: 'st',
+                    unitPrice: 100,
+                    vatRate: 25
+                },
+                {
+                    description: 'Item 2',
+                    quantity: 1,
+                    unit: 'st',
+                    unitPrice: 50,
+                    vatRate: 25
+                }
+            ];
+
+            const totals = invoiceService.calculateInvoiceTotals(lines);
+
+            expect(totals.subtotal).toBe(250);
+            expect(totals.vatAmount).toBe(62.5);
+            expect(totals.totalAmount).toBe(312.5);
+        });
+
+        it('should handle different VAT rates', () => {
+            const lines = [
+                {
+                    description: 'Item 1',
+                    quantity: 1,
+                    unit: 'st',
+                    unitPrice: 100,
+                    vatRate: 25
+                },
+                {
+                    description: 'Item 2',
+                    quantity: 1,
+                    unit: 'st',
+                    unitPrice: 100,
+                    vatRate: 12
+                }
+            ];
+
+            const totals = invoiceService.calculateInvoiceTotals(lines);
+
+            expect(totals.subtotal).toBe(200);
+            expect(totals.vatAmount).toBe(37);
+            expect(totals.totalAmount).toBe(237);
+        });
+    });
+
+    describe('createInvoice', () => {
+        it('should create invoice with lines', async () => {
+            const invoice = await invoiceService.createInvoice('company-id', {
+                customerId: 'customer-id',
+                invoiceDate: '2025-01-01',
+                dueDate: '2025-01-31',
+                lines: [
+                    {
+                        description: 'Test Product',
+                        quantity: 1,
+                        unit: 'st',
+                        unitPrice: 100,
+                        vatRate: 25
+                    }
+                ]
+            });
+
+            expect(invoice).toHaveProperty('invoiceNumber');
+            expect(invoice).toHaveProperty('ocrNumber');
+            expect(invoice.status).toBe('draft');
+            expect(invoice.lines).toHaveLength(1);
+        });
+    });
+});
+Filsökväg: backend/src/tests/integration/invoices.test.ts
+typescriptimport request from 'supertest';
+import app from '../../app';
+
+describe('Invoice API', () => {
+    let authToken: string;
+    let customerId: string;
+    let invoiceId: string;
+
+    beforeAll(async () => {
+        // Login to get auth token
+        const authResponse = await request(app)
+            .post('/api/auth/login')
+            .send({ email: 'test@example.com', password: 'password' });
+        authToken = authResponse.body.token;
+
+        // Create a customer for testing
+        const customerResponse = await request(app)
+            .post('/api/customers')
+            .set('Authorization', `Bearer ${authToken}`)
+            .send({
+                name: 'Test Customer',
+                email: 'customer@test.com',
+                organizationType: 'company'
+            });
+        customerId = customerResponse.body.id;
+    });
+
+    describe('POST /api/invoices', () => {
+        it('should create new invoice', async () => {
+            const response = await request(app)
+                .post('/api/invoices')
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({
+                    customerId: customerId,
+                    invoiceDate: '2025-01-01',
+                    dueDate: '2025-01-31',
+                    lines: [
+                        {
+                            description: 'Test Product',
+                            quantity: 2,
+                            unit: 'st',
+                            unitPrice: 100,
+                            vatRate: 25
+                        }
+                    ]
+                });
+
+            expect(response.status).toBe(201);
+            expect(response.body).toHaveProperty('id');
+            expect(response.body).toHaveProperty('invoiceNumber');
+            expect(response.body).toHaveProperty('ocrNumber');
+            expect(response.body.totalAmount).toBe(250);
+            invoiceId = response.body.id;
+        });
+
+        it('should reject invoice without lines', async () => {
+            const response = await request(app)
+                .post('/api/invoices')
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({
+                    customerId: customerId,
+                    invoiceDate: '2025-01-01',
+                    dueDate: '2025-01-31',
+                    lines: []
+                });
+
+            expect(response.status).toBe(400);
+        });
+    });
+
+    describe('GET /api/invoices', () => {
+        it('should return all invoices', async () => {
+            const response = await request(app)
+                .get('/api/invoices')
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(200);
+            expect(Array.isArray(response.body)).toBe(true);
+        });
+
+        it('should filter by status', async () => {
+            const response = await request(app)
+                .get('/api/invoices?status=draft')
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.every((inv: any) => inv.status === 'draft')).toBe(true);
+        });
+    });
+
+    describe('PATCH /api/invoices/:id/status', () => {
+        it('should update invoice status', async () => {
+            const response = await request(app)
+                .patch(`/api/invoices/${invoiceId}/status`)
+                .set('Authorization', `Bearer ${authToken}`)
+                .send({
+                    status: 'sent',
+                    date: '2025-01-15'
+                });
+
+            expect(response.status).toBe(200);
+            expect(response.body.status).toBe('sent');
+            expect(response.body.sentDate).toBe('2025-01-15');
+        });
+    });
+
+    describe('GET /api/invoices/stats/summary', () => {
+        it('should return statistics', async () => {
+            const response = await request(app)
+                .get('/api/invoices/stats/summary')
+                .set('Authorization', `Bearer ${authToken}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveProperty('totalInvoices');
+            expect(response.body).toHaveProperty('sentCount');
+            expect(response.body).toHaveProperty('paidCount');
+        });
+    });
+});
+
+Verifiering
+Kör följande steg för att verifiera implementationen:
+bash# 1. Kör migration
+docker exec -i redovisning-postgres psql -U postgres -d redovisning < database/migrations/005_invoices.sql
+
+# 2. Starta backend (om inte redan igång)
+cd backend && npm run dev
+
+# 3. Starta frontend (om inte redan igång)
+cd frontend && npm run dev
+
+# 4. Testa API endpoints
+curl -X POST http://localhost:3000/api/invoices \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customerId": "CUSTOMER_UUID",
+    "invoiceDate": "2025-01-01",
+    "dueDate": "2025-01-31",
+    "lines": [
+      {
+        "description": "Test Product",
+        "quantity": 1,
+        "unit": "st",
+        "unitPrice": 100,
+        "vatRate": 25
+      }
+    ]
+  }'
+
+# 5. Öppna frontend
+# Navigera till http://localhost:5173/invoices
+
+# 6. Kör tester
+cd backend && npm test -- invoices
+
+STEG 2.4: Invoice Module - DEL 2/2 ✅ FRONTEND KOMPONENTER
+Detta är en fortsättning av DEL 1. Lägg till dessa komponenter efter DEL 1 i Claude.md
+
+Frontend Components (Part 2/3) - InvoiceFormPage
+Filsökväg: frontend/src/pages/InvoiceFormPage.tsx
+typescriptimport React, { useState, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useForm, useFieldArray } from 'react-hook-form';
+import { FileText, Save, X, Plus, Trash2, Package } from 'lucide-react';
+import { useInvoice, useCreateInvoice, useUpdateInvoice } from '../hooks/useInvoice';
+import { useCustomers } from '../hooks/useCustomer';
+import { useArticles } from '../hooks/useArticle';
+import { CreateInvoiceDto, CreateInvoiceLineDto } from '../types/invoice.types';
+import { formatCurrency } from '../services/invoiceService';
+import { UNIT_LABELS, VAT_RATES } from '../services/articleService';
+
+export default function InvoiceFormPage() {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const isEditing = !!id;
+
+    const { data: invoice, isLoading: invoiceLoading } = useInvoice(id || '');
+    const { data: customers = [] } = useCustomers();
+    const { data: articles = [] } = useArticles({ isActive: true });
+    
+    const createInvoice = useCreateInvoice();
+    const updateInvoice = useUpdateInvoice();
+
+    const {
+        register,
+        control,
+        handleSubmit,
+        formState: { errors },
+        reset,
+        watch,
+        setValue
+    } = useForm<CreateInvoiceDto>({
+        defaultValues: {
+            customerId: '',
+            invoiceDate: new Date().toISOString().split('T')[0],
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            notes: '',
+            terms: 'Betalningsvillkor: 30 dagar netto\nVid försenad betalning tillkommer dröjsmålsränta enligt räntelagen.',
+            lines: [
+                {
+                    articleId: '',
+                    description: '',
+                    quantity: 1,
+                    unit: 'st',
+                    unitPrice: 0,
+                    vatRate: 25
+                }
+            ]
+        }
+    });
+
+    const { fields, append, remove } = useFieldArray({
+        control,
+        name: 'lines'
+    });
+
+    useEffect(() => {
+        if (invoice) {
+            reset({
+                customerId: invoice.customerId,
+                invoiceDate: invoice.invoiceDate,
+                dueDate: invoice.dueDate,
+                notes: invoice.notes || '',
+                terms: invoice.terms || '',
+                lines: invoice.lines?.map(line => ({
+                    articleId: line.articleId || '',
+                    description: line.description,
+                    quantity: line.quantity,
+                    unit: line.unit,
+                    unitPrice: line.unitPrice,
+                    vatRate: line.vatRate
+                })) || []
+            });
+        }
+    }, [invoice, reset]);
+
+    const lines = watch('lines');
+
+    // Calculate totals
+    const calculateLineTotals = (line: CreateInvoiceLineDto) => {
+        const subtotal = line.quantity * line.unitPrice;
+        const vat = subtotal * (line.vatRate / 100);
+        const total = subtotal + vat;
+        return { subtotal, vat, total };
+    };
+
+    const invoiceTotals = lines.reduce((acc, line) => {
+        const { subtotal, vat, total } = calculateLineTotals(line);
+        return {
+            subtotal: acc.subtotal + subtotal,
+            vat: acc.vat + vat,
+            total: acc.total + total
+        };
+    }, { subtotal: 0, vat: 0, total: 0 });
+
+    // Handle article selection
+    const handleArticleSelect = (index: number, articleId: string) => {
+        const article = articles.find(a => a.id === articleId);
+        if (article) {
+            setValue(`lines.${index}.description`, article.name);
+            setValue(`lines.${index}.unit`, article.unit);
+            setValue(`lines.${index}.unitPrice`, article.price);
+            setValue(`lines.${index}.vatRate`, article.vatRate);
+        }
+    };
+
+    const onSubmit = async (data: CreateInvoiceDto) => {
+        try {
+            if (isEditing) {
+                await updateInvoice.mutateAsync({ id: id!, data });
+            } else {
+                await createInvoice.mutateAsync(data);
+            }
+            navigate('/invoices');
+        } catch (error) {
+            // Error is handled by the hooks
+        }
+    };
+
+    if (invoiceLoading && isEditing) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-w-5xl mx-auto space-y-6">
+            {/* Header */}
+            <div className="flex items-center gap-3">
+                <FileText className="w-8 h-8 text-blue-600" />
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">
+                        {isEditing ? 'Redigera Faktura' : 'Ny Faktura'}
+                    </h1>
+                    <p className="text-gray-600">
+                        {isEditing ? 'Uppdatera fakturauppgifter' : 'Skapa en ny kundfaktura'}
+                    </p>
+                </div>
+            </div>
+
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+                {/* Basic Information */}
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                        Grundläggande Information
+                    </h2>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="col-span-3">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Kund *
+                            </label>
+                            <select
+                                {...register('customerId', { required: 'Kund krävs' })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            >
+                                <option value="">Välj kund</option>
+                                {customers.map(customer => (
+                                    <option key={customer.id} value={customer.id}>
+                                        {customer.name}
+                                        {customer.organizationNumber && ` (${customer.organizationNumber})`}
+                                    </option>
+                                ))}
+                            </select>
+                            {errors.customerId && (
+                                <p className="mt-1 text-sm text-red-600">{errors.customerId.message}</p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Fakturadatum *
+                            </label>
+                            <input
+                                type="date"
+                                {...register('invoiceDate', { required: 'Fakturadatum krävs' })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                            {errors.invoiceDate && (
+                                <p className="mt-1 text-sm text-red-600">{errors.invoiceDate.message}</p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Förfallodatum *
+                            </label>
+                            <input
+                                type="date"
+                                {...register('dueDate', { required: 'Förfallodatum krävs' })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                            {errors.dueDate && (
+                                <p className="mt-1 text-sm text-red-600">{errors.dueDate.message}</p>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Invoice Lines */}
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                            Fakturarader
+                        </h2>
+                        <button
+                            type="button"
+                            onClick={() => append({
+                                articleId: '',
+                                description: '',
+                                quantity: 1,
+                                unit: 'st',
+                                unitPrice: 0,
+                                vatRate: 25
+                            })}
+                            className="flex items-center gap-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+                        >
+                            <Plus className="w-4 h-4" />
+                            Lägg till rad
+                        </button>
+                    </div>
+
+                    <div className="space-y-4">
+                        {fields.map((field, index) => {
+                            const lineTotals = calculateLineTotals(lines[index]);
+                            
+                            return (
+                                <div key={field.id} className="border border-gray-200 rounded-lg p-4">
+                                    <div className="flex justify-between items-start mb-3">
+                                        <span className="text-sm font-medium text-gray-700">
+                                            Rad {index + 1}
+                                        </span>
+                                        {fields.length > 1 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => remove(index)}
+                                                className="text-red-600 hover:text-red-700"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <div className="grid grid-cols-12 gap-3">
+                                        {/* Article Selection */}
+                                        <div className="col-span-12 md:col-span-4">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                Artikel (valfritt)
+                                            </label>
+                                            <select
+                                                {...register(`lines.${index}.articleId` as const)}
+                                                onChange={(e) => handleArticleSelect(index, e.target.value)}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                <option value="">Välj artikel...</option>
+                                                {articles.map(article => (
+                                                    <option key={article.id} value={article.id}>
+                                                        {article.articleNumber} - {article.name}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        {/* Description */}
+                                        <div className="col-span-12 md:col-span-8">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                Beskrivning *
+                                            </label>
+                                            <input
+                                                type="text"
+                                                {...register(`lines.${index}.description` as const, { 
+                                                    required: 'Beskrivning krävs' 
+                                                })}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+
+                                        {/* Quantity */}
+                                        <div className="col-span-3">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                Antal *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                {...register(`lines.${index}.quantity` as const, { 
+                                                    required: 'Antal krävs',
+                                                    min: { value: 0.01, message: 'Minst 0.01' }
+                                                })}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+
+                                        {/* Unit */}
+                                        <div className="col-span-3">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                Enhet *
+                                            </label>
+                                            <select
+                                                {...register(`lines.${index}.unit` as const)}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                {Object.entries(UNIT_LABELS).map(([value, label]) => (
+                                                    <option key={value} value={value}>{label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        {/* Unit Price */}
+                                        <div className="col-span-3">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                À-pris (kr) *
+                                            </label>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                {...register(`lines.${index}.unitPrice` as const, { 
+                                                    required: 'Pris krävs',
+                                                    min: { value: 0, message: 'Minst 0' }
+                                                })}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+
+                                        {/* VAT Rate */}
+                                        <div className="col-span-3">
+                                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                Moms %
+                                            </label>
+                                            <select
+                                                {...register(`lines.${index}.vatRate` as const)}
+                                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                {VAT_RATES.map(rate => (
+                                                    <option key={rate.value} value={rate.value}>
+                                                        {rate.label}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        {/* Line Totals */}
+                                        <div className="col-span-12 mt-2 pt-2 border-t border-gray-200">
+                                            <div className="grid grid-cols-3 gap-2 text-xs">
+                                                <div className="text-gray-600">
+                                                    Subtotal: <span className="font-medium text-gray-900">
+                                                        {formatCurrency(lineTotals.subtotal)}
+                                                    </span>
+                                                </div>
+                                                <div className="text-gray-600">
+                                                    Moms: <span className="font-medium text-gray-900">
+                                                        {formatCurrency(lineTotals.vat)}
+                                                    </span>
+                                                </div>
+                                                <div className="text-gray-600">
+                                                    Total: <span className="font-medium text-gray-900">
+                                                        {formatCurrency(lineTotals.total)}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Invoice Totals */}
+                    <div className="mt-6 pt-4 border-t-2 border-gray-300">
+                        <div className="flex justify-end">
+                            <div className="w-64 space-y-2">
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-600">Subtotal:</span>
+                                    <span className="font-medium text-gray-900">
+                                        {formatCurrency(invoiceTotals.subtotal)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                    <span className="text-gray-600">Moms:</span>
+                                    <span className="font-medium text-gray-900">
+                                        {formatCurrency(invoiceTotals.vat)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-lg font-bold pt-2 border-t border-gray-200">
+                                    <span className="text-gray-900">Totalt att betala:</span>
+                                    <span className="text-blue-600">
+                                        {formatCurrency(invoiceTotals.total)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Additional Information */}
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                        Övrig Information
+                    </h2>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Anteckningar
+                            </label>
+                            <textarea
+                                {...register('notes')}
+                                rows={3}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                placeholder="Valfria anteckningar som syns på fakturan..."
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Betalningsvillkor
+                            </label>
+                            <textarea
+                                {...register('terms')}
+                                rows={3}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={() => navigate('/invoices')}
+                        className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                        <X className="w-4 h-4" />
+                        Avbryt
+                    </button>
+                    <button
+                        type="submit"
+                        disabled={createInvoice.isPending || updateInvoice.isPending}
+                        className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        <Save className="w-4 h-4" />
+                        {isEditing ? 'Uppdatera' : 'Skapa'} Faktura
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+}
+
+Frontend Components (Part 3/3) - InvoiceDetailPage
+Filsökväg: frontend/src/pages/InvoiceDetailPage.tsx
+typescriptimport React, { useState } from 'react';
+import { useNavigate, useParams, Link } from 'react-router-dom';
+import { 
+    FileText, Send, CheckCircle, Edit2, Download, 
+    Printer, Mail, MoreVertical, AlertCircle, Clock,
+    Building, User, Calendar, CreditCard, Hash
+} from 'lucide-react';
+import { useInvoice, useUpdateInvoiceStatus, useDeleteInvoice } from '../hooks/useInvoice';
+import { 
+    INVOICE_STATUS_LABELS,
+    formatCurrency,
+    formatDate,
+    daysUntilDue
+} from '../services/invoiceService';
+
+export default function InvoiceDetailPage() {
+    const { id } = useParams<{ id: string }>();
+    const navigate = useNavigate();
+    const [showActions, setShowActions] = useState(false);
+
+    const { data: invoice, isLoading } = useInvoice(id!);
+    const updateStatus = useUpdateInvoiceStatus();
+    const deleteInvoice = useDeleteInvoice();
+
+    if (isLoading) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        );
+    }
+
+    if (!invoice) {
+        return (
+            <div className="text-center py-12">
+                <FileText className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                <h2 className="text-xl font-semibold text-gray-900">Faktura hittades inte</h2>
+            </div>
+        );
+    }
+
+    const daysLeft = daysUntilDue(invoice.dueDate);
+    const isOverdue = daysLeft < 0 && invoice.status === 'sent';
+
+    const handleMarkAsSent = async () => {
+        await updateStatus.mutateAsync({
+            id: invoice.id,
+            data: {
+                status: 'sent',
+                date: new Date().toISOString().split('T')[0]
+            }
+        });
+    };
+
+    const handleMarkAsPaid = async () => {
+        const paymentDate = prompt('Betalningsdatum (ÅÅÅÅ-MM-DD):', new Date().toISOString().split('T')[0]);
+        if (paymentDate) {
+            await updateStatus.mutateAsync({
+                id: invoice.id,
+                data: {
+                    status: 'paid',
+                    date: paymentDate
+                }
+            });
+        }
+    };
+
+    const handleDelete = async () => {
+        if (window.confirm(`Är du säker på att du vill radera faktura ${invoice.invoiceNumber}?`)) {
+            await deleteInvoice.mutateAsync(invoice.id);
+            navigate('/invoices');
+        }
+    };
+
+    const getStatusBadge = () => {
+        const baseClasses = 'px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2';
+        
+        switch (invoice.status) {
+            case 'draft':
+                return (
+                    <span className={`${baseClasses} bg-gray-100 text-gray-800`}>
+                        <Clock className="w-4 h-4" />
+                        {INVOICE_STATUS_LABELS.draft}
+                    </span>
+                );
+            case 'sent':
+                return (
+                    <span className={`${baseClasses} bg-blue-100 text-blue-800`}>
+                        <Send className="w-4 h-4" />
+                        {INVOICE_STATUS_LABELS.sent}
+                    </span>
+                );
+            case 'paid':
+                return (
+                    <span className={`${baseClasses} bg-green-100 text-green-800`}>
+                        <CheckCircle className="w-4 h-4" />
+                        {INVOICE_STATUS_LABELS.paid}
+                    </span>
+                );
+            case 'overdue':
+                return (
+                    <span className={`${baseClasses} bg-red-100 text-red-800`}>
+                        <AlertCircle className="w-4 h-4" />
+                        {INVOICE_STATUS_LABELS.overdue}
+                    </span>
+                );
+            default:
+                return null;
+        }
+    };
+
+    return (
+        <div className="max-w-5xl mx-auto space-y-6">
+            {/* Header */}
+            <div className="flex justify-between items-start">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                        <FileText className="w-8 h-8" />
+                        Faktura #{invoice.invoiceNumber}
+                    </h1>
+                    <div className="flex items-center gap-3 mt-2">
+                        {getStatusBadge()}
+                        {isOverdue && (
+                            <span className="text-sm text-red-600 font-medium">
+                                {Math.abs(daysLeft)} dagar försenad
+                            </span>
+                        )}
+                    </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-2">
+                    {invoice.status === 'draft' && (
+                        <>
+                            <Link
+                                to={`/invoices/${invoice.id}/edit`}
+                                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                            >
+                                <Edit2 className="w-4 h-4" />
+                                Redigera
+                            </Link>
+                            <button
+                                onClick={handleMarkAsSent}
+                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                            >
+                                <Send className="w-4 h-4" />
+                                Markera som skickad
+                            </button>
+                        </>
+                    )}
+                    
+                    {invoice.status === 'sent' && (
+                        <button
+                            onClick={handleMarkAsPaid}
+                            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                        >
+                            <CheckCircle className="w-4 h-4" />
+                            Markera som betald
+                        </button>
+                    )}
+
+                    <div className="relative">
+                        <button
+                            onClick={() => setShowActions(!showActions)}
+                            className="p-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                        >
+                            <MoreVertical className="w-5 h-5" />
+                        </button>
+                        
+                        {showActions && (
+                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10">
+                                <button className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                                    <Download className="w-4 h-4" />
+                                    Ladda ner PDF
+                                </button>
+                                <button className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                                    <Printer className="w-4 h-4" />
+                                    Skriv ut
+                                </button>
+                                <button className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                                    <Mail className="w-4 h-4" />
+                                    Skicka via email
+                                </button>
+                                {invoice.status === 'draft' && (
+                                    <button
+                                        onClick={handleDelete}
+                                        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-red-600 border-t border-gray-200 mt-1 pt-2"
+                                    >
+                                        Radera faktura
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-6">
+                {/* Main Content */}
+                <div className="col-span-2 space-y-6">
+                    {/* Invoice Info */}
+                    <div className="bg-white rounded-lg border border-gray-200 p-6">
+                        <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                            Fakturainformation
+                        </h2>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <div className="text-sm text-gray-600 mb-1">Fakturanummer</div>
+                                <div className="font-medium text-gray-900">#{invoice.invoiceNumber}</div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600 mb-1">OCR-nummer</div>
+                                <div className="font-medium text-gray-900">{invoice.ocrNumber}</div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600 mb-1">Fakturadatum</div>
+                                <div className="font-medium text-gray-900">
+                                    {formatDate(invoice.invoiceDate)}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600 mb-1">Förfallodatum</div>
+                                <div className={`font-medium ${isOverdue ? 'text-red-600' : 'text-gray-900'}`}>
+                                    {formatDate(invoice.dueDate)}
+                                </div>
+                            </div>
+                            {invoice.sentDate && (
+                                <div>
+                                    <div className="text-sm text-gray-600 mb-1">Skickad</div>
+                                    <div className="font-medium text-gray-900">
+                                        {formatDate(invoice.sentDate)}
+                                    </div>
+                                </div>
+                            )}
+                            {invoice.paidDate && (
+                                <div>
+                                    <div className="text-sm text-gray-600 mb-1">Betald</div>
+                                    <div className="font-medium text-gray-900">
+                                        {formatDate(invoice.paidDate)}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Customer Info */}
+                    <div className="bg-white rounded-lg border border-gray-200 p-6">
+                        <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                            Kundinformation
+                        </h2>
+                        <div className="space-y-3">
+                            <div className="flex items-start gap-3">
+                                <Building className="w-5 h-5 text-gray-400 mt-0.5" />
+                                <div>
+                                    <div className="font-medium text-gray-900">
+                                        {invoice.customer?.name}
+                                    </div>
+                                    {invoice.customer?.organizationNumber && (
+                                        <div className="text-sm text-gray-600">
+                                            Org.nr: {invoice.customer.organizationNumber}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            {invoice.customer?.address && (
+                                <div className="flex items-start gap-3">
+                                    <div className="w-5"></div>
+                                    <div className="text-sm text-gray-600">
+                                        <div>{invoice.customer.address}</div>
+                                        <div>
+                                            {invoice.customer.postalCode} {invoice.customer.city}
+                                        </div>
+                                        {invoice.customer.country && (
+                                            <div>{invoice.customer.country}</div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                            {invoice.customer?.email && (
+                                <div className="flex items-center gap-3">
+                                    <Mail className="w-5 h-5 text-gray-400" />
+                                    <a 
+                                        href={`mailto:${invoice.customer.email}`}
+                                        className="text-sm text-blue-600 hover:text-blue-700"
+                                    >
+                                        {invoice.customer.email}
+                                    </a>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Invoice Lines */}
+                    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="p-6 border-b border-gray-200">
+                            <h2 className="text-lg font-semibold text-gray-900">
+                                Fakturarader
+                            </h2>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full">
+                                <thead className="bg-gray-50 border-b border-gray-200">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                                            Beskrivning
+                                        </th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                            Antal
+                                        </th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                            À-pris
+                                        </th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                            Moms
+                                        </th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                                            Totalt
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-200">
+                                    {invoice.lines?.map((line) => (
+                                        <tr key={line.id}>
+                                            <td className="px-6 py-4">
+                                                <div className="text-sm font-medium text-gray-900">
+                                                    {line.description}
+                                                </div>
+                                                {line.article && (
+                                                    <div className="text-xs text-gray-500">
+                                                        Art.nr: {line.article.articleNumber}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4 text-right text-sm text-gray-900">
+                                                {line.quantity} {line.unit}
+                                            </td>
+                                            <td className="px-6 py-4 text-right text-sm text-gray-900">
+                                                {formatCurrency(line.unitPrice)}
+                                            </td>
+                                            <td className="px-6 py-4 text-right text-sm text-gray-900">
+                                                {line.vatRate}%
+                                            </td>
+                                            <td className="px-6 py-4 text-right text-sm font-medium text-gray-900">
+                                                {formatCurrency(line.total)}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Totals */}
+                        <div className="p-6 border-t-2 border-gray-300 bg-gray-50">
+                            <div className="flex justify-end">
+                                <div className="w-80 space-y-2">
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-gray-600">Subtotal:</span>
+                                        <span className="font-medium text-gray-900">
+                                            {formatCurrency(invoice.subtotal)}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-gray-600">Moms:</span>
+                                        <span className="font-medium text-gray-900">
+                                            {formatCurrency(invoice.vatAmount)}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between text-lg font-bold pt-2 border-t border-gray-200">
+                                        <span className="text-gray-900">Totalt att betala:</span>
+                                        <span className="text-blue-600">
+                                            {formatCurrency(invoice.totalAmount)}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Notes and Terms */}
+                    {(invoice.notes || invoice.terms) && (
+                        <div className="bg-white rounded-lg border border-gray-200 p-6 space-y-4">
+                            {invoice.notes && (
+                                <div>
+                                    <h3 className="text-sm font-semibold text-gray-900 mb-2">
+                                        Anteckningar
+                                    </h3>
+                                    <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                                        {invoice.notes}
+                                    </p>
+                                </div>
+                            )}
+                            {invoice.terms && (
+                                <div>
+                                    <h3 className="text-sm font-semibold text-gray-900 mb-2">
+                                        Betalningsvillkor
+                                    </h3>
+                                    <p className="text-sm text-gray-600 whitespace-pre-wrap">
+                                        {invoice.terms}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Sidebar */}
+                <div className="space-y-6">
+                    {/* Amount Summary */}
+                    <div className="bg-blue-50 rounded-lg border border-blue-200 p-6">
+                        <div className="text-sm text-blue-800 mb-2">Totalt belopp</div>
+                        <div className="text-3xl font-bold text-blue-900">
+                            {formatCurrency(invoice.totalAmount)}
+                        </div>
+                        <div className="text-sm text-blue-700 mt-2">
+                            inkl. {formatCurrency(invoice.vatAmount)} moms
+                        </div>
+                    </div>
+
+                    {/* Payment Info */}
+                    {invoice.status === 'sent' && (
+                        <div className="bg-white rounded-lg border border-gray-200 p-6">
+                            <h3 className="text-sm font-semibold text-gray-900 mb-3">
+                                Betalningsinformation
+                            </h3>
+                            <div className="space-y-3 text-sm">
+                                <div>
+                                    <div className="text-gray-600">OCR-nummer</div>
+                                    <div className="font-mono font-medium text-gray-900">
+                                        {invoice.ocrNumber}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="text-gray-600">Förfaller</div>
+                                    <div className={`font-medium ${isOverdue ? 'text-red-600' : 'text-gray-900'}`}>
+                                        {formatDate(invoice.dueDate)}
+                                    </div>
+                                </div>
+                                {!isOverdue && daysLeft >= 0 && (
+                                    <div className="text-gray-600">
+                                        {daysLeft} dagar kvar
+                                    </div>
+                                )}
+                                {isOverdue && (
+                                    <div className="text-red-600 font-medium">
+                                        ⚠️ Förfallen ({Math.abs(daysLeft)} dagar)
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Timeline */}
+                    <div className="bg-white rounded-lg border border-gray-200 p-6">
+                        <h3 className="text-sm font-semibold text-gray-900 mb-3">
+                            Tidslinje
+                        </h3>
+                        <div className="space-y-3">
+                            <div className="flex gap-3">
+                                <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5"></div>
+                                <div className="flex-1">
+                                    <div className="text-sm font-medium text-gray-900">
+                                        Faktura skapad
+                                    </div>
+                                    <div className="text-xs text-gray-600">
+                                        {formatDate(invoice.createdAt)}
+                                    </div>
+                                </div>
+                            </div>
+                            {invoice.sentDate && (
+                                <div className="flex gap-3">
+                                    <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5"></div>
+                                    <div className="flex-1">
+                                        <div className="text-sm font-medium text-gray-900">
+                                            Faktura skickad
+                                        </div>
+                                        <div className="text-xs text-gray-600">
+                                            {formatDate(invoice.sentDate)}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            {invoice.paidDate && (
+                                <div className="flex gap-3">
+                                    <div className="w-2 h-2 bg-green-600 rounded-full mt-1.5"></div>
+                                    <div className="flex-1">
+                                        <div className="text-sm font-medium text-gray-900">
+                                            Faktura betald
+                                        </div>
+                                        <div className="text-xs text-gray-600">
+                                            {formatDate(invoice.paidDate)}
+                                        </div>
+                                        {invoice.paymentReference && (
+                                            <div className="text-xs text-gray-500 mt-1">
+                                                Ref: {invoice.paymentReference}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+App Routes Update
+Uppdatera: frontend/src/App.tsx - Lägg till routes
+typescriptimport InvoiceListPage from './pages/InvoiceListPage';
+import InvoiceFormPage from './pages/InvoiceFormPage';
+import InvoiceDetailPage from './pages/InvoiceDetailPage';
+
+// ... i routes:
+<Route path="/invoices" element={<InvoiceListPage />} />
+<Route path="/invoices/new" element={<InvoiceFormPage />} />
+<Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+<Route path="/invoices/:id/edit" element={<InvoiceFormPage />} />
+
+
 
 STEG 2.5-2.11: Övriga MVP Moduler
 För att hålla dokumentationen hanterbar, här är översikt över återstående moduler:
