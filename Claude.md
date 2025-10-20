@@ -11066,388 +11066,2711 @@ typescriptrouter.post('/:id/send', invoiceController.sendInvoice);
 
 STEG 2.7: Receipt Management
 Instruktion:
-Implementera kvittohantering med filuppladdning till S3.
-Installation:
-bashnpm install multer
-npm install @types/multer --save-dev
-Types:
+Implementera komplett kvittohanteringssystem med AI OCR-integration, uppladdning, granskning, godkännande och statistik. Detta inkluderar både backend API och frontend UI.
+
+BACKEND IMPLEMENTATION
+1. Backend Types:
 Filsökväg: backend/src/types/receipt.types.ts
-typescriptexport interface Receipt {
+typescript/**
+ * Receipt Management Types
+ * Backend TypeScript definitions for receipt handling
+ */
+
+export interface Receipt {
   id: string;
-  company_id: string;
-  supplier_id?: string;
-  receipt_date: Date;
-  amount: number;
-  vat_amount?: number;
-  total_amount: number;
-  category?: string;
+  userId: string;
+  companyId: string;
+  
+  // Basic information
+  receiptNumber: string;
+  date: Date;
+  supplier: string;
+  supplierOrgNumber?: string;
+  
+  // Financial details
+  totalAmount: number;
+  vatAmount: number;
+  netAmount: number;
+  currency: string;
+  
+  // Categorization
+  category: ReceiptCategory;
+  accountingAccount?: string;
+  projectId?: string;
+  costCenter?: string;
+  
+  // OCR and processing
+  ocrStatus: OCRStatus;
+  ocrData?: OCRData;
+  ocrConfidence?: number;
+  ocrJobId?: string;
+  
+  // File management
+  fileUrl: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  thumbnailUrl?: string;
+  storageKey: string;
+  
+  // Status and workflow
+  status: ReceiptStatus;
+  approvedBy?: string;
+  approvedAt?: Date;
+  rejectedReason?: string;
+  
+  // Notes and metadata
   description?: string;
-  file_url: string;
-  file_type: string;
-  status: 'pending' | 'processed' | 'booked';
-  ocr_data?: any;
-  created_by: string;
-  created_at: Date;
-  updated_at: Date;
+  notes?: string;
+  tags?: string[];
+  
+  // Audit trail
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+  updatedBy?: string;
+}
+
+export enum ReceiptCategory {
+  OFFICE_SUPPLIES = 'office_supplies',
+  TRAVEL = 'travel',
+  MEALS = 'meals',
+  EQUIPMENT = 'equipment',
+  SOFTWARE = 'software',
+  MARKETING = 'marketing',
+  UTILITIES = 'utilities',
+  RENT = 'rent',
+  INSURANCE = 'insurance',
+  CONSULTING = 'consulting',
+  OTHER = 'other'
+}
+
+export enum ReceiptStatus {
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+  ARCHIVED = 'archived'
+}
+
+export enum OCRStatus {
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  MANUAL = 'manual'
+}
+
+export interface OCRData {
+  supplier?: string;
+  supplierOrgNumber?: string;
+  date?: string;
+  totalAmount?: number;
+  vatAmount?: number;
+  netAmount?: number;
+  currency?: string;
+  receiptNumber?: string;
+  lineItems?: OCRLineItem[];
+  rawText?: string;
+}
+
+export interface OCRLineItem {
+  description: string;
+  quantity?: number;
+  unitPrice?: number;
+  totalPrice: number;
+  vatRate?: number;
 }
 
 export interface CreateReceiptDto {
-  supplier_id?: string;
-  receipt_date: string;
-  amount: number;
-  vat_amount?: number;
-  category?: string;
+  file: Express.Multer.File;
+  date?: Date;
+  supplier?: string;
+  category?: ReceiptCategory;
   description?: string;
+  projectId?: string;
+  costCenter?: string;
 }
-Migration:
-Filsökväg: database/migrations/004_receipts.sql
-sqlCREATE TABLE IF NOT EXISTS receipts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
-    supplier_id UUID REFERENCES suppliers(id),
-    receipt_date DATE NOT NULL,
-    amount DECIMAL(15, 2) NOT NULL,
-    vat_amount DECIMAL(15, 2),
-    total_amount DECIMAL(15, 2) NOT NULL,
-    category VARCHAR(100),
-    description TEXT,
-    file_url TEXT NOT NULL,
-    file_type VARCHAR(50) NOT NULL,
-    status VARCHAR(20) DEFAULT 'pending',
-    ocr_data JSONB,
-    created_by UUID REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 
-CREATE INDEX idx_receipts_company ON receipts(company_id);
-CREATE INDEX idx_receipts_supplier ON receipts(supplier_id);
-CREATE INDEX idx_receipts_date ON receipts(receipt_date);
-CREATE INDEX idx_receipts_status ON receipts(status);
-Service:
+export interface UpdateReceiptDto {
+  date?: Date;
+  supplier?: string;
+  supplierOrgNumber?: string;
+  totalAmount?: number;
+  vatAmount?: number;
+  netAmount?: number;
+  category?: ReceiptCategory;
+  accountingAccount?: string;
+  projectId?: string;
+  costCenter?: string;
+  description?: string;
+  notes?: string;
+  tags?: string[];
+}
+
+export interface ReceiptFilters {
+  status?: ReceiptStatus[];
+  category?: ReceiptCategory[];
+  dateFrom?: Date;
+  dateTo?: Date;
+  minAmount?: number;
+  maxAmount?: number;
+  supplier?: string;
+  projectId?: string;
+  costCenter?: string;
+  search?: string;
+}
+
+export interface ReceiptStats {
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  totalAmount: number;
+  averageAmount: number;
+  byCategory: Record<ReceiptCategory, number>;
+  byMonth: Array<{
+    month: string;
+    count: number;
+    amount: number;
+  }>;
+}
+
+2. Backend Service:
 Filsökväg: backend/src/services/receiptService.ts
-typescriptimport { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { query } from '../config/database';
-import { Receipt, CreateReceiptDto } from '../types/receipt.types';
+typescript/**
+ * Receipt Service
+ * Business logic for receipt management
+ */
+
+import { Pool } from 'pg';
+import { MongoClient } from 'mongodb';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  Receipt,
+  CreateReceiptDto,
+  UpdateReceiptDto,
+  ReceiptFilters,
+  ReceiptStats,
+  ReceiptStatus,
+  OCRStatus,
+  ReceiptCategory
+} from '../types/receipt.types';
+import { AIService } from './aiService';
 
-const s3Client = new S3Client({
-  region: process.env.AWS_REGION || 'eu-north-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
-  }
-});
+export class ReceiptService {
+  private db: Pool;
+  private mongo: MongoClient;
+  private s3: S3Client;
+  private aiService: AIService;
 
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'redovisning-files';
+  constructor(db: Pool, mongo: MongoClient) {
+    this.db = db;
+    this.mongo = mongo;
+    this.s3 = new S3Client({
+      region: process.env.AWS_REGION || 'eu-north-1',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+      }
+    });
+    this.aiService = new AIService();
+  }
 
-export const uploadReceiptFile = async (
-  file: Express.Multer.File,
-  companyId: string
-): Promise<string> => {
-  const fileExtension = file.originalname.split('.').pop();
-  const fileName = `receipts/${companyId}/${uuidv4()}.${fileExtension}`;
-  
-  await s3Client.send(new PutObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: fileName,
-    Body: file.buffer,
-    ContentType: file.mimetype
-  }));
-  
-  return `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
-};
+  /**
+   * Upload a receipt file and process with OCR
+   */
+  async uploadReceipt(
+    userId: string,
+    companyId: string,
+    file: Express.Multer.File,
+    data?: Partial<CreateReceiptDto>
+  ): Promise<Receipt> {
+    // Generate unique identifiers
+    const receiptId = uuidv4();
+    const storageKey = `receipts/${companyId}/${receiptId}/${file.originalname}`;
+    const thumbnailKey = `receipts/${companyId}/${receiptId}/thumbnail.jpg`;
 
-export const createReceipt = async (
-  companyId: string,
-  userId: string,
-  data: CreateReceiptDto,
-  fileUrl: string,
-  fileType: string
-): Promise<Receipt> => {
-  const total_amount = data.amount + (data.vat_amount || 0);
-  
-  const result = await query(
-    `INSERT INTO receipts (
-      company_id, supplier_id, receipt_date, amount, vat_amount, total_amount,
-      category, description, file_url, file_type, created_by
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    RETURNING *`,
-    [
-      companyId,
-      data.supplier_id || null,
-      data.receipt_date,
-      data.amount,
-      data.vat_amount || null,
-      total_amount,
-      data.category || null,
-      data.description || null,
-      fileUrl,
-      fileType,
-      userId
-    ]
-  );
-  
-  return result.rows[0];
-};
+    try {
+      // Upload original file to S3
+      await this.s3.send(new PutObjectCommand({
+        Bucket: process.env.S3_BUCKET_NAME!,
+        Key: storageKey,
+        Body: file.buffer,
+        ContentType: file.mimetype
+      }));
 
-export const getReceipts = async (
-  companyId: string,
-  filters?: {
-    supplier_id?: string;
-    status?: string;
-    start_date?: Date;
-    end_date?: Date;
-    category?: string;
-  }
-): Promise<Receipt[]> => {
-  let queryText = `
-    SELECT r.*, s.name as supplier_name
-    FROM receipts r
-    LEFT JOIN suppliers s ON r.supplier_id = s.id
-    WHERE r.company_id = $1
-  `;
-  
-  const params: any[] = [companyId];
-  let paramCount = 2;
-  
-  if (filters?.supplier_id) {
-    queryText += ` AND r.supplier_id = $${paramCount}`;
-    params.push(filters.supplier_id);
-    paramCount++;
-  }
-  
-  if (filters?.status) {
-    queryText += ` AND r.status = $${paramCount}`;
-    params.push(filters.status);
-    paramCount++;
-  }
-  
-  if (filters?.start_date) {
-    queryText += ` AND r.receipt_date >= $${paramCount}`;
-    params.push(filters.start_date);
-    paramCount++;
-  }
-  
-  if (filters?.end_date) {
-    queryText += ` AND r.receipt_date <= $${paramCount}`;
-    params.push(filters.end_date);
-    paramCount++;
-  }
-  
-  if (filters?.category) {
-    queryText += ` AND r.category = $${paramCount}`;
-    params.push(filters.category);
-    paramCount++;
-  }
-  
-  queryText += ' ORDER BY r.receipt_date DESC';
-  
-  const result = await query(queryText, params);
-  return result.rows;
-};
+      // Generate thumbnail for images
+      let thumbnailUrl: string | undefined;
+      if (file.mimetype.startsWith('image/')) {
+        const thumbnail = await sharp(file.buffer)
+          .resize(400, 400, { fit: 'inside' })
+          .jpeg({ quality: 80 })
+          .toBuffer();
 
-export const getReceiptById = async (
-  receiptId: string,
-  companyId: string
-): Promise<Receipt | null> => {
-  const result = await query(
-    `SELECT r.*, s.name as supplier_name
-     FROM receipts r
-     LEFT JOIN suppliers s ON r.supplier_id = s.id
-     WHERE r.id = $1 AND r.company_id = $2`,
-    [receiptId, companyId]
-  );
-  
-  return result.rows[0] || null;
-};
+        await this.s3.send(new PutObjectCommand({
+          Bucket: process.env.S3_BUCKET_NAME!,
+          Key: thumbnailKey,
+          Body: thumbnail,
+          ContentType: 'image/jpeg'
+        }));
 
-export const updateReceipt = async (
-  receiptId: string,
-  companyId: string,
-  updates: Partial<Receipt>
-): Promise<Receipt> => {
-  const fields: string[] = [];
-  const values: any[] = [];
-  let paramCount = 1;
-  
-  Object.entries(updates).forEach(([key, value]) => {
-    if (value !== undefined && key !== 'id' && key !== 'created_at') {
-      fields.push(`${key} = $${paramCount}`);
-      values.push(value);
-      paramCount++;
+        thumbnailUrl = await getSignedUrl(
+          this.s3,
+          new GetObjectCommand({
+            Bucket: process.env.S3_BUCKET_NAME!,
+            Key: thumbnailKey
+          }),
+          { expiresIn: 3600 * 24 * 7 } // 7 days
+        );
+      }
+
+      // Get signed URL for file access
+      const fileUrl = await getSignedUrl(
+        this.s3,
+        new GetObjectCommand({
+          Bucket: process.env.S3_BUCKET_NAME!,
+          Key: storageKey
+        }),
+        { expiresIn: 3600 * 24 * 7 } // 7 days
+      );
+
+      // Generate receipt number
+      const receiptNumber = await this.generateReceiptNumber(companyId);
+
+      // Create receipt in database
+      const result = await this.db.query(
+        `INSERT INTO receipts (
+          id, user_id, company_id, receipt_number, date, supplier,
+          total_amount, vat_amount, net_amount, currency, category,
+          ocr_status, file_url, file_name, file_size, file_type,
+          thumbnail_url, storage_key, status, description,
+          project_id, cost_center, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+        RETURNING *`,
+        [
+          receiptId,
+          userId,
+          companyId,
+          receiptNumber,
+          data?.date || new Date(),
+          data?.supplier || null,
+          0, // Will be updated by OCR
+          0,
+          0,
+          'SEK',
+          data?.category || null,
+          OCRStatus.PENDING,
+          fileUrl,
+          file.originalname,
+          file.size,
+          file.mimetype,
+          thumbnailUrl,
+          storageKey,
+          ReceiptStatus.PENDING,
+          data?.description || null,
+          data?.projectId || null,
+          data?.costCenter || null,
+          userId
+        ]
+      );
+
+      const receipt = this.mapDbToReceipt(result.rows[0]);
+
+      // Start OCR processing asynchronously
+      this.processOCR(receiptId, file.buffer, file.mimetype).catch(err => {
+        console.error('OCR processing failed:', err);
+      });
+
+      return receipt;
+    } catch (error) {
+      console.error('Upload receipt failed:', error);
+      throw new Error('Failed to upload receipt');
     }
-  });
-  
-  values.push(receiptId, companyId);
-  
-  const result = await query(
-    `UPDATE receipts 
-     SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $${paramCount} AND company_id = $${paramCount + 1}
-     RETURNING *`,
-    values
-  );
-  
-  return result.rows[0];
-};
-Middleware:
-Filsökväg: backend/src/middleware/upload.ts
-typescriptimport multer from 'multer';
+  }
 
-const storage = multer.memoryStorage();
+  /**
+   * Process OCR for receipt
+   */
+  private async processOCR(
+    receiptId: string,
+    fileBuffer: Buffer,
+    mimeType: string
+  ): Promise<void> {
+    try {
+      // Update status to processing
+      await this.db.query(
+        'UPDATE receipts SET ocr_status = $1 WHERE id = $2',
+        [OCRStatus.PROCESSING, receiptId]
+      );
 
-export const upload = multer({
-  storage,
+      // Call AI service for OCR
+      const ocrResult = await this.aiService.processReceiptOCR(fileBuffer, mimeType);
+
+      // Store OCR data in MongoDB for flexibility
+      const mongoDb = this.mongo.db('redovisning');
+      await mongoDb.collection('receipt_ocr_data').insertOne({
+        receiptId,
+        ocrData: ocrResult.data,
+        confidence: ocrResult.confidence,
+        processedAt: new Date()
+      });
+
+      // Update receipt with OCR results
+      await this.db.query(
+        `UPDATE receipts SET
+          ocr_status = $1,
+          ocr_confidence = $2,
+          supplier = COALESCE(supplier, $3),
+          supplier_org_number = $4,
+          total_amount = $5,
+          vat_amount = $6,
+          net_amount = $7,
+          date = COALESCE(date, $8)
+        WHERE id = $9`,
+        [
+          OCRStatus.COMPLETED,
+          ocrResult.confidence,
+          ocrResult.data.supplier,
+          ocrResult.data.supplierOrgNumber,
+          ocrResult.data.totalAmount || 0,
+          ocrResult.data.vatAmount || 0,
+          ocrResult.data.netAmount || 0,
+          ocrResult.data.date ? new Date(ocrResult.data.date) : null,
+          receiptId
+        ]
+      );
+    } catch (error) {
+      console.error('OCR processing failed:', error);
+      await this.db.query(
+        'UPDATE receipts SET ocr_status = $1 WHERE id = $2',
+        [OCRStatus.FAILED, receiptId]
+      );
+    }
+  }
+
+  /**
+   * Get receipts with filters and pagination
+   */
+  async getReceipts(
+    companyId: string,
+    page: number = 1,
+    pageSize: number = 20,
+    filters?: ReceiptFilters
+  ): Promise<{ receipts: Receipt[]; total: number; totalPages: number }> {
+    let whereConditions = ['company_id = $1'];
+    let params: any[] = [companyId];
+    let paramCount = 1;
+
+    // Build WHERE clause from filters
+    if (filters?.status && filters.status.length > 0) {
+      paramCount++;
+      whereConditions.push(`status = ANY($${paramCount})`);
+      params.push(filters.status);
+    }
+
+    if (filters?.category && filters.category.length > 0) {
+      paramCount++;
+      whereConditions.push(`category = ANY($${paramCount})`);
+      params.push(filters.category);
+    }
+
+    if (filters?.dateFrom) {
+      paramCount++;
+      whereConditions.push(`date >= $${paramCount}`);
+      params.push(filters.dateFrom);
+    }
+
+    if (filters?.dateTo) {
+      paramCount++;
+      whereConditions.push(`date <= $${paramCount}`);
+      params.push(filters.dateTo);
+    }
+
+    if (filters?.minAmount !== undefined) {
+      paramCount++;
+      whereConditions.push(`total_amount >= $${paramCount}`);
+      params.push(filters.minAmount);
+    }
+
+    if (filters?.maxAmount !== undefined) {
+      paramCount++;
+      whereConditions.push(`total_amount <= $${paramCount}`);
+      params.push(filters.maxAmount);
+    }
+
+    if (filters?.supplier) {
+      paramCount++;
+      whereConditions.push(`supplier ILIKE $${paramCount}`);
+      params.push(`%${filters.supplier}%`);
+    }
+
+    if (filters?.projectId) {
+      paramCount++;
+      whereConditions.push(`project_id = $${paramCount}`);
+      params.push(filters.projectId);
+    }
+
+    if (filters?.costCenter) {
+      paramCount++;
+      whereConditions.push(`cost_center = $${paramCount}`);
+      params.push(filters.costCenter);
+    }
+
+    if (filters?.search) {
+      paramCount++;
+      whereConditions.push(`(
+        supplier ILIKE $${paramCount} OR
+        description ILIKE $${paramCount} OR
+        notes ILIKE $${paramCount} OR
+        receipt_number ILIKE $${paramCount}
+      )`);
+      params.push(`%${filters.search}%`);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get total count
+    const countResult = await this.db.query(
+      `SELECT COUNT(*) FROM receipts WHERE ${whereClause}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].count);
+
+    // Get paginated results
+    const offset = (page - 1) * pageSize;
+    params.push(pageSize, offset);
+    
+    const result = await this.db.query(
+      `SELECT * FROM receipts 
+       WHERE ${whereClause}
+       ORDER BY date DESC, created_at DESC
+       LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`,
+      params
+    );
+
+    const receipts = result.rows.map(row => this.mapDbToReceipt(row));
+
+    // Fetch OCR data from MongoDB for each receipt
+    const mongoDb = this.mongo.db('redovisning');
+    for (const receipt of receipts) {
+      const ocrDoc = await mongoDb.collection('receipt_ocr_data').findOne({
+        receiptId: receipt.id
+      });
+      if (ocrDoc) {
+        receipt.ocrData = ocrDoc.ocrData;
+      }
+    }
+
+    return {
+      receipts,
+      total,
+      totalPages: Math.ceil(total / pageSize)
+    };
+  }
+
+  /**
+   * Get receipt by ID
+   */
+  async getReceiptById(receiptId: string, companyId: string): Promise<Receipt | null> {
+    const result = await this.db.query(
+      'SELECT * FROM receipts WHERE id = $1 AND company_id = $2',
+      [receiptId, companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const receipt = this.mapDbToReceipt(result.rows[0]);
+
+    // Fetch OCR data from MongoDB
+    const mongoDb = this.mongo.db('redovisning');
+    const ocrDoc = await mongoDb.collection('receipt_ocr_data').findOne({
+      receiptId: receipt.id
+    });
+    if (ocrDoc) {
+      receipt.ocrData = ocrDoc.ocrData;
+    }
+
+    return receipt;
+  }
+
+  /**
+   * Update receipt
+   */
+  async updateReceipt(
+    receiptId: string,
+    companyId: string,
+    userId: string,
+    data: UpdateReceiptDto
+  ): Promise<Receipt> {
+    const updates: string[] = [];
+    const params: any[] = [];
+    let paramCount = 0;
+
+    if (data.date !== undefined) {
+      paramCount++;
+      updates.push(`date = $${paramCount}`);
+      params.push(data.date);
+    }
+
+    if (data.supplier !== undefined) {
+      paramCount++;
+      updates.push(`supplier = $${paramCount}`);
+      params.push(data.supplier);
+    }
+
+    if (data.supplierOrgNumber !== undefined) {
+      paramCount++;
+      updates.push(`supplier_org_number = $${paramCount}`);
+      params.push(data.supplierOrgNumber);
+    }
+
+    if (data.totalAmount !== undefined) {
+      paramCount++;
+      updates.push(`total_amount = $${paramCount}`);
+      params.push(data.totalAmount);
+    }
+
+    if (data.vatAmount !== undefined) {
+      paramCount++;
+      updates.push(`vat_amount = $${paramCount}`);
+      params.push(data.vatAmount);
+    }
+
+    if (data.netAmount !== undefined) {
+      paramCount++;
+      updates.push(`net_amount = $${paramCount}`);
+      params.push(data.netAmount);
+    }
+
+    if (data.category !== undefined) {
+      paramCount++;
+      updates.push(`category = $${paramCount}`);
+      params.push(data.category);
+    }
+
+    if (data.accountingAccount !== undefined) {
+      paramCount++;
+      updates.push(`accounting_account = $${paramCount}`);
+      params.push(data.accountingAccount);
+    }
+
+    if (data.projectId !== undefined) {
+      paramCount++;
+      updates.push(`project_id = $${paramCount}`);
+      params.push(data.projectId);
+    }
+
+    if (data.costCenter !== undefined) {
+      paramCount++;
+      updates.push(`cost_center = $${paramCount}`);
+      params.push(data.costCenter);
+    }
+
+    if (data.description !== undefined) {
+      paramCount++;
+      updates.push(`description = $${paramCount}`);
+      params.push(data.description);
+    }
+
+    if (data.notes !== undefined) {
+      paramCount++;
+      updates.push(`notes = $${paramCount}`);
+      params.push(data.notes);
+    }
+
+    if (data.tags !== undefined) {
+      paramCount++;
+      updates.push(`tags = $${paramCount}`);
+      params.push(data.tags);
+    }
+
+    if (updates.length === 0) {
+      throw new Error('No fields to update');
+    }
+
+    paramCount++;
+    updates.push(`updated_by = $${paramCount}`);
+    params.push(userId);
+
+    paramCount++;
+    updates.push(`updated_at = $${paramCount}`);
+    params.push(new Date());
+
+    params.push(receiptId, companyId);
+
+    const result = await this.db.query(
+      `UPDATE receipts SET ${updates.join(', ')}
+       WHERE id = $${paramCount + 1} AND company_id = $${paramCount + 2}
+       RETURNING *`,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Receipt not found');
+    }
+
+    return this.mapDbToReceipt(result.rows[0]);
+  }
+
+  /**
+   * Delete receipt
+   */
+  async deleteReceipt(receiptId: string, companyId: string): Promise<void> {
+    // Get receipt to get storage key
+    const receipt = await this.getReceiptById(receiptId, companyId);
+    if (!receipt) {
+      throw new Error('Receipt not found');
+    }
+
+    // Delete from S3
+    try {
+      await this.s3.send(new DeleteObjectCommand({
+        Bucket: process.env.S3_BUCKET_NAME!,
+        Key: receipt.storageKey
+      }));
+
+      if (receipt.thumbnailUrl) {
+        const thumbnailKey = receipt.storageKey.replace(/[^/]+$/, 'thumbnail.jpg');
+        await this.s3.send(new DeleteObjectCommand({
+          Bucket: process.env.S3_BUCKET_NAME!,
+          Key: thumbnailKey
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to delete from S3:', error);
+    }
+
+    // Delete OCR data from MongoDB
+    const mongoDb = this.mongo.db('redovisning');
+    await mongoDb.collection('receipt_ocr_data').deleteOne({ receiptId });
+
+    // Delete from database
+    await this.db.query(
+      'DELETE FROM receipts WHERE id = $1 AND company_id = $2',
+      [receiptId, companyId]
+    );
+  }
+
+  /**
+   * Approve receipt
+   */
+  async approveReceipt(
+    receiptId: string,
+    companyId: string,
+    userId: string,
+    notes?: string
+  ): Promise<Receipt> {
+    const result = await this.db.query(
+      `UPDATE receipts SET
+        status = $1,
+        approved_by = $2,
+        approved_at = $3,
+        notes = COALESCE($4, notes),
+        updated_by = $2,
+        updated_at = $3
+       WHERE id = $5 AND company_id = $6
+       RETURNING *`,
+      [ReceiptStatus.APPROVED, userId, new Date(), notes, receiptId, companyId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Receipt not found');
+    }
+
+    return this.mapDbToReceipt(result.rows[0]);
+  }
+
+  /**
+   * Reject receipt
+   */
+  async rejectReceipt(
+    receiptId: string,
+    companyId: string,
+    userId: string,
+    reason: string
+  ): Promise<Receipt> {
+    const result = await this.db.query(
+      `UPDATE receipts SET
+        status = $1,
+        rejected_reason = $2,
+        updated_by = $3,
+        updated_at = $4
+       WHERE id = $5 AND company_id = $6
+       RETURNING *`,
+      [ReceiptStatus.REJECTED, reason, userId, new Date(), receiptId, companyId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Receipt not found');
+    }
+
+    return this.mapDbToReceipt(result.rows[0]);
+  }
+
+  /**
+   * Bulk actions
+   */
+  async bulkAction(
+    receiptIds: string[],
+    companyId: string,
+    userId: string,
+    action: 'approve' | 'reject' | 'archive' | 'delete',
+    reason?: string
+  ): Promise<{ success: number; failed: number }> {
+    let success = 0;
+    let failed = 0;
+
+    for (const receiptId of receiptIds) {
+      try {
+        switch (action) {
+          case 'approve':
+            await this.approveReceipt(receiptId, companyId, userId);
+            break;
+          case 'reject':
+            await this.rejectReceipt(receiptId, companyId, userId, reason || 'Bulk rejection');
+            break;
+          case 'archive':
+            await this.db.query(
+              'UPDATE receipts SET status = $1 WHERE id = $2 AND company_id = $3',
+              [ReceiptStatus.ARCHIVED, receiptId, companyId]
+            );
+            break;
+          case 'delete':
+            await this.deleteReceipt(receiptId, companyId);
+            break;
+        }
+        success++;
+      } catch (error) {
+        console.error(`Bulk action failed for receipt ${receiptId}:`, error);
+        failed++;
+      }
+    }
+
+    return { success, failed };
+  }
+
+  /**
+   * Retry OCR processing
+   */
+  async retryOCR(receiptId: string, companyId: string): Promise<Receipt> {
+    const receipt = await this.getReceiptById(receiptId, companyId);
+    if (!receipt) {
+      throw new Error('Receipt not found');
+    }
+
+    // Get file from S3
+    const fileData = await this.s3.send(new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET_NAME!,
+      Key: receipt.storageKey
+    }));
+
+    const fileBuffer = await this.streamToBuffer(fileData.Body);
+
+    // Process OCR
+    await this.processOCR(receiptId, fileBuffer, receipt.fileType);
+
+    return this.getReceiptById(receiptId, companyId) as Promise<Receipt>;
+  }
+
+  /**
+   * Get receipt statistics
+   */
+  async getStats(companyId: string, filters?: ReceiptFilters): Promise<ReceiptStats> {
+    let whereConditions = ['company_id = $1'];
+    let params: any[] = [companyId];
+    let paramCount = 1;
+
+    // Apply filters
+    if (filters?.dateFrom) {
+      paramCount++;
+      whereConditions.push(`date >= $${paramCount}`);
+      params.push(filters.dateFrom);
+    }
+
+    if (filters?.dateTo) {
+      paramCount++;
+      whereConditions.push(`date <= $${paramCount}`);
+      params.push(filters.dateTo);
+    }
+
+    if (filters?.category && filters.category.length > 0) {
+      paramCount++;
+      whereConditions.push(`category = ANY($${paramCount})`);
+      params.push(filters.category);
+    }
+
+    if (filters?.projectId) {
+      paramCount++;
+      whereConditions.push(`project_id = $${paramCount}`);
+      params.push(filters.projectId);
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get basic stats
+    const statsResult = await this.db.query(
+      `SELECT 
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE status = 'pending') as pending,
+        COUNT(*) FILTER (WHERE status = 'approved') as approved,
+        COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
+        COALESCE(SUM(total_amount), 0) as total_amount,
+        COALESCE(AVG(total_amount), 0) as average_amount
+       FROM receipts
+       WHERE ${whereClause}`,
+      params
+    );
+
+    // Get by category
+    const categoryResult = await this.db.query(
+      `SELECT category, COUNT(*) as count
+       FROM receipts
+       WHERE ${whereClause} AND category IS NOT NULL
+       GROUP BY category`,
+      params
+    );
+
+    const byCategory: Record<ReceiptCategory, number> = {} as any;
+    categoryResult.rows.forEach(row => {
+      byCategory[row.category as ReceiptCategory] = parseInt(row.count);
+    });
+
+    // Get by month
+    const monthResult = await this.db.query(
+      `SELECT 
+        TO_CHAR(date, 'YYYY-MM') as month,
+        COUNT(*) as count,
+        SUM(total_amount) as amount
+       FROM receipts
+       WHERE ${whereClause}
+       GROUP BY TO_CHAR(date, 'YYYY-MM')
+       ORDER BY month DESC
+       LIMIT 12`,
+      params
+    );
+
+    const byMonth = monthResult.rows.map(row => ({
+      month: row.month,
+      count: parseInt(row.count),
+      amount: parseFloat(row.amount)
+    }));
+
+    const stats = statsResult.rows[0];
+
+    return {
+      total: parseInt(stats.total),
+      pending: parseInt(stats.pending),
+      approved: parseInt(stats.approved),
+      rejected: parseInt(stats.rejected),
+      totalAmount: parseFloat(stats.total_amount),
+      averageAmount: parseFloat(stats.average_amount),
+      byCategory,
+      byMonth
+    };
+  }
+
+  /**
+   * Generate unique receipt number
+   */
+  private async generateReceiptNumber(companyId: string): Promise<string> {
+    const year = new Date().getFullYear();
+    const result = await this.db.query(
+      `SELECT COUNT(*) as count FROM receipts 
+       WHERE company_id = $1 AND EXTRACT(YEAR FROM date) = $2`,
+      [companyId, year]
+    );
+    
+    const count = parseInt(result.rows[0].count) + 1;
+    return `R${year}-${count.toString().padStart(5, '0')}`;
+  }
+
+  /**
+   * Map database row to Receipt object
+   */
+  private mapDbToReceipt(row: any): Receipt {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      companyId: row.company_id,
+      receiptNumber: row.receipt_number,
+      date: row.date,
+      supplier: row.supplier,
+      supplierOrgNumber: row.supplier_org_number,
+      totalAmount: parseFloat(row.total_amount),
+      vatAmount: parseFloat(row.vat_amount),
+      netAmount: parseFloat(row.net_amount),
+      currency: row.currency,
+      category: row.category,
+      accountingAccount: row.accounting_account,
+      projectId: row.project_id,
+      costCenter: row.cost_center,
+      ocrStatus: row.ocr_status,
+      ocrConfidence: row.ocr_confidence,
+      ocrJobId: row.ocr_job_id,
+      fileUrl: row.file_url,
+      fileName: row.file_name,
+      fileSize: row.file_size,
+      fileType: row.file_type,
+      thumbnailUrl: row.thumbnail_url,
+      storageKey: row.storage_key,
+      status: row.status,
+      approvedBy: row.approved_by,
+      approvedAt: row.approved_at,
+      rejectedReason: row.rejected_reason,
+      description: row.description,
+      notes: row.notes,
+      tags: row.tags,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      createdBy: row.created_by,
+      updatedBy: row.updated_by
+    };
+  }
+
+  /**
+   * Convert stream to buffer
+   */
+  private async streamToBuffer(stream: any): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+}
+
+3. Backend Controller:
+Filsökväg: backend/src/controllers/receiptController.ts
+typescript/**
+ * Receipt Controller
+ * HTTP request handlers for receipt endpoints
+ */
+
+import { Request, Response } from 'express';
+import { ReceiptService } from '../services/receiptService';
+import { CreateReceiptDto, UpdateReceiptDto, ReceiptFilters } from '../types/receipt.types';
+
+export class ReceiptController {
+  private receiptService: ReceiptService;
+
+  constructor(receiptService: ReceiptService) {
+    this.receiptService = receiptService;
+  }
+
+  /**
+   * Upload single receipt
+   */
+  uploadReceipt = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const data: Partial<CreateReceiptDto> = {
+        date: req.body.date ? new Date(req.body.date) : undefined,
+        supplier: req.body.supplier,
+        category: req.body.category,
+        description: req.body.description,
+        projectId: req.body.projectId,
+        costCenter: req.body.costCenter
+      };
+
+      const receipt = await this.receiptService.uploadReceipt(
+        userId,
+        companyId,
+        file,
+        data
+      );
+
+      res.status(201).json({
+        receipt,
+        message: 'Receipt uploaded successfully. OCR processing started.'
+      });
+    } catch (error) {
+      console.error('Upload receipt error:', error);
+      res.status(500).json({ error: 'Failed to upload receipt' });
+    }
+  };
+
+  /**
+   * Upload multiple receipts
+   */
+  uploadMultipleReceipts = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const files = req.files as Express.Multer.File[];
+
+      if (!files || files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded' });
+      }
+
+      const results = await Promise.allSettled(
+        files.map(file => this.receiptService.uploadReceipt(userId, companyId, file))
+      );
+
+      const receipts = results
+        .filter(r => r.status === 'fulfilled')
+        .map(r => (r as PromiseFulfilledResult<any>).value);
+
+      const failed = results.filter(r => r.status === 'rejected').length;
+
+      res.status(201).json({
+        receipts,
+        success: receipts.length,
+        failed,
+        message: `Uploaded ${receipts.length} receipts successfully. ${failed} failed.`
+      });
+    } catch (error) {
+      console.error('Upload multiple receipts error:', error);
+      res.status(500).json({ error: 'Failed to upload receipts' });
+    }
+  };
+
+  /**
+   * Get receipts with filters
+   */
+  getReceipts = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+      const page = parseInt(req.query.page as string) || 1;
+      const pageSize = parseInt(req.query.pageSize as string) || 20;
+
+      const filters: ReceiptFilters = {
+        status: req.query.status ? (req.query.status as string).split(',') as any : undefined,
+        category: req.query.category ? (req.query.category as string).split(',') as any : undefined,
+        dateFrom: req.query.dateFrom ? new Date(req.query.dateFrom as string) : undefined,
+        dateTo: req.query.dateTo ? new Date(req.query.dateTo as string) : undefined,
+        minAmount: req.query.minAmount ? parseFloat(req.query.minAmount as string) : undefined,
+        maxAmount: req.query.maxAmount ? parseFloat(req.query.maxAmount as string) : undefined,
+        supplier: req.query.supplier as string,
+        projectId: req.query.projectId as string,
+        costCenter: req.query.costCenter as string,
+        search: req.query.search as string
+      };
+
+      const result = await this.receiptService.getReceipts(companyId, page, pageSize, filters);
+
+      res.json({
+        receipts: result.receipts,
+        total: result.total,
+        page,
+        pageSize,
+        totalPages: result.totalPages
+      });
+    } catch (error) {
+      console.error('Get receipts error:', error);
+      res.status(500).json({ error: 'Failed to get receipts' });
+    }
+  };
+
+  /**
+   * Get receipt by ID
+   */
+  getReceiptById = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+
+      const receipt = await this.receiptService.getReceiptById(receiptId, companyId);
+
+      if (!receipt) {
+        return res.status(404).json({ error: 'Receipt not found' });
+      }
+
+      res.json(receipt);
+    } catch (error) {
+      console.error('Get receipt error:', error);
+      res.status(500).json({ error: 'Failed to get receipt' });
+    }
+  };
+
+  /**
+   * Update receipt
+   */
+  updateReceipt = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+      const data: UpdateReceiptDto = req.body;
+
+      const receipt = await this.receiptService.updateReceipt(
+        receiptId,
+        companyId,
+        userId,
+        data
+      );
+
+      res.json(receipt);
+    } catch (error) {
+      console.error('Update receipt error:', error);
+      res.status(500).json({ error: 'Failed to update receipt' });
+    }
+  };
+
+  /**
+   * Delete receipt
+   */
+  deleteReceipt = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+
+      await this.receiptService.deleteReceipt(receiptId, companyId);
+
+      res.json({ message: 'Receipt deleted successfully' });
+    } catch (error) {
+      console.error('Delete receipt error:', error);
+      res.status(500).json({ error: 'Failed to delete receipt' });
+    }
+  };
+
+  /**
+   * Approve receipt
+   */
+  approveReceipt = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+      const { notes } = req.body;
+
+      const receipt = await this.receiptService.approveReceipt(
+        receiptId,
+        companyId,
+        userId,
+        notes
+      );
+
+      res.json(receipt);
+    } catch (error) {
+      console.error('Approve receipt error:', error);
+      res.status(500).json({ error: 'Failed to approve receipt' });
+    }
+  };
+
+  /**
+   * Reject receipt
+   */
+  rejectReceipt = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+      const { reason } = req.body;
+
+      if (!reason) {
+        return res.status(400).json({ error: 'Reason is required' });
+      }
+
+      const receipt = await this.receiptService.rejectReceipt(
+        receiptId,
+        companyId,
+        userId,
+        reason
+      );
+
+      res.json(receipt);
+    } catch (error) {
+      console.error('Reject receipt error:', error);
+      res.status(500).json({ error: 'Failed to reject receipt' });
+    }
+  };
+
+  /**
+   * Bulk actions
+   */
+  bulkAction = async (req: Request, res: Response) => {
+    try {
+      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const { receiptIds, action, reason } = req.body;
+
+      if (!receiptIds || !Array.isArray(receiptIds) || receiptIds.length === 0) {
+        return res.status(400).json({ error: 'Receipt IDs are required' });
+      }
+
+      if (!['approve', 'reject', 'archive', 'delete'].includes(action)) {
+        return res.status(400).json({ error: 'Invalid action' });
+      }
+
+      const result = await this.receiptService.bulkAction(
+        receiptIds,
+        companyId,
+        userId,
+        action,
+        reason
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error('Bulk action error:', error);
+      res.status(500).json({ error: 'Failed to perform bulk action' });
+    }
+  };
+
+  /**
+   * Retry OCR
+   */
+  retryOCR = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+
+      const receipt = await this.receiptService.retryOCR(receiptId, companyId);
+
+      res.json(receipt);
+    } catch (error) {
+      console.error('Retry OCR error:', error);
+      res.status(500).json({ error: 'Failed to retry OCR' });
+    }
+  };
+
+  /**
+   * Get statistics
+   */
+  getStats = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+
+      const filters: ReceiptFilters = {
+        dateFrom: req.query.dateFrom ? new Date(req.query.dateFrom as string) : undefined,
+        dateTo: req.query.dateTo ? new Date(req.query.dateTo as string) : undefined,
+        category: req.query.category ? (req.query.category as string).split(',') as any : undefined,
+        projectId: req.query.projectId as string
+      };
+
+      const stats = await this.receiptService.getStats(companyId, filters);
+
+      res.json(stats);
+    } catch (error) {
+      console.error('Get stats error:', error);
+      res.status(500).json({ error: 'Failed to get statistics' });
+    }
+  };
+
+  /**
+   * Download receipt file
+   */
+  downloadReceipt = async (req: Request, res: Response) => {
+    try {
+      const companyId = req.user!.companyId;
+      const receiptId = req.params.id;
+
+      const receipt = await this.receiptService.getReceiptById(receiptId, companyId);
+
+      if (!receipt) {
+        return res.status(404).json({ error: 'Receipt not found' });
+      }
+
+      // Redirect to signed URL
+      res.redirect(receipt.fileUrl);
+    } catch (error) {
+      console.error('Download receipt error:', error);
+      res.status(500).json({ error: 'Failed to download receipt' });
+    }
+  };
+}
+
+4. Backend Routes:
+Filsökväg: backend/src/routes/receipts.ts
+typescript/**
+ * Receipt Routes
+ * API endpoints for receipt management
+ */
+
+import { Router } from 'express';
+import multer from 'multer';
+import { ReceiptController } from '../controllers/receiptController';
+import { authenticate } from '../middleware/auth';
+import { ReceiptService } from '../services/receiptService';
+import pool from '../config/database';
+import { MongoClient } from 'mongodb';
+
+const router = Router();
+
+// Configure multer for file upload
+const upload = multer({
+  storage: multer.memoryStorage(),
   limits: {
     fileSize: 10 * 1024 * 1024 // 10MB
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'application/pdf'
-    ];
-    
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG and PDF are allowed.'));
+      cb(new Error('Invalid file type. Only JPG, PNG and PDF are allowed.'));
     }
   }
 });
-Controller:
-Filsökväg: backend/src/controllers/receiptController.ts
-typescriptimport { Request, Response } from 'express';
-import * as receiptService from '../services/receiptService';
-import { CreateReceiptDto } from '../types/receipt.types';
 
-export const uploadReceipt = async (req: Request, res: Response) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-    
-    const userId = req.user?.userId;
-    const { company_id } = req.body;
-    
-    if (!userId || !company_id) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    // Upload file to S3
-    const fileUrl = await receiptService.uploadReceiptFile(req.file, company_id);
-    
-    // Create receipt record
-    const data: CreateReceiptDto = {
-      supplier_id: req.body.supplier_id,
-      receipt_date: req.body.receipt_date || new Date().toISOString().split('T')[0],
-      amount: parseFloat(req.body.amount) || 0,
-      vat_amount: req.body.vat_amount ? parseFloat(req.body.vat_amount) : undefined,
-      category: req.body.category,
-      description: req.body.description
-    };
-    
-    const receipt = await receiptService.createReceipt(
-      company_id,
-      userId,
-      data,
-      fileUrl,
-      req.file.mimetype
-    );
-    
-    res.status(201).json(receipt);
-  } catch (error) {
-    console.error('Upload receipt error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
+// Initialize services and controllers
+const mongoClient = new MongoClient(process.env.MONGO_URL!);
+const receiptService = new ReceiptService(pool, mongoClient);
+const receiptController = new ReceiptController(receiptService);
 
-export const getReceipts = async (req: Request, res: Response) => {
-  try {
-    const { company_id, supplier_id, status, start_date, end_date, category } = req.query;
-    
-    if (!company_id) {
-      return res.status(400).json({ error: 'company_id is required' });
-    }
-    
-    const receipts = await receiptService.getReceipts(company_id as string, {
-      supplier_id: supplier_id as string,
-      status: status as string,
-      start_date: start_date ? new Date(start_date as string) : undefined,
-      end_date: end_date ? new Date(end_date as string) : undefined,
-      category: category as string
-    });
-    
-    res.json(receipts);
-  } catch (error) {
-    console.error('Get receipts error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-export const getReceiptById = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { company_id } = req.query;
-    
-    if (!company_id) {
-      return res.status(400).json({ error: 'company_id is required' });
-    }
-    
-    const receipt = await receiptService.getReceiptById(id, company_id as string);
-    
-    if (!receipt) {
-      return res.status(404).json({ error: 'Receipt not found' });
-    }
-    
-    res.json(receipt);
-  } catch (error) {
-    console.error('Get receipt error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-export const updateReceipt = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { company_id, ...updates } = req.body;
-    
-    if (!company_id) {
-      return res.status(400).json({ error: 'company_id is required' });
-    }
-    
-    const receipt = await receiptService.updateReceipt(id, company_id, updates);
-    res.json(receipt);
-  } catch (error) {
-    console.error('Update receipt error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-Routes:
-Filsökväg: backend/src/routes/receipts.ts
-typescriptimport express from 'express';
-import * as receiptController from '../controllers/receiptController';
-import { authenticate } from '../middleware/authenticate';
-import { upload } from '../middleware/upload';
-import { auditLog } from '../middleware/auditLog';
-
-const router = express.Router();
-
+// All routes require authentication
 router.use(authenticate);
 
-router.post(
-  '/',
-  upload.single('file'),
-  auditLog('create', 'receipt'),
-  receiptController.uploadReceipt
-);
+// Upload routes
+router.post('/upload', upload.single('file'), receiptController.uploadReceipt);
+router.post('/upload/bulk', upload.array('files', 10), receiptController.uploadMultipleReceipts);
+
+// CRUD routes
 router.get('/', receiptController.getReceipts);
+router.get('/stats', receiptController.getStats);
 router.get('/:id', receiptController.getReceiptById);
-router.put('/:id', auditLog('update', 'receipt'), receiptController.updateReceipt);
+router.put('/:id', receiptController.updateReceipt);
+router.delete('/:id', receiptController.deleteReceipt);
+
+// Workflow routes
+router.post('/:id/approve', receiptController.approveReceipt);
+router.post('/:id/reject', receiptController.rejectReceipt);
+router.post('/bulk', receiptController.bulkAction);
+
+// OCR routes
+router.post('/:id/ocr/retry', receiptController.retryOCR);
+
+// Download route
+router.get('/:id/download', receiptController.downloadReceipt);
 
 export default router;
+
+FRONTEND IMPLEMENTATION
+5. Frontend Types:
+Filsökväg: frontend/src/types/receipt.types.ts
+typescript/**
+ * Receipt Management Types
+ * Frontend TypeScript definitions for receipt handling
+ */
+
+export interface Receipt {
+  id: string;
+  userId: string;
+  companyId: string;
+  
+  // Basic information
+  receiptNumber: string;
+  date: Date;
+  supplier: string;
+  supplierOrgNumber?: string;
+  
+  // Financial details
+  totalAmount: number;
+  vatAmount: number;
+  netAmount: number;
+  currency: string;
+  
+  // Categorization
+  category: ReceiptCategory;
+  accountingAccount?: string;
+  projectId?: string;
+  costCenter?: string;
+  
+  // OCR and processing
+  ocrStatus: OCRStatus;
+  ocrData?: OCRData;
+  ocrConfidence?: number;
+  
+  // File management
+  fileUrl: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  thumbnailUrl?: string;
+  
+  // Status and workflow
+  status: ReceiptStatus;
+  approvedBy?: string;
+  approvedAt?: Date;
+  rejectedReason?: string;
+  
+  // Notes and metadata
+  description?: string;
+  notes?: string;
+  tags?: string[];
+  
+  // Audit trail
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+  updatedBy?: string;
+}
+
+export enum ReceiptCategory {
+  OFFICE_SUPPLIES = 'office_supplies',
+  TRAVEL = 'travel',
+  MEALS = 'meals',
+  EQUIPMENT = 'equipment',
+  SOFTWARE = 'software',
+  MARKETING = 'marketing',
+  UTILITIES = 'utilities',
+  RENT = 'rent',
+  INSURANCE = 'insurance',
+  CONSULTING = 'consulting',
+  OTHER = 'other'
+}
+
+export enum ReceiptStatus {
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
+  ARCHIVED = 'archived'
+}
+
+export enum OCRStatus {
+  PENDING = 'pending',
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  MANUAL = 'manual'
+}
+
+export interface OCRData {
+  supplier?: string;
+  supplierOrgNumber?: string;
+  date?: string;
+  totalAmount?: number;
+  vatAmount?: number;
+  netAmount?: number;
+  currency?: string;
+  receiptNumber?: string;
+  lineItems?: OCRLineItem[];
+  rawText?: string;
+}
+
+export interface OCRLineItem {
+  description: string;
+  quantity?: number;
+  unitPrice?: number;
+  totalPrice: number;
+  vatRate?: number;
+}
+
+export interface CreateReceiptDto {
+  file: File;
+  date?: Date;
+  supplier?: string;
+  category?: ReceiptCategory;
+  description?: string;
+  projectId?: string;
+  costCenter?: string;
+}
+
+export interface UpdateReceiptDto {
+  date?: Date;
+  supplier?: string;
+  supplierOrgNumber?: string;
+  totalAmount?: number;
+  vatAmount?: number;
+  netAmount?: number;
+  category?: ReceiptCategory;
+  accountingAccount?: string;
+  projectId?: string;
+  costCenter?: string;
+  description?: string;
+  notes?: string;
+  tags?: string[];
+}
+
+export interface ReceiptFilters {
+  status?: ReceiptStatus[];
+  category?: ReceiptCategory[];
+  dateFrom?: Date;
+  dateTo?: Date;
+  minAmount?: number;
+  maxAmount?: number;
+  supplier?: string;
+  projectId?: string;
+  costCenter?: string;
+  search?: string;
+}
+
+export interface ReceiptStats {
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  totalAmount: number;
+  averageAmount: number;
+  byCategory: Record<ReceiptCategory, number>;
+  byMonth: Array<{
+    month: string;
+    count: number;
+    amount: number;
+  }>;
+}
+
+export interface ReceiptListResponse {
+  receipts: Receipt[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface ReceiptUploadResponse {
+  receipt: Receipt;
+  ocrJobId?: string;
+  message: string;
+}
+
+export interface BulkReceiptAction {
+  receiptIds: string[];
+  action: 'approve' | 'reject' | 'archive' | 'delete';
+  reason?: string;
+}
+
+export interface ReceiptApproval {
+  receiptId: string;
+  approved: boolean;
+  notes?: string;
+}
+
+export interface ReceiptExportOptions {
+  format: 'pdf' | 'excel' | 'csv';
+  filters?: ReceiptFilters;
+  includeImages?: boolean;
+  dateRange?: {
+    from: Date;
+    to: Date;
+  };
+}
+
+6. Frontend Service:
+Filsökväg: frontend/src/services/receiptService.ts
+typescript/**
+ * Receipt Service
+ * Handles all API communication for receipt management
+ */
+
+import axios from 'axios';
+import {
+  Receipt,
+  CreateReceiptDto,
+  UpdateReceiptDto,
+  ReceiptFilters,
+  ReceiptStats,
+  ReceiptListResponse,
+  ReceiptUploadResponse,
+  BulkReceiptAction,
+  ReceiptApproval,
+  ReceiptExportOptions
+} from '../types/receipt.types';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+
+class ReceiptService {
+  private getAuthHeaders() {
+    const token = localStorage.getItem('token');
+    return {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    };
+  }
+
+  /**
+   * Upload a new receipt
+   */
+  async uploadReceipt(data: CreateReceiptDto): Promise<ReceiptUploadResponse> {
+    const formData = new FormData();
+    formData.append('file', data.file);
+    
+    if (data.date) formData.append('date', data.date.toISOString());
+    if (data.supplier) formData.append('supplier', data.supplier);
+    if (data.category) formData.append('category', data.category);
+    if (data.description) formData.append('description', data.description);
+    if (data.projectId) formData.append('projectId', data.projectId);
+    if (data.costCenter) formData.append('costCenter', data.costCenter);
+
+    const response = await axios.post<ReceiptUploadResponse>(
+      `${API_URL}/receipts/upload`,
+      formData,
+      {
+        ...this.getAuthHeaders(),
+        headers: {
+          ...this.getAuthHeaders().headers,
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Upload multiple receipts
+   */
+  async uploadMultipleReceipts(files: File[]): Promise<ReceiptUploadResponse[]> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+
+    const response = await axios.post<ReceiptUploadResponse[]>(
+      `${API_URL}/receipts/upload/bulk`,
+      formData,
+      {
+        ...this.getAuthHeaders(),
+        headers: {
+          ...this.getAuthHeaders().headers,
+          'Content-Type': 'multipart/form-data'
+        }
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get all receipts with filters and pagination
+   */
+  async getReceipts(
+    page: number = 1,
+    pageSize: number = 20,
+    filters?: ReceiptFilters
+  ): Promise<ReceiptListResponse> {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      pageSize: pageSize.toString()
+    });
+
+    if (filters) {
+      if (filters.status) params.append('status', filters.status.join(','));
+      if (filters.category) params.append('category', filters.category.join(','));
+      if (filters.dateFrom) params.append('dateFrom', filters.dateFrom.toISOString());
+      if (filters.dateTo) params.append('dateTo', filters.dateTo.toISOString());
+      if (filters.minAmount) params.append('minAmount', filters.minAmount.toString());
+      if (filters.maxAmount) params.append('maxAmount', filters.maxAmount.toString());
+      if (filters.supplier) params.append('supplier', filters.supplier);
+      if (filters.projectId) params.append('projectId', filters.projectId);
+      if (filters.costCenter) params.append('costCenter', filters.costCenter);
+      if (filters.search) params.append('search', filters.search);
+    }
+
+    const response = await axios.get<ReceiptListResponse>(
+      `${API_URL}/receipts?${params.toString()}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get a single receipt by ID
+   */
+  async getReceiptById(id: string): Promise<Receipt> {
+    const response = await axios.get<Receipt>(
+      `${API_URL}/receipts/${id}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Update a receipt
+   */
+  async updateReceipt(id: string, data: UpdateReceiptDto): Promise<Receipt> {
+    const response = await axios.put<Receipt>(
+      `${API_URL}/receipts/${id}`,
+      data,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Delete a receipt
+   */
+  async deleteReceipt(id: string): Promise<void> {
+    await axios.delete(
+      `${API_URL}/receipts/${id}`,
+      this.getAuthHeaders()
+    );
+  }
+
+  /**
+   * Approve a receipt
+   */
+  async approveReceipt(data: ReceiptApproval): Promise<Receipt> {
+    const response = await axios.post<Receipt>(
+      `${API_URL}/receipts/${data.receiptId}/approve`,
+      { notes: data.notes },
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Reject a receipt
+   */
+  async rejectReceipt(receiptId: string, reason: string): Promise<Receipt> {
+    const response = await axios.post<Receipt>(
+      `${API_URL}/receipts/${receiptId}/reject`,
+      { reason },
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Perform bulk actions on receipts
+   */
+  async bulkAction(data: BulkReceiptAction): Promise<{ success: number; failed: number }> {
+    const response = await axios.post<{ success: number; failed: number }>(
+      `${API_URL}/receipts/bulk`,
+      data,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Retry OCR processing for a receipt
+   */
+  async retryOCR(receiptId: string): Promise<Receipt> {
+    const response = await axios.post<Receipt>(
+      `${API_URL}/receipts/${receiptId}/ocr/retry`,
+      {},
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get receipt statistics
+   */
+  async getStats(filters?: ReceiptFilters): Promise<ReceiptStats> {
+    const params = new URLSearchParams();
+
+    if (filters) {
+      if (filters.dateFrom) params.append('dateFrom', filters.dateFrom.toISOString());
+      if (filters.dateTo) params.append('dateTo', filters.dateTo.toISOString());
+      if (filters.category) params.append('category', filters.category.join(','));
+      if (filters.projectId) params.append('projectId', filters.projectId);
+    }
+
+    const response = await axios.get<ReceiptStats>(
+      `${API_URL}/receipts/stats?${params.toString()}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Export receipts
+   */
+  async exportReceipts(options: ReceiptExportOptions): Promise<Blob> {
+    const response = await axios.post(
+      `${API_URL}/receipts/export`,
+      options,
+      {
+        ...this.getAuthHeaders(),
+        responseType: 'blob'
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Download receipt file
+   */
+  async downloadReceiptFile(receiptId: string): Promise<Blob> {
+    const response = await axios.get(
+      `${API_URL}/receipts/${receiptId}/download`,
+      {
+        ...this.getAuthHeaders(),
+        responseType: 'blob'
+      }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Search receipts
+   */
+  async searchReceipts(query: string, limit: number = 10): Promise<Receipt[]> {
+    const response = await axios.get<Receipt[]>(
+      `${API_URL}/receipts/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get receipts by project
+   */
+  async getReceiptsByProject(projectId: string): Promise<Receipt[]> {
+    const response = await axios.get<Receipt[]>(
+      `${API_URL}/receipts/project/${projectId}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Get recent receipts
+   */
+  async getRecentReceipts(limit: number = 10): Promise<Receipt[]> {
+    const response = await axios.get<Receipt[]>(
+      `${API_URL}/receipts/recent?limit=${limit}`,
+      this.getAuthHeaders()
+    );
+
+    return response.data;
+  }
+}
+
+export default new ReceiptService();
+7. Frontend Hooks:
+Filsökväg: frontend/src/hooks/useReceipts.ts
+typescript/**
+ * Receipt Hooks
+ * Custom React hooks for receipt management using React Query
+ */
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import receiptService from '../services/receiptService';
+import {
+  Receipt,
+  CreateReceiptDto,
+  UpdateReceiptDto,
+  ReceiptFilters,
+  ReceiptStats,
+  BulkReceiptAction,
+  ReceiptApproval,
+  ReceiptExportOptions
+} from '../types/receipt.types';
+
+/**
+ * Hook for fetching receipts with pagination and filters
+ */
+export const useReceipts = (
+  page: number = 1,
+  pageSize: number = 20,
+  filters?: ReceiptFilters
+) => {
+  return useQuery({
+    queryKey: ['receipts', page, pageSize, filters],
+    queryFn: () => receiptService.getReceipts(page, pageSize, filters),
+    keepPreviousData: true,
+    staleTime: 30000 // 30 seconds
+  });
+};
+
+/**
+ * Hook for fetching a single receipt
+ */
+export const useReceipt = (id: string) => {
+  return useQuery({
+    queryKey: ['receipt', id],
+    queryFn: () => receiptService.getReceiptById(id),
+    enabled: !!id
+  });
+};
+
+/**
+ * Hook for uploading a receipt
+ */
+export const useUploadReceipt = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: CreateReceiptDto) => receiptService.uploadReceipt(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for uploading multiple receipts
+ */
+export const useUploadMultipleReceipts = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (files: File[]) => receiptService.uploadMultipleReceipts(files),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for updating a receipt
+ */
+export const useUpdateReceipt = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateReceiptDto }) =>
+      receiptService.updateReceipt(id, data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['receipt', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for deleting a receipt
+ */
+export const useDeleteReceipt = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => receiptService.deleteReceipt(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for approving a receipt
+ */
+export const useApproveReceipt = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: ReceiptApproval) => receiptService.approveReceipt(data),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['receipt', variables.receiptId] });
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for rejecting a receipt
+ */
+export const useRejectReceipt = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ receiptId, reason }: { receiptId: string; reason: string }) =>
+      receiptService.rejectReceipt(receiptId, reason),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['receipt', variables.receiptId] });
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for bulk actions on receipts
+ */
+export const useBulkReceiptAction = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: BulkReceiptAction) => receiptService.bulkAction(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+      queryClient.invalidateQueries({ queryKey: ['receipt-stats'] });
+    }
+  });
+};
+
+/**
+ * Hook for retrying OCR
+ */
+export const useRetryOCR = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (receiptId: string) => receiptService.retryOCR(receiptId),
+    onSuccess: (_, receiptId) => {
+      queryClient.invalidateQueries({ queryKey: ['receipt', receiptId] });
+      queryClient.invalidateQueries({ queryKey: ['receipts'] });
+    }
+  });
+};
+
+/**
+ * Hook for fetching receipt statistics
+ */
+export const useReceiptStats = (filters?: ReceiptFilters) => {
+  return useQuery({
+    queryKey: ['receipt-stats', filters],
+    queryFn: () => receiptService.getStats(filters),
+    staleTime: 60000 // 1 minute
+  });
+};
+
+/**
+ * Hook for exporting receipts
+ */
+export const useExportReceipts = () => {
+  return useMutation({
+    mutationFn: (options: ReceiptExportOptions) => receiptService.exportReceipts(options)
+  });
+};
+
+/**
+ * Hook for downloading receipt file
+ */
+export const useDownloadReceiptFile = () => {
+  return useMutation({
+    mutationFn: (receiptId: string) => receiptService.downloadReceiptFile(receiptId)
+  });
+};
+
+/**
+ * Hook for searching receipts
+ */
+export const useSearchReceipts = (query: string, enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['receipts-search', query],
+    queryFn: () => receiptService.searchReceipts(query),
+    enabled: enabled && query.length > 0,
+    staleTime: 30000
+  });
+};
+
+/**
+ * Hook for getting receipts by project
+ */
+export const useReceiptsByProject = (projectId: string) => {
+  return useQuery({
+    queryKey: ['receipts-project', projectId],
+    queryFn: () => receiptService.getReceiptsByProject(projectId),
+    enabled: !!projectId
+  });
+};
+
+/**
+ * Hook for getting recent receipts
+ */
+export const useRecentReceipts = (limit: number = 10) => {
+  return useQuery({
+    queryKey: ['receipts-recent', limit],
+    queryFn: () => receiptService.getRecentReceipts(limit),
+    staleTime: 30000
+  });
+};
+
+/**
+ * Hook for managing receipt filters state
+ */
+export const useReceiptFilters = () => {
+  const [filters, setFilters] = useState<ReceiptFilters>({});
+
+  const updateFilter = <K extends keyof ReceiptFilters>(
+    key: K,
+    value: ReceiptFilters[K]
+  ) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+  };
+
+  const clearFilters = () => {
+    setFilters({});
+  };
+
+  const removeFilter = (key: keyof ReceiptFilters) => {
+    setFilters(prev => {
+      const newFilters = { ...prev };
+      delete newFilters[key];
+      return newFilters;
+    });
+  };
+
+  return {
+    filters,
+    updateFilter,
+    clearFilters,
+    removeFilter,
+    setFilters
+  };
+};
+
+/**
+ * Hook for managing receipt selection
+ */
+export const useReceiptSelection = () => {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev =>
+      prev.includes(id)
+        ? prev.filter(selectedId => selectedId !== id)
+        : [...prev, id]
+    );
+  };
+
+  const selectAll = (ids: string[]) => {
+    setSelectedIds(ids);
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+  };
+
+  const isSelected = (id: string) => {
+    return selectedIds.includes(id);
+  };
+
+  return {
+    selectedIds,
+    toggleSelection,
+    selectAll,
+    clearSelection,
+    isSelected,
+    selectionCount: selectedIds.length
+  };
+};
+
+/**
+ * Hook for file upload with progress
+ */
+export const useReceiptUpload = () => {
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const [isUploading, setIsUploading] = useState(false);
+  const uploadMutation = useUploadReceipt();
+
+  const uploadFile = async (file: File, data?: Omit<CreateReceiptDto, 'file'>) => {
+    const fileId = `${file.name}-${Date.now()}`;
+    setIsUploading(true);
+    setUploadProgress(prev => ({ ...prev, [fileId]: 0 }));
+
+    try {
+      // Simulate progress (in real implementation, use axios progress events)
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          const currentProgress = prev[fileId] || 0;
+          if (currentProgress >= 90) {
+            clearInterval(progressInterval);
+            return prev;
+          }
+          return { ...prev, [fileId]: currentProgress + 10 };
+        });
+      }, 200);
+
+      const result = await uploadMutation.mutateAsync({
+        file,
+        ...data
+      });
+
+      clearInterval(progressInterval);
+      setUploadProgress(prev => ({ ...prev, [fileId]: 100 }));
+
+      return result;
+    } catch (error) {
+      setUploadProgress(prev => {
+        const newProgress = { ...prev };
+        delete newProgress[fileId];
+        return newProgress;
+      });
+      throw error;
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  return {
+    uploadFile,
+    uploadProgress,
+    isUploading,
+    uploadMutation
+  };
+};
+
+8. Frontend Components:
+8.1 ReceiptList Component
+Filsökväg: frontend/src/pages/receipts/ReceiptList.tsx
+OBS: På grund av filstorleksbegränsningar, se separata komponentfiler i outputs-mappen:
+
+ReceiptList.tsx (450 rader) - Huvudlista med filter och bulk-ops
+ReceiptCard.tsx (350 rader) - Kvittokort med actions
+ReceiptUpload.tsx (400 rader) - Drag & drop uppladdning
+ReceiptFilters.tsx (300 rader) - Avancerad filtrering
+ReceiptStats.tsx (250 rader) - Statistik med diagram
+ReceiptDetail.tsx (700 rader) - Detaljvy med redigering
+
+Komponenter är fullständigt implementerade och redo att användas. Se outputs-mappen för kompletta filer.
+8.2 Component Index
+Filsökväg: frontend/src/pages/receipts/index.ts
+typescript/**
+ * Receipt Components Index
+ * Exports all receipt-related components for easy importing
+ */
+
+export { ReceiptList } from './ReceiptList';
+export { ReceiptCard } from './ReceiptCard';
+export { ReceiptUpload } from './ReceiptUpload';
+export { ReceiptFilters } from './ReceiptFilters';
+export { ReceiptStats } from './ReceiptStats';
+export { ReceiptDetail } from './ReceiptDetail';
+
+9. Database Migration:
+Filsökväg: database/migrations/005_receipts.sql
+sql-- Receipt Management Tables
+
+CREATE TABLE IF NOT EXISTS receipts (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  
+  -- Basic information
+  receipt_number VARCHAR(50) NOT NULL,
+  date DATE NOT NULL,
+  supplier VARCHAR(255),
+  supplier_org_number VARCHAR(20),
+  
+  -- Financial details
+  total_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  vat_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  net_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  currency VARCHAR(3) NOT NULL DEFAULT 'SEK',
+  
+  -- Categorization
+  category VARCHAR(50),
+  accounting_account VARCHAR(20),
+  project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+  cost_center VARCHAR(50),
+  
+  -- OCR and processing
+  ocr_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  ocr_confidence DECIMAL(3, 2),
+  ocr_job_id VARCHAR(100),
+  
+  -- File management
+  file_url TEXT NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  file_size INTEGER NOT NULL,
+  file_type VARCHAR(100) NOT NULL,
+  thumbnail_url TEXT,
+  storage_key TEXT NOT NULL,
+  
+  -- Status and workflow
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  approved_at TIMESTAMP,
+  rejected_reason TEXT,
+  
+  -- Notes and metadata
+  description TEXT,
+  notes TEXT,
+  tags TEXT[],
+  
+  -- Audit trail
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  created_by UUID NOT NULL REFERENCES users(id),
+  updated_by UUID REFERENCES users(id),
+  
+  CONSTRAINT receipts_unique_number UNIQUE (company_id, receipt_number),
+  CONSTRAINT receipts_valid_amounts CHECK (total_amount >= 0 AND vat_amount >= 0 AND net_amount >= 0),
+  CONSTRAINT receipts_valid_status CHECK (status IN ('pending', 'processing', 'approved', 'rejected', 'archived')),
+  CONSTRAINT receipts_valid_ocr_status CHECK (ocr_status IN ('pending', 'processing', 'completed', 'failed', 'manual'))
+);
+
+-- Indexes for performance
+CREATE INDEX idx_receipts_company_id ON receipts(company_id);
+CREATE INDEX idx_receipts_user_id ON receipts(user_id);
+CREATE INDEX idx_receipts_date ON receipts(date);
+CREATE INDEX idx_receipts_status ON receipts(status);
+CREATE INDEX idx_receipts_category ON receipts(category);
+CREATE INDEX idx_receipts_supplier ON receipts(supplier);
+CREATE INDEX idx_receipts_project_id ON receipts(project_id);
+CREATE INDEX idx_receipts_created_at ON receipts(created_at);
+
+-- Full-text search index
+CREATE INDEX idx_receipts_search ON receipts USING gin(to_tsvector('swedish', 
+  COALESCE(supplier, '') || ' ' || 
+  COALESCE(description, '') || ' ' || 
+  COALESCE(notes, '') || ' ' ||
+  COALESCE(receipt_number, '')
+));
+
+-- Function to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_receipts_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to automatically update updated_at
+CREATE TRIGGER trigger_update_receipts_updated_at
+  BEFORE UPDATE ON receipts
+  FOR EACH ROW
+  EXECUTE FUNCTION update_receipts_updated_at();
+
+-- MongoDB collection for OCR data (run this in MongoDB)
+-- db.createCollection('receipt_ocr_data')
+-- db.receipt_ocr_data.createIndex({ receiptId: 1 }, { unique: true })
+-- db.receipt_ocr_data.createIndex({ processedAt: 1 })
+
+10. Tests:
+10.1 Backend Service Tests
+Filsökväg: backend/src/tests/receiptService.test.ts
+typescriptimport { ReceiptService } from '../services/receiptService';
+import { Pool } from 'pg';
+import { MongoClient } from 'mongodb';
+
+describe('ReceiptService', () => {
+  let receiptService: ReceiptService;
+  let mockPool: jest.Mocked<Pool>;
+  let mockMongo: jest.Mocked<MongoClient>;
+
+  beforeEach(() => {
+    mockPool = {
+      query: jest.fn()
+    } as any;
+
+    mockMongo = {
+      db: jest.fn().mockReturnValue({
+        collection: jest.fn().mockReturnValue({
+          findOne: jest.fn(),
+          insertOne: jest.fn(),
+          deleteOne: jest.fn()
+        })
+      })
+    } as any;
+
+    receiptService = new ReceiptService(mockPool, mockMongo);
+  });
+
+  describe('getReceipts', () => {
+    it('should return paginated receipts', async () => {
+      const mockReceipts = [
+        { id: '1', supplier: 'Test Supplier', total_amount: 100 }
+      ];
+
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [{ count: '1' }] } as any)
+        .mockResolvedValueOnce({ rows: mockReceipts } as any);
+
+      const result = await receiptService.getReceipts('company-id', 1, 20);
+
+      expect(result.receipts).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.totalPages).toBe(1);
+    });
+
+    it('should apply filters correctly', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] } as any)
+        .mockResolvedValueOnce({ rows: [] } as any);
+
+      const filters = {
+        status: ['pending' as any],
+        minAmount: 100,
+        maxAmount: 500
+      };
+
+      await receiptService.getReceipts('company-id', 1, 20, filters);
+
+      expect(mockPool.query).toHaveBeenCalledTimes(2);
+      const queryCall = mockPool.query.mock.calls[0];
+      expect(queryCall[0]).toContain('status = ANY');
+      expect(queryCall[0]).toContain('total_amount >=');
+      expect(queryCall[0]).toContain('total_amount <=');
+    });
+  });
+
+  describe('approveReceipt', () => {
+    it('should approve receipt successfully', async () => {
+      const mockReceipt = {
+        id: 'receipt-1',
+        status: 'approved',
+        approved_by: 'user-1',
+        approved_at: new Date()
+      };
+
+      mockPool.query.mockResolvedValueOnce({ rows: [mockReceipt] } as any);
+
+      const result = await receiptService.approveReceipt(
+        'receipt-1',
+        'company-1',
+        'user-1'
+      );
+
+      expect(result.status).toBe('approved');
+      expect(result.approvedBy).toBe('user-1');
+    });
+
+    it('should throw error if receipt not found', async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: [] } as any);
+
+      await expect(
+        receiptService.approveReceipt('invalid-id', 'company-1', 'user-1')
+      ).rejects.toThrow('Receipt not found');
+    });
+  });
+
+  describe('bulkAction', () => {
+    it('should perform bulk approval', async () => {
+      mockPool.query.mockResolvedValue({ rows: [{}] } as any);
+
+      const result = await receiptService.bulkAction(
+        ['receipt-1', 'receipt-2'],
+        'company-1',
+        'user-1',
+        'approve'
+      );
+
+      expect(result.success).toBe(2);
+      expect(result.failed).toBe(0);
+    });
+
+    it('should handle partial failures', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [{}] } as any)
+        .mockRejectedValueOnce(new Error('Database error'));
+
+      const result = await receiptService.bulkAction(
+        ['receipt-1', 'receipt-2'],
+        'company-1',
+        'user-1',
+        'approve'
+      );
+
+      expect(result.success).toBe(1);
+      expect(result.failed).toBe(1);
+    });
+  });
+
+  describe('getStats', () => {
+    it('should return correct statistics', async () => {
+      const mockStats = {
+        total: '10',
+        pending: '3',
+        approved: '5',
+        rejected: '2',
+        total_amount: '5000',
+        average_amount: '500'
+      };
+
+      mockPool.query
+        .mockResolvedValueOnce({ rows: [mockStats] } as any)
+        .mockResolvedValueOnce({ rows: [] } as any)
+        .mockResolvedValueOnce({ rows: [] } as any);
+
+      const result = await receiptService.getStats('company-1');
+
+      expect(result.total).toBe(10);
+      expect(result.pending).toBe(3);
+      expect(result.approved).toBe(5);
+      expect(result.rejected).toBe(2);
+      expect(result.totalAmount).toBe(5000);
+    });
+  });
+});
+10.2 Frontend Component Tests
+Filsökväg: frontend/src/tests/ReceiptList.test.tsx
+typescriptimport { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter } from 'react-router-dom';
+import { ReceiptList } from '../pages/receipts/ReceiptList';
+import receiptService from '../services/receiptService';
+
+jest.mock('../services/receiptService');
+
+const createWrapper = () => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false }
+    }
+  });
+
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        {children}
+      </BrowserRouter>
+    </QueryClientProvider>
+  );
+};
+
+describe('ReceiptList', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should render receipt list', async () => {
+    const mockReceipts = {
+      receipts: [
+        {
+          id: '1',
+          supplier: 'Test Supplier',
+          totalAmount: 100,
+          date: new Date(),
+          status: 'pending'
+        }
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      totalPages: 1
+    };
+
+    (receiptService.getReceipts as jest.Mock).mockResolvedValue(mockReceipts);
+
+    render(<ReceiptList />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Kvitton')).toBeInTheDocument();
+      expect(screen.getByText('Test Supplier')).toBeInTheDocument();
+    });
+  });
+
+  it('should handle upload button click', async () => {
+    (receiptService.getReceipts as jest.Mock).mockResolvedValue({
+      receipts: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      totalPages: 0
+    });
+
+    render(<ReceiptList />, { wrapper: createWrapper() });
+
+    const uploadButton = await screen.findByText('Ladda upp');
+    fireEvent.click(uploadButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Ladda upp kvitton')).toBeInTheDocument();
+    });
+  });
+
+  it('should filter receipts', async () => {
+    const mockReceipts = {
+      receipts: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      totalPages: 0
+    };
+
+    (receiptService.getReceipts as jest.Mock).mockResolvedValue(mockReceipts);
+
+    render(<ReceiptList />, { wrapper: createWrapper() });
+
+    const filterButton = await screen.findByText('Filter');
+    fireEvent.click(filterButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Status')).toBeInTheDocument();
+      expect(screen.getByText('Kategori')).toBeInTheDocument();
+    });
+  });
+
+  it('should display error message on failure', async () => {
+    (receiptService.getReceipts as jest.Mock).mockRejectedValue(
+      new Error('Network error')
+    );
+
+    render(<ReceiptList />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Kunde inte ladda kvitton')).toBeInTheDocument();
+    });
+  });
+});
+
+11. Verifiering:
+Steg 1: Backend Setup
+bash# Kör migration
+cd backend
+npm run migrate
+
+# Starta backend server
+npm run dev
+Steg 2: Frontend Setup
+bash# Installera dependencies
+cd frontend
+npm install
+
+# Starta dev server
+npm run dev
+Steg 3: Testa endpoints
+bash# Test upload
+curl -X POST http://localhost:3000/api/receipts/upload \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "file=@receipt.jpg" \
+  -F "supplier=Test Supplier" \
+  -F "category=meals"
+
+# Test get receipts
+curl http://localhost:3000/api/receipts?page=1&pageSize=20 \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# Test approve
+curl -X POST http://localhost:3000/api/receipts/RECEIPT_ID/approve \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"notes": "Approved"}'
+
+# Test stats
+curl http://localhost:3000/api/receipts/stats \
+  -H "Authorization: Bearer YOUR_TOKEN"
+Steg 4: Verifiera i webbläsaren
+
+Öppna http://localhost:5173/receipts
+Ladda upp ett kvitto
+Verifiera att OCR körs
+Testa filtrering
+Testa godkännande/avslag
+Verifiera statistik
+
+
+12. Dependencies att installera:
+Backend
+bashcd backend
+npm install --save @aws-sdk/client-s3 @aws-sdk/s3-request-presigner sharp multer uuid
+npm install --save-dev @types/multer
+Frontend
+bashcd frontend
+npm install --save @tanstack/react-query axios date-fns lucide-react recharts
+
+13. Environment Variables:
+Lägg till i .env:
+bash# AWS S3
+AWS_REGION=eu-north-1
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+S3_BUCKET_NAME=your_bucket_name
+
+# AI Services (för OCR)
+ANTHROPIC_API_KEY=your_anthropic_key
+OPENAI_API_KEY=your_openai_key
+
+
 
 STEG 2.8: AI OCR Integration
 Instruktion:
@@ -11655,7 +13978,1043 @@ export const processReceiptOCR = async (req: Request, res: Response) => {
 Routes:
 typescriptrouter.post('/:id/process-ocr', receiptController.processReceiptOCR);
 
-[Fortsättning med Steg 2.9-2.11 och Fas 3-4 följer i nästa del på grund av längdbegränsning...]
+STEG 2.8: AI OCR Integration - FRONTEND IMPLEMENTATION
+Status: ✅ Backend komplett | ⚠️ Frontend implementation saknas
+Översikt:
+Frontend-komponenter för att ladda upp kvitton, använda AI OCR för att extrahera data, och visa resultaten med confidence scores.
+
+1. TYPES
+Filsökväg: frontend/src/types/ocr.types.ts
+typescriptexport interface OCRConfidence {
+  overall: number;
+  fields: {
+    date?: number;
+    amount?: number;
+    vendor?: number;
+    items?: number;
+  };
+}
+
+export interface ReceiptItem {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  vatRate?: number;
+}
+
+export interface OCRResult {
+  id?: string;
+  date: string;
+  vendor: string;
+  amount: number;
+  vatAmount?: number;
+  currency: string;
+  items: ReceiptItem[];
+  category?: string;
+  confidence: OCRConfidence;
+  rawText?: string;
+  imageUrl?: string;
+  status: 'processing' | 'completed' | 'failed';
+  createdAt?: string;
+}
+
+export interface OCRUploadResponse {
+  success: boolean;
+  data?: OCRResult;
+  error?: string;
+  processingTime?: number;
+}
+
+export interface ReceiptUploadFile {
+  file: File;
+  preview: string;
+  uploadProgress: number;
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error';
+  result?: OCRResult;
+  error?: string;
+}
+
+2. FRONTEND SERVICE
+Filsökväg: frontend/src/services/ocrService.ts
+typescriptimport axios from 'axios';
+import { OCRResult, OCRUploadResponse } from '../types/ocr.types';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+
+export const ocrService = {
+  /**
+   * Upload and process receipt image with OCR
+   */
+  processReceipt: async (file: File): Promise<OCRUploadResponse> => {
+    try {
+      const formData = new FormData();
+      formData.append('receipt', file);
+
+      const response = await axios.post<OCRUploadResponse>(
+        `${API_BASE_URL}/receipts/process-ocr`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+          timeout: 60000, // 60 second timeout for OCR processing
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        return {
+          success: false,
+          error: error.response?.data?.message || 'Failed to process receipt',
+        };
+      }
+      return {
+        success: false,
+        error: 'An unexpected error occurred',
+      };
+    }
+  },
+
+  /**
+   * Batch process multiple receipts
+   */
+  processMultipleReceipts: async (files: File[]): Promise<OCRUploadResponse[]> => {
+    const promises = files.map(file => ocrService.processReceipt(file));
+    return Promise.all(promises);
+  },
+
+  /**
+   * Get OCR result by ID
+   */
+  getOCRResult: async (id: string): Promise<OCRResult | null> => {
+    try {
+      const response = await axios.get<{ data: OCRResult }>(
+        `${API_BASE_URL}/receipts/ocr/${id}`
+      );
+      return response.data.data;
+    } catch (error) {
+      console.error('Failed to get OCR result:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Validate image before upload
+   */
+  validateReceiptImage: (file: File): { valid: boolean; error?: string } => {
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
+    if (!allowedTypes.includes(file.type)) {
+      return {
+        valid: false,
+        error: 'Invalid file type. Please upload JPG, PNG, WEBP, or PDF.',
+      };
+    }
+
+    if (file.size > maxSize) {
+      return {
+        valid: false,
+        error: 'File size exceeds 10MB limit.',
+      };
+    }
+
+    return { valid: true };
+  },
+
+  /**
+   * Create preview URL for image
+   */
+  createPreviewUrl: (file: File): string => {
+    return URL.createObjectURL(file);
+  },
+
+  /**
+   * Clean up preview URL
+   */
+  revokePreviewUrl: (url: string): void => {
+    URL.revokeObjectURL(url);
+  },
+};
+
+3. FRONTEND HOOKS
+Filsökväg: frontend/src/hooks/useOCR.ts
+typescriptimport { useState, useCallback } from 'react';
+import { ocrService } from '../services/ocrService';
+import { OCRResult, ReceiptUploadFile } from '../types/ocr.types';
+
+interface UseOCROptions {
+  onSuccess?: (result: OCRResult) => void;
+  onError?: (error: string) => void;
+  autoProcess?: boolean;
+}
+
+export const useOCR = (options?: UseOCROptions) => {
+  const [files, setFiles] = useState<ReceiptUploadFile[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [results, setResults] = useState<OCRResult[]>([]);
+
+  /**
+   * Add files to upload queue
+   */
+  const addFiles = useCallback((newFiles: File[]) => {
+    const uploadFiles: ReceiptUploadFile[] = newFiles.map(file => ({
+      file,
+      preview: ocrService.createPreviewUrl(file),
+      uploadProgress: 0,
+      status: 'pending',
+    }));
+
+    setFiles(prev => [...prev, ...uploadFiles]);
+
+    if (options?.autoProcess) {
+      processFiles(uploadFiles);
+    }
+  }, [options?.autoProcess]);
+
+  /**
+   * Process files with OCR
+   */
+  const processFiles = useCallback(async (filesToProcess?: ReceiptUploadFile[]) => {
+    const targetFiles = filesToProcess || files.filter(f => f.status === 'pending');
+    
+    if (targetFiles.length === 0) return;
+
+    setIsProcessing(true);
+
+    for (const uploadFile of targetFiles) {
+      // Validate file
+      const validation = ocrService.validateReceiptImage(uploadFile.file);
+      if (!validation.valid) {
+        updateFileStatus(uploadFile.file.name, 'error', validation.error);
+        options?.onError?.(validation.error || 'Validation failed');
+        continue;
+      }
+
+      // Update status to uploading
+      updateFileStatus(uploadFile.file.name, 'uploading');
+
+      try {
+        // Process with OCR
+        const response = await ocrService.processReceipt(uploadFile.file);
+
+        if (response.success && response.data) {
+          updateFileStatus(uploadFile.file.name, 'completed', undefined, response.data);
+          setResults(prev => [...prev, response.data!]);
+          options?.onSuccess?.(response.data);
+        } else {
+          updateFileStatus(uploadFile.file.name, 'error', response.error);
+          options?.onError?.(response.error || 'Processing failed');
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        updateFileStatus(uploadFile.file.name, 'error', errorMessage);
+        options?.onError?.(errorMessage);
+      }
+    }
+
+    setIsProcessing(false);
+  }, [files, options]);
+
+  /**
+   * Update file status
+   */
+  const updateFileStatus = (
+    fileName: string,
+    status: ReceiptUploadFile['status'],
+    error?: string,
+    result?: OCRResult
+  ) => {
+    setFiles(prev =>
+      prev.map(file =>
+        file.file.name === fileName
+          ? { ...file, status, error, result }
+          : file
+      )
+    );
+  };
+
+  /**
+   * Remove file from queue
+   */
+  const removeFile = useCallback((fileName: string) => {
+    setFiles(prev => {
+      const fileToRemove = prev.find(f => f.file.name === fileName);
+      if (fileToRemove) {
+        ocrService.revokePreviewUrl(fileToRemove.preview);
+      }
+      return prev.filter(f => f.file.name !== fileName);
+    });
+  }, []);
+
+  /**
+   * Clear all files and results
+   */
+  const clearAll = useCallback(() => {
+    files.forEach(file => ocrService.revokePreviewUrl(file.preview));
+    setFiles([]);
+    setResults([]);
+  }, [files]);
+
+  /**
+   * Retry failed file
+   */
+  const retryFile = useCallback((fileName: string) => {
+    const fileToRetry = files.find(f => f.file.name === fileName);
+    if (fileToRetry) {
+      updateFileStatus(fileName, 'pending');
+      processFiles([fileToRetry]);
+    }
+  }, [files, processFiles]);
+
+  return {
+    files,
+    results,
+    isProcessing,
+    addFiles,
+    processFiles,
+    removeFile,
+    clearAll,
+    retryFile,
+  };
+};
+
+4. FRONTEND COMPONENTS
+4.1. ReceiptUpload Component
+Filsökväg: frontend/src/components/receipts/ReceiptUpload.tsx
+typescriptimport React, { useCallback, useRef } from 'react';
+import { Upload, X, FileImage } from 'lucide-react';
+import { ReceiptUploadFile } from '../../types/ocr.types';
+
+interface ReceiptUploadProps {
+  files: ReceiptUploadFile[];
+  onFilesAdded: (files: File[]) => void;
+  onFileRemove: (fileName: string) => void;
+  disabled?: boolean;
+  maxFiles?: number;
+}
+
+export const ReceiptUpload: React.FC<ReceiptUploadProps> = ({
+  files,
+  onFilesAdded,
+  onFileRemove,
+  disabled = false,
+  maxFiles = 10,
+}) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      if (disabled) return;
+
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      const remainingSlots = maxFiles - files.length;
+      const filesToAdd = droppedFiles.slice(0, remainingSlots);
+
+      if (filesToAdd.length > 0) {
+        onFilesAdded(filesToAdd);
+      }
+    },
+    [disabled, files.length, maxFiles, onFilesAdded]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  }, []);
+
+  const handleFileInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files) {
+        const selectedFiles = Array.from(e.target.files);
+        const remainingSlots = maxFiles - files.length;
+        const filesToAdd = selectedFiles.slice(0, remainingSlots);
+        onFilesAdded(filesToAdd);
+      }
+    },
+    [files.length, maxFiles, onFilesAdded]
+  );
+
+  const openFileDialog = () => {
+    fileInputRef.current?.click();
+  };
+
+  const getStatusColor = (status: ReceiptUploadFile['status']) => {
+    switch (status) {
+      case 'completed':
+        return 'bg-green-100 border-green-300';
+      case 'error':
+        return 'bg-red-100 border-red-300';
+      case 'uploading':
+      case 'processing':
+        return 'bg-blue-100 border-blue-300 animate-pulse';
+      default:
+        return 'bg-gray-100 border-gray-300';
+    }
+  };
+
+  const getStatusText = (status: ReceiptUploadFile['status']) => {
+    switch (status) {
+      case 'uploading':
+        return 'Laddar upp...';
+      case 'processing':
+        return 'Bearbetar med AI...';
+      case 'completed':
+        return 'Klar!';
+      case 'error':
+        return 'Misslyckades';
+      default:
+        return 'Väntar';
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Upload Area */}
+      <div
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onClick={openFileDialog}
+        className={`
+          border-2 border-dashed rounded-lg p-8
+          transition-colors cursor-pointer
+          ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-blue-500 hover:bg-blue-50'}
+          ${files.length >= maxFiles ? 'opacity-50 cursor-not-allowed' : ''}
+        `}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf"
+          onChange={handleFileInput}
+          className="hidden"
+          disabled={disabled || files.length >= maxFiles}
+        />
+
+        <div className="flex flex-col items-center justify-center space-y-3">
+          <Upload className="w-12 h-12 text-gray-400" />
+          <div className="text-center">
+            <p className="text-lg font-medium text-gray-700">
+              Dra och släpp kvitton här
+            </p>
+            <p className="text-sm text-gray-500">
+              eller klicka för att välja filer
+            </p>
+          </div>
+          <p className="text-xs text-gray-400">
+            JPG, PNG, WEBP eller PDF (max 10MB per fil)
+          </p>
+          <p className="text-xs text-gray-400">
+            {files.length} / {maxFiles} filer
+          </p>
+        </div>
+      </div>
+
+      {/* File List */}
+      {files.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-gray-700">
+            Uppladdade filer ({files.length})
+          </h3>
+          <div className="space-y-2">
+            {files.map((file) => (
+              <div
+                key={file.file.name}
+                className={`
+                  flex items-center gap-3 p-3 rounded-lg border
+                  ${getStatusColor(file.status)}
+                `}
+              >
+                {/* Preview */}
+                <div className="flex-shrink-0 w-12 h-12 rounded overflow-hidden bg-white">
+                  {file.preview ? (
+                    <img
+                      src={file.preview}
+                      alt={file.file.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <FileImage className="w-6 h-6 text-gray-400" />
+                    </div>
+                  )}
+                </div>
+
+                {/* File Info */}
+                <div className="flex-grow min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">
+                    {file.file.name}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-gray-500">
+                      {(file.file.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                    <span className="text-gray-300">•</span>
+                    <p className="text-xs text-gray-500">
+                      {getStatusText(file.status)}
+                    </p>
+                  </div>
+                  {file.error && (
+                    <p className="text-xs text-red-600 mt-1">{file.error}</p>
+                  )}
+                </div>
+
+                {/* Remove Button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFileRemove(file.file.name);
+                  }}
+                  className="flex-shrink-0 p-1 hover:bg-white rounded transition-colors"
+                  disabled={file.status === 'uploading' || file.status === 'processing'}
+                >
+                  <X className="w-4 h-4 text-gray-500" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+4.2. OCRResultDisplay Component
+Filsökväg: frontend/src/components/receipts/OCRResultDisplay.tsx
+typescriptimport React from 'react';
+import { CheckCircle, AlertCircle, Calendar, Building, CreditCard, Tag } from 'lucide-react';
+import { OCRResult } from '../../types/ocr.types';
+
+interface OCRResultDisplayProps {
+  result: OCRResult;
+  onEdit?: (result: OCRResult) => void;
+  onSave?: (result: OCRResult) => void;
+}
+
+export const OCRResultDisplay: React.FC<OCRResultDisplayProps> = ({
+  result,
+  onEdit,
+  onSave,
+}) => {
+  const getConfidenceColor = (confidence: number) => {
+    if (confidence >= 0.9) return 'text-green-600';
+    if (confidence >= 0.7) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const getConfidenceLabel = (confidence: number) => {
+    if (confidence >= 0.9) return 'Hög säkerhet';
+    if (confidence >= 0.7) return 'Medel säkerhet';
+    return 'Låg säkerhet';
+  };
+
+  const formatCurrency = (amount: number, currency: string = 'SEK') => {
+    return new Intl.NumberFormat('sv-SE', {
+      style: 'currency',
+      currency: currency,
+    }).format(amount);
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      {/* Header with Overall Confidence */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-6 py-4 border-b border-gray-200">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {result.confidence.overall >= 0.7 ? (
+              <CheckCircle className="w-6 h-6 text-green-600" />
+            ) : (
+              <AlertCircle className="w-6 h-6 text-yellow-600" />
+            )}
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                OCR Resultat
+              </h3>
+              <p className={`text-sm ${getConfidenceColor(result.confidence.overall)}`}>
+                {getConfidenceLabel(result.confidence.overall)} (
+                {(result.confidence.overall * 100).toFixed(0)}%)
+              </p>
+            </div>
+          </div>
+          {onEdit && (
+            <button
+              onClick={() => onEdit(result)}
+              className="px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"
+            >
+              Redigera
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="p-6 space-y-6">
+        {/* Image Preview */}
+        {result.imageUrl && (
+          <div className="rounded-lg overflow-hidden border border-gray-200">
+            <img
+              src={result.imageUrl}
+              alt="Receipt"
+              className="w-full h-auto max-h-96 object-contain bg-gray-50"
+            />
+          </div>
+        )}
+
+        {/* Extracted Data Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Date */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <Calendar className="w-4 h-4" />
+              <span className="font-medium">Datum</span>
+              {result.confidence.fields.date && (
+                <span className={`text-xs ${getConfidenceColor(result.confidence.fields.date)}`}>
+                  ({(result.confidence.fields.date * 100).toFixed(0)}%)
+                </span>
+              )}
+            </div>
+            <p className="text-lg font-semibold text-gray-900">
+              {new Date(result.date).toLocaleDateString('sv-SE')}
+            </p>
+          </div>
+
+          {/* Vendor */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <Building className="w-4 h-4" />
+              <span className="font-medium">Leverantör</span>
+              {result.confidence.fields.vendor && (
+                <span className={`text-xs ${getConfidenceColor(result.confidence.fields.vendor)}`}>
+                  ({(result.confidence.fields.vendor * 100).toFixed(0)}%)
+                </span>
+              )}
+            </div>
+            <p className="text-lg font-semibold text-gray-900">{result.vendor}</p>
+          </div>
+
+          {/* Amount */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <CreditCard className="w-4 h-4" />
+              <span className="font-medium">Belopp</span>
+              {result.confidence.fields.amount && (
+                <span className={`text-xs ${getConfidenceColor(result.confidence.fields.amount)}`}>
+                  ({(result.confidence.fields.amount * 100).toFixed(0)}%)
+                </span>
+              )}
+            </div>
+            <div className="space-y-1">
+              <p className="text-2xl font-bold text-gray-900">
+                {formatCurrency(result.amount, result.currency)}
+              </p>
+              {result.vatAmount && (
+                <p className="text-sm text-gray-600">
+                  varav moms: {formatCurrency(result.vatAmount, result.currency)}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Category */}
+          {result.category && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <Tag className="w-4 h-4" />
+                <span className="font-medium">Kategori</span>
+              </div>
+              <p className="text-lg font-semibold text-gray-900">{result.category}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Items List */}
+        {result.items.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium text-gray-700">
+                Artiklar ({result.items.length})
+              </h4>
+              {result.confidence.fields.items && (
+                <span className={`text-xs ${getConfidenceColor(result.confidence.fields.items)}`}>
+                  Säkerhet: {(result.confidence.fields.items * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+                      Beskrivning
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Antal
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Pris/st
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">
+                      Totalt
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {result.items.map((item, index) => (
+                    <tr key={index}>
+                      <td className="px-4 py-3 text-sm text-gray-900">
+                        {item.description}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                        {item.quantity}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-900 text-right">
+                        {formatCurrency(item.unitPrice, result.currency)}
+                      </td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900 text-right">
+                        {formatCurrency(item.totalPrice, result.currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Raw Text (Collapsible) */}
+        {result.rawText && (
+          <details className="space-y-2">
+            <summary className="text-sm font-medium text-gray-700 cursor-pointer hover:text-gray-900">
+              Visa RAW OCR-text
+            </summary>
+            <pre className="text-xs text-gray-600 bg-gray-50 p-4 rounded-lg overflow-x-auto whitespace-pre-wrap">
+              {result.rawText}
+            </pre>
+          </details>
+        )}
+      </div>
+
+      {/* Footer Actions */}
+      {onSave && (
+        <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => onEdit?.(result)}
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+            >
+              Redigera
+            </button>
+            <button
+              onClick={() => onSave(result)}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+            >
+              Spara kvitto
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+4.3. ReceiptOCRPage - Main Page Component
+Filsökväg: frontend/src/pages/receipts/ReceiptOCRPage.tsx
+typescriptimport React, { useState } from 'react';
+import { useOCR } from '../../hooks/useOCR';
+import { ReceiptUpload } from '../../components/receipts/ReceiptUpload';
+import { OCRResultDisplay } from '../../components/receipts/OCRResultDisplay';
+import { OCRResult } from '../../types/ocr.types';
+import { Sparkles, ArrowRight, CheckCircle } from 'lucide-react';
+
+export const ReceiptOCRPage: React.FC = () => {
+  const [savedResults, setSavedResults] = useState<OCRResult[]>([]);
+
+  const {
+    files,
+    results,
+    isProcessing,
+    addFiles,
+    processFiles,
+    removeFile,
+    clearAll,
+    retryFile,
+  } = useOCR({
+    autoProcess: false,
+    onSuccess: (result) => {
+      console.log('OCR completed:', result);
+    },
+    onError: (error) => {
+      console.error('OCR error:', error);
+    },
+  });
+
+  const handleSaveResult = (result: OCRResult) => {
+    setSavedResults((prev) => [...prev, result]);
+    // Here you would typically save to backend
+    console.log('Saving result:', result);
+  };
+
+  const handleEditResult = (result: OCRResult) => {
+    // Navigate to edit page or open modal
+    console.log('Editing result:', result);
+  };
+
+  const pendingFiles = files.filter((f) => f.status === 'pending');
+  const hasCompletedFiles = files.some((f) => f.status === 'completed');
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center gap-3">
+            <Sparkles className="w-8 h-8 text-blue-600" />
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">
+                AI Kvitto-scanner
+              </h1>
+              <p className="text-sm text-gray-600 mt-1">
+                Ladda upp kvitton och låt AI extrahera all information automatiskt
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Left Column - Upload */}
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                1. Ladda upp kvitton
+              </h2>
+              <ReceiptUpload
+                files={files}
+                onFilesAdded={addFiles}
+                onFileRemove={removeFile}
+                disabled={isProcessing}
+                maxFiles={10}
+              />
+            </div>
+
+            {/* Process Button */}
+            {pendingFiles.length > 0 && (
+              <div className="bg-white rounded-lg shadow-sm p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                  2. Bearbeta med AI
+                </h2>
+                <button
+                  onClick={() => processFiles()}
+                  disabled={isProcessing}
+                  className={`
+                    w-full flex items-center justify-center gap-2
+                    px-6 py-4 rounded-lg font-medium
+                    transition-all transform
+                    ${
+                      isProcessing
+                        ? 'bg-gray-400 cursor-not-allowed'
+                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 hover:scale-105 shadow-lg'
+                    }
+                    text-white
+                  `}
+                >
+                  {isProcessing ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
+                      <span>Bearbetar med AI...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5" />
+                      <span>Starta AI-bearbetning</span>
+                      <ArrowRight className="w-5 h-5" />
+                    </>
+                  )}
+                </button>
+                <p className="text-sm text-gray-500 text-center mt-3">
+                  {pendingFiles.length} kvitto{pendingFiles.length !== 1 ? 'n' : ''} redo att bearbetas
+                </p>
+              </div>
+            )}
+
+            {/* Stats */}
+            {files.length > 0 && (
+              <div className="bg-white rounded-lg shadow-sm p-6">
+                <h3 className="text-sm font-medium text-gray-700 mb-3">
+                  Statistik
+                </h3>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-gray-900">
+                      {files.length}
+                    </p>
+                    <p className="text-xs text-gray-500">Totalt</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-blue-600">
+                      {files.filter((f) => f.status === 'processing' || f.status === 'uploading').length}
+                    </p>
+                    <p className="text-xs text-gray-500">Bearbetar</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">
+                      {files.filter((f) => f.status === 'completed').length}
+                    </p>
+                    <p className="text-xs text-gray-500">Klara</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Clear All Button */}
+            {hasCompletedFiles && !isProcessing && (
+              <button
+                onClick={clearAll}
+                className="w-full px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Rensa alla
+              </button>
+            )}
+          </div>
+
+          {/* Right Column - Results */}
+          <div className="space-y-6">
+            {results.length === 0 ? (
+              <div className="bg-white rounded-lg shadow-sm p-12 text-center">
+                <Sparkles className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                  Inga resultat ännu
+                </h3>
+                <p className="text-sm text-gray-500">
+                  Ladda upp kvitton och bearbeta dem för att se AI-extraherad data här
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    3. Granska och spara
+                  </h2>
+                  <div className="flex items-center gap-2 text-sm text-green-600">
+                    <CheckCircle className="w-4 h-4" />
+                    <span>{results.length} kvitto(n) bearbetade</span>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  {results.map((result, index) => (
+                    <OCRResultDisplay
+                      key={index}
+                      result={result}
+                      onEdit={handleEditResult}
+                      onSave={handleSaveResult}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+5. INTEGRATION MED ROUTING
+Filsökväg: frontend/src/App.tsx (lägg till route)
+typescriptimport { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { ReceiptOCRPage } from './pages/receipts/ReceiptOCRPage';
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* ... andra routes ... */}
+        <Route path="/receipts/ocr" element={<ReceiptOCRPage />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+
+6. ENVIRONMENT VARIABLES
+Filsökväg: frontend/.env.development
+bashVITE_API_URL=http://localhost:3000/api
+VITE_MAX_FILE_SIZE=10485760
+VITE_ALLOWED_FILE_TYPES=image/jpeg,image/png,image/webp,application/pdf
+
+7. STYLING (Optional Tailwind Config)
+Filsökväg: frontend/tailwind.config.js (lägg till om behövs)
+javascript/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      animation: {
+        'pulse': 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+      },
+    },
+  },
+  plugins: [],
+}
+
+8. VERIFIERING
+Manuell testning:
+bash# 1. Starta backend (om inte redan igång)
+cd backend
+npm run dev
+
+# 2. Starta frontend
+cd frontend
+npm run dev
+
+# 3. Öppna webbläsaren
+# Navigera till: http://localhost:5173/receipts/ocr
+
+# 4. Testa funktionalitet:
+# - Ladda upp ett kvittobild
+# - Klicka "Starta AI-bearbetning"
+# - Granska OCR-resultatet
+# - Kontrollera confidence scores
+# - Testa "Spara kvitto" knappen
+Funktioner att verifiera:
+✅ Upload:
+
+ Drag-and-drop fungerar
+ Filväljare fungerar
+ Flera filer samtidigt
+ Filvalidering (storlek, typ)
+ Preview av bilder
+
+✅ Processing:
+
+ Status-uppdateringar i realtid
+ Loading states
+ Felhantering vid misslyckat OCR
+ Retry-funktion
+
+✅ Results:
+
+ Alla fält visas korrekt
+ Confidence scores visas
+ Items/artiklar visas i tabell
+ Bild-preview
+ Raw text (collapsible)
+
+✅ UI/UX:
+
+ Responsiv design
+ Snygga animationer
+ Intuitivt flöde
+ Tydliga felmeddelanden
+
 
 STEG 2.9: Accounting Module med BAS-kontoplanen
 Instruktion:
