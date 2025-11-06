@@ -12,6 +12,10 @@ import invoiceRoutes from './routes/invoices.js';
 import receiptRoutes from './routes/receipts.js';
 import accountingRoutes from './routes/accounting.js';
 import dashboardRoutes from './routes/dashboard.js';
+import bankTransactionRoutes from './routes/bankTransactions.js';
+import cashFlowRoutes from './routes/cashFlow.js';
+import salaryWithdrawalRoutes from './routes/salaryWithdrawals.js';
+import expenseReimbursementRoutes from './routes/expenseReimbursements.js';
 
 const app = express();
 
@@ -48,6 +52,10 @@ app.use('/api/v1/invoices', invoiceRoutes);
 app.use('/api/v1/receipts', receiptRoutes);
 app.use('/api/v1/accounting', accountingRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/bank-transactions', bankTransactionRoutes);
+app.use('/api/v1/cash-flow', cashFlowRoutes);
+app.use('/api/v1/salary-withdrawals', salaryWithdrawalRoutes);
+app.use('/api/v1/expense-reimbursements', expenseReimbursementRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
