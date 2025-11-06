@@ -5,12 +5,12 @@
 
 import express from 'express';
 import * as crossCompanyTransactionController from '../controllers/crossCompanyTransactionController';
-import { authenticateToken } from '../middleware/auth';
+import { authenticate } from '../middleware/authenticate';
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(authenticateToken);
+router.use(authenticate);
 
 // Transaction CRUD
 router.post('/', crossCompanyTransactionController.createCrossCompanyTransaction);

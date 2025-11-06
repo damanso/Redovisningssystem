@@ -3,15 +3,13 @@
  * Consolidated Reports Page
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useReportConfigs } from '../hooks/useConsolidatedReport';
 import { useCompanies } from '../hooks/useCompany';
 
 const ConsolidatedReportsPage: React.FC = () => {
   const { data: configs = [], isLoading } = useReportConfigs();
   const { data: companies = [] } = useCompanies();
-
-  const [selectedConfig, setSelectedConfig] = useState<string | null>(null);
 
   const getReportTypeName = (type: string) => {
     switch (type) {

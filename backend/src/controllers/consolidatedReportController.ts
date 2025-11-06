@@ -3,7 +3,8 @@
  * Consolidated Reports Controller
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthRequest } from '../middleware/authenticate';
 import * as consolidatedReportService from '../services/consolidatedReportService';
 import {
   CreateConsolidatedReportConfigDto,
@@ -14,9 +15,9 @@ import {
  * Create a new consolidated report configuration
  * POST /api/v1/consolidated-reports/configs
  */
-export const createReportConfig = async (req: Request, res: Response) => {
+export const createReportConfig = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -42,9 +43,9 @@ export const createReportConfig = async (req: Request, res: Response) => {
  * Get all report configurations for current user
  * GET /api/v1/consolidated-reports/configs
  */
-export const getReportConfigs = async (req: Request, res: Response) => {
+export const getReportConfigs = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -61,9 +62,9 @@ export const getReportConfigs = async (req: Request, res: Response) => {
  * Get a specific report configuration by ID
  * GET /api/v1/consolidated-reports/configs/:id
  */
-export const getReportConfigById = async (req: Request, res: Response) => {
+export const getReportConfigById = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -86,9 +87,9 @@ export const getReportConfigById = async (req: Request, res: Response) => {
  * Update a report configuration
  * PUT /api/v1/consolidated-reports/configs/:id
  */
-export const updateReportConfig = async (req: Request, res: Response) => {
+export const updateReportConfig = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -113,9 +114,9 @@ export const updateReportConfig = async (req: Request, res: Response) => {
  * Delete a report configuration
  * DELETE /api/v1/consolidated-reports/configs/:id
  */
-export const deleteReportConfig = async (req: Request, res: Response) => {
+export const deleteReportConfig = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -138,9 +139,9 @@ export const deleteReportConfig = async (req: Request, res: Response) => {
  * Generate a consolidated report
  * POST /api/v1/consolidated-reports/generate
  */
-export const generateConsolidatedReport = async (req: Request, res: Response) => {
+export const generateConsolidatedReport = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -196,9 +197,9 @@ export const generateConsolidatedReport = async (req: Request, res: Response) =>
  * Get consolidated transaction data
  * GET /api/v1/consolidated-reports/transactions
  */
-export const getConsolidatedTransactionData = async (req: Request, res: Response) => {
+export const getConsolidatedTransactionData = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }

@@ -3,7 +3,8 @@
  * Cross-Company Transaction Controller
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthRequest } from '../middleware/authenticate';
 import * as crossCompanyTransactionService from '../services/crossCompanyTransactionService';
 import {
   CreateCrossCompanyTransactionDto,
@@ -15,9 +16,9 @@ import {
  * Create a new cross-company transaction
  * POST /api/v1/cross-company-transactions
  */
-export const createCrossCompanyTransaction = async (req: Request, res: Response) => {
+export const createCrossCompanyTransaction = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -47,9 +48,9 @@ export const createCrossCompanyTransaction = async (req: Request, res: Response)
  * Get all cross-company transactions
  * GET /api/v1/cross-company-transactions
  */
-export const getCrossCompanyTransactions = async (req: Request, res: Response) => {
+export const getCrossCompanyTransactions = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -73,9 +74,9 @@ export const getCrossCompanyTransactions = async (req: Request, res: Response) =
  * Get a specific cross-company transaction by ID
  * GET /api/v1/cross-company-transactions/:id
  */
-export const getCrossCompanyTransactionById = async (req: Request, res: Response) => {
+export const getCrossCompanyTransactionById = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -98,9 +99,9 @@ export const getCrossCompanyTransactionById = async (req: Request, res: Response
  * Update a cross-company transaction
  * PUT /api/v1/cross-company-transactions/:id
  */
-export const updateCrossCompanyTransaction = async (req: Request, res: Response) => {
+export const updateCrossCompanyTransaction = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -125,9 +126,9 @@ export const updateCrossCompanyTransaction = async (req: Request, res: Response)
  * Reconcile a cross-company transaction
  * POST /api/v1/cross-company-transactions/:id/reconcile
  */
-export const reconcileTransaction = async (req: Request, res: Response) => {
+export const reconcileTransaction = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -150,9 +151,9 @@ export const reconcileTransaction = async (req: Request, res: Response) => {
  * Delete a cross-company transaction
  * DELETE /api/v1/cross-company-transactions/:id
  */
-export const deleteCrossCompanyTransaction = async (req: Request, res: Response) => {
+export const deleteCrossCompanyTransaction = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -175,9 +176,9 @@ export const deleteCrossCompanyTransaction = async (req: Request, res: Response)
  * Get transaction summary for a company
  * GET /api/v1/cross-company-transactions/summary/:companyId
  */
-export const getCompanyTransactionSummary = async (req: Request, res: Response) => {
+export const getCompanyTransactionSummary = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }

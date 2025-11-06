@@ -5,7 +5,6 @@
 
 import React, { useState } from 'react';
 import { useCrossCompanyTransactions } from '../hooks/useCrossCompanyTransaction';
-import { useCompanies } from '../hooks/useCompany';
 
 const CrossCompanyTransactionsPage: React.FC = () => {
   const [filters, setFilters] = useState<{
@@ -13,7 +12,6 @@ const CrossCompanyTransactionsPage: React.FC = () => {
   }>({});
 
   const { data: transactions = [], isLoading } = useCrossCompanyTransactions(filters);
-  const { data: companies = [] } = useCompanies();
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('sv-SE');

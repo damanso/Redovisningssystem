@@ -5,12 +5,12 @@
 
 import express from 'express';
 import * as companyGroupController from '../controllers/companyGroupController';
-import { authenticateToken } from '../middleware/auth';
+import { authenticate } from '../middleware/authenticate';
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(authenticateToken);
+router.use(authenticate);
 
 // Company Group CRUD
 router.post('/', companyGroupController.createCompanyGroup);

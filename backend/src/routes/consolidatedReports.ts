@@ -5,12 +5,12 @@
 
 import express from 'express';
 import * as consolidatedReportController from '../controllers/consolidatedReportController';
-import { authenticateToken } from '../middleware/auth';
+import { authenticate } from '../middleware/authenticate';
 
 const router = express.Router();
 
 // All routes require authentication
-router.use(authenticateToken);
+router.use(authenticate);
 
 // Report configurations
 router.post('/configs', consolidatedReportController.createReportConfig);

@@ -3,7 +3,8 @@
  * Company Groups Controller
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthRequest } from '../middleware/authenticate';
 import * as companyGroupService from '../services/companyGroupService';
 import { CreateCompanyGroupDto, UpdateCompanyGroupDto } from '../types/companyGroup.types';
 
@@ -11,9 +12,9 @@ import { CreateCompanyGroupDto, UpdateCompanyGroupDto } from '../types/companyGr
  * Create a new company group
  * POST /api/v1/company-groups
  */
-export const createCompanyGroup = async (req: Request, res: Response) => {
+export const createCompanyGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -36,9 +37,9 @@ export const createCompanyGroup = async (req: Request, res: Response) => {
  * Get all company groups for current user
  * GET /api/v1/company-groups
  */
-export const getCompanyGroups = async (req: Request, res: Response) => {
+export const getCompanyGroups = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -55,9 +56,9 @@ export const getCompanyGroups = async (req: Request, res: Response) => {
  * Get a specific company group by ID
  * GET /api/v1/company-groups/:id
  */
-export const getCompanyGroupById = async (req: Request, res: Response) => {
+export const getCompanyGroupById = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -80,9 +81,9 @@ export const getCompanyGroupById = async (req: Request, res: Response) => {
  * Update a company group
  * PUT /api/v1/company-groups/:id
  */
-export const updateCompanyGroup = async (req: Request, res: Response) => {
+export const updateCompanyGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -107,9 +108,9 @@ export const updateCompanyGroup = async (req: Request, res: Response) => {
  * Delete a company group
  * DELETE /api/v1/company-groups/:id
  */
-export const deleteCompanyGroup = async (req: Request, res: Response) => {
+export const deleteCompanyGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -132,9 +133,9 @@ export const deleteCompanyGroup = async (req: Request, res: Response) => {
  * Add a company to a group
  * POST /api/v1/company-groups/:id/companies
  */
-export const addCompanyToGroup = async (req: Request, res: Response) => {
+export const addCompanyToGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -158,9 +159,9 @@ export const addCompanyToGroup = async (req: Request, res: Response) => {
  * Remove a company from a group
  * DELETE /api/v1/company-groups/:id/companies/:companyId
  */
-export const removeCompanyFromGroup = async (req: Request, res: Response) => {
+export const removeCompanyFromGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -185,9 +186,9 @@ export const removeCompanyFromGroup = async (req: Request, res: Response) => {
  * Get all companies in a group
  * GET /api/v1/company-groups/:id/companies
  */
-export const getCompaniesInGroup = async (req: Request, res: Response) => {
+export const getCompaniesInGroup = async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
