@@ -2,6 +2,10 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import CustomerListPage from './pages/customers/CustomerListPage'
 import CustomerFormPage from './pages/customers/CustomerFormPage'
 import CustomerDetailPage from './pages/customers/CustomerDetailPage'
+import AnalyticsDashboard from './pages/AnalyticsDashboard'
+import BudgetsPage from './pages/BudgetsPage'
+import KPIsDashboardPage from './pages/KPIsDashboardPage'
+import CashFlowPage from './pages/CashFlowPage'
 
 function App() {
   return (
@@ -26,6 +30,12 @@ function App() {
           <Route path="/customers/new" element={<CustomerFormPage />} />
           <Route path="/customers/:id" element={<CustomerDetailPage />} />
           <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
+
+          {/* Analytics routes */}
+          <Route path="/analytics" element={<AnalyticsDashboard />} />
+          <Route path="/analytics/budgets" element={<BudgetsPage />} />
+          <Route path="/analytics/kpis" element={<KPIsDashboardPage />} />
+          <Route path="/analytics/cash-flow" element={<CashFlowPage />} />
         </Routes>
       </div>
     </Router>
