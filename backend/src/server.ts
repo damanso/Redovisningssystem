@@ -1,6 +1,7 @@
 import app from './app.js';
 import dotenv from 'dotenv';
 import pool from './config/database.js';
+import * as cronScheduler from './services/cronScheduler.js';
 
 // Load environment variables
 dotenv.config();
@@ -22,11 +23,15 @@ const server = app.listen(PORT, () => {
   console.log(`✓ Server running on port ${PORT}`);
   console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✓ API available at http://localhost:${PORT}/api/v1`);
+
+  // Initialize cron jobs
+  cronScheduler.initCronJobs();
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM signal received: closing HTTP server');
+  cronScheduler.stopCronJobs();
   server.close(() => {
     console.log('HTTP server closed');
     pool.end(() => {
@@ -38,6 +43,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('SIGINT signal received: closing HTTP server');
+  cronScheduler.stopCronJobs();
   server.close(() => {
     console.log('HTTP server closed');
     pool.end(() => {
