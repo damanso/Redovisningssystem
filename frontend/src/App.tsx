@@ -2,11 +2,14 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import CustomerListPage from './pages/customers/CustomerListPage'
 import CustomerFormPage from './pages/customers/CustomerFormPage'
 import CustomerDetailPage from './pages/customers/CustomerDetailPage'
+import IntegrationsPage from './pages/IntegrationsPage'
+import Navigation from './components/Navigation'
 
 function App() {
   return (
     <Router>
       <div className="min-h-screen bg-gray-50">
+        <Navigation />
         <Routes>
           <Route path="/" element={
             <div className="flex items-center justify-center min-h-screen">
@@ -26,6 +29,9 @@ function App() {
           <Route path="/customers/new" element={<CustomerFormPage />} />
           <Route path="/customers/:id" element={<CustomerDetailPage />} />
           <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
+
+          {/* Integrations */}
+          <Route path="/integrations" element={<IntegrationsPage />} />
         </Routes>
       </div>
     </Router>

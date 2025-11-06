@@ -1,11 +1,11 @@
 import React, { useEffect } from 'react';
-import { Cloud, CloudOff, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { Cloud, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useSyncInvoice, useSyncReceipt, useSyncStatus } from '../hooks/useGoogleDrive';
 
 interface GoogleDriveSyncButtonProps {
   documentType: 'invoice' | 'receipt';
   documentId: string;
-  companyId: string;
+  companyId?: string; // Optional for now, can be used for future enhancements
   className?: string;
   showStatus?: boolean;
 }
@@ -13,7 +13,6 @@ interface GoogleDriveSyncButtonProps {
 const GoogleDriveSyncButton: React.FC<GoogleDriveSyncButtonProps> = ({
   documentType,
   documentId,
-  companyId,
   className = '',
   showStatus = true,
 }) => {
