@@ -2,6 +2,29 @@
 
 A React Native mobile application for managing accounting, invoices, customers, and receipts on-the-go.
 
+## 🚀 Getting Started
+
+**Choose your path:**
+
+- **📱 [Quick Start Guide](./QUICK_START.md)** - Fastest way to get the app running on your iPhone
+- **🍎 [iOS Setup Guide](./IOS_SETUP_GUIDE.md)** - Detailed iOS development setup with Apple Developer account
+- **📚 [Complete Init Guide](./COMPLETE_PROJECT_INIT_GUIDE.md)** - How to initialize the React Native project from scratch
+
+**Quick Commands:**
+```bash
+# iOS Setup (Mac only)
+./scripts/setup-ios.sh
+
+# Android Setup
+./scripts/setup-android.sh
+
+# Clean everything
+./scripts/clean.sh
+
+# Initialize React Native project
+./scripts/init-react-native.sh
+```
+
 ## Features
 
 - **Authentication**: Secure login and registration
