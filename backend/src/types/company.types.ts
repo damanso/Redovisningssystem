@@ -14,6 +14,9 @@ export interface Company {
   accounting_method?: 'accrual' | 'cash';
   currency?: string;
   logo_url?: string;
+  bank_account?: string;
+  bank_clearing?: string;
+  bank_name?: string;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -49,6 +52,9 @@ export interface UpdateCompanyDto {
   accounting_method?: 'accrual' | 'cash';
   currency?: string;
   logo_url?: string;
+  bank_account?: string;
+  bank_clearing?: string;
+  bank_name?: string;
 }
 
 export interface UserCompany {
