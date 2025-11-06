@@ -12,6 +12,10 @@ import invoiceRoutes from './routes/invoices.js';
 import receiptRoutes from './routes/receipts.js';
 import accountingRoutes from './routes/accounting.js';
 import dashboardRoutes from './routes/dashboard.js';
+// FAS 4.1: Multi-Company Management
+import companyGroupRoutes from './routes/companyGroups.js';
+import crossCompanyTransactionRoutes from './routes/crossCompanyTransactions.js';
+import consolidatedReportRoutes from './routes/consolidatedReports.js';
 
 const app = express();
 
@@ -48,6 +52,10 @@ app.use('/api/v1/invoices', invoiceRoutes);
 app.use('/api/v1/receipts', receiptRoutes);
 app.use('/api/v1/accounting', accountingRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+// FAS 4.1: Multi-Company Management
+app.use('/api/v1/company-groups', companyGroupRoutes);
+app.use('/api/v1/cross-company-transactions', crossCompanyTransactionRoutes);
+app.use('/api/v1/consolidated-reports', consolidatedReportRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
