@@ -2,6 +2,8 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import CustomerListPage from './pages/customers/CustomerListPage'
 import CustomerFormPage from './pages/customers/CustomerFormPage'
 import CustomerDetailPage from './pages/customers/CustomerDetailPage'
+import CalendarPage from './pages/calendar/CalendarPage'
+import EventFormPage from './pages/calendar/EventFormPage'
 
 function App() {
   return (
@@ -26,6 +28,11 @@ function App() {
           <Route path="/customers/new" element={<CustomerFormPage />} />
           <Route path="/customers/:id" element={<CustomerDetailPage />} />
           <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
+
+          {/* Calendar routes */}
+          <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/calendar/new" element={<EventFormPage />} />
+          <Route path="/calendar/events/:id/edit" element={<EventFormPage />} />
         </Routes>
       </div>
     </Router>
