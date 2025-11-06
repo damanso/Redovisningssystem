@@ -233,3 +233,62 @@ Svara i JSON-format:
     };
   }
 };
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Chat with AI assistant about accounting questions
+ * @param messages - Conversation history
+ * @param companyContext - Optional company context for personalized responses
+ * @returns AI assistant response
+ */
+export const chatWithAssistant = async (
+  messages: ChatMessage[],
+  companyContext?: {
+    name: string;
+    orgNumber: string;
+    industry?: string;
+  }
+): Promise<string> => {
+  try {
+    const systemPrompt = `Du är en svensk redovisningsassistent som hjälper företag med redovisningsfrågor.
+
+${companyContext ? `Företagskontext:
+- Företagsnamn: ${companyContext.name}
+- Organisationsnummer: ${companyContext.orgNumber}
+${companyContext.industry ? `- Bransch: ${companyContext.industry}` : ''}
+` : ''}
+
+Du kan hjälpa med:
+- Redovisningsfrågor och BAS-kontoplan
+- Momshantering och skatteregler
+- Bokföringstips och råd
+- Förklara redovisningstermer
+- Hjälp med fakturor och kvitton
+
+Svara alltid på svenska, var koncis och tydlig. Om du är osäker, säg det och föreslå att användaren kontaktar en revisor för komplexa frågor.`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022',
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
+    });
+
+    const textContent = message.content.find(c => c.type === 'text');
+    if (!textContent || textContent.type !== 'text') {
+      throw new Error('No text response from Claude');
+    }
+
+    return textContent.text;
+  } catch (error) {
+    console.error('Chat error:', error);
+    throw new Error(`Failed to get AI response: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+};

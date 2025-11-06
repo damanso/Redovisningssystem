@@ -1,20 +1,27 @@
 import app from './app.js';
 import dotenv from 'dotenv';
 import pool from './config/database.js';
+import { connectMongoDB, closeMongoDB } from './config/mongodb.js';
 
 // Load environment variables
 dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 
-// Test database connection (non-blocking)
+// Test PostgreSQL connection (non-blocking)
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
-    console.error('⚠ Database connection warning:', err.message);
+    console.error('⚠ PostgreSQL connection warning:', err.message);
     console.log('  Server will continue, but database operations may fail');
   } else {
-    console.log('✓ Database connected successfully');
+    console.log('✓ PostgreSQL connected successfully');
   }
+});
+
+// Connect to MongoDB (non-blocking)
+connectMongoDB().catch((err) => {
+  console.error('⚠ MongoDB connection warning:', err.message);
+  console.log('  Server will continue, but chatbot features may fail');
 });
 
 // Start server
@@ -25,10 +32,11 @@ const server = app.listen(PORT, () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
+  server.close(async () => {
     console.log('HTTP server closed');
+    await closeMongoDB();
     pool.end(() => {
       console.log('Database pool closed');
       process.exit(0);
@@ -36,10 +44,11 @@ process.on('SIGTERM', () => {
   });
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('SIGINT signal received: closing HTTP server');
-  server.close(() => {
+  server.close(async () => {
     console.log('HTTP server closed');
+    await closeMongoDB();
     pool.end(() => {
       console.log('Database pool closed');
       process.exit(0);

@@ -12,6 +12,7 @@ import invoiceRoutes from './routes/invoices.js';
 import receiptRoutes from './routes/receipts.js';
 import accountingRoutes from './routes/accounting.js';
 import dashboardRoutes from './routes/dashboard.js';
+import chatbotRoutes from './routes/chatbot.js';
 
 const app = express();
 
@@ -48,6 +49,7 @@ app.use('/api/v1/invoices', invoiceRoutes);
 app.use('/api/v1/receipts', receiptRoutes);
 app.use('/api/v1/accounting', accountingRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/chatbot', chatbotRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
