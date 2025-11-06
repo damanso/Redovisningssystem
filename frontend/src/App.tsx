@@ -2,6 +2,9 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import CustomerListPage from './pages/customers/CustomerListPage'
 import CustomerFormPage from './pages/customers/CustomerFormPage'
 import CustomerDetailPage from './pages/customers/CustomerDetailPage'
+import VATReportListPage from './pages/vat/VATReportListPage'
+import VATReportDetailPage from './pages/vat/VATReportDetailPage'
+import VATReportGeneratePage from './pages/vat/VATReportGeneratePage'
 
 function App() {
   return (
@@ -26,6 +29,11 @@ function App() {
           <Route path="/customers/new" element={<CustomerFormPage />} />
           <Route path="/customers/:id" element={<CustomerDetailPage />} />
           <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
+
+          {/* VAT / Moms routes */}
+          <Route path="/vat/reports" element={<VATReportListPage />} />
+          <Route path="/vat/reports/new" element={<VATReportGeneratePage />} />
+          <Route path="/vat/reports/:id" element={<VATReportDetailPage />} />
         </Routes>
       </div>
     </Router>
