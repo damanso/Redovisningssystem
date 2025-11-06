@@ -2,6 +2,9 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import CustomerListPage from './pages/customers/CustomerListPage'
 import CustomerFormPage from './pages/customers/CustomerFormPage'
 import CustomerDetailPage from './pages/customers/CustomerDetailPage'
+import ProjectListPage from './pages/projects/ProjectListPage'
+import ProjectFormPage from './pages/projects/ProjectFormPage'
+import ProjectDetailPage from './pages/projects/ProjectDetailPage'
 
 function App() {
   return (
@@ -26,6 +29,12 @@ function App() {
           <Route path="/customers/new" element={<CustomerFormPage />} />
           <Route path="/customers/:id" element={<CustomerDetailPage />} />
           <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
+
+          {/* Project routes */}
+          <Route path="/projects" element={<ProjectListPage />} />
+          <Route path="/projects/new" element={<ProjectFormPage />} />
+          <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/projects/:id/edit" element={<ProjectFormPage />} />
         </Routes>
       </div>
     </Router>
