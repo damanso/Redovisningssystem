@@ -1,152 +1,46 @@
-# Redovisningssystem - AI-Drivet
+# Redovisningssystem
 
-Ett modernt redovisningssystem byggt med React, Node.js, PostgreSQL, MongoDB och Redis.
+Svenskt redovisningssystem under **ombyggnad** enligt en fas-för-fas-plan med
+verifieringsgrindar.
 
-## 🚀 Snabbstart
+## Status
 
-### 1. Förutsättningar
+| Fas | Innehåll | Status |
+|---|---|---|
+| 0 | Fundament & förtroendegräns (migrationsrunner, fail-fast-env, tenant-isolering + RLS, append-only auditlogg, säkra uppladdningar) | Pågår |
+| 1 | Korrekt bokföringskärna (verifikationsserier, debet=kredit i ören, oföränderlighet, moms, SIE4, OCR/Luhn) | Ej påbörjad |
+| 2 | Affärsobjekt (kunder, leverantörer, artiklar, fakturor, kvitton, dokumentarkiv) | Ej påbörjad |
+| 3 | AI-först-gränssnitt (MCP-/action-lager) | Ej påbörjad |
+| 4 | Läsbar webbvy (read-only) | Ej påbörjad |
 
-- Node.js 20+
-- Docker & Docker Compose
-- Git
+Statuspåståenden i det här repot ska alltid backas av körd, visad bevisning —
+se `KICKOFF_NYSESSION.md` (regler) och `GRANSKNING_OCH_OMSTARTSPLAN.md` (analys & plan).
 
-### 2. Installation
+## Struktur
+
+```
+server/          API + bokföringskärna (TypeScript, Express, Postgres)
+  migrations/    SQL-migrationer, körs av server/src/db/migrate.ts
+docs/
+  KRAV_Claude.md Ursprunglig kravkälla (domänkrav)
+  archive/       Arkiverade, vilseledande statusrapporter från den gamla koden
+```
+
+Den gamla implementationen är borttagen ur trädet men finns i git-historiken
+(SHA:n för det sista trädet med legacy-koden står i commit-meddelandet som tog bort den).
+
+## Kom igång (utveckling)
+
+Krav: Node ≥ 22, PostgreSQL 16.
 
 ```bash
-# Klona projektet
-cd redovisningssystem
-
-# Installera frontend dependencies
-cd frontend
+# Starta Postgres (t.ex. via docker compose up -d)
+cp .env.example .env       # fyll i JWT_SECRET (openssl rand -hex 32)
 npm install
-
-# Installera backend dependencies
-cd ../backend
-npm install
+npm run migrate            # kör migrationskedjan
+npm run dev                # startar API:t
+npm test                   # kör testerna (kräver Postgres)
 ```
 
-### 3. Miljövariabler
-
-Kopiera `.env.example` till `.env` i både root, frontend och backend:
-
-```bash
-# I root
-cp .env.example .env
-
-# I backend
-cp backend/.env.example backend/.env
-
-# I frontend
-cp frontend/.env.example frontend/.env
-```
-
-Uppdatera `.env`-filerna med dina egna värden (särskilt JWT_SECRET och API-nycklar).
-
-### 4. Starta databaser
-
-```bash
-# I root-mappen
-docker-compose up -d
-
-# Verifiera att alla containers körs
-docker ps
-```
-
-Du ska se tre containers: postgres, mongodb, och redis.
-
-### 5. Kör databas-migrationer
-
-```bash
-# Kör initial schema
-docker exec -i redovisningssystem-postgres-1 psql -U postgres -d redovisning < database/migrations/001_initial_schema.sql
-```
-
-### 6. Starta applikationen
-
-```bash
-# Terminal 1 - Backend
-cd backend
-npm run dev
-
-# Terminal 2 - Frontend
-cd frontend
-npm run dev
-```
-
-Backend körs på: http://localhost:3000
-Frontend körs på: http://localhost:5173
-
-## 🧪 Testning
-
-```bash
-# Backend tests
-cd backend
-npm test
-
-# Frontend tests
-cd frontend
-npm test
-```
-
-## 📁 Projektstruktur
-
-```
-redovisningssystem/
-├── frontend/          # React frontend
-├── backend/           # Node.js backend
-├── database/          # SQL migrations
-├── scripts/           # Utility scripts
-└── docs/             # Documentation
-```
-
-## 🔧 Utveckling
-
-### API Endpoints
-
-- `POST /api/v1/auth/register` - Registrera ny användare
-- `POST /api/v1/auth/login` - Logga in
-- `GET /health` - Health check
-
-### Databasstruktur
-
-Se `database/migrations/001_initial_schema.sql` för fullständigt schema.
-
-Huvudtabeller:
-- `users` - Användarinformation
-- `companies` - Företagsinformation
-- `user_companies` - Koppling användare-företag
-
-## 📝 Nästa steg
-
-1. ✅ Fas 0: Setup och autentisering (KLAR)
-2. 🔄 Fas 1: Foundation (User Management, Company Settings)
-3. ⏳ Fas 2: MVP Core (Invoices, Receipts, AI OCR)
-4. ⏳ Fas 3: Enhanced (Chatbot, Recurring, Integrations)
-5. ⏳ Fas 4: Advanced (Multi-Company, Bank, Mobile)
-
-Se `CLAUDE.md` för detaljerad utvecklingsplan.
-
-## 🐛 Felsökning
-
-### Databaser startar inte
-
-```bash
-docker-compose down -v
-docker-compose up -d
-```
-
-### Port redan används
-
-Ändra portar i `.env` och `docker-compose.yml`.
-
-### Migration error
-
-Se till att postgres-containern heter rätt:
-```bash
-docker ps
-# Använd rätt container-namn i migration-kommandot
-```
-
-## 📄 Licens
-
-Proprietär - Alla rättigheter förbehålles
+API:t ansluter som den lågprivilegierade rollen `app` (Row Level Security tvingas),
+migrationsrunnern som ägarrollen via `DATABASE_ADMIN_URL`.
