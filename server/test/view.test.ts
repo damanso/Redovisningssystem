@@ -153,6 +153,57 @@ describe('sessionshärdning', () => {
   });
 });
 
+describe('människa-i-loopen: godkänn/avvisa i vyn', () => {
+  const h = () => ({ Authorization: `Bearer ${userA.token}` });
+
+  async function pendingBookInvoice(label: string, date: string): Promise<{ approvalId: string; invoiceId: string; fyId: string }> {
+    const fy = await api.post(`/api/companies/${companyA}/accounting/fiscal-years`).set(h())
+      .send({ label, start_date: `${label}-01-01`, end_date: `${label}-12-31` });
+    const cust = await api.post(`/api/companies/${companyA}/customers`).set(h()).send({ name: `Kund ${label}` });
+    const inv = await api.post(`/api/companies/${companyA}/invoices`).set(h())
+      .send({ customer_id: cust.body.customer.id, invoice_date: date, lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }] });
+    const tok = await api.post(`/api/companies/${companyA}/agent-tokens`).set(h()).send({ name: 'AI' });
+    const req = await api.post(`/api/companies/${companyA}/actions/book_invoice`).set({ Authorization: `Bearer ${tok.body.token}` })
+      .send({ invoice_id: inv.body.invoice.id, fiscal_year_id: fy.body.fiscal_year.id });
+    expect(req.status).toBe(202); // känslig → pending, bokförs INTE automatiskt
+    return { approvalId: req.body.approval.id, invoiceId: inv.body.invoice.id, fyId: fy.body.fiscal_year.id };
+  }
+
+  it('agent föreslår → människa GODKÄNNER i vyn → utförd och fakturan bokförd', async () => {
+    const { approvalId, invoiceId } = await pendingBookInvoice('2099', '2099-06-01');
+    const approve = await agentA.post(`/app/c/${companyA}/approvals/${approvalId}/approve`).type('form').send({});
+    expect([302, 303]).toContain(approve.status);
+    expect(approve.headers.location).toBe(`/app/c/${companyA}/approvals`);
+    const executed = await api.get(`/api/companies/${companyA}/approvals?status=executed`).set(h());
+    expect(executed.body.approvals.some((a: { id: string }) => a.id === approvalId)).toBe(true);
+    const invs = await api.get(`/api/companies/${companyA}/invoices`).set(h());
+    const booked = invs.body.invoices.find((i: { id: string }) => i.id === invoiceId);
+    expect(booked.voucher_id).toBeTruthy(); // faktiskt bokförd i huvudboken
+  });
+
+  it('människa AVVISAR ett förslag → status rejected, inget bokförs', async () => {
+    const { approvalId, invoiceId } = await pendingBookInvoice('2098', '2098-06-01');
+    const reject = await agentA.post(`/app/c/${companyA}/approvals/${approvalId}/reject`).type('form').send({});
+    expect([302, 303]).toContain(reject.status);
+    const rejected = await api.get(`/api/companies/${companyA}/approvals?status=rejected`).set(h());
+    expect(rejected.body.approvals.some((a: { id: string }) => a.id === approvalId)).toBe(true);
+    const invs = await api.get(`/api/companies/${companyA}/invoices`).set(h());
+    const inv = invs.body.invoices.find((i: { id: string }) => i.id === invoiceId);
+    expect(inv.voucher_id).toBeFalsy(); // ej bokförd
+  });
+
+  it('en utomstående (B) kan INTE godkänna A:s förslag', async () => {
+    const { approvalId } = await pendingBookInvoice('2097', '2097-06-01');
+    const agentB = supertest.agent(app);
+    await agentB.post('/app/login').type('form').send({ email: userB.email, password: PASSWORD });
+    const res = await agentB.post(`/app/c/${companyA}/approvals/${approvalId}/approve`).type('form').send({});
+    expect([403, 404]).toContain(res.status); // B är inte medlem i A
+    // Förslaget ligger kvar orört (fortfarande pending).
+    const pending = await api.get(`/api/companies/${companyA}/approvals?status=pending`).set(h());
+    expect(pending.body.approvals.some((a: { id: string }) => a.id === approvalId)).toBe(true);
+  });
+});
+
 describe('dokumentarkiv', () => {
   it('genererar en faktura-PDF, som syns i arkivet och kan hämtas via vyn', async () => {
     // Skapa en PDF via API:t så att den hamnar i dokumentarkivet.

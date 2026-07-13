@@ -11,6 +11,7 @@ import { listInvoices } from '../../services/invoices.js';
 import { listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { listReceipts } from '../../services/receipts.js';
 import { listApprovals } from '../../services/approvals.js';
+import { approveAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { balanceSheet, dashboard, generalLedger, incomeStatement } from '../../services/reports.js';
@@ -372,8 +373,13 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                 ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
               </div>
               <div class="ai-actions">
-                ${chip('Väntar på godkännande', 'warn', '◔')}
-                <span class="hint">Godkänn eller avvisa i åtgärdslagret — varje beslut loggas i revisionsloggen.</span>
+                <form method="post" action="/app/c/${companyId}/approvals/${a.id}/approve" style="margin:0">
+                  <button class="btn btn--primary btn--sm" type="submit">✓ Godkänn &amp; utför</button>
+                </form>
+                <form method="post" action="/app/c/${companyId}/approvals/${a.id}/reject" style="margin:0">
+                  <button class="btn btn--ghost btn--sm" type="submit">Avvisa</button>
+                </form>
+                <span class="hint">Du bestämmer — varje beslut loggas i revisionsloggen.</span>
               </div>
             </article>`;
           })
@@ -404,6 +410,32 @@ viewRouter.get(
     });
   }),
 );
+
+// Människa-i-loopen: en inloggad människa godkänner/avvisar ett AI-/agentförslag
+// direkt i vyn. actor är ALLTID 'human' här (viewAuth sätter så), och
+// approveAction/rejectApproval härleder tenant från medlemskap + kräver human.
+// Cookien är SameSite=Lax + Path=/app → korsande sajt kan inte utlösa POST:en.
+function parseApprovalId(value: unknown): string {
+  const parsed = UuidSchema.safeParse(value);
+  if (!parsed.success) throw new NotFoundError('approval');
+  return parsed.data;
+}
+
+viewRouter.post('/c/:companyId/approvals/:id/approve', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const approvalId = parseApprovalId(req.params.id);
+  await approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId });
+  res.redirect(`/app/c/${companyId}/approvals`);
+}));
+
+viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const approvalId = parseApprovalId(req.params.id);
+  await rejectApproval({ companyId, approverId: userId, approvalId });
+  res.redirect(`/app/c/${companyId}/approvals`);
+}));
 
 // Hela revisionsloggen (keyset-paginerad).
 viewRouter.get('/c/:companyId/audit', pageFor('audit', 'Revisionslogg', async (client, companyId) => {
