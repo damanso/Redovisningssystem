@@ -99,9 +99,11 @@ describe('sidorna visar rätt innehåll', () => {
     expect(res.text).toContain('Resultaträkning');
     expect(res.text).toContain('Balansräkning');
     expect(res.text).toContain('Momsrapport');
-    // Balanskontrollen ska vara ärlig: friskt seedat data balanserar och har
-    // inga oklassificerade konton (kontrollen är inte längre alltid-noll-vacuös).
-    expect(res.text).toContain('balanserar');
+    // Balanskontrollen ska vara ärlig: friskt seedat data balanserar (chip
+    // "Balanserar") och har inga oklassificerade konton (kontrollen är inte
+    // längre alltid-noll-vacuös). Ingen avvikelse ska visas.
+    expect(res.text).toContain('Balanserar');
+    expect(res.text).not.toContain('Avvikelse');
     expect(res.text).not.toContain('Ej klassificerade konton');
   });
 
