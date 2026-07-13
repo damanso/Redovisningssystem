@@ -32,6 +32,24 @@ export async function createCompany(token: string, name: string): Promise<string
   return res.body.company.id;
 }
 
+/**
+ * Extraherar den läsbara texten ur en (okomprimerad) PDFKit-PDF. PDFKit skriver
+ * text som hex-strängar i TJ-arrayer (<48616e...> = "Han..."), så en ren grep
+ * på bufferten hittar inget — vi avkodar hex-runorna och slår ihop dem.
+ */
+export function pdfText(buffer: Buffer): string {
+  const raw = buffer.toString('latin1');
+  let out = '';
+  for (const match of raw.matchAll(/<([0-9A-Fa-f]+)>/g)) {
+    const hex = match[1]!;
+    if (hex.length % 2 !== 0) continue;
+    for (let i = 0; i < hex.length; i += 2) {
+      out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    }
+  }
+  return out;
+}
+
 /** Adminanslutning (ägarrollen) för verifieringar som ska gå förbi app-rollen. */
 export async function withAdmin<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });

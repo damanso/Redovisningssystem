@@ -15,7 +15,9 @@ import { getUserId } from '../middleware/authenticate.js';
 import { requireCompanyAccess } from '../middleware/companyAccess.js';
 import { accountingRouter } from './accounting.js';
 import { filesRouter } from './files.js';
+import { invoicesRouter } from './invoices.js';
 import { partiesRouter } from './parties.js';
+import { receiptsRouter } from './receipts.js';
 
 // Svenskt organisationsnummer: NNNNNN-NNNN (bindestrecket valfritt vid inmatning).
 const OrgNumberSchema = z
@@ -211,4 +213,6 @@ companiesRouter.get('/:companyId/audit', async (req, res) => {
 
 companiesRouter.use('/:companyId/files', filesRouter);
 companiesRouter.use('/:companyId/accounting', accountingRouter);
+companiesRouter.use('/:companyId/invoices', invoicesRouter);
+companiesRouter.use('/:companyId/receipts', receiptsRouter);
 companiesRouter.use('/:companyId', partiesRouter);

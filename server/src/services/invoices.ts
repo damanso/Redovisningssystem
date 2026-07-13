@@ -1,0 +1,240 @@
+import type { PoolClient } from 'pg';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import { assertSafeOre, roundOre, sumOre, type Ore } from '../domain/money.js';
+import { isVatRate, vatFromNet, type VatRate } from '../domain/vat.js';
+import { generateOcr } from '../domain/ocr.js';
+import { postCustomerInvoice } from './accounting/autopost.js';
+import { writeAudit } from './auditService.js';
+import { generateInvoicePdf } from './pdfService.js';
+import { nextDocumentNumber } from './accounting/numbering.js';
+import { validateUpload, writeStoredFile } from './fileStorage.js';
+
+export interface InvoiceLineInput {
+  article_id?: string;
+  description?: string;
+  quantity: number;
+  unit?: string;
+  unit_price_ore?: Ore;
+  vat_rate?: VatRate;
+  revenue_account?: number;
+}
+
+export interface CreateInvoiceInput {
+  customer_id: string;
+  invoice_date: string;
+  due_date?: string;
+  payment_terms?: number;
+  reference?: string;
+  notes?: string;
+  lines: InvoiceLineInput[];
+}
+
+function addDays(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export async function createInvoice(
+  client: PoolClient,
+  companyId: string,
+  userId: string,
+  input: CreateInvoiceInput,
+): Promise<Record<string, unknown>> {
+  if (input.lines.length === 0) throw new BadRequestError('no_lines', 'fakturan saknar rader');
+
+  const customer = await client.query<{ payment_terms: number | null }>(
+    'SELECT payment_terms FROM customers WHERE id = $1 AND company_id = $2',
+    [input.customer_id, companyId],
+  );
+  if (!customer.rows[0]) throw new NotFoundError('customer');
+
+  // Radberäkning i ören. Artikel fyller i default pris/moms/konto/enhet.
+  const resolved = [];
+  for (const [i, line] of input.lines.entries()) {
+    let unitPrice = line.unit_price_ore;
+    let vatRate = line.vat_rate;
+    let revenueAccount = line.revenue_account;
+    let unit = line.unit;
+    let description = line.description;
+    if (line.article_id) {
+      const art = await client.query<{
+        name: string; unit: string; unit_price_ore: number; vat_rate: number; revenue_account: number;
+      }>(
+        'SELECT name, unit, unit_price_ore::int, vat_rate, revenue_account FROM articles WHERE id = $1 AND company_id = $2 AND is_active',
+        [line.article_id, companyId],
+      );
+      if (!art.rows[0]) throw new BadRequestError('unknown_article', `rad ${i + 1}: okänd/inaktiv artikel`);
+      unitPrice ??= art.rows[0].unit_price_ore;
+      vatRate ??= art.rows[0].vat_rate as VatRate;
+      revenueAccount ??= art.rows[0].revenue_account;
+      unit ??= art.rows[0].unit;
+      description ??= art.rows[0].name;
+    }
+    if (unitPrice === undefined || vatRate === undefined) {
+      throw new BadRequestError('invalid_line', `rad ${i + 1}: pris och momssats krävs`);
+    }
+    if (!isVatRate(vatRate)) throw new BadRequestError('invalid_vat_rate', `rad ${i + 1}: otillåten momssats`);
+    if (!description) throw new BadRequestError('invalid_line', `rad ${i + 1}: beskrivning krävs`);
+    if (!(line.quantity > 0)) throw new BadRequestError('invalid_line', `rad ${i + 1}: antal måste vara positivt`);
+    assertSafeOre(unitPrice);
+    const lineNet = roundOre(line.quantity * unitPrice);
+    resolved.push({
+      article_id: line.article_id ?? null,
+      description,
+      quantity: line.quantity,
+      unit: unit ?? 'st',
+      unit_price_ore: unitPrice,
+      vat_rate: vatRate,
+      revenue_account: revenueAccount ?? 3001,
+      line_net_ore: lineNet,
+    });
+  }
+
+  const subtotal = sumOre(resolved.map((l) => l.line_net_ore));
+  const vat = sumOre(resolved.map((l) => vatFromNet(l.line_net_ore, l.vat_rate)));
+  const total = assertSafeOre(subtotal + vat);
+
+  const number = await nextDocumentNumber(client, companyId, 'invoice');
+  const ocr = generateOcr(String(number).padStart(6, '0'), { lengthControl: true });
+  const paymentTerms = input.payment_terms ?? customer.rows[0].payment_terms ?? 30;
+  const dueDate = input.due_date ?? addDays(input.invoice_date, paymentTerms);
+
+  const inv = await client.query<{ id: string }>(
+    `INSERT INTO invoices (company_id, customer_id, invoice_number, ocr, invoice_date, due_date,
+        subtotal_ore, vat_ore, total_ore, reference, notes, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+    [companyId, input.customer_id, number, ocr, input.invoice_date, dueDate,
+      subtotal, vat, total, input.reference ?? null, input.notes ?? null, userId],
+  );
+  const invoiceId = inv.rows[0]!.id;
+
+  for (const [i, l] of resolved.entries()) {
+    await client.query(
+      `INSERT INTO invoice_lines (invoice_id, company_id, line_no, article_id, description,
+          quantity, unit, unit_price_ore, vat_rate, line_net_ore, revenue_account)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [invoiceId, companyId, i + 1, l.article_id, l.description, l.quantity, l.unit,
+        l.unit_price_ore, l.vat_rate, l.line_net_ore, l.revenue_account],
+    );
+  }
+
+  await writeAudit(client, {
+    companyId, userId, action: 'invoice.created', entityType: 'invoice', entityId: invoiceId,
+    details: { invoice_number: number, total_ore: total },
+  });
+  return getInvoice(client, companyId, invoiceId);
+}
+
+export async function getInvoice(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
+  const head = await client.query(
+    `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
+            i.subtotal_ore::int, i.vat_ore::int, i.total_ore::int, i.reference, i.notes,
+            i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
+     FROM invoices i JOIN customers c ON c.id = i.customer_id
+     WHERE i.id = $1 AND i.company_id = $2`,
+    [id, companyId],
+  );
+  if (!head.rows[0]) throw new NotFoundError('invoice');
+  const lines = await client.query(
+    `SELECT line_no, article_id, description, quantity::text, unit, unit_price_ore::int,
+            vat_rate, line_net_ore::int, revenue_account
+     FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`,
+    [id],
+  );
+  return { ...head.rows[0], lines: lines.rows };
+}
+
+export async function listInvoices(
+  client: PoolClient, companyId: string, opts: { status?: string } = {},
+): Promise<Record<string, unknown>[]> {
+  const result = await client.query(
+    `SELECT i.id, i.invoice_number, i.invoice_date::text, i.due_date::text, i.status,
+            i.total_ore::int, i.voucher_id, c.name AS customer_name
+     FROM invoices i JOIN customers c ON c.id = i.customer_id
+     WHERE i.company_id = $1 AND ($2::text IS NULL OR i.status = $2)
+     ORDER BY i.invoice_number DESC`,
+    [companyId, opts.status ?? null],
+  );
+  return result.rows;
+}
+
+/** Bokför fakturan till huvudboken (automatkontering). Dubbelbokningsspärr via source. */
+export async function bookInvoice(
+  client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId: string,
+): Promise<Record<string, unknown>> {
+  const invoice = await getInvoice(client, companyId, id);
+  if (invoice.voucher_id) throw new ConflictError('already_booked', 'fakturan är redan bokförd');
+  const lines = invoice.lines as { line_net_ore: number; vat_rate: number; revenue_account: number }[];
+
+  const voucher = await postCustomerInvoice(client, companyId, userId, {
+    fiscalYearId,
+    voucherDate: invoice.invoice_date as string,
+    sourceId: id,
+    description: `Kundfaktura ${invoice.invoice_number}`,
+    lines: lines.map((l) => ({ netOre: l.line_net_ore, vatRate: l.vat_rate as VatRate, account: l.revenue_account })),
+  });
+
+  await client.query(
+    "UPDATE invoices SET voucher_id = $1, status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END WHERE id = $2 AND company_id = $3",
+    [voucher.id, id, companyId],
+  );
+  await writeAudit(client, {
+    companyId, userId, action: 'invoice.booked', entityType: 'invoice', entityId: id,
+    details: { voucher_id: voucher.id },
+  });
+  return getInvoice(client, companyId, id);
+}
+
+/** Genererar faktura-PDF, lagrar i dokumentarkivet och kopplar den till fakturan. */
+export async function generateInvoicePdfFile(
+  client: PoolClient, companyId: string, userId: string, id: string,
+): Promise<{ fileId: string; buffer: Buffer }> {
+  const company = await client.query(
+    `SELECT name, org_number, address, postal_code, city, email, phone, vat_number,
+            bankgiro, plusgiro, bank_account, iban FROM companies WHERE id = $1`,
+    [companyId],
+  );
+  const invoice = await getInvoice(client, companyId, id);
+  const customer = await client.query(
+    'SELECT name, address, postal_code, city FROM customers WHERE id = $1 AND company_id = $2',
+    [invoice.customer_id, companyId],
+  );
+
+  const buffer = await generateInvoicePdf({
+    company: company.rows[0] as never,
+    customer: customer.rows[0] as never,
+    invoice: {
+      invoice_number: invoice.invoice_number as number,
+      invoice_date: invoice.invoice_date as string,
+      due_date: invoice.due_date as string,
+      ocr: invoice.ocr as string | null,
+      reference: invoice.reference as string | null,
+    },
+    lines: (invoice.lines as never[]).map((l: any) => ({
+      description: l.description, quantity: l.quantity, unit: l.unit,
+      unit_price_ore: l.unit_price_ore, vat_rate: l.vat_rate, line_net_ore: l.line_net_ore,
+    })),
+    totals: {
+      subtotal_ore: invoice.subtotal_ore as number,
+      vat_ore: invoice.vat_ore as number,
+      total_ore: invoice.total_ore as number,
+    },
+  });
+
+  const validated = validateUpload(`faktura-${invoice.invoice_number}.pdf`, buffer);
+  const file = await client.query<{ id: string }>(
+    `INSERT INTO files (company_id, original_name, stored_name, mime_type, size_bytes, sha256, uploaded_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [companyId, `faktura-${invoice.invoice_number}.pdf`, validated.storedName, validated.mimeType,
+      buffer.length, validated.sha256, userId],
+  );
+  const fileId = file.rows[0]!.id;
+  await writeStoredFile(companyId, validated.storedName, buffer);
+  await client.query('UPDATE invoices SET pdf_file_id = $1 WHERE id = $2 AND company_id = $3', [fileId, id, companyId]);
+  await writeAudit(client, {
+    companyId, userId, action: 'invoice.pdf_generated', entityType: 'invoice', entityId: id,
+    details: { file_id: fileId },
+  });
+  return { fileId, buffer };
+}
