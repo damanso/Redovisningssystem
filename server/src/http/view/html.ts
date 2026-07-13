@@ -128,6 +128,7 @@ const NAV = [
   ['payables', 'Leverantörsreskontra'],
   ['invoices', 'Fakturor'],
   ['recurring', 'Abonnemang'],
+  ['projects', 'Projekt'],
   ['receipts', 'Kvitton'],
   ['approvals', 'Att göra'],
   ['customers', 'Kunder'],

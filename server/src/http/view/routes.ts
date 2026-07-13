@@ -19,6 +19,7 @@ import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
+import { getProject, listProjects } from '../../services/projects.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
@@ -361,6 +362,65 @@ viewRouter.get('/c/:companyId/recurring', pageFor('recurring', 'Abonnemang', asy
               <td>${r.active ? chip('Aktiv', 'ok') : chip('Pausad', 'muted')}</td></tr>`)}
             </tbody></table></div>`
     }`;
+}));
+
+// Projekt & tid. Listvy med upparbetad/fakturerbar tid; detaljvy med tidposter.
+const hhmm = (minutes: number): string => `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
+const kpiCell = (label: string, value: Raw): Raw => html`<div class="kpi"><div class="l">${label}</div><div class="v">${value}</div></div>`;
+viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (client, companyId) => {
+  const rows = await listProjects(client, companyId, {});
+  return html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>Projekt & tid</h1>
+      <p class="lede">Upparbetad och fakturerbar tid per projekt. Klicka på ett projekt för tidposterna.</p></div></div>
+    ${
+      rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga projekt ännu</div>Skapa ett projekt och börja tidrapportera.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Nr</th><th>Projekt</th><th>Kund</th><th class="num">Total tid</th><th class="num">Fakturerbar</th><th>Status</th></tr></thead>
+            <tbody>${rows.map((r) => html`<tr>
+              <td class="code">${r.number as number}</td>
+              <td><a href="/app/c/${companyId}/projects/${r.id as string}">${r.name as string}</a></td>
+              <td>${(r.customer_name as string) ?? '—'}</td>
+              <td class="num">${hhmm(r.total_minutes as number)}</td>
+              <td class="num">${hhmm(r.billable_minutes as number)}</td>
+              <td>${r.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</td></tr>`)}
+            </tbody></table></div>`
+    }`;
+}));
+
+viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const p = await getProject(client, companyId, projectId) as {
+      id: string; number: number; name: string; status: string; customer_name: string | null;
+      hourly_rate_ore: number | null; budget_ore: number | null; notes: string | null;
+      entries: Array<{ work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean; hourly_rate_ore: number | null }>;
+      summary: { total_minutes: number; billable_minutes: number; billable_amount_ore: number };
+    };
+    const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
+        <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${p.customer_name} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
+        <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</div></div>
+      <div class="kpi-grid">
+        ${kpiCell('Total tid', html`${hhmm(p.summary.total_minutes)}`)}
+        ${kpiCell('Fakturerbar tid', html`${hhmm(p.summary.billable_minutes)}`)}
+        ${kpiCell('Fakturerbart belopp', amount(p.summary.billable_amount_ore))}
+        ${p.budget_ore != null ? kpiCell('Budget', amount(p.budget_ore)) : ''}
+      </div>
+      <h2 style="margin-top:18px">Tidposter</h2>
+      ${
+        p.entries.length === 0
+          ? html`<p class="muted">Inga tidposter ännu.</p>`
+          : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th></tr></thead><tbody>
+              ${p.entries.map((e) => html`<tr><td class="code">${e.work_date}</td><td>${e.description}</td>
+                <td class="num">${hhmm(e.minutes)}</td><td>${e.billable ? chip('Ja', 'ok') : chip('Nej', 'muted')}</td>
+                <td>${e.invoiced ? chip('Ja', 'info') : ''}</td></tr>`)}
+              </tbody></table></div>`
+      }`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
 }));
 
 // CSV-export av rapporter (revisor/Excel). Läser rapporten inom tenant-gränsen

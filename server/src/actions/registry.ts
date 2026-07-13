@@ -13,6 +13,7 @@ import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
+import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -256,6 +257,59 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ as_of: IsoDateSchema }).strict(),
     handler: (ctx, i: { as_of: string }) =>
       runDueRecurringInvoices(ctx.client, ctx.companyId, ctx.userId, i.as_of),
+  }),
+  def({
+    name: 'list_projects',
+    title: 'Lista projekt',
+    sensitivity: 'read',
+    inputSchema: z.object({ status: z.enum(['active', 'closed']).optional() }).strict(),
+    handler: (ctx, i: { status?: 'active' | 'closed' }) => listProjects(ctx.client, ctx.companyId, { status: i.status }),
+  }),
+  def({
+    name: 'get_project',
+    title: 'Hämta projekt med tidsammanställning',
+    sensitivity: 'read',
+    inputSchema: z.object({ project_id: UuidSchema }).strict(),
+    handler: (ctx, i: { project_id: string }) => getProject(ctx.client, ctx.companyId, i.project_id),
+  }),
+  def({
+    name: 'create_project',
+    title: 'Skapa projekt',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        name: safeText(150),
+        customer_id: UuidSchema.optional(),
+        hourly_rate_ore: OreSchema.optional(),
+        budget_ore: OreSchema.optional(),
+        notes: safeText(500).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => createProject(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_project_status',
+    title: 'Öppna/stäng projekt',
+    sensitivity: 'write',
+    inputSchema: z.object({ project_id: UuidSchema, status: z.enum(['active', 'closed']) }).strict(),
+    handler: (ctx, i: { project_id: string; status: 'active' | 'closed' }) =>
+      setProjectStatus(ctx.client, ctx.companyId, ctx.userId, i.project_id, i.status),
+  }),
+  def({
+    name: 'log_time',
+    title: 'Registrera tidpost',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema,
+        work_date: IsoDateSchema,
+        minutes: z.number().int().min(1).max(1440),
+        description: safeText(300),
+        hourly_rate_ore: OreSchema.optional(),
+        billable: z.boolean().optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   def({
     name: 'create_receipt',
