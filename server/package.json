@@ -22,6 +22,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "pdfkit": "^0.15.0",
     "pg": "^8.16.0",
     "zod": "^3.25.0"
   },
@@ -30,6 +31,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^2.0.0",
     "@types/node": "^22.10.0",
+    "@types/pdfkit": "^0.13.4",
     "@types/pg": "^8.15.0",
     "@types/supertest": "^6.0.2",
     "supertest": "^7.1.0",

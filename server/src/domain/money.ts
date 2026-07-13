@@ -40,6 +40,15 @@ export function oreToKronor(ore: Ore): number {
   return ore / 100;
 }
 
+/** Svensk formatering för presentation (PDF/e-post), t.ex. 123456 → "1 234,56". */
+export function formatOre(ore: Ore, options: { currency?: boolean } = {}): string {
+  const formatted = new Intl.NumberFormat('sv-SE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(oreToKronor(ore));
+  return options.currency ? `${formatted} kr` : formatted;
+}
+
 /** Summerar ören säkert (heltal). */
 export function sumOre(values: readonly Ore[]): Ore {
   let total = 0;

@@ -15,6 +15,7 @@ import { getUserId } from '../middleware/authenticate.js';
 import { requireCompanyAccess } from '../middleware/companyAccess.js';
 import { accountingRouter } from './accounting.js';
 import { filesRouter } from './files.js';
+import { partiesRouter } from './parties.js';
 
 // Svenskt organisationsnummer: NNNNNN-NNNN (bindestrecket valfritt vid inmatning).
 const OrgNumberSchema = z
@@ -29,11 +30,25 @@ const CreateCompanySchema = z
   })
   .strict();
 
+const optText = (max: number) => safeText(max).nullable().optional();
+
 // .strict() avvisar okända nycklar → en skadlig "kolumnnyckel" stoppas redan här.
 const UpdateCompanySchema = z
   .object({
     name: safeText(200).optional(),
     org_number: OrgNumberSchema.nullable().optional(),
+    // Betal- och adressuppgifter (används på faktura-PDF och betalinfo).
+    address: optText(200),
+    postal_code: optText(20),
+    city: optText(100),
+    email: optText(254),
+    phone: optText(50),
+    vat_number: optText(30),
+    bankgiro: optText(20),
+    plusgiro: optText(20),
+    bank_account: optText(50),
+    iban: optText(50),
+    payment_terms: z.number().int().min(0).max(365).optional(),
   })
   .strict();
 
@@ -41,6 +56,17 @@ const UpdateCompanySchema = z
 const COMPANY_UPDATE_COLUMNS = {
   name: 'name',
   org_number: 'org_number',
+  address: 'address',
+  postal_code: 'postal_code',
+  city: 'city',
+  email: 'email',
+  phone: 'phone',
+  vat_number: 'vat_number',
+  bankgiro: 'bankgiro',
+  plusgiro: 'plusgiro',
+  bank_account: 'bank_account',
+  iban: 'iban',
+  payment_terms: 'payment_terms',
 } as const;
 
 const AuditQuerySchema = z
@@ -115,7 +141,10 @@ companiesRouter.get('/:companyId', async (req, res) => {
   const companyId = req.companyId!;
   const company = await withTenantTransaction(userId, companyId, async (client) => {
     const result = await client.query(
-      'SELECT id, name, org_number, created_at, updated_at FROM companies WHERE id = $1',
+      `SELECT id, name, org_number, address, postal_code, city, email, phone,
+              vat_number, bankgiro, plusgiro, bank_account, iban, payment_terms,
+              created_at, updated_at
+       FROM companies WHERE id = $1`,
       [companyId],
     );
     if (!result.rows[0]) throw new NotFoundError('company');
@@ -182,3 +211,4 @@ companiesRouter.get('/:companyId/audit', async (req, res) => {
 
 companiesRouter.use('/:companyId/files', filesRouter);
 companiesRouter.use('/:companyId/accounting', accountingRouter);
+companiesRouter.use('/:companyId', partiesRouter);
