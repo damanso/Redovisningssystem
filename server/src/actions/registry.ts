@@ -15,6 +15,7 @@ import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recor
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
+import { listMembers } from '../services/team.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -127,6 +128,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'list_team_members',
+    title: 'Lista teammedlemmar och roller',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listMembers(ctx.client, ctx.companyId, ctx.userId),
   }),
   def({
     name: 'key_ratios',

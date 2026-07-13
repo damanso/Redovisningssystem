@@ -36,7 +36,7 @@ declare module 'express-serve-static-core' {
   interface Request {
     auth?: AuthContext;
     companyId?: string;
-    companyRole?: 'owner' | 'member';
+    companyRole?: 'owner' | 'admin' | 'member';
   }
 }
 

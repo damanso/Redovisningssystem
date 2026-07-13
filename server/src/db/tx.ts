@@ -3,7 +3,7 @@ import { pool } from './pool.js';
 import { NotFoundError } from '../lib/errors.js';
 
 export type Queryable = Pool | PoolClient;
-export type CompanyRole = 'owner' | 'member';
+export type CompanyRole = 'owner' | 'admin' | 'member';
 
 /**
  * Sätter transaktionslokal RLS-kontext (app.user_id + valfritt app.company_id).

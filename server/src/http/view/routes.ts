@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
 import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
-import { ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { UuidSchema } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { listInvoices } from '../../services/invoices.js';
@@ -21,6 +21,7 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
+import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
@@ -858,6 +859,92 @@ viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
   const approvalId = parseApprovalId(req.params.id);
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
     rejectApproval({ companyId, approverId: userId, approvalId }));
+}));
+
+// Team & roller. Alla medlemmar ser rostern; ägare/admin ser hanteringskontroller.
+const roleOptions = (current: string): Raw => html`${(['admin', 'member'] as const).map((r) => html`<option value="${r}"${r === current ? html` selected` : ''}>${roleLabel(r)}</option>`)}`;
+viewRouter.get('/c/:companyId/team', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client, role) => {
+    const company = await loadCompany(client, companyId);
+    const members = await listMembers(client, companyId, userId);
+    const canManage = role === 'owner' || role === 'admin';
+    const b = html`<div class="page-head"><div>${eyebrow('Team')}<h1>Medlemmar & roller</h1>
+        <p class="lede">Vem har åtkomst till ${company.name} och med vilken roll. ${canManage ? 'Du kan bjuda in, ändra roll och ta bort medlemmar.' : 'Kontakta en ägare eller admin för att ändra åtkomst.'}</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Namn</th><th>E-post</th><th>Roll</th>${canManage ? html`<th></th>` : ''}</tr></thead><tbody>
+        ${members.map((m) => html`<tr>
+          <td>${m.name}${m.is_you ? html` ${chip('Du', 'info')}` : ''}</td>
+          <td>${m.email}</td>
+          <td>${m.role === 'owner' ? chip('Ägare', 'info') : m.role === 'admin' ? chip('Administratör', 'ok') : chip('Medlem', 'muted')}</td>
+          ${
+            canManage
+              ? html`<td class="actions">${
+                  m.role === 'owner' || m.is_you
+                    ? html`<span class="muted" style="font-size:12.5px">—</span>`
+                    : html`<form method="post" action="/app/c/${companyId}/team/role" style="display:inline-flex;gap:6px;align-items:center">
+                        <input type="hidden" name="user_id" value="${m.user_id}">
+                        <select name="role" class="input input--sm">${roleOptions(m.role)}</select>
+                        <button class="btn btn--ghost btn--sm" type="submit">Spara</button></form>
+                      <form method="post" action="/app/c/${companyId}/team/remove" style="display:inline" onsubmit="">
+                        <input type="hidden" name="user_id" value="${m.user_id}">
+                        <button class="btn btn--ghost btn--sm" type="submit">Ta bort</button></form>`
+                }</td>`
+              : ''
+          }</tr>`)}
+        </tbody></table></div>
+      ${
+        canManage
+          ? html`<div class="panel" style="margin-top:16px"><div class="panel__head"><h2>Bjud in medlem</h2></div>
+              <div class="panel__body" style="padding:14px 16px">
+                <p class="muted" style="font-size:12.5px;margin-bottom:10px">Användaren måste redan ha ett konto. Inbjudan via e-postlänk till nya användare kräver e-postutskick (byggs i e-post/notiser-fasen).</p>
+                <form method="post" action="/app/c/${companyId}/team/invite" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                  <input class="input" type="email" name="email" placeholder="namn@exempel.se" required style="min-width:240px">
+                  <select name="role" class="input">${roleOptions('member')}</select>
+                  <button class="btn btn--primary" type="submit">Bjud in</button></form></div></div>`
+          : ''
+      }`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: 'Team', companyId, companyName: name, active: 'team', body }).value);
+}));
+
+const TeamActionSchema = z.object({ user_id: UuidSchema, role: z.enum(['admin', 'member']).optional() });
+function teamRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+  // Konflikter (sista ägaren, redan medlem) är begripliga tillstånd → tillbaka till
+  // teamsidan snarare än felsida. Behörighetsfel (403/404) bubblar upp.
+  return run().then(() => { res.redirect(`/app/c/${companyId}/team`); }, (err) => {
+    if (err instanceof ConflictError || err instanceof BadRequestError) { res.redirect(`/app/c/${companyId}/team`); return; }
+    throw err;
+  });
+}
+
+viewRouter.post('/c/:companyId/team/invite', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const email = z.string().email().max(254).parse((req.body as { email?: unknown }).email);
+  const role = z.enum(['admin', 'member']).parse((req.body as { role?: unknown }).role);
+  await teamRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client, actorRole) => inviteMember(client, companyId, actorRole, userId, email, role)));
+}));
+
+viewRouter.post('/c/:companyId/team/role', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const input = TeamActionSchema.parse(req.body);
+  await teamRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client, actorRole) => setMemberRole(client, companyId, actorRole, userId, input.user_id, input.role ?? 'member')));
+}));
+
+viewRouter.post('/c/:companyId/team/remove', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const input = TeamActionSchema.parse(req.body);
+  await teamRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client, actorRole) => removeMember(client, companyId, actorRole, userId, input.user_id)));
 }));
 
 // Hela revisionsloggen (keyset-paginerad).
