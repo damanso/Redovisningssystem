@@ -74,11 +74,20 @@ beforeAll(async () => {
     .send({ customer_id: cust2.body.customer.id, invoice_date: '2025-05-01', lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }] });
   invoiceId = inv.body.invoice.id;
 
-  child = spawn(process.execPath, ['dist/mcp/server.js'], {
+  // Kör KÄLLAN via tsx (inte dist/) så testet aldrig kan exercera en gammal
+  // byggartefakt — källa och test kan inte divergera, och npm test behöver
+  // ingen föregående build.
+  child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp/server.ts'], {
     cwd: process.cwd(),
     env: { ...process.env, REDOVISNING_API_URL: baseUrl, REDOVISNING_AGENT_TOKEN: agentToken, REDOVISNING_COMPANY_ID: companyId },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;
+  // Tydlig diagnostik om servern inte startar (annars bara en 10s-timeout).
+  const stderr: string[] = [];
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (d: string) => stderr.push(d));
+  child.on('error', (e) => { throw new Error(`kunde inte starta MCP-servern: ${e.message}`); });
+  child.on('exit', (code) => { if (code) throw new Error(`MCP-servern avslutades (${code}): ${stderr.join('')}`); });
   mcp = new McpClient(child);
   await mcp.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } });
   mcp.notify('notifications/initialized');

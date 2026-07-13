@@ -104,7 +104,8 @@ async function main(): Promise<void> {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
       if (name === 'list_pending_approvals') {
-        const { body } = await api(`/api/companies/${COMPANY_ID}/approvals?status=pending`);
+        const { status, body } = await api(`/api/companies/${COMPANY_ID}/approvals?status=pending`);
+        if (status >= 400) return textResult(`Fel (HTTP ${status}): ${JSON.stringify(body)}`, true);
         return textResult(JSON.stringify(body, null, 2));
       }
       if (!byName.has(name)) return textResult(`Okänt verktyg: ${name}`, true);

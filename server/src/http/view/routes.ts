@@ -1,11 +1,11 @@
-import { Router, urlencoded } from 'express';
+import { Router, urlencoded, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
 import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
-import { NotFoundError } from '../../lib/errors.js';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { UuidSchema } from '../../lib/validation.js';
 import { listInvoices } from '../../services/invoices.js';
 import { listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
@@ -421,20 +421,46 @@ function parseApprovalId(value: unknown): string {
   return parsed.data;
 }
 
+// Extra CSRF-lager utöver SameSite=Lax-cookien för de pengaflyttande POST-rutterna:
+// om webbläsaren skickar en Origin-header måste den matcha värden. Saknas Origin
+// (vissa samma-ursprungs-POST:ar) faller vi tillbaka på SameSite-skyddet.
+function assertSameOrigin(req: Request): void {
+  const origin = req.get('origin');
+  if (!origin) return;
+  let originHost: string;
+  try { originHost = new URL(origin).host; } catch { throw new ForbiddenError('cross_origin', 'ogiltig origin'); }
+  if (originHost !== req.get('host')) throw new ForbiddenError('cross_origin', 'korsande ursprung nekas');
+}
+
+// Ett redan avgjort förslag (dubbelklick/gammal flik) ger ConflictError — det ska
+// inte visa en felsida, åtgärden är idempotent ur människans synvinkel, så vi
+// omdirigerar tillbaka. NotFoundError (t.ex. en icke-medlem, RLS döljer raden)
+// sväljs INTE — det ska förbli ett 404 så åtkomstgränsen syns.
+async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    if (!(err instanceof ConflictError)) throw err;
+  }
+  res.redirect(redirectTo);
+}
+
 viewRouter.post('/c/:companyId/approvals/:id/approve', page(async (req, res) => {
+  assertSameOrigin(req);
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const approvalId = parseApprovalId(req.params.id);
-  await approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId });
-  res.redirect(`/app/c/${companyId}/approvals`);
+  await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
+    approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId }));
 }));
 
 viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
+  assertSameOrigin(req);
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const approvalId = parseApprovalId(req.params.id);
-  await rejectApproval({ companyId, approverId: userId, approvalId });
-  res.redirect(`/app/c/${companyId}/approvals`);
+  await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
+    rejectApproval({ companyId, approverId: userId, approvalId }));
 }));
 
 // Hela revisionsloggen (keyset-paginerad).

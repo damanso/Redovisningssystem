@@ -192,6 +192,23 @@ describe('människa-i-loopen: godkänn/avvisa i vyn', () => {
     expect(inv.voucher_id).toBeFalsy(); // ej bokförd
   });
 
+  it('dubbelklick på godkänn ger ingen felsida — idempotent redirect', async () => {
+    const { approvalId } = await pendingBookInvoice('2095', '2095-06-01');
+    await agentA.post(`/app/c/${companyA}/approvals/${approvalId}/approve`).type('form').send({});
+    const second = await agentA.post(`/app/c/${companyA}/approvals/${approvalId}/approve`).type('form').send({});
+    expect([302, 303]).toContain(second.status); // redan utförd → omdirigera, inte 409-sida
+    expect(second.headers.location).toBe(`/app/c/${companyA}/approvals`);
+  });
+
+  it('en korsande Origin nekas på godkänn-POST (CSRF-lager utöver SameSite)', async () => {
+    const { approvalId } = await pendingBookInvoice('2096', '2096-06-01');
+    const res = await agentA.post(`/app/c/${companyA}/approvals/${approvalId}/approve`)
+      .set('Origin', 'https://evil.example').type('form').send({});
+    expect(res.status).toBe(403);
+    const pending = await api.get(`/api/companies/${companyA}/approvals?status=pending`).set(h());
+    expect(pending.body.approvals.some((a: { id: string }) => a.id === approvalId)).toBe(true);
+  });
+
   it('en utomstående (B) kan INTE godkänna A:s förslag', async () => {
     const { approvalId } = await pendingBookInvoice('2097', '2097-06-01');
     const agentB = supertest.agent(app);
