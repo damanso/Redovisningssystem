@@ -1,7 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
-yarn.lock
 
 # Environment variables
 .env
@@ -10,6 +8,7 @@ yarn.lock
 
 # Build outputs
 dist/
+dist-test/
 build/
 *.log
 
@@ -24,13 +23,10 @@ build/
 .DS_Store
 Thumbs.db
 
-# Database
-*.sqlite
-*.db
-
 # Test coverage
 coverage/
 .nyc_output/
 
-# Runtime upload storage
+# Runtime upload storage (utanför webbroten, UUID-namn)
+data/
 uploads/

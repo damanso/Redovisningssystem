@@ -1,0 +1,15 @@
+# Lokal utvecklingsdatabas. Porten 5433 för att inte krocka med en ev. lokal
+# Postgres på 5432. Trust-auth är endast för lokal utveckling.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -1,0 +1,19 @@
+{
+  "name": "redovisningssystem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run dev -w server",
+    "build": "npm run build -w server",
+    "test": "npm run test -w server",
+    "typecheck": "npm run typecheck -w server",
+    "migrate": "npm run migrate -w server"
+  }
+}
