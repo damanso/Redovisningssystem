@@ -20,6 +20,7 @@ import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, 
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
+import { consolidatedOverview } from '../../services/consolidated.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
@@ -73,7 +74,6 @@ viewRouter.get(
       );
       return r.rows;
     });
-    const roleLabel = (r: string) => (r === 'owner' ? 'Ägare' : r === 'admin' ? 'Administratör' : r === 'member' ? 'Medlem' : r);
     const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}<h1>Dina bolag</h1>
         <p class="lede">Öppna ett bolag för att se dess bokföring.</p></div></div>
       ${
@@ -87,11 +87,50 @@ viewRouter.get(
                   <div class="muted" style="font-size:12.5px;margin-top:6px">Öppna →</div>
                 </a>`,
               )}
-            </div>`
+            </div>
+            ${companies.length > 1 ? html`<p class="lede" style="margin-top:16px"><a class="btn btn--ghost btn--sm" href="/app/consolidated">Se koncernöversikt över alla bolag →</a></p>` : ''}`
       }`;
     res.type('html').send(layout({ title: 'Bolag', body }).value);
   }),
 );
+
+// Konsoliderad koncernöversikt: nyckeltal summerade över alla bolag användaren
+// är medlem i. Varje bolags siffror hämtas i sin egen tenant-transaktion.
+viewRouter.get('/consolidated', page(async (req, res) => {
+  const userId = getUserId(req);
+  const con = await consolidatedOverview(userId);
+  const t = con.totals;
+  const body = html`<div class="page-head"><div>${eyebrow('Koncern')}<h1>Konsoliderad översikt</h1>
+      <p class="lede">Nyckeltal summerade över dina ${String(con.rows.length)} bolag. <a href="/app/">← Bolag</a></p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Kundfordringar', amount(t.receivables_ore))}
+      ${kpiCell('Leverantörsskulder', amount(t.payables_ore))}
+      ${kpiCell('Likvida medel', amount(t.bank_ore))}
+      ${kpiCell('Resultat (i år)', amount(t.result_ore))}
+    </div>
+    ${
+      con.rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga bolag</div>Du är inte medlem i något bolag.</div>`
+        : html`<div class="table-wrap" style="margin-top:16px"><table>
+            <thead><tr><th>Bolag</th><th>Roll</th><th class="num">Kundfordringar</th><th class="num">Lev.skulder</th><th class="num">Likvida medel</th><th class="num">Resultat</th><th class="num">Att göra</th></tr></thead>
+            <tbody>${con.rows.map((r) => html`<tr>
+              <td><a href="/app/c/${r.company_id}">${r.company_name}</a></td>
+              <td>${chip(roleLabel(r.role), r.role === 'owner' ? 'info' : 'muted')}</td>
+              <td class="num">${amount(r.receivables_ore, { unit: false })}</td>
+              <td class="num">${amount(r.payables_ore, { unit: false })}</td>
+              <td class="num">${amount(r.bank_ore, { unit: false })}</td>
+              <td class="num">${amount(r.result_ore, { unit: false })}</td>
+              <td class="num">${r.pending_approvals ? chip(String(r.pending_approvals), 'warn') : ''}</td></tr>`)}
+              <tr class="subtot"><td><strong>Summa</strong></td><td></td>
+                <td class="num"><strong>${amount(t.receivables_ore, { unit: false })}</strong></td>
+                <td class="num"><strong>${amount(t.payables_ore, { unit: false })}</strong></td>
+                <td class="num"><strong>${amount(t.bank_ore, { unit: false })}</strong></td>
+                <td class="num"><strong>${amount(t.result_ore, { unit: false })}</strong></td>
+                <td class="num">${t.pending_approvals ? chip(String(t.pending_approvals), 'warn') : ''}</td></tr>
+            </tbody></table></div>`
+    }`;
+  res.type('html').send(layout({ title: 'Koncernöversikt', body }).value);
+}));
 
 // ---- Bolagskontext: ALLTID från URL + verifierat medlemskap (ingen global
 // "current company" — regression mot den gamla currentCompanyId-buggen). ----
@@ -367,6 +406,7 @@ viewRouter.get('/c/:companyId/recurring', pageFor('recurring', 'Abonnemang', asy
 // Projekt & tid. Listvy med upparbetad/fakturerbar tid; detaljvy med tidposter.
 const hhmm = (minutes: number): string => `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
 const kpiCell = (label: string, value: Raw): Raw => html`<div class="kpi"><div class="l">${label}</div><div class="v">${value}</div></div>`;
+const roleLabel = (r: string): string => (r === 'owner' ? 'Ägare' : r === 'admin' ? 'Administratör' : r === 'member' ? 'Medlem' : r);
 viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (client, companyId) => {
   const rows = await listProjects(client, companyId, {});
   return html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>Projekt & tid</h1>
