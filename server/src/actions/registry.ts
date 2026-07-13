@@ -197,21 +197,22 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'register_invoice_payment',
     title: 'Registrera betalning på faktura',
     sensitivity: 'sensitive',
+    // Betalar hela fakturan. Delbetalning stöds inte ännu (unik source-referens
+    // per faktura kan bara bära ett betalningsverifikat), så inget belopp
+    // exponeras — det undviker en footgun där en delbetalning låser fakturan.
     inputSchema: z
       .object({
         invoice_id: UuidSchema,
         fiscal_year_id: UuidSchema,
         payment_date: IsoDateSchema,
-        amount_ore: OreSchema.optional(),
         bank_account: AccountNumberSchema.optional(),
       })
       .strict(),
-    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string; payment_date: string; bank_account?: number }) =>
       recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
         invoiceId: i.invoice_id,
         fiscalYearId: i.fiscal_year_id,
         paymentDate: i.payment_date,
-        amountOre: i.amount_ore,
         bankAccount: i.bank_account,
       }),
   }),

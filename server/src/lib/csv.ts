@@ -4,8 +4,21 @@
 
 const DELIMITER = ';';
 
+// Formelinjektionsskydd: ett fält som börjar med = + - @ (eller tab/CR) kan
+// tolkas som en formel av Excel/Sheets (t.ex. "=cmd|...", "@SUM", DDE). Rena tal
+// (inkl. negativa belopp som "-50,00") ska INTE röras — bara text som skulle bli
+// en formel prefixas med en apostrof så cellen blir ofarlig text.
+function needsFormulaGuard(s: string): boolean {
+  if (s === '') return false;
+  const c = s[0]!;
+  if (c === '=' || c === '@' || c === '\t' || c === '\r') return true;
+  if (c === '+' || c === '-') return !/^[+-]?\d+([.,]\d+)?$/.test(s); // tillåt rena tal
+  return false;
+}
+
 function escapeField(value: string | number | null | undefined): string {
-  const s = String(value ?? '');
+  let s = String(value ?? '');
+  if (needsFormulaGuard(s)) s = `'${s}`;
   if (s.includes('"') || s.includes(DELIMITER) || s.includes('\n') || s.includes('\r')) {
     return `"${s.replace(/"/g, '""')}"`;
   }

@@ -226,6 +226,11 @@ export async function recordInvoicePayment(
   if (invoice.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
   const total = invoice.total_ore as number;
   const amountOre = input.amountOre ?? total;
+  // Delbetalning kan inte slutföras (unik source-referens per faktura spärrar ett
+  // andra betalningsverifikat) och överbetalning skulle överkreditera 1510 →
+  // tills delbetalning stöds fullt ut kräver vi hela beloppet.
+  if (amountOre > total) throw new BadRequestError('overpayment', 'betalningen överstiger fakturans belopp');
+  if (amountOre < total) throw new BadRequestError('partial_payment_unsupported', 'delbetalning stöds inte ännu — registrera hela beloppet');
   const voucher = await postCustomerPayment(client, companyId, userId, {
     fiscalYearId: input.fiscalYearId,
     voucherDate: input.paymentDate,

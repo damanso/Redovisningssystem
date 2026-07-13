@@ -56,6 +56,40 @@ describe('kundreskontra åldersanalys', () => {
     expect(t.total_ore).toBe(375_000);
   });
 
+  it('förfallohinkarnas gränsdagar (0/1/30/31/60/61/90/91) hamnar rätt', async () => {
+    // Eget bolag så inga andra fakturor stör. as_of = 2025-06-30.
+    const u2 = await registerUser('arb');
+    const c2 = await createCompany(u2.token, 'Gränsfall AB');
+    const a2 = { Authorization: `Bearer ${u2.token}` };
+    const co2 = `/api/companies/${c2}`;
+    const fy2 = await api.post(`${co2}/accounting/fiscal-years`).set(a2).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    const cust = await api.post(`${co2}/customers`).set(a2).send({ name: 'Gräns Kund', payment_terms: 0 });
+    // (dagar förbi 2025-06-30 → förväntad hink)
+    const cases: [string, 'not_due' | 'd1_30' | 'd31_60' | 'd61_90' | 'd90_plus'][] = [
+      ['2025-06-30', 'not_due'],  // 0 dagar (förfaller idag) → ej förfallet
+      ['2025-06-29', 'd1_30'],    // 1
+      ['2025-05-31', 'd1_30'],    // 30
+      ['2025-05-30', 'd31_60'],   // 31
+      ['2025-05-01', 'd31_60'],   // 60
+      ['2025-04-30', 'd61_90'],   // 61
+      ['2025-04-01', 'd61_90'],   // 90
+      ['2025-03-31', 'd90_plus'], // 91
+    ];
+    const counts: Record<string, number> = { not_due: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+    for (const [date, bucket] of cases) {
+      const inv = await api.post(`${co2}/invoices`).set(a2).send({ customer_id: cust.body.customer.id, invoice_date: date, lines: [{ description: 'X', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }] });
+      await api.post(`${co2}/invoices/${inv.body.invoice.id}/book`).set(a2).send({ fiscal_year_id: fy2.body.fiscal_year.id });
+      counts[bucket] += 125_000;
+    }
+    const res = await api.post(`${co2}/actions/accounts_receivable_aging`).set(a2).send({ as_of: AS_OF });
+    const t = res.body.result.totals;
+    expect(t.not_due_ore).toBe(counts.not_due);   // 125 000 (1 faktura)
+    expect(t.d1_30_ore).toBe(counts.d1_30);       // 250 000 (2)
+    expect(t.d31_60_ore).toBe(counts.d31_60);     // 250 000 (2)
+    expect(t.d61_90_ore).toBe(counts.d61_90);     // 250 000 (2)
+    expect(t.d90_plus_ore).toBe(counts.d90_plus); // 125 000 (1)
+  });
+
   it('betalda och ej bokförda (utkast) fakturor räknas INTE som fordran', async () => {
     // En bokförd + betald faktura ska försvinna ur reskontran.
     const paid = await invoice('2025-04-01');

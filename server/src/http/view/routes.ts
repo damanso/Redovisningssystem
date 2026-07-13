@@ -341,7 +341,7 @@ viewRouter.get('/c/:companyId/reports/export/vat.csv', csvDownload('momsrapport.
 }));
 
 viewRouter.get('/c/:companyId/reports/export/ledger.csv', csvDownload('huvudbok.csv', async (client, companyId) => {
-  const vouchers = await generalLedger(client, companyId, { limit: 1000 });
+  const vouchers = await generalLedger(client, companyId, { limit: null }); // hela huvudboken — ingen tyst trunkering
   const rows: (string | number)[][] = [['Verifikat', 'Datum', 'Beskrivning', 'Konto', 'Radtext', 'Debet (kr)', 'Kredit (kr)']];
   for (const v of vouchers) {
     for (const l of v.lines) {

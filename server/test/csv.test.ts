@@ -16,6 +16,20 @@ describe('CSV-serialisering', () => {
     expect(csv.split('\r\n')[0]).toBe('Namn;Belopp'); // enkla fält lämnas ociterade
   });
 
+  it('neutraliserar formelinjektion men rör inte rena tal', () => {
+    const csv = toCsv([
+      ['=cmd|calc', '+DDE', '@SUM(A1)', '-cmd', '-50,00', '1234,56', 'Normal'],
+    ]);
+    const cells = csv.trimEnd().split(';');
+    expect(cells[0]).toBe("'=cmd|calc"); // formel → apostrof-prefix
+    expect(cells[1]).toBe("'+DDE");
+    expect(cells[2]).toBe("'@SUM(A1)");
+    expect(cells[3]).toBe("'-cmd");
+    expect(cells[4]).toBe('-50,00'); // rena (negativa) tal lämnas orörda
+    expect(cells[5]).toBe('1234,56');
+    expect(cells[6]).toBe('Normal');
+  });
+
   it('csvKronor ger svensk komma-decimal utan tusentalsavgränsare', () => {
     expect(csvKronor(123456)).toBe('1234,56');
     expect(csvKronor(-5000)).toBe('-50,00');

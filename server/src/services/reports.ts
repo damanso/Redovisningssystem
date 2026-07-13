@@ -174,18 +174,24 @@ export interface LedgerVoucher {
 export async function generalLedger(
   client: PoolClient,
   companyId: string,
-  opts: { fiscalYearId?: string; limit?: number } = {},
+  opts: { fiscalYearId?: string; limit?: number | null } = {},
 ): Promise<LedgerVoucher[]> {
-  const heads = await client.query<{
-    id: string; series: string; number: number; voucher_date: string; description: string;
-  }>(
+  // limit === null → ingen gräns (för fullständig CSV-export; en trunkerad
+  // huvudbok som ser komplett ut vore ett dataintegritetsfel). Default 100 för vyn.
+  const limit = opts.limit === undefined ? 100 : opts.limit;
+  const params: unknown[] = [companyId, opts.fiscalYearId ?? null];
+  let sql =
     `SELECT id, series, number, voucher_date::text, description
      FROM vouchers
      WHERE company_id = $1 AND ($2::uuid IS NULL OR fiscal_year_id = $2)
-     ORDER BY voucher_date DESC, series, number DESC
-     LIMIT $3`,
-    [companyId, opts.fiscalYearId ?? null, opts.limit ?? 100],
-  );
+     ORDER BY voucher_date DESC, series, number DESC`;
+  if (limit !== null) {
+    params.push(limit);
+    sql += ` LIMIT $3`;
+  }
+  const heads = await client.query<{
+    id: string; series: string; number: number; voucher_date: string; description: string;
+  }>(sql, params);
   if (heads.rows.length === 0) return [];
   const ids = heads.rows.map((h) => h.id);
   const lines = await client.query<{
