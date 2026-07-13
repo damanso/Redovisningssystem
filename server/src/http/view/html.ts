@@ -124,6 +124,7 @@ const NAV = [
   ['', 'Översikt'],
   ['ledger', 'Huvudbok'],
   ['reports', 'Rapporter'],
+  ['analytics', 'Analys'],
   ['cashflow', 'Kassaflöde'],
   ['receivables', 'Kundreskontra'],
   ['payables', 'Leverantörsreskontra'],

@@ -21,6 +21,7 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
+import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
@@ -461,6 +462,43 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// Avancerad analys: nyckeltal, toppkunder och kostnadsfördelning för perioden.
+const pct = (permille: number): string => `${(permille / 10).toLocaleString('sv-SE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (client, companyId) => {
+  const p = await reportingPeriod(client, companyId);
+  const ratios = await keyRatios(client, companyId, p.from, p.to);
+  const top = await topCustomers(client, companyId, p.from, p.to, 10);
+  const exp = await expenseBreakdown(client, companyId, p.from, p.to);
+  return html`<div class="page-head"><div>${eyebrow('Analys')}<h1>Avancerad analys</h1>
+      <p class="lede">Nyckeltal och nedbrytningar för perioden ${p.from} – ${p.to}.</p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Nettomarginal', html`${pct(ratios.net_margin_permille)}`)}
+      ${kpiCell('Soliditet', html`${pct(ratios.equity_ratio_permille)}`)}
+      ${kpiCell('Kassalikviditet', html`${pct(ratios.current_ratio_permille)}`)}
+      ${kpiCell('Resultat', amount(ratios.result_ore))}
+    </div>
+    <h2 style="margin-top:20px">Toppkunder</h2>
+    ${
+      top.length === 0
+        ? html`<p class="muted">Inga bokförda fakturor i perioden.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Kund</th><th class="num">Antal fakturor</th><th class="num">Nettoomsättning</th></tr></thead><tbody>
+            ${top.map((c) => html`<tr><td><a href="/app/c/${companyId}/customers/${c.customer_id}">${c.customer_name}</a></td>
+              <td class="num">${String(c.invoice_count)}</td><td class="num">${amount(c.net_ore, { unit: false })}</td></tr>`)}
+          </tbody></table></div>`
+    }
+    <h2 style="margin-top:20px">Kostnadsfördelning</h2>
+    ${
+      exp.slices.length === 0
+        ? html`<p class="muted">Inga bokförda kostnader i perioden.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Konto</th><th>Benämning</th><th class="num">Belopp</th><th class="num">Andel</th><th></th></tr></thead><tbody>
+            ${exp.slices.map((s) => html`<tr><td class="code">${String(s.account_number)}</td><td>${s.name}</td>
+              <td class="num">${amount(s.amount_ore, { unit: false })}</td><td class="num">${pct(s.share_permille)}</td>
+              <td><span style="display:inline-block;height:9px;width:${Math.round(s.share_permille / 1000 * 120)}px;background:var(--accent, #4f6bed);border-radius:2px"></span></td></tr>`)}
+            <tr class="subtot"><td colspan="2"><strong>Summa kostnader</strong></td><td class="num"><strong>${amount(exp.total_ore, { unit: false })}</strong></td><td></td><td></td></tr>
+          </tbody></table></div>`
+    }`;
 }));
 
 // Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.

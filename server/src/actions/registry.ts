@@ -14,6 +14,7 @@ import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForec
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
+import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -126,6 +127,27 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'key_ratios',
+    title: 'Nyckeltal (marginal, soliditet, likviditet)',
+    sensitivity: 'read',
+    inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema }).strict(),
+    handler: (ctx, i: { from: string; to: string }) => keyRatios(ctx.client, ctx.companyId, i.from, i.to),
+  }),
+  def({
+    name: 'top_customers',
+    title: 'Toppkunder efter omsättning',
+    sensitivity: 'read',
+    inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema, limit: z.number().int().min(1).max(100).optional() }).strict(),
+    handler: (ctx, i: { from: string; to: string; limit?: number }) => topCustomers(ctx.client, ctx.companyId, i.from, i.to, i.limit),
+  }),
+  def({
+    name: 'expense_breakdown',
+    title: 'Kostnadsfördelning per konto',
+    sensitivity: 'read',
+    inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema }).strict(),
+    handler: (ctx, i: { from: string; to: string }) => expenseBreakdown(ctx.client, ctx.companyId, i.from, i.to),
   }),
   def({
     name: 'cash_flow',
