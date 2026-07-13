@@ -9,7 +9,9 @@
 ```
 Läs GRANSKNING_OCH_OMSTARTSPLAN.md och KICKOFF_NYSESSION.md i det här repot. De är din
 källa till sanning: den första är analysen och omstartsplanen, den andra är reglerna
-för hur bygget ska gå till.
+för hur bygget ska gå till. Filerna ligger på branchen claude/nice-ramanujan-tdwqn5 —
+hittar du dem inte, kör `git fetch origin claude/nice-ramanujan-tdwqn5` och checka ut
+den branchen (eller läs filerna därifrån) innan du börjar.
 
 Bygg om systemet enligt planen — men FAS FÖR FAS med verifieringsgrindar, inte allt i
 ett svep. Efter varje fas ska du köra /verify, /code-review och /security-review och
