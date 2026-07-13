@@ -25,6 +25,12 @@ export async function requireCompanyAccess(
   // matchar det zod/Postgres (skiftlägesokänsligt) accepterar.
   const companyId = parsed.data.toLowerCase();
 
+  // Ett agent-token är låst till sitt bolag: neka allt annat (404, läcker inte
+  // existens) även om användaren bakom token är medlem i fler bolag.
+  if (req.auth?.actor === 'agent' && req.auth.scopedCompanyId?.toLowerCase() !== companyId) {
+    throw new NotFoundError('company');
+  }
+
   const membership = await withUserTransaction(userId, (client) =>
     fetchMembership(client, userId, companyId),
   );

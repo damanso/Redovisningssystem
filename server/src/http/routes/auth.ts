@@ -1,12 +1,12 @@
 import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
 import { ConflictError, UnauthenticatedError } from '../../lib/errors.js';
+import { signToken as signJwt } from '../../lib/jwt.js';
 import { EmailSchema, safeText } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 
@@ -31,11 +31,7 @@ const LoginSchema = z
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', config.BCRYPT_ROUNDS);
 
 function signToken(userId: string): string {
-  return jwt.sign({}, config.JWT_SECRET, {
-    subject: userId,
-    algorithm: 'HS256',
-    expiresIn: config.JWT_EXPIRES_IN_SECONDS,
-  });
+  return signJwt(userId, { actor: 'human' }, config.JWT_EXPIRES_IN_SECONDS);
 }
 
 export const authRouter = Router();

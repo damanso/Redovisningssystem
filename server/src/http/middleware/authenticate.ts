@@ -3,8 +3,17 @@ import jwt from 'jsonwebtoken';
 import { config } from '../../config.js';
 import { UnauthenticatedError } from '../../lib/errors.js';
 
+// 'human' = en inloggad person. 'agent' = ett AI-token (Cowork/Hermes) minted av
+// en ägare. Åtskillnaden är förtroendegränsen mellan AI och människa: agenter kan
+// begära känsliga operationer men aldrig själva godkänna dem.
+export type Actor = 'human' | 'agent';
+
 export interface AuthContext {
   userId: string;
+  actor: Actor;
+  // Agent-token är scopat till exakt ett bolag; requireCompanyAccess tvingar
+  // att URL:ens bolag matchar. Odefinierat för människo-token (alla medlemskap).
+  scopedCompanyId?: string;
 }
 
 /**
@@ -15,6 +24,11 @@ export interface AuthContext {
 export function getUserId(req: Request): string {
   if (!req.auth) throw new UnauthenticatedError();
   return req.auth.userId;
+}
+
+export function getActor(req: Request): Actor {
+  if (!req.auth) throw new UnauthenticatedError();
+  return req.auth.actor;
 }
 
 // Express 5 + TS: vi utökar Request med auth-kontext via declaration merging.
@@ -42,7 +56,11 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
     if (typeof payload === 'string' || typeof payload.sub !== 'string') {
       throw new UnauthenticatedError();
     }
-    req.auth = { userId: payload.sub };
+    const actor: Actor = payload.actor === 'agent' ? 'agent' : 'human';
+    const scopedCompanyId = typeof payload.company_id === 'string' ? payload.company_id : undefined;
+    // Ett agent-token MÅSTE vara bolagsscopat.
+    if (actor === 'agent' && !scopedCompanyId) throw new UnauthenticatedError();
+    req.auth = { userId: payload.sub, actor, scopedCompanyId };
     next();
   } catch {
     throw new UnauthenticatedError();

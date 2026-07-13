@@ -15,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",

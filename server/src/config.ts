@@ -29,6 +29,11 @@ const EnvSchema = z.object({
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),
+  // AI-OCR (Fas 3). Avstängt om ANTHROPIC_API_KEY saknas — funktionen är
+  // frivillig, så vi fail-fastar INTE på den (till skillnad från JWT_SECRET).
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  AI_MODEL: z.string().min(1).default('claude-sonnet-5'),
+  AI_AGENT_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60),
   // Express 'trust proxy'-inställning. Bakom en reverse proxy måste denna sättas
   // (t.ex. '1' för en hop, eller ett subnät) så att req.ip och rate-limitern
   // ser klientens riktiga IP. Default false (ingen proxy). Se app.ts.

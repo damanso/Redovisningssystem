@@ -7,13 +7,16 @@ import {
   withTransaction,
   withUserTransaction,
 } from '../../db/tx.js';
-import { BadRequestError, NotFoundError } from '../../lib/errors.js';
+import { config } from '../../config.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
+import { signToken as signJwt } from '../../lib/jwt.js';
 import { buildAllowlistedUpdate } from '../../lib/updateBuilder.js';
 import { EmailSchema, safeText } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
-import { getUserId } from '../middleware/authenticate.js';
+import { getActor, getUserId } from '../middleware/authenticate.js';
 import { requireCompanyAccess } from '../middleware/companyAccess.js';
 import { accountingRouter } from './accounting.js';
+import { actionsRouter } from './actions.js';
 import { filesRouter } from './files.js';
 import { invoicesRouter } from './invoices.js';
 import { partiesRouter } from './parties.js';
@@ -211,8 +214,28 @@ companiesRouter.get('/:companyId/audit', async (req, res) => {
   res.json({ entries, next_before: nextBefore });
 });
 
+// Minta ett företagsscopat agent-token (för Cowork/Hermes). Endast en ägare,
+// och endast en människa (en agent får aldrig minta fler agenter).
+companiesRouter.post('/:companyId/agent-tokens', async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = req.companyId!;
+  if (getActor(req) !== 'human' || req.companyRole !== 'owner') {
+    throw new ForbiddenError('only_owner_human');
+  }
+  const input = z.object({ name: safeText(100).optional() }).strict().parse(req.body);
+  const token = signJwt(userId, { actor: 'agent', company_id: companyId }, config.AI_AGENT_TOKEN_TTL_SECONDS);
+  await withTenantTransaction(userId, companyId, (c) =>
+    writeAudit(c, {
+      companyId, userId, action: 'agent_token.minted', entityType: 'company', entityId: companyId,
+      details: { name: input.name ?? null },
+    }),
+  );
+  res.status(201).json({ token, expires_in: config.AI_AGENT_TOKEN_TTL_SECONDS, actor: 'agent' });
+});
+
 companiesRouter.use('/:companyId/files', filesRouter);
 companiesRouter.use('/:companyId/accounting', accountingRouter);
 companiesRouter.use('/:companyId/invoices', invoicesRouter);
 companiesRouter.use('/:companyId/receipts', receiptsRouter);
+companiesRouter.use('/:companyId', actionsRouter);
 companiesRouter.use('/:companyId', partiesRouter);
