@@ -14,7 +14,7 @@ import { listApprovals } from '../../services/approvals.js';
 import { approveAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
-import { balanceSheet, dashboard, generalLedger, incomeStatement } from '../../services/reports.js';
+import { accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement } from '../../services/reports.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, statusChip, type Raw } from './html.js';
@@ -258,6 +258,32 @@ viewRouter.get(
       </section>`;
   }),
 );
+
+// Kundreskontra med åldersanalys (öppna, bokförda, obetalda kundfakturor).
+viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontra', async (client, companyId) => {
+  const aging = await accountsReceivableAging(client, companyId);
+  const t = aging.totals;
+  const bucket = (r: { not_due_ore: number; d1_30_ore: number; d31_60_ore: number; d61_90_ore: number; d90_plus_ore: number; total_ore: number }) => html`
+    <td class="num">${r.not_due_ore ? amount(r.not_due_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d1_30_ore ? amount(r.d1_30_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d31_60_ore ? amount(r.d31_60_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d61_90_ore ? amount(r.d61_90_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d90_plus_ore ? amount(r.d90_plus_ore, { unit: false }) : ''}</td>
+    <td class="num"><strong>${amount(r.total_ore, { unit: false })}</strong></td>`;
+  return html`<div class="page-head"><div>${eyebrow('Kundreskontra')}<h1>Åldersanalys av kundfordringar</h1>
+      <p class="lede">Öppna, bokförda och obetalda kundfakturor per kund och hur långt förbi förfallodagen de är (per ${aging.as_of}).</p></div></div>
+    ${
+      aging.rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga utestående fakturor 🎉</div>Alla bokförda kundfakturor är betalda.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Kund</th><th class="num">Ej förfallet</th><th class="num">1–30 d</th><th class="num">31–60 d</th><th class="num">61–90 d</th><th class="num">&gt;90 d</th><th class="num">Totalt</th></tr></thead>
+            <tbody>
+              ${aging.rows.map((r) => html`<tr><td>${r.customer_name}</td>${bucket(r)}</tr>`)}
+              <tr class="subtot"><td>Summa</td>${bucket(t)}</tr>
+            </tbody></table></div>
+            ${t.d90_plus_ore > 0 ? html`<p class="lede">${chip(`${money(t.d90_plus_ore)} kr är mer än 90 dagar förfallet`, 'neg', '!')}</p>` : ''}`
+    }`;
+}));
 
 // Register
 function registerCell(key: string, value: unknown): Raw {

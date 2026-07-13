@@ -251,3 +251,81 @@ export async function dashboard(
     pending_approvals: Number(c.approvals),
   };
 }
+
+export interface ArAgingRow {
+  customer_id: string;
+  customer_name: string;
+  not_due_ore: Ore;
+  d1_30_ore: Ore;
+  d31_60_ore: Ore;
+  d61_90_ore: Ore;
+  d90_plus_ore: Ore;
+  total_ore: Ore;
+}
+export interface ArAging {
+  as_of: string;
+  rows: ArAgingRow[];
+  totals: Omit<ArAgingRow, 'customer_id' | 'customer_name'>;
+}
+
+/**
+ * Kundreskontra med åldersanalys: öppna (bokförda, ej betalda/annullerade)
+ * kundfakturor grupperade per kund och hur långt förbi förfallodagen de är,
+ * relativt `asOf` (default dagens datum). Beloppen är fakturans totalbelopp i
+ * ören — systemet spårar (ännu) inte delbetalningar, så en öppen faktura räknas
+ * med hela sitt belopp. Allt inom tenant-gränsen (RLS).
+ */
+export async function accountsReceivableAging(
+  client: PoolClient,
+  companyId: string,
+  asOf?: string,
+): Promise<ArAging> {
+  const result = await client.query<{
+    customer_id: string; customer_name: string;
+    not_due: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number; total: number;
+    as_of: string;
+  }>(
+    `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d)
+     SELECT i.customer_id, c.name AS customer_name,
+       sum(CASE WHEN i.due_date >= (SELECT d FROM ref) THEN i.total_ore ELSE 0 END) AS not_due,
+       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 1 AND 30 THEN i.total_ore ELSE 0 END) AS d1_30,
+       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 31 AND 60 THEN i.total_ore ELSE 0 END) AS d31_60,
+       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 61 AND 90 THEN i.total_ore ELSE 0 END) AS d61_90,
+       sum(CASE WHEN (SELECT d FROM ref) - i.due_date > 90 THEN i.total_ore ELSE 0 END) AS d90_plus,
+       sum(i.total_ore) AS total,
+       (SELECT d FROM ref)::text AS as_of
+     FROM invoices i
+     JOIN customers c ON c.id = i.customer_id
+     WHERE i.company_id = $1
+       AND i.voucher_id IS NOT NULL
+       AND i.status NOT IN ('paid', 'cancelled')
+     GROUP BY i.customer_id, c.name
+     ORDER BY total DESC, c.name`,
+    [companyId, asOf ?? null],
+  );
+
+  const rows: ArAgingRow[] = result.rows.map((r) => ({
+    customer_id: r.customer_id,
+    customer_name: r.customer_name,
+    not_due_ore: Number(r.not_due),
+    d1_30_ore: Number(r.d1_30),
+    d31_60_ore: Number(r.d31_60),
+    d61_90_ore: Number(r.d61_90),
+    d90_plus_ore: Number(r.d90_plus),
+    total_ore: Number(r.total),
+  }));
+  const sum = (k: keyof ArAgingRow) => rows.reduce((s, r) => s + (r[k] as number), 0);
+  const asOfDate = result.rows[0]?.as_of ?? (asOf ?? '');
+  return {
+    as_of: asOfDate,
+    rows,
+    totals: {
+      not_due_ore: sum('not_due_ore'),
+      d1_30_ore: sum('d1_30_ore'),
+      d31_60_ore: sum('d31_60_ore'),
+      d61_90_ore: sum('d61_90_ore'),
+      d90_plus_ore: sum('d90_plus_ore'),
+      total_ore: sum('total_ore'),
+    },
+  };
+}
