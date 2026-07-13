@@ -17,6 +17,8 @@ import { createProject, createTimeEntry, getProject, listProjects, setProjectSta
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
 import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
+import { importSie, parseSie } from '../services/sieImport.js';
+import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -362,6 +364,36 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'import_sie',
+    title: 'Importera SIE-fil (konton + verifikat)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema, sie_content: z.string().min(1).max(4_000_000) }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; sie_content: string }) =>
+      importSie(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id, parseSie(i.sie_content)),
+  }),
+  def({
+    name: 'import_bank_csv',
+    title: 'Importera bank-CSV',
+    sensitivity: 'write',
+    inputSchema: z.object({ csv_content: z.string().min(1).max(4_000_000) }).strict(),
+    handler: (ctx, i: { csv_content: string }) => importBankCsv(ctx.client, ctx.companyId, ctx.userId, i.csv_content),
+  }),
+  def({
+    name: 'list_bank_transactions',
+    title: 'Lista importerade banktransaktioner',
+    sensitivity: 'read',
+    inputSchema: z.object({ reconciled: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { reconciled?: boolean }) => listBankTransactions(ctx.client, ctx.companyId, { reconciled: i.reconciled }),
+  }),
+  def({
+    name: 'reconcile_bank_transaction',
+    title: 'Markera banktransaktion som avstämd',
+    sensitivity: 'write',
+    inputSchema: z.object({ transaction_id: UuidSchema, reconciled: z.boolean() }).strict(),
+    handler: (ctx, i: { transaction_id: string; reconciled: boolean }) =>
+      setBankTransactionReconciled(ctx.client, ctx.companyId, ctx.userId, i.transaction_id, i.reconciled),
   }),
   def({
     name: 'create_receipt',

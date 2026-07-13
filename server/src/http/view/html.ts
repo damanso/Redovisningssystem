@@ -137,6 +137,7 @@ const NAV = [
   ['suppliers', 'Leverantörer'],
   ['articles', 'Artiklar'],
   ['documents', 'Dokument'],
+  ['import', 'Import'],
   ['team', 'Team'],
   ['audit', 'Revisionslogg'],
 ] as const;

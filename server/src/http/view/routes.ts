@@ -31,6 +31,8 @@ import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, g
 import { verifyTotp } from '../../lib/totp.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
 import { emailEnabled } from '../../services/email.js';
+import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
+import { importSie, parseSie } from '../../services/sieImport.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -1114,6 +1116,80 @@ viewRouter.post('/c/:companyId/team/remove', page(async (req, res) => {
   const input = TeamActionSchema.parse(req.body);
   await teamRedirect(companyId, res, () =>
     withTenantTransaction(userId, companyId, (client, actorRole) => removeMember(client, companyId, actorRole, userId, input.user_id)));
+}));
+
+// Migration/import: SIE-fil (konton + verifikat) och bank-CSV. Live bankkoppling
+// (PSD2) är utanför scope — detta är manuell filimport.
+viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client, companyId) => {
+  const fys = await client.query<{ id: string; label: string }>(
+    'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
+  );
+  const txns = await listBankTransactions(client, companyId, {});
+  return html`<div class="page-head"><div>${eyebrow('Import')}<h1>Migration & import</h1>
+      <p class="lede">Flytta in bokföring från ett annat system (SIE) eller läs in kontohändelser från en bank-CSV. En live bankkoppling (PSD2) ingår inte — detta är filimport.</p></div></div>
+    <div class="panel"><div class="panel__head"><h2>SIE-import</h2></div><div class="panel__body" style="padding:14px 16px">
+      <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in innehållet i en SIE4-fil. Konton skapas, verifikat importeras med färska nummer i importserien I (originalnumret bevaras i texten). Debet=kredit krävs.</p>
+      ${
+        fys.rows.length === 0
+          ? html`<p class="muted">Skapa ett räkenskapsår först.</p>`
+          : html`<form method="post" action="/app/c/${companyId}/import/sie" style="display:grid;gap:10px">
+              <label class="field" style="margin:0"><span>Räkenskapsår</span><select name="fiscal_year_id">${fys.rows.map((f) => html`<option value="${f.id}">${f.label}</option>`)}</select></label>
+              <label class="field" style="margin:0"><span>SIE-innehåll</span><textarea name="sie_content" rows="8" required style="width:100%;font-family:monospace;font-size:12.5px"></textarea></label>
+              <div><button class="btn btn--primary" type="submit">Importera SIE</button></div></form>`
+      }</div></div>
+    <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Bank-CSV</h2></div><div class="panel__body" style="padding:14px 16px">
+      <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in en CSV med kolumnerna datum, text, belopp (och valfritt saldo). Dubbletter hoppas automatiskt.</p>
+      <form method="post" action="/app/c/${companyId}/import/bank" style="display:grid;gap:10px">
+        <label class="field" style="margin:0"><span>CSV-innehåll</span><textarea name="csv_content" rows="6" required style="width:100%;font-family:monospace;font-size:12.5px"></textarea></label>
+        <div><button class="btn btn--primary" type="submit">Importera bank-CSV</button></div></form></div></div>
+    <h2 style="margin-top:18px">Importerade banktransaktioner</h2>
+    ${
+      txns.length === 0
+        ? html`<p class="muted">Inga importerade transaktioner ännu.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Text</th><th class="num">Belopp</th><th>Avstämd</th></tr></thead><tbody>
+            ${txns.map((t) => html`<tr><td class="code">${t.booking_date as string}</td><td>${t.text as string}</td>
+              <td class="num">${amount(t.amount_ore as number, { unit: false })}</td>
+              <td>${
+                t.reconciled
+                  ? chip('Ja', 'ok')
+                  : html`<form method="post" action="/app/c/${companyId}/import/reconcile" style="display:inline"><input type="hidden" name="transaction_id" value="${t.id as string}"><button class="btn btn--ghost btn--sm" type="submit">Markera avstämd</button></form>`
+              }</td></tr>`)}
+          </tbody></table></div>`
+    }`;
+}));
+
+function importRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+  return run().then(() => { res.redirect(`/app/c/${companyId}/import`); }, (err) => {
+    if (err instanceof BadRequestError || err instanceof ConflictError) { res.redirect(`/app/c/${companyId}/import`); return; }
+    throw err;
+  });
+}
+
+viewRouter.post('/c/:companyId/import/sie', urlencoded({ extended: false, limit: '5mb' }), page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = z.object({ fiscal_year_id: UuidSchema, sie_content: z.string().min(1).max(4_000_000) }).parse(req.body);
+  await importRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client) => importSie(client, companyId, userId, b.fiscal_year_id, parseSie(b.sie_content))));
+}));
+
+viewRouter.post('/c/:companyId/import/bank', urlencoded({ extended: false, limit: '5mb' }), page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = z.object({ csv_content: z.string().min(1).max(4_000_000) }).parse(req.body);
+  await importRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client) => importBankCsv(client, companyId, userId, b.csv_content)));
+}));
+
+viewRouter.post('/c/:companyId/import/reconcile', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = z.string().uuid().parse((req.body as { transaction_id?: unknown }).transaction_id);
+  await importRedirect(companyId, res, () =>
+    withTenantTransaction(userId, companyId, (client) => setBankTransactionReconciled(client, companyId, userId, id, true)));
 }));
 
 // Hela revisionsloggen (keyset-paginerad).
