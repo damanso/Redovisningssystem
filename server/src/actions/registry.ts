@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices } from '../services/invoices.js';
@@ -228,12 +229,25 @@ export function getAction(name: string): ActionDef<never> | undefined {
   return BY_NAME.get(name);
 }
 
-/** Manifest (MCP-tools-lista): namn, titel, känslighet, JSON-schema. */
-export function actionManifest(): unknown[] {
+export interface ActionManifestEntry {
+  name: string;
+  title: string;
+  sensitivity: Sensitivity;
+  requires_approval: boolean;
+  input_schema: Record<string, unknown>;
+}
+
+/**
+ * Manifest (MCP tools/list): namn, titel, känslighet och ett JSON-schema för
+ * indata. JSON-schemat gör att en MCP-server kan exponera varje action som ett
+ * native, typat verktyg mot Cowork/claude.ai utan att känna till zod.
+ */
+export function actionManifest(): ActionManifestEntry[] {
   return ACTIONS.map((a) => ({
     name: a.name,
     title: a.title,
     sensitivity: a.sensitivity,
     requires_approval: a.sensitivity === 'sensitive',
+    input_schema: zodToJsonSchema(a.inputSchema, { $refStrategy: 'none', target: 'jsonSchema7' }) as Record<string, unknown>,
   }));
 }

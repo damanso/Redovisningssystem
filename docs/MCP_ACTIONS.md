@@ -61,3 +61,47 @@ från indata eller dokumentinnehåll. Konkret:
 `POST .../ocr/receipt` (bild/PDF) returnerar ett strukturerat förslag. Kräver
 `ANTHROPIC_API_KEY` (annars `400 ai_disabled` — funktionen är frivillig och
 fail-fastar inte vid start). Modell via `AI_MODEL` (aktuell, konfigurerbar).
+
+## Köra MCP-servern (live via Cowork/claude.ai)
+
+Servern `server/src/mcp/server.ts` (bygg med `npm run build -w server`, kör med
+`npm run mcp -w server`) är en **tunn stdio-transport**: den har ingen egen
+databas- eller behörighetslogik utan ringer HTTP-action-API:t med ett
+agent-token. Alla regler tvingas på servern (tenant/RLS, oföränderlighet, audit,
+mänskligt godkännande). En känslig action returnerar aldrig ett utfört resultat —
+den läggs i godkännandekön och en människa godkänner i webbvyn under **Att göra**.
+
+`tools/list` speglar action-manifestet (varje action blir ett native, typat
+verktyg via medskickat JSON-schema) plus `list_pending_approvals`. `tools/call`
+mappar till `POST .../actions/:name`.
+
+**Env för servern:**
+
+| Variabel | Betydelse |
+|---|---|
+| `REDOVISNING_API_URL` | bas-URL till API:t (default `http://127.0.0.1:3000`) |
+| `REDOVISNING_AGENT_TOKEN` | agent-token (minta via `POST /api/companies/:id/agent-tokens` som ägare) |
+| `REDOVISNING_COMPANY_ID` | bolagets UUID verktygen verkar mot |
+
+**Koppla in i en MCP-klient** (Claude Desktop / Cowork-connector) — exempel:
+
+```json
+{
+  "mcpServers": {
+    "redovisning": {
+      "command": "node",
+      "args": ["/absolut/väg/till/server/dist/mcp/server.js"],
+      "env": {
+        "REDOVISNING_API_URL": "https://din-api-host",
+        "REDOVISNING_AGENT_TOKEN": "<agent-token>",
+        "REDOVISNING_COMPANY_ID": "<bolags-uuid>"
+      }
+    }
+  }
+}
+```
+
+Därefter kan du i Cowork/claude.ai säga t.ex. *"lista kunder"*, *"skapa en
+faktura till …"*, *"bokför faktura X"* — den sista blir ett förslag du godkänner
+i webbvyn. Rök-/integrationstestet `server/test/mcp.test.ts` startar den byggda
+servern och bevisar hela kedjan (inkl. att en känslig action hamnar i kön).

@@ -12,10 +12,12 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "migrate": "tsx src/db/migrate.ts",
+    "mcp": "node dist/mcp/server.js",
     "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.0",
     "express": "^5.1.0",
@@ -25,7 +27,8 @@
     "multer": "^2.0.2",
     "pdfkit": "^0.15.0",
     "pg": "^8.16.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
