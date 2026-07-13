@@ -49,8 +49,13 @@ function sieAmount(debitOre: number, creditOre: number): string {
   return kronor.toFixed(2);
 }
 
+// SIE4 är ett radorienterat postformat. Utöver citattecken MÅSTE CR/LF/tab
+// neutraliseras i citerade textfält — annars kan en verifikationsbeskrivning
+// (eller konto-/bolagsnamn) med inbäddade radbrytningar bryta ut ur posten och
+// injicera fabricerade #VER/#TRANS-rader i den exporterade filen (som lämnas
+// till revisor/Skatteverket). safeText tillåter \t\n\r, så det måste ske här.
 function quote(value: string): string {
-  return `"${value.replace(/"/g, "'")}"`;
+  return `"${value.replace(/[\r\n\t]/g, ' ').replace(/"/g, "'")}"`;
 }
 
 /** Ren rendering av SIE4-innehåll (teststbar utan databas). */

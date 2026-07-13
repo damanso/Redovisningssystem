@@ -180,4 +180,33 @@ describe('fynd: SIE #VER har ociterad serie och nummer', () => {
     expect(content).toContain('#VER A 1 20250201 "Text"');
     expect(content).not.toContain('#VER "A"');
   });
+
+  it('CR/LF i textfält kan inte injicera fabricerade SIE-poster (säkerhetsfynd)', () => {
+    const content = renderSie4({
+      company: { name: 'X AB', orgNumber: '556677-8899' },
+      fiscalYear: { startDate: '2025-01-01', endDate: '2025-12-31' },
+      accounts: [{ account_number: 1930, name: 'Bank' }],
+      vouchers: [
+        {
+          series: 'A',
+          number: 1,
+          voucher_date: '2025-02-01',
+          description: 'Lunch\r\n}\r\n#VER B 99 20260101 "Fabricerad"',
+          lines: [
+            { account_number: 1930, debit_ore: 1000, credit_ore: 0 },
+            { account_number: 1930, debit_ore: 0, credit_ore: 1000 },
+          ],
+        },
+      ],
+      generatedDate: '20250601',
+    });
+    // Endast ETT verkligt #VER — ingen rad börjar med en injicerad post.
+    const verLines = content.split('\r\n').filter((l) => l.startsWith('#VER'));
+    expect(verLines).toHaveLength(1);
+    expect(verLines[0]!.startsWith('#VER A 1 20250201')).toBe(true);
+    // Ingen rad börjar med den injicerade #TRANS-raden heller.
+    expect(content.split('\r\n').some((l) => l.startsWith('#VER B'))).toBe(false);
+    // Beskrivningen finns kvar men på en enda rad (radbrytningar → mellanslag).
+    expect(verLines[0]).toContain('Lunch');
+  });
 });
