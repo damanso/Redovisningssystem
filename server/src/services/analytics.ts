@@ -1,13 +1,17 @@
 // Fas A9: avancerad analys. Läsande nyckeltal och nedbrytningar över huvudboken
-// och reskontran. Allt i heltal ören; nyckeltal returneras som promille (0–1000)
-// för att undvika flyttal i transporten (t.ex. margin_permille 250 = 25,0 %).
+// och reskontran. Allt i heltal ören; nyckeltal returneras som promille
+// (t.ex. margin_permille 250 = 25,0 %) för att undvika flyttal i transporten.
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { balanceSheet, incomeStatement } from './reports.js';
 
-/** Heltalspromille av del/helt (0–1000). 0 om helt är 0. */
-function permille(part: number, whole: number): number {
-  if (whole === 0) return 0;
+/**
+ * Heltalspromille av del/helt. NULL när nämnaren är 0 — ett odefinierat nyckeltal
+ * (t.ex. balanslikviditet utan kortfristiga skulder) ska visas som "–", inte som
+ * 0 % (vilket vore omöjligt att skilja från äkta noll).
+ */
+function permille(part: number, whole: number): number | null {
+  if (whole === 0) return null;
   return Math.round((part / whole) * 1000);
 }
 
@@ -34,7 +38,7 @@ export async function topCustomers(
   }));
 }
 
-export interface ExpenseSlice { account_number: number; name: string; amount_ore: Ore; share_permille: number }
+export interface ExpenseSlice { account_number: number; name: string; amount_ore: Ore; share_permille: number | null }
 export interface ExpenseBreakdown { total_ore: Ore; slices: ExpenseSlice[] }
 
 /** Kostnader per konto i perioden, med andel av total (promille). */
@@ -72,9 +76,9 @@ export interface KeyRatios {
   revenue_ore: Ore;
   expense_ore: Ore;
   result_ore: Ore;
-  net_margin_permille: number;   // resultat / intäkter
-  equity_ratio_permille: number; // eget kapital / totala tillgångar (soliditet)
-  current_ratio_permille: number; // omsättningstillgångar / kortfristiga skulder
+  net_margin_permille: number | null;   // resultat / intäkter
+  equity_ratio_permille: number | null; // eget kapital / totala tillgångar (soliditet)
+  current_ratio_permille: number | null; // omsättningstillgångar / kortfristiga skulder (balanslikviditet)
   total_assets_ore: Ore;
   equity_ore: Ore;
 }

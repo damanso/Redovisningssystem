@@ -18,7 +18,14 @@ export interface ConsolidatedRow {
 export interface Consolidated {
   rows: ConsolidatedRow[];
   totals: Omit<ConsolidatedRow, 'company_id' | 'company_name' | 'role'>;
+  total_companies: number; // hur många bolag användaren är medlem i totalt
+  truncated: boolean;      // true om fler bolag än taket → bara de N första summeras
 }
+
+// Tak för hur många bolag som summeras per sidladdning. Varje bolag kostar en
+// egen tenant-transaktion med två huvudboksaggregeringar; en byråanvändare med
+// hundratals klientbolag skulle annars utlösa tusentals seriella frågor (själv-DoS).
+const MAX_CONSOLIDATED_COMPANIES = 50;
 
 async function fiscalPeriod(client: import('pg').PoolClient, companyId: string): Promise<{ from: string; to: string }> {
   const r = await client.query<{ start_date: string; end_date: string }>(
@@ -40,8 +47,12 @@ export async function consolidatedOverview(userId: string): Promise<Consolidated
   });
 
   // 2) Per bolag: hämta dashboard-nyckeltal i bolagets egen tenant-transaktion.
+  // Kapa vid taket så en användare med väldigt många bolag inte utlöser tusentals
+  // seriella frågor; överskottet flaggas (truncated) i stället för att tyst döljas.
+  const truncated = companies.length > MAX_CONSOLIDATED_COMPANIES;
+  const included = companies.slice(0, MAX_CONSOLIDATED_COMPANIES);
   const rows: ConsolidatedRow[] = [];
-  for (const co of companies) {
+  for (const co of included) {
     const d = await withTenantTransaction(userId, co.id, async (client) => {
       const period = await fiscalPeriod(client, co.id);
       return dashboard(client, co.id, period);
@@ -68,5 +79,7 @@ export async function consolidatedOverview(userId: string): Promise<Consolidated
       result_ore: sum('result_ore'),
       pending_approvals: sum('pending_approvals'),
     },
+    total_companies: companies.length,
+    truncated,
   };
 }

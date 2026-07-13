@@ -103,7 +103,8 @@ viewRouter.get('/consolidated', page(async (req, res) => {
   const con = await consolidatedOverview(userId);
   const t = con.totals;
   const body = html`<div class="page-head"><div>${eyebrow('Koncern')}<h1>Konsoliderad översikt</h1>
-      <p class="lede">Nyckeltal summerade över dina ${String(con.rows.length)} bolag. <a href="/app/">← Bolag</a></p></div></div>
+      <p class="lede">Nyckeltal summerade över ${con.truncated ? html`${String(con.rows.length)} av dina ${String(con.total_companies)}` : html`dina ${String(con.rows.length)}`} bolag. <a href="/app/">← Bolag</a></p></div></div>
+    ${con.truncated ? html`<p class="lede">${chip(`Endast de ${String(con.rows.length)} första bolagen (alfabetiskt) summeras här`, 'warn', '!')}</p>` : ''}
     <div class="kpi-grid">
       ${kpiCell('Kundfordringar', amount(t.receivables_ore))}
       ${kpiCell('Leverantörsskulder', amount(t.payables_ore))}
@@ -466,7 +467,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
 }));
 
 // Avancerad analys: nyckeltal, toppkunder och kostnadsfördelning för perioden.
-const pct = (permille: number): string => `${(permille / 10).toLocaleString('sv-SE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+const pct = (permille: number | null): string => permille === null ? '–' : `${(permille / 10).toLocaleString('sv-SE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
 viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (client, companyId) => {
   const p = await reportingPeriod(client, companyId);
   const ratios = await keyRatios(client, companyId, p.from, p.to);
@@ -477,7 +478,7 @@ viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (
     <div class="kpi-grid">
       ${kpiCell('Nettomarginal', html`${pct(ratios.net_margin_permille)}`)}
       ${kpiCell('Soliditet', html`${pct(ratios.equity_ratio_permille)}`)}
-      ${kpiCell('Kassalikviditet', html`${pct(ratios.current_ratio_permille)}`)}
+      ${kpiCell('Balanslikviditet', html`${pct(ratios.current_ratio_permille)}`)}
       ${kpiCell('Resultat', amount(ratios.result_ore))}
     </div>
     <h2 style="margin-top:20px">Toppkunder</h2>
@@ -496,7 +497,7 @@ viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (
         : html`<div class="table-wrap"><table><thead><tr><th>Konto</th><th>Benämning</th><th class="num">Belopp</th><th class="num">Andel</th><th></th></tr></thead><tbody>
             ${exp.slices.map((s) => html`<tr><td class="code">${String(s.account_number)}</td><td>${s.name}</td>
               <td class="num">${amount(s.amount_ore, { unit: false })}</td><td class="num">${pct(s.share_permille)}</td>
-              <td><span style="display:inline-block;height:9px;width:${Math.round(s.share_permille / 1000 * 120)}px;background:var(--accent, #4f6bed);border-radius:2px"></span></td></tr>`)}
+              <td><span style="display:inline-block;height:9px;width:${Math.round((s.share_permille ?? 0) / 1000 * 120)}px;background:var(--accent, #4f6bed);border-radius:2px"></span></td></tr>`)}
             <tr class="subtot"><td colspan="2"><strong>Summa kostnader</strong></td><td class="num"><strong>${amount(exp.total_ore, { unit: false })}</strong></td><td></td><td></td></tr>
           </tbody></table></div>`
     }`;

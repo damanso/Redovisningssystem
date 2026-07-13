@@ -76,7 +76,17 @@ describe('avancerad analys', () => {
     expect(res.body.result.net_margin_permille).toBe(765);
   });
 
-  it('analysvyn renderas', async () => {
+  it('odefinierat nyckeltal (noll nämnare) blir null, inte 0', async () => {
+    // Ett tomt bolag utan intäkter/tillgångar → marginal/soliditet odefinierade.
+    const empty = await createCompany(user.token, 'Tomt AB');
+    const res = await api.post(`/api/companies/${empty}/actions/key_ratios`).set(auth()).send({ from: '2025-01-01', to: '2025-12-31' });
+    expect(res.status).toBe(200);
+    expect(res.body.result.net_margin_permille).toBeNull();
+    expect(res.body.result.equity_ratio_permille).toBeNull();
+    expect(res.body.result.current_ratio_permille).toBeNull();
+  });
+
+  it('analysvyn renderas (balanslikviditet, inte kassalikviditet)', async () => {
     const ua = supertest.agent(app);
     await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
     const res = await ua.get(`/app/c/${companyId}/analytics`);
@@ -84,5 +94,7 @@ describe('avancerad analys', () => {
     expect(res.text).toContain('Avancerad analys');
     expect(res.text).toContain('Storkund AB');
     expect(res.text).toContain('Nettomarginal');
+    expect(res.text).toContain('Balanslikviditet');
+    expect(res.text).not.toContain('Kassalikviditet'); // felmärkning rättad
   });
 });
