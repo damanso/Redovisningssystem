@@ -27,8 +27,7 @@ import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, totpChallengePage, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, verifyCredentials, viewAuth } from './auth.js';
-import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, getTotpState, updateName } from '../../services/profile.js';
-import { verifyTotp } from '../../lib/totp.js';
+import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
 import { emailEnabled } from '../../services/email.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
@@ -81,10 +80,7 @@ viewRouter.post('/login/2fa',
     const pending = readPendingUserId(req);
     if (!pending) { res.redirect('/app/login'); return; }
     const code = z.string().max(12).safeParse((req.body as { code?: unknown }).code);
-    const ok = code.success && await withUserTransaction(pending, async (client) => {
-      const state = await getTotpState(client, pending);
-      return state.enabled && state.secret !== null && verifyTotp(state.secret, code.data);
-    });
+    const ok = code.success && await withUserTransaction(pending, (client) => verifyLoginTotp(client, pending, code.data));
     if (!ok) {
       res.status(401).type('html').send(totpChallengePage('Fel kod. Försök igen.').value);
       return;

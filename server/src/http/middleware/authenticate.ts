@@ -56,6 +56,13 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
     if (typeof payload === 'string' || typeof payload.sub !== 'string') {
       throw new UnauthenticatedError();
     }
+    // Ett pending-2FA-token har bara passerat lösenordssteget (utfärdas av
+    // webb-login före TOTP). Det får ALDRIG accepteras som en fullvärdig session
+    // på API:t — annars kringgås 2FA helt genom att kopiera cookien till en
+    // Bearer-header. Endast /app/login/2fa läser det (via readPendingUserId).
+    if (payload.stage === 'pending_2fa') {
+      throw new UnauthenticatedError();
+    }
     const actor: Actor = payload.actor === 'agent' ? 'agent' : 'human';
     const scopedCompanyId = typeof payload.company_id === 'string' ? payload.company_id : undefined;
     // Ett agent-token MÅSTE vara bolagsscopat.

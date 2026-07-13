@@ -6,7 +6,34 @@ import type { PoolClient } from 'pg';
 import { config } from '../config.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
-import { generateTotpSecret, otpauthUri, verifyTotp } from '../lib/totp.js';
+import { generateTotpSecret, otpauthUri, verifyTotpStep } from '../lib/totp.js';
+
+/**
+ * Replay-säker TOTP-verifiering: låser användarraden, matchar koden mot ett
+ * tidssteg och avvisar steg som redan använts (totp_last_step). Uppdaterar
+ * senast använda steget vid träff. Returnerar true endast för en färsk kod.
+ */
+async function verifyAndConsumeTotp(client: PoolClient, userId: string, secret: string, code: string): Promise<boolean> {
+  const locked = await client.query<{ totp_last_step: string | null }>(
+    'SELECT totp_last_step FROM users WHERE id = $1 FOR UPDATE', [userId],
+  );
+  if (!locked.rows[0]) return false;
+  const step = verifyTotpStep(secret, code);
+  if (step === null) return false;
+  const lastStep = locked.rows[0].totp_last_step === null ? null : Number(locked.rows[0].totp_last_step);
+  if (lastStep !== null && step <= lastStep) return false; // redan använt → replay
+  await client.query('UPDATE users SET totp_last_step = $2 WHERE id = $1', [userId, step]);
+  return true;
+}
+
+/** Replay-säker verifiering vid inloggning (2FA-steget). */
+export async function verifyLoginTotp(client: PoolClient, userId: string, code: string): Promise<boolean> {
+  const r = await client.query<{ totp_secret: string | null; totp_enabled: boolean }>(
+    'SELECT totp_secret, totp_enabled FROM users WHERE id = $1', [userId],
+  );
+  if (!r.rows[0] || !r.rows[0].totp_enabled || !r.rows[0].totp_secret) return false;
+  return verifyAndConsumeTotp(client, userId, r.rows[0].totp_secret, code);
+}
 
 export interface Profile { id: string; name: string; email: string; totp_enabled: boolean }
 
@@ -58,7 +85,7 @@ export async function confirmTotp(client: PoolClient, userId: string, code: stri
   if (!r.rows[0]) throw new NotFoundError('user');
   if (r.rows[0].totp_enabled) throw new ConflictError('already_enabled', 'tvåfaktor är redan aktiverad');
   if (!r.rows[0].totp_secret) throw new BadRequestError('no_setup', 'starta registreringen först');
-  if (!verifyTotp(r.rows[0].totp_secret, code)) throw new BadRequestError('bad_code', 'koden stämmer inte');
+  if (!(await verifyAndConsumeTotp(client, userId, r.rows[0].totp_secret, code))) throw new BadRequestError('bad_code', 'koden stämmer inte');
   await client.query('UPDATE users SET totp_enabled = true WHERE id = $1', [userId]);
   await writeAudit(client, { userId, action: 'account.totp_enabled', entityType: 'user', entityId: userId });
 }
@@ -71,8 +98,8 @@ export async function disableTotp(client: PoolClient, userId: string, code: stri
   if (!r.rows[0] || !r.rows[0].totp_enabled || !r.rows[0].totp_secret) {
     throw new BadRequestError('not_enabled', 'tvåfaktor är inte aktiverad');
   }
-  if (!verifyTotp(r.rows[0].totp_secret, code)) throw new BadRequestError('bad_code', 'koden stämmer inte');
-  await client.query('UPDATE users SET totp_secret = NULL, totp_enabled = false WHERE id = $1', [userId]);
+  if (!(await verifyAndConsumeTotp(client, userId, r.rows[0].totp_secret, code))) throw new BadRequestError('bad_code', 'koden stämmer inte');
+  await client.query('UPDATE users SET totp_secret = NULL, totp_enabled = false, totp_last_step = NULL WHERE id = $1', [userId]);
   await writeAudit(client, { userId, action: 'account.totp_disabled', entityType: 'user', entityId: userId });
 }
 

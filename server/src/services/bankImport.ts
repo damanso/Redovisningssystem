@@ -9,11 +9,13 @@ import { writeAudit } from './auditService.js';
 
 export interface ParsedBankRow { booking_date: string; text: string; amount_ore: number; balance_ore: number | null }
 
-/** Svenskt beloppsformat → öre. "1 234,56" / "-1234.56" / "1.234,56". */
+/** Svenskt beloppsformat → öre. "1 234,56" / "-1234.56" / "1.234,56" / "1234,56-". */
 export function parseAmountToOre(raw: string): number {
   let s = raw.trim().replace(/\s/g, '').replace(/kr$/i, '');
   if (s === '') throw new BadRequestError('bad_amount', 'tomt belopp');
-  const neg = s.startsWith('-') || /^\(.*\)$/.test(s);
+  // Negativt kan anges med ledande '-', omslutande parenteser ELLER efterställt
+  // '-' (vanligt i nordiska bank-/bokföringsexporter, t.ex. "1 234,56-").
+  const neg = s.startsWith('-') || s.endsWith('-') || /^\(.*\)$/.test(s);
   s = s.replace(/[()+-]/g, '');
   // Om både . och , finns antas . vara tusentalsavgränsare (svensk stil).
   if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '');
@@ -97,8 +99,16 @@ export async function importBankCsv(
   if (rows.length === 0) throw new BadRequestError('empty_csv', 'inga tolkbara rader i filen');
   const batch = randomUUID();
   let imported = 0, duplicates = 0;
+  // Räkna förekomster per identisk rad-tupel så två genuint separata men
+  // identiska transaktioner samma dag (samma text/belopp, inget radsaldo) INTE
+  // kollapsar till en. Vid omimport av samma fil ger samma tupel samma ordningstal
+  // → samma hash → fortfarande dedupad. Ordningstalet ingår därför i hashen.
+  const occurrence = new Map<string, number>();
   for (const r of rows) {
-    const hash = createHash('sha256').update(`${r.booking_date}|${r.text}|${r.amount_ore}|${r.balance_ore ?? ''}`).digest('hex');
+    const tuple = `${r.booking_date}|${r.text}|${r.amount_ore}|${r.balance_ore ?? ''}`;
+    const seq = occurrence.get(tuple) ?? 0;
+    occurrence.set(tuple, seq + 1);
+    const hash = createHash('sha256').update(`${tuple}|#${seq}`).digest('hex');
     const res = await client.query(
       `INSERT INTO bank_transactions (company_id, booking_date, text, amount_ore, balance_ore, import_batch, row_hash, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)

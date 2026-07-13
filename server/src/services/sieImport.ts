@@ -23,7 +23,11 @@ export function accountTypeForNumber(n: number): AccountType {
   return 'expense'; // 4000–8999: kostnader/finansiella poster
 }
 
-/** Delar en SIE-rad i fält, med hänsyn till citattecken. */
+/**
+ * Delar en SIE-rad i fält, med hänsyn till citattecken OCH objekt-/dimensionslistor
+ * `{...}`. En hel `{...}`-grupp blir ETT token (inkl. citat inuti) så att ett
+ * numeriskt dimensionsvärde (t.ex. `{1 "500"}`) inte förväxlas med #TRANS-beloppet.
+ */
 function tokenize(line: string): string[] {
   const out: string[] = [];
   let i = 0;
@@ -36,9 +40,21 @@ function tokenize(line: string): string[] {
       while (i < line.length && line[i] !== '"') { s += line[i]; i += 1; }
       i += 1; // stängande "
       out.push(s);
+    } else if (line[i] === '{') {
+      // Konsumera hela objektlistan till matchande '}' (respektera citat inuti).
+      let depth = 0, s = '', inQ = false;
+      while (i < line.length) {
+        const ch = line[i]!;
+        s += ch;
+        if (ch === '"') inQ = !inQ;
+        else if (!inQ && ch === '{') depth += 1;
+        else if (!inQ && ch === '}') { depth -= 1; if (depth === 0) { i += 1; break; } }
+        i += 1;
+      }
+      out.push(s);
     } else {
       let s = '';
-      while (i < line.length && !/\s/.test(line[i]!)) { s += line[i]; i += 1; }
+      while (i < line.length && !/\s/.test(line[i]!) && line[i] !== '{') { s += line[i]; i += 1; }
       out.push(s);
     }
   }

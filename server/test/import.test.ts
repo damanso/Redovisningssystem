@@ -40,12 +40,26 @@ describe('bank-CSV-parsning', () => {
     expect(parseAmountToOre('1.234,56')).toBe(123456);
     expect(parseAmountToOre('500')).toBe(50000);
   });
+  it('efterställt minus tolkas som negativt (grindfynd)', () => {
+    expect(parseAmountToOre('1 234,56-')).toBe(-123456);
+    expect(parseAmountToOre('(250,00)')).toBe(-25000);
+  });
   it('parsar CSV med rubrikrad och ; som avgränsare', () => {
     const csv = 'Datum;Text;Belopp;Saldo\n2025-06-01;Lön;25000,00;30000,00\n2025-06-02;Hyra;-8000,00;22000,00';
     const rows = parseBankCsv(csv);
     expect(rows.length).toBe(2);
     expect(rows[0]).toEqual({ booking_date: '2025-06-01', text: 'Lön', amount_ore: 2500000, balance_ore: 3000000 });
     expect(rows[1]!.amount_ore).toBe(-800000);
+  });
+});
+
+describe('SIE #TRANS med dimensionsobjekt (grindfynd)', () => {
+  it('numeriskt dimensionsvärde förväxlas inte med beloppet', () => {
+    const sie = ['#KONTO 1930 "Bank"', '#VER A 1 20250101 "Test"', '{',
+      '   #TRANS 1930 {1 "500"} 1000.00', '   #TRANS 3001 {1 "500"} -1000.00', '}'].join('\r\n');
+    const v = parseSie(sie).vouchers[0]!;
+    expect(v.lines[0]).toEqual({ account: 1930, debit_ore: 100000, credit_ore: 0 }); // 1000 kr, inte 500
+    expect(v.lines[1]).toEqual({ account: 3001, debit_ore: 0, credit_ore: 100000 });
   });
 });
 
@@ -98,12 +112,25 @@ describe('import end-to-end (actions)', () => {
     expect(list.body.result.length).toBe(2);
   });
 
+  it('två genuint identiska rader i samma fil behålls båda (grindfynd)', async () => {
+    // Samma dag, text och belopp, inget radsaldo → tidigare kollapsade de till en.
+    const csv = 'Datum;Text;Belopp\n2025-07-01;Kaffe;-4500\n2025-07-01;Kaffe;-4500';
+    const res = await api.post(`${co()}/actions/import_bank_csv`).set(auth()).send({ csv_content: csv });
+    expect(res.body.result.imported).toBe(2);
+    expect(res.body.result.duplicates).toBe(0);
+    // Men en OMimport av exakt samma fil ska fortfarande dedupas helt.
+    const again = await api.post(`${co()}/actions/import_bank_csv`).set(auth()).send({ csv_content: csv });
+    expect(again.body.result.imported).toBe(0);
+    expect(again.body.result.duplicates).toBe(2);
+  });
+
   it('avstämning markerar en transaktion', async () => {
     const list = await api.post(`${co()}/actions/list_bank_transactions`).set(auth()).send({ reconciled: false });
+    const before = list.body.result.length;
     const id = list.body.result[0].id;
     const rec = await api.post(`${co()}/actions/reconcile_bank_transaction`).set(auth()).send({ transaction_id: id, reconciled: true });
     expect(rec.status).toBe(200);
     const remaining = await api.post(`${co()}/actions/list_bank_transactions`).set(auth()).send({ reconciled: false });
-    expect(remaining.body.result.length).toBe(1);
+    expect(remaining.body.result.length).toBe(before - 1);
   });
 });

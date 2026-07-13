@@ -70,11 +70,15 @@ describe('konto: tvåfaktor', () => {
   it('aktivera → login kräver kod → verifiera → inaktivera', async () => {
     const { ua } = await login(user);
 
-    // 1) Starta setup, hämta secret ur sidan, bekräfta med genererad kod.
+    // Distinkta tidssteg (−30/0/+30 s) för varje verifiering, eftersom replay-
+    // skyddet gör att samma steg bara kan användas EN gång. Alla ligger inom ±1-
+    // fönstret som verifieringen accepterar.
+    const T = Date.now();
+    // 1) Starta setup, hämta secret, bekräfta med kod för föregående steg.
     const begin = await ua.post('/app/account/totp/begin').type('form').send({});
     expect(begin.status).toBe(200);
     const secret = secretOf(begin.text);
-    const confirm = await ua.post('/app/account/totp/confirm').type('form').send({ code: totpCode(secret, Date.now()) });
+    const confirm = await ua.post('/app/account/totp/confirm').type('form').send({ code: totpCode(secret, T - 30_000) });
     expect(confirm.status).toBe(302);
 
     // 2) Ny inloggning: lösenord ger nu bara pending → /app/login/2fa.
@@ -82,20 +86,31 @@ describe('konto: tvåfaktor', () => {
     const pwStep = await ua2.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
     expect(pwStep.status).toBe(302);
     expect(pwStep.headers.location).toBe('/app/login/2fa');
-    // Pending-cookien får INTE ge åtkomst till appen.
-    expect((await ua2.get('/app/')).status).toBe(302);
+    expect((await ua2.get('/app/')).status).toBe(302); // pending ger inte åtkomst
 
-    // Fel kod nekas, rätt kod ger full session.
+    // SÄKERHET (grindfynd HIGH): pending-cookien får INTE fungera som Bearer-token
+    // mot API:t — annars kringgås 2FA helt.
+    const cookie = (pwStep.headers['set-cookie'][0] as string);
+    const pendingToken = decodeURIComponent(cookie.split('=')[1]!.split(';')[0]!);
+    const apiTry = await supertest(app).get('/api/companies').set('Authorization', `Bearer ${pendingToken}`);
+    expect(apiTry.status).toBe(401); // pending_2fa avvisas av authenticate
+
+    // Fel kod nekas, rätt kod (steg T) ger full session.
     const badCode = await ua2.post('/app/login/2fa').type('form').send({ code: '000000' });
     expect(badCode.status).toBe(401);
-    const goodCode = await ua2.post('/app/login/2fa').type('form').send({ code: totpCode(secret, Date.now()) });
+    const goodCode = await ua2.post('/app/login/2fa').type('form').send({ code: totpCode(secret, T) });
     expect(goodCode.status).toBe(302);
     expect((await ua2.get('/app/')).status).toBe(200); // nu inne
 
-    // 3) Inaktivera 2FA med giltig kod.
-    const disable = await ua2.post('/app/account/totp/disable').type('form').send({ code: totpCode(secret, Date.now()) });
+    // SÄKERHET (grindfynd LOW): samma kod (steg T) kan inte återanvändas.
+    const ua3 = supertest.agent(app);
+    await ua3.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    const replay = await ua3.post('/app/login/2fa').type('form').send({ code: totpCode(secret, T) });
+    expect(replay.status).toBe(401); // steg T redan använt
+
+    // 3) Inaktivera 2FA med en färsk kod (nästa steg T+30 s).
+    const disable = await ua2.post('/app/account/totp/disable').type('form').send({ code: totpCode(secret, T + 30_000) });
     expect(disable.status).toBe(302);
-    // Login utan 2FA igen.
     const plain = await supertest.agent(app).post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
     expect(plain.headers.location).toBe('/app');
   });

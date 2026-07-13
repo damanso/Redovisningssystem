@@ -30,11 +30,17 @@ export async function listMembers(client: PoolClient, companyId: string, current
   return r.rows.map((x) => ({ ...x, is_you: x.user_id === currentUserId }));
 }
 
-async function ownerCount(client: PoolClient, companyId: string): Promise<number> {
-  const r = await client.query<{ n: string }>(
-    "SELECT count(*) AS n FROM company_members WHERE company_id = $1 AND role = 'owner'", [companyId],
+/**
+ * Antal ägare i bolaget. LÅSER ägarraderna (FOR UPDATE) så två samtidiga
+ * degraderingar/borttag av olika ägare inte båda kan passera siste-ägaren-kollen
+ * och lämna bolaget utan ägare (TOCTOU/write-skew under READ COMMITTED). count(*)
+ * kan inte kombineras med FOR UPDATE, så vi låser raderna och räknar dem i JS.
+ */
+async function lockedOwnerCount(client: PoolClient, companyId: string): Promise<number> {
+  const r = await client.query(
+    "SELECT user_id FROM company_members WHERE company_id = $1 AND role = 'owner' FOR UPDATE", [companyId],
   );
-  return Number(r.rows[0]!.n);
+  return r.rowCount ?? 0;
 }
 
 /** Bjud in en BEFINTLIG användare (konto krävs) via e-post. Nyregistrering via
@@ -90,7 +96,7 @@ export async function setMemberRole(
     throw new ForbiddenError('owner_only', 'endast en ägare kan hantera ägarrollen');
   }
   // Skydda den siste ägaren: degradera inte bort den enda ägaren.
-  if (currentRole === 'owner' && newRole !== 'owner' && (await ownerCount(client, companyId)) <= 1) {
+  if (currentRole === 'owner' && newRole !== 'owner' && (await lockedOwnerCount(client, companyId)) <= 1) {
     throw new ConflictError('last_owner', 'bolaget måste ha minst en ägare');
   }
   await client.query('UPDATE company_members SET role = $3 WHERE company_id = $1 AND user_id = $2', [companyId, targetUserId, newRole]);
@@ -113,7 +119,7 @@ export async function removeMember(
   if (cur.rows[0].role === 'owner') {
     // En ägare får bara tas bort av en ägare, och aldrig den siste.
     if (actorRole !== 'owner') throw new ForbiddenError('owner_only', 'endast en ägare kan ta bort en ägare');
-    if ((await ownerCount(client, companyId)) <= 1) throw new ConflictError('last_owner', 'bolaget måste ha minst en ägare');
+    if ((await lockedOwnerCount(client, companyId)) <= 1) throw new ConflictError('last_owner', 'bolaget måste ha minst en ägare');
   }
   await client.query('DELETE FROM company_members WHERE company_id = $1 AND user_id = $2', [companyId, targetUserId]);
   await writeAudit(client, {

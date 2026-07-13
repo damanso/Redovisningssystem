@@ -75,6 +75,27 @@ export function verifyTotp(secret: string, token: string, opts: { window?: numbe
   return false;
 }
 
+/**
+ * Som verifyTotp men returnerar det MATCHANDE tidssteget (counter) i stället för
+ * en boolean — null om ingen match. Callern kan lagra steget och avvisa
+ * återanvändning (engångsbruk, skydd mot replay inom fönstret).
+ */
+export function verifyTotpStep(secret: string, token: string, opts: { window?: number; now?: number; step?: number } = {}): number | null {
+  const window = opts.window ?? 1;
+  const now = opts.now ?? Date.now();
+  const stepSeconds = opts.step ?? 30;
+  const clean = token.replace(/\s/g, '');
+  if (!/^\d{6}$/.test(clean)) return null;
+  for (let i = -window; i <= window; i += 1) {
+    const t = now + i * stepSeconds * 1000;
+    const candidate = totpCode(secret, t);
+    const a = Buffer.from(candidate);
+    const b = Buffer.from(clean);
+    if (a.length === b.length && timingSafeEqual(a, b)) return Math.floor(t / 1000 / stepSeconds);
+  }
+  return null;
+}
+
 /** otpauth://-URI för QR-appar (Google Authenticator, Authy m.fl.). */
 export function otpauthUri(secret: string, account: string, issuer = 'Daglig liggare'): string {
   const label = encodeURIComponent(`${issuer}:${account}`);
