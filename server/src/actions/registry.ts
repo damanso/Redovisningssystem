@@ -10,7 +10,7 @@ import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.j
 import { postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
-import { accountsPayableAging, accountsReceivableAging, monthlyRevenue } from '../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
@@ -126,6 +126,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'cash_flow',
+    title: 'Kassaflöde per månad (12 mån)',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => cashFlow(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'liquidity_forecast',
+    title: 'Likviditetsprognos',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => liquidityForecast(ctx.client, ctx.companyId, i.as_of),
   }),
   def({
     name: 'accounts_payable_aging',

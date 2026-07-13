@@ -16,7 +16,7 @@ import { listApprovals } from '../../services/approvals.js';
 import { approveAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
-import { accountsPayableAging, accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue } from '../../services/reports.js';
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
@@ -421,6 +421,42 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.
+viewRouter.get('/c/:companyId/cashflow', pageFor('cashflow', 'Kassaflöde', async (client, companyId) => {
+  const cf = await cashFlow(client, companyId);
+  const liq = await liquidityForecast(client, companyId);
+  const maxAbs = Math.max(1, ...cf.months.map((m) => Math.max(m.inflow_ore, m.outflow_ore)));
+  return html`<div class="page-head"><div>${eyebrow('Kassaflöde')}<h1>Kassaflöde & likviditet</h1>
+      <p class="lede">Kassarörelser på likvida konton (19xx) per månad och en enkel likviditetsprognos utifrån öppna kund- och leverantörsfakturors förfallodag. Prognosen är en indikation, inte en utfästelse.</p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Kassa nu', amount(liq.cash_ore))}
+      ${kpiCell('Ingående (12 mån sedan)', amount(cf.opening_ore))}
+      ${kpiCell('Utgående kassa', amount(cf.months.at(-1)?.closing_ore ?? cf.opening_ore))}
+      ${kpiCell('Prognos slutsaldo', amount(liq.buckets.at(-1)?.projected_ore ?? liq.cash_ore))}
+    </div>
+    <h2 style="margin-top:18px">Kassaflöde per månad</h2>
+    <div class="table-wrap"><table><thead><tr><th>Månad</th><th class="num">In</th><th class="num">Ut</th><th class="num">Netto</th><th class="num">Utgående</th><th>Flöde</th></tr></thead><tbody>
+      ${cf.months.map((m) => html`<tr>
+        <td class="code">${m.ym}</td>
+        <td class="num">${m.inflow_ore ? amount(m.inflow_ore, { unit: false }) : ''}</td>
+        <td class="num">${m.outflow_ore ? amount(m.outflow_ore, { unit: false }) : ''}</td>
+        <td class="num">${m.net_ore ? amount(m.net_ore, { unit: false }) : ''}</td>
+        <td class="num"><strong>${amount(m.closing_ore, { unit: false })}</strong></td>
+        <td><span class="flowbar" style="display:inline-block;height:9px;width:${Math.round((m.inflow_ore / maxAbs) * 90)}px;background:var(--pos, #2f9e6b);border-radius:2px" title="In"></span><span class="flowbar" style="display:inline-block;height:9px;width:${Math.round((m.outflow_ore / maxAbs) * 90)}px;background:var(--neg, #d0454c);border-radius:2px;margin-left:2px" title="Ut"></span></td></tr>`)}
+    </tbody></table></div>
+    <h2 style="margin-top:20px">Likviditetsprognos</h2>
+    <div class="table-wrap"><table><thead><tr><th>Period</th><th class="num">Väntade inbetalningar</th><th class="num">Väntade utbetalningar</th><th class="num">Netto</th><th class="num">Projicerad kassa</th></tr></thead><tbody>
+      <tr><td>Kassa idag</td><td class="num"></td><td class="num"></td><td class="num"></td><td class="num"><strong>${amount(liq.cash_ore, { unit: false })}</strong></td></tr>
+      ${liq.buckets.map((b) => html`<tr>
+        <td>${b.label}</td>
+        <td class="num">${b.inflow_ore ? amount(b.inflow_ore, { unit: false }) : ''}</td>
+        <td class="num">${b.outflow_ore ? amount(b.outflow_ore, { unit: false }) : ''}</td>
+        <td class="num">${b.net_ore ? amount(b.net_ore, { unit: false }) : ''}</td>
+        <td class="num"><strong>${amount(b.projected_ore, { unit: false })}</strong></td></tr>`)}
+    </tbody></table></div>
+    ${liq.buckets.some((b) => b.projected_ore < 0) ? html`<p class="lede">${chip('Prognosen visar negativ kassa i någon period — se över in-/utbetalningar', 'neg', '!')}</p>` : ''}`;
 }));
 
 // CSV-export av rapporter (revisor/Excel). Läser rapporten inom tenant-gränsen

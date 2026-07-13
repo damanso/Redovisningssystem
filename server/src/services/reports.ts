@@ -421,3 +421,116 @@ export async function accountsReceivableAging(
     },
   };
 }
+
+// Likvida konton enligt BAS: 19xx (kassa och bank). Kassaflödet och likviditeten
+// mäts som rörelser/saldo på dessa konton — en tillgång som ökar med debet.
+const LIQUID_ACCOUNT_MIN = 1900;
+const LIQUID_ACCOUNT_MAX = 1999;
+
+export interface CashFlowMonth { ym: string; inflow_ore: Ore; outflow_ore: Ore; net_ore: Ore; closing_ore: Ore }
+export interface CashFlow { opening_ore: Ore; months: CashFlowMonth[] }
+
+/**
+ * Kassaflöde per månad de senaste 12 månaderna (t.o.m. `asOf`). In = debet på
+ * likvida konton (19xx), ut = kredit. Ingående saldo är nettot på 19xx FÖRE
+ * fönstrets första månad; utgående saldo ackumuleras månad för månad. Nollfyllt.
+ */
+export async function cashFlow(client: PoolClient, companyId: string, asOf?: string): Promise<CashFlow> {
+  const result = await client.query<{ ym: string | null; opening: string; inflow: string; outflow: string }>(
+    `WITH ref AS (SELECT date_trunc('month', COALESCE($2::date, CURRENT_DATE)) AS m0),
+     liquid AS (
+       SELECT date_trunc('month', v.voucher_date) AS m, vl.debit_ore, vl.credit_ore
+       FROM voucher_lines vl JOIN vouchers v ON v.id = vl.voucher_id
+       WHERE vl.company_id = $1 AND vl.account_number BETWEEN ${LIQUID_ACCOUNT_MIN} AND ${LIQUID_ACCOUNT_MAX}
+     ),
+     opening AS (
+       SELECT COALESCE(sum(debit_ore - credit_ore), 0) AS opening
+       FROM liquid WHERE m < (SELECT m0 FROM ref) - interval '11 months'
+     ),
+     months AS (
+       SELECT (SELECT m0 FROM ref) - (n || ' months')::interval AS m
+       FROM generate_series(11, 0, -1) AS n
+     ),
+     agg AS (
+       SELECT m, sum(debit_ore) AS inflow, sum(credit_ore) AS outflow
+       FROM liquid GROUP BY m
+     )
+     SELECT to_char(mo.m, 'YYYY-MM') AS ym, (SELECT opening FROM opening) AS opening,
+            COALESCE(a.inflow, 0) AS inflow, COALESCE(a.outflow, 0) AS outflow
+     FROM months mo LEFT JOIN agg a ON a.m = mo.m
+     ORDER BY mo.m`,
+    [companyId, asOf ?? null],
+  );
+  const opening = result.rows.length ? Number(result.rows[0]!.opening) : 0;
+  let running = opening;
+  const months: CashFlowMonth[] = result.rows.map((r) => {
+    const inflow = Number(r.inflow);
+    const outflow = Number(r.outflow);
+    const net = inflow - outflow;
+    running += net;
+    return { ym: r.ym!, inflow_ore: inflow, outflow_ore: outflow, net_ore: net, closing_ore: running };
+  });
+  return { opening_ore: opening, months };
+}
+
+export interface LiquidityBucket { label: string; inflow_ore: Ore; outflow_ore: Ore; net_ore: Ore; projected_ore: Ore }
+export interface Liquidity { as_of: string; cash_ore: Ore; buckets: LiquidityBucket[] }
+
+/**
+ * Enkel likviditetsprognos: nuvarande kassa (saldo på 19xx per `asOf`) plus
+ * väntade inbetalningar (öppna kundfakturor) minus väntade utbetalningar (öppna
+ * leverantörsfakturor), grupperade i förfalloperioder. Förfallet-/nu-hinken
+ * inkluderar allt t.o.m. asOf. Projected = löpande kassa efter varje hink.
+ * Detta är en indikation, inte en utfäst prognos.
+ */
+export async function liquidityForecast(client: PoolClient, companyId: string, asOf?: string): Promise<Liquidity> {
+  const result = await client.query<{
+    cash: string; as_of: string;
+    in_now: string; in_30: string; in_60: string; in_90: string; in_later: string;
+    out_now: string; out_30: string; out_60: string; out_90: string; out_later: string;
+  }>(
+    `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d),
+     cash AS (
+       SELECT COALESCE(sum(vl.debit_ore - vl.credit_ore), 0) AS cash
+       FROM voucher_lines vl JOIN vouchers v ON v.id = vl.voucher_id
+       WHERE vl.company_id = $1 AND vl.account_number BETWEEN ${LIQUID_ACCOUNT_MIN} AND ${LIQUID_ACCOUNT_MAX}
+         AND v.voucher_date <= (SELECT d FROM ref)
+     ),
+     ar AS (
+       SELECT i.due_date, (i.total_ore - i.paid_amount_ore) AS amt FROM invoices i
+       WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL AND i.status <> 'cancelled' AND i.total_ore > i.paid_amount_ore
+     ),
+     ap AS (
+       SELECT s.due_date, (s.total_ore - s.paid_amount_ore) AS amt FROM supplier_invoices s
+       WHERE s.company_id = $1 AND s.voucher_id IS NOT NULL AND s.status <> 'cancelled' AND s.total_ore > s.paid_amount_ore
+     )
+     SELECT (SELECT cash FROM cash) AS cash, (SELECT d FROM ref)::text AS as_of,
+       COALESCE((SELECT sum(amt) FROM ar WHERE due_date <= (SELECT d FROM ref)), 0) AS in_now,
+       COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) BETWEEN 1 AND 30), 0) AS in_30,
+       COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) BETWEEN 31 AND 60), 0) AS in_60,
+       COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) BETWEEN 61 AND 90), 0) AS in_90,
+       COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) > 90), 0) AS in_later,
+       COALESCE((SELECT sum(amt) FROM ap WHERE due_date <= (SELECT d FROM ref)), 0) AS out_now,
+       COALESCE((SELECT sum(amt) FROM ap WHERE due_date - (SELECT d FROM ref) BETWEEN 1 AND 30), 0) AS out_30,
+       COALESCE((SELECT sum(amt) FROM ap WHERE due_date - (SELECT d FROM ref) BETWEEN 31 AND 60), 0) AS out_60,
+       COALESCE((SELECT sum(amt) FROM ap WHERE due_date - (SELECT d FROM ref) BETWEEN 61 AND 90), 0) AS out_90,
+       COALESCE((SELECT sum(amt) FROM ap WHERE due_date - (SELECT d FROM ref) > 90), 0) AS out_later`,
+    [companyId, asOf ?? null],
+  );
+  const r = result.rows[0]!;
+  const cash = Number(r.cash);
+  const defs: Array<[string, number, number]> = [
+    ['Förfallet / nu', Number(r.in_now), Number(r.out_now)],
+    ['Inom 30 dagar', Number(r.in_30), Number(r.out_30)],
+    ['31–60 dagar', Number(r.in_60), Number(r.out_60)],
+    ['61–90 dagar', Number(r.in_90), Number(r.out_90)],
+    ['Senare', Number(r.in_later), Number(r.out_later)],
+  ];
+  let projected = cash;
+  const buckets: LiquidityBucket[] = defs.map(([label, inflow, outflow]) => {
+    const net = inflow - outflow;
+    projected += net;
+    return { label, inflow_ore: inflow, outflow_ore: outflow, net_ore: net, projected_ore: projected };
+  });
+  return { as_of: r.as_of, cash_ore: cash, buckets };
+}
