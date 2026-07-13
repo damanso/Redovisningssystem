@@ -16,7 +16,8 @@ import { listApprovals } from '../../services/approvals.js';
 import { approveAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
-import { accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
+import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
@@ -305,6 +306,40 @@ viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontr
     }`;
 }));
 
+// Leverantörsreskontra med åldersanalys (öppna, bokförda leverantörsfakturor).
+viewRouter.get('/c/:companyId/payables', pageFor('payables', 'Leverantörsreskontra', async (client, companyId) => {
+  const aging = await accountsPayableAging(client, companyId);
+  const invoices = await listSupplierInvoices(client, companyId, {});
+  const t = aging.totals;
+  const bucket = (r: { not_due_ore: number; d1_30_ore: number; d31_60_ore: number; d61_90_ore: number; d90_plus_ore: number; total_ore: number }) => html`
+    <td class="num">${r.not_due_ore ? amount(r.not_due_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d1_30_ore ? amount(r.d1_30_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d31_60_ore ? amount(r.d31_60_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d61_90_ore ? amount(r.d61_90_ore, { unit: false }) : ''}</td>
+    <td class="num">${r.d90_plus_ore ? amount(r.d90_plus_ore, { unit: false }) : ''}</td>
+    <td class="num"><strong>${amount(r.total_ore, { unit: false })}</strong></td>`;
+  return html`<div class="page-head"><div>${eyebrow('Leverantörsreskontra')}<h1>Åldersanalys av leverantörsskulder</h1>
+      <p class="lede">Öppna, bokförda leverantörsfakturor per leverantör och förfalloålder (per ${aging.as_of}).</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/payables/export.csv">Exportera CSV</a></div></div>
+    ${
+      aging.rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga obetalda leverantörsskulder 🎉</div>Alla bokförda leverantörsfakturor är betalda.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Leverantör</th><th class="num">Ej förfallet</th><th class="num">1–30 d</th><th class="num">31–60 d</th><th class="num">61–90 d</th><th class="num">&gt;90 d</th><th class="num">Totalt</th></tr></thead>
+            <tbody>${aging.rows.map((r) => html`<tr><td>${r.supplier_name}</td>${bucket(r)}</tr>`)}
+              <tr class="subtot"><td>Summa</td>${bucket(t)}</tr></tbody></table></div>`
+    }
+    <h2>Leverantörsfakturor</h2>
+    ${
+      invoices.length === 0
+        ? html`<p class="muted">Inga leverantörsfakturor ännu.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Leverantör</th><th>Datum</th><th>Förfaller</th><th class="num">Totalt</th><th class="num">Betalt</th><th>Status</th></tr></thead><tbody>
+            ${invoices.map((r) => html`<tr><td class="code">${r.number as number}</td><td>${r.supplier_name as string}</td><td>${r.invoice_date as string}</td><td>${r.due_date as string}</td>
+              <td class="num">${amount(r.total_ore as number)}</td><td class="num">${amount(r.paid_amount_ore as number)}</td><td>${statusChip(String(r.status))}</td></tr>`)}
+            </tbody></table></div>`
+    }`;
+}));
+
 // CSV-export av rapporter (revisor/Excel). Läser rapporten inom tenant-gränsen
 // och skickar en nedladdning. BOM (﻿) så svensk Excel läser åäö rätt.
 function csvDownload(filename: string, build: (client: PoolClient, companyId: string) => Promise<string>) {
@@ -369,6 +404,16 @@ viewRouter.get('/c/:companyId/receivables/export.csv', csvDownload('kundreskontr
   const rows: (string | number)[][] = [['Kundreskontra', `per ${aging.as_of}`],
     ['Kund', 'Ej förfallet', '1-30 d', '31-60 d', '61-90 d', '>90 d', 'Totalt (kr)']];
   for (const r of aging.rows) rows.push([r.customer_name, csvKronor(r.not_due_ore), csvKronor(r.d1_30_ore), csvKronor(r.d31_60_ore), csvKronor(r.d61_90_ore), csvKronor(r.d90_plus_ore), csvKronor(r.total_ore)]);
+  const t = aging.totals;
+  rows.push(['Summa', csvKronor(t.not_due_ore), csvKronor(t.d1_30_ore), csvKronor(t.d31_60_ore), csvKronor(t.d61_90_ore), csvKronor(t.d90_plus_ore), csvKronor(t.total_ore)]);
+  return toCsv(rows);
+}));
+
+viewRouter.get('/c/:companyId/payables/export.csv', csvDownload('leverantorsreskontra.csv', async (client, companyId) => {
+  const aging = await accountsPayableAging(client, companyId);
+  const rows: (string | number)[][] = [['Leverantörsreskontra', `per ${aging.as_of}`],
+    ['Leverantör', 'Ej förfallet', '1-30 d', '31-60 d', '61-90 d', '>90 d', 'Totalt (kr)']];
+  for (const r of aging.rows) rows.push([r.supplier_name, csvKronor(r.not_due_ore), csvKronor(r.d1_30_ore), csvKronor(r.d31_60_ore), csvKronor(r.d61_90_ore), csvKronor(r.d90_plus_ore), csvKronor(r.total_ore)]);
   const t = aging.totals;
   rows.push(['Summa', csvKronor(t.not_due_ore), csvKronor(t.d1_30_ore), csvKronor(t.d31_60_ore), csvKronor(t.d61_90_ore), csvKronor(t.d90_plus_ore), csvKronor(t.total_ore)]);
   return toCsv(rows);

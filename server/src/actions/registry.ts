@@ -10,7 +10,8 @@ import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.j
 import { postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
-import { accountsReceivableAging, monthlyRevenue } from '../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, monthlyRevenue } from '../services/reports.js';
+import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -123,6 +124,51 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'accounts_payable_aging',
+    title: 'Leverantörsreskontra (åldersanalys)',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => accountsPayableAging(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'list_supplier_invoices',
+    title: 'Lista leverantörsfakturor',
+    sensitivity: 'read',
+    inputSchema: z.object({ status: safeText(20).optional() }).strict(),
+    handler: (ctx, i: { status?: string }) => listSupplierInvoices(ctx.client, ctx.companyId, { status: i.status }),
+  }),
+  def({
+    name: 'create_supplier_invoice',
+    title: 'Skapa leverantörsfaktura',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      supplier_id: UuidSchema, supplier_ref: safeText(60).optional(),
+      invoice_date: IsoDateSchema, due_date: IsoDateSchema,
+      net_ore: OreSchema, vat_rate: VatRateSchema, expense_account: AccountNumberSchema, notes: safeText(300).optional(),
+    }).strict(),
+    handler: (ctx, i: { supplier_id: string; supplier_ref?: string; invoice_date: string; due_date: string; net_ore: number; vat_rate: 0 | 6 | 12 | 25; expense_account: number; notes?: string }) =>
+      createSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'book_supplier_invoice',
+    title: 'Bokför leverantörsfaktura',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string }) =>
+      bookSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i.supplier_invoice_id, i.fiscal_year_id),
+  }),
+  def({
+    name: 'register_supplier_payment',
+    title: 'Registrera betalning på leverantörsfaktura',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({
+      supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema,
+      amount_ore: OreSchema.optional(), bank_account: AccountNumberSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+      recordSupplierPayment(ctx.client, ctx.companyId, ctx.userId, { supplierInvoiceId: i.supplier_invoice_id, fiscalYearId: i.fiscal_year_id, paymentDate: i.payment_date, amountOre: i.amount_ore, bankAccount: i.bank_account }),
   }),
 
   def({

@@ -258,6 +258,47 @@ export async function dashboard(
   };
 }
 
+export interface ApAgingRow { supplier_id: string; supplier_name: string; not_due_ore: Ore; d1_30_ore: Ore; d31_60_ore: Ore; d61_90_ore: Ore; d90_plus_ore: Ore; total_ore: Ore }
+export interface ApAging { as_of: string; rows: ApAgingRow[]; totals: Omit<ApAgingRow, 'supplier_id' | 'supplier_name'> }
+
+/** Leverantörsreskontra med åldersanalys — utestående (bokförda, ej annullerade)
+ *  leverantörsfakturor per leverantör och förfalloålder. Belopp = total − betalt. */
+export async function accountsPayableAging(client: PoolClient, companyId: string, asOf?: string): Promise<ApAging> {
+  const result = await client.query<{
+    supplier_id: string; supplier_name: string; not_due: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number; total: number; as_of: string;
+  }>(
+    `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d),
+     open_si AS (
+       SELECT si.supplier_id, si.due_date, (si.total_ore - si.paid_amount_ore) AS outstanding
+       FROM supplier_invoices si
+       WHERE si.company_id = $1 AND si.voucher_id IS NOT NULL
+         AND si.status <> 'cancelled' AND si.total_ore > si.paid_amount_ore
+     )
+     SELECT o.supplier_id, s.name AS supplier_name,
+       sum(CASE WHEN o.due_date >= (SELECT d FROM ref) THEN o.outstanding ELSE 0 END) AS not_due,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 1 AND 30 THEN o.outstanding ELSE 0 END) AS d1_30,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 31 AND 60 THEN o.outstanding ELSE 0 END) AS d31_60,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 61 AND 90 THEN o.outstanding ELSE 0 END) AS d61_90,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date > 90 THEN o.outstanding ELSE 0 END) AS d90_plus,
+       sum(o.outstanding) AS total, (SELECT d FROM ref)::text AS as_of
+     FROM open_si o JOIN suppliers s ON s.id = o.supplier_id
+     GROUP BY o.supplier_id, s.name
+     ORDER BY total DESC, s.name`,
+    [companyId, asOf ?? null],
+  );
+  const rows: ApAgingRow[] = result.rows.map((r) => ({
+    supplier_id: r.supplier_id, supplier_name: r.supplier_name,
+    not_due_ore: Number(r.not_due), d1_30_ore: Number(r.d1_30), d31_60_ore: Number(r.d31_60),
+    d61_90_ore: Number(r.d61_90), d90_plus_ore: Number(r.d90_plus), total_ore: Number(r.total),
+  }));
+  const sum = (k: keyof ApAgingRow) => rows.reduce((s, r) => s + (r[k] as number), 0);
+  return {
+    as_of: result.rows[0]?.as_of ?? (asOf ?? ''),
+    rows,
+    totals: { not_due_ore: sum('not_due_ore'), d1_30_ore: sum('d1_30_ore'), d31_60_ore: sum('d31_60_ore'), d61_90_ore: sum('d61_90_ore'), d90_plus_ore: sum('d90_plus_ore'), total_ore: sum('total_ore') },
+  };
+}
+
 export interface MonthlyPoint { ym: string; revenue_ore: Ore; expense_ore: Ore; result_ore: Ore }
 
 /**

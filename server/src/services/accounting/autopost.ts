@@ -153,3 +153,35 @@ export async function postCustomerPayment(
     sourceId: input.sourceId,
   });
 }
+
+/** Utbetalning på leverantörsfaktura: debet leverantörsskuld, kredit bank. */
+export async function postSupplierPayment(
+  client: PoolClient,
+  companyId: string,
+  userId: string,
+  input: {
+    fiscalYearId: string;
+    voucherDate: string;
+    sourceId: string;
+    series?: string;
+    description: string;
+    amountOre: Ore;
+    bankAccount?: number;
+    payableAccount?: number;
+  },
+): Promise<Voucher> {
+  assertSafeOre(input.amountOre);
+  if (input.amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
+  return postVoucher(client, companyId, userId, {
+    fiscalYearId: input.fiscalYearId,
+    series: input.series,
+    voucherDate: input.voucherDate,
+    description: input.description,
+    lines: [
+      { account_number: input.payableAccount ?? PAYABLE_ACCOUNT, debit_ore: input.amountOre },
+      { account_number: input.bankAccount ?? 1930, credit_ore: input.amountOre },
+    ],
+    sourceType: 'payment',
+    sourceId: input.sourceId,
+  });
+}
