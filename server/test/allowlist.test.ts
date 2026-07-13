@@ -79,6 +79,16 @@ describe('PATCH /api/companies/:id (API)', () => {
     expect(usersTable.rowCount).toBe(1);
   });
 
+  it('trasig JSON-body ger 400, inte 500', async () => {
+    const res = await api
+      .patch(`/api/companies/${companyId}`)
+      .set('Authorization', `Bearer ${user.token}`)
+      .set('Content-Type', 'application/json')
+      .send('{trasig');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_body');
+  });
+
   it('ogiltigt organisationsnummer avvisas', async () => {
     const res = await api
       .patch(`/api/companies/${companyId}`)

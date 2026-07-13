@@ -29,6 +29,23 @@ export function errorHandler(
     res.status(status).json({ error: 'upload_error' });
     return;
   }
+  // body-parser (express.json) kastar fel med en klientstatus, t.ex.
+  // SyntaxError vid trasig JSON (400) eller PayloadTooLargeError (413).
+  if (isHttpClientError(err)) {
+    res.status(err.statusCode).json({ error: 'invalid_body' });
+    return;
+  }
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'internal_error' });
+}
+
+function isHttpClientError(err: unknown): err is { statusCode: number } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'statusCode' in err &&
+    typeof (err as { statusCode: unknown }).statusCode === 'number' &&
+    (err as { statusCode: number }).statusCode >= 400 &&
+    (err as { statusCode: number }).statusCode < 500
+  );
 }
