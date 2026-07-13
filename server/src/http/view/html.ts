@@ -414,6 +414,7 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .btn--primary:hover { background: var(--accent-ink); }
 .btn--ghost { background: transparent; border-color: var(--line-2); color: var(--ink-2); }
 .btn--sm { padding: 6px 11px; font-size: 13px; }
+.badge { display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 3px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; line-height: 17px; }
 .actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
 
 /* Tomt tillstånd */
@@ -496,6 +497,7 @@ export function layout(opts: {
   companyId?: string;
   companyName?: string;
   active?: string;
+  unread?: number;
   body: Raw;
 }): Raw {
   const nav = opts.companyId
@@ -511,6 +513,7 @@ export function layout(opts: {
           opts.companyName ? html`<span class="sep">/</span><span class="co">${opts.companyName}</span>` : ''
         }</a>
         <div style="display:flex;gap:8px;align-items:center">
+          <a class="btn btn--ghost btn--sm" href="/app/notifications">Notiser${opts.unread ? html` <span class="badge">${String(opts.unread)}</span>` : ''}</a>
           <a class="btn btn--ghost btn--sm" href="/app/account">Konto</a>
           <form method="post" action="/app/logout" style="margin:0">
             <button class="btn btn--ghost btn--sm" type="submit">Logga ut</button>

@@ -16,6 +16,7 @@ import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices,
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
 import { listMembers } from '../services/team.js';
+import { listNotifications } from '../services/notifications.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -128,6 +129,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'list_notifications',
+    title: 'Lista dina notiser',
+    sensitivity: 'read',
+    inputSchema: z.object({ unread_only: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { unread_only?: boolean }) => listNotifications(ctx.client, ctx.userId, { unreadOnly: i.unread_only }),
   }),
   def({
     name: 'list_team_members',

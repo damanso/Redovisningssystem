@@ -7,6 +7,7 @@ import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
+import { notify } from './notifications.js';
 
 export type ManageableRole = 'admin' | 'member';
 
@@ -59,6 +60,16 @@ export async function inviteMember(
   await writeAudit(client, {
     companyId, userId: actorUserId, action: 'team.member_invited', entityType: 'company_member',
     entityId: targetId, details: { email: u.rows[0].email, role },
+  });
+  // Notifiera den inbjudna användaren (in-app + valfri e-post via outboxen).
+  const co = await client.query<{ name: string }>('SELECT name FROM companies WHERE id = $1', [companyId]);
+  const companyName = co.rows[0]?.name ?? 'ett bolag';
+  await notify(client, {
+    userId: targetId, companyId, kind: 'team_invite',
+    title: `Du har lagts till i ${companyName}`,
+    body: `Du är nu ${role === 'admin' ? 'administratör' : 'medlem'} i ${companyName}.`,
+    link: `/app/c/${companyId}`,
+    email: { toEmail: u.rows[0].email },
   });
   const members = await listMembers(client, companyId, actorUserId);
   return members.find((m) => m.user_id === targetId)!;

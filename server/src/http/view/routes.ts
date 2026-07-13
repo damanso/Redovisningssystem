@@ -29,6 +29,8 @@ import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, st
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, getTotpState, updateName } from '../../services/profile.js';
 import { verifyTotp } from '../../lib/totp.js';
+import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
+import { emailEnabled } from '../../services/email.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -178,7 +180,7 @@ function accountBody(profile: { name: string; email: string; totp_enabled: boole
       <form method="post" action="/app/account/name" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <label class="field" style="margin:0"><span>Namn</span><input type="text" name="name" value="${profile.name}" required maxlength="200"></label>
         <button class="btn btn--primary" type="submit">Spara namn</button></form>
-      <p class="muted" style="font-size:12.5px;margin-top:10px">E-post: ${profile.email}</p></div></div>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">E-post: ${profile.email} · Notiser via e-post: ${emailEnabled() ? 'aktiva' : 'ej konfigurerade (kräver SMTP)'}</p></div></div>
     <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Byt lösenord</h2></div><div class="panel__body" style="padding:14px 16px">
       <form method="post" action="/app/account/password" style="display:grid;gap:10px;max-width:360px">
         <label class="field" style="margin:0"><span>Nuvarande lösenord</span><input type="password" name="current" autocomplete="current-password" required></label>
@@ -263,6 +265,42 @@ viewRouter.post('/account/totp/disable', page(async (req, res) => {
   const userId = getUserId(req);
   const code = z.string().max(12).parse((req.body as { code?: unknown }).code);
   await accountRedirect(res, 'Tvåfaktor är avstängd.', () => withUserTransaction(userId, (c) => disableTotp(c, userId, code)));
+}));
+
+// Notiser (in-app). Bell/länk i appbaren visar antal olästa.
+viewRouter.get('/notifications', page(async (req, res) => {
+  const userId = getUserId(req);
+  const { list, unread } = await withUserTransaction(userId, async (client) => ({
+    list: await listNotifications(client, userId, {}),
+    unread: await unreadCount(client, userId),
+  }));
+  const body = html`<div class="page-head"><div>${eyebrow('Notiser')}<h1>Dina notiser</h1>
+      <p class="lede">${emailEnabled() ? 'E-postnotiser är aktiverade.' : 'E-post är inte konfigurerad — notiser visas här i appen. (E-postutskick kräver SMTP-inställningar.)'} <a href="/app/">← Bolag</a></p></div>
+      <div class="actions">${list.some((n) => !n.read_at) ? html`<form method="post" action="/app/notifications/read-all" style="margin:0"><button class="btn btn--ghost btn--sm" type="submit">Markera alla som lästa</button></form>` : ''}</div></div>
+    ${
+      list.length === 0
+        ? html`<div class="empty"><div class="big">Inga notiser</div>Här dyker viktiga händelser upp.</div>`
+        : html`<div class="log">${list.map((n) => html`<div class="log-row" style="${n.read_at ? '' : 'background:var(--surface-2, rgba(79,107,237,.06))'}">
+            <div class="log-when">${n.created_at.replace('T', ' ').slice(0, 16)}${n.read_at ? '' : html` ${chip('Ny', 'info')}`}</div>
+            <div class="log-what"><strong>${n.title}</strong>${n.body ? html`<br>${n.body}` : ''}
+              ${n.link ? html`<br><a href="${n.link}">Öppna →</a>` : ''}</div></div>`)}</div>`
+    }`;
+  res.type('html').send(layout({ title: 'Notiser', unread, body }).value);
+}));
+
+viewRouter.post('/notifications/read-all', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  await withUserTransaction(userId, (c) => markAllRead(c, userId));
+  res.redirect('/app/notifications');
+}));
+
+viewRouter.post('/notifications/:id/read', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const id = parseApprovalId(req.params.id);
+  await withUserTransaction(userId, (c) => markRead(c, userId, id));
+  res.redirect('/app/notifications');
 }));
 
 // ---- Bolagskontext: ALLTID från URL + verifierat medlemskap (ingen global

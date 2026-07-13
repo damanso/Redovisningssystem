@@ -38,6 +38,14 @@ const EnvSchema = z.object({
   // (t.ex. '1' för en hop, eller ett subnät) så att req.ip och rate-limitern
   // ser klientens riktiga IP. Default false (ingen proxy). Se app.ts.
   TRUST_PROXY: z.string().default('false'),
+  // E-postutskick (Fas A12). ALLA frivilliga — utan SMTP_HOST skickas ingen
+  // e-post; notiser stannar i appen och e-post-outboxen markeras som ej skickad.
+  // Vi fail-fastar INTE på dessa (till skillnad från JWT_SECRET).
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().max(65535).default(587),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASS: z.string().min(1).optional(),
+  SMTP_FROM: z.string().min(1).optional(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
@@ -53,6 +61,9 @@ export const config = Object.freeze({
   ...parsed.data,
   isProduction: parsed.data.NODE_ENV === 'production',
   isTest: parsed.data.NODE_ENV === 'test',
+  // E-post är "konfigurerad" först när både värd och avsändare finns. Detta styr
+  // om outboxen ens FÖRSÖKER skicka — utan det stannar allt som in-app-notiser.
+  smtpConfigured: Boolean(parsed.data.SMTP_HOST && parsed.data.SMTP_FROM),
 });
 
 export type Config = typeof config;
