@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { luhnAppendCheckDigit, luhnCheckDigit, luhnIsValid } from '../src/domain/luhn.js';
 import { generateOcr, ocrIsValid } from '../src/domain/ocr.js';
-import { assertSafeOre, kronorToOre, oreToKronor, sumOre } from '../src/domain/money.js';
+import { assertSafeOre, formatOre, kronorToOre, oreToKronor, sumOre } from '../src/domain/money.js';
 import { INPUT_VAT_ACCOUNT, outputVatAccount, splitGross, vatFromNet } from '../src/domain/vat.js';
 
 // Oberoende Luhn-validering (annan implementation än produktionskoden) för att
@@ -90,6 +90,16 @@ describe('pengar i ören', () => {
 
   it('ören → kronor endast för presentation', () => {
     expect(oreToKronor(123456)).toBeCloseTo(1234.56, 2);
+  });
+
+  it('formatOre visar aldrig negativt noll ("−0,00")', () => {
+    // Ett saldo som råkar bli -0 (t.ex. differens av lika stora belopp) får
+    // aldrig renderas med minustecken.
+    expect(formatOre(-0)).toBe('0,00');
+    expect(formatOre(-0, { currency: true })).toBe('0,00 kr');
+    // Äkta negativa belopp behåller minustecknet.
+    expect(formatOre(-12345, { currency: true })).toBe('−123,45 kr');
+    expect(formatOre(123456)).toBe(`1 234,56`); // U+00A0
   });
 });
 

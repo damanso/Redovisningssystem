@@ -42,10 +42,11 @@ export function oreToKronor(ore: Ore): number {
 
 /** Svensk formatering för presentation (PDF/e-post), t.ex. 123456 → "1 234,56". */
 export function formatOre(ore: Ore, options: { currency?: boolean } = {}): string {
+  // + 0 normaliserar negativt noll (-0) → 0 så "−0,00" aldrig visas.
   const formatted = new Intl.NumberFormat('sv-SE', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(oreToKronor(ore));
+  }).format(oreToKronor(ore) + 0);
   return options.currency ? `${formatted} kr` : formatted;
 }
 
