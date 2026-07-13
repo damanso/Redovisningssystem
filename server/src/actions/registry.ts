@@ -12,6 +12,7 @@ import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
+import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -213,6 +214,48 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createInvoice(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_recurring_invoices',
+    title: 'Lista återkommande fakturor',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listRecurringInvoices(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'create_recurring_invoice',
+    title: 'Skapa mall för återkommande faktura',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        customer_id: UuidSchema,
+        title: safeText(150),
+        interval: z.enum(['monthly', 'quarterly', 'yearly']),
+        next_run_date: IsoDateSchema,
+        end_date: IsoDateSchema.optional(),
+        payment_terms: z.number().int().min(0).max(365).optional(),
+        reference: safeText(200).optional(),
+        notes: safeText(300).optional(),
+        lines: z.array(InvoiceLine).min(1),
+      })
+      .strict(),
+    handler: (ctx, i) => createRecurringInvoice(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_recurring_active',
+    title: 'Aktivera/pausa återkommande faktura',
+    sensitivity: 'write',
+    inputSchema: z.object({ recurring_id: UuidSchema, active: z.boolean() }).strict(),
+    handler: (ctx, i: { recurring_id: string; active: boolean }) =>
+      setRecurringActive(ctx.client, ctx.companyId, ctx.userId, i.recurring_id, i.active),
+  }),
+  def({
+    name: 'run_recurring_invoices',
+    title: 'Generera förfallna återkommande fakturor',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ as_of: IsoDateSchema }).strict(),
+    handler: (ctx, i: { as_of: string }) =>
+      runDueRecurringInvoices(ctx.client, ctx.companyId, ctx.userId, i.as_of),
   }),
   def({
     name: 'create_receipt',

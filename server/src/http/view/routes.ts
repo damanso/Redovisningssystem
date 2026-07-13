@@ -18,6 +18,7 @@ import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
+import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
@@ -336,6 +337,28 @@ viewRouter.get('/c/:companyId/payables', pageFor('payables', 'Leverantörsreskon
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Leverantör</th><th>Datum</th><th>Förfaller</th><th class="num">Totalt</th><th class="num">Betalt</th><th>Status</th></tr></thead><tbody>
             ${invoices.map((r) => html`<tr><td class="code">${r.number as number}</td><td>${r.supplier_name as string}</td><td>${r.invoice_date as string}</td><td>${r.due_date as string}</td>
               <td class="num">${amount(r.total_ore as number)}</td><td class="num">${amount(r.paid_amount_ore as number)}</td><td>${statusChip(String(r.status))}</td></tr>`)}
+            </tbody></table></div>`
+    }`;
+}));
+
+// Återkommande fakturor (abonnemang): mallar som genererar fakturor per intervall.
+const INTERVAL_SV: Record<string, string> = { monthly: 'Varje månad', quarterly: 'Varje kvartal', yearly: 'Varje år' };
+viewRouter.get('/c/:companyId/recurring', pageFor('recurring', 'Abonnemang', async (client, companyId) => {
+  const rows = await listRecurringInvoices(client, companyId);
+  return html`<div class="page-head"><div>${eyebrow('Abonnemang')}<h1>Återkommande fakturor</h1>
+      <p class="lede">Mallar som genererar riktiga fakturautkast vid varje förfallodatum. Kör genereringen (t.ex. via AI-assistenten eller <span class="code">run_recurring_invoices</span>) för att skapa dem — inget bokförs automatiskt.</p></div></div>
+    ${
+      rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga abonnemang ännu</div>Skapa en mall så genererar systemet fakturor åt dig enligt intervallet.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Mall</th><th>Kund</th><th>Intervall</th><th>Nästa faktura</th><th>Slutar</th><th class="num">Skapade</th><th>Status</th></tr></thead>
+            <tbody>${rows.map((r) => html`<tr>
+              <td>${r.title as string}</td><td>${r.customer_name as string}</td>
+              <td>${INTERVAL_SV[String(r.interval)] ?? String(r.interval)}</td>
+              <td class="code">${(r.next_run_date as string) ?? ''}</td>
+              <td class="code">${(r.end_date as string) ?? '—'}</td>
+              <td class="num">${r.generated_count as number}</td>
+              <td>${r.active ? chip('Aktiv', 'ok') : chip('Pausad', 'muted')}</td></tr>`)}
             </tbody></table></div>`
     }`;
 }));
