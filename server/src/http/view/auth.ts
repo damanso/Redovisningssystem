@@ -52,9 +52,9 @@ export function clearSessionCookie(res: Response): void {
 export async function verifyCredentials(
   email: string,
   password: string,
-): Promise<{ id: string; name: string } | null> {
-  const result = await pool.query<{ id: string; name: string; password_hash: string }>(
-    'SELECT id, name, password_hash FROM users WHERE lower(email) = lower($1)',
+): Promise<{ id: string; name: string; totpEnabled: boolean } | null> {
+  const result = await pool.query<{ id: string; name: string; password_hash: string; totp_enabled: boolean }>(
+    'SELECT id, name, password_hash, totp_enabled FROM users WHERE lower(email) = lower($1)',
     [email],
   );
   const user = result.rows[0];
@@ -63,12 +63,34 @@ export async function verifyCredentials(
     await withTransaction((c) => writeAudit(c, { userId: user?.id ?? null, action: 'auth.login_failed', details: { email, via: 'web' } }));
     return null;
   }
-  await withTransaction((c) => writeAudit(c, { userId: user.id, action: 'auth.login', details: { via: 'web' } }));
-  return { id: user.id, name: user.name };
+  // Audit sker vid FULL session (issueSession) — inte här — så en avbruten
+  // 2FA-inloggning inte loggas som en lyckad inloggning.
+  return { id: user.id, name: user.name, totpEnabled: user.totp_enabled };
 }
 
 export function issueSession(res: Response, userId: string): void {
   setSessionCookie(res, signToken(userId, { actor: 'human' }, config.JWT_EXPIRES_IN_SECONDS));
+  void withTransaction((c) => writeAudit(c, { userId, action: 'auth.login', details: { via: 'web' } }));
+}
+
+// Mellansteg vid 2FA: en kortlivad token (5 min) som ENBART duger till att slutföra
+// 2FA-steget — viewAuth avvisar den (stage=pending_2fa) så den inte ger åtkomst.
+const PENDING_TTL_SECONDS = 5 * 60;
+export function issuePendingSession(res: Response, userId: string): void {
+  setSessionCookie(res, signToken(userId, { actor: 'human', stage: 'pending_2fa' }, PENDING_TTL_SECONDS));
+}
+
+/** Läser userId ur en pending-2FA-cookie. null om saknas/ogiltig/inte pending. */
+export function readPendingUserId(req: Request): string | null {
+  const token = parseCookie(req.headers.cookie, COOKIE);
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.JWT_SECRET, { algorithms: ['HS256'] });
+    if (typeof payload === 'string' || payload.stage !== 'pending_2fa' || typeof payload.sub !== 'string') return null;
+    return payload.sub;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -88,6 +110,10 @@ export function viewAuth(req: Request, res: Response, next: NextFunction): void 
     // annars kunde en agent-token (avsedd för ETT bolag via requireCompanyAccess)
     // läsa alla bolag användaren är medlem i via vyn. Webbvyn kör bara som människa.
     if (payload.actor === 'agent') throw new Error('agent token not allowed in web view');
+    // En pending-2FA-token har bara passerat lösenordssteget — inte 2FA. Den får
+    // aldrig ge åtkomst till appen; skicka till 2FA-steget UTAN att rensa cookien
+    // (annars förlorar användaren sitt mellansteg bara genom att öppna appen).
+    if (payload.stage === 'pending_2fa') { res.redirect('/app/login/2fa'); return; }
     req.auth = { userId: payload.sub, actor: 'human' };
     next();
   } catch {

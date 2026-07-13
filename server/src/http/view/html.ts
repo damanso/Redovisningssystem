@@ -475,6 +475,21 @@ export function loginPage(error?: string): Raw {
     </form></div></body></html>`;
 }
 
+/** Andra steget vid inloggning: engångskod från autentiseringsappen. */
+export function totpChallengePage(error?: string): Raw {
+  return html`<!doctype html><html lang="sv"><head>${head('Tvåfaktor')}</head>
+    <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/login/2fa">
+      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <h1>Tvåfaktor</h1>
+      <p class="lede">Ange den sexsiffriga koden från din autentiseringsapp.</p>
+      ${error ? html`<p class="notice">${error}</p>` : ''}
+      <label class="field"><span>Engångskod</span>
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" required autofocus></label>
+      <button class="btn btn--primary" type="submit">Verifiera</button>
+      <p style="margin-top:12px"><a href="/app/login">← Avbryt</a></p>
+    </form></div></body></html>`;
+}
+
 /** Sidmall för en inloggad vy under ett bolag. */
 export function layout(opts: {
   title: string;
@@ -495,9 +510,12 @@ export function layout(opts: {
         <a class="brand" href="/app">${MARK}<b>Redovisning</b>${
           opts.companyName ? html`<span class="sep">/</span><span class="co">${opts.companyName}</span>` : ''
         }</a>
-        <form method="post" action="/app/logout" style="margin:0">
-          <button class="btn btn--ghost btn--sm" type="submit">Logga ut</button>
-        </form>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a class="btn btn--ghost btn--sm" href="/app/account">Konto</a>
+          <form method="post" action="/app/logout" style="margin:0">
+            <button class="btn btn--ghost btn--sm" type="submit">Logga ut</button>
+          </form>
+        </div>
       </div>
       ${nav}
       <main>${opts.body}</main>

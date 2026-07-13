@@ -25,8 +25,10 @@ import { inviteMember, listMembers, removeMember, setMemberRole } from '../../se
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
-import { clearSessionCookie, issueSession, page, verifyCredentials, viewAuth } from './auth.js';
+import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, totpChallengePage, type Raw } from './html.js';
+import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, verifyCredentials, viewAuth } from './auth.js';
+import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, getTotpState, updateName } from '../../services/profile.js';
+import { verifyTotp } from '../../lib/totp.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -50,7 +52,39 @@ viewRouter.post(
       res.status(401).type('html').send(loginPage('Fel e-post eller lösenord.').value);
       return;
     }
+    if (user.totpEnabled) {
+      // Lösenordet stämmer men kontot har 2FA → utfärda mellansteg och be om kod.
+      issuePendingSession(res, user.id);
+      res.redirect('/app/login/2fa');
+      return;
+    }
     issueSession(res, user.id);
+    res.redirect('/app');
+  }),
+);
+
+// Andra steget i 2FA-inloggning: kräver en giltig pending-cookie + TOTP-kod.
+viewRouter.get('/login/2fa', page(async (req, res) => {
+  const pending = readPendingUserId(req);
+  if (!pending) { res.redirect('/app/login'); return; }
+  res.type('html').send(totpChallengePage().value);
+}));
+
+viewRouter.post('/login/2fa',
+  rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
+  page(async (req, res) => {
+    const pending = readPendingUserId(req);
+    if (!pending) { res.redirect('/app/login'); return; }
+    const code = z.string().max(12).safeParse((req.body as { code?: unknown }).code);
+    const ok = code.success && await withUserTransaction(pending, async (client) => {
+      const state = await getTotpState(client, pending);
+      return state.enabled && state.secret !== null && verifyTotp(state.secret, code.data);
+    });
+    if (!ok) {
+      res.status(401).type('html').send(totpChallengePage('Fel kod. Försök igen.').value);
+      return;
+    }
+    issueSession(res, pending); // ersätter pending-cookien med en full session
     res.redirect('/app');
   }),
 );
@@ -133,6 +167,102 @@ viewRouter.get('/consolidated', page(async (req, res) => {
             </tbody></table></div>`
     }`;
   res.type('html').send(layout({ title: 'Koncernöversikt', body }).value);
+}));
+
+// Kontosida: profil, lösenordsbyte och tvåfaktor. Toppnivå (ej bolagsbunden).
+function accountBody(profile: { name: string; email: string; totp_enabled: boolean }, notice?: string): Raw {
+  return html`<div class="page-head"><div>${eyebrow('Konto')}<h1>Ditt konto</h1>
+      <p class="lede">Namn, lösenord och tvåfaktor. <a href="/app/">← Bolag</a></p></div></div>
+    ${notice ? html`<p class="lede">${chip(notice, 'ok', '✓')}</p>` : ''}
+    <div class="panel"><div class="panel__head"><h2>Profil</h2></div><div class="panel__body" style="padding:14px 16px">
+      <form method="post" action="/app/account/name" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <label class="field" style="margin:0"><span>Namn</span><input type="text" name="name" value="${profile.name}" required maxlength="200"></label>
+        <button class="btn btn--primary" type="submit">Spara namn</button></form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">E-post: ${profile.email}</p></div></div>
+    <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Byt lösenord</h2></div><div class="panel__body" style="padding:14px 16px">
+      <form method="post" action="/app/account/password" style="display:grid;gap:10px;max-width:360px">
+        <label class="field" style="margin:0"><span>Nuvarande lösenord</span><input type="password" name="current" autocomplete="current-password" required></label>
+        <label class="field" style="margin:0"><span>Nytt lösenord (minst 12 tecken)</span><input type="password" name="new" autocomplete="new-password" minlength="12" required></label>
+        <button class="btn btn--primary" type="submit">Byt lösenord</button></form></div></div>
+    <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Tvåfaktor (2FA)</h2>${profile.totp_enabled ? chip('Aktiverad', 'ok') : chip('Av', 'muted')}</div>
+      <div class="panel__body" style="padding:14px 16px">${
+        profile.totp_enabled
+          ? html`<p class="lede">Tvåfaktor är aktiverad. För att stänga av, ange en aktuell kod.</p>
+              <form method="post" action="/app/account/totp/disable" style="display:flex;gap:8px;align-items:flex-end">
+                <label class="field" style="margin:0"><span>Engångskod</span><input type="text" name="code" inputmode="numeric" maxlength="6" pattern="[0-9]*" required></label>
+                <button class="btn btn--ghost" type="submit">Stäng av 2FA</button></form>`
+          : html`<p class="lede">Lägg till ett extra lager säkerhet med en autentiseringsapp (Google Authenticator, Authy m.fl.).</p>
+              <form method="post" action="/app/account/totp/begin"><button class="btn btn--primary" type="submit">Aktivera tvåfaktor</button></form>`
+      }</div></div>`;
+}
+
+function totpSetupBody(secret: string, otpauthUri: string): Raw {
+  return html`<div class="page-head"><div>${eyebrow('Tvåfaktor')}<h1>Aktivera tvåfaktor</h1>
+      <p class="lede">Lägg till hemligheten i din autentiseringsapp och bekräfta med en kod. <a href="/app/account">← Konto</a></p></div></div>
+    <div class="panel"><div class="panel__body" style="padding:16px">
+      <p>1. Öppna din autentiseringsapp och lägg till ett nytt konto med denna nyckel (manuell inmatning):</p>
+      <p class="code" style="font-size:18px;letter-spacing:2px;user-select:all;margin:10px 0">${secret}</p>
+      <p class="muted" style="font-size:12.5px;word-break:break-all">Eller använd URI:n: ${otpauthUri}</p>
+      <p style="margin-top:14px">2. Ange den sexsiffriga koden appen visar:</p>
+      <form method="post" action="/app/account/totp/confirm" style="display:flex;gap:8px;align-items:flex-end;margin-top:6px">
+        <label class="field" style="margin:0"><span>Engångskod</span><input type="text" name="code" inputmode="numeric" maxlength="6" pattern="[0-9]*" required autofocus></label>
+        <button class="btn btn--primary" type="submit">Bekräfta & aktivera</button></form></div></div>`;
+}
+
+viewRouter.get('/account', page(async (req, res) => {
+  const userId = getUserId(req);
+  const profile = await withUserTransaction(userId, (client) => getProfile(client, userId));
+  const notice = typeof req.query.ok === 'string' ? decodeURIComponent(req.query.ok).slice(0, 80) : undefined;
+  res.type('html').send(layout({ title: 'Konto', body: accountBody(profile, notice) }).value);
+}));
+
+function accountRedirect(res: import('express').Response, okMsg: string, run: () => Promise<unknown>): Promise<void> {
+  return run().then(() => { res.redirect(`/app/account?ok=${encodeURIComponent(okMsg)}`); }, (err) => {
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`/app/account?ok=${encodeURIComponent(err.message)}`); return;
+    }
+    throw err;
+  });
+}
+
+viewRouter.post('/account/name', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const name = z.string().min(1).max(200).parse((req.body as { name?: unknown }).name);
+  await accountRedirect(res, 'Namnet är uppdaterat.', () => withUserTransaction(userId, (c) => updateName(c, userId, name)));
+}));
+
+viewRouter.post('/account/password', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const b = z.object({ current: z.string().max(200), new: z.string().max(200) }).parse(req.body);
+  await accountRedirect(res, 'Lösenordet är bytt.', () => withUserTransaction(userId, (c) => changePassword(c, userId, b.current, b.new)));
+}));
+
+viewRouter.post('/account/totp/begin', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  try {
+    const setup = await withUserTransaction(userId, (c) => beginTotpSetup(c, userId));
+    res.type('html').send(layout({ title: 'Aktivera 2FA', body: totpSetupBody(setup.secret, setup.otpauth_uri) }).value);
+  } catch (err) {
+    if (err instanceof ConflictError) { res.redirect('/app/account'); return; }
+    throw err;
+  }
+}));
+
+viewRouter.post('/account/totp/confirm', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const code = z.string().max(12).parse((req.body as { code?: unknown }).code);
+  await accountRedirect(res, 'Tvåfaktor är aktiverad.', () => withUserTransaction(userId, (c) => confirmTotp(c, userId, code)));
+}));
+
+viewRouter.post('/account/totp/disable', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const code = z.string().max(12).parse((req.body as { code?: unknown }).code);
+  await accountRedirect(res, 'Tvåfaktor är avstängd.', () => withUserTransaction(userId, (c) => disableTotp(c, userId, code)));
 }));
 
 // ---- Bolagskontext: ALLTID från URL + verifierat medlemskap (ingen global
