@@ -5,9 +5,12 @@ verifieringsgrindar.
 
 ## Status
 
-Alla fem faser är byggda och passerade sin grind (`npm run build` rent +
-acceptanstester gröna). Bevis: **`npm test` → 141 tester passerar** i 16 sviter
-mot en riktig Postgres (`server/test/`), och `npm run build` (tsc) utan fel.
+Grundfaserna 0–4 samt utökningsfaserna A1–A14 är byggda och passerade sina
+grindar (`npm run build` rent + acceptanstester gröna). Bevis: **`npm test` →
+218 tester passerar** i 32 sviter mot en riktig Postgres (`server/test/`), och
+`npm run build` (tsc) utan fel.
+
+### Grundfaser
 
 | Fas | Innehåll | Status | Bevis (testsvit) |
 |---|---|---|---|
@@ -16,6 +19,36 @@ mot en riktig Postgres (`server/test/`), och `npm run build` (tsc) utan fel.
 | 2 | Affärsobjekt (kunder, leverantörer, artiklar, fakturor, kvitton, dokumentarkiv) | Klar | `business`, `business-review-fixes`, `upload` |
 | 3 | AI-först-gränssnitt (action-lager + godkännandekö, AI-OCR, prompt-injection-skydd) | Klar | `actions` |
 | 4 | Läsbar webbvy (read-only) + designsystem + människa-i-loopen (godkänn/avvisa) | Klar | `view` |
+
+### Utökningsfaser (A-serien)
+
+| Fas | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| A1 | Dashboard 12-mån intäktsdiagram (JS-fri SVG) | Klar | `dashboard-chart` |
+| A2 | Rich CRM — kontaktpersoner, anteckningar, taggar | Klar | `crm` |
+| A3 | Riktiga delbetalningar (FOR UPDATE-serialisering) | Klar | `partial-payments` |
+| A4 | Leverantörsfakturor + AP-åldersanalys | Klar | `supplier-invoices` |
+| A5 | Återkommande fakturor (mall + generering) | Klar | `recurring-invoices` |
+| A6 | Projekt & tidrapportering | Klar | `projects-time` |
+| A7 | Kassaflöde & likviditetsprognos | Klar | `cashflow` |
+| A8 | Multi-bolag konsoliderad översikt | Klar | `consolidated` |
+| A9 | Avancerad analys (nyckeltal, toppkunder, kostnader) | Klar | `analytics` |
+| A10 | Team & roller (owner/admin/member) | Klar | `team` |
+| A11 | Användarkonto — profil, lösenord, 2FA (TOTP) | Klar | `account-totp` |
+| A12 | In-app-notiser + e-post-outbox (bakom SMTP) | Klar | `notifications` |
+| A13 | Migration/import — SIE-import + CSV-bankimport | Klar | `import` |
+| A14 | Lön & HR (utan AGI/KU-10 till Skatteverket) | Klar | `payroll` |
+
+### Utanför scope / integrationsgränser
+
+Följande är medvetet **inte** byggt (eller byggt fram till en tydligt flaggad
+gräns), enligt uppdraget:
+
+- **BankID** och **Skatteverket** (AGI/arbetsgivardeklaration, KU-10, momsdeklaration): ej byggt.
+- **PSD2 / live bankkoppling**: ej byggt — bankimport sker via manuell CSV-fil.
+- **SMTP-utskick**: e-post läggs i en outbox men skickas bara om SMTP konfigureras;
+  utan config markeras raderna `skipped_no_smtp` (ingen fejkad leverans).
+- **Inbjudningslänk till nya (oregistrerade) användare**: kräver e-postutskick (SMTP) — flaggad.
 
 Statuspåståenden i det här repot ska alltid backas av körd, visad bevisning —
 se `KICKOFF_NYSESSION.md` (regler) och `GRANSKNING_OCH_OMSTARTSPLAN.md` (analys & plan).
