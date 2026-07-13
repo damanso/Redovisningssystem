@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **139 tester passerar** i 16 sviter mot
+**Reproducera allt:** `npm test -w server` → **141 tester passerar** i 16 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -49,7 +49,7 @@ Legend: ✅ = byggt och bevisat med test.
 | 3.1 | Action-lager med serverpåtvingade regler + audit + **mänskligt godkännande** på pengaflyttande operationer | ✅ | `actions.test.ts`, `mcp.test.ts`, `view.test.ts` |
 | 3.2 | **Prompt-injection-skydd** — text i ett kvitto kan inte ändra behörighet eller utlösa en bokning | ✅ | `actions.test.ts` |
 | 3.3 | AI-OCR: giltig nyckel, aktuell modell, PDF-stöd, **kräver mänsklig granskning** före bokföring | ✅ | `actions.test.ts` |
-| 3.4 | **MCP-server** så Cowork/claude.ai kan driva kärnan live (native, typade verktyg) | ✅ | `mcp.test.ts` (startar byggd server, pratar MCP över stdio) |
+| 3.4 | **MCP-server** så Cowork/claude.ai kan driva kärnan live (native, typade verktyg) | ✅ | `mcp.test.ts` (startar servern som barnprocess, pratar MCP över stdio) |
 
 ## Fas 4 — Läsbar vy
 
@@ -63,7 +63,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 139 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 141 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)

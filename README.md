@@ -6,7 +6,7 @@ verifieringsgrindar.
 ## Status
 
 Alla fem faser är byggda och passerade sin grind (`npm run build` rent +
-acceptanstester gröna). Bevis: **`npm test` → 136 tester passerar** i 15 sviter
+acceptanstester gröna). Bevis: **`npm test` → 141 tester passerar** i 16 sviter
 mot en riktig Postgres (`server/test/`), och `npm run build` (tsc) utan fel.
 
 | Fas | Innehåll | Status | Bevis (testsvit) |
