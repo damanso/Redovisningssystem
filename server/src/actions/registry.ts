@@ -19,6 +19,7 @@ import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
+import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -394,6 +395,53 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ transaction_id: UuidSchema, reconciled: z.boolean() }).strict(),
     handler: (ctx, i: { transaction_id: string; reconciled: boolean }) =>
       setBankTransactionReconciled(ctx.client, ctx.companyId, ctx.userId, i.transaction_id, i.reconciled),
+  }),
+  def({
+    name: 'list_employees',
+    title: 'Lista anställda',
+    sensitivity: 'read',
+    inputSchema: z.object({ active: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { active?: boolean }) => listEmployees(ctx.client, ctx.companyId, { active: i.active }),
+  }),
+  def({
+    name: 'create_employee',
+    title: 'Lägg till anställd',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      name: safeText(200), personnummer: safeText(20).optional(), email: EmailSchema.optional(),
+      monthly_salary_ore: OreSchema, tax_rate: z.number().int().min(0).max(100).optional(),
+      employment_type: safeText(40).optional(),
+    }).strict(),
+    handler: (ctx, i) => createEmployee(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_employee_active',
+    title: 'Aktivera/avsluta anställd',
+    sensitivity: 'write',
+    inputSchema: z.object({ employee_id: UuidSchema, active: z.boolean() }).strict(),
+    handler: (ctx, i: { employee_id: string; active: boolean }) => setEmployeeActive(ctx.client, ctx.companyId, ctx.userId, i.employee_id, i.active),
+  }),
+  def({
+    name: 'list_payslips',
+    title: 'Lista lönebesked',
+    sensitivity: 'read',
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/).optional() }).strict(),
+    handler: (ctx, i: { period?: string }) => listPayslips(ctx.client, ctx.companyId, { period: i.period }),
+  }),
+  def({
+    name: 'create_payslip',
+    title: 'Skapa lönebesked (utkast)',
+    sensitivity: 'write',
+    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-\d{2}$/), gross_ore: OreSchema.optional() }).strict(),
+    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'book_payslip',
+    title: 'Bokför lönebesked',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema }).strict(),
+    handler: (ctx, i: { payslip_id: string; fiscal_year_id: string; payment_date: string }) =>
+      bookPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id, i.fiscal_year_id, i.payment_date),
   }),
   def({
     name: 'create_receipt',

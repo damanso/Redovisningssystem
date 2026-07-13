@@ -33,6 +33,7 @@ import { listNotifications, markAllRead, markRead, unreadCount } from '../../ser
 import { emailEnabled } from '../../services/email.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
 import { importSie, parseSie } from '../../services/sieImport.js';
+import { listEmployees, listPayslips } from '../../services/payroll.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -1116,6 +1117,38 @@ viewRouter.post('/c/:companyId/team/remove', page(async (req, res) => {
   const input = TeamActionSchema.parse(req.body);
   await teamRedirect(companyId, res, () =>
     withTenantTransaction(userId, companyId, (client, actorRole) => removeMember(client, companyId, actorRole, userId, input.user_id)));
+}));
+
+// Lön & HR: anställda och lönebesked. Ingen arbetsgivardeklaration (AGI) till
+// Skatteverket — det är utanför scope; systemet beräknar och bokför lönen.
+viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client, companyId) => {
+  const employees = await listEmployees(client, companyId, {});
+  const payslips = await listPayslips(client, companyId, {});
+  return html`<div class="page-head"><div>${eyebrow('Lön')}<h1>Lön & personal</h1>
+      <p class="lede">Anställda och lönebesked. Systemet beräknar brutto, preliminärskatt och arbetsgivaravgift och bokför lönen. Arbetsgivardeklaration (AGI) till Skatteverket ingår inte.</p></div></div>
+    <h2>Anställda</h2>
+    ${
+      employees.length === 0
+        ? html`<p class="muted">Inga anställda ännu. Lägg till via AI-assistenten eller <span class="code">create_employee</span>.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Namn</th><th>E-post</th><th class="num">Månadslön</th><th class="num">Skatt</th><th>Anställning</th><th>Status</th></tr></thead><tbody>
+            ${employees.map((e) => html`<tr><td>${e.name as string}</td><td>${(e.email as string) ?? ''}</td>
+              <td class="num">${amount(e.monthly_salary_ore as number)}</td><td class="num">${String(e.tax_rate)} %</td>
+              <td>${e.employment_type as string}</td><td>${e.active ? chip('Aktiv', 'ok') : chip('Avslutad', 'muted')}</td></tr>`)}
+          </tbody></table></div>`
+    }
+    <h2 style="margin-top:20px">Lönebesked</h2>
+    ${
+      payslips.length === 0
+        ? html`<p class="muted">Inga lönebesked ännu.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Period</th><th>Anställd</th><th class="num">Brutto</th><th class="num">Skatt</th><th class="num">Netto</th><th class="num">Arb.avgift</th><th>Status</th></tr></thead><tbody>
+            ${payslips.map((p) => html`<tr><td class="code">${p.period as string}</td><td>${p.employee_name as string}</td>
+              <td class="num">${amount(p.gross_ore as number, { unit: false })}</td>
+              <td class="num">${amount(p.tax_ore as number, { unit: false })}</td>
+              <td class="num">${amount(p.net_ore as number, { unit: false })}</td>
+              <td class="num">${amount(p.employer_contribution_ore as number, { unit: false })}</td>
+              <td>${statusChip(String(p.status))}</td></tr>`)}
+          </tbody></table></div>`
+    }`;
 }));
 
 // Migration/import: SIE-fil (konton + verifikat) och bank-CSV. Live bankkoppling
