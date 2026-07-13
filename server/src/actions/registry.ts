@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { IsoDateSchema, safeText, UuidSchema } from '../lib/validation.js';
+import { AccountNumberSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
@@ -33,9 +33,9 @@ function def<I>(d: ActionDef<I>): ActionDef<I> {
   return d;
 }
 
-const VAT = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
-const ORE = z.number().int().nonnegative().safe();
-const ACCOUNT = z.number().int().min(1000).max(9999);
+const VAT = VatRateSchema;
+const ORE = OreSchema;
+const ACCOUNT = AccountNumberSchema;
 
 const InvoiceLine = z
   .object({

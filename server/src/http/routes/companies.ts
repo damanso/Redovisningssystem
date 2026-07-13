@@ -84,8 +84,17 @@ const AuditQuerySchema = z
 
 export const companiesRouter = Router();
 
+// Ett agent-token är låst till sitt bolag. Samlingsrutterna nedan ligger utanför
+// /:companyId (och därmed utanför requireCompanyAccess scoping), så vi nekar
+// agenter här explicit — annars kunde en agent lista/skapa bolag utanför sitt
+// scope och läcka ägarens andra tenants.
+function denyAgent(req: Parameters<typeof getActor>[0]): void {
+  if (getActor(req) === 'agent') throw new ForbiddenError('agent_scope', 'agent-token är låst till sitt bolag');
+}
+
 companiesRouter.get('/', async (req, res) => {
   const userId = getUserId(req);
+  denyAgent(req);
   const companies = await withUserTransaction(userId, async (client) => {
     const result = await client.query(
       `SELECT c.id, c.name, c.org_number, m.role, c.created_at
@@ -102,6 +111,7 @@ companiesRouter.get('/', async (req, res) => {
 
 companiesRouter.post('/', async (req, res) => {
   const userId = getUserId(req);
+  denyAgent(req);
   const input = CreateCompanySchema.parse(req.body);
 
   // Bolagets id genereras i förväg så att RLS-kontexten kan sättas innan

@@ -1,8 +1,7 @@
 import { Router } from 'express';
-import multer from 'multer';
-import { config } from '../../config.js';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError, NotFoundError } from '../../lib/errors.js';
+import { singleFileUpload } from '../../lib/upload.js';
 import { UuidSchema } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import {
@@ -13,15 +12,6 @@ import {
 } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
 
-// Filer hålls i minnet tills valideringen är klar — vi skriver själva till disk
-// med UUID-namn (aldrig användarens filnamn) under en katalog utanför webbroten.
-// defParamCharset:'utf8' gör att busboy avkodar filnamn som UTF-8 (annars latin1
-// → mojibake för svenska/unicode-filnamn).
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1 },
-  defParamCharset: 'utf8',
-});
 
 interface FileRow {
   id: string;
@@ -36,7 +26,7 @@ interface FileRow {
 // mergeParams: routern monteras under /:companyId/files i companies.ts.
 export const filesRouter = Router({ mergeParams: true });
 
-filesRouter.post('/', upload.single('file'), async (req, res) => {
+filesRouter.post('/', singleFileUpload(), async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   if (!req.file) throw new BadRequestError('missing_file', 'ingen fil bifogad (fältnamn: file)');

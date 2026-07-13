@@ -35,6 +35,12 @@ export const EmailSchema = z
 
 export const UuidSchema = z.string().uuid();
 
+// Delade fält-primitiver (används av flera routrar/register — en plats så att
+// t.ex. en ny momssats inte behöver ändras på sex ställen).
+export const VatRateSchema = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
+export const OreSchema = z.number().int().nonnegative().safe();
+export const AccountNumberSchema = z.number().int().min(1000).max(9999);
+
 // Datum måste vara ett verkligt kalenderdatum — enbart regexen släpper igenom
 // t.ex. 2026-02-30, som annars blir ett Postgres-fel (22008) → 500.
 export const IsoDateSchema = z

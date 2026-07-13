@@ -1,22 +1,16 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { z } from 'zod';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { actionManifest } from '../../actions/registry.js';
-import { config } from '../../config.js';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError, ForbiddenError } from '../../lib/errors.js';
+import { singleFileUpload } from '../../lib/upload.js';
 import { safeText } from '../../lib/validation.js';
 import { aiOcrReceipt } from '../../services/aiOcr.js';
 import { listApprovals } from '../../services/approvals.js';
 import { getActor, getUserId } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1 },
-  defParamCharset: 'utf8',
-});
 
 export const actionsRouter = Router({ mergeParams: true });
 
@@ -56,7 +50,7 @@ actionsRouter.post('/approvals/:id/approve', async (req, res) => {
   if (getActor(req) !== 'human') throw new ForbiddenError('human_approval_required', 'endast en människa kan godkänna');
   z.object({}).strict().parse(req.body ?? {});
   const id = ID.parse(req.params.id);
-  const outcome = await approveAction({ companyId, approverId, approvalId: id });
+  const outcome = await approveAction({ companyId, approverId, approverActor: getActor(req), approvalId: id });
   res.json(outcome);
 });
 
@@ -73,7 +67,7 @@ actionsRouter.post('/approvals/:id/reject', async (req, res) => {
 // AI-OCR: läser en kvittofil och returnerar ett FÖRSLAG (kräver mänsklig
 // granskning; bokför aldrig något). Kräver medlemskap; ingen auktoritet härleds
 // ur filens innehåll.
-actionsRouter.post('/ocr/receipt', upload.single('file'), async (req, res) => {
+actionsRouter.post('/ocr/receipt', singleFileUpload(), async (req, res) => {
   getUserId(req);
   if (!req.file) throw new BadRequestError('missing_file', 'ingen fil bifogad (fältnamn: file)');
   const suggestion = await aiOcrReceipt({ mimeType: req.file.mimetype, buffer: req.file.buffer });

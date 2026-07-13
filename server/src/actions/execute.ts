@@ -1,5 +1,5 @@
 import { withTenantTransaction } from '../db/tx.js';
-import { AppError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import { ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
 import {
@@ -74,58 +74,50 @@ export async function executeAction(params: {
 }
 
 /**
- * Godkänner och kör en pending action. Endast en människa får godkänna
- * (kontrolleras i routen) — en agent kan aldrig godkänna sin egen begäran.
+ * Godkänner och kör en pending action i EN transaktion: lås (FOR UPDATE) →
+ * omvalidera det lagrade indatat mot actionens schema → kör → markera executed.
+ *
+ * Allt-eller-inget: misslyckas körningen rullas hela transaktionen tillbaka och
+ * godkännandet förblir 'pending' (omkörbart) — inget kan fastna i ett halvkört
+ * mellanläge. Godkännaren MÅSTE vara en människa (kontrolleras både i routen och
+ * här som andra försvarslinje).
  */
 export async function approveAction(params: {
   companyId: string;
   approverId: string;
+  approverActor: Actor;
   approvalId: string;
 }): Promise<{ approval: Approval; result: unknown }> {
-  // Steg 1: gör anspråk på godkännandet (pending → approved), serialiserat.
-  await withTenantTransaction(params.approverId, params.companyId, async (client) => {
-    const appr = await lockPendingApproval(client, params.companyId, params.approvalId);
-    if (!getAction(appr.action)) throw new NotFoundError('action');
-    await client.query(
-      "UPDATE action_approvals SET status = 'approved', decided_by = $1, decided_at = now() WHERE id = $2",
-      [params.approverId, params.approvalId],
-    );
-  });
-
-  // Steg 2: kör i egen transaktion (ett DB-fel abortera transaktionen, så
-  // markeringen 'failed' måste ske i en separat transaktion).
-  try {
-    return await withTenantTransaction(params.approverId, params.companyId, async (client) => {
-      const appr = await getApproval(client, params.companyId, params.approvalId);
-      const action = getAction(appr.action)!;
-      const result = await action.handler(
-        { client, companyId: params.companyId, userId: params.approverId },
-        appr.input as never,
-      );
-      await client.query("UPDATE action_approvals SET status = 'executed', result = $1 WHERE id = $2", [
-        JSON.stringify(result ?? null),
-        params.approvalId,
-      ]);
-      await writeAudit(client, {
-        companyId: params.companyId,
-        userId: params.approverId,
-        action: 'action.approved_executed',
-        entityType: 'approval',
-        entityId: params.approvalId,
-        details: { action: appr.action, requested_by: appr.requested_by },
-      });
-      return { approval: await getApproval(client, params.companyId, params.approvalId), result };
-    });
-  } catch (err) {
-    const code = err instanceof AppError ? err.code : 'internal_error';
-    await withTenantTransaction(params.approverId, params.companyId, (client) =>
-      client.query("UPDATE action_approvals SET status = 'failed', error = $1 WHERE id = $2", [
-        code,
-        params.approvalId,
-      ]),
-    );
-    throw err;
+  if (params.approverActor !== 'human') {
+    throw new ForbiddenError('human_approval_required', 'endast en människa kan godkänna');
   }
+  return withTenantTransaction(params.approverId, params.companyId, async (client) => {
+    const appr = await lockPendingApproval(client, params.companyId, params.approvalId);
+    const action = getAction(appr.action);
+    if (!action) throw new NotFoundError('action');
+    // Omvalidera det lagrade indatat — stänger fönstret där ett schema skärpts
+    // medan godkännandet legat i kö.
+    const input = action.inputSchema.parse(appr.input);
+    const result = await action.handler(
+      { client, companyId: params.companyId, userId: params.approverId },
+      input as never,
+    );
+    const updated = await client.query<Approval>(
+      `UPDATE action_approvals SET status = 'executed', decided_by = $1, decided_at = now(), result = $2
+       WHERE id = $3 RETURNING id, action, input, status, requested_by, requested_actor,
+             decided_by, decided_at, result, error, created_at`,
+      [params.approverId, JSON.stringify(result ?? null), params.approvalId],
+    );
+    await writeAudit(client, {
+      companyId: params.companyId,
+      userId: params.approverId,
+      action: 'action.approved_executed',
+      entityType: 'approval',
+      entityId: params.approvalId,
+      details: { action: appr.action, requested_by: appr.requested_by },
+    });
+    return { approval: updated.rows[0]!, result };
+  });
 }
 
 export async function rejectApproval(params: {

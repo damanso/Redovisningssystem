@@ -47,6 +47,16 @@ describe('agent-token: åtskillnad och scoping', () => {
     const res = await api.get(`/api/companies/${otherCompanyId}/actions`).set(agent());
     expect(res.status).toBe(404);
   });
+
+  it('agent-token kan inte lista eller skapa bolag (samlingsrutter utanför scope)', async () => {
+    // Regression mot Fas 3-säkerhetsfyndet: /api/companies ligger utanför
+    // requireCompanyAccess scoping.
+    const list = await api.get('/api/companies').set(agent());
+    expect(list.status).toBe(403);
+    expect(list.body.error).toBe('agent_scope');
+    const create = await api.post('/api/companies').set(agent()).send({ name: 'Smygbolag AB' });
+    expect(create.status).toBe(403);
+  });
 });
 
 describe('action-lager: manifest och icke-känsliga actions', () => {

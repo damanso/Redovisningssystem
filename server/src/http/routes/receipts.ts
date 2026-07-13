@@ -1,10 +1,9 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { z } from 'zod';
-import { config } from '../../config.js';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError } from '../../lib/errors.js';
-import { IsoDateSchema, safeText } from '../../lib/validation.js';
+import { singleFileUpload } from '../../lib/upload.js';
+import { IsoDateSchema, safeText, UuidSchema, VatRateSchema } from '../../lib/validation.js';
 import {
   attachReceiptFile,
   bookReceipt,
@@ -14,15 +13,9 @@ import {
 } from '../../services/receipts.js';
 import { getUserId } from '../middleware/authenticate.js';
 
-const ID = z.string().uuid();
+const ID = UuidSchema;
 const ISO_DATE = IsoDateSchema;
-const VAT = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1 },
-  defParamCharset: 'utf8',
-});
+const VAT = VatRateSchema;
 
 const CreateSchema = z
   .object({
@@ -62,7 +55,7 @@ receiptsRouter.get('/:id', async (req, res) => {
   res.json({ receipt });
 });
 
-receiptsRouter.post('/:id/file', upload.single('file'), async (req, res) => {
+receiptsRouter.post('/:id/file', singleFileUpload(), async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const id = ID.parse(req.params.id);
