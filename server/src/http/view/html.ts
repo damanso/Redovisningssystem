@@ -90,6 +90,36 @@ export function statusChip(status: string): Raw {
   return chip(s.label, s.kind, s.icon);
 }
 
+/**
+ * Grupperat stapeldiagram (intäkt/kostnad per månad) som ren inline-SVG — noll
+ * JavaScript (CSP script-src 'none'). Skalas responsivt via viewBox; hover ger
+ * belopp via <title>. Månadsetikett = MM.
+ */
+export function monthlyChart(points: readonly { ym: string; revenue_ore: number; expense_ore: number }[]): Raw {
+  const W = 720, H = 220, padT = 14, padB = 34, padL = 8, padR = 8;
+  const plotH = H - padT - padB, plotW = W - padL - padR;
+  const max = Math.max(1, ...points.flatMap((p) => [p.revenue_ore, p.expense_ore]));
+  const n = Math.max(1, points.length);
+  const groupW = plotW / n;
+  const barW = Math.max(3, groupW * 0.32);
+  const gap = groupW * 0.08;
+  const yOf = (v: number) => padT + plotH - (Math.max(0, v) / max) * plotH;
+  const bars = points.map((p, i) => {
+    const gx = padL + i * groupW + groupW / 2;
+    const rx = gx - barW - gap / 2, ex = gx + gap / 2;
+    const ry = yOf(p.revenue_ore), ey = yOf(p.expense_ore);
+    return (
+      `<rect class="bar-rev" x="${rx.toFixed(1)}" y="${ry.toFixed(1)}" width="${barW.toFixed(1)}" height="${(padT + plotH - ry).toFixed(1)}" rx="2">` +
+      `<title>${esc(p.ym)} · Intäkt ${esc(formatOre(p.revenue_ore))} kr</title></rect>` +
+      `<rect class="bar-exp" x="${ex.toFixed(1)}" y="${ey.toFixed(1)}" width="${barW.toFixed(1)}" height="${(padT + plotH - ey).toFixed(1)}" rx="2">` +
+      `<title>${esc(p.ym)} · Kostnad ${esc(formatOre(p.expense_ore))} kr</title></rect>` +
+      `<text class="ch-lbl" x="${gx.toFixed(1)}" y="${(H - 12).toFixed(1)}" text-anchor="middle">${esc(p.ym.slice(5))}</text>`
+    );
+  }).join('');
+  const baseline = `<line class="ch-base" x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}"/>`;
+  return raw(`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Intäkter och kostnader per månad, senaste 12 månaderna">${baseline}${bars}</svg>`);
+}
+
 const NAV = [
   ['', 'Översikt'],
   ['ledger', 'Huvudbok'],
@@ -401,6 +431,16 @@ input:focus { border-color: var(--accent); }
 .auth-card .btn--primary { width: 100%; margin-top: 8px; padding: 11px; }
 .err { color: var(--neg); font-size: 13.5px; }
 .notice { background: var(--neg-weak); color: var(--neg); border: 1px solid color-mix(in oklch, var(--neg) 26%, transparent); border-radius: var(--radius-sm); padding: 9px 12px; font-size: 13.5px; margin: 8px 0; }
+
+/* Diagram (ren inline-SVG, inget JavaScript) */
+.chart { width: 100%; height: auto; display: block; }
+.chart .bar-rev { fill: var(--accent); }
+.chart .bar-exp { fill: var(--ink-3); opacity: 0.5; }
+.chart .ch-base { stroke: var(--line-2); stroke-width: 1; }
+.chart .ch-lbl { fill: var(--ink-3); font-size: 11px; }
+.chart-legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-3); margin-top: 8px; }
+.chart-legend .k { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

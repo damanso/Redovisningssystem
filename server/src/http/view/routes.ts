@@ -15,10 +15,10 @@ import { listApprovals } from '../../services/approvals.js';
 import { approveAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
-import { accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement } from '../../services/reports.js';
+import { accountsReceivableAging, balanceSheet, dashboard, generalLedger, incomeStatement, monthlyRevenue } from '../../services/reports.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, eyebrow, html, layout, loginPage, money, statusChip, type Raw } from './html.js';
+import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, type Raw } from './html.js';
 import { clearSessionCookie, issueSession, page, verifyCredentials, viewAuth } from './auth.js';
 
 export const viewRouter = Router();
@@ -132,6 +132,7 @@ viewRouter.get(
   pageFor('', 'Översikt', async (client, companyId) => {
     const period = await reportingPeriod(client, companyId);
     const d = await dashboard(client, companyId, period);
+    const trend = await monthlyRevenue(client, companyId);
     const kpi = (label: string, value: Raw) => html`<div class="kpi"><div class="l">${label}</div><div class="v">${value}</div></div>`;
     const resultGood = d.result_ore >= 0;
     return html`<div class="page-head"><div>${eyebrow('Översikt')}<h1>Så går det just nu</h1></div></div>
@@ -154,6 +155,16 @@ viewRouter.get(
         ${kpi('Fakturor', html`<span class="num">${String(d.invoice_count)}</span>`)}
         ${kpi('Kvitton', html`<span class="num">${String(d.receipt_count)}</span>`)}
         ${kpi('Verifikat', html`<span class="num">${String(d.voucher_count)}</span>`)}
+      </div>
+      <div class="panel" style="margin-top:20px">
+        <div class="panel__head"><h2>Intäkter och kostnader</h2><span class="muted" style="font-size:12.5px">Senaste 12 månaderna</span></div>
+        <div class="panel__body" style="padding:16px">
+          ${monthlyChart(trend)}
+          <div class="chart-legend">
+            <span class="k"><span class="sw" style="background:var(--accent)"></span>Intäkter</span>
+            <span class="k"><span class="sw" style="background:var(--ink-3);opacity:.5"></span>Kostnader</span>
+          </div>
+        </div>
       </div>
       <div class="panel" style="margin-top:20px">
         <div class="panel__head"><h2>Att göra</h2>${

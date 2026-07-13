@@ -258,6 +258,47 @@ export async function dashboard(
   };
 }
 
+export interface MonthlyPoint { ym: string; revenue_ore: Ore; expense_ore: Ore; result_ore: Ore }
+
+/**
+ * Intäkt och kostnad per månad för de senaste 12 månaderna (t.o.m. `asOf`,
+ * default idag). Nollfyllda månader via generate_series så diagrammet alltid
+ * har 12 punkter. Intäkt = kreditsaldo på intäktskonton, kostnad = debetsaldo
+ * på kostnadskonton — samma teckenkonvention som resultaträkningen.
+ */
+export async function monthlyRevenue(client: PoolClient, companyId: string, asOf?: string): Promise<MonthlyPoint[]> {
+  const result = await client.query<{ ym: string; revenue_ore: string; expense_ore: string }>(
+    `WITH ref AS (SELECT date_trunc('month', COALESCE($2::date, CURRENT_DATE)) AS m0),
+     months AS (
+       SELECT to_char((SELECT m0 FROM ref) - (n || ' months')::interval, 'YYYY-MM') AS ym
+       FROM generate_series(11, 0, -1) AS n
+     ),
+     agg AS (
+       SELECT to_char(date_trunc('month', v.voucher_date), 'YYYY-MM') AS ym,
+              sum(CASE WHEN a.account_type = 'revenue' THEN vl.credit_ore - vl.debit_ore ELSE 0 END) AS revenue_ore,
+              sum(CASE WHEN a.account_type = 'expense' THEN vl.debit_ore - vl.credit_ore ELSE 0 END) AS expense_ore
+       FROM voucher_lines vl
+       JOIN vouchers v ON v.id = vl.voucher_id
+       LEFT JOIN LATERAL (
+         SELECT account_type FROM accounts
+         WHERE account_number = vl.account_number AND (company_id = $1 OR company_id IS NULL)
+         ORDER BY company_id NULLS LAST LIMIT 1
+       ) a ON true
+       WHERE vl.company_id = $1
+       GROUP BY 1
+     )
+     SELECT m.ym, COALESCE(g.revenue_ore, 0) AS revenue_ore, COALESCE(g.expense_ore, 0) AS expense_ore
+     FROM months m LEFT JOIN agg g ON g.ym = m.ym
+     ORDER BY m.ym`,
+    [companyId, asOf ?? null],
+  );
+  return result.rows.map((r) => {
+    const revenue = Number(r.revenue_ore);
+    const expense = Number(r.expense_ore);
+    return { ym: r.ym, revenue_ore: revenue, expense_ore: expense, result_ore: revenue - expense };
+  });
+}
+
 export interface ArAgingRow {
   customer_id: string;
   customer_name: string;
