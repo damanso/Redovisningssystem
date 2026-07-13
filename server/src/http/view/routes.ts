@@ -9,7 +9,8 @@ import { ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.j
 import { UuidSchema } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { listInvoices } from '../../services/invoices.js';
-import { listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
+import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
+import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { listReceipts } from '../../services/receipts.js';
 import { listApprovals } from '../../services/approvals.js';
 import { approveAction, rejectApproval } from '../../actions/execute.js';
@@ -383,28 +384,68 @@ function registerCell(key: string, value: unknown): Raw {
   }
   return html`${(value as string) ?? ''}`;
 }
-function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][]) {
+function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][], detailPrefix?: string) {
   return pageFor(active, title, async (client, companyId) => {
     const rows = await load(client, companyId);
+    const cell = (key: string, r: Record<string, unknown>): Raw =>
+      key === 'name' && detailPrefix && r.id
+        ? html`<a href="/app/c/${companyId}/${detailPrefix}/${r.id as string}">${registerCell(key, r[key])}</a>`
+        : registerCell(key, r[key]);
     return html`<div class="page-head"><div>${eyebrow('Register')}<h1>${title}</h1>
         <p class="lede">${lede}</p></div></div>
       ${
         rows.length === 0
           ? html`<div class="empty"><div class="big">Inga poster ännu</div>Här samlas dina ${title.toLowerCase()}.</div>`
           : html`<div class="table-wrap"><table><thead><tr>${cols.map(([key, label]) => html`<th class="${key.endsWith('_ore') ? 'num' : ''}">${label}</th>`)}</tr></thead><tbody>
-              ${rows.map((r) => html`<tr>${cols.map(([key]) => html`<td class="${key.endsWith('_ore') ? 'num' : ''}">${registerCell(key, r[key])}</td>`)}</tr>`)}
+              ${rows.map((r) => html`<tr>${cols.map(([key]) => html`<td class="${key.endsWith('_ore') ? 'num' : ''}">${cell(key, r)}</td>`)}</tr>`)}
               </tbody></table></div>`
       }`;
   });
 }
 
-viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'Personer och företag du fakturerar.',
+// Detaljvy för en part (kund/leverantör) med taggar, kontaktpersoner och anteckningar.
+function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolClient, id: string, partyId: string) => Promise<Record<string, unknown>>) {
+  return page(async (req, res) => {
+    const userId = getUserId(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const partyId = parseApprovalId(req.params.partyId); // UUID-validering (kastar 404 vid ogiltigt)
+    const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+      const company = await loadCompany(client, companyId);
+      const party = await load(client, companyId, partyId);
+      const crm = await getPartyCrm(client, companyId, partyType, partyId);
+      const backLabel = partyType === 'customer' ? 'Kunder' : 'Leverantörer';
+      const b = html`<div class="page-head"><div>${eyebrow(backLabel)}<h1>${party.name as string}</h1>
+          <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div></div>
+        <div class="panel"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
+          ${crm.tags.length ? crm.tags.map((t) => html`${chip(t, 'info')} `) : html`<span class="muted">Inga taggar.</span>`}</div></div>
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Kontaktpersoner</h2><span class="muted" style="font-size:12.5px">${String(crm.contacts.length)} st</span></div>
+          <div class="panel__body" style="padding:6px 4px">${
+            crm.contacts.length === 0 ? html`<p class="muted" style="padding:10px 12px">Inga kontaktpersoner.</p>`
+              : html`<div class="table-wrap" style="border:0;box-shadow:none"><table><thead><tr><th>Namn</th><th>Roll</th><th>E-post</th><th>Telefon</th><th></th></tr></thead><tbody>
+                ${crm.contacts.map((c) => html`<tr><td>${c.name}</td><td>${c.role ?? ''}</td><td>${c.email ?? ''}</td><td>${c.phone ?? ''}</td><td>${c.is_primary ? chip('Primär', 'ok', '★') : ''}</td></tr>`)}
+                </tbody></table></div>`
+          }</div></div>
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Anteckningar</h2></div>
+          <div class="panel__body" style="padding:6px 4px">${
+            crm.notes.length === 0 ? html`<p class="muted" style="padding:10px 12px">Inga anteckningar.</p>`
+              : html`<div class="log">${crm.notes.map((nt) => html`<div class="log-row"><div class="log-when">${nt.created_at.replace('T', ' ').slice(0, 16)}</div><div class="log-what">${nt.body}</div></div>`)}</div>`
+          }</div></div>`;
+      return { name: company.name, body: b };
+    });
+    res.type('html').send(layout({ title: name, companyId, companyName: name, active, body }).value);
+  });
+}
+
+viewRouter.get('/c/:companyId/customers/:partyId', partyDetailPage('customers', 'customer', (c, id, pid) => getCustomer(c, id, pid)));
+viewRouter.get('/c/:companyId/suppliers/:partyId', partyDetailPage('suppliers', 'supplier', (c, id, pid) => getSupplier(c, id, pid)));
+
+viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'Personer och företag du fakturerar. Klicka på namnet för kontakter, anteckningar och taggar.',
   (c, id) => listCustomers(c, id, { includeInactive: true }),
-  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']]));
+  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customers'));
 
 viewRouter.get('/c/:companyId/suppliers', registerPage('suppliers', 'Leverantörer', 'Företag du köper av och betalar.',
   (c, id) => listSuppliers(c, id, { includeInactive: true }),
-  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']]));
+  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'suppliers'));
 
 viewRouter.get('/c/:companyId/articles', registerPage('articles', 'Artiklar', 'Varor och tjänster du säljer.',
   (c, id) => listArticles(c, id, { includeInactive: true }),

@@ -1,7 +1,9 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { AccountNumberSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import { AccountNumberSchema, EmailSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import { addContact, addNote, setTags } from '../services/crm.js';
+const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
@@ -182,6 +184,34 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createReceipt(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+
+  def({
+    name: 'add_contact',
+    title: 'Lägg till kontaktperson',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      party_type: PartyTypeSchema, party_id: UuidSchema, name: safeText(150),
+      email: EmailSchema.optional(), phone: safeText(40).optional(), role: safeText(80).optional(), is_primary: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; name: string; email?: string; phone?: string; role?: string; is_primary?: boolean }) =>
+      addContact(ctx.client, ctx.companyId, ctx.userId, { partyType: i.party_type, partyId: i.party_id, name: i.name, email: i.email, phone: i.phone, role: i.role, isPrimary: i.is_primary }),
+  }),
+  def({
+    name: 'add_note',
+    title: 'Lägg till anteckning',
+    sensitivity: 'write',
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema, body: safeText(2000) }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; body: string }) =>
+      addNote(ctx.client, ctx.companyId, ctx.userId, { partyType: i.party_type, partyId: i.party_id, body: i.body }),
+  }),
+  def({
+    name: 'set_tags',
+    title: 'Sätt taggar',
+    sensitivity: 'write',
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema, tags: z.array(safeText(40)).max(30) }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; tags: string[] }) =>
+      setTags(ctx.client, ctx.companyId, ctx.userId, i.party_type, i.party_id, i.tags),
   }),
 
   def({
