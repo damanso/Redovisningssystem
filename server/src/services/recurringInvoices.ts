@@ -9,6 +9,11 @@ import { createInvoice, type InvoiceLineInput } from './invoices.js';
 
 export type RecurringInterval = 'monthly' | 'quarterly' | 'yearly';
 
+// Max antal fakturor en enskild mall får generera per körning (backstop mot en
+// bakåtdaterad mall utan slutdatum). 60 = 5 år månadsvis; resterande perioder
+// tas i nästa körning eftersom next_run_date sparas där loopen stannade.
+const MAX_CATCHUP_PER_RUN = 60;
+
 export interface CreateRecurringInput {
   customer_id: string;
   title: string;
@@ -21,12 +26,18 @@ export interface CreateRecurringInput {
   lines: InvoiceLineInput[];
 }
 
-/** Flyttar ett ISO-datum framåt enligt intervall (UTC, klamrar månadsdag). */
-export function advanceDate(isoDate: string, interval: RecurringInterval): string {
+/**
+ * Flyttar ett ISO-datum framåt enligt intervall (UTC). Månadsdagen tas från
+ * `anchorDay` (den ursprungliga fakturadagen), klampad till målmånadens längd —
+ * INTE från `isoDate`. Så en mall på den 30:e blir 28 feb men återgår till 30 mars,
+ * i stället för att permanent fastna på den 28:e efter en kort månad. Om anchorDay
+ * utelämnas används dagen i isoDate (bakåtkompatibelt för anrop utan ankare).
+ */
+export function advanceDate(isoDate: string, interval: RecurringInterval, anchorDay?: number): string {
   const d = new Date(`${isoDate}T00:00:00Z`);
-  const day = d.getUTCDate();
+  const day = anchorDay ?? d.getUTCDate();
   const monthsToAdd = interval === 'monthly' ? 1 : interval === 'quarterly' ? 3 : 12;
-  // Sätt dag till 1 innan månad läggs till så att t.ex. 31 jan → 28/29 feb, inte mars.
+  // Sätt dag till 1 innan månad läggs till så att månadsövergången inte spiller över.
   d.setUTCDate(1);
   d.setUTCMonth(d.getUTCMonth() + monthsToAdd);
   const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
@@ -45,14 +56,17 @@ export async function createRecurringInvoice(
   if (input.end_date && input.end_date < input.next_run_date) {
     throw new BadRequestError('invalid_end_date', 'slutdatum får inte vara före startdatum');
   }
+  // Ankardagen = dagen i det första förfallodatumet. Den bevaras så att en mall
+  // på t.ex. den 30:e återgår till den 30:e efter en kort månad (se advanceDate).
+  const anchorDay = Number(input.next_run_date.slice(8, 10));
   const row = await client.query<{ id: string }>(
     `INSERT INTO recurring_invoices
        (company_id, customer_id, title, interval, next_run_date, end_date,
-        payment_terms, reference, notes, lines, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        payment_terms, reference, notes, lines, anchor_day, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
     [companyId, input.customer_id, input.title, input.interval, input.next_run_date,
       input.end_date ?? null, input.payment_terms ?? null, input.reference ?? null,
-      input.notes ?? null, JSON.stringify(input.lines), userId],
+      input.notes ?? null, JSON.stringify(input.lines), anchorDay, userId],
   );
   const id = row.rows[0]!.id;
   await writeAudit(client, {
@@ -117,10 +131,10 @@ export async function runDueRecurringInvoices(
   const due = await client.query<{
     id: string; customer_id: string; interval: RecurringInterval; next_run_date: string;
     end_date: string | null; payment_terms: number | null; reference: string | null;
-    notes: string | null; lines: InvoiceLineInput[];
+    notes: string | null; lines: InvoiceLineInput[]; anchor_day: number;
   }>(
     `SELECT id, customer_id, interval, next_run_date::text, end_date::text,
-            payment_terms, reference, notes, lines
+            payment_terms, reference, notes, lines, anchor_day
      FROM recurring_invoices
      WHERE company_id = $1 AND active AND next_run_date <= $2
      ORDER BY next_run_date ASC
@@ -132,8 +146,15 @@ export async function runDueRecurringInvoices(
   for (const tpl of due.rows) {
     let runDate = tpl.next_run_date;
     let count = 0;
-    // Skapa en faktura per förfallodatum som passerats, upp till end_date.
-    while (runDate <= asOf && (!tpl.end_date || runDate <= tpl.end_date)) {
+    // Skapa en faktura per förfallodatum som passerats, upp till end_date. Taket
+    // MAX_CATCHUP_PER_RUN hindrar att en kraftigt bakåtdaterad mall utan slutdatum
+    // genererar hundratals fakturor i EN transaktion (t.ex. next_run_date år 2000).
+    // När taket nås pausar loopen med next_run_date framflyttat så långt vi hann —
+    // nästa körning tar vid där vi slutade.
+    while (
+      count < MAX_CATCHUP_PER_RUN &&
+      runDate <= asOf && (!tpl.end_date || runDate <= tpl.end_date)
+    ) {
       const invoice = await createInvoice(client, companyId, userId, {
         customer_id: tpl.customer_id,
         invoice_date: runDate,
@@ -144,7 +165,7 @@ export async function runDueRecurringInvoices(
       });
       generated.push({ recurring_id: tpl.id, invoice_id: invoice.id as string, invoice_date: runDate });
       count += 1;
-      runDate = advanceDate(runDate, tpl.interval);
+      runDate = advanceDate(runDate, tpl.interval, tpl.anchor_day);
     }
     if (count > 0) {
       // Deaktivera mallen om nästa datum passerat slutdatum.

@@ -33,6 +33,16 @@ describe('advanceDate', () => {
     expect(advanceDate('2025-01-15', 'yearly')).toBe('2026-01-15');
     expect(advanceDate('2024-01-31', 'monthly')).toBe('2024-02-29'); // skottår
   });
+
+  it('fastnar INTE på en kort månad — ankardagen återställer fakturadagen', () => {
+    // Ankardag 30: feb klampas till 28 men mars ska återgå till 30 (inte fastna på 28).
+    expect(advanceDate('2025-01-30', 'monthly', 30)).toBe('2025-02-28');
+    expect(advanceDate('2025-02-28', 'monthly', 30)).toBe('2025-03-30');
+    expect(advanceDate('2025-03-30', 'monthly', 30)).toBe('2025-04-30');
+    // Sista dagen i månaden (ankardag 31) → varje månad klampas till sin längd.
+    expect(advanceDate('2025-01-31', 'monthly', 31)).toBe('2025-02-28');
+    expect(advanceDate('2025-02-28', 'monthly', 31)).toBe('2025-03-31');
+  });
 });
 
 describe('återkommande fakturor', () => {
@@ -78,6 +88,23 @@ describe('återkommande fakturor', () => {
   it('pausad mall genererar inget även om datum passerat', async () => {
     const run = await approveAction('run_recurring_invoices', { as_of: '2026-01-01' });
     expect(run.body.result.generated.length).toBe(0);
+  });
+
+  it('bakåtdaterad mall utan slutdatum genererar högst taket per körning', async () => {
+    // Mall från år 2000 utan slutdatum → utan tak skulle den skapa 300+ fakturor
+    // i en transaktion. Taket (60) begränsar en körning; next_run_date sparas.
+    const create = await api.post(`${co()}/actions/create_recurring_invoice`).set(auth()).send({
+      customer_id: customerId, title: 'Gammal mall', interval: 'monthly', next_run_date: '2000-01-01',
+      lines: [{ description: 'Drift', quantity: 1, unit_price_ore: 10000, vat_rate: 25 }],
+    });
+    const run = await approveAction('run_recurring_invoices', { as_of: '2026-01-01' });
+    const forThis = run.body.result.generated.filter((g: { recurring_id: string }) => g.recurring_id === create.body.result.id);
+    expect(forThis.length).toBe(60); // taket, inte 300+
+
+    const rl = await api.post(`${co()}/actions/list_recurring_invoices`).set(auth()).send({});
+    const tpl = rl.body.result.find((r: { id: string }) => r.id === create.body.result.id);
+    expect(tpl.active).toBe(true); // fortfarande aktiv — mer att ta igen nästa körning
+    expect(tpl.next_run_date).toBe('2005-01-01'); // 60 månader från 2000-01-01
   });
 
   it('abonnemangsvyn renderas', async () => {

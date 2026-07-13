@@ -56,18 +56,27 @@ export async function getSupplierInvoice(client: PoolClient, companyId: string, 
 }
 
 export async function bookSupplierInvoice(client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId: string): Promise<Record<string, unknown>> {
-  const inv = await getSupplierInvoice(client, companyId, id);
+  // Lås raden (FOR UPDATE) så samtidiga bokföringsförsök serialiseras — samma
+  // TOCTOU-skydd som betalningsvägen. Dubbelbokningsspärren i
+  // vouchers_source_uk är sista linjen, men låset ger ett rent 409 i stället.
+  const locked = await client.query<{ voucher_id: string | null; status: string; invoice_date: string; number: number; net_ore: string; vat_rate: number; expense_account: number }>(
+    `SELECT voucher_id, status, invoice_date::text, number, net_ore, vat_rate, expense_account
+     FROM supplier_invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [id, companyId],
+  );
+  const inv = locked.rows[0];
+  if (!inv) throw new NotFoundError('supplier_invoice');
   if (inv.voucher_id) throw new ConflictError('already_booked', 'leverantörsfakturan är redan bokförd');
   if (inv.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte bokföras');
   const voucher = await postExpense(client, companyId, userId, {
     fiscalYearId,
-    voucherDate: inv.invoice_date as string,
+    voucherDate: inv.invoice_date,
     sourceId: id,
     sourceType: 'supplier_invoice',
     description: `Leverantörsfaktura ${inv.number}`,
-    lines: [{ netOre: inv.net_ore as number, vatRate: inv.vat_rate as VatRate, account: inv.expense_account as number }],
+    lines: [{ netOre: Number(inv.net_ore), vatRate: inv.vat_rate as VatRate, account: inv.expense_account }],
   });
-  await client.query("UPDATE supplier_invoices SET voucher_id = $1, status = 'booked' WHERE id = $2 AND company_id = $3", [voucher.id, id, companyId]);
+  await client.query("UPDATE supplier_invoices SET voucher_id = $1, status = 'booked' WHERE id = $2 AND company_id = $3 AND voucher_id IS NULL", [voucher.id, id, companyId]);
   await writeAudit(client, { companyId, userId, action: 'supplier_invoice.booked', entityType: 'supplier_invoice', entityId: id, details: { voucher_id: voucher.id } });
   return getSupplierInvoice(client, companyId, id);
 }

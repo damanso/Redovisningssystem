@@ -5,6 +5,10 @@ import type { Ore } from '../domain/money.js';
 // shadow-subquery (företagskonto skuggar standardkonto), samma mönster som
 // vatReport, så ett eget konto aldrig dubbelräknas.
 
+// Dagens datum (ISO) som fallback för åldersanalysernas as_of när frågan inte
+// returnerar någon rad (t.ex. inga öppna fakturor) — så headern aldrig blir tom.
+const todayIso = (): string => new Date().toISOString().slice(0, 10);
+
 export interface AccountLine {
   account_number: number;
   name: string;
@@ -293,7 +297,7 @@ export async function accountsPayableAging(client: PoolClient, companyId: string
   }));
   const sum = (k: keyof ApAgingRow) => rows.reduce((s, r) => s + (r[k] as number), 0);
   return {
-    as_of: result.rows[0]?.as_of ?? (asOf ?? ''),
+    as_of: result.rows[0]?.as_of ?? asOf ?? todayIso(),
     rows,
     totals: { not_due_ore: sum('not_due_ore'), d1_30_ore: sum('d1_30_ore'), d31_60_ore: sum('d31_60_ore'), d61_90_ore: sum('d61_90_ore'), d90_plus_ore: sum('d90_plus_ore'), total_ore: sum('total_ore') },
   };
@@ -407,7 +411,7 @@ export async function accountsReceivableAging(
     total_ore: Number(r.total),
   }));
   const sum = (k: keyof ArAgingRow) => rows.reduce((s, r) => s + (r[k] as number), 0);
-  const asOfDate = result.rows[0]?.as_of ?? (asOf ?? '');
+  const asOfDate = result.rows[0]?.as_of ?? asOf ?? todayIso();
   return {
     as_of: asOfDate,
     rows,

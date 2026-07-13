@@ -23,10 +23,15 @@ export interface CreateTimeEntryInput {
   billable?: boolean;
 }
 
-/** Belopp i ören för en tidpost: minuter/60 * gällande timtaxa, avrundat. */
+/**
+ * Belopp i ören för en tidpost: minuter/60 * gällande timtaxa, avrundat till
+ * hela ören. Heltalsmultiplikation FÖRE division (minuter ≤ 1440, taxan bunden
+ * av OreSchema) så mellanledet aldrig blir ett flyttal — invarianten "öre i
+ * heltal, aldrig float" gäller även härledda belopp.
+ */
 export function timeEntryAmountOre(minutes: number, rateOre: number | null): number {
   if (!rateOre) return 0;
-  return Math.round((minutes / 60) * rateOre);
+  return Math.round((minutes * rateOre) / 60);
 }
 
 export async function createProject(

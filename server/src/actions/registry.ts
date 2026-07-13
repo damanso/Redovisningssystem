@@ -152,7 +152,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'list_supplier_invoices',
     title: 'Lista leverantörsfakturor',
     sensitivity: 'read',
-    inputSchema: z.object({ status: safeText(20).optional() }).strict(),
+    inputSchema: z.object({ status: z.enum(['draft', 'booked', 'paid', 'cancelled']).optional() }).strict(),
     handler: (ctx, i: { status?: string }) => listSupplierInvoices(ctx.client, ctx.companyId, { status: i.status }),
   }),
   def({
