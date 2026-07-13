@@ -107,6 +107,26 @@ describe('sidorna visar rätt innehåll', () => {
     expect(res.text).not.toContain('Ej klassificerade konton');
   });
 
+  it('rapporter kan exporteras som CSV (revisor/Excel)', async () => {
+    const vat = await agentA.get(`/app/c/${companyA}/reports/export/vat.csv`);
+    expect(vat.status).toBe(200);
+    expect(vat.headers['content-type']).toContain('text/csv');
+    expect(vat.headers['content-disposition']).toContain('momsrapport.csv');
+    expect(vat.text).toContain('Momsrapport');
+    expect(vat.text).toContain('Att betala');
+    const ledger = await agentA.get(`/app/c/${companyA}/reports/export/ledger.csv`);
+    expect(ledger.status).toBe(200);
+    expect(ledger.text).toContain('Verifikat;Datum;Beskrivning');
+    expect(ledger.text).toContain('1510'); // kontonummer ur den bokförda fakturan
+  });
+
+  it('en utomstående (B) kan inte exportera A:s rapporter', async () => {
+    const agentB = supertest.agent(app);
+    await agentB.post('/app/login').type('form').send({ email: userB.email, password: PASSWORD });
+    const res = await agentB.get(`/app/c/${companyA}/reports/export/vat.csv`);
+    expect(res.status).toBe(404);
+  });
+
   it('register och revisionslogg finns', async () => {
     expect((await agentA.get(`/app/c/${companyA}/customers`)).text).toContain('Kunder');
     expect((await agentA.get(`/app/c/${companyA}/suppliers`)).status).toBe(200);

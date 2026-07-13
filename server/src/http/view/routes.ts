@@ -7,6 +7,7 @@ import { config } from '../../config.js';
 import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { UuidSchema } from '../../lib/validation.js';
+import { csvKronor, toCsv } from '../../lib/csv.js';
 import { listInvoices } from '../../services/invoices.js';
 import { listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { listReceipts } from '../../services/receipts.js';
@@ -224,7 +225,13 @@ viewRouter.get(
         <tr class="subtot"><td></td><td>${totalLabel}</td><td class="num">${amount(total, { unit: false })}</td></tr></tbody></table></div>`;
     const balanced = bs.difference_ore === 0;
     return html`<div class="page-head"><div>${eyebrow('Rapporter')}<h1>Rapporter</h1>
-        <p class="lede">Period: ${period.from} – ${period.to}</p></div></div>
+        <p class="lede">Period: ${period.from} – ${period.to}</p></div>
+        <div class="actions">
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/reports/export/income.csv">Resultat (CSV)</a>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/reports/export/balance.csv">Balans (CSV)</a>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/reports/export/vat.csv">Moms (CSV)</a>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/reports/export/ledger.csv">Huvudbok (CSV)</a>
+        </div></div>
 
       <section class="statement">
         <div class="statement__cap"><h2>Resultaträkning</h2></div>
@@ -271,7 +278,8 @@ viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontr
     <td class="num">${r.d90_plus_ore ? amount(r.d90_plus_ore, { unit: false }) : ''}</td>
     <td class="num"><strong>${amount(r.total_ore, { unit: false })}</strong></td>`;
   return html`<div class="page-head"><div>${eyebrow('Kundreskontra')}<h1>Åldersanalys av kundfordringar</h1>
-      <p class="lede">Öppna, bokförda och obetalda kundfakturor per kund och hur långt förbi förfallodagen de är (per ${aging.as_of}).</p></div></div>
+      <p class="lede">Öppna, bokförda och obetalda kundfakturor per kund och hur långt förbi förfallodagen de är (per ${aging.as_of}).</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/receivables/export.csv">Exportera CSV</a></div></div>
     ${
       aging.rows.length === 0
         ? html`<div class="empty"><div class="big">Inga utestående fakturor 🎉</div>Alla bokförda kundfakturor är betalda.</div>`
@@ -283,6 +291,75 @@ viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontr
             </tbody></table></div>
             ${t.d90_plus_ore > 0 ? html`<p class="lede">${chip(`${money(t.d90_plus_ore)} kr är mer än 90 dagar förfallet`, 'neg', '!')}</p>` : ''}`
     }`;
+}));
+
+// CSV-export av rapporter (revisor/Excel). Läser rapporten inom tenant-gränsen
+// och skickar en nedladdning. BOM (﻿) så svensk Excel läser åäö rätt.
+function csvDownload(filename: string, build: (client: PoolClient, companyId: string) => Promise<string>) {
+  return page(async (req, res) => {
+    const userId = getUserId(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const csv = await withTenantTransaction(userId, companyId, async (client) => {
+      await loadCompany(client, companyId); // verifierar existens + medlemskap
+      return build(client, companyId);
+    });
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.type('text/csv; charset=utf-8').send('﻿' + csv);
+  });
+}
+
+viewRouter.get('/c/:companyId/reports/export/income.csv', csvDownload('resultatrakning.csv', async (client, companyId) => {
+  const p = await reportingPeriod(client, companyId);
+  const is = await incomeStatement(client, companyId, p.from, p.to);
+  const rows: (string | number)[][] = [['Resultaträkning', `${p.from} – ${p.to}`], ['Typ', 'Konto', 'Namn', 'Belopp (kr)']];
+  for (const r of is.revenue) rows.push(['Intäkt', r.account_number, r.name, csvKronor(r.balance_ore)]);
+  for (const r of is.expense) rows.push(['Kostnad', r.account_number, r.name, csvKronor(r.balance_ore)]);
+  rows.push([], ['Summa intäkter', '', '', csvKronor(is.total_revenue_ore)], ['Summa kostnader', '', '', csvKronor(is.total_expense_ore)], ['Resultat', '', '', csvKronor(is.result_ore)]);
+  return toCsv(rows);
+}));
+
+viewRouter.get('/c/:companyId/reports/export/balance.csv', csvDownload('balansrakning.csv', async (client, companyId) => {
+  const p = await reportingPeriod(client, companyId);
+  const bs = await balanceSheet(client, companyId, p.to);
+  const rows: (string | number)[][] = [['Balansräkning', `per ${bs.as_of}`], ['Typ', 'Konto', 'Namn', 'Belopp (kr)']];
+  for (const r of bs.assets) rows.push(['Tillgång', r.account_number, r.name, csvKronor(r.balance_ore)]);
+  for (const r of bs.liabilities) rows.push(['Skuld', r.account_number, r.name, csvKronor(r.balance_ore)]);
+  for (const r of bs.equity) rows.push(['Eget kapital', r.account_number, r.name, csvKronor(r.balance_ore)]);
+  rows.push([], ['Summa tillgångar', '', '', csvKronor(bs.total_assets_ore)], ['Summa skulder + EK + resultat', '', '', csvKronor(bs.total_liabilities_ore + bs.total_equity_ore + bs.result_ore)]);
+  return toCsv(rows);
+}));
+
+viewRouter.get('/c/:companyId/reports/export/vat.csv', csvDownload('momsrapport.csv', async (client, companyId) => {
+  const p = await reportingPeriod(client, companyId);
+  const vat = await vatReport(client, companyId, p.from, p.to);
+  return toCsv([
+    ['Momsrapport', `${p.from} – ${p.to}`], ['Post', 'Belopp (kr)'],
+    ['Utgående moms', csvKronor(vat.output_vat_ore)],
+    ['Ingående moms', csvKronor(vat.input_vat_ore)],
+    ['Att betala', csvKronor(vat.net_to_pay_ore)],
+  ]);
+}));
+
+viewRouter.get('/c/:companyId/reports/export/ledger.csv', csvDownload('huvudbok.csv', async (client, companyId) => {
+  const vouchers = await generalLedger(client, companyId, { limit: 1000 });
+  const rows: (string | number)[][] = [['Verifikat', 'Datum', 'Beskrivning', 'Konto', 'Radtext', 'Debet (kr)', 'Kredit (kr)']];
+  for (const v of vouchers) {
+    for (const l of v.lines) {
+      rows.push([`${v.series}${v.number}`, v.voucher_date, v.description, l.account_number, l.description ?? '',
+        l.debit_ore ? csvKronor(l.debit_ore) : '', l.credit_ore ? csvKronor(l.credit_ore) : '']);
+    }
+  }
+  return toCsv(rows);
+}));
+
+viewRouter.get('/c/:companyId/receivables/export.csv', csvDownload('kundreskontra.csv', async (client, companyId) => {
+  const aging = await accountsReceivableAging(client, companyId);
+  const rows: (string | number)[][] = [['Kundreskontra', `per ${aging.as_of}`],
+    ['Kund', 'Ej förfallet', '1-30 d', '31-60 d', '61-90 d', '>90 d', 'Totalt (kr)']];
+  for (const r of aging.rows) rows.push([r.customer_name, csvKronor(r.not_due_ore), csvKronor(r.d1_30_ore), csvKronor(r.d31_60_ore), csvKronor(r.d61_90_ore), csvKronor(r.d90_plus_ore), csvKronor(r.total_ore)]);
+  const t = aging.totals;
+  rows.push(['Summa', csvKronor(t.not_due_ore), csvKronor(t.d1_30_ore), csvKronor(t.d31_60_ore), csvKronor(t.d61_90_ore), csvKronor(t.d90_plus_ore), csvKronor(t.total_ore)]);
+  return toCsv(rows);
 }));
 
 // Register
