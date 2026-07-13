@@ -5,7 +5,7 @@ import { assertSafeOre, roundOre, sumOre, type Ore } from '../domain/money.js';
 import { isVatRate, vatFromNet, type VatRate } from '../domain/vat.js';
 import { generateOcr } from '../domain/ocr.js';
 import { assertAccountsExist } from './accounting/accounts.js';
-import { postCustomerInvoice } from './accounting/autopost.js';
+import { postCustomerInvoice, postCustomerPayment } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { generateInvoicePdf } from './pdfService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
@@ -204,6 +204,45 @@ export async function bookInvoice(
     details: { voucher_id: voucher.id },
   });
   return getInvoice(client, companyId, id);
+}
+
+/**
+ * Registrerar en inbetalning på en (bokförd) kundfaktura: automatkonterar
+ * betalningen (debet bank / kredit kundfordran via postCustomerPayment) och
+ * markerar fakturan som betald när hela beloppet kommit in. Dubbelbetalnings-
+ * spärr sker via postVoucher (source_type='payment' + source_id är unik), så
+ * samma faktura inte kan betalas två gånger. Detta är automatkonteringen för
+ * "betalning" som KICKOFF §4 Fas 1.4 kräver.
+ */
+export async function recordInvoicePayment(
+  client: PoolClient,
+  companyId: string,
+  userId: string,
+  input: { invoiceId: string; fiscalYearId: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
+): Promise<Record<string, unknown>> {
+  const invoice = await getInvoice(client, companyId, input.invoiceId);
+  if (!invoice.voucher_id) throw new ConflictError('not_booked', 'fakturan måste vara bokförd innan en betalning kan registreras');
+  if (invoice.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan betald');
+  if (invoice.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
+  const total = invoice.total_ore as number;
+  const amountOre = input.amountOre ?? total;
+  const voucher = await postCustomerPayment(client, companyId, userId, {
+    fiscalYearId: input.fiscalYearId,
+    voucherDate: input.paymentDate,
+    sourceId: input.invoiceId,
+    description: `Betalning faktura ${invoice.invoice_number}`,
+    amountOre,
+    bankAccount: input.bankAccount,
+  });
+  const fullyPaid = amountOre >= total;
+  if (fullyPaid) {
+    await client.query("UPDATE invoices SET status = 'paid' WHERE id = $1 AND company_id = $2", [input.invoiceId, companyId]);
+  }
+  await writeAudit(client, {
+    companyId, userId, action: 'invoice.payment_recorded', entityType: 'invoice', entityId: input.invoiceId,
+    details: { voucher_id: voucher.id, amount_ore: amountOre, fully_paid: fullyPaid },
+  });
+  return getInvoice(client, companyId, input.invoiceId);
 }
 
 /**

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
-import { createInvoice, bookInvoice, getInvoice, listInvoices } from '../services/invoices.js';
+import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
 import { postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
@@ -184,6 +184,28 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ receipt_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { receipt_id: string; fiscal_year_id: string }) =>
       bookReceipt(ctx.client, ctx.companyId, ctx.userId, i.receipt_id, i.fiscal_year_id),
+  }),
+  def({
+    name: 'register_invoice_payment',
+    title: 'Registrera betalning på faktura',
+    sensitivity: 'sensitive',
+    inputSchema: z
+      .object({
+        invoice_id: UuidSchema,
+        fiscal_year_id: UuidSchema,
+        payment_date: IsoDateSchema,
+        amount_ore: OreSchema.optional(),
+        bank_account: AccountNumberSchema.optional(),
+      })
+      .strict(),
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+      recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
+        invoiceId: i.invoice_id,
+        fiscalYearId: i.fiscal_year_id,
+        paymentDate: i.payment_date,
+        amountOre: i.amount_ore,
+        bankAccount: i.bank_account,
+      }),
   }),
   def({
     name: 'post_voucher',

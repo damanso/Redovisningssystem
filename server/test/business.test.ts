@@ -106,6 +106,26 @@ describe('faktura: nummer/OCR, totaler i ören, bokföring, PDF med Bankgiro', (
     expect(again.body.error).toBe('already_booked');
   });
 
+  it('registrerar betalning via action-lagret (känsligt → godkännande) → faktura betald', async () => {
+    // Automatkontering för "betalning" (KICKOFF §4 Fas 1.4), exponerad som en
+    // känslig action. Människa begär → hamnar i godkännandekö (bokförs inte
+    // automatiskt) → en människa godkänner → betalningen konteras och fakturan
+    // markeras betald.
+    const req = await api.post(`${co()}/actions/register_invoice_payment`).set(auth())
+      .send({ invoice_id: invoiceId, fiscal_year_id: fiscalYearId, payment_date: '2025-04-01' });
+    expect(req.status, JSON.stringify(req.body)).toBe(202); // känslig → pending
+    const approvalId = req.body.approval.id;
+
+    const notPaidYet = await api.get(`${co()}/invoices`).set(auth());
+    expect(notPaidYet.body.invoices.find((i: { id: string }) => i.id === invoiceId).status).not.toBe('paid');
+
+    const approve = await api.post(`${co()}/approvals/${approvalId}/approve`).set(auth()).send({});
+    expect(approve.status, JSON.stringify(approve.body)).toBe(200);
+
+    const after = await api.get(`${co()}/invoices`).set(auth());
+    expect(after.body.invoices.find((i: { id: string }) => i.id === invoiceId).status).toBe('paid');
+  });
+
   it('genererar PDF som innehåller Bankgiro och OCR', async () => {
     const res = await api
       .post(`${co()}/invoices/${invoiceId}/pdf`)
