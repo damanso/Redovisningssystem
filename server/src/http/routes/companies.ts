@@ -70,14 +70,20 @@ companiesRouter.post('/', async (req, res) => {
       "SELECT set_config('app.user_id', $1, true), set_config('app.company_id', $2, true)",
       [userId, companyId],
     );
-    const inserted = await client.query(
-      `INSERT INTO companies (id, name, org_number)
-       VALUES ($1, $2, $3) RETURNING id, name, org_number, created_at`,
-      [companyId, input.name, input.org_number ?? null],
-    );
+    // Ingen RETURNING här: SELECT-policyn är medlemskapsbaserad och medlem-
+    // skapet finns inte förrän nästa INSERT — raden läses tillbaka efteråt.
+    await client.query('INSERT INTO companies (id, name, org_number) VALUES ($1, $2, $3)', [
+      companyId,
+      input.name,
+      input.org_number ?? null,
+    ]);
     await client.query(
       "INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'owner')",
       [companyId, userId],
+    );
+    const inserted = await client.query(
+      'SELECT id, name, org_number, created_at FROM companies WHERE id = $1',
+      [companyId],
     );
     await writeAudit(client, {
       companyId,
