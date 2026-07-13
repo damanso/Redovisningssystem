@@ -99,6 +99,10 @@ describe('sidorna visar rätt innehåll', () => {
     expect(res.text).toContain('Resultaträkning');
     expect(res.text).toContain('Balansräkning');
     expect(res.text).toContain('Momsrapport');
+    // Balanskontrollen ska vara ärlig: friskt seedat data balanserar och har
+    // inga oklassificerade konton (kontrollen är inte längre alltid-noll-vacuös).
+    expect(res.text).toContain('balanserar');
+    expect(res.text).not.toContain('Ej klassificerade konton');
   });
 
   it('register och revisionslogg finns', async () => {
@@ -124,6 +128,26 @@ describe('XSS-escaping', () => {
   it('svaret sätter en skript-förbjudande CSP', async () => {
     const res = await agentA.get(`/app/c/${companyA}`);
     expect(res.headers['content-security-policy']).toContain("script-src 'none'");
+  });
+});
+
+describe('sessionshärdning', () => {
+  it('en agent-token får INTE användas som webbsession (relabel till human vore scope-läcka)', async () => {
+    const minted = await api.post(`/api/companies/${companyA}/agent-tokens`)
+      .set({ Authorization: `Bearer ${userA.token}` }).send({ name: 'Cowork' });
+    const agentToken: string = minted.body.token;
+    // Använd agent-JWT:n som session-cookie mot vyn.
+    const res = await api.get(`/app/c/${companyA}`).set('Cookie', `session=${agentToken}`);
+    expect([302, 303]).toContain(res.status); // avvisad → omdirigeras till login
+    expect(res.headers.location).toBe('/app/login');
+    expect(res.text).not.toContain('Alfa Bokföring AB');
+  });
+
+  it('en felformad session-cookie kraschar inte vyn (ingen 500)', async () => {
+    // "%zz" är ogiltig procentkodning → decodeURIComponent skulle kasta URIError.
+    const res = await api.get(`/app/c/${companyA}`).set('Cookie', 'session=%zz');
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toBe('/app/login');
   });
 });
 

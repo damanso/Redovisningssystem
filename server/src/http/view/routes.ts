@@ -179,7 +179,10 @@ viewRouter.get(
       <h3>Eget kapital</h3>${accTable(bs.equity)}
       <p><strong>Summa tillgångar:</strong> ${money(bs.total_assets_ore)} kr &nbsp;
          <strong>Skulder+EK+resultat:</strong> ${money(bs.total_liabilities_ore + bs.total_equity_ore + bs.result_ore)} kr &nbsp;
-         <strong>Differens:</strong> ${money(bs.difference_ore)} kr</p>
+         <strong>Balanskontroll:</strong> ${bs.difference_ore === 0 ? 'balanserar (0,00 kr)' : `AVVIKELSE ${money(bs.difference_ore)} kr`}</p>
+      ${bs.unclassified.length > 0
+        ? html`<h3>⚠ Ej klassificerade konton (saknar kontotyp i kontoplanen)</h3>${accTable(bs.unclassified)}`
+        : ''}
       <h2>Momsrapport</h2>
       <p><strong>Utgående moms:</strong> ${money(vat.output_vat_ore)} kr &nbsp;
          <strong>Ingående moms:</strong> ${money(vat.input_vat_ore)} kr &nbsp;

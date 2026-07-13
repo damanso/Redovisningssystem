@@ -22,13 +22,16 @@ async function accountSums(
   const result = await client.query<{
     account_number: number;
     name: string;
-    account_type: string;
+    account_type: string | null;
     debit_ore: string;
     credit_ore: string;
   }>(
+    // account_type lämnas NULL om kontot saknar kontoplandefinition — vi defaultar
+    // INTE till 'asset', för det skulle dölja ett obokfört/feldefinierat konto i
+    // tillgångssumman. Ett oklassificerat saldo ska synas som en avvikelse.
     `SELECT vl.account_number,
             COALESCE(a.name, '') AS name,
-            COALESCE(a.account_type, 'asset') AS account_type,
+            a.account_type AS account_type,
             sum(vl.debit_ore)  AS debit_ore,
             sum(vl.credit_ore) AS credit_ore
      FROM voucher_lines vl
@@ -51,7 +54,9 @@ async function accountSums(
     return {
       account_number: r.account_number,
       name: r.name,
-      account_type: r.account_type,
+      // Konto utan kontoplandefinition hamnar i en egen 'unclassified'-hink och
+      // räknas därmed inte som tillgång/skuld/resultat — det fångas av balanskontrollen.
+      account_type: r.account_type ?? 'unclassified',
       debit_ore: debit,
       credit_ore: credit,
       balance_ore: debit - credit,
@@ -101,11 +106,20 @@ export interface BalanceSheet {
   assets: AccountLine[];
   liabilities: AccountLine[];
   equity: AccountLine[];
+  // Konton som saknar kontoplandefinition (account_type okänd). I ett friskt
+  // system är detta tomt; icke-tomt = ett saldo som inte kunnat klassificeras.
+  unclassified: AccountLine[];
   total_assets_ore: Ore;
   total_liabilities_ore: Ore;
   total_equity_ore: Ore;
   result_ore: Ore; // årets resultat (intäkter − kostnader hittills)
-  // balanskontroll: tillgångar − (skulder + eget kapital + resultat)
+  // Balanskontroll = tillgångar − (skulder + eget kapital + resultat). Eftersom
+  // varje verifikat är balanserat (CHECK i 0007) är summan av ALLA klassificerade
+  // konton noll; det som kan göra kontrollen ≠ 0 är just oklassificerade saldon
+  // (konton utan kontotyp). Kontrollen är alltså INTE vacuös: den fångar konton
+  // som bokförts utan giltig kontoplandefinition. (Ett konto med FEL men giltig
+  // kontotyp fångas dock inte av aritmetiken — det förutsätter en korrekt
+  // seedad BAS-kontoplan.)
   difference_ore: Ore;
 }
 
@@ -125,6 +139,8 @@ export async function balanceSheet(
   const equity = rows
     .filter((r) => r.account_type === 'equity')
     .map((r) => ({ ...r, balance_ore: r.credit_ore - r.debit_ore }));
+  // Bara konton utan giltig kontotyp — dessa ska normalt inte finnas.
+  const unclassified = rows.filter((r) => r.account_type === 'unclassified');
   const result =
     rows.filter((r) => r.account_type === 'revenue').reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0) -
     rows.filter((r) => r.account_type === 'expense').reduce((s, r) => s + (r.debit_ore - r.credit_ore), 0);
@@ -136,6 +152,7 @@ export async function balanceSheet(
     assets,
     liabilities,
     equity,
+    unclassified,
     total_assets_ore: totalAssets,
     total_liabilities_ore: totalLiabilities,
     total_equity_ore: totalEquity,

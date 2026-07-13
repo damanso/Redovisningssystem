@@ -17,7 +17,17 @@ function parseCookie(header: string | undefined, name: string): string | undefin
   for (const part of header.split(';')) {
     const idx = part.indexOf('=');
     if (idx === -1) continue;
-    if (part.slice(0, idx).trim() === name) return decodeURIComponent(part.slice(idx + 1).trim());
+    if (part.slice(0, idx).trim() === name) {
+      const value = part.slice(idx + 1).trim();
+      // En trasig procentkodning (t.ex. "%zz") får decodeURIComponent att kasta
+      // URIError. Vyn ska inte krascha på en felformad cookie — behandla den som
+      // ogiltig (returnera råvärdet; JWT-verifieringen underkänner det ändå).
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
   }
   return undefined;
 }
@@ -74,7 +84,10 @@ export function viewAuth(req: Request, res: Response, next: NextFunction): void 
   try {
     const payload = jwt.verify(token, config.JWT_SECRET, { algorithms: ['HS256'] });
     if (typeof payload === 'string' || typeof payload.sub !== 'string') throw new Error('bad');
-    // Webbvyn kör alltid som människa (aldrig agent).
+    // Agent-tokens är bolagsskopade och får ALDRIG användas som webbsession —
+    // annars kunde en agent-token (avsedd för ETT bolag via requireCompanyAccess)
+    // läsa alla bolag användaren är medlem i via vyn. Webbvyn kör bara som människa.
+    if (payload.actor === 'agent') throw new Error('agent token not allowed in web view');
     req.auth = { userId: payload.sub, actor: 'human' };
     next();
   } catch {
@@ -91,12 +104,12 @@ export function page(handler: (req: Request, res: Response) => Promise<void>): R
   return (req, res, next) => {
     handler(req, res).catch((err: unknown) => {
       if (res.headersSent) return next(err);
-      if (err instanceof AppError) {
-        const message = err.status === 404 ? 'Hittades inte eller ingen åtkomst.' : 'Något gick fel.';
-        res.status(err.status).type('html').send(errorPage(err.status, message).value);
-        return;
-      }
-      next(err);
+      // Webbvyn ska ALDRIG läcka ett JSON-fel till en webbläsare — även oväntade
+      // fel (t.ex. ett driver-undantag) renderas som en generisk HTML-sida.
+      if (!(err instanceof AppError)) console.error('Unhandled view error:', err);
+      const status = err instanceof AppError ? err.status : 500;
+      const message = status === 404 ? 'Hittades inte eller ingen åtkomst.' : 'Något gick fel.';
+      res.status(status).type('html').send(errorPage(status, message).value);
     });
   };
 }
