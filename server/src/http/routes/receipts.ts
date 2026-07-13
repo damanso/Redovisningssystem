@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError } from '../../lib/errors.js';
-import { safeText } from '../../lib/validation.js';
+import { IsoDateSchema, safeText } from '../../lib/validation.js';
 import {
   attachReceiptFile,
   bookReceipt,
@@ -15,13 +15,7 @@ import {
 import { getUserId } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
-const ISO_DATE = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD')
-  .refine((v) => {
-    const d = new Date(`${v}T00:00:00Z`);
-    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
-  }, 'ogiltigt kalenderdatum');
+const ISO_DATE = IsoDateSchema;
 const VAT = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
 
 const upload = multer({
@@ -35,7 +29,7 @@ const CreateSchema = z
     supplier_id: ID.optional(),
     receipt_date: ISO_DATE,
     description: safeText(300),
-    net_ore: z.number().int().nonnegative().safe(),
+    net_ore: z.number().int().positive().safe(),
     vat_rate: VAT,
     expense_account: z.number().int().min(1000).max(9999),
     payment_account: z.number().int().min(1000).max(9999).optional(),
@@ -74,9 +68,8 @@ receiptsRouter.post('/:id/file', upload.single('file'), async (req, res) => {
   const id = ID.parse(req.params.id);
   if (!req.file) throw new BadRequestError('missing_file', 'ingen fil bifogad (fältnamn: file)');
   const { originalname, buffer } = req.file;
-  const receipt = await withTenantTransaction(userId, companyId, (c) =>
-    attachReceiptFile(c, companyId, userId, id, originalname, buffer),
-  );
+  // Hanterar egen transaktion (diskskrivning utanför tx + städning vid fel).
+  const receipt = await attachReceiptFile(companyId, userId, id, originalname, buffer);
   res.status(201).json({ receipt });
 });
 

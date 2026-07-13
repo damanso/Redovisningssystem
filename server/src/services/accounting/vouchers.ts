@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../../lib/errors.js';
 import type { Ore } from '../../domain/money.js';
 import { writeAudit } from '../auditService.js';
+import { assertAccountsExist } from './accounts.js';
 import { nextVoucherNumber } from './numbering.js';
 
 export interface VoucherLineInput {
@@ -102,30 +103,6 @@ function normalizeLines(lines: VoucherLineInput[]): NormalizedLine[] {
     throw new BadRequestError('unbalanced', 'verifikatet har nollbelopp');
   }
   return normalized;
-}
-
-/**
- * Kontrollerar att alla konton finns för DETTA bolag (standard eller bolagets
- * egna). Bolagsscopat: ett konto som bara finns i ett annat bolag (som
- * användaren råkar vara medlem i) får inte kunna bokas här.
- */
-async function assertAccountsExist(
-  client: PoolClient,
-  companyId: string,
-  accountNumbers: number[],
-): Promise<void> {
-  const unique = [...new Set(accountNumbers)];
-  const result = await client.query<{ account_number: number }>(
-    `SELECT DISTINCT account_number FROM accounts
-     WHERE account_number = ANY($1::int[]) AND is_active
-       AND (company_id IS NULL OR company_id = $2)`,
-    [unique, companyId],
-  );
-  const found = new Set(result.rows.map((r) => r.account_number));
-  const missing = unique.filter((n) => !found.has(n));
-  if (missing.length > 0) {
-    throw new BadRequestError('unknown_account', `okända/inaktiva konton: ${missing.join(', ')}`);
-  }
 }
 
 /**
@@ -245,7 +222,7 @@ export async function getVoucher(
   );
   if (!head.rows[0]) throw new NotFoundError('voucher');
   const lines = await client.query<VoucherLine>(
-    `SELECT account_number, debit_ore::int, credit_ore::int, description, line_no
+    `SELECT account_number, debit_ore, credit_ore, description, line_no
      FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no`,
     [voucherId],
   );

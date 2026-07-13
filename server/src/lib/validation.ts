@@ -34,3 +34,13 @@ export const EmailSchema = z
   .transform((v) => v.toLowerCase());
 
 export const UuidSchema = z.string().uuid();
+
+// Datum måste vara ett verkligt kalenderdatum — enbart regexen släpper igenom
+// t.ex. 2026-02-30, som annars blir ett Postgres-fel (22008) → 500.
+export const IsoDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD')
+  .refine((v) => {
+    const d = new Date(`${v}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+  }, 'ogiltigt kalenderdatum');

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { withTenantTransaction } from '../../db/tx.js';
-import { safeText } from '../../lib/validation.js';
+import { IsoDateSchema, safeText } from '../../lib/validation.js';
 import {
   bookInvoice,
   createInvoice,
@@ -12,13 +12,7 @@ import {
 import { getUserId } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
-const ISO_DATE = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD')
-  .refine((v) => {
-    const d = new Date(`${v}T00:00:00Z`);
-    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
-  }, 'ogiltigt kalenderdatum');
+const ISO_DATE = IsoDateSchema;
 const ORE = z.number().int().nonnegative().safe();
 const VAT = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
 
@@ -91,9 +85,8 @@ invoicesRouter.post('/:id/pdf', async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const id = ID.parse(req.params.id);
-  const { buffer } = await withTenantTransaction(userId, companyId, (c) =>
-    generateInvoicePdfFile(c, companyId, userId, id),
-  );
+  // Hanterar egen transaktion (diskskrivning utanför tx + städning vid fel).
+  const { buffer } = await generateInvoicePdfFile(companyId, userId, id);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'attachment; filename="faktura.pdf"');
   res.send(buffer);

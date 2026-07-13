@@ -147,7 +147,7 @@ export async function exportFiscalYearSie(
     debit_ore: number;
     credit_ore: number;
   }>(
-    `SELECT vl.voucher_id, vl.account_number, vl.debit_ore::int, vl.credit_ore::int
+    `SELECT vl.voucher_id, vl.account_number, vl.debit_ore, vl.credit_ore
      FROM voucher_lines vl
      JOIN vouchers v ON v.id = vl.voucher_id
      WHERE v.company_id = $1 AND v.fiscal_year_id = $2

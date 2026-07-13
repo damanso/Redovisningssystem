@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError } from '../../lib/errors.js';
-import { safeText } from '../../lib/validation.js';
+import { IsoDateSchema, safeText } from '../../lib/validation.js';
 import {
   createCompanyAccount,
   listAccounts,
@@ -18,15 +18,7 @@ import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
 import { getUserId } from '../middleware/authenticate.js';
 
-// Datum måste vara ett verkligt kalenderdatum — regexen ensam släpper igenom
-// t.ex. 2026-02-30, som annars blir ett Postgres-fel (22008) → 500.
-const ISO_DATE = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD')
-  .refine((v) => {
-    const d = new Date(`${v}T00:00:00Z`);
-    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
-  }, 'ogiltigt kalenderdatum');
+const ISO_DATE = IsoDateSchema;
 // Belopp: heltal ören inom säkert intervall (annars 500 via assertSafeOre).
 const ORE = z.number().int().safe();
 const ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;

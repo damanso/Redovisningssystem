@@ -1,6 +1,14 @@
 import pg from 'pg';
 import { config } from '../config.js';
 
+// node-pg returnerar bigint (int8, OID 20) som sträng och lämnar den orörd.
+// Den gamla lösningen — SELECT ...::int i frågorna — KAPADE alla belopp vid
+// 2 147 483 647 ören (~21,47 MSEK) med "integer out of range", vilket motsäger
+// öre-designen (bigint, upp till ~90 biljoner kr). Vi parsar i stället int8 till
+// ett JS-tal en gång här. Belopp asserteras vara säkra heltal vid skrivning
+// (assertSafeOre ≤ 2^53), så läsningen är alltid inom säkert intervall.
+pg.types.setTypeParser(20, (value) => (value === null ? null : Number(value)));
+
 // API:t ansluter som den lågprivilegierade rollen "app" (icke-superuser, inte
 // tabellägare) — det är förutsättningen för att Row Level Security tvingas.
 // Migrationsrunnern använder DATABASE_ADMIN_URL separat (se db/migrate.ts).

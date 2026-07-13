@@ -121,7 +121,7 @@ export async function updateSupplier(
 }
 
 // ---- Artiklar ----
-const ARTICLE_COLUMNS = `id, article_number, name, unit, unit_price_ore::int, vat_rate, revenue_account, is_active, created_at`;
+const ARTICLE_COLUMNS = `id, article_number, name, unit, unit_price_ore, vat_rate, revenue_account, is_active, created_at`;
 const ARTICLE_UPDATE = {
   name: 'name', unit: 'unit', unit_price_ore: 'unit_price_ore', vat_rate: 'vat_rate',
   revenue_account: 'revenue_account', is_active: 'is_active',

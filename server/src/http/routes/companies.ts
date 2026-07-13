@@ -9,7 +9,7 @@ import {
 } from '../../db/tx.js';
 import { BadRequestError, NotFoundError } from '../../lib/errors.js';
 import { buildAllowlistedUpdate } from '../../lib/updateBuilder.js';
-import { safeText } from '../../lib/validation.js';
+import { EmailSchema, safeText } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { requireCompanyAccess } from '../middleware/companyAccess.js';
@@ -43,7 +43,7 @@ const UpdateCompanySchema = z
     address: optText(200),
     postal_code: optText(20),
     city: optText(100),
-    email: optText(254),
+    email: EmailSchema.nullable().optional(),
     phone: optText(50),
     vat_number: optText(30),
     bankgiro: optText(20),
