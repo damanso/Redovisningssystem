@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg';
+import type { Queryable } from '../db/tx.js';
 
 export interface AuditEvent {
   companyId?: string | null;
@@ -14,7 +14,7 @@ export interface AuditEvent {
  * mutationen den beskriver — rullas mutationen tillbaka försvinner loggraden,
  * och tvärtom kan en mutation inte committas utan sin loggrad.
  */
-export async function writeAudit(client: PoolClient, event: AuditEvent): Promise<void> {
+export async function writeAudit(client: Queryable, event: AuditEvent): Promise<void> {
   await client.query(
     `INSERT INTO audit_log (company_id, user_id, action, entity_type, entity_id, details)
      VALUES ($1, $2, $3, $4, $5, $6)`,

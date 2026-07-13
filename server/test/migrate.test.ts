@@ -46,6 +46,7 @@ describe('migrationsrunnern mot en tom databas', () => {
       '0002_identity_and_tenancy.sql',
       '0003_audit_log.sql',
       '0004_files.sql',
+      '0005_force_rls_and_audit_index.sql',
     ]);
 
     const client = new pg.Client({ connectionString: scratchUrl() });
@@ -56,7 +57,7 @@ describe('migrationsrunnern mot en tom databas', () => {
       );
       expect(extensions.rows.map((r) => r.extname)).toEqual(['pg_trgm', 'uuid-ossp']);
       const versions = await client.query('SELECT version FROM schema_migrations ORDER BY version');
-      expect(versions.rows.map((r) => r.version)).toEqual([1, 2, 3, 4]);
+      expect(versions.rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5]);
     } finally {
       await client.end();
     }
@@ -65,7 +66,7 @@ describe('migrationsrunnern mot en tom databas', () => {
   it('omkörning är idempotent', async () => {
     const result = await migrate(scratchUrl());
     expect(result.applied).toEqual([]);
-    expect(result.alreadyApplied).toBe(4);
+    expect(result.alreadyApplied).toBe(5);
   });
 });
 

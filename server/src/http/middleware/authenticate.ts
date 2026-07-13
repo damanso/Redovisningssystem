@@ -7,6 +7,16 @@ export interface AuthContext {
   userId: string;
 }
 
+/**
+ * Delad typsäker åtkomst till den autentiserade användaren. authenticate-
+ * middlewaren garanterar req.auth för alla skyddade rutter; helpern samlar
+ * den narrowingen på ett ställe i stället för en inline-kontroll per handler.
+ */
+export function getUserId(req: Request): string {
+  if (!req.auth) throw new UnauthenticatedError();
+  return req.auth.userId;
+}
+
 // Express 5 + TS: vi utökar Request med auth-kontext via declaration merging.
 declare module 'express-serve-static-core' {
   interface Request {

@@ -1,8 +1,19 @@
 // VIKTIGT: config importeras FÖRST — den laddar .env och fail-fastar om
 // JWT_SECRET saknas, innan någon annan modul hinner läsa miljön.
 import { config } from './config.js';
-import { closePool } from './db/pool.js';
+import { assertAppRoleEnforcesRls, closePool } from './db/pool.js';
 import { createApp } from './http/app.js';
+
+// Fail-fast: vägra ta emot trafik om DATABASE_URL pekar på en roll som kringgår
+// RLS (superuser/BYPASSRLS/tabellägare) — annars vore tenant-isoleringens andra
+// lager tyst avstängt.
+try {
+  await assertAppRoleEnforcesRls();
+} catch (err) {
+  console.error(`FATAL: ${err instanceof Error ? err.message : err}`);
+  await closePool();
+  process.exit(1);
+}
 
 const app = createApp();
 const server = app.listen(config.PORT, () => {

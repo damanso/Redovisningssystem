@@ -6,24 +6,30 @@ import { BadRequestError } from '../lib/errors.js';
 
 // Tillåtna filtyper. Ändelsen valideras mot allowlist OCH innehållets magic
 // bytes måste matcha — en .png som inte är en PNG avvisas.
-const MAGIC_CHECKS: Readonly<Record<string, (buf: Buffer) => boolean>> = {
-  pdf: (b) => b.subarray(0, 5).toString('latin1') === '%PDF-',
-  png: (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
-  jpg: (b) => b.length > 2 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
-  jpeg: (b) => b.length > 2 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
-};
+const isJpeg = (b: Buffer): boolean => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
 
-const CANONICAL_EXT: Readonly<Record<string, string>> = { jpeg: 'jpg' };
-const MIME_BY_EXT: Readonly<Record<string, string>> = {
+// Object.create(null): ingen prototypkedja, så en fil döpt "x.constructor" inte
+// kan slå upp Object.prototype.constructor och råka passera magic-kontrollen.
+const MAGIC_CHECKS: Record<string, (buf: Buffer) => boolean> = Object.assign(Object.create(null), {
+  pdf: (b: Buffer) => b.subarray(0, 5).toString('latin1') === '%PDF-',
+  png: (b: Buffer) =>
+    b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  jpg: isJpeg,
+  jpeg: isJpeg,
+});
+
+const CANONICAL_EXT: Record<string, string> = Object.assign(Object.create(null), { jpeg: 'jpg' });
+const MIME_BY_EXT: Record<string, string> = Object.assign(Object.create(null), {
   pdf: 'application/pdf',
   png: 'image/png',
   jpg: 'image/jpeg',
-};
+});
 
-// Måste matcha CHECK-villkoret på files.stored_name i migration 0004.
-const STORED_NAME_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,10}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// UUID-källa; STORED_NAME_PATTERN återanvänder den så mönstren aldrig kan drifta
+// isär, och den speglar CHECK-villkoret på files.stored_name i migration 0004.
+const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const STORED_NAME_PATTERN = new RegExp(`^${UUID_SOURCE}\\.[a-z0-9]{1,10}$`);
+const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`);
 
 export function uploadRoot(): string {
   return path.resolve(config.UPLOAD_DIR);
@@ -35,14 +41,15 @@ export function uploadRoot(): string {
  * strikta mönster INNAN de joinas — och containment-kollen är sista spärren.
  */
 export function resolveStoredPath(companyId: string, storedName: string): string {
-  if (!UUID_PATTERN.test(companyId)) {
+  const normalizedCompany = companyId.toLowerCase();
+  if (!UUID_PATTERN.test(normalizedCompany)) {
     throw new BadRequestError('invalid_file', 'ogiltigt bolags-id');
   }
   if (!STORED_NAME_PATTERN.test(storedName)) {
     throw new BadRequestError('invalid_file', 'ogiltigt lagrat filnamn');
   }
   const root = uploadRoot();
-  const full = path.resolve(root, companyId, storedName);
+  const full = path.resolve(root, normalizedCompany, storedName);
   if (!full.startsWith(root + path.sep)) {
     throw new BadRequestError('invalid_file', 'sökväg utanför uppladdningskatalogen');
   }
@@ -51,7 +58,6 @@ export function resolveStoredPath(companyId: string, storedName: string): string
 
 export interface ValidatedUpload {
   storedName: string;
-  extension: string;
   mimeType: string;
   sha256: string;
 }
@@ -77,7 +83,6 @@ export function validateUpload(originalName: string, buffer: Buffer): ValidatedU
   if (!mime) throw new BadRequestError('invalid_file');
   return {
     storedName: `${randomUUID()}.${extension}`,
-    extension,
     mimeType: mime,
     sha256: createHash('sha256').update(buffer).digest('hex'),
   };
@@ -100,10 +105,4 @@ export async function removeStoredFile(companyId: string, storedName: string): P
   } catch {
     // städning vid rollback — får inte dölja ursprungsfelet
   }
-}
-
-/** Content-Disposition-säkert filnamn: inga citattecken, kontrolltecken eller sökvägsdelar. */
-export function sanitizeDownloadName(name: string): string {
-  const base = path.basename(name).replace(/[^\p{L}\p{N} ._-]/gu, '_');
-  return base.length > 0 ? base.slice(0, 128) : 'fil';
 }

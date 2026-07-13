@@ -27,6 +27,12 @@ const EnvSchema = z.object({
   JWT_EXPIRES_IN_SECONDS: z.coerce.number().int().positive().default(12 * 60 * 60),
   UPLOAD_DIR: z.string().min(1).default('data/uploads'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
+  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),
+  // Express 'trust proxy'-inställning. Bakom en reverse proxy måste denna sättas
+  // (t.ex. '1' för en hop, eller ett subnät) så att req.ip och rate-limitern
+  // ser klientens riktiga IP. Default false (ingen proxy). Se app.ts.
+  TRUST_PROXY: z.string().default('false'),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

@@ -105,8 +105,10 @@ describe('auth-skyddad hämtning', () => {
       });
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('image/png');
-    // Inga citattecken eller sökvägar i Content-Disposition.
-    expect(res.headers['content-disposition']).toMatch(/^attachment; filename="[^"\\/]+"$/);
+    // res.attachment sätter en RFC 6266-korrekt header; citattecken i namnet
+    // är säkert escapade av content-disposition-paketet.
+    expect(res.headers['content-disposition']).toMatch(/^attachment; filename=/);
+    expect(res.headers['content-disposition']).not.toContain('..');
     expect(Buffer.compare(res.body as Buffer, PNG_BYTES)).toBe(0);
   });
 

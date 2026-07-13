@@ -135,7 +135,14 @@ export async function migrate(
         );
         await client.query('COMMIT');
       } catch (err) {
-        await client.query('ROLLBACK');
+        // Guarda ROLLBACK: dog anslutningen under migrationen kastar även
+        // ROLLBACK, och vi vill behålla det ursprungliga (informativa) felet
+        // med filnamnet i stället för ett nako "Connection terminated".
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // ignorera — ursprungsfelet nedan är det som betyder något
+        }
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`Migration ${migration.filename} misslyckades: ${message}`);
       }

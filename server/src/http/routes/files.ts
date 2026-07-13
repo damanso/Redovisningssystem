@@ -1,25 +1,27 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { z } from 'zod';
+import { config } from '../../config.js';
 import { withTenantTransaction } from '../../db/tx.js';
-import { BadRequestError, NotFoundError, UnauthenticatedError } from '../../lib/errors.js';
+import { BadRequestError, NotFoundError } from '../../lib/errors.js';
+import { UuidSchema } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import {
   removeStoredFile,
   resolveStoredPath,
-  sanitizeDownloadName,
   validateUpload,
   writeStoredFile,
 } from '../../services/fileStorage.js';
+import { getUserId } from '../middleware/authenticate.js';
 
 // Filer hålls i minnet tills valideringen är klar — vi skriver själva till disk
 // med UUID-namn (aldrig användarens filnamn) under en katalog utanför webbroten.
+// defParamCharset:'utf8' gör att busboy avkodar filnamn som UTF-8 (annars latin1
+// → mojibake för svenska/unicode-filnamn).
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1 },
+  defParamCharset: 'utf8',
 });
-
-const FileIdSchema = z.string().uuid();
 
 interface FileRow {
   id: string;
@@ -35,66 +37,66 @@ interface FileRow {
 export const filesRouter = Router({ mergeParams: true });
 
 filesRouter.post('/', upload.single('file'), async (req, res) => {
-  if (!req.auth) throw new UnauthenticatedError();
-  const userId = req.auth.userId;
+  const userId = getUserId(req);
   const companyId = req.companyId!;
   if (!req.file) throw new BadRequestError('missing_file', 'ingen fil bifogad (fältnamn: file)');
 
   const { buffer, originalname, size } = req.file;
   const validated = validateUpload(originalname, buffer);
 
-  const file = await withTenantTransaction(userId, companyId, async (client) => {
-    const inserted = await client.query<FileRow>(
-      `INSERT INTO files (company_id, original_name, stored_name, mime_type, size_bytes, sha256, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, original_name, stored_name, mime_type, size_bytes, sha256, created_at`,
-      [
+  // Skriv filen till disk FÖRE transaktionen: annars hålls en poolad klient med
+  // öppen transaktion under hela diskskrivningen (upp till MAX_UPLOAD_BYTES).
+  // wx-flaggan gör att ett redan existerande UUID-namn aldrig skrivs över.
+  await writeStoredFile(companyId, validated.storedName, buffer);
+  try {
+    const file = await withTenantTransaction(userId, companyId, async (client) => {
+      const inserted = await client.query<FileRow>(
+        `INSERT INTO files (company_id, original_name, stored_name, mime_type, size_bytes, sha256, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, created_at`,
+        [
+          companyId,
+          originalname,
+          validated.storedName,
+          validated.mimeType,
+          size,
+          validated.sha256,
+          userId,
+        ],
+      );
+      const row = inserted.rows[0]!;
+      await writeAudit(client, {
         companyId,
-        originalname,
-        validated.storedName,
-        validated.mimeType,
-        size,
-        validated.sha256,
         userId,
-      ],
-    );
-    const row = inserted.rows[0]!;
-    await writeAudit(client, {
-      companyId,
-      userId,
-      action: 'file.uploaded',
-      entityType: 'file',
-      entityId: row.id,
-      details: { original_name: originalname, size_bytes: size, sha256: validated.sha256 },
+        action: 'file.uploaded',
+        entityType: 'file',
+        entityId: row.id,
+        details: { original_name: originalname, size_bytes: size, sha256: validated.sha256 },
+      });
+      return row;
     });
-    // Diskskrivningen sker inne i transaktionen: misslyckas den rullas
-    // databasraden tillbaka och ingen föräldralös metadata blir kvar.
-    try {
-      await writeStoredFile(companyId, validated.storedName, buffer);
-    } catch (err) {
-      await removeStoredFile(companyId, validated.storedName);
-      throw err;
-    }
-    return row;
-  });
 
-  res.status(201).json({
-    file: {
-      id: file.id,
-      original_name: file.original_name,
-      mime_type: file.mime_type,
-      size_bytes: Number(file.size_bytes),
-      sha256: file.sha256,
-      created_at: file.created_at,
-    },
-  });
+    res.status(201).json({
+      file: {
+        id: file.id,
+        original_name: originalname,
+        mime_type: validated.mimeType,
+        size_bytes: size,
+        sha256: validated.sha256,
+        created_at: file.created_at,
+      },
+    });
+  } catch (err) {
+    // Transaktionen misslyckades → ta bort den föräldralösa filen från disk.
+    await removeStoredFile(companyId, validated.storedName);
+    throw err;
+  }
 });
 
 filesRouter.get('/:fileId', async (req, res) => {
-  if (!req.auth) throw new UnauthenticatedError();
-  const userId = req.auth.userId;
+  const userId = getUserId(req);
   const companyId = req.companyId!;
-  const parsed = FileIdSchema.safeParse(req.params.fileId);
+  const parsed = UuidSchema.safeParse(req.params.fileId);
   if (!parsed.success) throw new NotFoundError('file');
 
   const file = await withTenantTransaction(userId, companyId, async (client) => {
@@ -109,11 +111,11 @@ filesRouter.get('/:fileId', async (req, res) => {
 
   // resolveStoredPath validerar mönster + containment igen (sista spärren).
   const fullPath = resolveStoredPath(companyId, file.stored_name);
-  res.setHeader('Content-Type', file.mime_type);
-  res.setHeader(
-    'Content-Disposition',
-    `attachment; filename="${sanitizeDownloadName(file.original_name)}"`,
-  );
+  // res.attachment sätter en RFC 6266-korrekt Content-Disposition (inkl.
+  // filename*=UTF-8''… för icke-ASCII-namn) — hindrar både header-injektion
+  // och ERR_INVALID_CHAR som en handrullad header gav för unicode-namn.
+  res.attachment(file.original_name);
+  res.type(file.mime_type);
   res.sendFile(fullPath, (err) => {
     if (err && !res.headersSent) {
       res.status(404).json({ error: 'not_found' });

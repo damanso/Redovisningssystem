@@ -1,9 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
-import { z } from 'zod';
-import { withUserTransaction } from '../../db/tx.js';
-import { NotFoundError, UnauthenticatedError } from '../../lib/errors.js';
-
-const UuidSchema = z.string().uuid();
+import { fetchMembership, withUserTransaction } from '../../db/tx.js';
+import { NotFoundError } from '../../lib/errors.js';
+import { UuidSchema } from '../../lib/validation.js';
+import { getUserId } from './authenticate.js';
 
 /**
  * Förtroendegränsen på HTTP-nivå: verifierar att den inloggade användaren är
@@ -19,21 +18,19 @@ export async function requireCompanyAccess(
   _res: Response,
   next: NextFunction,
 ): Promise<void> {
-  if (!req.auth) throw new UnauthenticatedError();
+  const userId = getUserId(req);
   const parsed = UuidSchema.safeParse(req.params.companyId);
   if (!parsed.success) throw new NotFoundError('company');
+  // Normalisera till gemener så att fil-lagrets gemen-baserade sökvägsmönster
+  // matchar det zod/Postgres (skiftlägesokänsligt) accepterar.
+  const companyId = parsed.data.toLowerCase();
 
-  const userId = req.auth.userId;
-  const membership = await withUserTransaction(userId, async (client) => {
-    const result = await client.query<{ role: 'owner' | 'member' }>(
-      'SELECT role FROM company_members WHERE user_id = $1 AND company_id = $2',
-      [userId, parsed.data],
-    );
-    return result.rows[0] ?? null;
-  });
+  const membership = await withUserTransaction(userId, (client) =>
+    fetchMembership(client, userId, companyId),
+  );
 
   if (!membership) throw new NotFoundError('company');
-  req.companyId = parsed.data;
+  req.companyId = companyId;
   req.companyRole = membership.role;
   next();
 }
