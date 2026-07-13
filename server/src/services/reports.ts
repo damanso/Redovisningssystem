@@ -316,11 +316,10 @@ export interface ArAging {
 }
 
 /**
- * Kundreskontra med åldersanalys: öppna (bokförda, ej betalda/annullerade)
- * kundfakturor grupperade per kund och hur långt förbi förfallodagen de är,
- * relativt `asOf` (default dagens datum). Beloppen är fakturans totalbelopp i
- * ören — systemet spårar (ännu) inte delbetalningar, så en öppen faktura räknas
- * med hela sitt belopp. Allt inom tenant-gränsen (RLS).
+ * Kundreskontra med åldersanalys: öppna (bokförda, ej annullerade) kundfakturor
+ * med kvarvarande skuld, grupperade per kund och hur långt förbi förfallodagen
+ * de är, relativt `asOf` (default dagens datum). Beloppet är UTESTÅENDE skuld
+ * (total − betalt), så delbetalningar räknas av. Allt inom tenant-gränsen (RLS).
  */
 export async function accountsReceivableAging(
   client: PoolClient,

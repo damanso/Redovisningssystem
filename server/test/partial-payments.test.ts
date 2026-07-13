@@ -58,6 +58,31 @@ describe('delbetalningar', () => {
     expect(await agingTotal()).toBe(0);
   });
 
+  it('samtidiga godkännanden av två betalningar på samma faktura dubbelkrediterar INTE (FOR UPDATE-lås)', async () => {
+    const inv = await bookedInvoice(); // total 125 000
+    // Två pending betalningar à 75 000 (summa 150 000 > total).
+    const mk = async () => {
+      const req = await api.post(`${co()}/actions/register_invoice_payment`).set(auth())
+        .send({ invoice_id: inv, fiscal_year_id: fiscalYearId, payment_date: '2025-06-15', amount_ore: 75_000 });
+      expect(req.status).toBe(202);
+      return req.body.approval.id as string;
+    };
+    const a1 = await mk();
+    const a2 = await mk();
+    // Godkänn båda SAMTIDIGT — låset ska serialisera dem.
+    const [r1, r2] = await Promise.all([
+      api.post(`${co()}/approvals/${a1}/approve`).set(auth()).send({}),
+      api.post(`${co()}/approvals/${a2}/approve`).set(auth()).send({}),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual([200, 400]); // en lyckas, en avvisas (överbetalning)
+    // Fakturan är delbetald med exakt 75 000 — inte dubbelkrediterad.
+    const after = await api.get(`${co()}/invoices`).set(auth());
+    const row = after.body.invoices.find((i: { id: string }) => i.id === inv);
+    expect(row.status).not.toBe('paid');
+    expect(await agingTotal()).toBe(50_000); // 125 000 − 75 000
+  });
+
   it('överbetalning avvisas vid godkännandet (får ej överstiga återstoden)', async () => {
     const inv = await bookedInvoice();
     const res = await pay(inv, 200_000); // > 125 000

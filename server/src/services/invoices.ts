@@ -221,12 +221,22 @@ export async function recordInvoicePayment(
   userId: string,
   input: { invoiceId: string; fiscalYearId: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
 ): Promise<Record<string, unknown>> {
-  const invoice = await getInvoice(client, companyId, input.invoiceId);
-  if (!invoice.voucher_id) throw new ConflictError('not_booked', 'fakturan måste vara bokförd innan en betalning kan registreras');
-  if (invoice.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan fullt betald');
-  if (invoice.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
-  const total = invoice.total_ore as number;
-  const alreadyPaid = Number(invoice.paid_amount_ore ?? 0);
+  // Lås fakturaraden FÖRST (FOR UPDATE) så samtidiga betalningar på samma faktura
+  // serialiseras. Utan låset kunde två godkännanden båda läsa paid=0, båda passera
+  // överbetalningskontrollen och båda kreditera 1510 → dubbelkreditering (0014 tog
+  // bort den unika DB-spärren för betalningsverifikat, så app-låset är skyddet).
+  const locked = await client.query<{ total_ore: string; paid_amount_ore: string; status: string; voucher_id: string | null; invoice_number: number }>(
+    `SELECT total_ore, paid_amount_ore, status, voucher_id, invoice_number
+     FROM invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.invoiceId, companyId],
+  );
+  const row = locked.rows[0];
+  if (!row) throw new NotFoundError('invoice');
+  if (!row.voucher_id) throw new ConflictError('not_booked', 'fakturan måste vara bokförd innan en betalning kan registreras');
+  if (row.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan fullt betald');
+  if (row.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
+  const total = Number(row.total_ore);
+  const alreadyPaid = Number(row.paid_amount_ore);
   const outstanding = total - alreadyPaid;
   const amountOre = input.amountOre ?? outstanding;
   if (amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
@@ -235,7 +245,7 @@ export async function recordInvoicePayment(
     fiscalYearId: input.fiscalYearId,
     voucherDate: input.paymentDate,
     sourceId: input.invoiceId,
-    description: `Betalning faktura ${invoice.invoice_number}`,
+    description: `Betalning faktura ${row.invoice_number}`,
     amountOre,
     bankAccount: input.bankAccount,
   });
