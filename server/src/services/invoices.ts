@@ -144,7 +144,7 @@ export async function createInvoice(
 export async function getInvoice(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const head = await client.query(
     `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
-            i.subtotal_ore, i.vat_ore, i.total_ore, i.reference, i.notes,
+            i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.notes,
             i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.id = $1 AND i.company_id = $2`,
@@ -207,12 +207,13 @@ export async function bookInvoice(
 }
 
 /**
- * Registrerar en inbetalning på en (bokförd) kundfaktura: automatkonterar
- * betalningen (debet bank / kredit kundfordran via postCustomerPayment) och
- * markerar fakturan som betald när hela beloppet kommit in. Dubbelbetalnings-
- * spärr sker via postVoucher (source_type='payment' + source_id är unik), så
- * samma faktura inte kan betalas två gånger. Detta är automatkonteringen för
- * "betalning" som KICKOFF §4 Fas 1.4 kräver.
+ * Registrerar en (hel- eller del-) inbetalning på en bokförd kundfaktura:
+ * automatkonterar betalningen (debet bank / kredit kundfordran) och räknar upp
+ * fakturans paid_amount_ore. När hela beloppet kommit in sätts status 'paid'.
+ * Default-belopp = återstående skuld. Flera betalningsverifikat per faktura
+ * tillåts (source_type='payment' undantas dubbelbokningsspärren); överbetalning
+ * spärras av att beloppet aldrig får överstiga återstoden. Automatkonteringen
+ * för "betalning" som KICKOFF §4 Fas 1.4 kräver.
  */
 export async function recordInvoicePayment(
   client: PoolClient,
@@ -222,15 +223,14 @@ export async function recordInvoicePayment(
 ): Promise<Record<string, unknown>> {
   const invoice = await getInvoice(client, companyId, input.invoiceId);
   if (!invoice.voucher_id) throw new ConflictError('not_booked', 'fakturan måste vara bokförd innan en betalning kan registreras');
-  if (invoice.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan betald');
+  if (invoice.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan fullt betald');
   if (invoice.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
   const total = invoice.total_ore as number;
-  const amountOre = input.amountOre ?? total;
-  // Delbetalning kan inte slutföras (unik source-referens per faktura spärrar ett
-  // andra betalningsverifikat) och överbetalning skulle överkreditera 1510 →
-  // tills delbetalning stöds fullt ut kräver vi hela beloppet.
-  if (amountOre > total) throw new BadRequestError('overpayment', 'betalningen överstiger fakturans belopp');
-  if (amountOre < total) throw new BadRequestError('partial_payment_unsupported', 'delbetalning stöds inte ännu — registrera hela beloppet');
+  const alreadyPaid = Number(invoice.paid_amount_ore ?? 0);
+  const outstanding = total - alreadyPaid;
+  const amountOre = input.amountOre ?? outstanding;
+  if (amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
+  if (amountOre > outstanding) throw new BadRequestError('overpayment', `betalningen överstiger återstående skuld (${outstanding} ören)`);
   const voucher = await postCustomerPayment(client, companyId, userId, {
     fiscalYearId: input.fiscalYearId,
     voucherDate: input.paymentDate,
@@ -239,13 +239,16 @@ export async function recordInvoicePayment(
     amountOre,
     bankAccount: input.bankAccount,
   });
-  const fullyPaid = amountOre >= total;
-  if (fullyPaid) {
-    await client.query("UPDATE invoices SET status = 'paid' WHERE id = $1 AND company_id = $2", [input.invoiceId, companyId]);
-  }
+  const newPaid = alreadyPaid + amountOre;
+  const fullyPaid = newPaid >= total;
+  await client.query(
+    `UPDATE invoices SET paid_amount_ore = $1, status = CASE WHEN $2 THEN 'paid' ELSE status END
+     WHERE id = $3 AND company_id = $4`,
+    [newPaid, fullyPaid, input.invoiceId, companyId],
+  );
   await writeAudit(client, {
     companyId, userId, action: 'invoice.payment_recorded', entityType: 'invoice', entityId: input.invoiceId,
-    details: { voucher_id: voucher.id, amount_ore: amountOre, fully_paid: fullyPaid },
+    details: { voucher_id: voucher.id, amount_ore: amountOre, paid_amount_ore: newPaid, fully_paid: fullyPaid },
   });
   return getInvoice(client, companyId, input.invoiceId);
 }

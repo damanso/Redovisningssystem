@@ -332,21 +332,26 @@ export async function accountsReceivableAging(
     not_due: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number; total: number;
     as_of: string;
   }>(
-    `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d)
-     SELECT i.customer_id, c.name AS customer_name,
-       sum(CASE WHEN i.due_date >= (SELECT d FROM ref) THEN i.total_ore ELSE 0 END) AS not_due,
-       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 1 AND 30 THEN i.total_ore ELSE 0 END) AS d1_30,
-       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 31 AND 60 THEN i.total_ore ELSE 0 END) AS d31_60,
-       sum(CASE WHEN (SELECT d FROM ref) - i.due_date BETWEEN 61 AND 90 THEN i.total_ore ELSE 0 END) AS d61_90,
-       sum(CASE WHEN (SELECT d FROM ref) - i.due_date > 90 THEN i.total_ore ELSE 0 END) AS d90_plus,
-       sum(i.total_ore) AS total,
+    // Utestående = total − betalt (delbetalningar räknas av). Endast bokförda,
+    // ej annullerade fakturor med kvarvarande skuld tas med.
+    `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d),
+     open_inv AS (
+       SELECT i.customer_id, i.due_date, (i.total_ore - i.paid_amount_ore) AS outstanding
+       FROM invoices i
+       WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL
+         AND i.status <> 'cancelled' AND i.total_ore > i.paid_amount_ore
+     )
+     SELECT o.customer_id, c.name AS customer_name,
+       sum(CASE WHEN o.due_date >= (SELECT d FROM ref) THEN o.outstanding ELSE 0 END) AS not_due,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 1 AND 30 THEN o.outstanding ELSE 0 END) AS d1_30,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 31 AND 60 THEN o.outstanding ELSE 0 END) AS d31_60,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date BETWEEN 61 AND 90 THEN o.outstanding ELSE 0 END) AS d61_90,
+       sum(CASE WHEN (SELECT d FROM ref) - o.due_date > 90 THEN o.outstanding ELSE 0 END) AS d90_plus,
+       sum(o.outstanding) AS total,
        (SELECT d FROM ref)::text AS as_of
-     FROM invoices i
-     JOIN customers c ON c.id = i.customer_id
-     WHERE i.company_id = $1
-       AND i.voucher_id IS NOT NULL
-       AND i.status NOT IN ('paid', 'cancelled')
-     GROUP BY i.customer_id, c.name
+     FROM open_inv o
+     JOIN customers c ON c.id = o.customer_id
+     GROUP BY o.customer_id, c.name
      ORDER BY total DESC, c.name`,
     [companyId, asOf ?? null],
   );
