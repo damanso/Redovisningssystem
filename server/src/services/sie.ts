@@ -70,8 +70,9 @@ export function renderSie4(input: SieExportInput): string {
   }
 
   for (const voucher of input.vouchers) {
+    // SIE4: serie och verifikationsnummer anges ociterade; endast vertexten citeras.
     lines.push(
-      `#VER ${quote(voucher.series)} ${quote(String(voucher.number))} ${sieDate(voucher.voucher_date)} ${quote(voucher.description)}`,
+      `#VER ${voucher.series} ${voucher.number} ${sieDate(voucher.voucher_date)} ${quote(voucher.description)}`,
     );
     lines.push('{');
     for (const line of voucher.lines) {

@@ -40,15 +40,6 @@ export function oreToKronor(ore: Ore): number {
   return ore / 100;
 }
 
-/** Svensk formatering, t.ex. 123456 ören → "1 234,56 kr". */
-export function formatOre(ore: Ore, options: { currency?: boolean } = {}): string {
-  const formatted = new Intl.NumberFormat('sv-SE', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(oreToKronor(ore));
-  return options.currency === false ? formatted : `${formatted} kr`;
-}
-
 /** Summerar ören säkert (heltal). */
 export function sumOre(values: readonly Ore[]): Ore {
   let total = 0;
@@ -57,11 +48,11 @@ export function sumOre(values: readonly Ore[]): Ore {
 }
 
 /**
- * Avrundar ett ören-belopp beräknat med en momssats till närmaste heltal ören.
- * Banker's rounding undviks medvetet: svensk moms avrundas normalt aritmetiskt
- * (0,5 uppåt). Vi arbetar i ören så indata är redan heltal; detta används när
- * en momssats appliceras (netto * sats).
+ * Avrundar ett beräknat ören-belopp till närmaste heltal ören, symmetriskt runt
+ * noll (0,5 avrundas bort från noll). Math.round ensamt är asymmetriskt
+ * (Math.round(-2.5) === -2), vilket skulle bryta symmetrin för kreditnotor:
+ * momsen på ett belopp och dess negation måste spegla varandra öreexakt.
  */
 export function roundOre(value: number): Ore {
-  return assertSafeOre(Math.round(value));
+  return assertSafeOre(Math.sign(value) * Math.round(Math.abs(value)));
 }

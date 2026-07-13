@@ -18,8 +18,17 @@ import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
 import { getUserId } from '../middleware/authenticate.js';
 
-const ISO_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD');
-const ORE = z.number().int();
+// Datum måste vara ett verkligt kalenderdatum — regexen ensam släpper igenom
+// t.ex. 2026-02-30, som annars blir ett Postgres-fel (22008) → 500.
+const ISO_DATE = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'datum anges som YYYY-MM-DD')
+  .refine((v) => {
+    const d = new Date(`${v}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+  }, 'ogiltigt kalenderdatum');
+// Belopp: heltal ören inom säkert intervall (annars 500 via assertSafeOre).
+const ORE = z.number().int().safe();
 const ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
 
 // Router monteras under /:companyId/accounting → requireCompanyAccess har redan
@@ -116,7 +125,7 @@ const PostVoucherSchema = z
     description: safeText(200),
     lines: z.array(VoucherLineSchema).min(2),
     source_type: z.enum(['manual', 'invoice', 'supplier_invoice', 'receipt', 'payment']).optional(),
-    source_id: z.string().max(200).optional(),
+    source_id: safeText(200).optional(),
   })
   .strict();
 

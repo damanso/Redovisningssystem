@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../../lib/errors.js';
-import { assertSafeOre, type Ore } from '../../domain/money.js';
+import type { Ore } from '../../domain/money.js';
 import { writeAudit } from '../auditService.js';
 import { nextVoucherNumber } from './numbering.js';
 
@@ -65,8 +65,9 @@ function normalizeLines(lines: VoucherLineInput[]): NormalizedLine[] {
   const normalized = lines.map((line, index) => {
     const debit = line.debit_ore ?? 0;
     const credit = line.credit_ore ?? 0;
-    assertSafeOre(debit);
-    assertSafeOre(credit);
+    if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit)) {
+      throw new BadRequestError('invalid_line', `rad ${index + 1}: belopp utanför tillåtet intervall`);
+    }
     if (debit < 0 || credit < 0) {
       throw new BadRequestError('invalid_line', `rad ${index + 1}: belopp kan inte vara negativt`);
     }
@@ -88,8 +89,9 @@ function normalizeLines(lines: VoucherLineInput[]): NormalizedLine[] {
       description: line.description ?? null,
     };
   });
-  assertSafeOre(totalDebit);
-  assertSafeOre(totalCredit);
+  if (!Number.isSafeInteger(totalDebit) || !Number.isSafeInteger(totalCredit)) {
+    throw new BadRequestError('unbalanced', 'verifikatets summa är utanför tillåtet intervall');
+  }
   if (totalDebit !== totalCredit) {
     throw new BadRequestError(
       'unbalanced',
@@ -102,15 +104,22 @@ function normalizeLines(lines: VoucherLineInput[]): NormalizedLine[] {
   return normalized;
 }
 
-/** Kontrollerar att alla konton finns (standard eller företagsspecifika). */
+/**
+ * Kontrollerar att alla konton finns för DETTA bolag (standard eller bolagets
+ * egna). Bolagsscopat: ett konto som bara finns i ett annat bolag (som
+ * användaren råkar vara medlem i) får inte kunna bokas här.
+ */
 async function assertAccountsExist(
   client: PoolClient,
+  companyId: string,
   accountNumbers: number[],
 ): Promise<void> {
   const unique = [...new Set(accountNumbers)];
   const result = await client.query<{ account_number: number }>(
-    'SELECT account_number FROM accounts WHERE account_number = ANY($1::int[]) AND is_active',
-    [unique],
+    `SELECT DISTINCT account_number FROM accounts
+     WHERE account_number = ANY($1::int[]) AND is_active
+       AND (company_id IS NULL OR company_id = $2)`,
+    [unique, companyId],
   );
   const found = new Set(result.rows.map((r) => r.account_number));
   const missing = unique.filter((n) => !found.has(n));
@@ -134,7 +143,7 @@ export async function postVoucher(
     throw new BadRequestError('invalid_series', 'serien måste vara en bokstav A–Z');
   }
   const lines = normalizeLines(input.lines);
-  await assertAccountsExist(client, lines.map((l) => l.account_number));
+  await assertAccountsExist(client, companyId, lines.map((l) => l.account_number));
 
   // App-nivåkontroll av periodlås + datumintervall för ett rent 4xx. DB-triggern
   // voucher_check_period är den hårda garantin (även mot direkta DB-skrivningar).

@@ -144,7 +144,7 @@ describe('SIE4-export', () => {
     expect(content).toContain('#ORGNR 556677-8899');
     expect(content).toContain('#RAR 0 20250101 20251231');
     expect(content).toContain('#KONTO 1930 "Företagskonto"');
-    expect(content).toContain('#VER "A" "1" 20250201 "Faktura 1"');
+    expect(content).toContain('#VER A 1 20250201 "Faktura 1"');
     expect(content).toContain('#TRANS 1930 {} 1250.00'); // debet positivt
     expect(content).toContain('#TRANS 3001 {} -1000.00'); // kredit negativt
     expect(content).toContain('#TRANS 2611 {} -250.00');
@@ -161,7 +161,7 @@ describe('SIE4-export', () => {
       exportFiscalYearSie(c, companyId, fiscalYearId, '20250601'),
     );
     expect(content).toContain('#FNAMN "Automat AB"');
-    expect(content).toContain('#VER "A"');
+    expect(content).toContain('#VER A 1');
     // Svenska tecken kodas som CP437 (ö = 0x94), inte UTF-8 (0xc3 0xb6).
     expect(buffer.includes(0x94)).toBe(true);
     expect(buffer.length).toBeGreaterThan(100);

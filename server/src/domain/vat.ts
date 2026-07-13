@@ -23,9 +23,6 @@ export const OUTPUT_VAT_ACCOUNT: Record<Exclude<VatRate, 0>, number> = {
 // Ingående moms — debiterad ingående moms, oavsett sats.
 export const INPUT_VAT_ACCOUNT = 2641;
 
-// Redovisningskonto för moms (används vid momsredovisning/periodavslut).
-export const VAT_SETTLEMENT_ACCOUNT = 2650;
-
 export function outputVatAccount(rate: VatRate): number | null {
   if (rate === 0) return null;
   return OUTPUT_VAT_ACCOUNT[rate];

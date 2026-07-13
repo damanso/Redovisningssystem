@@ -80,7 +80,15 @@ function pgErrorStatus(err: unknown): { status: number; code: string } | null {
     case '23514': // check_violation
     case '22021': // character_not_in_repertoire (t.ex. ogiltig UTF8-byte)
     case '22P02': // invalid_text_representation
+    case '22007': // invalid_datetime_format
+    case '22008': // datetime_field_overflow (t.ex. 2026-02-30)
       return { status: 400, code: 'invalid_input' };
+    case 'P0001':
+      // raise_exception från våra affärsregel-triggrar (periodlås, balans,
+      // oföränderlighet). De representerar alltid ett regelbrott, aldrig ett
+      // serverfel. App-lagret fångar normalfallet före triggern; detta är ett
+      // backstop mot t.ex. ett TOCTOU-race på periodlåset.
+      return { status: 409, code: 'rule_violation' };
     default:
       return null;
   }
