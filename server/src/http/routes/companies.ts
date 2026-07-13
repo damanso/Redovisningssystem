@@ -13,6 +13,7 @@ import { safeText } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { requireCompanyAccess } from '../middleware/companyAccess.js';
+import { accountingRouter } from './accounting.js';
 import { filesRouter } from './files.js';
 
 // Svenskt organisationsnummer: NNNNNN-NNNN (bindestrecket valfritt vid inmatning).
@@ -180,3 +181,4 @@ companiesRouter.get('/:companyId/audit', async (req, res) => {
 });
 
 companiesRouter.use('/:companyId/files', filesRouter);
+companiesRouter.use('/:companyId/accounting', accountingRouter);

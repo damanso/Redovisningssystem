@@ -40,14 +40,14 @@ describe('migrationsrunnern mot en tom databas', () => {
   });
 
   it('kör hela kedjan utan fel och registrerar versionerna', async () => {
+    // Härled förväntan från migrationsfilerna på disk så testet inte behöver
+    // uppdateras för varje ny migration (men fortfarande bevisar att HELA
+    // kedjan går på en tom databas).
+    const all = await loadMigrations();
+    expect(all.length).toBeGreaterThanOrEqual(7);
+
     const result = await migrate(scratchUrl());
-    expect(result.applied).toEqual([
-      '0001_extensions.sql',
-      '0002_identity_and_tenancy.sql',
-      '0003_audit_log.sql',
-      '0004_files.sql',
-      '0005_force_rls_and_audit_index.sql',
-    ]);
+    expect(result.applied).toEqual(all.map((m) => m.filename));
 
     const client = new pg.Client({ connectionString: scratchUrl() });
     await client.connect();
@@ -57,16 +57,17 @@ describe('migrationsrunnern mot en tom databas', () => {
       );
       expect(extensions.rows.map((r) => r.extname)).toEqual(['pg_trgm', 'uuid-ossp']);
       const versions = await client.query('SELECT version FROM schema_migrations ORDER BY version');
-      expect(versions.rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5]);
+      expect(versions.rows.map((r) => r.version)).toEqual(all.map((m) => m.version));
     } finally {
       await client.end();
     }
   });
 
   it('omkörning är idempotent', async () => {
+    const all = await loadMigrations();
     const result = await migrate(scratchUrl());
     expect(result.applied).toEqual([]);
-    expect(result.alreadyApplied).toBe(5);
+    expect(result.alreadyApplied).toBe(all.length);
   });
 });
 
