@@ -34,7 +34,7 @@ import { importBankCsv, listBankTransactions, setBankTransactionReconciled } fro
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
-import { taxOverview } from '../../services/taxes.js';
+import { runTaxReminders, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
 
 export const viewRouter = Router();
@@ -843,10 +843,20 @@ viewRouter.get('/c/:companyId/tax', pageFor('tax', 'Skatt', async (client, compa
     }
 
     <h2 style="margin-top:22px">Kommande deadlines (vägledande)</h2>
+    <p class="muted" style="font-size:12.5px">Påminnelser skapas som notiser till ägare/admin${emailEnabled() ? ' och skickas som e-post' : ' (e-post kräver SMTP-konfiguration)'}. Automatisk avfyrning kräver en extern schemaläggare som regelbundet anropar <span class="code">run_tax_reminders</span>.</p>
+    <form method="post" action="/app/c/${companyId}/tax/reminders" style="margin-bottom:10px"><button class="btn btn--ghost btn--sm" type="submit">Skapa påminnelser för deadlines inom 14 dagar</button></form>
     ${next ? html`<p class="lede">Nästa: <strong>${next.label}</strong> — ${next.due_date} (${next.period_label})</p>` : ''}
     <div class="table-wrap"><table><thead><tr><th>Förfaller</th><th>Deklaration</th><th>Period</th><th></th></tr></thead><tbody>
       ${t.deadlines.map((d) => html`<tr><td class="code">${d.due_date}</td><td>${d.label}</td><td>${d.period_label}</td><td class="muted" style="font-size:12px">${d.note}</td></tr>`)}
     </tbody></table></div>`;
+}));
+
+viewRouter.post('/c/:companyId/tax/reminders', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  await withTenantTransaction(userId, companyId, (client) => runTaxReminders(client, companyId, userId, {}));
+  res.redirect(`/app/c/${companyId}/tax`);
 }));
 
 viewRouter.post('/c/:companyId/tax/opening-loss', page(async (req, res) => {

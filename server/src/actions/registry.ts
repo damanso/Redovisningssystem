@@ -21,7 +21,7 @@ import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport } from '../services/k2.js';
-import { taxOverview } from '../services/taxes.js';
+import { runTaxReminders, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
 
 export interface ActionContext {
@@ -173,6 +173,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       await ctx.client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [ctx.companyId, i.opening_tax_loss_ore]);
       return { opening_tax_loss_ore: i.opening_tax_loss_ore };
     },
+  }),
+  def({
+    name: 'run_tax_reminders',
+    title: 'Skapa skattepåminnelser för kommande deadlines',
+    sensitivity: 'write',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional(), lead_days: z.number().int().min(1).max(90).optional() }).strict(),
+    handler: (ctx, i: { as_of?: string; lead_days?: number }) =>
+      runTaxReminders(ctx.client, ctx.companyId, ctx.userId, { asOf: i.as_of, leadDays: i.lead_days }),
   }),
   def({
     name: 'set_vat_period',

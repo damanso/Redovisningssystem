@@ -9,6 +9,9 @@
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { accountSums } from './reports.js';
+import { notify } from './notifications.js';
+import { writeAudit } from './auditService.js';
+import { config } from '../config.js';
 
 export type VatPeriod = 'monthly' | 'quarterly' | 'yearly';
 
@@ -168,4 +171,70 @@ export function taxDeadlines(asOf: string, vatPeriod: VatPeriod, fiscalYearEnd: 
   }
 
   return out.sort((a, b) => a.due_date.localeCompare(b.due_date));
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export interface ReminderResult {
+  reminded: Array<{ type: string; period_label: string; due_date: string; recipients: number }>;
+  smtp_configured: boolean;
+}
+
+/**
+ * Skapar påminnelser för deadlines som förfaller inom `leadDays` från `asOf`.
+ * En påminnelse per deadline och bolag (dedup via tax_reminders), levererad som
+ * in-app-notis till ägare/admin + (SMTP-gated) e-post. Kör idempotent — en redan
+ * påmind deadline hoppas. INGEN automatisk avfyrning: en extern schemaläggare
+ * (cron) måste anropa detta regelbundet (gränsen är flaggad).
+ */
+export async function runTaxReminders(
+  client: PoolClient, companyId: string, userId: string, opts: { asOf?: string; leadDays?: number } = {},
+): Promise<ReminderResult> {
+  const asOf = opts.asOf ?? todayIso();
+  const leadDays = opts.leadDays ?? 14;
+  const cutoff = addDaysIso(asOf, leadDays);
+  const overview = await taxOverview(client, companyId, asOf);
+  const due = overview.deadlines.filter((d) => d.due_date >= asOf && d.due_date <= cutoff);
+
+  // Mottagare: ägare/admin i bolaget (de som ansvarar för skatten).
+  const recipients = await client.query<{ user_id: string; email: string }>(
+    `SELECT m.user_id, u.email FROM company_members m JOIN users u ON u.id = m.user_id
+     WHERE m.company_id = $1 AND m.role IN ('owner', 'admin')`,
+    [companyId],
+  );
+  const company = await client.query<{ name: string }>('SELECT name FROM companies WHERE id = $1', [companyId]);
+  const companyName = company.rows[0]?.name ?? 'ditt bolag';
+
+  const reminded: ReminderResult['reminded'] = [];
+  for (const d of due) {
+    // Dedup: hoppa om vi redan påmint om denna deadline.
+    const ins = await client.query(
+      `INSERT INTO tax_reminders (company_id, deadline_type, period_label, due_date)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (company_id, deadline_type, period_label) DO NOTHING RETURNING id`,
+      [companyId, d.type, d.period_label, d.due_date],
+    );
+    if (ins.rowCount !== 1) continue;
+
+    for (const r of recipients.rows) {
+      await notify(client, {
+        userId: r.user_id, companyId, kind: 'tax_deadline',
+        title: `Skattedeadline ${d.due_date}: ${d.label}`,
+        body: `${companyName}: ${d.label} för ${d.period_label} ska deklareras/betalas senast ${d.due_date}. ${d.note}`,
+        link: `/app/c/${companyId}/tax`,
+        email: { toEmail: r.email },
+      });
+    }
+    reminded.push({ type: d.type, period_label: d.period_label, due_date: d.due_date, recipients: recipients.rows.length });
+  }
+
+  await writeAudit(client, {
+    companyId, userId, action: 'tax.reminders_run', entityType: 'company', entityId: companyId,
+    details: { as_of: asOf, lead_days: leadDays, created: reminded.length },
+  });
+  return { reminded, smtp_configured: config.smtpConfigured };
 }
