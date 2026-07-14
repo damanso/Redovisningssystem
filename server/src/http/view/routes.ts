@@ -33,7 +33,7 @@ import { emailEnabled } from '../../services/email.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
-import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
+import { k2AnnualReport, k2ManagementReport, type K2Report, type K2Section, type ManagementReport } from '../../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
 import { listFixedAssets } from '../../services/fixedAssets.js';
@@ -501,6 +501,56 @@ viewRouter.get(
 function k2SectionRows(sec: K2Section, hasPrev: boolean): Raw {
   return html`${sec.lines.map((l) => html`<tr><td>${l.label}</td><td class="num">${amount(l.amount_ore, { unit: false })}</td>${hasPrev ? html`<td class="num muted">${l.prev_ore === null ? '' : amount(l.prev_ore, { unit: false })}</td>` : ''}</tr>`)}`;
 }
+function forvaltningsberattelseBody(companyId: string, fyId: string, m: ManagementReport, r: K2Report): Raw {
+  const ek = m.equity_changes;
+  return html`<section class="statement"><div class="statement__cap"><h2>Förvaltningsberättelse</h2></div>
+    <h3>Verksamheten</h3>
+    ${m.business_description
+      ? html`<p>${m.business_description}</p>`
+      : html`<p class="muted">Ingen verksamhetsbeskrivning angiven.</p>`}
+    <form method="post" action="/app/c/${companyId}/annual/description" style="display:grid;gap:8px;max-width:640px;margin:8px 0 16px">
+      <input type="hidden" name="fy" value="${fyId}">
+      <textarea name="business_description" rows="3" placeholder="Beskriv bolagets verksamhet…" style="width:100%">${m.business_description ?? ''}</textarea>
+      <div><button class="btn btn--ghost btn--sm" type="submit">Spara verksamhetstext</button></div></form>
+
+    <h3>Flerårsöversikt</h3>
+    <div class="table-wrap"><table><thead><tr><th>Nyckeltal</th>${m.flerarsoversikt.map((y) => html`<th class="num">${y.year}</th>`)}</tr></thead><tbody>
+      <tr><td>Nettoomsättning</td>${m.flerarsoversikt.map((y) => html`<td class="num">${amount(y.net_revenue_ore, { unit: false })}</td>`)}</tr>
+      <tr><td>Resultat efter finansiella poster</td>${m.flerarsoversikt.map((y) => html`<td class="num">${amount(y.result_after_financial_ore, { unit: false })}</td>`)}</tr>
+      <tr><td>Balansomslutning</td>${m.flerarsoversikt.map((y) => html`<td class="num">${amount(y.balance_total_ore, { unit: false })}</td>`)}</tr>
+      <tr><td>Soliditet</td>${m.flerarsoversikt.map((y) => html`<td class="num">${y.solidity_permille === null ? '–' : `${(y.solidity_permille / 10).toFixed(1)} %`}</td>`)}</tr>
+    </tbody></table></div>
+
+    <h3 style="margin-top:14px">Förändringar i eget kapital</h3>
+    <div class="table-wrap"><table><thead><tr><th></th><th class="num">Aktiekapital</th><th class="num">Balanserat resultat</th><th class="num">Årets resultat</th></tr></thead><tbody>
+      <tr><td>Belopp vid årets ingång</td><td class="num">${amount(ek.opening_aktiekapital_ore, { unit: false })}</td><td class="num">${amount(ek.opening_balanserat_ore, { unit: false })}</td><td class="num"></td></tr>
+      <tr><td>Årets resultat</td><td class="num"></td><td class="num"></td><td class="num">${amount(ek.arets_resultat_ore, { unit: false })}</td></tr>
+      <tr class="subtot"><td><strong>Belopp vid årets utgång</strong></td><td class="num"><strong>${amount(ek.closing_aktiekapital_ore, { unit: false })}</strong></td><td class="num"><strong>${amount(ek.closing_balanserat_ore, { unit: false })}</strong></td><td class="num"><strong>${amount(m.resultatdisposition.arets_resultat_ore, { unit: false })}</strong></td></tr>
+    </tbody></table></div>
+
+    <h3 style="margin-top:14px">Resultatdisposition</h3>
+    <p>Till årsstämmans förfogande står följande medel (kr):</p>
+    <div class="table-wrap"><table><tbody>
+      <tr><td>Balanserat resultat</td><td class="num">${amount(m.resultatdisposition.balanserat_ore, { unit: false })}</td></tr>
+      <tr><td>Årets resultat</td><td class="num">${amount(m.resultatdisposition.arets_resultat_ore, { unit: false })}</td></tr>
+      <tr class="subtot"><td><strong>Summa</strong></td><td class="num"><strong>${amount(m.resultatdisposition.total_ore, { unit: false })}</strong></td></tr>
+    </tbody></table></div>
+    <p class="muted">Styrelsen föreslår att medlen balanseras i ny räkning (förslag — justera vid utdelning).</p>
+  </section>`;
+}
+
+function signaturesBody(r: K2Report, m: ManagementReport): Raw {
+  return html`<section class="statement"><div class="statement__cap"><h2>Fastställelseintyg och underskrifter</h2></div>
+    <p>Undertecknad intygar att resultaträkningen och balansräkningen fastställts på årsstämma. Årsstämman beslutade att godkänna styrelsens förslag till resultatdisposition.</p>
+    <p class="muted">Ort och datum: ______________________</p>
+    <div style="display:flex;gap:40px;flex-wrap:wrap;margin-top:24px">
+      <div><div style="border-top:1px solid var(--ink-3);width:220px;padding-top:4px">Underskrift</div><div class="muted" style="font-size:12.5px">Namnförtydligande / styrelseledamot</div></div>
+      <div><div style="border-top:1px solid var(--ink-3);width:220px;padding-top:4px">Underskrift</div><div class="muted" style="font-size:12.5px">Namnförtydligande / styrelseledamot</div></div>
+    </div>
+    <p class="muted" style="font-size:12px;margin-top:16px">Min revisionsberättelse/yttrande har lämnats separat (om bolaget har revisor). Detta är ett underlag — ingen digital inlämning till Bolagsverket ingår.</p>
+  </section>`;
+}
+
 function k2Body(companyId: string, fyId: string, r: K2Report): Raw {
   const hasPrev = r.prev_fiscal_year !== null;
   const yrHead = html`<th class="num">${r.fiscal_year.label}</th>${hasPrev ? html`<th class="num muted">${r.prev_fiscal_year!.label}</th>` : ''}`;
@@ -565,6 +615,15 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
     }
     const chosen = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]!.id;
     const report = await k2AnnualReport(client, companyId, chosen);
+    const mgmt = await k2ManagementReport(client, companyId, chosen);
+    const extraNoter = mgmt.fixed_assets_note
+      ? html`<section class="statement"><div class="statement__cap"><h2>Not — Anläggningstillgångar</h2></div>
+          <div class="table-wrap"><table><tbody>
+            <tr><td>Anskaffningsvärde</td><td class="num">${amount(mgmt.fixed_assets_note.acquisition_cost_ore, { unit: false })}</td></tr>
+            <tr><td>Ackumulerade avskrivningar</td><td class="num">−${amount(mgmt.fixed_assets_note.accumulated_depreciation_ore, { unit: false })}</td></tr>
+            <tr class="subtot"><td><strong>Bokfört värde</strong></td><td class="num"><strong>${amount(mgmt.fixed_assets_note.net_book_value_ore, { unit: false })}</strong></td></tr>
+          </tbody></table></div><p class="muted">${String(mgmt.fixed_assets_note.count)} anläggningstillgång(ar).</p></section>`
+      : '';
     const lockRow = await client.query<{ is_locked: boolean }>('SELECT is_locked FROM fiscal_years WHERE id = $1 AND company_id = $2', [chosen, companyId]);
     const locked = lockRow.rows[0]?.is_locked ?? false;
     const plan = await taxPlanning(client, companyId, chosen);
@@ -583,7 +642,7 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
           <form method="post" action="/app/c/${companyId}/annual/lock"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--primary btn--sm" type="submit">Lås bokslut</button></form></td></tr>
       </tbody></table></div>`}
       <p class="muted" style="font-size:12px;margin-top:6px">Skatten ovan är en uppskattning ur bokföringen (utan skattemässiga justeringar). Justera beloppet efter din revisors bedömning innan du bokför.</p></section>`;
-    return { name: company.name, body: html`${picker}${k2Body(companyId, chosen, report)}${bokslut}` };
+    return { name: company.name, body: html`${picker}${forvaltningsberattelseBody(companyId, chosen, mgmt, report)}${k2Body(companyId, chosen, report)}${extraNoter}${signaturesBody(report, mgmt)}${bokslut}` };
   });
   res.type('html').send(layout({ title: 'Årsredovisning', companyId, companyName: name, active: 'annual', body }).value);
 }));
@@ -594,6 +653,16 @@ function bokslutRedirect(companyId: string, fy: string, res: import('express').R
     throw err;
   });
 }
+
+viewRouter.post('/c/:companyId/annual/description', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  const desc = z.string().max(4000).parse((req.body as { business_description?: unknown }).business_description ?? '');
+  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET business_description = $2 WHERE id = $1', [companyId, desc || null]));
+  res.redirect(`/app/c/${companyId}/annual?fy=${fy}`);
+}));
 
 viewRouter.post('/c/:companyId/annual/pf', page(async (req, res) => {
   assertSameOrigin(req);

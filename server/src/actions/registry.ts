@@ -20,7 +20,7 @@ import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
-import { k2AnnualReport } from '../services/k2.js';
+import { k2AnnualReport, k2ManagementReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
@@ -257,6 +257,23 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => k2AnnualReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'k2_management_report',
+    title: 'Förvaltningsberättelse (flerårsöversikt, EK, resultatdisposition)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => k2ManagementReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'set_business_description',
+    title: 'Sätt verksamhetsbeskrivning (förvaltningsberättelse)',
+    sensitivity: 'write',
+    inputSchema: z.object({ business_description: safeText(4000) }).strict(),
+    handler: async (ctx, i: { business_description: string }) => {
+      await ctx.client.query('UPDATE companies SET business_description = $2 WHERE id = $1', [ctx.companyId, i.business_description]);
+      return { business_description: i.business_description };
+    },
   }),
   def({
     name: 'key_ratios',

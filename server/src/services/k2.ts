@@ -231,3 +231,105 @@ export async function k2AnnualReport(client: PoolClient, companyId: string, fisc
     },
   };
 }
+
+// --- Fas C3: förvaltningsberättelse (flerårsöversikt, förändring eget kapital,
+// resultatdisposition) + anläggningsnot. Beräknas ur bokföringen; verksamhets-
+// texten är fri och fylls i av användaren. ---
+
+function sumRangeAt(rows: AccountLine[], min: number, max: number, mode: 'credit' | 'debit'): number {
+  return rows.filter((r) => r.account_number >= min && r.account_number <= max)
+    .reduce((s, r) => s + (mode === 'credit' ? r.credit_ore - r.debit_ore : r.debit_ore - r.credit_ore), 0);
+}
+function permilleOf(part: number, whole: number): number | null {
+  return whole === 0 ? null : Math.round((part / whole) * 1000);
+}
+function dayBefore(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+export interface FlerarsRow { year: string; net_revenue_ore: Ore; result_after_financial_ore: Ore; balance_total_ore: Ore; solidity_permille: number | null }
+export interface ManagementReport {
+  business_description: string | null;
+  flerarsoversikt: FlerarsRow[];
+  equity_changes: {
+    opening_aktiekapital_ore: Ore; opening_balanserat_ore: Ore;
+    arets_resultat_ore: Ore; closing_aktiekapital_ore: Ore; closing_balanserat_ore: Ore; closing_total_ore: Ore;
+  };
+  resultatdisposition: { balanserat_ore: Ore; arets_resultat_ore: Ore; total_ore: Ore };
+  fixed_assets_note: { acquisition_cost_ore: Ore; accumulated_depreciation_ore: Ore; net_book_value_ore: Ore; count: number } | null;
+}
+
+export async function k2ManagementReport(client: PoolClient, companyId: string, fiscalYearId: string): Promise<ManagementReport> {
+  const fy = await client.query<{ start_date: string; end_date: string; business_description: string | null }>(
+    `SELECT f.start_date::text, f.end_date::text, c.business_description
+     FROM fiscal_years f JOIN companies c ON c.id = f.company_id WHERE f.id = $1 AND f.company_id = $2`,
+    [fiscalYearId, companyId],
+  );
+  if (!fy.rows[0]) throw new NotFoundError('fiscal_year');
+  const { start_date, end_date, business_description } = fy.rows[0];
+
+  // Flerårsöversikt: aktuellt år + upp till 3 tidigare räkenskapsår.
+  const years = await client.query<{ start_date: string; end_date: string }>(
+    'SELECT start_date::text, end_date::text FROM fiscal_years WHERE company_id = $1 AND end_date <= $2 ORDER BY end_date DESC LIMIT 4',
+    [companyId, end_date],
+  );
+  const flerarsoversikt: FlerarsRow[] = [];
+  for (const y of years.rows) {
+    const period = await accountSums(client, companyId, { from: y.start_date, to: y.end_date });
+    const balance = await accountSums(client, companyId, { to: y.end_date });
+    const netRevenue = sumRangeAt(period, 3000, 3799, 'credit');
+    const resultAfterFin = sumRangeAt(period, 3000, 8799, 'credit');
+    const balanceTotal = sumRangeAt(balance, 1000, 1999, 'debit');
+    const equity = sumRangeAt(balance, 2000, 2099, 'credit') +
+      balance.filter((r) => r.account_number >= 3000 && r.account_number <= 8999).reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0);
+    flerarsoversikt.push({
+      year: y.end_date.slice(0, 4),
+      net_revenue_ore: netRevenue, result_after_financial_ore: resultAfterFin,
+      balance_total_ore: balanceTotal, solidity_permille: permilleOf(equity, balanceTotal),
+    });
+  }
+
+  // Förändring eget kapital: IB (dagen före årets start) → årets resultat → UB.
+  const opening = await accountSums(client, companyId, { to: dayBefore(start_date) });
+  const closing = await accountSums(client, companyId, { to: end_date });
+  const periodRows = await accountSums(client, companyId, { from: start_date, to: end_date });
+  const aretsResultat = periodRows.filter((r) => r.account_number >= 3000 && r.account_number <= 8989)
+    .reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0);
+  const openingAktiekapital = sumRangeAt(opening, 2080, 2089, 'credit');
+  const openingBalanserat = sumRangeAt(opening, 2090, 2098, 'credit');
+  const closingAktiekapital = sumRangeAt(closing, 2080, 2089, 'credit');
+  const closingBalanserat = sumRangeAt(closing, 2090, 2098, 'credit');
+  // Om årets resultat inte bokförts (2099) räknar vi in det beräknade resultatet.
+  const closingAretsResultat = sumRangeAt(closing, 2099, 2099, 'credit') || aretsResultat;
+
+  // Anläggningsnot.
+  const fa = await client.query<{ n: string; cost: string; acc: string }>(
+    `SELECT count(*) AS n, COALESCE(sum(acquisition_cost_ore), 0) AS cost,
+            COALESCE((SELECT sum(amount_ore) FROM fixed_asset_depreciations d WHERE d.company_id = $1), 0) AS acc
+     FROM fixed_assets WHERE company_id = $1 AND status = 'active'`,
+    [companyId],
+  );
+  const faCount = Number(fa.rows[0]!.n);
+  const faCost = Number(fa.rows[0]!.cost);
+  const faAcc = Number(fa.rows[0]!.acc);
+
+  return {
+    business_description,
+    flerarsoversikt,
+    equity_changes: {
+      opening_aktiekapital_ore: openingAktiekapital, opening_balanserat_ore: openingBalanserat,
+      arets_resultat_ore: aretsResultat,
+      closing_aktiekapital_ore: closingAktiekapital, closing_balanserat_ore: closingBalanserat,
+      closing_total_ore: closingAktiekapital + closingBalanserat + closingAretsResultat,
+    },
+    resultatdisposition: {
+      balanserat_ore: closingBalanserat, arets_resultat_ore: closingAretsResultat,
+      total_ore: closingBalanserat + closingAretsResultat,
+    },
+    fixed_assets_note: faCount > 0
+      ? { acquisition_cost_ore: faCost, accumulated_depreciation_ore: faAcc, net_book_value_ore: faCost - faAcc, count: faCount }
+      : null,
+  };
+}
