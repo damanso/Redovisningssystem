@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../../config.js';
-import { UnauthenticatedError } from '../../lib/errors.js';
+import { ForbiddenError, UnauthenticatedError } from '../../lib/errors.js';
 
 // 'human' = en inloggad person. 'agent' = ett AI-token (Cowork/Hermes) minted av
 // en ägare. Åtskillnaden är förtroendegränsen mellan AI och människa: agenter kan
@@ -29,6 +29,20 @@ export function getUserId(req: Request): string {
 export function getActor(req: Request): Actor {
   if (!req.auth) throw new UnauthenticatedError();
   return req.auth.actor;
+}
+
+/**
+ * Spärr för känsliga DIREKTA REST-rutter (bokför, periodlås, verifikat, återföring):
+ * ett agent-token får ALDRIG utföra dem direkt — förtroendegränsen kräver att AI:t
+ * går via action-lagret (`/actions/...`) där känsliga operationer hamnar i
+ * godkännandekön. Utan denna spärr kunde ett agent-token kringgå godkännandet genom
+ * att anropa råa REST-endpointen. Middleware ELLER inline i handlern.
+ */
+export function requireHuman(req: Request, _res?: Response, next?: NextFunction): void {
+  if (getActor(req) !== 'human') {
+    throw new ForbiddenError('human_required', 'endast en människa kan utföra denna åtgärd direkt — en agent måste gå via godkännandekön (action-lagret)');
+  }
+  next?.();
 }
 
 // Express 5 + TS: vi utökar Request med auth-kontext via declaration merging.

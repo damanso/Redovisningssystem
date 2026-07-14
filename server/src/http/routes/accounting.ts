@@ -16,7 +16,7 @@ import {
 import { getVoucher, postVoucher, reverseVoucher } from '../../services/accounting/vouchers.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
-import { getUserId } from '../middleware/authenticate.js';
+import { getUserId, requireHuman } from '../middleware/authenticate.js';
 
 const ISO_DATE = IsoDateSchema;
 // Belopp: heltal ören inom säkert intervall (annars 500 via assertSafeOre).
@@ -89,7 +89,7 @@ accountingRouter.post('/fiscal-years', async (req, res) => {
 
 const LockSchema = z.object({ locked: z.boolean() }).strict();
 
-accountingRouter.patch('/fiscal-years/:fiscalYearId', async (req, res) => {
+accountingRouter.patch('/fiscal-years/:fiscalYearId', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const fyId = z.string().uuid().parse(req.params.fiscalYearId);
@@ -121,7 +121,7 @@ const PostVoucherSchema = z
   })
   .strict();
 
-accountingRouter.post('/vouchers', async (req, res) => {
+accountingRouter.post('/vouchers', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const input = PostVoucherSchema.parse(req.body);
@@ -149,7 +149,7 @@ accountingRouter.get('/vouchers/:voucherId', async (req, res) => {
   res.json({ voucher });
 });
 
-accountingRouter.post('/vouchers/:voucherId/reverse', async (req, res) => {
+accountingRouter.post('/vouchers/:voucherId/reverse', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const voucherId = z.string().uuid().parse(req.params.voucherId);

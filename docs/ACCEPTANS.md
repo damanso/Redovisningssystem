@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **331 tester passerar** i 50 sviter mot
+**Reproducera allt:** `npm test -w server` → **335 tester passerar** i 50 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 331 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 335 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -132,6 +132,22 @@ Utöver testsviten startades API:t **på riktigt** mot en färsk Postgres och k�
 | Omvänd skattskyldighet: faktura → bokför → ruta 41 | ingen moms, 3231, ruta 41 | ✅ `vat_ore=0`, konto 3231, ruta 41 = 50 000 kr, ruta 10 = 0 |
 | ROT-faktura: avdrag beräknas | 30 % av 12 500 = 3 750 kr | ✅ `housework_reduction_ore=375000` |
 | GDPR-anonymisering via agent-token | 202 (godkännandekö, ej direkt körd) | ✅ 202 |
+
+## Slutgrind — säkerhetsgranskning (`/security-review`)
+
+En avslutande adversariell helkodsgranskning (authz/tenant, injektion/hemligheter,
+bokföringsintegritet) med oberoende verifiering av varje fynd. Bekräftade fynd
+åtgärdades med regressionstest:
+
+| Allvar | Fynd | Åtgärd | Testbevis |
+|---|---|---|---|
+| **Kritisk** | Ett agent-token kunde utföra känsliga operationer (bokföra, periodlås/-upplås, verifikat, återföring) direkt via råa REST-rutter och därmed kringgå godkännandekön | `requireHuman`-spärr på de fem känsliga direktrutterna; agenter måste gå via action-lagret (→ 202 godkännandekö) | `actions.test.ts` (agent 403, människa 200, agent-begäran → 202) |
+| Låg | Login/2FA/logout-POST saknade CSRF-skydd (`assertSameOrigin`) | Same-origin-spärr tillagd på alla tre | `view.test.ts` (korsande ursprung → 403) |
+| Låg | Ett verifikat kunde återföras flera gånger (över-rättade saldon) | Idempotensspärr i tjänsten + partiellt unikt index (migration 0037) | `accounting.test.ts` (andra återföring → 409) |
+| — | RLS INSERT `WITH CHECK (true)` på notifications/email_outbox | Avfärdat (FALSE POSITIVE): ingen endpoint exponerar rå insert, company_id härleds serverside | — |
+
+Övriga faser (0–4, A, B, C, D, E) hade dessutom var sin egen grind med säkerhets-
+dimension; alla bekräftade fynd åtgärdades löpande.
 
 ## Medvetet utanför scope (kräver extern integration)
 

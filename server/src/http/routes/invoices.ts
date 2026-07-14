@@ -9,7 +9,7 @@ import {
   getInvoice,
   listInvoices,
 } from '../../services/invoices.js';
-import { getUserId } from '../middleware/authenticate.js';
+import { getUserId, requireHuman } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
 const ISO_DATE = IsoDateSchema;
@@ -75,7 +75,7 @@ invoicesRouter.get('/:id', async (req, res) => {
   res.json({ invoice });
 });
 
-invoicesRouter.post('/:id/book', async (req, res) => {
+invoicesRouter.post('/:id/book', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const id = ID.parse(req.params.id);

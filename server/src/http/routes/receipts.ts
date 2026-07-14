@@ -11,7 +11,7 @@ import {
   getReceipt,
   listReceipts,
 } from '../../services/receipts.js';
-import { getUserId } from '../middleware/authenticate.js';
+import { getUserId, requireHuman } from '../middleware/authenticate.js';
 
 const ID = UuidSchema;
 const ISO_DATE = IsoDateSchema;
@@ -66,7 +66,7 @@ receiptsRouter.post('/:id/file', singleFileUpload(), async (req, res) => {
   res.status(201).json({ receipt });
 });
 
-receiptsRouter.post('/:id/book', async (req, res) => {
+receiptsRouter.post('/:id/book', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const id = ID.parse(req.params.id);

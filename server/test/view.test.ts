@@ -58,6 +58,17 @@ describe('inloggning', () => {
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toBe('/app/login');
   });
+
+  it('korsande ursprung nekas på login/logout (CSRF-skydd, grindfynd)', async () => {
+    const evil = await api.post('/app/login').set('Origin', 'https://evil.example')
+      .type('form').send({ email: userA.email, password: PASSWORD });
+    expect(evil.status).toBe(403); // korsande ursprung nekas
+    const evilLogout = await api.post('/app/logout').set('Origin', 'https://evil.example').send({});
+    expect(evilLogout.status).toBe(403);
+    // Samma ursprung (ingen Origin-header, som en vanlig formpost i test) → tillåts.
+    const ok = await api.post('/app/login').type('form').send({ email: userA.email, password: PASSWORD });
+    expect([302, 303]).toContain(ok.status);
+  });
 });
 
 describe('bolagskontext härleds från URL + medlemskap (regression mot currentCompanyId-buggen)', () => {

@@ -126,6 +126,16 @@ describe('oföränderlighet + rättelseverifikat', () => {
     const revLine = rev.body.voucher.lines.find((l: { account_number: number }) => l.account_number === 1930);
     expect(origLine.debit_ore).toBe(revLine.credit_ore);
   });
+
+  it('samma verifikat kan inte återföras två gånger (idempotens, grindfynd)', async () => {
+    const res = await api.post(`${base()}/vouchers`).set(auth()).send(balancedVoucher());
+    const id = res.body.voucher.id;
+    const first = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
+    expect(first.status).toBe(201);
+    const second = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
+    expect(second.status).toBe(409); // redan återfört — inget dubbel-rättat saldo
+    expect(second.body.error).toBe('already_reversed');
+  });
 });
 
 describe('periodlås', () => {

@@ -60,6 +60,7 @@ viewRouter.post(
   '/login',
   rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
   page(async (req, res) => {
+    assertSameOrigin(req);
     const parsed = z.object({ email: z.string().max(254), password: z.string().max(200) }).safeParse(req.body);
     if (!parsed.success) {
       res.status(400).type('html').send(loginPage('Fyll i e-post och lösenord.').value);
@@ -91,6 +92,7 @@ viewRouter.get('/login/2fa', page(async (req, res) => {
 viewRouter.post('/login/2fa',
   rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
   page(async (req, res) => {
+    assertSameOrigin(req);
     const pending = readPendingUserId(req);
     if (!pending) { res.redirect('/app/login'); return; }
     const code = z.string().max(12).safeParse((req.body as { code?: unknown }).code);
@@ -104,7 +106,8 @@ viewRouter.post('/login/2fa',
   }),
 );
 
-viewRouter.post('/logout', (_req, res) => {
+viewRouter.post('/logout', (req, res) => {
+  assertSameOrigin(req);
   clearSessionCookie(res);
   res.redirect('/app/login');
 });

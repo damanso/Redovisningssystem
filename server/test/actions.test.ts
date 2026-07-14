@@ -37,6 +37,39 @@ beforeAll(async () => {
   agentToken = token.body.token;
 });
 
+describe('förtroendegräns: agent kan inte kringgå godkännandekön via direkta REST-rutter (grindfynd)', () => {
+  async function freshInvoice(): Promise<string> {
+    const c = await api.post(`${co()}/customers`).set(human()).send({ name: 'Direktkund' });
+    const inv = await api.post(`${co()}/invoices`).set(human()).send({
+      customer_id: c.body.customer.id, invoice_date: '2025-06-01',
+      lines: [{ description: 'X', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }],
+    });
+    return inv.body.invoice.id;
+  }
+  it('agent nekas bokföring/periodlås/verifikat direkt (403 human_required)', async () => {
+    const iid = await freshInvoice();
+    const book = await api.post(`${co()}/invoices/${iid}/book`).set(agent()).send({ fiscal_year_id: fiscalYearId });
+    expect(book.status, JSON.stringify(book.body)).toBe(403);
+    expect(book.body.error).toBe('human_required');
+    const lock = await api.patch(`${co()}/accounting/fiscal-years/${fiscalYearId}`).set(agent()).send({ locked: true });
+    expect(lock.status).toBe(403);
+    const voucher = await api.post(`${co()}/accounting/vouchers`).set(agent()).send({
+      fiscal_year_id: fiscalYearId, voucher_date: '2025-06-01', description: 'smyg',
+      lines: [{ account_number: 1930, debit_ore: 1000 }, { account_number: 3001, credit_ore: 1000 }],
+    });
+    expect(voucher.status).toBe(403);
+    // Regressionsskydd: en människa kan fortfarande bokföra direkt.
+    const humanBook = await api.post(`${co()}/invoices/${iid}/book`).set(human()).send({ fiscal_year_id: fiscalYearId });
+    expect(humanBook.status, JSON.stringify(humanBook.body)).toBe(200);
+  });
+  it('agent kan BEGÄRA bokföring via action-lagret → hamnar i godkännandekö (202)', async () => {
+    const iid = await freshInvoice();
+    const req = await api.post(`${co()}/actions/book_invoice`).set(agent()).send({ invoice_id: iid, fiscal_year_id: fiscalYearId });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    expect(req.body.status).toBe('pending_approval');
+  });
+});
+
 describe('agent-token: åtskillnad och scoping', () => {
   it('endast ägare (människa) kan minta agent-token', async () => {
     const asAgent = await api.post(`${co()}/agent-tokens`).set(agent()).send({});

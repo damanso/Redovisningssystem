@@ -242,6 +242,13 @@ export async function reverseVoucher(
   options: { voucherDate?: string; description?: string } = {},
 ): Promise<Voucher> {
   const original = await getVoucher(client, companyId, voucherId);
+  // Idempotens: ett verifikat får återföras EN gång. Utan spärren skapar ett
+  // dubbelklick/dubbel begäran två rättelser → kontosaldona blir fel (över-rättade).
+  const already = await client.query(
+    'SELECT 1 FROM vouchers WHERE company_id = $1 AND reverses_voucher_id = $2 LIMIT 1',
+    [companyId, voucherId],
+  );
+  if (already.rows.length > 0) throw new ConflictError('already_reversed', 'verifikatet är redan återfört');
   const reversedLines: VoucherLineInput[] = original.lines.map((l) => ({
     account_number: l.account_number,
     debit_ore: l.credit_ore,
