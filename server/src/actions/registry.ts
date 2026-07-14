@@ -28,6 +28,7 @@ import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../ser
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments } from '../services/ink2.js';
 import { vatDeclaration } from '../services/vatDeclaration.js';
 import { generateInk2Sru } from '../services/sruExport.js';
+import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -281,6 +282,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => ink2rReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'generate_k2_ixbrl',
+    title: 'Generera iXBRL-årsredovisning (K2) för Bolagsverket',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => generateK2Ixbrl(ctx.client, ctx.companyId, i.fiscal_year_id),
   }),
   def({
     name: 'generate_ink2_sru',

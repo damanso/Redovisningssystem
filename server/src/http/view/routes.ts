@@ -41,6 +41,7 @@ import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type Ink2rReport, type Ink2sResult } from '../../services/ink2.js';
 import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services/vatDeclaration.js';
 import { generateInk2Sru } from '../../services/sruExport.js';
+import { generateK2Ixbrl } from '../../services/ixbrlExport.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -562,7 +563,8 @@ function k2Body(companyId: string, fyId: string, r: K2Report): Raw {
   const bs = r.balance_sheet;
   return html`<div class="page-head"><div>${eyebrow('Bokslut · K2')}<h1>Årsredovisning ${r.fiscal_year.label}</h1>
       <p class="lede">${r.company.name}${r.company.org_number ? html` · org.nr ${r.company.org_number}` : ''} · räkenskapsår ${r.fiscal_year.start} – ${r.fiscal_year.end}</p></div>
-      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/export.csv?fy=${fyId}">Exportera CSV</a></div></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/export.csv?fy=${fyId}">Exportera CSV</a>
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/arsredovisning.xhtml?fy=${fyId}">Ladda ner iXBRL (Bolagsverket)</a></div></div>
     <div class="empty" style="text-align:left;padding:12px 14px">${chip('Underlag — ej inlämnad årsredovisning', 'warn', '!')} <span class="muted">Detta är ett beräknat underlag ur din bokföring för manuell inmatning (t.ex. till deklarationsprogram). Förvaltningsberättelsens text, resultatdisposition, underskrifter och slutlig granskning görs av dig/din revisor. Ingen digital inlämning till Bolagsverket ingår.</span></div>
 
     <section class="statement"><div class="statement__cap"><h2>Resultaträkning</h2></div>
@@ -1218,6 +1220,21 @@ async function sruFile(req: Request, res: import('express').Response, which: 'in
 }
 viewRouter.get('/c/:companyId/ink2/info.sru', page((req, res) => sruFile(req, res, 'info')));
 viewRouter.get('/c/:companyId/ink2/blanketter.sru', page((req, res) => sruFile(req, res, 'blanketter')));
+
+// Fas C7: iXBRL-årsredovisning (K2) för Bolagsverket. Ett XHTML-dokument, både
+// maskin- och mänskligt läsbart. Beräknat underlag; ingen digital inlämning.
+viewRouter.get('/c/:companyId/annual/arsredovisning.xhtml', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyId = z.string().uuid().parse(req.query.fy);
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateK2Ixbrl(client, companyId, fyId);
+  });
+  res.type('application/xhtml+xml; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="arsredovisning-${out.fiscal_year.label}.xhtml"`)
+    .send(out.ixbrl);
+}));
 
 // Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.
 viewRouter.get('/c/:companyId/cashflow', pageFor('cashflow', 'Kassaflöde', async (client, companyId) => {
