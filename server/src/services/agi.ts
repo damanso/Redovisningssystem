@@ -33,7 +33,7 @@ export interface AgiDeclaration {
   disclaimer: string;
 }
 
-const PERIOD_RE = /^\d{4}-\d{2}$/;
+const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 /**
  * Bygger AGI för en redovisningsperiod ('YYYY-MM') ur bolagets lönebesked (ej
@@ -161,6 +161,20 @@ export async function generateAgiXml(client: PoolClient, companyId: string, peri
     opts.contactEmail ? `      <agd:Epostadress>${xmlEsc(opts.contactEmail)}</agd:Epostadress>` : '',
   ].filter(Boolean).join('\n');
 
+  // Avrunda till kronor PER individuppgift och summera heltalen till huvuduppgiften.
+  // Skatteverket stämmer av HU SummaSkatteavdr (497) mot summan av IU AvdrPrelSkatt
+  // (001); att avrunda periodens öre-summa separat (round(Σ) ≠ Σ round) skulle ge en
+  // 1-krona-drift som avvisar filen. Samma per-post-avrundning för alla HU-totaler.
+  const iuKr = d.individuals.map((i) => ({
+    pnr: normalizePnr(i.personnummer!, periodYear)!,
+    spec: String(i.spec_no).padStart(3, '0'),
+    grossKr: toKr(i.gross_ore),
+    taxKr: toKr(i.tax_ore),
+    employerKr: toKr(i.employer_contribution_ore),
+  }));
+  const huTaxKr = iuKr.reduce((s, i) => s + i.taxKr, 0);
+  const huEmployerKr = iuKr.reduce((s, i) => s + i.employerKr, 0);
+
   const hu = `  <agd:Blankett>
     <agd:Arendeinformation>
       <agd:Arendeagare>${agId}</agd:Arendeagare>
@@ -172,16 +186,13 @@ export async function generateAgiXml(client: PoolClient, companyId: string, peri
           <agd:AgRegistreradId faltkod="201">${agId}</agd:AgRegistreradId>
         </agd:ArbetsgivareHUGROUP>
         <agd:RedovisningsPeriod faltkod="006">${d.period_yyyymm}</agd:RedovisningsPeriod>
-        <agd:SummaArbAvgSlf faltkod="487">${toKr(d.summary.employer_contribution_total_ore)}</agd:SummaArbAvgSlf>
-        <agd:SummaSkatteavdr faltkod="497">${toKr(d.summary.employee_tax_total_ore)}</agd:SummaSkatteavdr>
+        <agd:SummaArbAvgSlf faltkod="487">${huEmployerKr}</agd:SummaArbAvgSlf>
+        <agd:SummaSkatteavdr faltkod="497">${huTaxKr}</agd:SummaSkatteavdr>
       </agd:HU>
     </agd:Blankettinnehall>
   </agd:Blankett>`;
 
-  const ius = d.individuals.map((i) => {
-    const pnr = normalizePnr(i.personnummer!, periodYear)!;
-    const spec = String(i.spec_no).padStart(3, '0');
-    return `  <agd:Blankett>
+  const ius = iuKr.map((i) => `  <agd:Blankett>
     <agd:Arendeinformation>
       <agd:Arendeagare>${agId}</agd:Arendeagare>
       <agd:Period>${d.period_yyyymm}</agd:Period>
@@ -193,17 +204,16 @@ export async function generateAgiXml(client: PoolClient, companyId: string, peri
         </agd:ArbetsgivareIUGROUP>
         <agd:BetalningsmottagareIUGROUP>
           <agd:BetalningsmottagareIDChoice>
-            <agd:BetalningsmottagarId faltkod="215">${pnr}</agd:BetalningsmottagarId>
+            <agd:BetalningsmottagarId faltkod="215">${i.pnr}</agd:BetalningsmottagarId>
           </agd:BetalningsmottagareIDChoice>
         </agd:BetalningsmottagareIUGROUP>
         <agd:RedovisningsPeriod faltkod="006">${d.period_yyyymm}</agd:RedovisningsPeriod>
-        <agd:Specifikationsnummer faltkod="570">${spec}</agd:Specifikationsnummer>
-        <agd:KontantErsattningUlagAG faltkod="011">${toKr(i.gross_ore)}</agd:KontantErsattningUlagAG>
-        <agd:AvdrPrelSkatt faltkod="001">${toKr(i.tax_ore)}</agd:AvdrPrelSkatt>
+        <agd:Specifikationsnummer faltkod="570">${i.spec}</agd:Specifikationsnummer>
+        <agd:KontantErsattningUlagAG faltkod="011">${i.grossKr}</agd:KontantErsattningUlagAG>
+        <agd:AvdrPrelSkatt faltkod="001">${i.taxKr}</agd:AvdrPrelSkatt>
       </agd:IU>
     </agd:Blankettinnehall>
-  </agd:Blankett>`;
-  }).join('\n');
+  </agd:Blankett>`).join('\n');
 
   const xml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <Skatteverket omrade="Arbetsgivardeklaration"

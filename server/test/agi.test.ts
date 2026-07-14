@@ -102,6 +102,48 @@ describe('AGI-XML', () => {
   });
 });
 
+// Grindfynd D1: HU SummaSkatteavdr (497) måste vara EXAKT summan av IU AvdrPrelSkatt
+// (001). Om HU-totalen avrundas ur öre-summan separat (round(Σ) ≠ Σ round) avvisar
+// Skatteverket filen. Två anställda vars skatt slutar på 50 öre framtvingar driften.
+describe('AGI-avrundning: HU stämmer mot summan av IU (grindfynd)', () => {
+  let u: TestUser; let cid: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+
+  beforeAll(async () => {
+    u = await registerUser('agi-round');
+    cid = await createCompany(u.token, 'Avrundning AB');
+    await api.patch(`${c()}`).set(a()).send({ org_number: '5560269986' });
+    // Brutto 41833 öre × 30 % = 12549,9 → tax_ore 12550 (=125,50 kr). Två sådana →
+    // per IU round(125,5)=126, summa 252; men round(251,00)=251 om HU avrundar öre-summan.
+    for (const namn of ['Ett', 'Två']) {
+      const e = await api.post(`${c()}/actions/create_employee`).set(a()).send({
+        name: namn, personnummer: '198202252386', monthly_salary_ore: 41833, tax_rate: 30,
+      });
+      await api.post(`${c()}/actions/create_payslip`).set(a()).send({ employee_id: e.body.result.id, period: '2024-03' });
+    }
+  });
+
+  it('HU SummaSkatteavdr = summan av de kronavrundade IU-beloppen', async () => {
+    const res = await api.post(`${c()}/actions/generate_agi_file`).set(a()).send({ period: '2024-03' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const x = res.body.result.xml as string;
+    const iuTax = [...x.matchAll(/<agd:AvdrPrelSkatt faltkod="001">(\d+)<\/agd:AvdrPrelSkatt>/g)].map((m) => Number(m[1]));
+    const huTax = Number(/<agd:SummaSkatteavdr faltkod="497">(\d+)<\/agd:SummaSkatteavdr>/.exec(x)![1]);
+    expect(iuTax.reduce((s, n) => s + n, 0)).toBe(huTax); // 126 + 126 = 252 = HU
+  });
+});
+
+// Grindfynd D1: periodvalidering ska avvisa ogiltig månad (00, 13).
+describe('AGI period-validering (grindfynd)', () => {
+  it('vägrar månad utanför 01–12', async () => {
+    const bad = await api.post(`${co()}/actions/agi_declaration`).set(auth()).send({ period: '2024-13' });
+    expect(bad.status).toBe(400);
+    const bad0 = await api.post(`${co()}/actions/agi_declaration`).set(auth()).send({ period: '2024-00' });
+    expect(bad0.status).toBe(400);
+  });
+});
+
 describe('AGI-vy och nedladdning', () => {
   it('lönevyn visar AGI och erbjuder filnedladdning', async () => {
     const ua = supertest.agent(app);

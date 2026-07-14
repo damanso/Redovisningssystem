@@ -288,14 +288,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'agi_declaration',
     title: 'Arbetsgivardeklaration på individnivå (AGI) för en period',
     sensitivity: 'read',
-    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/, "period anges som 'YYYY-MM'") }).strict(),
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "period anges som 'YYYY-MM'") }).strict(),
     handler: (ctx, i: { period: string }) => agiDeclaration(ctx.client, ctx.companyId, i.period),
   }),
   def({
     name: 'generate_agi_file',
     title: 'Generera AGI-fil (XML) för Skatteverket',
     sensitivity: 'read',
-    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/, "period anges som 'YYYY-MM'") }).strict(),
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "period anges som 'YYYY-MM'") }).strict(),
     handler: (ctx, i: { period: string }) => {
       const now = new Date();
       return generateAgiXml(ctx.client, ctx.companyId, i.period, { createdIso: now.toISOString().slice(0, 19) });
@@ -642,14 +642,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'list_payslips',
     title: 'Lista lönebesked',
     sensitivity: 'read',
-    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/).optional() }).strict(),
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional() }).strict(),
     handler: (ctx, i: { period?: string }) => listPayslips(ctx.client, ctx.companyId, { period: i.period }),
   }),
   def({
     name: 'create_payslip',
     title: 'Skapa lönebesked (utkast)',
     sensitivity: 'write',
-    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-\d{2}$/), gross_ore: OreSchema.optional() }).strict(),
+    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), gross_ore: OreSchema.optional() }).strict(),
     handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({

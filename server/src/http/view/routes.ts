@@ -1735,7 +1735,7 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
 viewRouter.get('/c/:companyId/payroll/agi.xml', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const period = z.string().regex(/^\d{4}-\d{2}$/).parse(req.query.period);
+  const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).parse(req.query.period);
   const now = new Date();
   const out = await withTenantTransaction(userId, companyId, async (client) => {
     await loadCompany(client, companyId);
