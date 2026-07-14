@@ -96,6 +96,37 @@ describe('INK2S skattemässiga justeringar', () => {
   });
 });
 
+// Grindfynd C1–C6 (HIGH): kontospannet 2450–2499 måste täckas i INK2R-balansräkningen,
+// annars läcker ett skuldsaldo rakt in i difference_ore och balansräkningen balanserar inte.
+describe('INK2R balanserar med skuld i 2450–2499 (grindfynd)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+
+  beforeAll(async () => {
+    u = await registerUser('ink2-gap');
+    cid = await createCompany(u.token, 'Gap AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // Skapa ett konto i luckan (2490 Övriga kortfristiga skulder) och bokför en skuld mot bank.
+    await api.post(`${c()}/accounting/accounts`).set(a()).send({ account_number: 2490, name: 'Övriga kortfristiga skulder', account_type: 'liability' });
+    const v = await api.post(`${c()}/actions/post_voucher`).set(a()).send({
+      fiscal_year_id: fyId, voucher_date: '2025-06-01', description: 'Skuld i luckan',
+      lines: [{ account_number: 1930, debit_ore: 10000_00 }, { account_number: 2490, credit_ore: 10000_00 }],
+    });
+    await api.post(`${c()}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+  });
+
+  it('difference_ore = 0 och skulden syns i eget kapital och skulder', async () => {
+    const res = await api.post(`${c()}/actions/ink2r_schema`).set(a()).send({ fiscal_year_id: fyId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const r = res.body.result;
+    expect(r.balance_sheet.difference_ore).toBe(0);
+    const field = r.balance_sheet.equity_liabilities.find((f: { code: string }) => f.code === '2.46');
+    expect(field.amount_ore).toBe(10000_00);
+  });
+});
+
 describe('INK2-vyn', () => {
   it('renderar INK2R och INK2S med förbehåll', async () => {
     const ua = supertest.agent(app);

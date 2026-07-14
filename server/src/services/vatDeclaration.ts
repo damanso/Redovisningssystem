@@ -51,12 +51,17 @@ function baseFromVat(vatOre: number, permille: number): number {
 export async function vatDeclaration(client: PoolClient, companyId: string, from: string, to: string): Promise<VatDeclaration> {
   const rows = await accountSums(client, companyId, { from, to });
 
-  // B. Utgående moms per skattesats (kreditsaldo på 26xx).
-  const out25 = credit(rows, 2610, 2613) + credit(rows, 2616, 2619);
-  const out12 = credit(rows, 2620, 2629);
-  const out6 = credit(rows, 2630, 2639);
-  // D. Utgående moms vid omvänd skattskyldighet/import (2614–2615, 25 %).
-  const rev25 = credit(rows, 2614, 2615);
+  // B. Utgående moms på EGEN försäljning per skattesats (ospecificerad + försäljning
+  // inom Sverige: 261x/262x/263x med suffix 0–3). Konton för omvänd skattskyldighet
+  // och förvärvsmoms (suffix 4–9) hör INTE hit — de går till D (ruta 30–32).
+  const out25 = credit(rows, 2610, 2613);
+  const out12 = credit(rows, 2620, 2623);
+  const out6 = credit(rows, 2630, 2633);
+  // D. Utgående moms vid omvänd skattskyldighet/import/förvärv per sats (suffix 4–9:
+  // 2614–2619 25 %, 2624–2629 12 %, 2634–2639 6 %).
+  const rev25 = credit(rows, 2614, 2619);
+  const rev12 = credit(rows, 2624, 2629);
+  const rev6 = credit(rows, 2634, 2639);
   // F. Ingående moms (debetsaldo 264x).
   const inVat = debit(rows, 2640, 2649);
 
@@ -67,8 +72,8 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   const base6 = baseFromVat(out6, 60);
   const box05 = base25 + base12 + base6;
 
-  // C. Underlag för inköp vid omvänd skattskyldighet (rekonstruerat ur ruta 30).
-  const revBase25 = baseFromVat(rev25, 250);
+  // C. Underlag för inköp vid omvänd skattskyldighet (rekonstruerat ur ruta 30–32).
+  const revBase = baseFromVat(rev25, 250) + baseFromVat(rev12, 120) + baseFromVat(rev6, 60);
 
   // E. Undantagen försäljning ur specifika försäljningskonton (kreditsaldo).
   const euGoods = credit(rows, 3105, 3106);   // varor till annat EU-land (ruta 35)
@@ -76,7 +81,7 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   const euServices = credit(rows, 3308, 3308); // tjänster till näringsidkare i annat EU-land (ruta 39)
   const exemptOther = credit(rows, 3004, 3004); // momsfri övrig försäljning (ruta 42)
 
-  const totalOutput = out25 + out12 + out6 + rev25;
+  const totalOutput = out25 + out12 + out6 + rev25 + rev12 + rev6;
   const net = totalOutput - inVat;
 
   assertSafeOre(totalOutput);
@@ -98,15 +103,15 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
     ],
     reverse_purchases: [
       { code: '20', label: 'Inköp av varor från ett annat EU-land', amount_ore: 0 },
-      { code: '21', label: 'Inköp av tjänster från ett annat EU-land', amount_ore: revBase25 },
+      { code: '21', label: 'Inköp av tjänster från ett annat EU-land', amount_ore: revBase },
       { code: '22', label: 'Inköp av tjänster från ett land utanför EU', amount_ore: 0 },
       { code: '23', label: 'Inköp av varor i Sverige (omvänd skattskyldighet)', amount_ore: 0 },
       { code: '24', label: 'Övriga inköp av tjänster (omvänd skattskyldighet)', amount_ore: 0 },
     ],
     reverse_output_vat: [
       { code: '30', label: 'Utgående moms 25 % på inköp i ruta 20–24', amount_ore: rev25 },
-      { code: '31', label: 'Utgående moms 12 % på inköp i ruta 20–24', amount_ore: 0 },
-      { code: '32', label: 'Utgående moms 6 % på inköp i ruta 20–24', amount_ore: 0 },
+      { code: '31', label: 'Utgående moms 12 % på inköp i ruta 20–24', amount_ore: rev12 },
+      { code: '32', label: 'Utgående moms 6 % på inköp i ruta 20–24', amount_ore: rev6 },
     ],
     exempt_sales: [
       { code: '35', label: 'Försäljning av varor till ett annat EU-land', amount_ore: euGoods },

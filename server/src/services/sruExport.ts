@@ -141,7 +141,10 @@ export async function generateInk2Sru(client: PoolClient, companyId: string, fis
 // INK2R-vyns fältkoder → SRU-kod. 'income' = intäkt (kredit−debet, positiv),
 // 'cost' = kostnad (debet−kredit, positiv). Flera vyfält kan peka på samma SRU-kod
 // (summeras). Bokslutsdispositioner (3.20) och årets resultat hanteras separat.
-const INK2R_INCOME_KODER: Record<string, { kod: string; kind: 'income' | 'cost' }> = {
+// Fält med `neg` är teckenväxlande (kan lagligen bli negativa) och mappas då till sin
+// motsatta SRU-kod i stället för att tappas — annars stämmer inte INK2R-raderna mot
+// årets resultat (7450/7550), som beräknas ur hela periodintervallet.
+const INK2R_INCOME_KODER: Record<string, { kod: string; kind: 'income' | 'cost'; neg?: string }> = {
   '3.1': { kod: '7410', kind: 'income' },  // Nettoomsättning
   '3.4': { kod: '7413', kind: 'income' },  // Övriga rörelseintäkter
   '3.5': { kod: '7511', kind: 'cost' },    // Råvaror, förnödenheter och handelsvaror
@@ -149,8 +152,8 @@ const INK2R_INCOME_KODER: Record<string, { kod: string; kind: 'income' | 'cost' 
   '3.8': { kod: '7514', kind: 'cost' },    // Personalkostnader
   '3.9': { kod: '7515', kind: 'cost' },    // Av- och nedskrivningar
   '3.10': { kod: '7517', kind: 'cost' },   // Övriga rörelsekostnader
-  '3.13': { kod: '7414', kind: 'income' }, // Resultat från andelar i koncernföretag
-  '3.16': { kod: '7417', kind: 'income' }, // Övriga ränteintäkter
+  '3.13': { kod: '7414', kind: 'income', neg: '7518' }, // Resultat andelar koncern (+/−)
+  '3.16': { kod: '7417', kind: 'income', neg: '7522' }, // Ränteintäkter (+) / räntekostnad (−)
   '3.18': { kod: '7522', kind: 'cost' },   // Räntekostnader
   '3.24': { kod: '7528', kind: 'cost' },   // Skatt på årets resultat
 };
@@ -177,6 +180,7 @@ const INK2R_BALANCE_KODER: Record<string, string> = {
   '2.41': '7368',  // Skatteskulder
   '2.42': '7369',  // Moms → övriga kortfristiga skulder
   '2.44': '7369',  // Övriga kortfristiga skulder (summeras)
+  '2.46': '7369',  // Övriga kortfristiga skulder 2450–2499 (summeras)
   '2.45': '7369',  // Personalens källskatt/avgifter → övriga skulder (summeras)
   '2.47': '7370',  // Upplupna kostnader och förutbetalda intäkter
 };
@@ -199,8 +203,13 @@ function mapInk2rFields(r: Awaited<ReturnType<typeof ink2rReport>>): SruField[] 
     const m = INK2R_INCOME_KODER[f.code];
     if (!m) continue;
     const kr = toKronor(f.amount_ore);
-    if (m.kind === 'income' && kr > 0) accumulate(acc, m.kod, kr);
-    else if (m.kind === 'cost' && kr < 0) accumulate(acc, m.kod, -kr);
+    if (m.kind === 'income') {
+      if (kr > 0) accumulate(acc, m.kod, kr);
+      else if (kr < 0 && m.neg) accumulate(acc, m.neg, -kr); // negativ intäkt → kostnadskod
+    } else { // kind === 'cost'
+      if (kr < 0) accumulate(acc, m.kod, -kr);
+      else if (kr > 0 && m.neg) accumulate(acc, m.neg, kr);  // positiv "kostnad" → intäktskod
+    }
   }
   // Årets resultat: vinst 7450 / förlust 7550.
   const resKr = toKronor(r.income_statement.arets_resultat_ore);

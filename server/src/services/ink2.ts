@@ -83,6 +83,9 @@ const INK2R_EQUITY_LIAB: FieldDef[] = [
   { code: '2.41', label: 'Skatteskulder', min: 2500, max: 2599, mode: 'credit' },
   { code: '2.42', label: 'Moms och särskilda punktskatter', min: 2600, max: 2699, mode: 'credit' },
   { code: '2.44', label: 'Övriga kortfristiga skulder', min: 2400, max: 2439, mode: 'credit' },
+  // OBS: 2450–2499 MÅSTE täckas (t.ex. 2450 Fakturerad men ej upparbetad intäkt,
+  // 2460 koncernskuld, 2490/2499 övriga) annars läcker saldot rakt in i difference_ore.
+  { code: '2.46', label: 'Övriga kortfristiga skulder (2450–2499)', min: 2450, max: 2499, mode: 'credit' },
   { code: '2.45', label: 'Personalens källskatt och sociala avgifter', min: 2700, max: 2799, mode: 'credit' },
   { code: '2.47', label: 'Upplupna kostnader och förutbetalda intäkter', min: 2800, max: 2999, mode: 'credit' },
 ];

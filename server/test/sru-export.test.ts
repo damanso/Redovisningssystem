@@ -91,6 +91,38 @@ describe('INK2S-fältkoder', () => {
   });
 });
 
+// Grindfynd C1–C6 (MEDIUM): ett teckenväxlande finansiellt resultatfält (3.13 andelar,
+// konto 8000–8199) som blir NEGATIVT ska emitteras till sin motsatta SRU-kod (7518),
+// inte tappas — annars stämmer inte INK2R-raderna mot årets resultat.
+describe('negativt resultat från andelar emitteras till 7518 (grindfynd)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+
+  beforeAll(async () => {
+    u = await registerUser('sru-neg');
+    cid = await createCompany(u.token, 'Nedskrivning AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // Nedskrivning av andelar i koncernföretag: konto 8070 (inom 8000–8199) debet mot bank.
+    await api.post(`${c()}/accounting/accounts`).set(a()).send({ account_number: 8070, name: 'Nedskrivningar av andelar i koncernföretag', account_type: 'expense' });
+    const v = await api.post(`${c()}/actions/post_voucher`).set(a()).send({
+      fiscal_year_id: fyId, voucher_date: '2025-05-01', description: 'Nedskrivning andelar',
+      lines: [{ account_number: 8070, debit_ore: 500000_00 }, { account_number: 1930, credit_ore: 500000_00 }],
+    });
+    await api.post(`${c()}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+  });
+
+  it('BLANKETTER.SRU bär 7518 med förlustbeloppet', async () => {
+    const res = await api.post(`${c()}/actions/generate_ink2_sru`).set(a()).send({ fiscal_year_id: fyId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const b = res.body.result.blanketter_sru as string;
+    expect(b).toContain('#UPPGIFT 7518 500000'); // negativt andelsresultat → kostnadskod
+    expect(b).not.toContain('#UPPGIFT 7414');     // ska inte emitteras som positiv intäkt
+    expect(b).toContain('#UPPGIFT 7550 500000');  // årets resultat, förlust
+  });
+});
+
 describe('SRU-nedladdning', () => {
   it('vyn erbjuder filnedladdning med rätt content-disposition', async () => {
     const ua = supertest.agent(app);

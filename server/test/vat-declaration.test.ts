@@ -88,6 +88,42 @@ describe('momsdeklaration rutor 05–49', () => {
   });
 });
 
+// Grindfynd C1–C6 (MEDIUM): omvänd skattskyldighet/förvärvsmoms på 12 %/6 % (konton
+// 2624–2629 / 2634–2639) får INTE räknas som vanlig utgående moms (ruta 11/12) — de
+// hör till ruta 31/32 med underlag i ruta 21, inte ruta 05.
+describe('omvänd skattskyldighet 12 % hamnar i ruta 31 (grindfynd)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+
+  beforeAll(async () => {
+    u = await registerUser('vat-rev');
+    cid = await createCompany(u.token, 'Omvänd AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // EU-tjänsteförvärv 12 %: beräknad utgående moms 2624 (kredit) mot beräknad ingående 2645 (debet).
+    await api.post(`${c()}/accounting/accounts`).set(a()).send({ account_number: 2624, name: 'Utgående moms omvänd skattskyldighet, 12 %', account_type: 'liability' });
+    const v = await api.post(`${c()}/actions/post_voucher`).set(a()).send({
+      fiscal_year_id: fyId, voucher_date: '2025-04-01', description: 'EU-tjänst omvänd 12%',
+      lines: [{ account_number: 2645, debit_ore: 1200_00 }, { account_number: 2624, credit_ore: 1200_00 }],
+    });
+    await api.post(`${c()}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+  });
+
+  it('ruta 31 = utgående omvänd 12 %, ruta 21 = underlag, ruta 11 och 05 opåverkade', async () => {
+    const res = await api.post(`${c()}/actions/vat_declaration`).set(a()).send({ from: '2025-01-01', to: '2025-12-31' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const d = res.body.result;
+    const b = (boxes: { code: string; amount_ore: number }[], code: string) => boxes.find((x) => x.code === code)!.amount_ore;
+    expect(b(d.reverse_output_vat, '31')).toBe(1200_00);   // utgående omvänd 12 %
+    expect(b(d.reverse_purchases, '21')).toBe(10000_00);   // underlag 1 200 / 0,12
+    expect(b(d.output_vat, '11')).toBe(0);                 // INTE vanlig utgående 12 %
+    expect(b(d.sales, '05')).toBe(0);                      // INTE momspliktig egen försäljning
+    expect(d.input_vat.amount_ore).toBe(1200_00);          // ingående 2645
+    expect(d.net_to_pay_ore).toBe(0);                      // 1 200 utgående − 1 200 ingående
+  });
+});
+
 describe('momsdeklarationsvyn', () => {
   it('renderar rutor och förbehåll', async () => {
     const ua = supertest.agent(app);
