@@ -35,6 +35,7 @@ import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
 import { taxOverview } from '../../services/taxes.js';
+import { taxPlanning } from '../../services/taxPlanning.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -789,6 +790,8 @@ viewRouter.get('/c/:companyId/tax', pageFor('tax', 'Skatt', async (client, compa
   const t = await taxOverview(client, companyId);
   const L = t.liability;
   const next = t.deadlines[0];
+  const latestFy = await client.query<{ id: string }>('SELECT id FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1', [companyId]);
+  const plan = latestFy.rows[0] ? await taxPlanning(client, companyId, latestFy.rows[0].id) : null;
   return html`<div class="page-head"><div>${eyebrow('Skatt')}<h1>Skatt & skattekonto</h1>
       <p class="lede">Vad bolaget är skyldigt Skatteverket, beräknat ur bokföringen per ${t.as_of}. Deadlines är vägledande.</p></div></div>
     <div class="empty" style="text-align:left;padding:12px 14px">${chip('Vägledande underlag', 'warn', '!')} <span class="muted">Beloppen kommer ur din bokföring och bolagsskatten är en uppskattning (20,6 % av positivt resultat före skattemässiga justeringar). Detta är inte Skatteverkets skattekonto och ersätter inte din revisor.</span></div>
@@ -813,11 +816,46 @@ viewRouter.get('/c/:companyId/tax', pageFor('tax', 'Skatt', async (client, compa
       <button class="btn btn--ghost btn--sm" type="submit">Spara</button>
       <span class="muted" style="font-size:12.5px">Nuvarande: ${VAT_PERIOD_SV[t.vat_period]}</span></form>
 
-    <h2 style="margin-top:20px">Kommande deadlines (vägledande)</h2>
+    ${
+      plan
+        ? html`<h2 style="margin-top:22px">Skattestöd — sänk skatten lagligt (${plan.fiscal_year.label})</h2>
+          <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beslutsstöd, ej rådgivning', 'warn', '!')} <span class="muted">Förenklad uppskattning ur bokföringen — skattemässiga justeringar (t.ex. ej avdragsgilla kostnader) ingår inte. Stäm av med din revisor innan du agerar.</span></div>
+          <div class="kpi-grid">
+            ${kpiCell('Skatt utan optimering', amount(plan.baseline_tax_ore))}
+            ${kpiCell('Skatt optimerad', amount(plan.optimized.tax_ore))}
+            ${kpiCell('Möjlig besparing', amount(plan.estimated_saving_ore))}
+            ${kpiCell('Tillgängligt underskott', amount(plan.loss_carryforward_ore))}
+          </div>
+          <div class="table-wrap" style="margin-top:12px"><table><tbody>
+            <tr><td>Resultat före skatt</td><td class="num">${amount(plan.result_before_tax_ore, { unit: false })}</td></tr>
+            <tr><td>Föreslagen avsättning periodiseringsfond (25 %)</td><td class="num">${amount(plan.optimized.periodiseringsfond_avsattning_ore, { unit: false })}</td></tr>
+            <tr><td>Utnyttjat underskottsavdrag</td><td class="num">${amount(plan.optimized.loss_used_ore, { unit: false })}</td></tr>
+            <tr class="subtot"><td><strong>Skattemässigt resultat (optimerat)</strong></td><td class="num"><strong>${amount(plan.optimized.taxable_income_ore, { unit: false })}</strong></td></tr>
+            <tr><td>Befintliga periodiseringsfonder</td><td class="num">${amount(plan.existing_periodiseringsfond_ore, { unit: false })}</td></tr>
+          </tbody></table></div>
+          <p class="lede" style="margin-top:12px"><strong>Momsavdrag-genomgång:</strong> ingående moms i år ${money(plan.vat_review.input_vat_ore)} kr. ${plan.vat_review.expense_vouchers_without_vat ? chip(`${plan.vat_review.expense_vouchers_without_vat} kostnadsverifikat utan ingående moms — kontrollera avdragsrätt`, 'warn', '!') : chip('Inga kostnadsverifikat saknar ingående moms', 'ok', '✓')}</p>
+          <h3 style="margin-top:14px">Avdragschecklista & aktivitetsförslag</h3>
+          <ul>${plan.suggestions.map((s) => html`<li class="muted">${s}</li>`)}</ul>
+          <form method="post" action="/app/c/${companyId}/tax/opening-loss" style="display:flex;gap:8px;align-items:flex-end;margin-top:8px">
+            <label class="field" style="margin:0"><span>Ingående skattemässigt underskott (kr)</span><input type="number" name="opening_loss_kr" min="0" step="1" value="${String(Math.round(plan.loss_carryforward_ore / 100))}"></label>
+            <button class="btn btn--ghost btn--sm" type="submit">Spara underskott</button></form>`
+        : ''
+    }
+
+    <h2 style="margin-top:22px">Kommande deadlines (vägledande)</h2>
     ${next ? html`<p class="lede">Nästa: <strong>${next.label}</strong> — ${next.due_date} (${next.period_label})</p>` : ''}
     <div class="table-wrap"><table><thead><tr><th>Förfaller</th><th>Deklaration</th><th>Period</th><th></th></tr></thead><tbody>
       ${t.deadlines.map((d) => html`<tr><td class="code">${d.due_date}</td><td>${d.label}</td><td>${d.period_label}</td><td class="muted" style="font-size:12px">${d.note}</td></tr>`)}
     </tbody></table></div>`;
+}));
+
+viewRouter.post('/c/:companyId/tax/opening-loss', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { opening_loss_kr?: unknown }).opening_loss_kr);
+  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [companyId, kr * 100]));
+  res.redirect(`/app/c/${companyId}/tax`);
 }));
 
 viewRouter.post('/c/:companyId/tax/vat-period', page(async (req, res) => {

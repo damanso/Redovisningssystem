@@ -22,6 +22,7 @@ import { importBankCsv, listBankTransactions, setBankTransactionReconciled } fro
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport } from '../services/k2.js';
 import { taxOverview } from '../services/taxes.js';
+import { taxPlanning } from '../services/taxPlanning.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -155,6 +156,23 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => taxOverview(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'tax_planning',
+    title: 'Skattestöd (underskott, periodiseringsfond, optimerad skatt)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => taxPlanning(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'set_opening_tax_loss',
+    title: 'Ange ingående skattemässigt underskott',
+    sensitivity: 'write',
+    inputSchema: z.object({ opening_tax_loss_ore: OreSchema }).strict(),
+    handler: async (ctx, i: { opening_tax_loss_ore: number }) => {
+      await ctx.client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [ctx.companyId, i.opening_tax_loss_ore]);
+      return { opening_tax_loss_ore: i.opening_tax_loss_ore };
+    },
   }),
   def({
     name: 'set_vat_period',
