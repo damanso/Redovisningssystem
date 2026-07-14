@@ -42,6 +42,7 @@ import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type I
 import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services/vatDeclaration.js';
 import { generateInk2Sru } from '../../services/sruExport.js';
 import { generateK2Ixbrl } from '../../services/ixbrlExport.js';
+import { agiDeclaration, generateAgiXml } from '../../services/agi.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -1686,8 +1687,11 @@ viewRouter.post('/c/:companyId/team/remove', page(async (req, res) => {
 viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client, companyId) => {
   const employees = await listEmployees(client, companyId, {});
   const payslips = await listPayslips(client, companyId, {});
+  // Redovisningsperioder med lönebesked (för AGI-generering), nyast först.
+  const periods = [...new Set(payslips.map((p) => p.period as string))].sort().reverse();
+  const agi = periods[0] ? await agiDeclaration(client, companyId, periods[0]) : null;
   return html`<div class="page-head"><div>${eyebrow('Lön')}<h1>Lön & personal</h1>
-      <p class="lede">Anställda och lönebesked. Systemet beräknar brutto, preliminärskatt och arbetsgivaravgift och bokför lönen. Arbetsgivardeklaration (AGI) till Skatteverket ingår inte.</p></div></div>
+      <p class="lede">Anställda och lönebesked. Systemet beräknar brutto, preliminärskatt och arbetsgivaravgift och bokför lönen. Arbetsgivardeklaration (AGI) genereras som fil för egen uppladdning till Skatteverket.</p></div></div>
     <h2>Anställda</h2>
     ${
       employees.length === 0
@@ -1710,7 +1714,36 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
               <td class="num">${amount(p.employer_contribution_ore as number, { unit: false })}</td>
               <td>${statusChip(String(p.status))}</td></tr>`)}
           </tbody></table></div>`
-    }`;
+    }
+    ${agi ? html`<h2 style="margin-top:22px">Arbetsgivardeklaration (AGI)</h2>
+      <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beräknat underlag — ingen digital inlämning', 'warn', '!')} <span class="muted">${agi.disclaimer}</span></div>
+      <div class="kpi-grid">
+        ${kpiCell('Period', html`${agi.period}`)}
+        ${kpiCell('Avdragen skatt', amount(agi.summary.employee_tax_total_ore))}
+        ${kpiCell('Arbetsgivaravgifter', amount(agi.summary.employer_contribution_total_ore))}
+        ${kpiCell('Att betala', amount(agi.summary.to_pay_total_ore))}
+      </div>
+      <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Spec.nr</th><th>Anställd</th><th class="num">Kontant ersättning</th><th class="num">Avdragen skatt</th></tr></thead><tbody>
+        ${agi.individuals.map((i) => html`<tr><td class="code">${String(i.spec_no).padStart(3, '0')}</td><td>${i.employee_name}</td>
+          <td class="num">${amount(i.gross_ore, { unit: false })}</td><td class="num">${amount(i.tax_ore, { unit: false })}</td></tr>`)}
+      </tbody></table></div>
+      <h3 style="margin-top:14px">Ladda ner AGI-fil (XML) per period</h3>
+      <div class="actions">${periods.map((per) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/payroll/agi.xml?period=${per}">AGI ${per}</a> `)}</div>` : ''}`;
+}));
+
+// Fas D1: AGI-filnedladdning (XML) för en period. Beräknat underlag; ingen digital inlämning.
+viewRouter.get('/c/:companyId/payroll/agi.xml', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const period = z.string().regex(/^\d{4}-\d{2}$/).parse(req.query.period);
+  const now = new Date();
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateAgiXml(client, companyId, period, { createdIso: now.toISOString().slice(0, 19) });
+  });
+  res.type('application/xml; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="${out.filename}"`)
+    .send(out.xml);
 }));
 
 // Migration/import: SIE-fil (konton + verifikat) och bank-CSV. Live bankkoppling

@@ -29,6 +29,7 @@ import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTa
 import { vatDeclaration } from '../services/vatDeclaration.js';
 import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
+import { agiDeclaration, generateAgiXml } from '../services/agi.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -282,6 +283,23 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => ink2rReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'agi_declaration',
+    title: 'Arbetsgivardeklaration på individnivå (AGI) för en period',
+    sensitivity: 'read',
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/, "period anges som 'YYYY-MM'") }).strict(),
+    handler: (ctx, i: { period: string }) => agiDeclaration(ctx.client, ctx.companyId, i.period),
+  }),
+  def({
+    name: 'generate_agi_file',
+    title: 'Generera AGI-fil (XML) för Skatteverket',
+    sensitivity: 'read',
+    inputSchema: z.object({ period: z.string().regex(/^\d{4}-\d{2}$/, "period anges som 'YYYY-MM'") }).strict(),
+    handler: (ctx, i: { period: string }) => {
+      const now = new Date();
+      return generateAgiXml(ctx.client, ctx.companyId, i.period, { createdIso: now.toISOString().slice(0, 19) });
+    },
   }),
   def({
     name: 'generate_k2_ixbrl',
