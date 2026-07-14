@@ -18,9 +18,11 @@ beforeAll(async () => {
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5560269986' });
   const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
   fiscalYearId = fy.body.fiscal_year.id;
-  // Löneunderlag: en anställd med lönebesked i 2024 (brutto 40 000 kr).
+  // Löneunderlag för inkomstår 2024 = KALENDERÅRET FÖRE (2023). Lön 2023 (40 000 kr)
+  // ska räknas; en lön 2024 ska INTE räknas med i gränsbeloppet för inkomstår 2024.
   const e = await api.post(`${co()}/actions/create_employee`).set(auth()).send({ name: 'Ägare', personnummer: '198001011234', monthly_salary_ore: 4000000, tax_rate: 30 });
-  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2024-06' });
+  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2023-06' });
+  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2024-06' }); // fel år → exkluderas
 });
 
 const BASE = {
@@ -103,6 +105,19 @@ describe('K10 SRU-blankett', () => {
   it('vägrar ogiltigt personnummer', async () => {
     const res = await sru({ owner_personnummer: '123' });
     expect(res.status).toBe(400);
+  });
+  // Grindfynd: huvudregeln får inte tyst rapporteras med förenklingsregelns gränsbelopp.
+  it('vägrar SRU för huvudregeln (grindfynd)', async () => {
+    const res = await sru({ rule: 'huvudregel' });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('huvudregel_sru_unsupported');
+  });
+  // Grindfynd: blankettens interna summa 412 = 410 + 411 ska stämma exakt (kron-avrundat).
+  it('412 = 410 + 411 (avrundningskonsistens, grindfynd)', async () => {
+    const res = await sru({ saved_allowance_ore: 12550, dividend_ore: 0 }); // 125,50 kr sparat
+    const b = res.body.result.blanketter_sru as string;
+    const get = (kod: string) => Number(new RegExp(`#UPPGIFT ${kod} (\\d+)`).exec(b)?.[1] ?? '0');
+    expect(get('412')).toBe(get('410') + get('411'));
   });
 });
 

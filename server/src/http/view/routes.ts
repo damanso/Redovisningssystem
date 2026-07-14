@@ -1351,10 +1351,14 @@ function k10InputFromQuery(q: Record<string, unknown>): { fy: string; input: imp
   const fy = typeof q.fy === 'string' && /^[0-9a-f-]{36}$/.test(q.fy) ? q.fy : null;
   if (!fy) return null;
   const rule = q.rule === 'huvudregel' ? 'huvudregel' : 'forenkling';
+  // Saknat fält → default 100 %. Ett ANGIVET men ogiltigt värde (0, NaN) klampas till 1
+  // (minsta giltiga) i stället för att tyst bli 1000 — `|| 1000` konflaterade 0 med saknas.
+  const ownRaw = q.ownership_permille;
+  const ownership = ownRaw === undefined || ownRaw === '' ? 1000 : Math.min(1000, Math.max(1, Math.round(Number(ownRaw) || 1)));
   return {
     fy,
     input: {
-      ownership_permille: Math.min(1000, Math.max(1, Math.round(Number(q.ownership_permille) || 1000))),
+      ownership_permille: ownership,
       omkostnadsbelopp_ore: (K10_NUM.safeParse(q.omkostnad_kr).success ? Number(q.omkostnad_kr) : 0) * 100,
       saved_allowance_ore: (K10_NUM.safeParse(q.saved_kr).success ? Number(q.saved_kr) : 0) * 100,
       owner_salary_ore: (K10_NUM.safeParse(q.salary_kr).success ? Number(q.salary_kr) : 0) * 100,

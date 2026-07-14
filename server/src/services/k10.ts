@@ -86,11 +86,14 @@ export async function k10Computation(client: PoolClient, companyId: string, fisc
   const k = K10_CONSTANTS[incomeYear];
   if (!k) throw new BadRequestError('year_not_supported', `saknar 3:12-konstanter för inkomstår ${incomeYear} (stöds: ${Object.keys(K10_CONSTANTS).join(', ')})`);
 
-  // Löneunderlag = totala kontanta bruttolöner i bolaget under räkenskapsåret.
+  // Löneunderlag = totala kontanta bruttolöner i bolaget under KALENDERÅRET FÖRE
+  // inkomståret (3:12 räknar på året före beskattningsåret) — samma år som IBB/
+  // schablonbeloppet i K10_CONSTANTS bygger på. Kalenderårsbaserat, inte räkenskapsår.
+  const wageYear = incomeYear - 1;
   const wages = await client.query<{ total: string }>(
     `SELECT COALESCE(sum(gross_ore), 0) AS total FROM payslips
      WHERE company_id = $1 AND period LIKE $2 AND status <> 'cancelled'`,
-    [companyId, `${incomeYear}-%`],
+    [companyId, `${wageYear}-%`],
   );
   const wageBase = Number(wages.rows[0]!.total);
 
@@ -158,6 +161,12 @@ export interface K10SruInput extends K10Input {
 export async function generateK10Sru(
   client: PoolClient, companyId: string, fiscalYearId: string, input: K10SruInput, createdDate: string, createdTime: string,
 ): Promise<{ info_sru: string; blanketter_sru: string; blankett_id: string; disclaimer: string }> {
+  // Endast förenklingsregeln stöds i SRU-genereringen (dess fältkoder är bekräftade).
+  // Att tyst rapportera huvudregelns utdelning med förenklingsregelns lägre gränsbelopp
+  // skulle felaktigt beskatta kapital-utdelning som tjänst — vägra i stället.
+  if (input.rule === 'huvudregel') {
+    throw new BadRequestError('huvudregel_sru_unsupported', 'K10 SRU-generering stödjer endast förenklingsregeln (huvudregelns fältkoder måste verifieras mot aktuell blankett) — välj förenklingsregeln eller fyll i huvudregeln manuellt');
+  }
   const r = await k10Computation(client, companyId, fiscalYearId, input);
   const ownerId = input.owner_personnummer.replace(/\D/g, '');
   if (ownerId.length !== 10 && ownerId.length !== 12) {
@@ -166,19 +175,23 @@ export async function generateK10Sru(
   const companyOrg = (r.company.org_number ?? '').replace(/\D/g, '');
   if (companyOrg.length !== 10) throw new BadRequestError('missing_org_number', 'bolagets organisationsnummer krävs');
 
-  // Förenklingsregelns fördelning (oberoende av vald regel i beräkningen ovan).
-  const chosen = r.forenkling.total_gransbelopp_ore;
-  const over = Math.max(0, input.dividend_ore - chosen);
-  const savedNext = Math.max(0, chosen - input.dividend_ore);
+  // Avrunda i kronor så blankettens interna summor stämmer exakt: 412 = 410 + 411,
+  // och 415/416 = differensen mot 413 (per-fält-avrundning skulle annars ge ±1 kr).
+  const kr410 = toKronor(r.forenkling.arets_gransbelopp_ore);   // årets gränsbelopp
+  const kr411 = toKronor(r.forenkling.saved_uprated_ore);       // sparat f.å. uppräknat
+  const kr412 = kr410 + kr411;                                  // gränsbelopp förenkling (summa)
+  const kr413 = toKronor(input.dividend_ore);                   // utdelning
+  const kr415 = Math.max(0, kr413 - kr412);                     // beskattas i tjänst
+  const kr416 = Math.max(0, kr412 - kr413);                     // sparat till nästa år
 
   const fields: SruField[] = [
-    { kod: '480', value: Number(companyOrg) },                                    // företagets org.nr
-    { kod: '410', value: toKronor(r.forenkling.arets_gransbelopp_ore) },          // årets gränsbelopp
-    { kod: '411', value: toKronor(r.forenkling.saved_uprated_ore) },              // sparat f.å. uppräknat
-    { kod: '412', value: toKronor(chosen) },                                      // gränsbelopp förenkling (summa)
-    { kod: '413', value: toKronor(input.dividend_ore) },                          // utdelning
-    { kod: '415', value: toKronor(over) },                                        // utdelning som beskattas i tjänst
-    { kod: '416', value: toKronor(savedNext) },                                   // sparat utdelningsutrymme till nästa år
+    { kod: '480', value: Number(companyOrg) },
+    { kod: '410', value: kr410 },
+    { kod: '411', value: kr411 },
+    { kod: '412', value: kr412 },
+    { kod: '413', value: kr413 },
+    { kod: '415', value: kr415 },
+    { kod: '416', value: kr416 },
   ];
 
   const sender = { orgnr: ownerId, name: input.owner_name, program: 'Redovisningssystem' };
