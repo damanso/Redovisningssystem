@@ -39,6 +39,7 @@ import { taxPlanning } from '../../services/taxPlanning.js';
 import { listFixedAssets } from '../../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type Ink2rReport, type Ink2sResult } from '../../services/ink2.js';
+import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services/vatDeclaration.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -653,6 +654,33 @@ function ink2Body(companyId: string, fyId: string, r: Ink2rReport, s: Ink2sResul
     </section>`;
 }
 
+function vatDeclarationBody(companyId: string, d: VatDeclaration): Raw {
+  const boxRows = (boxes: VatBox[]) => boxes.map((b) => html`<tr><td class="code">${b.code}</td><td>${b.label}</td><td class="num">${amount(b.amount_ore, { unit: false })}</td></tr>`);
+  const grp = (title: string, boxes: VatBox[]) => html`<tr><td colspan="3" class="muted"><strong>${title}</strong></td></tr>${boxRows(boxes)}`;
+  return html`<div class="page-head"><div>${eyebrow('Moms · Skattedeklaration')}<h1>Momsdeklaration</h1>
+      <p class="lede">Perioden ${d.from} – ${d.to}. Alla rutor 05–49 beräknade ur bokföringen.</p></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beräknat underlag — ingen digital inlämning', 'warn', '!')} <span class="muted">${d.disclaimer}</span></div>
+    <form method="get" action="/app/c/${companyId}/vat" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:6px 0 12px">
+      <label class="field" style="margin:0"><span>Från</span><input type="date" name="from" value="${d.from}"></label>
+      <label class="field" style="margin:0"><span>Till</span><input type="date" name="to" value="${d.to}"></label>
+      <button class="btn btn--ghost btn--sm" type="submit">Visa period</button></form>
+    <div class="kpi-grid">
+      ${kpiCell('Utgående moms', amount(d.output_vat.reduce((s, b) => s + b.amount_ore, 0) + d.reverse_output_vat.reduce((s, b) => s + b.amount_ore, 0)))}
+      ${kpiCell('Ingående moms (48)', amount(d.input_vat.amount_ore))}
+      ${kpiCell(d.net_to_pay_ore >= 0 ? 'Moms att betala (49)' : 'Moms att få tillbaka (49)', amount(d.net.amount_ore))}
+    </div>
+    <div class="table-wrap" style="margin-top:14px"><table><thead><tr><th>Ruta</th><th>Post</th><th class="num">Belopp</th></tr></thead><tbody>
+      ${grp('A. Momspliktig försäljning eller uttag exkl. moms', d.sales)}
+      ${grp('B. Utgående moms på försäljning i ruta 05–08', d.output_vat)}
+      ${grp('C. Momspliktiga inköp vid omvänd skattskyldighet', d.reverse_purchases)}
+      ${grp('D. Utgående moms på inköp i ruta 20–24', d.reverse_output_vat)}
+      ${grp('E. Försäljning m.m. som är undantagen från moms', d.exempt_sales)}
+      <tr><td colspan="3" class="muted"><strong>F. Ingående moms</strong></td></tr>
+      ${boxRows([d.input_vat])}
+      <tr class="subtot"><td class="code">49</td><td><strong>G. ${d.net.label}</strong></td><td class="num"><strong>${amount(d.net.amount_ore, { unit: false })}</strong></td></tr>
+    </tbody></table></div>`;
+}
+
 viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1090,6 +1118,27 @@ viewRouter.post('/c/:companyId/tax/vat-period', page(async (req, res) => {
   const vatPeriod = z.enum(['monthly', 'quarterly', 'yearly']).parse((req.body as { vat_period?: unknown }).vat_period);
   await withTenantTransaction(userId, companyId, (client) => setVatPeriod(client, companyId, userId, vatPeriod));
   res.redirect(`/app/c/${companyId}/tax`);
+}));
+
+// Fas C5: momsdeklaration — alla rutor 05–49 för en momsperiod. Beräknat underlag.
+viewRouter.get('/c/:companyId/vat', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const q = req.query as { from?: unknown; to?: unknown };
+  const fromQ = typeof q.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.from) ? q.from : null;
+  const toQ = typeof q.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.to) ? q.to : null;
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    // Standardperiod: senaste räkenskapsårets omfång om inget valts.
+    const fy = await client.query<{ start_date: string; end_date: string }>(
+      'SELECT start_date::text, end_date::text FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1', [companyId],
+    );
+    const from = fromQ ?? fy.rows[0]?.start_date ?? '2000-01-01';
+    const to = toQ ?? fy.rows[0]?.end_date ?? '2000-12-31';
+    const d = await vatDeclaration(client, companyId, from, to);
+    return { name: company.name, body: vatDeclarationBody(companyId, d) };
+  });
+  res.type('html').send(layout({ title: 'Momsdeklaration', companyId, companyName: name, active: 'vat', body }).value);
 }));
 
 // Fas C4: INK2 deklarationsunderlag — INK2R räkenskapsschema + INK2S skattemässiga

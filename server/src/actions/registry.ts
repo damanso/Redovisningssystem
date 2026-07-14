@@ -26,6 +26,7 @@ import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments } from '../services/ink2.js';
+import { vatDeclaration } from '../services/vatDeclaration.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -265,6 +266,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => k2ManagementReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'vat_declaration',
+    title: 'Momsdeklaration (alla rutor 05–49)',
+    sensitivity: 'read',
+    inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema }).strict(),
+    handler: (ctx, i: { from: string; to: string }) => vatDeclaration(ctx.client, ctx.companyId, i.from, i.to),
   }),
   def({
     name: 'ink2r_schema',

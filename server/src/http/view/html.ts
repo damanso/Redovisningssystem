@@ -127,6 +127,7 @@ const NAV = [
   ['annual', 'Bokslut'],
   ['assets', 'Anläggningar'],
   ['tax', 'Skatt'],
+  ['vat', 'Moms'],
   ['ink2', 'Deklaration'],
   ['analytics', 'Analys'],
   ['cashflow', 'Kassaflöde'],

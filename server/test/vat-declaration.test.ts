@@ -1,0 +1,102 @@
+// Fas C5: momsdeklaration (skattedeklaration för moms) — alla rutor 05–49 beräknade
+// ur bokföringen. Utgående moms per sats (10–12), ingående moms (48), moms att betala
+// (49), underlag (05) och undantagen försäljning (35/39/42). Beräknat underlag.
+import supertest from 'supertest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+
+const PASSWORD = 'mycket-hemligt-losen-123';
+let user: TestUser;
+let companyId: string;
+let fiscalYearId: string;
+const auth = () => ({ Authorization: `Bearer ${user.token}` });
+const co = () => `/api/companies/${companyId}`;
+
+async function approveAction(name: string, body: Record<string, unknown>) {
+  const req = await api.post(`${co()}/actions/${name}`).set(auth()).send(body);
+  expect(req.status, JSON.stringify(req.body)).toBe(202);
+  return api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+}
+async function invoice(lines: Record<string, unknown>[]) {
+  const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Kund' });
+  const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({
+    customer_id: cust.body.customer.id, invoice_date: '2025-02-10', due_date: '2025-03-10', lines,
+  });
+  expect(inv.status, JSON.stringify(inv.body)).toBe(200);
+  await approveAction('book_invoice', { invoice_id: inv.body.result.id, fiscal_year_id: fiscalYearId });
+}
+
+beforeAll(async () => {
+  user = await registerUser('vatdecl');
+  companyId = await createCompany(user.token, 'Moms AB');
+  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.body.fiscal_year.id;
+  // 25 %-försäljning 100 000 → utgående moms 25 000 (ruta 10), underlag 100 000 (ruta 05).
+  await invoice([{ description: 'Konsult', quantity: 1, unit_price_ore: 100000_00, vat_rate: 25 }]);
+  // 12 %-försäljning 50 000 → utgående moms 6 000 (ruta 11).
+  await invoice([{ description: 'Mat', quantity: 1, unit_price_ore: 50000_00, vat_rate: 12 }]);
+  // EU-tjänst (konto 3308, momsfri) 30 000 → ruta 39.
+  await invoice([{ description: 'EU-tjänst', quantity: 1, unit_price_ore: 30000_00, vat_rate: 0, revenue_account: 3308 }]);
+  // Momsfri försäljning (konto 3004) 10 000 → ruta 42.
+  await invoice([{ description: 'Momsfritt', quantity: 1, unit_price_ore: 10000_00, vat_rate: 0, revenue_account: 3004 }]);
+  // Kostnad 20 000 + 25 % → ingående moms 5 000 (ruta 48).
+  const receipt = await api.post(`${co()}/actions/create_receipt`).set(auth()).send({
+    receipt_date: '2025-02-15', description: 'Inköp', net_ore: 20000_00, vat_rate: 25, expense_account: 5460, payment_account: 1930,
+  });
+  await approveAction('book_receipt', { receipt_id: receipt.body.result.id, fiscal_year_id: fiscalYearId });
+});
+
+async function decl() {
+  const res = await api.post(`${co()}/actions/vat_declaration`).set(auth()).send({ from: '2025-01-01', to: '2025-12-31' });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return res.body.result;
+}
+const box = (boxes: { code: string; amount_ore: number }[], code: string) => boxes.find((b) => b.code === code)!.amount_ore;
+
+describe('momsdeklaration rutor 05–49', () => {
+  it('utgående moms per sats, underlag och undantagen försäljning', async () => {
+    const d = await decl();
+    // B. Utgående moms.
+    expect(box(d.output_vat, '10')).toBe(25000_00); // 25 % av 100 000
+    expect(box(d.output_vat, '11')).toBe(6000_00);  // 12 % av 50 000
+    expect(box(d.output_vat, '12')).toBe(0);
+    // A. Underlag ruta 05 = 100 000 + 50 000 (rekonstruerat ur momsen).
+    expect(box(d.sales, '05')).toBe(150000_00);
+    // E. Undantagen försäljning.
+    expect(box(d.exempt_sales, '39')).toBe(30000_00); // EU-tjänst
+    expect(box(d.exempt_sales, '42')).toBe(10000_00); // momsfri
+  });
+
+  it('ingående moms (48) och moms att betala (49)', async () => {
+    const d = await decl();
+    expect(d.input_vat.amount_ore).toBe(5000_00);      // ruta 48
+    // 49 = (25 000 + 6 000) − 5 000 = 26 000.
+    expect(d.net.amount_ore).toBe(26000_00);
+    expect(d.net_to_pay_ore).toBe(26000_00);
+    expect(d.net.label).toBe('Moms att betala');
+  });
+
+  it('alla rutor 05–49 finns i uppställningen', async () => {
+    const d = await decl();
+    const codes = [
+      ...d.sales, ...d.output_vat, ...d.reverse_purchases, ...d.reverse_output_vat,
+      ...d.exempt_sales, d.input_vat, d.net,
+    ].map((b: { code: string }) => b.code);
+    for (const c of ['05', '06', '07', '08', '10', '11', '12', '20', '21', '22', '23', '24', '30', '31', '32', '35', '36', '37', '38', '39', '40', '41', '42', '48', '49']) {
+      expect(codes, `ruta ${c} saknas`).toContain(c);
+    }
+  });
+});
+
+describe('momsdeklarationsvyn', () => {
+  it('renderar rutor och förbehåll', async () => {
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    const res = await ua.get(`/app/c/${companyId}/vat?from=2025-01-01&to=2025-12-31`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Momsdeklaration');
+    expect(res.text).toContain('Utgående moms 25 %');
+    expect(res.text).toContain('Moms att betala');
+    expect(res.text).toContain('ingen digital inlämning');
+  });
+});
