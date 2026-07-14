@@ -380,10 +380,13 @@ export async function accountsReceivableAging(
     // ej annullerade fakturor med kvarvarande skuld tas med.
     `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d),
      open_inv AS (
-       SELECT i.customer_id, i.due_date, (i.total_ore - i.paid_amount_ore) AS outstanding
+       -- Vid ROT/RUT är KUNDENS skuld total − skattereduktion (resten är fordran
+       -- på Skatteverket, inte på kunden) → dra av avdraget ur kundens utestående.
+       SELECT i.customer_id, i.due_date,
+              (i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS outstanding
        FROM invoices i
        WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL
-         AND i.status <> 'cancelled' AND i.total_ore > i.paid_amount_ore
+         AND i.status <> 'cancelled' AND (i.total_ore - i.housework_reduction_ore) > i.paid_amount_ore
      )
      SELECT o.customer_id, c.name AS customer_name,
        sum(CASE WHEN o.due_date >= (SELECT d FROM ref) THEN o.outstanding ELSE 0 END) AS not_due,
@@ -501,8 +504,10 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
          AND v.voucher_date <= (SELECT d FROM ref)
      ),
      ar AS (
-       SELECT i.due_date, (i.total_ore - i.paid_amount_ore) AS amt FROM invoices i
-       WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL AND i.status <> 'cancelled' AND i.total_ore > i.paid_amount_ore
+       -- Kundens del vid ROT/RUT = total − skattereduktion (resten fås från Skatteverket).
+       SELECT i.due_date, (i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS amt FROM invoices i
+       WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL AND i.status <> 'cancelled'
+         AND (i.total_ore - i.housework_reduction_ore) > i.paid_amount_ore
      ),
      ap AS (
        SELECT s.due_date, (s.total_ore - s.paid_amount_ore) AS amt FROM supplier_invoices s

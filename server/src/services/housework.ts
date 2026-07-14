@@ -49,5 +49,22 @@ export function computeHouseworkReduction(
   return { type, labor_cost_ore: laborCostOre, raw_reduction_ore: raw, reduction_ore: reduction, capped: reduction < raw };
 }
 
+// Kanoniserar ett personnummer till 12 siffror så att samma person alltid får samma
+// nyckel — annars kan årets tak kringgås genom att växla mellan 10- och 12-siffrigt
+// format. '+' i personnumret betyder att personen fyllt 100 (drar ner seklet).
+// referenceYear (fakturaåret) används för att härleda seklet för 10-siffrigt indata.
+export function canonicalPersonnummer(raw: string, referenceYear: number): string | null {
+  const centuryOld = raw.includes('+');
+  const d = raw.replace(/\D/g, '');
+  if (d.length === 12) return d;
+  if (d.length === 10) {
+    const yy = Number(d.slice(0, 2));
+    let prefix = 2000 + yy <= referenceYear ? '20' : '19';
+    if (centuryOld) prefix = prefix === '20' ? '19' : '18';
+    return prefix + d;
+  }
+  return null;
+}
+
 export const HOUSEWORK_DISCLAIMER =
   'Beräknat ROT/RUT-underlag enligt fakturamodellen. Kunden betalar fakturan minus skattereduktionen; resten begärs från Skatteverket (ingen digital begäran görs här). Avdraget är kapat mot vad detta bolag redan fakturerat köparen i år — den slutliga skattereduktionen beror på köparens samlade köp hos alla utförare och på Skatteverkets beslut.';

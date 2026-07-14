@@ -8,7 +8,7 @@ import { assertAccountsExist } from './accounting/accounts.js';
 import { postCustomerInvoice, postCustomerPayment } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { generateInvoicePdf } from './pdfService.js';
-import { computeHouseworkReduction, HOUSEWORK_RECEIVABLE_ACCOUNT, type HouseworkType } from './housework.js';
+import { canonicalPersonnummer, computeHouseworkReduction, HOUSEWORK_RECEIVABLE_ACCOUNT, type HouseworkType } from './housework.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { removeStoredFile, validateUpload, writeStoredFile } from './fileStorage.js';
 
@@ -148,12 +148,15 @@ export async function createInvoice(
     laborCostOre = input.labor_cost_ore ?? 0;
     if (!Number.isInteger(laborCostOre) || laborCostOre <= 0) throw new BadRequestError('invalid_labor_cost', 'arbetskostnad (labor_cost_ore) krävs för ROT/RUT');
     if (laborCostOre > total) throw new BadRequestError('labor_cost_exceeds_total', 'arbetskostnaden kan inte överstiga fakturans totalbelopp');
-    buyerPersonnummer = (input.buyer_personnummer ?? '').replace(/\D/g, '');
-    if (buyerPersonnummer.length !== 10 && buyerPersonnummer.length !== 12) throw new BadRequestError('invalid_buyer_personnummer', 'köparens personnummer krävs för ROT/RUT (10 eller 12 siffror)');
+    // Kanonisera till 12 siffror så att samma person alltid aggregeras mot årets tak,
+    // oavsett om 10- eller 12-siffrigt format matades in.
+    const year = Number(input.invoice_date.slice(0, 4));
+    const canonicalPnr = canonicalPersonnummer(input.buyer_personnummer ?? '', year);
+    if (!canonicalPnr) throw new BadRequestError('invalid_buyer_personnummer', 'köparens personnummer krävs för ROT/RUT (10 eller 12 siffror)');
+    buyerPersonnummer = canonicalPnr;
     propertyDesignation = input.property_designation ?? null;
     if (houseworkType === 'rot' && !propertyDesignation) throw new BadRequestError('missing_property_designation', 'fastighetsbeteckning krävs för ROT');
     // Redan beviljat detta bolag/köpare/år (kapning mot årets tak).
-    const year = Number(input.invoice_date.slice(0, 4));
     const prior = await client.query<{ rot: string; total: string }>(
       `SELECT COALESCE(sum(housework_reduction_ore) FILTER (WHERE housework_type = 'rot'), 0) AS rot,
               COALESCE(sum(housework_reduction_ore), 0) AS total
@@ -296,8 +299,8 @@ export async function recordInvoicePayment(
   // serialiseras. Utan låset kunde två godkännanden båda läsa paid=0, båda passera
   // överbetalningskontrollen och båda kreditera 1510 → dubbelkreditering (0014 tog
   // bort den unika DB-spärren för betalningsverifikat, så app-låset är skyddet).
-  const locked = await client.query<{ total_ore: string; paid_amount_ore: string; status: string; voucher_id: string | null; invoice_number: number }>(
-    `SELECT total_ore, paid_amount_ore, status, voucher_id, invoice_number
+  const locked = await client.query<{ total_ore: string; paid_amount_ore: string; housework_reduction_ore: string; status: string; voucher_id: string | null; invoice_number: number }>(
+    `SELECT total_ore, paid_amount_ore, housework_reduction_ore, status, voucher_id, invoice_number
      FROM invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`,
     [input.invoiceId, companyId],
   );
@@ -307,8 +310,12 @@ export async function recordInvoicePayment(
   if (row.status === 'paid') throw new ConflictError('already_paid', 'fakturan är redan fullt betald');
   if (row.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte betalas');
   const total = Number(row.total_ore);
+  // Vid ROT/RUT betalar KUNDEN bara sin del (total − skattereduktion); resten är en
+  // fordran på Skatteverket (1513) som regleras separat. Betalningen och "betald"-
+  // statusen ska därför räknas mot kundens del, inte hela fakturabeloppet.
+  const customerDue = total - Number(row.housework_reduction_ore ?? 0);
   const alreadyPaid = Number(row.paid_amount_ore);
-  const outstanding = total - alreadyPaid;
+  const outstanding = customerDue - alreadyPaid;
   const amountOre = input.amountOre ?? outstanding;
   if (amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
   if (amountOre > outstanding) throw new BadRequestError('overpayment', `betalningen överstiger återstående skuld (${outstanding} ören)`);
@@ -321,7 +328,7 @@ export async function recordInvoicePayment(
     bankAccount: input.bankAccount,
   });
   const newPaid = alreadyPaid + amountOre;
-  const fullyPaid = newPaid >= total;
+  const fullyPaid = newPaid >= customerDue;
   await client.query(
     `UPDATE invoices SET paid_amount_ore = $1, status = CASE WHEN $2 THEN 'paid' ELSE status END
      WHERE id = $3 AND company_id = $4`,

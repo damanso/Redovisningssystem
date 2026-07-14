@@ -83,6 +83,27 @@ describe('ROT-faktura', () => {
     expect(text).toContain('199001011234');
     expect(text).toContain('Villan 1:2');
     expect(text).toContain('Husavdrag');
+
+    // Grindfynd: kunden betalar total − avdrag (8 750 kr); den fulla totalen får
+    // INTE stå som "Att betala" i betalningsblocket.
+    expect(text).toContain('8 750,00'); // 8 750,00 (reducerat att betala)
+  });
+
+  it('kunden betalar sin del (total − avdrag) → fakturan markeras betald (grindfynd E3)', async () => {
+    const inv = await api.post(`${co()}/invoices`).set(auth()).send({
+      customer_id: customerId, invoice_date: '2025-07-01',
+      housework_type: 'rot', labor_cost_ore: 1_250_000, buyer_personnummer: '199001011234', property_designation: 'Villan 1:2',
+      lines: [{ description: 'Renovering', quantity: 1, unit_price_ore: 1_000_000, vat_rate: 25 }],
+    });
+    const id = inv.body.invoice.id;
+    await api.post(`${co()}/invoices/${id}/book`).set(auth()).send({ fiscal_year_id: fiscalYearId });
+    // Kundens del = 1 250 000 − 375 000 = 875 000 ören.
+    const req = await api.post(`${co()}/actions/register_invoice_payment`).set(auth()).send({ invoice_id: id, fiscal_year_id: fiscalYearId, payment_date: '2025-07-20' });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const done = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.result.paid_amount_ore).toBe(875_000); // default-belopp = kundens återstod
+    expect(done.body.result.status).toBe('paid');            // markeras betald när kundens del är betald
   });
 });
 
@@ -98,6 +119,24 @@ describe('Årligt tak över flera fakturor', () => {
     expect(a.body.invoice.housework_reduction_ore).toBe(7_000_000);
     const b = await mk(14_000_000); // ytterligare 70 000 kr raw → bara 5 000 kr kvar
     expect(b.body.invoice.housework_reduction_ore).toBe(500_000); // kapat till kvarvarande utrymme
+  });
+});
+
+describe('Personnummer-kanonisering (grindfynd E3)', () => {
+  it('samma person i 12- och 10-siffrigt format aggregeras mot taket', async () => {
+    const c = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Mixformat', payment_terms: 30 });
+    const cid = c.body.customer.id;
+    const mk = (pnr: string, labor: number) => api.post(`${co()}/invoices`).set(auth()).send({
+      customer_id: cid, invoice_date: '2025-08-01',
+      housework_type: 'rut', labor_cost_ore: labor, buyer_personnummer: pnr,
+      lines: [{ description: 'Städ', quantity: 1, unit_price_ore: labor, vat_rate: 0 }],
+    });
+    // Först 12-siffrigt (färskt personnummer): RUT 50 % av 140 000 = 70 000 kr.
+    const a = await mk('198203031234', 14_000_000);
+    expect(a.body.invoice.housework_reduction_ore).toBe(7_000_000);
+    // Sedan SAMMA person men 10-siffrigt → måste aggregera, bara 5 000 kr kvar.
+    const b = await mk('8203031234', 14_000_000);
+    expect(b.body.invoice.housework_reduction_ore).toBe(500_000); // taket kringgås inte
   });
 });
 

@@ -211,7 +211,8 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       ['IBAN:', company.iban],
       ['OCR-nummer:', invoice.ocr],
       ['Förfallodatum:', invoice.due_date],
-      ['Att betala:', `${formatOre(totals.total_ore)} SEK`],
+      // Vid ROT/RUT betalar kunden totalen minus avdraget (samma som i summeringen).
+      ['Att betala:', `${formatOre(totals.total_ore - reduction)} SEK`],
     ];
     for (const [label, value] of payment) {
       if (value) {

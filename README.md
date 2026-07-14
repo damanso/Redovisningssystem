@@ -6,11 +6,12 @@ verifieringsgrindar.
 ## Status
 
 Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
-deklarationsprogram-faserna C1–C7 samt myndighetsfil-faserna D1–D4 är byggda och
-passerade sina grindar (`npm run build` rent + acceptanstester gröna, inklusive
-adversariella finansmatte-/SRU-/iXBRL-/filformat-granskningar där varje bekräftat fynd
-åtgärdats med test). Bevis: **`npm test` → 306 tester passerar** i 47 sviter mot en
-riktig Postgres (`server/test/`), och `npm run build` (tsc) utan fel.
+deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
+faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
+tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 329
+tester passerar** i 50 sviter mot en riktig Postgres (`server/test/`), och
+`npm run build` (tsc) utan fel.
 
 ### Grundfaser
 
@@ -90,6 +91,20 @@ specifikationer och exempelfiler. Notera: **AGI (D1) ersatte KU10 för vanliga a
 löneuppgifter från 2019** — KU10 (D3) används i vissa fall (t.ex. utländsk arbetsgivare med
 socialavgiftsavtal) och innehåller inte avdragen skatt. Allt är beräknat underlag; ingen
 digital inlämning och ingen BankID-signering.
+
+### Regelefterlevnad (E-serien)
+
+| Fas | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| E1 | GDPR-radering/anonymisering av parter — kontaktpersoner/anteckningar/taggar tas bort, kontaktuppgifter nollas, obokförda fakturors PDF och återkommande fakturor rensas; namn/org.nr behålls bara vid bokförda transaktioner (bokföringslagen); känslig åtgärd → godkännandekö | Klar | `gdpr` |
+| E2 | F-skatt (företagsinställning → faktura-PDF) + omvänd skattskyldighet/byggmoms på utgående fakturor (ingen moms, konto 3231, PDF-text, momsdeklarationens ruta 41) | Klar | `f-tax-reverse-charge` |
+| E3 | ROT/RUT-avdrag (husavdrag) enligt fakturamodellen — 30 %/50 % av arbetskostnaden kapat mot årets tak, delad fordran (kund 1510 + Skatteverket 1513), PDF med avdragsspecifikation | Klar | `housework-deduction` |
+
+E-serien producerar **beräknat underlag med tydliga förbehåll**: GDPR-anonymiseringen
+väger rätten till radering mot bokföringslagens bevarandekrav; F-skatt/omvänd
+skattskyldighet och ROT/RUT beräknas och bokförs ur uppgifterna men den slutliga
+skattereduktionen beror på köparens samlade köp och Skatteverkets beslut. Ingen digital
+begäran skickas till Skatteverket.
 
 ### Utanför scope / integrationsgränser
 
