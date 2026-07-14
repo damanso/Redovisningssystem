@@ -54,6 +54,7 @@ const UpdateCompanySchema = z
     bank_account: optText(50),
     iban: optText(50),
     payment_terms: z.number().int().min(0).max(365).optional(),
+    approved_for_f_tax: z.boolean().optional(),
   })
   .strict();
 
@@ -72,6 +73,7 @@ const COMPANY_UPDATE_COLUMNS = {
   bank_account: 'bank_account',
   iban: 'iban',
   payment_terms: 'payment_terms',
+  approved_for_f_tax: 'approved_for_f_tax',
 } as const;
 
 const AuditQuerySchema = z

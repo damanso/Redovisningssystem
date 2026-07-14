@@ -36,6 +36,7 @@ const CreateSchema = z
     payment_terms: z.number().int().min(0).max(365).optional(),
     reference: safeText(200).optional(),
     notes: safeText(1000).optional(),
+    reverse_charge: z.boolean().optional(),
     lines: z.array(LineSchema).min(1),
   })
   .strict();

@@ -19,12 +19,15 @@ export interface InvoicePdfCompany {
   plusgiro: string | null;
   bank_account: string | null;
   iban: string | null;
+  approved_for_f_tax?: boolean;
 }
 export interface InvoicePdfCustomer {
   name: string;
   address: string | null;
   postal_code: string | null;
   city: string | null;
+  org_number?: string | null;
+  vat_number?: string | null;
 }
 export interface InvoicePdfLine {
   description: string;
@@ -43,6 +46,7 @@ export interface InvoicePdfData {
     due_date: string;
     ocr: string | null;
     reference: string | null;
+    reverse_charge?: boolean;
   };
   lines: InvoicePdfLine[];
   totals: { subtotal_ore: Ore; vat_ore: Ore; total_ore: Ore };
@@ -76,6 +80,7 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       company.vat_number ? `Moms-nr: ${company.vat_number}` : null,
       company.email,
       company.phone,
+      company.approved_for_f_tax ? 'Godkänd för F-skatt' : null,
     ]) {
       if (line) { doc.text(line, 50, y); y += 12; }
     }
@@ -105,6 +110,8 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       customer.name,
       customer.address,
       [customer.postal_code, customer.city].filter(Boolean).join(' ') || null,
+      customer.org_number ? `Org.nr: ${customer.org_number}` : null,
+      invoice.reverse_charge && customer.vat_number ? `Moms-nr: ${customer.vat_number}` : null,
     ]) {
       if (line) { doc.text(line, 50, cy); cy += 12; }
     }
@@ -146,6 +153,16 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     doc.fontSize(11);
     totalRow('Att betala:', `${formatOre(totals.total_ore)} SEK`, true);
     doc.fontSize(9);
+
+    // Omvänd skattskyldighet: lagstadgad hänvisning på fakturan (moms redovisas
+    // av köparen, ingen moms debiteras).
+    if (invoice.reverse_charge) {
+      ty += 12;
+      doc.font('Helvetica-Bold').fillColor('#000').text('Omvänd betalningsskyldighet', 50, ty);
+      ty += 13;
+      doc.font('Helvetica').text('Omvänd skattskyldighet gäller — köparen redovisar och betalar momsen. Ingen moms har debiterats på denna faktura.', 50, ty, { width: 400 });
+      ty += 26;
+    }
 
     // Betalinformation
     ty += 20;

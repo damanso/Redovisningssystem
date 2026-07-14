@@ -77,8 +77,10 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
 
   // E. Undantagen försäljning ur specifika försäljningskonton (kreditsaldo).
   const euGoods = credit(rows, 3105, 3106);   // varor till annat EU-land (ruta 35)
-  const exportGoods = credit(rows, 3107, 3108) + credit(rows, 3200, 3299); // export utanför EU (ruta 36)
+  // export utanför EU (ruta 36) — hoppa över 3231–3239 (omvänd skattskyldighet, ruta 41).
+  const exportGoods = credit(rows, 3107, 3108) + credit(rows, 3200, 3230) + credit(rows, 3240, 3299);
   const euServices = credit(rows, 3308, 3308); // tjänster till näringsidkare i annat EU-land (ruta 39)
+  const revChargeSales = credit(rows, 3231, 3239); // omvänd skattskyldighet, köparen betalar (ruta 41)
   const exemptOther = credit(rows, 3004, 3004); // momsfri övrig försäljning (ruta 42)
 
   const totalOutput = out25 + out12 + out6 + rev25 + rev12 + rev6;
@@ -120,7 +122,7 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
       { code: '38', label: 'Mellanmans försäljning av varor vid trepartshandel', amount_ore: 0 },
       { code: '39', label: 'Försäljning av tjänster till näringsidkare i annat EU-land', amount_ore: euServices },
       { code: '40', label: 'Övrig försäljning av tjänster omsatta utom landet', amount_ore: 0 },
-      { code: '41', label: 'Försäljning när köparen är skattskyldig i Sverige', amount_ore: 0 },
+      { code: '41', label: 'Försäljning när köparen är skattskyldig i Sverige', amount_ore: revChargeSales },
       { code: '42', label: 'Övrig försäljning m.m. (momsfri)', amount_ore: exemptOther },
     ],
     input_vat: { code: '48', label: 'Ingående moms att dra av', amount_ore: inVat },

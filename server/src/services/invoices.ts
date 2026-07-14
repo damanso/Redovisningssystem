@@ -28,8 +28,13 @@ export interface CreateInvoiceInput {
   payment_terms?: number;
   reference?: string;
   notes?: string;
+  reverse_charge?: boolean;
   lines: InvoiceLineInput[];
 }
+
+// Konto för försäljning med omvänd skattskyldighet (byggsektorn), redovisas i
+// momsdeklarationens ruta 41.
+export const REVERSE_CHARGE_ACCOUNT = 3231;
 
 function addDays(isoDate: string, days: number): string {
   const d = new Date(`${isoDate}T00:00:00Z`);
@@ -45,11 +50,19 @@ export async function createInvoice(
 ): Promise<Record<string, unknown>> {
   if (input.lines.length === 0) throw new BadRequestError('no_lines', 'fakturan saknar rader');
 
-  const customer = await client.query<{ payment_terms: number | null }>(
-    'SELECT payment_terms FROM customers WHERE id = $1 AND company_id = $2',
+  const customer = await client.query<{ payment_terms: number | null; org_number: string | null; vat_number: string | null }>(
+    'SELECT payment_terms, org_number, vat_number FROM customers WHERE id = $1 AND company_id = $2',
     [input.customer_id, companyId],
   );
   if (!customer.rows[0]) throw new NotFoundError('customer');
+
+  // Omvänd skattskyldighet (byggmoms): fakturan ställs ut utan moms och köparen
+  // redovisar den. Köparen måste kunna identifieras (org.nr eller vat-nr) eftersom
+  // fakturan enligt lag ska ange att omvänd skattskyldighet gäller.
+  const reverseCharge = input.reverse_charge === true;
+  if (reverseCharge && !customer.rows[0].org_number && !customer.rows[0].vat_number) {
+    throw new BadRequestError('reverse_charge_requires_buyer_id', 'omvänd skattskyldighet kräver att köparen har org.nr eller vat-nr');
+  }
 
   // Radberäkning i ören. Artikel fyller i default pris/moms/konto/enhet.
   const resolved = [];
@@ -72,6 +85,12 @@ export async function createInvoice(
       revenueAccount ??= art.rows[0].revenue_account;
       unit ??= art.rows[0].unit;
       description ??= art.rows[0].name;
+    }
+    // Vid omvänd skattskyldighet debiteras ingen moms (köparen redovisar den) och
+    // intäkten bokförs på konto 3231 om inget annat konto angetts.
+    if (reverseCharge) {
+      vatRate = 0;
+      revenueAccount ??= REVERSE_CHARGE_ACCOUNT;
     }
     if (unitPrice === undefined || vatRate === undefined) {
       throw new BadRequestError('invalid_line', `rad ${i + 1}: pris och momssats krävs`);
@@ -117,10 +136,10 @@ export async function createInvoice(
 
   const inv = await client.query<{ id: string }>(
     `INSERT INTO invoices (company_id, customer_id, invoice_number, ocr, invoice_date, due_date,
-        subtotal_ore, vat_ore, total_ore, reference, notes, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+        subtotal_ore, vat_ore, total_ore, reference, notes, reverse_charge, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
     [companyId, input.customer_id, number, ocr, input.invoice_date, dueDate,
-      subtotal, vat, total, input.reference ?? null, input.notes ?? null, userId],
+      subtotal, vat, total, input.reference ?? null, input.notes ?? null, reverseCharge, userId],
   );
   const invoiceId = inv.rows[0]!.id;
 
@@ -145,7 +164,7 @@ export async function getInvoice(client: PoolClient, companyId: string, id: stri
   const head = await client.query(
     `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
             i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.notes,
-            i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
+            i.reverse_charge, i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.id = $1 AND i.company_id = $2`,
     [id, companyId],
@@ -165,7 +184,7 @@ export async function listInvoices(
 ): Promise<Record<string, unknown>[]> {
   const result = await client.query(
     `SELECT i.id, i.invoice_number, i.invoice_date::text, i.due_date::text, i.status,
-            i.total_ore, i.voucher_id, c.name AS customer_name
+            i.total_ore, i.voucher_id, i.reverse_charge, c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.company_id = $1 AND ($2::text IS NULL OR i.status = $2)
      ORDER BY i.invoice_number DESC`,
@@ -275,12 +294,12 @@ export async function generateInvoicePdfFile(
   const buffer = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await client.query(
       `SELECT name, org_number, address, postal_code, city, email, phone, vat_number,
-              bankgiro, plusgiro, bank_account, iban FROM companies WHERE id = $1`,
+              bankgiro, plusgiro, bank_account, iban, approved_for_f_tax FROM companies WHERE id = $1`,
       [companyId],
     );
     const invoice = await getInvoice(client, companyId, id);
     const customer = await client.query(
-      'SELECT name, address, postal_code, city FROM customers WHERE id = $1 AND company_id = $2',
+      'SELECT name, address, postal_code, city, org_number, vat_number FROM customers WHERE id = $1 AND company_id = $2',
       [invoice.customer_id, companyId],
     );
     return generateInvoicePdf({
@@ -292,6 +311,7 @@ export async function generateInvoicePdfFile(
         due_date: invoice.due_date as string,
         ocr: invoice.ocr as string | null,
         reference: invoice.reference as string | null,
+        reverse_charge: invoice.reverse_charge as boolean,
       },
       lines: (invoice.lines as { description: string; quantity: string; unit: string; unit_price_ore: number; vat_rate: number; line_net_ore: number }[]).map((l) => ({
         description: l.description, quantity: l.quantity, unit: l.unit,
