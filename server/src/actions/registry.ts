@@ -23,6 +23,7 @@ import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips
 import { k2AnnualReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
+import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -149,6 +150,40 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({}).strict(),
     handler: (ctx) => listMembers(ctx.client, ctx.companyId, ctx.userId),
+  }),
+  def({
+    name: 'list_fixed_assets',
+    title: 'Lista anläggningstillgångar',
+    sensitivity: 'read',
+    inputSchema: z.object({ status: z.enum(['active', 'disposed']).optional() }).strict(),
+    handler: (ctx, i: { status?: 'active' | 'disposed' }) => listFixedAssets(ctx.client, ctx.companyId, { status: i.status }),
+  }),
+  def({
+    name: 'get_fixed_asset',
+    title: 'Hämta anläggningstillgång',
+    sensitivity: 'read',
+    inputSchema: z.object({ fixed_asset_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fixed_asset_id: string }) => getFixedAsset(ctx.client, ctx.companyId, i.fixed_asset_id),
+  }),
+  def({
+    name: 'create_fixed_asset',
+    title: 'Lägg till anläggningstillgång',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      name: safeText(200), acquisition_date: IsoDateSchema, acquisition_cost_ore: OreSchema,
+      useful_life_months: z.number().int().min(1).max(1200), residual_value_ore: OreSchema.optional(),
+      asset_account: AccountNumberSchema.optional(), accumulated_depr_account: AccountNumberSchema.optional(),
+      depreciation_expense_account: AccountNumberSchema.optional(), notes: safeText(500).optional(),
+    }).strict(),
+    handler: (ctx, i) => createFixedAsset(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'book_depreciation',
+    title: 'Bokför planenlig avskrivning',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ fixed_asset_id: UuidSchema, through_date: IsoDateSchema, fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fixed_asset_id: string; through_date: string; fiscal_year_id: string }) =>
+      bookDepreciation(ctx.client, ctx.companyId, ctx.userId, i.fixed_asset_id, i.through_date, i.fiscal_year_id),
   }),
   def({
     name: 'tax_overview',

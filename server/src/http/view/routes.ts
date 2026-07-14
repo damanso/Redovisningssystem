@@ -36,6 +36,7 @@ import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
+import { listFixedAssets } from '../../services/fixedAssets.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -780,6 +781,34 @@ viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (
               <td class="num">${amount(s.amount_ore, { unit: false })}</td><td class="num">${pct(s.share_permille)}</td>
               <td><span style="display:inline-block;height:9px;width:${Math.round((s.share_permille ?? 0) / 1000 * 120)}px;background:var(--accent, #4f6bed);border-radius:2px"></span></td></tr>`)}
             <tr class="subtot"><td colspan="2"><strong>Summa kostnader</strong></td><td class="num"><strong>${amount(exp.total_ore, { unit: false })}</strong></td><td></td><td></td></tr>
+          </tbody></table></div>`
+    }`;
+}));
+
+// Anläggningsregister: tillgångar med planenlig avskrivning och bokfört värde.
+viewRouter.get('/c/:companyId/assets', pageFor('assets', 'Anläggningar', async (client, companyId) => {
+  const assets = await listFixedAssets(client, companyId, {});
+  const totalCost = assets.reduce((s, a) => s + (a.acquisition_cost_ore as number), 0);
+  const totalAcc = assets.reduce((s, a) => s + (a.accumulated_depreciation_ore as number), 0);
+  return html`<div class="page-head"><div>${eyebrow('Anläggningar')}<h1>Anläggningsregister</h1>
+      <p class="lede">Anläggningstillgångar med planenlig (linjär) avskrivning ned till restvärdet. Bokförda avskrivningar syns i huvudboken.</p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Anskaffningsvärde', amount(totalCost))}
+      ${kpiCell('Ackumulerad avskrivning', amount(totalAcc))}
+      ${kpiCell('Bokfört värde', amount(totalCost - totalAcc))}
+      ${kpiCell('Antal', html`<span class="num">${String(assets.length)}</span>`)}
+    </div>
+    ${
+      assets.length === 0
+        ? html`<div class="empty" style="margin-top:14px"><div class="big">Inga anläggningstillgångar</div>Lägg till via AI-assistenten eller <span class="code">create_fixed_asset</span>.</div>`
+        : html`<div class="table-wrap" style="margin-top:14px"><table><thead><tr><th>Tillgång</th><th>Anskaffad</th><th class="num">Anskaffning</th><th class="num">Ack. avskrivning</th><th class="num">Bokfört värde</th><th>Avskriven t.o.m.</th><th>Status</th></tr></thead><tbody>
+            ${assets.map((a) => html`<tr>
+              <td>${a.name as string}</td><td class="code">${a.acquisition_date as string}</td>
+              <td class="num">${amount(a.acquisition_cost_ore as number, { unit: false })}</td>
+              <td class="num">${amount(a.accumulated_depreciation_ore as number, { unit: false })}</td>
+              <td class="num"><strong>${amount(a.net_book_value_ore as number, { unit: false })}</strong></td>
+              <td class="code">${(a.depreciated_through as string) ?? '—'}</td>
+              <td>${a.status === 'active' ? chip('Aktiv', 'ok') : chip('Avyttrad', 'muted')}</td></tr>`)}
           </tbody></table></div>`
     }`;
 }));
