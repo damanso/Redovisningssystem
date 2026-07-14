@@ -5,9 +5,11 @@ verifieringsgrindar.
 
 ## Status
 
-Grundfaserna 0–4, utökningsfaserna A1–A14 samt bokslut/skatt-faserna B1–B4 är
-byggda och passerade sina grindar (`npm run build` rent + acceptanstester gröna).
-Bevis: **`npm test` → 235 tester passerar** i 37 sviter mot en riktig Postgres
+Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4 samt
+deklarationsprogram-faserna C1–C7 är byggda och passerade sina grindar
+(`npm run build` rent + acceptanstester gröna, inklusive adversariella
+finansmatte-/SRU-/iXBRL-granskningar där varje bekräftat fynd åtgärdats med test).
+Bevis: **`npm test` → 273 tester passerar** i 43 sviter mot en riktig Postgres
 (`server/test/`), och `npm run build` (tsc) utan fel.
 
 ### Grundfaser
@@ -53,13 +55,33 @@ t.ex. deklarationsprogram) med tydliga förbehåll i vyerna. Ingen digital inlä
 och skattestödet är ett förenklat beslutsstöd (utan skattemässiga justeringar) — inte
 skatterådgivning.
 
+### Deklarationsprogram (C-serien)
+
+| Fas | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| C1 | Anläggningsregister + planenlig (linjär) avskrivning — bokförs, idempotent per period, kapas vid restvärdet | Klar | `fixed-assets` |
+| C2 | Bokförda bokslutstransaktioner — periodiseringsfond, årets skatt, överföring av årets resultat, källtyp-dubbelbokningsspärr + ordningsspärr | Klar | `bokslut` |
+| C3 | Komplett årsredovisning — förvaltningsberättelse (flerårsöversikt, förändring eget kapital, resultatdisposition), anläggningsnot, fastställelseintyg | Klar | `annual-management` |
+| C4 | Skattemässiga justeringar — INK2R räkenskapsschema (balanserar) + INK2S (bokfört → beskattningsbart, återläggning av skatt, manuella justeringar, underskottsavdrag) | Klar | `ink2` |
+| C5 | Momsdeklaration — alla rutor 05–49 ur bokföringen (utgående per sats, omvänd skattskyldighet, ingående, ruta 49) | Klar | `vat-declaration` |
+| C6 | SRU-filgenerering för INK2 — INFO.SRU + BLANKETTER.SRU med fältkoder enligt Skatteverkets SKV 269 | Klar | `sru-export` |
+| C7 | iXBRL-generering för K2-årsredovisning — Inline XBRL enligt XBRL Swedens K2-taxonomi (se-gen-base/se-cd-base), för Bolagsverkets inlämningstjänst | Klar | `ixbrl-export` |
+
+C-serien ger dig **färdiga filer att ladda upp själv**: SRU-filerna för inkomst-
+deklarationen (INK2R/INK2S) i Skatteverkets e-tjänst, och iXBRL-årsredovisningen i
+Bolagsverkets tjänst. Fältkoder och taxonomikoncept är verifierade mot Skatteverkets
+respektive XBRL Swedens publicerade specifikationer, men allt är **beräknat underlag**
+— verifiera fältårtal/taxonomiversion och stäm av med din revisor före inlämning.
+Ingen digital inlämning och ingen BankID-signering sker i systemet.
+
 ### Utanför scope / integrationsgränser
 
 Följande är medvetet **inte** byggt (eller byggt fram till en tydligt flaggad
 gräns), enligt uppdraget:
 
-- **BankID** och **Skatteverket** (AGI/arbetsgivardeklaration, KU-10, moms-/inkomstdeklaration): ej digitalt inlämnat — B-serien beräknar underlag för manuell inmatning.
-- **Bolagsverket**: ingen digital inlämning av årsredovisning (iXBRL/taxonomi) — B1 ger K2-underlaget.
+- **BankID** och direkt **API-inlämning** till Skatteverket/Bolagsverket (nivå 5): medvetet utanför scope — inget skickas eller signeras digitalt av systemet.
+- **Skatteverket** (moms-/inkomstdeklaration): C5 beräknar momsdeklarationens alla rutor och C6 genererar färdiga SRU-filer för INK2 (INK2R/INK2S) att ladda upp själv. AGI/arbetsgivardeklaration och KU-10 beräknas som underlag (B-serien), ej filgenererade.
+- **Bolagsverket**: C7 genererar en iXBRL-årsredovisning (K2) att ladda upp själv i inlämningstjänsten — ingen automatisk inlämning.
 - **PSD2 / live bankkoppling**: ej byggt — bankimport sker via manuell CSV-fil.
 - **SMTP-utskick**: e-post läggs i en outbox men skickas bara om SMTP konfigureras;
   utan config markeras raderna `skipped_no_smtp` (ingen fejkad leverans).
