@@ -37,6 +37,8 @@ import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
 import { listFixedAssets } from '../../services/fixedAssets.js';
+import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../services/bokslut.js';
+import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -563,11 +565,72 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
     }
     const chosen = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]!.id;
     const report = await k2AnnualReport(client, companyId, chosen);
+    const lockRow = await client.query<{ is_locked: boolean }>('SELECT is_locked FROM fiscal_years WHERE id = $1 AND company_id = $2', [chosen, companyId]);
+    const locked = lockRow.rows[0]?.is_locked ?? false;
+    const plan = await taxPlanning(client, companyId, chosen);
     const picker = html`<div class="page-head" style="padding-bottom:0"><div>${eyebrow('Välj räkenskapsår')}</div>
       <div class="actions">${fys.rows.map((f) => html`<a class="btn ${f.id === chosen ? 'btn--primary' : 'btn--ghost'} btn--sm" href="/app/c/${companyId}/annual?fy=${f.id}">${f.label}</a> `)}</div></div>`;
-    return { name: company.name, body: html`${picker}${k2Body(companyId, chosen, report)}` };
+    const bokslut = html`<section class="statement"><div class="statement__cap"><h2>Bokslutsåtgärder</h2></div>
+      <div class="empty" style="text-align:left;padding:12px 14px">${locked ? chip('Räkenskapsåret är låst', 'ok', '🔒') : chip('Bokför bokslutstransaktionerna i ordning', 'info')} <span class="muted">Avsättning periodiseringsfond → årets skatt → överför årets resultat → lås. Dessa skapar riktiga verifikat i huvudboken.</span></div>
+      ${locked ? '' : html`<div class="table-wrap"><table><tbody>
+        <tr><td>Avsättning periodiseringsfond (max ${money(plan.periodiseringsfond_max_ore)} kr)</td><td>
+          <form method="post" action="/app/c/${companyId}/annual/pf" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" min="0" step="1" value="${String(Math.round(plan.periodiseringsfond_max_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför avsättning</button></form></td></tr>
+        <tr><td>Årets skatt (uppskattad ${money(plan.optimized.tax_ore)} kr)</td><td>
+          <form method="post" action="/app/c/${companyId}/annual/tax" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" min="0" step="1" value="${String(Math.round(plan.optimized.tax_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför skatt</button></form></td></tr>
+        <tr><td>Överför årets resultat till eget kapital (2099)</td><td>
+          <form method="post" action="/app/c/${companyId}/annual/result"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--ghost btn--sm" type="submit">Bokför årets resultat</button></form></td></tr>
+        <tr><td><strong>Lås räkenskapsåret</strong> (inga fler verifikat kan bokföras)</td><td>
+          <form method="post" action="/app/c/${companyId}/annual/lock"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--primary btn--sm" type="submit">Lås bokslut</button></form></td></tr>
+      </tbody></table></div>`}
+      <p class="muted" style="font-size:12px;margin-top:6px">Skatten ovan är en uppskattning ur bokföringen (utan skattemässiga justeringar). Justera beloppet efter din revisors bedömning innan du bokför.</p></section>`;
+    return { name: company.name, body: html`${picker}${k2Body(companyId, chosen, report)}${bokslut}` };
   });
   res.type('html').send(layout({ title: 'Årsredovisning', companyId, companyName: name, active: 'annual', body }).value);
+}));
+
+function bokslutRedirect(companyId: string, fy: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+  return run().then(() => { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); }, (err) => {
+    if (err instanceof ConflictError || err instanceof BadRequestError) { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); return; }
+    throw err;
+  });
+}
+
+viewRouter.post('/c/:companyId/annual/pf', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
+  await bokslutRedirect(companyId, fy, res, () => kr === 0 ? Promise.resolve() :
+    withTenantTransaction(userId, companyId, (client) => bookPeriodiseringsfond(client, companyId, userId, fy, 'avsattning', kr * 100)));
+}));
+
+viewRouter.post('/c/:companyId/annual/tax', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
+  await bokslutRedirect(companyId, fy, res, () =>
+    withTenantTransaction(userId, companyId, (client) => bookCorporateTax(client, companyId, userId, fy, kr * 100)));
+}));
+
+viewRouter.post('/c/:companyId/annual/result', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  await bokslutRedirect(companyId, fy, res, () =>
+    withTenantTransaction(userId, companyId, (client) => bookYearResult(client, companyId, userId, fy)));
+}));
+
+viewRouter.post('/c/:companyId/annual/lock', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  await bokslutRedirect(companyId, fy, res, () =>
+    withTenantTransaction(userId, companyId, (client) => setFiscalYearLock(client, companyId, userId, fy, true)));
 }));
 
 viewRouter.get('/c/:companyId/annual/export.csv', page(async (req, res) => {

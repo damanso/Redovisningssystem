@@ -24,6 +24,7 @@ import { k2AnnualReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
+import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -184,6 +185,29 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ fixed_asset_id: UuidSchema, through_date: IsoDateSchema, fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fixed_asset_id: string; through_date: string; fiscal_year_id: string }) =>
       bookDepreciation(ctx.client, ctx.companyId, ctx.userId, i.fixed_asset_id, i.through_date, i.fiscal_year_id),
+  }),
+  def({
+    name: 'book_periodiseringsfond',
+    title: 'Bokför avsättning/återföring av periodiseringsfond',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema, type: z.enum(['avsattning', 'aterforing']), amount_ore: OreSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; type: 'avsattning' | 'aterforing'; amount_ore: number }) =>
+      bookPeriodiseringsfond(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id, i.type, i.amount_ore),
+  }),
+  def({
+    name: 'book_corporate_tax',
+    title: 'Bokför årets skatt',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema, amount_ore: OreSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; amount_ore: number }) =>
+      bookCorporateTax(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id, i.amount_ore),
+  }),
+  def({
+    name: 'book_year_result',
+    title: 'Överför årets resultat till eget kapital',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => bookYearResult(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id),
   }),
   def({
     name: 'tax_overview',
