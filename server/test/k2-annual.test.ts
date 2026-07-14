@@ -109,4 +109,20 @@ describe('K2-årsredovisning', () => {
     expect(res.headers['content-disposition']).toContain('arsredovisning-k2.csv');
     expect(res.text).toContain('Nettoomsättning');
   });
+
+  it('SIE4-export finns i webbvyn (till revisor/systembyte)', async () => {
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    // Knappen syns på bokslutssidan
+    const page = await ua.get(`/app/c/${companyId}/annual?fy=${fiscalYearId}`);
+    expect(page.text).toContain('SIE4 (till revisor)');
+    // Nedladdningen ger en riktig SIE4-fil via cookie-sessionen
+    const sie = await ua.get(`/app/c/${companyId}/annual/export.sie?fy=${fiscalYearId}`).buffer()
+      .parse((r, cb) => { const c: Buffer[] = []; r.on('data', (d: Buffer) => c.push(d)); r.on('end', () => cb(null, Buffer.concat(c))); });
+    expect(sie.status).toBe(200);
+    expect(sie.headers['content-disposition']).toContain('bokforing.se');
+    const text = (sie.body as Buffer).toString('latin1');
+    expect(text).toContain('#FLAGGA');
+    expect(text).toContain('#VER'); // innehåller verifikat
+  });
 });

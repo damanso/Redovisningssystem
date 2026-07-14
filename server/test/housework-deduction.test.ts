@@ -172,5 +172,9 @@ describe('ROT/RUT-vy', () => {
     const view = await ua.get(`/app/c/${companyId}/invoices`);
     expect(view.status).toBe(200);
     expect(view.text).toContain('ROT');
+    // Förbehåll för det beräknade skattereduktionsunderlaget måste visas i vyn
+    // (tidigare var HOUSEWORK_DISCLAIMER dead code).
+    expect(view.text).toContain('ROT/RUT — beräknat underlag');
+    expect(view.text).toContain('Skatteverkets beslut');
   });
 });

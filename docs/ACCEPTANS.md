@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **335 tester passerar** i 50 sviter mot
+**Reproducera allt:** `npm test -w server` → **336 tester passerar** i 50 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 335 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 336 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -148,6 +148,35 @@ bokföringsintegritet) med oberoende verifiering av varje fynd. Bekräftade fynd
 
 Övriga faser (0–4, A, B, C, D, E) hade dessutom var sin egen grind med säkerhets-
 dimension; alla bekräftade fynd åtgärdades löpande.
+
+## Produktägar-genomgång inför release
+
+En helhetsgranskning ur en **otekniskt produktägares** perspektiv: bygget kördes, hela
+testsviten kördes, appen startades på riktigt och hela affärs- och deklarationsresan
+drevs igenom med curl, och fyra oberoende granskningsspår gicks (ärlighet i
+dokumentationen, förbehåll på alla genererade underlag, att inga menylänkar är döda,
+och luckor i användarresan). Utfall:
+
+**Verifierat live (curl mot riktig server):** register → bolag → räkenskapsår →
+kund/leverantör → faktura → bokför → betalning → leverantörsfaktura → kvitto →
+momsrapport → momsdeklaration (alla rutor, förbehåll visas) → anläggning + avskrivning
+→ bokslut (periodiseringsfond) → K2-årsredovisning (resultat/balans/noter) → INK2R/S +
+SRU-fil → iXBRL → lön → AGI-fil → KU10 → SIE4-export. Alla säkerhetsprober (annat bolag
+404, förfalskat token 401, append-only auditlogg, path-traversal, filtyp) höll.
+
+**Fynd som åtgärdades i genomgången:**
+
+| Fynd | Åtgärd | Testbevis |
+|---|---|---|
+| ROT/RUT-avdragets `HOUSEWORK_DISCLAIMER` var korrekt skrivet men **dead code** — förbehållet visades aldrig i appen | Förbehållet visas nu på fakturasidan när en ROT/RUT-faktura finns | `housework-deduction` (vy: "ROT/RUT — beräknat underlag" + "Skatteverkets beslut") |
+| **SIE4-export** fanns som API men saknade nedladdningslänk i webbvyn (import fanns) — bröt "lämna över till revisor"-steget | Nedladdningsknapp + rutt på bokslutssidan | `k2-annual` ("SIE4 (till revisor)" + `bokforing.se`) |
+| Tre **inkonsekventa testantal** i dokumentationen (README 329, två SPÅRBARHET-filer 142) mot faktiska 336 | Alla rättade till 336 (repots egen regel: inga overifierade siffror som bevis) | — |
+
+**Medvetna designval (inte defekter):** dataregistrering (skapa kund/faktura, registrera
+betalning) sker via **AI-först-lagret** (MCP/Cowork) med människa-i-loopen för känsliga
+steg — webbvyn är läsbar + godkänn/avvisa. Detta är den dokumenterade arkitekturen
+(README §"Använda live"), inte en lucka. Bankimportens "Markera avstämd" matchar/prickar
+av rader (bokför inte) — ärligt märkt som avstämning.
 
 ## Medvetet utanför scope (kräver extern integration)
 

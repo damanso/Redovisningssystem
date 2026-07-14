@@ -9,6 +9,7 @@ import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '.
 import { UuidSchema } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { listInvoices } from '../../services/invoices.js';
+import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { listReceipts } from '../../services/receipts.js';
@@ -32,6 +33,7 @@ import { listNotifications, markAllRead, markRead, unreadCount } from '../../ser
 import { emailEnabled } from '../../services/email.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
 import { importSie, parseSie } from '../../services/sieImport.js';
+import { exportFiscalYearSie } from '../../services/sie.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, k2ManagementReport, type K2Report, type K2Section, type ManagementReport } from '../../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
@@ -571,6 +573,7 @@ function k2Body(companyId: string, fyId: string, r: K2Report): Raw {
   return html`<div class="page-head"><div>${eyebrow('Bokslut · K2')}<h1>Årsredovisning ${r.fiscal_year.label}</h1>
       <p class="lede">${r.company.name}${r.company.org_number ? html` · org.nr ${r.company.org_number}` : ''} · räkenskapsår ${r.fiscal_year.start} – ${r.fiscal_year.end}</p></div>
       <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/export.csv?fy=${fyId}">Exportera CSV</a>
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/export.sie?fy=${fyId}">SIE4 (till revisor)</a>
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/arsredovisning.xhtml?fy=${fyId}">Ladda ner iXBRL (Bolagsverket)</a></div></div>
     <div class="empty" style="text-align:left;padding:12px 14px">${chip('Underlag — ej inlämnad årsredovisning', 'warn', '!')} <span class="muted">Detta är ett beräknat underlag ur din bokföring för manuell inmatning (t.ex. till deklarationsprogram). Förvaltningsberättelsens text, resultatdisposition, underskrifter och slutlig granskning görs av dig/din revisor. Ingen digital inlämning till Bolagsverket ingår.</span></div>
 
@@ -920,6 +923,22 @@ viewRouter.get('/c/:companyId/annual/export.csv', page(async (req, res) => {
   });
   res.setHeader('Content-Disposition', 'attachment; filename="arsredovisning-k2.csv"');
   res.type('text/csv; charset=utf-8').send('﻿' + csv);
+}));
+
+// SIE4-export av hela räkenskapsåret (konton + verifikat) — filen du lämnar till din
+// revisor eller tar med vid systembyte. Samma motor som API:ts /sie, men via
+// cookie-sessionen i webbvyn.
+viewRouter.get('/c/:companyId/annual/export.sie', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyId = z.string().uuid().parse(req.query.fy);
+  const gen = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const { buffer } = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return exportFiscalYearSie(client, companyId, fyId, gen);
+  });
+  res.setHeader('Content-Disposition', 'attachment; filename="bokforing.se"');
+  res.type('application/octet-stream').send(buffer);
 }));
 
 // Kundreskontra med åldersanalys (öppna, bokförda, obetalda kundfakturor).
@@ -1654,6 +1673,10 @@ viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (
             ${rows.map((r) => html`<tr><td class="code">${r.invoice_number}</td><td>${r.invoice_date}</td><td>${r.customer_name}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
               <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td></tr>`)}
             </tbody></table></div>`
+    }${
+      rows.some((r) => r.housework_type)
+        ? html`<div class="empty" style="text-align:left;padding:12px 14px;margin-top:12px">${chip('ROT/RUT — beräknat underlag', 'warn', '!')} <span class="muted">${HOUSEWORK_DISCLAIMER}</span></div>`
+        : ''
     }`;
 }));
 
