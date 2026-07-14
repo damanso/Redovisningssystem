@@ -1,0 +1,18 @@
+# Håll byggkontexten liten och deterministisk.
+.git
+node_modules
+**/node_modules
+**/dist
+**/dist-test
+coverage
+.nyc_output
+data
+uploads
+*.log
+.env
+.env.*
+.DS_Store
+scratchpad
+docs
+*.md
+!server/migrations
