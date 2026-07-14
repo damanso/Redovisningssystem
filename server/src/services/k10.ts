@@ -11,6 +11,7 @@
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { buildInfoSru, buildBlanketterSru, toKronor, type SruField } from './sruExport.js';
 
 // Per inkomstår (räkenskapsårets slutår). Belopp i ören, räntor/faktorer i baspunkter
 // (1 bp = 0,01 %). Källa: Skatteverket "Belopp och procentsatser (blankett K10)".
@@ -141,3 +142,51 @@ export async function k10Computation(client: PoolClient, companyId: string, fisc
 }
 
 export { K10_CONSTANTS };
+
+// --- K10 SRU-blankett (förenklingsregeln). ---
+// K10 lämnas som SRU-bilaga till ägarens INK1. Denna generator täcker FÖRENKLINGSREGELN,
+// vars fältkoder (410/411/412/413/415/416, 480) är verifierade mot Skatteverkets K10
+// (SKV 2110) och SKV 269. Huvudregelns lönebaserade fältkoder har sannolikt ändrats
+// efter 2013 och genereras INTE här — kontrollera alltid mot aktuell K10-
+// blankettspecifikation för inkomståret innan inlämning. Belopp i hela kronor.
+
+export interface K10SruInput extends K10Input {
+  owner_name: string;
+  owner_personnummer: string; // ägarens person-/samordningsnummer (SRU-identitet)
+}
+
+export async function generateK10Sru(
+  client: PoolClient, companyId: string, fiscalYearId: string, input: K10SruInput, createdDate: string, createdTime: string,
+): Promise<{ info_sru: string; blanketter_sru: string; blankett_id: string; disclaimer: string }> {
+  const r = await k10Computation(client, companyId, fiscalYearId, input);
+  const ownerId = input.owner_personnummer.replace(/\D/g, '');
+  if (ownerId.length !== 10 && ownerId.length !== 12) {
+    throw new BadRequestError('invalid_personnummer', 'ägarens personnummer krävs (10 eller 12 siffror)');
+  }
+  const companyOrg = (r.company.org_number ?? '').replace(/\D/g, '');
+  if (companyOrg.length !== 10) throw new BadRequestError('missing_org_number', 'bolagets organisationsnummer krävs');
+
+  // Förenklingsregelns fördelning (oberoende av vald regel i beräkningen ovan).
+  const chosen = r.forenkling.total_gransbelopp_ore;
+  const over = Math.max(0, input.dividend_ore - chosen);
+  const savedNext = Math.max(0, chosen - input.dividend_ore);
+
+  const fields: SruField[] = [
+    { kod: '480', value: Number(companyOrg) },                                    // företagets org.nr
+    { kod: '410', value: toKronor(r.forenkling.arets_gransbelopp_ore) },          // årets gränsbelopp
+    { kod: '411', value: toKronor(r.forenkling.saved_uprated_ore) },              // sparat f.å. uppräknat
+    { kod: '412', value: toKronor(chosen) },                                      // gränsbelopp förenkling (summa)
+    { kod: '413', value: toKronor(input.dividend_ore) },                          // utdelning
+    { kod: '415', value: toKronor(over) },                                        // utdelning som beskattas i tjänst
+    { kod: '416', value: toKronor(savedNext) },                                   // sparat utdelningsutrymme till nästa år
+  ];
+
+  const sender = { orgnr: ownerId, name: input.owner_name, program: 'Redovisningssystem' };
+  const blankettId = `K10-${r.income_year}`;
+  return {
+    info_sru: buildInfoSru(sender, createdDate, createdTime),
+    blanketter_sru: buildBlanketterSru(sender, [{ id: blankettId, fields }], createdDate, createdTime),
+    blankett_id: blankettId,
+    disclaimer: 'Beräknad K10-SRU (förenklingsregeln) för bilaga till ägarens INK1. Fältkoderna är verifierade mot SKV 2110/SKV 269 men huvudregelns lönebaserade koder ingår inte — kontrollera mot aktuell K10-blankettspecifikation för inkomståret innan inlämning. Ingen digital inlämning.',
+  };
+}

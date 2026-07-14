@@ -43,6 +43,7 @@ import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services
 import { generateInk2Sru } from '../../services/sruExport.js';
 import { generateK2Ixbrl } from '../../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../../services/agi.js';
+import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -694,6 +695,60 @@ function vatDeclarationBody(companyId: string, d: VatDeclaration): Raw {
     </tbody></table></div>`;
 }
 
+function k10Body(companyId: string, fys: { id: string; label: string }[], parsed: { fy: string; input: import('../../services/k10.js').K10Input } | null, r: K10Result | null, error: string | null): Raw {
+  const inp = parsed?.input;
+  const kr = (ore: number) => String(Math.round(ore / 100));
+  const field = (label: string, name: string, value: string, type = 'number') =>
+    html`<label class="field" style="margin:0"><span>${label}</span><input type="${type}" name="${name}" value="${value}" ${type === 'number' ? html`min="0" step="1"` : ''}></label>`;
+  const chosenLabel = r?.input.rule === 'huvudregel' ? 'huvudregeln' : 'förenklingsregeln';
+  return html`<div class="page-head"><div>${eyebrow('K10 · 3:12')}<h1>K10 — utdelning i fåmansföretag</h1>
+      <p class="lede">Beräkna gränsbeloppet (utdelningsutrymme) enligt förenklingsregeln och huvudregeln, och hur en utdelning fördelas mellan kapital (20 %) och tjänst.</p></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beslutsstöd, ej skatterådgivning', 'warn', '!')} <span class="muted">Ägarandel, omkostnadsbelopp, sparat utrymme, ägarlön och utdelning fyller du i. Löneunderlaget hämtas ur lönekörningen. Förenklingsregeln får bara användas i ett bolag per år.</span></div>
+    ${fys.length === 0 ? html`<div class="empty"><div class="big">Inget räkenskapsår</div>Skapa ett räkenskapsår först.</div>` : html`
+    <form method="get" action="/app/c/${companyId}/k10" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;max-width:760px">
+      <label class="field" style="margin:0"><span>Räkenskapsår (inkomstår)</span><select name="fy">${fys.map((f) => html`<option value="${f.id}"${parsed?.fy === f.id ? html` selected` : ''}>${f.label}</option>`)}</select></label>
+      <label class="field" style="margin:0"><span>Regel</span><select name="rule"><option value="forenkling"${inp?.rule !== 'huvudregel' ? html` selected` : ''}>Förenklingsregeln</option><option value="huvudregel"${inp?.rule === 'huvudregel' ? html` selected` : ''}>Huvudregeln</option></select></label>
+      ${field('Ägarandel (promille, 1000=100 %)', 'ownership_permille', inp ? String(inp.ownership_permille) : '1000')}
+      ${field('Omkostnadsbelopp (kr)', 'omkostnad_kr', inp ? kr(inp.omkostnadsbelopp_ore) : '0')}
+      ${field('Sparat utdelningsutrymme f.å. (kr)', 'saved_kr', inp ? kr(inp.saved_allowance_ore) : '0')}
+      ${field('Ägarens egen lön i år (kr)', 'salary_kr', inp ? kr(inp.owner_salary_ore) : '0')}
+      ${field('Faktisk utdelning (kr)', 'dividend_kr', inp ? kr(inp.dividend_ore) : '0')}
+      <div style="align-self:end"><button class="btn btn--primary btn--sm" type="submit">Beräkna</button></div>
+    </form>`}
+    ${error ? html`<p class="lede" style="margin-top:12px">${chip(error, 'neg', '!')}</p>` : ''}
+    ${r ? html`<h2 style="margin-top:20px">Resultat (inkomstår ${String(r.income_year)}, ${chosenLabel})</h2>
+      <div class="kpi-grid">
+        ${kpiCell('Gränsbelopp (valt)', amount(r.chosen_gransbelopp_ore))}
+        ${kpiCell('Utdelning i kapital', amount(r.dividend_within_gransbelopp_ore))}
+        ${kpiCell('Beskattas i tjänst', amount(r.dividend_over_gransbelopp_ore))}
+        ${kpiCell('Sparat till nästa år', amount(r.saved_to_next_year_ore))}
+      </div>
+      <div class="table-wrap" style="margin-top:12px"><table><tbody>
+        <tr><td colspan="2" class="muted"><strong>Förenklingsregeln</strong></td></tr>
+        <tr><td>Årets gränsbelopp (schablon × andel)</td><td class="num">${amount(r.forenkling.arets_gransbelopp_ore, { unit: false })}</td></tr>
+        <tr><td>Sparat f.å. uppräknat</td><td class="num">${amount(r.forenkling.saved_uprated_ore, { unit: false })}</td></tr>
+        <tr class="subtot"><td><strong>Gränsbelopp förenkling</strong></td><td class="num"><strong>${amount(r.forenkling.total_gransbelopp_ore, { unit: false })}</strong></td></tr>
+        <tr><td colspan="2" class="muted"><strong>Huvudregeln</strong></td></tr>
+        <tr><td>Uppräknat omkostnadsbelopp</td><td class="num">${amount(r.huvudregel.uprated_omkostnad_ore, { unit: false })}</td></tr>
+        <tr><td>Löneunderlag (kontanta löner)</td><td class="num">${amount(r.wage_base_ore, { unit: false })}</td></tr>
+        <tr><td>Löneuttagskrav ${r.huvudregel.salary_requirement_met ? chip('uppfyllt', 'ok', '✓') : chip('ej uppfyllt', 'warn', '!')}</td><td class="num">${amount(r.huvudregel.loneuttagskrav_ore, { unit: false })}</td></tr>
+        <tr><td>Lönebaserat utrymme</td><td class="num">${amount(r.huvudregel.lonebaserat_utrymme_ore, { unit: false })}</td></tr>
+        <tr class="subtot"><td><strong>Gränsbelopp huvudregeln</strong></td><td class="num"><strong>${amount(r.huvudregel.total_gransbelopp_ore, { unit: false })}</strong></td></tr>
+        <tr><td>Utdelning som tas upp i kapital (2/3)</td><td class="num">${amount(r.capital_taxed_ore, { unit: false })}</td></tr>
+      </tbody></table></div>
+      <h3 style="margin-top:16px">Generera K10 SRU-blankett (förenklingsregeln)</h3>
+      <div class="empty" style="text-align:left;padding:12px 14px">${chip('Verifiera fältkoder mot aktuell blankett', 'warn', '!')} <span class="muted">${r.disclaimer}</span></div>
+      <form method="post" action="/app/c/${companyId}/k10/sru" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px">
+        <input type="hidden" name="fy" value="${parsed!.fy}"><input type="hidden" name="rule" value="${inp!.rule}">
+        <input type="hidden" name="ownership_permille" value="${String(inp!.ownership_permille)}"><input type="hidden" name="omkostnad_kr" value="${kr(inp!.omkostnadsbelopp_ore)}">
+        <input type="hidden" name="saved_kr" value="${kr(inp!.saved_allowance_ore)}"><input type="hidden" name="salary_kr" value="${kr(inp!.owner_salary_ore)}"><input type="hidden" name="dividend_kr" value="${kr(inp!.dividend_ore)}">
+        <label class="field" style="margin:0"><span>Ägarens namn</span><input name="owner_name" maxlength="100" required></label>
+        <label class="field" style="margin:0"><span>Ägarens personnummer</span><input name="owner_personnummer" placeholder="ÅÅÅÅMMDD-NNNN" required></label>
+        <button class="btn btn--ghost btn--sm" type="submit" name="file" value="info">info.sru</button>
+        <button class="btn btn--primary btn--sm" type="submit" name="file" value="blanketter">blanketter.sru</button>
+      </form>` : ''}`;
+}
+
 viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1221,6 +1276,66 @@ async function sruFile(req: Request, res: import('express').Response, which: 'in
 }
 viewRouter.get('/c/:companyId/ink2/info.sru', page((req, res) => sruFile(req, res, 'info')));
 viewRouter.get('/c/:companyId/ink2/blanketter.sru', page((req, res) => sruFile(req, res, 'blanketter')));
+
+// Fas D2: K10 (3:12) — gränsbeloppskalkyl för delägare i fåmansföretag + SRU-blankett.
+const K10_NUM = z.coerce.number().int().min(0).max(1_000_000_000);
+function k10InputFromQuery(q: Record<string, unknown>): { fy: string; input: import('../../services/k10.js').K10Input } | null {
+  const fy = typeof q.fy === 'string' && /^[0-9a-f-]{36}$/.test(q.fy) ? q.fy : null;
+  if (!fy) return null;
+  const rule = q.rule === 'huvudregel' ? 'huvudregel' : 'forenkling';
+  return {
+    fy,
+    input: {
+      ownership_permille: Math.min(1000, Math.max(1, Math.round(Number(q.ownership_permille) || 1000))),
+      omkostnadsbelopp_ore: (K10_NUM.safeParse(q.omkostnad_kr).success ? Number(q.omkostnad_kr) : 0) * 100,
+      saved_allowance_ore: (K10_NUM.safeParse(q.saved_kr).success ? Number(q.saved_kr) : 0) * 100,
+      owner_salary_ore: (K10_NUM.safeParse(q.salary_kr).success ? Number(q.salary_kr) : 0) * 100,
+      dividend_ore: (K10_NUM.safeParse(q.dividend_kr).success ? Number(q.dividend_kr) : 0) * 100,
+      rule,
+    },
+  };
+}
+
+viewRouter.get('/c/:companyId/k10', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const q = req.query as Record<string, unknown>;
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const fys = await client.query<{ id: string; label: string }>(
+      'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
+    );
+    const parsed = k10InputFromQuery(q);
+    let result: K10Result | null = null;
+    let error: string | null = null;
+    if (parsed && fys.rows.some((f) => f.id === parsed.fy)) {
+      try { result = await k10Computation(client, companyId, parsed.fy, parsed.input); }
+      catch (e) { error = e instanceof Error ? e.message : 'fel'; }
+    }
+    return { name: company.name, body: k10Body(companyId, fys.rows, parsed, result, error) };
+  });
+  res.type('html').send(layout({ title: 'K10 (3:12)', companyId, companyName: name, active: 'k10', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/k10/sru', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const parsed = k10InputFromQuery(b);
+  if (!parsed) throw new BadRequestError('invalid_input', 'räkenskapsår krävs');
+  const ownerName = z.string().min(1).max(100).parse(b.owner_name).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+  const ownerPnr = z.string().regex(/^\d{6,8}-?\d{4}$/).parse(b.owner_personnummer);
+  const which = b.file === 'info' ? 'info' : 'blanketter';
+  const now = new Date();
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateK10Sru(client, companyId, parsed.fy, { ...parsed.input, owner_name: ownerName, owner_personnummer: ownerPnr }, now.toISOString().slice(0, 10), now.toISOString().slice(11, 19));
+  });
+  res.type('text/plain; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="${which === 'info' ? 'info.sru' : 'blanketter.sru'}"`)
+    .send(which === 'info' ? out.info_sru : out.blanketter_sru);
+}));
 
 // Fas C7: iXBRL-årsredovisning (K2) för Bolagsverket. Ett XHTML-dokument, både
 // maskin- och mänskligt läsbart. Beräknat underlag; ingen digital inlämning.

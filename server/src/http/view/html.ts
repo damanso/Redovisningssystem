@@ -129,6 +129,7 @@ const NAV = [
   ['tax', 'Skatt'],
   ['vat', 'Moms'],
   ['ink2', 'Deklaration'],
+  ['k10', 'K10 (3:12)'],
   ['analytics', 'Analys'],
   ['cashflow', 'Kassaflöde'],
   ['receivables', 'Kundreskontra'],

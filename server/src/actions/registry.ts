@@ -30,6 +30,7 @@ import { vatDeclaration } from '../services/vatDeclaration.js';
 import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../services/agi.js';
+import { k10Computation, generateK10Sru } from '../services/k10.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -290,6 +291,42 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "period anges som 'YYYY-MM'") }).strict(),
     handler: (ctx, i: { period: string }) => agiDeclaration(ctx.client, ctx.companyId, i.period),
+  }),
+  def({
+    name: 'k10_computation',
+    title: 'K10 — gränsbelopp (3:12) för delägare i fåmansföretag',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema,
+      ownership_permille: z.number().int().min(1).max(1000),
+      omkostnadsbelopp_ore: OreSchema,
+      saved_allowance_ore: OreSchema,
+      owner_salary_ore: OreSchema,
+      dividend_ore: OreSchema,
+      rule: z.enum(['forenkling', 'huvudregel']),
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; ownership_permille: number; omkostnadsbelopp_ore: number; saved_allowance_ore: number; owner_salary_ore: number; dividend_ore: number; rule: 'forenkling' | 'huvudregel' }) =>
+      k10Computation(ctx.client, ctx.companyId, i.fiscal_year_id, i),
+  }),
+  def({
+    name: 'generate_k10_sru',
+    title: 'Generera K10 SRU-blankett (förenklingsregeln)',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema,
+      ownership_permille: z.number().int().min(1).max(1000),
+      omkostnadsbelopp_ore: OreSchema,
+      saved_allowance_ore: OreSchema,
+      owner_salary_ore: OreSchema,
+      dividend_ore: OreSchema,
+      rule: z.enum(['forenkling', 'huvudregel']),
+      owner_name: safeText(100),
+      owner_personnummer: z.string().regex(/^\d{6,8}-?\d{4}$/, 'personnummer NNNNNN-NNNN eller NNNNNNNN-NNNN'),
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; ownership_permille: number; omkostnadsbelopp_ore: number; saved_allowance_ore: number; owner_salary_ore: number; dividend_ore: number; rule: 'forenkling' | 'huvudregel'; owner_name: string; owner_personnummer: string }) => {
+      const now = new Date();
+      return generateK10Sru(ctx.client, ctx.companyId, i.fiscal_year_id, i, now.toISOString().slice(0, 10), now.toISOString().slice(11, 19));
+    },
   }),
   def({
     name: 'generate_agi_file',
