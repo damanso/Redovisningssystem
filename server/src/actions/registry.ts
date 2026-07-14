@@ -569,6 +569,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         invoice_date: IsoDateSchema,
         due_date: IsoDateSchema.optional(),
         reference: safeText(200).optional(),
+        reverse_charge: z.boolean().optional(),
+        housework_type: z.enum(['rot', 'rut']).optional(),
+        labor_cost_ore: z.number().int().nonnegative().safe().optional(),
+        buyer_personnummer: safeText(13).optional(),
+        property_designation: safeText(100).optional(),
         lines: z.array(InvoiceLine).min(1),
       })
       .strict(),

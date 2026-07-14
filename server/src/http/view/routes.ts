@@ -1648,7 +1648,7 @@ viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapade fakturor listas här.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th></tr></thead><tbody>
-            ${rows.map((r) => html`<tr><td class="code">${r.invoice_number}</td><td>${r.invoice_date}</td><td>${r.customer_name}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}</td>
+            ${rows.map((r) => html`<tr><td class="code">${r.invoice_number}</td><td>${r.invoice_date}</td><td>${r.customer_name}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
               <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td></tr>`)}
             </tbody></table></div>`
     }`;

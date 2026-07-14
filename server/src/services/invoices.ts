@@ -8,6 +8,7 @@ import { assertAccountsExist } from './accounting/accounts.js';
 import { postCustomerInvoice, postCustomerPayment } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { generateInvoicePdf } from './pdfService.js';
+import { computeHouseworkReduction, HOUSEWORK_RECEIVABLE_ACCOUNT, type HouseworkType } from './housework.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { removeStoredFile, validateUpload, writeStoredFile } from './fileStorage.js';
 
@@ -29,6 +30,10 @@ export interface CreateInvoiceInput {
   reference?: string;
   notes?: string;
   reverse_charge?: boolean;
+  housework_type?: HouseworkType;
+  labor_cost_ore?: Ore;
+  buyer_personnummer?: string;
+  property_designation?: string;
   lines: InvoiceLineInput[];
 }
 
@@ -130,6 +135,39 @@ export async function createInvoice(
   const vat = sumOre(resolved.map((l) => vatFromNet(l.line_net_ore, l.vat_rate)));
   const total = assertSafeOre(subtotal + vat);
 
+  // ROT/RUT-avdrag (husavdrag): skattereduktion räknas på arbetskostnaden (inkl.
+  // moms) och kapas mot årets tak givet vad bolaget redan fakturerat samma köpare.
+  let houseworkType: HouseworkType | null = null;
+  let laborCostOre = 0;
+  let houseworkReductionOre = 0;
+  let buyerPersonnummer: string | null = null;
+  let propertyDesignation: string | null = null;
+  if (input.housework_type) {
+    if (reverseCharge) throw new BadRequestError('housework_and_reverse_charge', 'ROT/RUT kan inte kombineras med omvänd skattskyldighet');
+    houseworkType = input.housework_type;
+    laborCostOre = input.labor_cost_ore ?? 0;
+    if (!Number.isInteger(laborCostOre) || laborCostOre <= 0) throw new BadRequestError('invalid_labor_cost', 'arbetskostnad (labor_cost_ore) krävs för ROT/RUT');
+    if (laborCostOre > total) throw new BadRequestError('labor_cost_exceeds_total', 'arbetskostnaden kan inte överstiga fakturans totalbelopp');
+    buyerPersonnummer = (input.buyer_personnummer ?? '').replace(/\D/g, '');
+    if (buyerPersonnummer.length !== 10 && buyerPersonnummer.length !== 12) throw new BadRequestError('invalid_buyer_personnummer', 'köparens personnummer krävs för ROT/RUT (10 eller 12 siffror)');
+    propertyDesignation = input.property_designation ?? null;
+    if (houseworkType === 'rot' && !propertyDesignation) throw new BadRequestError('missing_property_designation', 'fastighetsbeteckning krävs för ROT');
+    // Redan beviljat detta bolag/köpare/år (kapning mot årets tak).
+    const year = Number(input.invoice_date.slice(0, 4));
+    const prior = await client.query<{ rot: string; total: string }>(
+      `SELECT COALESCE(sum(housework_reduction_ore) FILTER (WHERE housework_type = 'rot'), 0) AS rot,
+              COALESCE(sum(housework_reduction_ore), 0) AS total
+       FROM invoices
+       WHERE company_id = $1 AND buyer_personnummer = $2 AND housework_type IS NOT NULL
+         AND status <> 'cancelled' AND date_part('year', invoice_date) = $3`,
+      [companyId, buyerPersonnummer, year],
+    );
+    const reduction = computeHouseworkReduction(houseworkType, laborCostOre, {
+      rot_ore: Number(prior.rows[0]!.rot), total_ore: Number(prior.rows[0]!.total),
+    });
+    houseworkReductionOre = reduction.reduction_ore;
+  }
+
   const number = await nextDocumentNumber(client, companyId, 'invoice');
   const ocr = generateOcr(String(number).padStart(6, '0'), { lengthControl: true });
   const paymentTerms = input.payment_terms ?? customer.rows[0].payment_terms ?? 30;
@@ -140,10 +178,12 @@ export async function createInvoice(
 
   const inv = await client.query<{ id: string }>(
     `INSERT INTO invoices (company_id, customer_id, invoice_number, ocr, invoice_date, due_date,
-        subtotal_ore, vat_ore, total_ore, reference, notes, reverse_charge, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+        subtotal_ore, vat_ore, total_ore, reference, notes, reverse_charge,
+        housework_type, labor_cost_ore, housework_reduction_ore, buyer_personnummer, property_designation, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
     [companyId, input.customer_id, number, ocr, input.invoice_date, dueDate,
-      subtotal, vat, total, input.reference ?? null, input.notes ?? null, reverseCharge, userId],
+      subtotal, vat, total, input.reference ?? null, input.notes ?? null, reverseCharge,
+      houseworkType, houseworkType ? laborCostOre : null, houseworkReductionOre, buyerPersonnummer, propertyDesignation, userId],
   );
   const invoiceId = inv.rows[0]!.id;
 
@@ -168,7 +208,9 @@ export async function getInvoice(client: PoolClient, companyId: string, id: stri
   const head = await client.query(
     `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
             i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.notes,
-            i.reverse_charge, i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
+            i.reverse_charge, i.housework_type, i.labor_cost_ore, i.housework_reduction_ore,
+            i.buyer_personnummer, i.property_designation,
+            i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.id = $1 AND i.company_id = $2`,
     [id, companyId],
@@ -188,7 +230,8 @@ export async function listInvoices(
 ): Promise<Record<string, unknown>[]> {
   const result = await client.query(
     `SELECT i.id, i.invoice_number, i.invoice_date::text, i.due_date::text, i.status,
-            i.total_ore, i.voucher_id, i.reverse_charge, c.name AS customer_name
+            i.total_ore, i.voucher_id, i.reverse_charge, i.housework_type, i.housework_reduction_ore,
+            c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.company_id = $1 AND ($2::text IS NULL OR i.status = $2)
      ORDER BY i.invoice_number DESC`,
@@ -210,12 +253,17 @@ export async function bookInvoice(
     .filter((l) => l.line_net_ore > 0);
   if (lines.length === 0) throw new BadRequestError('nothing_to_book', 'fakturan har inga bokningsbara rader');
 
+  // ROT/RUT: den del köparen inte betalar bokförs som fordran på Skatteverket (1513)
+  // i stället för kundfordran (1510). Verifikatet balanserar oförändrat.
+  const houseworkReductionOre = Number(invoice.housework_reduction_ore ?? 0);
   const voucher = await postCustomerInvoice(client, companyId, userId, {
     fiscalYearId,
     voucherDate: invoice.invoice_date as string,
     sourceId: id,
     description: `Kundfaktura ${invoice.invoice_number}`,
     lines: lines.map((l) => ({ netOre: l.line_net_ore, vatRate: l.vat_rate as VatRate, account: l.revenue_account })),
+    houseworkReductionOre: houseworkReductionOre > 0 ? houseworkReductionOre : undefined,
+    houseworkReceivableAccount: HOUSEWORK_RECEIVABLE_ACCOUNT,
   });
 
   await client.query(
@@ -316,6 +364,11 @@ export async function generateInvoicePdfFile(
         ocr: invoice.ocr as string | null,
         reference: invoice.reference as string | null,
         reverse_charge: invoice.reverse_charge as boolean,
+        housework_type: invoice.housework_type as 'rot' | 'rut' | null,
+        labor_cost_ore: invoice.labor_cost_ore == null ? null : Number(invoice.labor_cost_ore),
+        housework_reduction_ore: Number(invoice.housework_reduction_ore ?? 0),
+        buyer_personnummer: invoice.buyer_personnummer as string | null,
+        property_designation: invoice.property_designation as string | null,
       },
       lines: (invoice.lines as { description: string; quantity: string; unit: string; unit_price_ore: number; vat_rate: number; line_net_ore: number }[]).map((l) => ({
         description: l.description, quantity: l.quantity, unit: l.unit,

@@ -47,6 +47,11 @@ export interface InvoicePdfData {
     ocr: string | null;
     reference: string | null;
     reverse_charge?: boolean;
+    housework_type?: 'rot' | 'rut' | null;
+    labor_cost_ore?: Ore | null;
+    housework_reduction_ore?: Ore;
+    buyer_personnummer?: string | null;
+    property_designation?: string | null;
   };
   lines: InvoicePdfLine[];
   totals: { subtotal_ore: Ore; vat_ore: Ore; total_ore: Ore };
@@ -149,10 +154,40 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     };
     totalRow('Delsumma exkl. moms:', `${formatOre(totals.subtotal_ore)} SEK`);
     totalRow('Moms:', `${formatOre(totals.vat_ore)} SEK`);
-    ty += 4;
-    doc.fontSize(11);
-    totalRow('Att betala:', `${formatOre(totals.total_ore)} SEK`, true);
-    doc.fontSize(9);
+    // ROT/RUT: visa fakturans totalbelopp, avdraget och vad kunden faktiskt betalar.
+    const reduction = invoice.housework_reduction_ore ?? 0;
+    if (invoice.housework_type && reduction > 0) {
+      totalRow('Fakturabelopp:', `${formatOre(totals.total_ore)} SEK`);
+      const label = invoice.housework_type === 'rot' ? 'ROT-avdrag:' : 'RUT-avdrag:';
+      totalRow(label, `−${formatOre(reduction)} SEK`);
+      ty += 4;
+      doc.fontSize(11);
+      totalRow('Att betala:', `${formatOre(totals.total_ore - reduction)} SEK`, true);
+      doc.fontSize(9);
+    } else {
+      ty += 4;
+      doc.fontSize(11);
+      totalRow('Att betala:', `${formatOre(totals.total_ore)} SEK`, true);
+      doc.fontSize(9);
+    }
+
+    // ROT/RUT: obligatoriska uppgifter + hänvisning till fakturamodellen.
+    if (invoice.housework_type && reduction > 0) {
+      ty += 12;
+      const rc = invoice.housework_type === 'rot' ? 'ROT' : 'RUT';
+      doc.font('Helvetica-Bold').text(`Husavdrag (${rc})`, 50, ty);
+      ty += 13;
+      doc.font('Helvetica');
+      for (const line of [
+        invoice.labor_cost_ore ? `Arbetskostnad (inkl. moms): ${formatOre(invoice.labor_cost_ore)} SEK` : null,
+        invoice.buyer_personnummer ? `Köparens personnummer: ${invoice.buyer_personnummer}` : null,
+        invoice.property_designation ? `Fastighetsbeteckning: ${invoice.property_designation}` : null,
+        'Skattereduktionen begärs av utföraren hos Skatteverket (fakturamodellen).',
+      ]) {
+        if (line) { doc.text(line, 50, ty, { width: 460 }); ty += 12; }
+      }
+      ty += 12;
+    }
 
     // Omvänd skattskyldighet: lagstadgad hänvisning på fakturan (moms redovisas
     // av köparen, ingen moms debiteras).

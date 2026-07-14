@@ -53,12 +53,17 @@ function aggregate(entries: { account: number; debit?: Ore; credit?: Ore }[]): V
   return lines;
 }
 
-/** Kundfaktura: debet kundfordran (brutto), kredit intäkt (netto) + utgående moms. */
+/**
+ * Kundfaktura: debet kundfordran (brutto), kredit intäkt (netto) + utgående moms.
+ * Vid ROT/RUT (houseworkReductionOre) delas debetsidan: köparens del bokförs som
+ * kundfordran (1510), skattereduktionen som fordran på Skatteverket (1513). Summan
+ * är oförändrad så verifikatet balanserar.
+ */
 export async function postCustomerInvoice(
   client: PoolClient,
   companyId: string,
   userId: string,
-  input: AutoBase & { receivableAccount?: number },
+  input: AutoBase & { receivableAccount?: number; houseworkReductionOre?: Ore; houseworkReceivableAccount?: number },
 ): Promise<Voucher> {
   const entries: { account: number; debit?: Ore; credit?: Ore }[] = [];
   let gross = 0;
@@ -73,7 +78,13 @@ export async function postCustomerInvoice(
     if (vatAccount) entries.push({ account: vatAccount, credit: vat });
     gross += line.netOre + vat;
   }
-  entries.push({ account: input.receivableAccount ?? RECEIVABLE_ACCOUNT, debit: assertSafeOre(gross) });
+  assertSafeOre(gross);
+  const reduction = input.houseworkReductionOre ?? 0;
+  if (reduction < 0 || reduction > gross) throw new BadRequestError('invalid_housework_reduction', 'ogiltig ROT/RUT-reduktion');
+  if (reduction > 0) {
+    entries.push({ account: input.houseworkReceivableAccount ?? RECEIVABLE_ACCOUNT, debit: reduction });
+  }
+  entries.push({ account: input.receivableAccount ?? RECEIVABLE_ACCOUNT, debit: gross - reduction });
 
   return postVoucher(client, companyId, userId, {
     fiscalYearId: input.fiscalYearId,

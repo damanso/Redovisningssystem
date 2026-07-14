@@ -37,6 +37,10 @@ const CreateSchema = z
     reference: safeText(200).optional(),
     notes: safeText(1000).optional(),
     reverse_charge: z.boolean().optional(),
+    housework_type: z.enum(['rot', 'rut']).optional(),
+    labor_cost_ore: ORE.optional(),
+    buyer_personnummer: safeText(13).optional(),
+    property_designation: safeText(100).optional(),
     lines: z.array(LineSchema).min(1),
   })
   .strict();
