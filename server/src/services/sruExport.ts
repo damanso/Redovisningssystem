@@ -40,12 +40,14 @@ function sruText(s: string, max = 250): string {
  * Bygger INFO.SRU. Innehåller en #DATABESKRIVNING (vilken fil som hör ihop) och en
  * #MEDIELEV-sektion med avsändarens org.nr, namn och adress. Radslut är CRLF.
  */
-export function buildInfoSru(sender: SruSender, createdIso: string): string {
+export function buildInfoSru(sender: SruSender, createdDate: string, createdTime: string): string {
+  const stamp = `${createdDate.replace(/-/g, '')} ${createdTime.replace(/:/g, '')}`;
   const lines: string[] = [
     '#DATABESKRIVNING_START',
     '#PRODUKT SRU',
-    '#FILNAMN BLANKETTER.SRU',
-    `#DATUM ${createdIso.replace(/-/g, '')}`,
+    `#SKAPAD ${stamp}`,
+    `#PROGRAM ${sruText(sender.program ?? 'Redovisningssystem', 60)} 1.0`,
+    '#FILNAMN blanketter.sru',
     '#DATABESKRIVNING_SLUT',
     '#MEDIELEV_START',
     `#ORGNR ${sruText(sender.orgnr, 12)}`,
@@ -125,7 +127,7 @@ export async function generateInk2Sru(client: PoolClient, companyId: string, fis
   ];
 
   return {
-    info_sru: buildInfoSru(sender, createdDate),
+    info_sru: buildInfoSru(sender, createdDate, createdTime),
     blanketter_sru: buildBlanketterSru(sender, blanketter, createdDate, createdTime),
     income_year: incomeYear,
     blankett_ids: blanketter.map((b) => b.id),
@@ -133,13 +135,106 @@ export async function generateInk2Sru(client: PoolClient, companyId: string, fis
   };
 }
 
-// --- Fältkodsmappning (SKV 269). Fylls efter research; se SRU_FIELD_CODES. ---
-// Placeholders tas bort när de riktiga koderna är bekräftade.
-function mapInk2rFields(_r: Awaited<ReturnType<typeof ink2rReport>>): SruField[] {
-  return [];
+// --- Fältkodsmappning (Skatteverkets SKV 269). Koderna är stabila mellan år; endast
+// blankett-id:t bär inkomståret. Belopp i hela kronor, positiva i sin egen fältkod. ---
+
+// INK2R-vyns fältkoder → SRU-kod. 'income' = intäkt (kredit−debet, positiv),
+// 'cost' = kostnad (debet−kredit, positiv). Flera vyfält kan peka på samma SRU-kod
+// (summeras). Bokslutsdispositioner (3.20) och årets resultat hanteras separat.
+const INK2R_INCOME_KODER: Record<string, { kod: string; kind: 'income' | 'cost' }> = {
+  '3.1': { kod: '7410', kind: 'income' },  // Nettoomsättning
+  '3.4': { kod: '7413', kind: 'income' },  // Övriga rörelseintäkter
+  '3.5': { kod: '7511', kind: 'cost' },    // Råvaror, förnödenheter och handelsvaror
+  '3.7': { kod: '7513', kind: 'cost' },    // Övriga externa kostnader
+  '3.8': { kod: '7514', kind: 'cost' },    // Personalkostnader
+  '3.9': { kod: '7515', kind: 'cost' },    // Av- och nedskrivningar
+  '3.10': { kod: '7517', kind: 'cost' },   // Övriga rörelsekostnader
+  '3.13': { kod: '7414', kind: 'income' }, // Resultat från andelar i koncernföretag
+  '3.16': { kod: '7417', kind: 'income' }, // Övriga ränteintäkter
+  '3.18': { kod: '7522', kind: 'cost' },   // Räntekostnader
+  '3.24': { kod: '7528', kind: 'cost' },   // Skatt på årets resultat
+};
+// INK2R-balansfält → SRU-kod. Tillgångar (debet−kredit) och EK/skulder (kredit−debet)
+// är redan positiva i vyn. Flera fält kan peka på samma kod (summeras).
+const INK2R_BALANCE_KODER: Record<string, string> = {
+  '2.1': '7201',   // Immateriella anläggningstillgångar
+  '2.4': '7214',   // Byggnader och mark
+  '2.5': '7215',   // Maskiner och inventarier
+  '2.6': '7233',   // Finansiella anläggningstillgångar (andra långfr. värdepapper)
+  '2.14': '7243',  // Varulager (färdiga varor och handelsvaror)
+  '2.20': '7251',  // Kundfordringar
+  '2.22': '7261',  // Övriga fordringar
+  '2.24': '7263',  // Förutbetalda kostnader och upplupna intäkter
+  '2.26': '7271',  // Kortfristiga placeringar
+  '2.27': '7281',  // Kassa, bank och redovisningsmedel
+  '2.28': '7301',  // Bundet eget kapital
+  '2.30': '7301',  // Övrigt bundet eget kapital (summeras med 2.28)
+  '2.29': '7302',  // Fritt eget kapital (kan vara negativt)
+  '2.31': '7321',  // Obeskattade reserver (periodiseringsfonder)
+  '2.32': '7333',  // Övriga avsättningar
+  '2.33': '7354',  // Långfristiga skulder (övriga)
+  '2.40': '7365',  // Leverantörsskulder
+  '2.41': '7368',  // Skatteskulder
+  '2.42': '7369',  // Moms → övriga kortfristiga skulder
+  '2.44': '7369',  // Övriga kortfristiga skulder (summeras)
+  '2.45': '7369',  // Personalens källskatt/avgifter → övriga skulder (summeras)
+  '2.47': '7370',  // Upplupna kostnader och förutbetalda intäkter
+};
+
+function accumulate(map: Map<string, number>, kod: string, value: number): void {
+  if (value === 0) return;
+  map.set(kod, (map.get(kod) ?? 0) + value);
 }
-function mapInk2sFields(_s: Awaited<ReturnType<typeof ink2sReport>>): SruField[] {
-  return [];
+
+function mapInk2rFields(r: Awaited<ReturnType<typeof ink2rReport>>): SruField[] {
+  const acc = new Map<string, number>();
+  for (const f of r.income_statement.fields) {
+    if (f.code === '3.20') {
+      // Bokslutsdispositioner: positivt netto = återföring PF (7420), negativt = avsättning (7525).
+      const kr = toKronor(f.amount_ore);
+      if (kr > 0) accumulate(acc, '7420', kr);
+      else if (kr < 0) accumulate(acc, '7525', -kr);
+      continue;
+    }
+    const m = INK2R_INCOME_KODER[f.code];
+    if (!m) continue;
+    const kr = toKronor(f.amount_ore);
+    if (m.kind === 'income' && kr > 0) accumulate(acc, m.kod, kr);
+    else if (m.kind === 'cost' && kr < 0) accumulate(acc, m.kod, -kr);
+  }
+  // Årets resultat: vinst 7450 / förlust 7550.
+  const resKr = toKronor(r.income_statement.arets_resultat_ore);
+  if (resKr > 0) accumulate(acc, '7450', resKr);
+  else if (resKr < 0) accumulate(acc, '7550', -resKr);
+
+  for (const f of r.balance_sheet.assets) {
+    const kod = INK2R_BALANCE_KODER[f.code];
+    if (kod) accumulate(acc, kod, toKronor(f.amount_ore));
+  }
+  for (const f of r.balance_sheet.equity_liabilities) {
+    const kod = INK2R_BALANCE_KODER[f.code];
+    if (kod) accumulate(acc, kod, toKronor(f.amount_ore));
+  }
+  return [...acc.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([kod, value]) => ({ kod, value }));
+}
+
+function mapInk2sFields(s: Awaited<ReturnType<typeof ink2sReport>>): SruField[] {
+  const fields: SruField[] = [];
+  const bokfort = toKronor(s.bokfort_resultat_ore);
+  if (bokfort >= 0) fields.push({ kod: '7650', value: bokfort });       // 4.1 vinst
+  else fields.push({ kod: '7750', value: -bokfort });                    // 4.2 förlust
+  const tax = toKronor(s.tax_addback_ore);
+  if (tax > 0) fields.push({ kod: '7651', value: tax });                 // 4.3a skatt (ej avdragsgill)
+  const nonDed = toKronor(s.non_deductible_ore);
+  if (nonDed > 0) fields.push({ kod: '7653', value: nonDed });           // 4.3c andra ej avdragsgilla kostnader
+  const nonTax = toKronor(s.non_taxable_ore);
+  if (nonTax > 0) fields.push({ kod: '7754', value: nonTax });           // 4.5c bokförda intäkter ej skattepliktiga
+  const loss = toKronor(s.loss_used_ore);
+  if (loss > 0) fields.push({ kod: '7763', value: loss });               // 4.14a outnyttjat underskott
+  const taxable = toKronor(s.taxable_result_ore);
+  if (taxable >= 0) fields.push({ kod: '7670', value: taxable });        // 4.15 överskott
+  else fields.push({ kod: '7770', value: -taxable });                    // 4.16 underskott
+  return fields;
 }
 
 export { toKronor };

@@ -40,6 +40,7 @@ import { listFixedAssets } from '../../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type Ink2rReport, type Ink2sResult } from '../../services/ink2.js';
 import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services/vatDeclaration.js';
+import { generateInk2Sru } from '../../services/sruExport.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -651,6 +652,15 @@ function ink2Body(companyId: string, fyId: string, r: Ink2rReport, s: Ink2sResul
         <label class="field" style="margin:0"><span>Belopp (kr)</span><input type="number" name="amount_kr" min="1" step="1" required style="width:120px"></label>
         <button class="btn btn--ghost btn--sm" type="submit">Lägg till justering</button>
       </form>
+    </section>
+
+    <section class="statement"><div class="statement__cap"><h2>SRU-filer för Skatteverket</h2></div>
+      <p class="lede" style="margin:0 0 8px">Ladda ner INK2R + INK2S som SRU-filer (Skatteverkets filformat) och ladda upp dem själv i e-tjänsten "Filöverföring". Två filer krävs: <span class="code">info.sru</span> (avsändaruppgifter) och <span class="code">blanketter.sru</span> (deklarationsblanketterna).</p>
+      <div class="empty" style="text-align:left;padding:12px 14px">${chip('Kontrollera blankett-årtal', 'warn', '!')} <span class="muted">Fältkoderna följer Skatteverkets SKV 269. Blankett-id:t bär inkomståret (t.ex. INK2R-2025P4) — verifiera årtalssuffixet mot Skatteverkets specifikation för aktuellt inkomstår innan uppladdning. Ingen digital inlämning sker härifrån.</span></div>
+      <div class="actions" style="margin-top:10px">
+        <a class="btn btn--primary btn--sm" href="/app/c/${companyId}/ink2/info.sru?fy=${fyId}">Ladda ner info.sru</a>
+        <a class="btn btn--primary btn--sm" href="/app/c/${companyId}/ink2/blanketter.sru?fy=${fyId}">Ladda ner blanketter.sru</a>
+      </div>
     </section>`;
 }
 
@@ -1187,6 +1197,27 @@ viewRouter.post('/c/:companyId/ink2/adjustment/delete', page(async (req, res) =>
   await withTenantTransaction(userId, companyId, (client) => deleteTaxAdjustment(client, companyId, userId, id));
   res.redirect(`/app/c/${companyId}/ink2?fy=${fy}`);
 }));
+
+// Fas C6: SRU-filnedladdning för INK2. Två filer (info.sru + blanketter.sru) som
+// användaren själv laddar upp i Skatteverkets e-tjänst. Beräknat underlag.
+async function sruFile(req: Request, res: import('express').Response, which: 'info' | 'blanketter'): Promise<void> {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyId = z.string().uuid().parse(req.query.fy);
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toISOString().slice(11, 19);
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateInk2Sru(client, companyId, fyId, date, time);
+  });
+  const filename = which === 'info' ? 'info.sru' : 'blanketter.sru';
+  res.type('text/plain; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="${filename}"`)
+    .send(which === 'info' ? out.info_sru : out.blanketter_sru);
+}
+viewRouter.get('/c/:companyId/ink2/info.sru', page((req, res) => sruFile(req, res, 'info')));
+viewRouter.get('/c/:companyId/ink2/blanketter.sru', page((req, res) => sruFile(req, res, 'blanketter')));
 
 // Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.
 viewRouter.get('/c/:companyId/cashflow', pageFor('cashflow', 'Kassaflöde', async (client, companyId) => {

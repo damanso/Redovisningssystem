@@ -27,6 +27,7 @@ import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } fr
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments } from '../services/ink2.js';
 import { vatDeclaration } from '../services/vatDeclaration.js';
+import { generateInk2Sru } from '../services/sruExport.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -280,6 +281,18 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => ink2rReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'generate_ink2_sru',
+    title: 'Generera SRU-filer för INK2 (INFO.SRU + BLANKETTER.SRU)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => {
+      const now = new Date();
+      const date = now.toISOString().slice(0, 10);
+      const time = now.toISOString().slice(11, 19);
+      return generateInk2Sru(ctx.client, ctx.companyId, i.fiscal_year_id, date, time);
+    },
   }),
   def({
     name: 'ink2s_adjustments',
