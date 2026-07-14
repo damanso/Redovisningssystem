@@ -8,10 +8,10 @@ import { nextDocumentNumber } from './accounting/numbering.js';
 // förtroendegränsen; kolumnnamn i UPDATE byggs via allowlist (aldrig från indata).
 
 // ---- Kunder ----
-const CUSTOMER_COLUMNS = `id, customer_number, name, org_number, email, phone,
+const CUSTOMER_COLUMNS = `id, customer_number, name, org_number, vat_number, email, phone,
   address, postal_code, city, payment_terms, is_active, created_at`;
 const CUSTOMER_UPDATE = {
-  name: 'name', org_number: 'org_number', email: 'email', phone: 'phone',
+  name: 'name', org_number: 'org_number', vat_number: 'vat_number', email: 'email', phone: 'phone',
   address: 'address', postal_code: 'postal_code', city: 'city',
   payment_terms: 'payment_terms', is_active: 'is_active',
 } as const;
@@ -21,10 +21,10 @@ export async function createCustomer(
 ): Promise<Record<string, unknown>> {
   const number = await nextDocumentNumber(client, companyId, 'customer');
   const result = await client.query(
-    `INSERT INTO customers (company_id, customer_number, name, org_number, email, phone,
+    `INSERT INTO customers (company_id, customer_number, name, org_number, vat_number, email, phone,
         address, postal_code, city, payment_terms)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${CUSTOMER_COLUMNS}`,
-    [companyId, number, input.name, input.org_number ?? null, input.email ?? null,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${CUSTOMER_COLUMNS}`,
+    [companyId, number, input.name, input.org_number ?? null, input.vat_number ?? null, input.email ?? null,
       input.phone ?? null, input.address ?? null, input.postal_code ?? null,
       input.city ?? null, input.payment_terms ?? null],
   );

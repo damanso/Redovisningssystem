@@ -44,6 +44,7 @@ import { generateInk2Sru } from '../../services/sruExport.js';
 import { generateK2Ixbrl } from '../../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../../services/agi.js';
 import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
+import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -749,6 +750,35 @@ function k10Body(companyId: string, fys: { id: string; label: string }[], parsed
       </form>` : ''}`;
 }
 
+function ecSalesBody(companyId: string, d: EcSalesList): Raw {
+  return html`<div class="page-head"><div>${eyebrow('EU-moms · Periodisk sammanställning')}<h1>Periodisk sammanställning</h1>
+      <p class="lede">EU-försäljning av varor (konto 3105) och tjänster (konto 3308) per köpare, ${d.from} – ${d.to}.</p></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beräknat underlag — ingen digital inlämning', 'warn', '!')} <span class="muted">${d.disclaimer}</span></div>
+    <form method="get" action="/app/c/${companyId}/ec-sales" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:6px 0 12px">
+      <label class="field" style="margin:0"><span>Från</span><input type="date" name="from" value="${d.from}"></label>
+      <label class="field" style="margin:0"><span>Till</span><input type="date" name="to" value="${d.to}"></label>
+      <button class="btn btn--ghost btn--sm" type="submit">Visa period</button></form>
+    <div class="kpi-grid">
+      ${kpiCell('Varor (EU)', amount(d.total_goods_ore))}
+      ${kpiCell('Tjänster (EU)', amount(d.total_services_ore))}
+      ${kpiCell('Antal köpare', html`${String(d.rows.length)}`)}
+    </div>
+    ${d.missing_vat.length ? html`<p class="lede" style="margin-top:10px">${chip(`${d.missing_vat.length} kund(er) saknar momsnummer: ${d.missing_vat.join(', ')}`, 'warn', '!')} <span class="muted">Fyll i momsregistreringsnummer på kunden innan filen genereras.</span></p>` : ''}
+    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Köpare</th><th>Momsnummer</th><th class="num">Varor</th><th class="num">Tjänster</th></tr></thead><tbody>
+      ${d.rows.length === 0 ? html`<tr><td colspan="4" class="muted">Ingen EU-försäljning i perioden.</td></tr>` : d.rows.map((r) => html`<tr><td>${r.customer_name}</td><td class="code">${r.vat_number ?? chip('saknas', 'warn', '!')}</td>
+        <td class="num">${amount(r.goods_ore, { unit: false })}</td><td class="num">${amount(r.services_ore, { unit: false })}</td></tr>`)}
+    </tbody></table></div>
+    <h2 style="margin-top:20px">Generera fil (SKV574008)</h2>
+    <form method="post" action="/app/c/${companyId}/ec-sales/file" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <label class="field" style="margin:0"><span>Period</span><input name="period" placeholder="2024-06 eller 2024-Q2" required></label>
+      <label class="field" style="margin:0"><span>Kontaktperson</span><input name="contact_name" maxlength="35" required></label>
+      <label class="field" style="margin:0"><span>Telefon</span><input name="contact_phone" maxlength="17" required></label>
+      <label class="field" style="margin:0"><span>E-post (valfritt)</span><input name="contact_email" maxlength="254"></label>
+      <button class="btn btn--primary btn--sm" type="submit">Ladda ner fil</button>
+    </form>
+    <p class="muted" style="font-size:12px;margin-top:6px">Perioden avgör månad (YYYY-MM) eller kvartal (YYYY-Qn) i filen. Alla EU-köpare måste ha momsnummer.</p>`;
+}
+
 viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1207,6 +1237,44 @@ viewRouter.get('/c/:companyId/vat', page(async (req, res) => {
     return { name: company.name, body: vatDeclarationBody(companyId, d) };
   });
   res.type('html').send(layout({ title: 'Momsdeklaration', companyId, companyName: name, active: 'vat', body }).value);
+}));
+
+// Fas D4: periodisk sammanställning (EU-moms). EU-försäljning per köpare + SKV574008-fil.
+viewRouter.get('/c/:companyId/ec-sales', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const q = req.query as { from?: unknown; to?: unknown };
+  const fromQ = typeof q.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.from) ? q.from : null;
+  const toQ = typeof q.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.to) ? q.to : null;
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const fy = await client.query<{ start_date: string; end_date: string }>(
+      'SELECT start_date::text, end_date::text FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1', [companyId],
+    );
+    const from = fromQ ?? fy.rows[0]?.start_date ?? '2000-01-01';
+    const to = toQ ?? fy.rows[0]?.end_date ?? '2000-12-31';
+    const list = await ecSalesList(client, companyId, from, to);
+    return { name: company.name, body: ecSalesBody(companyId, list) };
+  });
+  res.type('html').send(layout({ title: 'Periodisk sammanställning', companyId, companyName: name, active: 'ec-sales', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/ec-sales/file', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2]|Q[1-4])$/).parse(b.period);
+  const contactName = z.string().min(1).max(35).parse(b.contact_name).replace(/[\r\n\t;]/g, ' ');
+  const contactPhone = z.string().min(1).max(17).parse(b.contact_phone).replace(/[\r\n\t;]/g, ' ');
+  const contactEmail = typeof b.contact_email === 'string' && b.contact_email ? b.contact_email.replace(/[\r\n\t;]/g, '') : undefined;
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateEcSalesFile(client, companyId, period, { name: contactName, phone: contactPhone, email: contactEmail });
+  });
+  res.type('text/plain; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="${out.filename}"`)
+    .send(out.csv);
 }));
 
 // Fas C4: INK2 deklarationsunderlag — INK2R räkenskapsschema + INK2S skattemässiga

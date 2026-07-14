@@ -128,6 +128,7 @@ const NAV = [
   ['assets', 'Anläggningar'],
   ['tax', 'Skatt'],
   ['vat', 'Moms'],
+  ['ec-sales', 'EU-moms'],
   ['ink2', 'Deklaration'],
   ['k10', 'K10 (3:12)'],
   ['analytics', 'Analys'],

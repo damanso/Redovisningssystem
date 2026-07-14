@@ -31,6 +31,7 @@ import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../services/agi.js';
 import { k10Computation, generateK10Sru } from '../services/k10.js';
+import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -293,6 +294,26 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     handler: (ctx, i: { period: string }) => agiDeclaration(ctx.client, ctx.companyId, i.period),
   }),
   def({
+    name: 'ec_sales_list',
+    title: 'Periodisk sammanställning (EU-försäljning per köpare)',
+    sensitivity: 'read',
+    inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema }).strict(),
+    handler: (ctx, i: { from: string; to: string }) => ecSalesList(ctx.client, ctx.companyId, i.from, i.to),
+  }),
+  def({
+    name: 'generate_ec_sales_file',
+    title: 'Generera periodisk sammanställning som fil (SKV574008)',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2]|Q[1-4])$/, "period 'YYYY-MM' eller 'YYYY-Qn'"),
+      contact_name: safeText(35),
+      contact_phone: safeText(17),
+      contact_email: safeText(254).optional(),
+    }).strict(),
+    handler: (ctx, i: { period: string; contact_name: string; contact_phone: string; contact_email?: string }) =>
+      generateEcSalesFile(ctx.client, ctx.companyId, i.period, { name: i.contact_name, phone: i.contact_phone, email: i.contact_email }),
+  }),
+  def({
     name: 'k10_computation',
     title: 'K10 — gränsbelopp (3:12) för delägare i fåmansföretag',
     sensitivity: 'read',
@@ -490,6 +511,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       .object({
         name: safeText(200),
         org_number: safeText(20).optional(),
+        vat_number: safeText(20).optional(),
         email: safeText(254).optional(),
         phone: safeText(50).optional(),
         payment_terms: z.number().int().min(0).max(365).optional(),
