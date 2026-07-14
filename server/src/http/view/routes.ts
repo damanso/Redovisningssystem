@@ -763,7 +763,8 @@ function ecSalesBody(companyId: string, d: EcSalesList): Raw {
       ${kpiCell('Tjänster (EU)', amount(d.total_services_ore))}
       ${kpiCell('Antal köpare', html`${String(d.rows.length)}`)}
     </div>
-    ${d.missing_vat.length ? html`<p class="lede" style="margin-top:10px">${chip(`${d.missing_vat.length} kund(er) saknar momsnummer: ${d.missing_vat.join(', ')}`, 'warn', '!')} <span class="muted">Fyll i momsregistreringsnummer på kunden innan filen genereras.</span></p>` : ''}
+    ${d.missing_vat.length ? html`<p class="lede" style="margin-top:10px">${chip(`${d.missing_vat.length} kund(er) saknar giltigt momsnummer: ${d.missing_vat.join(', ')}`, 'warn', '!')} <span class="muted">Fyll i momsregistreringsnummer på kunden innan filen genereras.</span></p>` : ''}
+    ${!d.reconciles ? html`<p class="lede" style="margin-top:10px">${chip('Stämmer inte mot huvudboken', 'neg', '!')} <span class="muted">Huvudbokens EU-försäljning (ruta 35/39): varor ${money(d.ledger_goods_ore)} kr, tjänster ${money(d.ledger_services_ore)} kr. Differensen beror sannolikt på återförda verifikat som inte kan knytas till en kund — makulera fakturan i stället, annars stämmer inte sammanställningen mot momsdeklarationen.</span></p>` : ''}
     <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Köpare</th><th>Momsnummer</th><th class="num">Varor</th><th class="num">Tjänster</th></tr></thead><tbody>
       ${d.rows.length === 0 ? html`<tr><td colspan="4" class="muted">Ingen EU-försäljning i perioden.</td></tr>` : d.rows.map((r) => html`<tr><td>${r.customer_name}</td><td class="code">${r.vat_number ?? chip('saknas', 'warn', '!')}</td>
         <td class="num">${amount(r.goods_ore, { unit: false })}</td><td class="num">${amount(r.services_ore, { unit: false })}</td></tr>`)}

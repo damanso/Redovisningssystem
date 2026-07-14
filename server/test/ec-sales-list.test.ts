@@ -96,6 +96,45 @@ describe('SKV574008-fil', () => {
   });
 });
 
+// Grindfynd D4: kontaktfält får inte kunna injicera rader i den semikolonseparerade
+// filen (semikolon/radbrytning) — saneras i tjänsten (den delade ingången), inte bara vyn.
+describe('SKV574008 CSV-injektion (grindfynd)', () => {
+  it('semikolon och radbrytning i kontaktnamn saneras', async () => {
+    const c3 = await createCompany(user.token, 'Inject AB');
+    await api.patch(`/api/companies/${c3}`).set(auth()).send({ org_number: '5560269986' });
+    const res = await api.post(`/api/companies/${c3}/actions/generate_ec_sales_file`).set(auth()).send({
+      period: '2024-05', contact_name: 'Anna\r\nSE999999999901;1000000;;;', contact_phone: '08-1',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const csv = res.body.result.csv as string;
+    expect(csv).not.toContain('SE999999999901;1000000'); // ingen injicerad köparrad
+    // Huvudraden får inte ha extra semikolonfält från namnet.
+    const header = csv.split('\r\n')[1]!;
+    expect(header.split(';').length).toBe(5); // momsnr;period;namn;tel;epost
+  });
+});
+
+// Grindfynd D4: ogiltigt/blankt momsnummer ska flaggas som saknat (inte tyst tomt i filen).
+describe('ogiltigt momsnummer (grindfynd)', () => {
+  it('kund med momsnummer "N/A" flaggas som saknat', async () => {
+    const c2 = await createCompany(user.token, 'BadVat AB');
+    await api.patch(`/api/companies/${c2}`).set(auth()).send({ org_number: '5560269986' });
+    const fy = await api.post(`/api/companies/${c2}/accounting/fiscal-years`).set(auth()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
+    const cust = await api.post(`/api/companies/${c2}/actions/create_customer`).set(auth()).send({ name: 'Ogiltig', vat_number: 'N/A' });
+    const inv = await api.post(`/api/companies/${c2}/actions/create_invoice`).set(auth()).send({
+      customer_id: cust.body.result.id, invoice_date: '2024-05-15', due_date: '2024-06-15',
+      lines: [{ description: 'EU', quantity: 1, unit_price_ore: 10000_00, vat_rate: 0, revenue_account: 3105 }],
+    });
+    const req = await api.post(`/api/companies/${c2}/actions/book_invoice`).set(auth()).send({ invoice_id: inv.body.result.id, fiscal_year_id: fy.body.fiscal_year.id });
+    await api.post(`/api/companies/${c2}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+    const listRes = await api.post(`/api/companies/${c2}/actions/ec_sales_list`).set(auth()).send({ from: '2024-01-01', to: '2024-12-31' });
+    expect(listRes.body.result.missing_vat).toContain('Ogiltig');
+    const fileRes = await api.post(`/api/companies/${c2}/actions/generate_ec_sales_file`).set(auth()).send({ period: '2024-05', contact_name: 'A', contact_phone: '1' });
+    expect(fileRes.status).toBe(400);
+    expect(JSON.stringify(fileRes.body)).toContain('missing_vat_number');
+  });
+});
+
 describe('EU-moms-vyn', () => {
   it('renderar sammanställning och filformulär', async () => {
     const ua = supertest.agent(app);

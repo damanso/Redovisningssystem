@@ -6,6 +6,7 @@
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { BadRequestError } from '../lib/errors.js';
+import { accountSums } from './reports.js';
 
 // EU-försäljningskonton. Varor → ruta i sammanställningen (varuvärde), tjänster →
 // tjänstevärde. Trepartshandel kräver särskild kontering och stöds inte automatiskt.
@@ -25,19 +26,38 @@ export interface EcSalesList {
   rows: EcSalesRow[];
   total_goods_ore: Ore;
   total_services_ore: Ore;
-  missing_vat: string[];       // kundnamn med EU-försäljning men utan momsnummer
+  missing_vat: string[];       // kunder med EU-försäljning men utan giltigt momsnummer
+  // Avstämning mot huvudboken (samma underlag som momsdeklarationens ruta 35/39). En
+  // differens = rättelser/återföringar som inte kan knytas till en kund (t.ex.
+  // reverse_voucher) och måste hanteras manuellt innan filen lämnas in.
+  ledger_goods_ore: Ore;
+  ledger_services_ore: Ore;
+  reconciles: boolean;
   disclaimer: string;
 }
 
-const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Giltigt EU-momsnummer: 2 bokstäver (landskod) + minst 2 alfanumeriska tecken.
+const VAT_RE = /^[A-Z]{2}[0-9A-Z]{2,}$/;
+function normalizeVat(v: string | null): string | null {
+  if (!v) return null;
+  const cleaned = v.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  return VAT_RE.test(cleaned) ? cleaned : null;
+}
+function isValidIsoDate(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number) as [number, number, number];
+  if (m < 1 || m > 12) return false;
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return d >= 1 && d <= days;
+}
 
 /**
  * Periodisk sammanställning för [from, to]: EU-varu- och tjänsteförsäljning per kund,
- * ur bokförda (ej makulerade) fakturarader på EU-försäljningskontona. Kunder med
- * EU-försäljning men utan registrerat momsnummer flaggas separat.
+ * ur bokförda (ej makulerade) fakturarader på EU-försäljningskontona. Kunder utan
+ * giltigt momsnummer flaggas. Summan stäms av mot huvudboken (ruta 35/39).
  */
 export async function ecSalesList(client: PoolClient, companyId: string, from: string, to: string): Promise<EcSalesList> {
-  if (!ISO_RE.test(from) || !ISO_RE.test(to)) throw new BadRequestError('invalid_period', "datum anges som 'YYYY-MM-DD'");
+  if (!isValidIsoDate(from) || !isValidIsoDate(to)) throw new BadRequestError('invalid_period', "datum anges som 'YYYY-MM-DD'");
   const company = await client.query<{ name: string; org_number: string | null; vat_number: string | null }>(
     'SELECT name, org_number, vat_number FROM companies WHERE id = $1', [companyId],
   );
@@ -63,19 +83,33 @@ export async function ecSalesList(client: PoolClient, companyId: string, from: s
 
   const list: EcSalesRow[] = rows.rows.map((r) => ({
     customer_name: r.customer_name,
-    vat_number: r.vat_number,
+    vat_number: normalizeVat(r.vat_number), // ogiltigt/blankt momsnummer → null (flaggas)
     goods_ore: Number(r.goods),
     services_ore: Number(r.services),
   }));
+
+  // Avstämning mot huvudboken (kredit − debet på EU-kontona), samma nettning som
+  // momsdeklarationens ruta 35/39 — fångar bl.a. återförda verifikat som inte kan
+  // knytas till en kund via fakturan.
+  const ledger = await accountSums(client, companyId, { from, to });
+  const ledgerGoods = ledger.filter((a) => a.account_number >= EU_GOODS_MIN && a.account_number <= EU_GOODS_MAX)
+    .reduce((s, a) => s + (a.credit_ore - a.debit_ore), 0);
+  const ledgerServices = ledger.filter((a) => a.account_number >= EU_SERVICES_MIN && a.account_number <= EU_SERVICES_MAX)
+    .reduce((s, a) => s + (a.credit_ore - a.debit_ore), 0);
+  const totalGoods = list.reduce((s, r) => s + r.goods_ore, 0);
+  const totalServices = list.reduce((s, r) => s + r.services_ore, 0);
 
   return {
     from, to,
     company: { name: company.rows[0]?.name ?? '', org_number: company.rows[0]?.org_number ?? null, vat_number: company.rows[0]?.vat_number ?? null },
     rows: list,
-    total_goods_ore: list.reduce((s, r) => s + r.goods_ore, 0),
-    total_services_ore: list.reduce((s, r) => s + r.services_ore, 0),
+    total_goods_ore: totalGoods,
+    total_services_ore: totalServices,
     missing_vat: list.filter((r) => !r.vat_number).map((r) => r.customer_name),
-    disclaimer: 'Beräknad periodisk sammanställning ur bokförda fakturor på EU-försäljningskontona (3105 varor, 3308 tjänster). Köparens momsregistreringsnummer måste finnas på kunden — kunder utan momsnummer flaggas. Trepartshandel hanteras inte automatiskt. Ingen digital inlämning; ladda upp filen själv hos Skatteverket.',
+    ledger_goods_ore: ledgerGoods,
+    ledger_services_ore: ledgerServices,
+    reconciles: ledgerGoods === totalGoods && ledgerServices === totalServices,
+    disclaimer: 'Beräknad periodisk sammanställning ur bokförda fakturor på EU-försäljningskontona (3105 varor, 3308 tjänster). Köparens momsregistreringsnummer måste finnas på kunden — kunder med saknat/ogiltigt momsnummer flaggas. Rättelser görs genom att makulera fakturan (ett återfört verifikat kan inte knytas till en kund) — differens mot huvudboken flaggas. Trepartshandel hanteras inte automatiskt. Ingen digital inlämning.',
   };
 }
 
@@ -122,13 +156,17 @@ export async function generateEcSalesFile(client: PoolClient, companyId: string,
   // Uppgiftslämnarens momsnummer = 10-siffrigt org.nr + '01' (svenskt momsnr utan SE).
   const reporterVat = list.company.vat_number ? cleanVat(list.company.vat_number).replace(/^SE/, '') : `${orgDigits}01`;
 
-  const header = [reporterVat, code, contact.name, contact.phone, contact.email ?? ''].join(';');
-  const buyerRows = list.rows.map((r) => {
-    const goods = r.goods_ore ? String(toKr(r.goods_ore)) : '';
-    const services = r.services_ore ? String(toKr(r.services_ore)) : '';
+  // Semikolon och radbrytning i kontaktfälten skulle bryta/injicera rader i den
+  // semikolonseparerade filen — ta bort dem här (den delade ingången), inte bara i vyn.
+  const field = (s: string) => s.replace(/[\r\n\t;]/g, ' ').trim();
+  const header = [reporterVat, code, field(contact.name), field(contact.phone), contact.email ? field(contact.email) : ''].join(';');
+  // Bara köpare med ett belopp ≥ 1 kr i minst ett fält tas med (en post som avrundas
+  // till 0 kr ska inte generera en 0-rad).
+  const buyerRows = list.rows
+    .map((r) => ({ vat: cleanVat(r.vat_number!), goods: toKr(r.goods_ore), services: toKr(r.services_ore) }))
+    .filter((r) => r.goods !== 0 || r.services !== 0)
     // Fält: köparVAT;varor;trepartshandel;tjänster; (trepartshandel stöds ej → tomt).
-    return `${cleanVat(r.vat_number!)};${goods};;${services};`;
-  });
+    .map((r) => `${r.vat};${r.goods || ''};;${r.services || ''};`);
   const csv = ['SKV574008;', header, ...buyerRows].join('\r\n') + '\r\n';
-  return { csv, filename: `periodisk_sammanstallning_${code.replace('-', 'Q')}.txt`, period, buyer_count: list.rows.length };
+  return { csv, filename: `periodisk_sammanstallning_${code.replace('-', 'Q')}.txt`, period, buyer_count: buyerRows.length };
 }
