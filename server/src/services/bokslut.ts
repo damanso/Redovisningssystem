@@ -27,7 +27,24 @@ async function loadFy(client: PoolClient, companyId: string, fiscalYearId: strin
   return { from: r.rows[0].start_date, to: r.rows[0].end_date, locked: r.rows[0].is_locked };
 }
 
-/** Avsättning (8811 → 2110) eller återföring (2110 → 8819) av periodiseringsfond. */
+/** Har årets resultat redan överförts (bokslutstransaktionerna måste ske FÖRE det)? */
+async function yearResultBooked(client: PoolClient, companyId: string, fiscalYearId: string): Promise<boolean> {
+  const r = await client.query(
+    "SELECT 1 FROM vouchers WHERE company_id = $1 AND source_type = 'year_result' AND source_id = $2 LIMIT 1",
+    [companyId, fiscalYearId],
+  );
+  return r.rows.length > 0;
+}
+
+// Endast dubbelbokningsspärren (already_posted / 23505) ska rapporteras som "redan
+// bokförd". period_locked och andra ConflictError måste bubbla upp oförändrade.
+function isDuplicateSource(err: unknown): boolean {
+  return (err instanceof ConflictError && err.code === 'already_posted') ||
+    (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505');
+}
+
+/** Avsättning (8811 → 2110) eller återföring (2110 → 8819) av periodiseringsfond.
+ *  Källtyp-spärr per riktning och räkenskapsår hindrar dubbelbokning. */
 export async function bookPeriodiseringsfond(
   client: PoolClient, companyId: string, userId: string, fiscalYearId: string,
   type: 'avsattning' | 'aterforing', amountOre: number,
@@ -35,16 +52,22 @@ export async function bookPeriodiseringsfond(
   if (!Number.isInteger(amountOre) || amountOre <= 0) throw new BadRequestError('invalid_amount', 'belopp måste vara positivt');
   const fy = await loadFy(client, companyId, fiscalYearId);
   if (fy.locked) throw new ConflictError('year_locked', 'räkenskapsåret är låst');
+  if (await yearResultBooked(client, companyId, fiscalYearId)) throw new ConflictError('result_transferred', 'årets resultat är redan överfört — bokför bokslutsdispositioner före resultatöverföringen');
   const lines = type === 'avsattning'
     ? [{ account_number: PF_AVSATTNING_EXPENSE, debit_ore: amountOre }, { account_number: PF_FOND, credit_ore: amountOre }]
     : [{ account_number: PF_FOND, debit_ore: amountOre }, { account_number: PF_ATERFORING_INCOME, credit_ore: amountOre }];
-  const voucher = await postVoucher(client, companyId, userId, {
-    fiscalYearId, voucherDate: fy.to,
-    description: type === 'avsattning' ? 'Avsättning till periodiseringsfond' : 'Återföring från periodiseringsfond',
-    sourceType: 'periodiseringsfond', lines,
-  });
-  await writeAudit(client, { companyId, userId, action: 'bokslut.periodiseringsfond', entityType: 'fiscal_year', entityId: fiscalYearId, details: { type, amount_ore: amountOre } });
-  return { voucher_id: voucher.id, type, amount_ore: amountOre };
+  try {
+    const voucher = await postVoucher(client, companyId, userId, {
+      fiscalYearId, voucherDate: fy.to,
+      description: type === 'avsattning' ? 'Avsättning till periodiseringsfond' : 'Återföring från periodiseringsfond',
+      sourceType: type === 'avsattning' ? 'pf_avsattning' : 'pf_aterforing', sourceId: fiscalYearId, lines,
+    });
+    await writeAudit(client, { companyId, userId, action: 'bokslut.periodiseringsfond', entityType: 'fiscal_year', entityId: fiscalYearId, details: { type, amount_ore: amountOre } });
+    return { voucher_id: voucher.id, type, amount_ore: amountOre };
+  } catch (err) {
+    if (isDuplicateSource(err)) throw new ConflictError('already_booked', `periodiseringsfond (${type}) är redan bokförd för året`);
+    throw err;
+  }
 }
 
 /** Bokför årets skatt (8910 → 2512). En gång per räkenskapsår (källtyp-spärr). */
@@ -54,6 +77,7 @@ export async function bookCorporateTax(
   if (!Number.isInteger(amountOre) || amountOre < 0) throw new BadRequestError('invalid_amount', 'skatt kan inte vara negativ');
   const fy = await loadFy(client, companyId, fiscalYearId);
   if (fy.locked) throw new ConflictError('year_locked', 'räkenskapsåret är låst');
+  if (await yearResultBooked(client, companyId, fiscalYearId)) throw new ConflictError('result_transferred', 'årets resultat är redan överfört — bokför skatten före resultatöverföringen');
   if (amountOre === 0) return { skipped: true, reason: 'noll skatt' };
   try {
     const voucher = await postVoucher(client, companyId, userId, {
@@ -64,7 +88,7 @@ export async function bookCorporateTax(
     await writeAudit(client, { companyId, userId, action: 'bokslut.corporate_tax', entityType: 'fiscal_year', entityId: fiscalYearId, details: { amount_ore: amountOre } });
     return { voucher_id: voucher.id, amount_ore: amountOre };
   } catch (err) {
-    if (err instanceof ConflictError || (err as { code?: string }).code === '23505') throw new ConflictError('already_booked', 'årets skatt är redan bokförd');
+    if (isDuplicateSource(err)) throw new ConflictError('already_booked', 'årets skatt är redan bokförd');
     throw err;
   }
 }
@@ -96,7 +120,7 @@ export async function bookYearResult(
     await writeAudit(client, { companyId, userId, action: 'bokslut.year_result', entityType: 'fiscal_year', entityId: fiscalYearId, details: { result_ore: result } });
     return { voucher_id: voucher.id, result_ore: result };
   } catch (err) {
-    if (err instanceof ConflictError || (err as { code?: string }).code === '23505') throw new ConflictError('already_booked', 'årets resultat är redan överfört');
+    if (isDuplicateSource(err)) throw new ConflictError('already_booked', 'årets resultat är redan överfört');
     throw err;
   }
 }

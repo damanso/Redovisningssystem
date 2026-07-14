@@ -26,13 +26,25 @@ export function monthlyDepreciationOre(costOre: number, residualOre: number, lif
   return Math.round((costOre - residualOre) / lifeMonths);
 }
 
-/** Antal hela månader mellan två ISO-datum (from exkl., to inkl. månadsslut). */
+/**
+ * Antal hela månader mellan två ISO-datum. Ankardagen (from-dagen) klampas till
+ * målmånadens längd så att en tillgång anskaffad den 31:e ändå får en hel månad
+ * vid en kort månads slut (t.ex. 31 jan → 29 feb = 1 månad, inte 0).
+ */
 export function monthsBetween(fromIso: string, toIso: string): number {
   const [fy, fm, fd] = fromIso.split('-').map(Number) as [number, number, number];
   const [ty, tm, td] = toIso.split('-').map(Number) as [number, number, number];
   let months = (ty - fy) * 12 + (tm - fm);
-  if (td < fd) months -= 1; // inte en hel månad om måldagen är tidigare i månaden
+  const lastDayOfTargetMonth = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+  const effectiveAnchorDay = Math.min(fd, lastDayOfTargetMonth);
+  if (td < effectiveAnchorDay) months -= 1;
   return months;
+}
+
+function dayBeforeIso(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 export async function createFixedAsset(
@@ -114,24 +126,38 @@ export async function bookDepreciation(
   if (!a) throw new NotFoundError('fixed_asset');
   if (a.status === 'disposed') throw new ConflictError('disposed', 'tillgången är avyttrad');
 
-  const start = a.depreciated_through ?? a.acquisition_date;
-  if (throughDate <= start) throw new BadRequestError('nothing_to_book', 'inget att skriva av för perioden');
+  const rawStart = a.depreciated_through ?? a.acquisition_date;
+  if (throughDate <= rawStart) throw new BadRequestError('nothing_to_book', 'inget att skriva av för perioden');
+
+  // Bokför bara innevarande räkenskapsårs andel. Om det finns obokförd avskrivning
+  // från ETT TIDIGARE räkenskapsår (rawStart före årets ingång) hänvisar vi till att
+  // bokföra det året först — annars skulle prior-år-kostnad hamna på fel år.
+  const fyRow = await client.query<{ start_date: string }>(
+    'SELECT start_date::text FROM fiscal_years WHERE id = $1 AND company_id = $2', [fiscalYearId, companyId],
+  );
+  if (!fyRow.rows[0]) throw new NotFoundError('fiscal_year');
+  if (rawStart < dayBeforeIso(fyRow.rows[0].start_date)) {
+    throw new BadRequestError('prior_year_first', 'bokför tidigare räkenskapsårs avskrivning först');
+  }
 
   const cost = Number(a.acquisition_cost_ore);
   const residual = Number(a.residual_value_ore);
-  const monthly = monthlyDepreciationOre(cost, residual, a.useful_life_months);
+  const base = cost - residual;
 
   const already = await client.query<{ acc: string }>(
     'SELECT COALESCE(sum(amount_ore), 0) AS acc FROM fixed_asset_depreciations WHERE fixed_asset_id = $1', [fixedAssetId],
   );
   const accumulated = Number(already.rows[0]!.acc);
-  const depreciableRemaining = Math.max(0, (cost - residual) - accumulated);
-  if (depreciableRemaining === 0) throw new ConflictError('fully_depreciated', 'tillgången är helt avskriven');
+  if (base - accumulated <= 0) throw new ConflictError('fully_depreciated', 'tillgången är helt avskriven');
 
-  const months = monthsBetween(start, throughDate);
-  if (months <= 0) throw new BadRequestError('nothing_to_book', 'mindre än en månad sedan senaste avskrivning');
-  const amount = Math.min(months * monthly, depreciableRemaining);
-  if (amount <= 0) throw new BadRequestError('nothing_to_book', 'ingen avskrivning att bokföra');
+  // Ackumulerat MÅL vid throughDate = base * förfluten tid / livslängd (kapat).
+  // Beloppet = mål − redan bokfört. Räknas på totalen (inte månad × avrundad
+  // månadskostnad) så småvärden/långa livslängder inte fastnar på 0 och avrundning
+  // inte driver ackumulerat bort från base.
+  const elapsedMonths = Math.min(monthsBetween(a.acquisition_date, throughDate), a.useful_life_months);
+  const targetAccumulated = Math.min(Math.round((base * elapsedMonths) / a.useful_life_months), base);
+  const amount = targetAccumulated - accumulated;
+  if (amount <= 0) throw new BadRequestError('nothing_to_book', 'ingen avskrivning att bokföra för perioden');
 
   const voucher = await postVoucher(client, companyId, userId, {
     fiscalYearId,

@@ -87,3 +87,46 @@ describe('bokförda bokslutstransaktioner', () => {
     expect(done.status).toBe(409); // year_locked
   });
 });
+
+// Grindfynd C2: bokslutsdispositioner och skatt måste bokföras FÖRE resultatöverföringen.
+// Efter att årets resultat överförts nollar 8999 resultaträkningen — då skulle en sen PF/skatt
+// hamna på fel sida. Tjänsten vägrar därför med result_transferred (409).
+describe('ordningsspärr: dispositioner före resultatöverföring (grindfynd)', () => {
+  let u: TestUser;
+  let cid: string;
+  let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  async function approve(name: string, body: Record<string, unknown>) {
+    const req = await api.post(`${c()}/actions/${name}`).set(a()).send(body);
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    return api.post(`${c()}/approvals/${req.body.approval.id}/approve`).set(a()).send({});
+  }
+
+  beforeAll(async () => {
+    u = await registerUser('bokslut-order');
+    cid = await createCompany(u.token, 'Ordning AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // Skapa en vinst så att resultatöverföringen faktiskt bokför något.
+    const cust = await api.post(`${c()}/customers`).set(a()).send({ name: 'Kund' });
+    const inv = await api.post(`${c()}/actions/create_invoice`).set(a()).send({
+      customer_id: cust.body.customer.id, invoice_date: '2025-03-01', due_date: '2025-03-31',
+      lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 50000_00, vat_rate: 25 }],
+    });
+    await approve('book_invoice', { invoice_id: inv.body.result.id, fiscal_year_id: fyId });
+  });
+
+  it('efter resultatöverföring vägras skatt och PF med result_transferred', async () => {
+    const yr = await approve('book_year_result', { fiscal_year_id: fyId });
+    expect(yr.status, JSON.stringify(yr.body)).toBe(200);
+
+    const tax = await api.post(`${c()}/actions/book_corporate_tax`).set(a()).send({ fiscal_year_id: fyId, amount_ore: 5000_00 });
+    const taxDone = await api.post(`${c()}/approvals/${tax.body.approval.id}/approve`).set(a()).send({});
+    expect(taxDone.status).toBe(409); // result_transferred
+
+    const pf = await api.post(`${c()}/actions/book_periodiseringsfond`).set(a()).send({ fiscal_year_id: fyId, type: 'avsattning', amount_ore: 5000_00 });
+    const pfDone = await api.post(`${c()}/approvals/${pf.body.approval.id}/approve`).set(a()).send({});
+    expect(pfDone.status).toBe(409); // result_transferred
+  });
+});

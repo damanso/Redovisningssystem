@@ -33,6 +33,11 @@ describe('avskrivningsmatte (rena funktioner)', () => {
     expect(monthsBetween('2025-01-01', '2025-07-01')).toBe(6);
     expect(monthsBetween('2025-01-15', '2025-02-14')).toBe(0); // inte en hel månad
   });
+  it('månadsslutsdag klampas (grindfynd)', () => {
+    expect(monthsBetween('2024-01-31', '2024-02-29')).toBe(1); // 31 jan → 29 feb = 1 hel månad
+    expect(monthsBetween('2024-01-31', '2024-04-30')).toBe(3); // inte 2
+    expect(monthsBetween('2024-01-31', '2024-11-30')).toBe(10);
+  });
 });
 
 describe('anläggningsregister end-to-end', () => {
@@ -85,5 +90,50 @@ describe('anläggningsregister end-to-end', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.result.accumulated_depreciation_ore).toBe(60000_00); // kapat, inte 11*10 000
     expect(res.body.result.net_book_value_ore).toBe(0);
+  });
+
+  it('litet belopp / lång livslängd fastnar inte på noll (grindfynd)', async () => {
+    // 50 öre över 120 mån → månadskostnaden avrundar till 0, men ackumulerat-mål-formeln
+    // bokför ändå när tiden räcker (mål = round(base*mån/liv)). T.o.m. helår → round(50*11/120)=5.
+    const tiny = await api.post(`${co()}/actions/create_fixed_asset`).set(auth()).send({
+      name: 'Bagatell', acquisition_date: '2025-01-01', acquisition_cost_ore: 50, useful_life_months: 120,
+    });
+    const res = await approveAction('book_depreciation', { fixed_asset_id: tiny.body.result.id, through_date: '2025-12-31', fiscal_year_id: fiscalYearId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.accumulated_depreciation_ore).toBeGreaterThan(0);
+  });
+});
+
+// Grindfynd C1: en tillgång anskaffad ett TIDIGARE räkenskapsår får inte skriva av
+// hela sitt eftersläp på innevarande år — det skulle lägga fjolårets kostnad på fel år.
+// Tjänsten vägrar med prior_year_first tills det tidigare året bokförts.
+describe('avskrivning över räkenskapsårsgräns (grindfynd)', () => {
+  let u: TestUser;
+  let cid: string;
+  let fy2025: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+
+  beforeAll(async () => {
+    u = await registerUser('assets-boundary');
+    cid = await createCompany(u.token, 'Gräns AB');
+    await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
+    const y25 = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fy2025 = y25.body.fiscal_year.id;
+  });
+
+  it('vägrar bokföra fjolårets eftersläp på 2025 med prior_year_first', async () => {
+    // Anskaffad 2024, aldrig avskriven. Försök skriva av t.o.m. 2025 → prior_year_first.
+    const asset = await api.post(`${c()}/actions/create_fixed_asset`).set(a()).send({
+      name: 'Fjolårsmaskin', acquisition_date: '2024-06-01', acquisition_cost_ore: 120000_00, useful_life_months: 60,
+    });
+    const req = await api.post(`${c()}/actions/book_depreciation`).set(a()).send({ fixed_asset_id: asset.body.result.id, through_date: '2025-06-01', fiscal_year_id: fy2025 });
+    if (req.status === 202) {
+      const done = await api.post(`${c()}/approvals/${req.body.approval.id}/approve`).set(a()).send({});
+      expect(done.status, JSON.stringify(done.body)).toBe(400);
+      expect(done.body.error ?? done.body.code).toContain('prior_year_first');
+    } else {
+      expect(req.status).toBe(400);
+    }
   });
 });
