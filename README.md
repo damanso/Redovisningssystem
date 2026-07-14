@@ -5,10 +5,10 @@ verifieringsgrindar.
 
 ## Status
 
-Grundfaserna 0–4 samt utökningsfaserna A1–A14 är byggda och passerade sina
-grindar (`npm run build` rent + acceptanstester gröna). Bevis: **`npm test` →
-218 tester passerar** i 32 sviter mot en riktig Postgres (`server/test/`), och
-`npm run build` (tsc) utan fel.
+Grundfaserna 0–4, utökningsfaserna A1–A14 samt bokslut/skatt-faserna B1–B4 är
+byggda och passerade sina grindar (`npm run build` rent + acceptanstester gröna).
+Bevis: **`npm test` → 235 tester passerar** i 37 sviter mot en riktig Postgres
+(`server/test/`), och `npm run build` (tsc) utan fel.
 
 ### Grundfaser
 
@@ -39,15 +39,31 @@ grindar (`npm run build` rent + acceptanstester gröna). Bevis: **`npm test` →
 | A13 | Migration/import — SIE-import + CSV-bankimport | Klar | `import` |
 | A14 | Lön & HR (utan AGI/KU-10 till Skatteverket) | Klar | `payroll` |
 
+### Bokslut & skatt (B-serien)
+
+| Fas | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| B1 | K2-årsredovisning — resultat- & balansräkning i K2-uppställning + noter, jämförelseår, CSV-export | Klar | `k2-annual` |
+| B2 | Skatteskuld & skattekonto — moms, AGI (skatt + arbetsgivaravgift), uppskattad bolagsskatt + vägledande deadlines, konfigurerbar momsperiod | Klar | `taxes` |
+| B3 | Skattestöd — underskottsavdrag, periodiseringsfond, optimerad vs baslinje-skatt, momsavdrag-genomgång, avdragschecklista | Klar | `tax-planning` |
+| B4 | Skattepåminnelser — deadlines → notiser + (SMTP-gated) e-post, idempotent | Klar | `tax-reminders` |
+
+B-serien producerar **beräknat underlag ur bokföringen** (för manuell inmatning i
+t.ex. deklarationsprogram) med tydliga förbehåll i vyerna. Ingen digital inlämning,
+och skattestödet är ett förenklat beslutsstöd (utan skattemässiga justeringar) — inte
+skatterådgivning.
+
 ### Utanför scope / integrationsgränser
 
 Följande är medvetet **inte** byggt (eller byggt fram till en tydligt flaggad
 gräns), enligt uppdraget:
 
-- **BankID** och **Skatteverket** (AGI/arbetsgivardeklaration, KU-10, momsdeklaration): ej byggt.
+- **BankID** och **Skatteverket** (AGI/arbetsgivardeklaration, KU-10, moms-/inkomstdeklaration): ej digitalt inlämnat — B-serien beräknar underlag för manuell inmatning.
+- **Bolagsverket**: ingen digital inlämning av årsredovisning (iXBRL/taxonomi) — B1 ger K2-underlaget.
 - **PSD2 / live bankkoppling**: ej byggt — bankimport sker via manuell CSV-fil.
 - **SMTP-utskick**: e-post läggs i en outbox men skickas bara om SMTP konfigureras;
   utan config markeras raderna `skipped_no_smtp` (ingen fejkad leverans).
+- **Automatiska skattepåminnelser**: `run_tax_reminders` skapar notiser/e-post, men automatisk avfyrning kräver en extern schemaläggare (cron).
 - **Inbjudningslänk till nya (oregistrerade) användare**: kräver e-postutskick (SMTP) — flaggad.
 
 Statuspåståenden i det här repot ska alltid backas av körd, visad bevisning —
