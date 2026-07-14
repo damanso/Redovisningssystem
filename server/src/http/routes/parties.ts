@@ -13,6 +13,7 @@ const includeInactive = (req: { query: Record<string, unknown> }) => req.query.i
 const CustomerCreate = z.object({
   name: safeText(200),
   org_number: safeText(20).optional(),
+  vat_number: safeText(30).optional(),
   email: safeText(254).optional(),
   phone: safeText(50).optional(),
   address: safeText(200).optional(),

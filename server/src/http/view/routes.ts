@@ -1599,8 +1599,8 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
           }</div></div>
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Dataskydd (GDPR)</h2></div>
           <div class="panel__body" style="padding:14px 16px">
-            <p class="lede" style="margin-top:0">Anonymisera personuppgifter på begäran (rätten till radering, art. 17). Kontaktpersoner och anteckningar tas bort och kontaktuppgifter nollas. Om parten har <strong>bokförda</strong> affärshändelser behålls namn och org.nr — bokföringslagen kräver att verifikatets motpart kan identifieras och sparas i 7 år.</p>
-            <p class="muted" style="font-size:12.5px">Åtgärden är oåterkallelig och kräver mänskligt godkännande — den läggs i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
+            <p class="lede" style="margin-top:0">Anonymisera personuppgifter på begäran (rätten till radering, art. 17). Kontaktpersoner, anteckningar, taggar och kontaktuppgifter tas bort; obokförda fakturors PDF och aktiva återkommande fakturor rensas. Om parten har <strong>bokförda</strong> affärshändelser behålls namn och org.nr — bokföringslagen kräver att verifikatets motpart kan identifieras och sparas i 7 år.</p>
+            <p class="muted" style="font-size:12.5px">Kontrollen bygger på strukturerade dokumentkopplingar (fakturor, kvitton). Förekommer parten i <strong>manuella verifikat</strong> upptäcks det inte automatiskt — kontrollera det innan du raderar namn/org.nr. Åtgärden är oåterkallelig och kräver mänskligt godkännande — den läggs i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
             <form method="post" action="/app/c/${companyId}/${active}/${partyId}/gdpr-anonymize" style="margin:0">
               <button type="submit" class="btn btn--ghost" style="color:var(--neg);border-color:var(--neg)">Begär anonymisering</button>
             </form>
