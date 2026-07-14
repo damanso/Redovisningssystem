@@ -3,6 +3,8 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { withTenantTransaction } from '../src/db/tx.js';
+import { createCompanyAccount } from '../src/services/accounting/accounts.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -61,6 +63,24 @@ describe('K2-årsredovisning', () => {
     expect(bs.equity.arets_resultat_ore).toBe(60000_00);
     expect(bs.total_equity_liabilities_ore).toBe(75000_00);
     expect(bs.difference_ore).toBe(0); // balanserar
+  });
+
+  it('en kortfristig skuld på 2450–2499 dras INTE ur balansräkningen (grindfynd HIGH)', async () => {
+    // Skapa konto 2460 (koncernskuld, kortfristig) och bokför bank/2460.
+    await withTenantTransaction(user.userId, companyId, (client) =>
+      createCompanyAccount(client, companyId, user.userId, { account_number: 2460, name: 'Kortfristig koncernskuld', account_type: 'liability' }));
+    const req = await api.post(`${co()}/actions/post_voucher`).set(auth()).send({
+      fiscal_year_id: fiscalYearId, voucher_date: '2025-04-01', description: 'Kortfristigt lån',
+      lines: [{ account_number: 1930, debit_ore: 50000_00 }, { account_number: 2460, credit_ore: 50000_00 }],
+    });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+
+    const res = await api.post(`${co()}/actions/k2_annual_report`).set(auth()).send({ fiscal_year_id: fiscalYearId });
+    const bs = res.body.result.balance_sheet;
+    expect(bs.difference_ore).toBe(0); // balanserar fortfarande — 2460 fångas nu
+    const line = bs.short_liabilities.lines.find((l: { key: string }) => l.key === 'ovriga_kortfristiga_24');
+    expect(line.amount_ore).toBe(50000_00);
   });
 
   it('noter innehåller redovisningsprinciper och medelantal anställda', async () => {

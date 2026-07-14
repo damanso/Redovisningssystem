@@ -69,14 +69,18 @@ const PROVISIONS: LineDef[] = [
 const LONG_LIABILITIES: LineDef[] = [
   { key: 'langfristiga_skulder', label: 'Långfristiga skulder', min: 2300, max: 2399 },
 ];
+// OBS: kortfristiga skulder MÅSTE täcka 2400–2999 utan luckor, annars faller ett
+// saldo (t.ex. 2450 "Fakturerad men ej upparbetad intäkt", 2460 koncernskuld) ur
+// balansräkningen och den slutar balansera.
 const SHORT_LIABILITIES: LineDef[] = [
+  { key: 'ovriga_lev', label: 'Övriga leverantörsskulder', min: 2400, max: 2439 },
   { key: 'leverantorsskulder', label: 'Leverantörsskulder', min: 2440, max: 2449 },
+  { key: 'ovriga_kortfristiga_24', label: 'Övriga kortfristiga skulder', min: 2450, max: 2499 },
   { key: 'skatteskulder', label: 'Skatteskulder', min: 2500, max: 2599 },
   { key: 'moms_skuld', label: 'Momsskuld', min: 2600, max: 2699 },
   { key: 'personal_skuld', label: 'Personalens källskatt och sociala avgifter', min: 2700, max: 2799 },
   { key: 'ovriga_kortfristiga', label: 'Övriga kortfristiga skulder', min: 2800, max: 2899 },
   { key: 'upplupna_kostnader', label: 'Upplupna kostnader och förutbetalda intäkter', min: 2900, max: 2999 },
-  { key: 'ovriga_lev', label: 'Övriga leverantörsskulder', min: 2400, max: 2439 },
 ];
 
 function sumRange(rows: AccountLine[], def: LineDef, mode: 'credit' | 'debit'): number {
@@ -168,8 +172,12 @@ export async function k2AnnualReport(client: PoolClient, companyId: string, fisc
   const resEfterFinPrev = rorelseresultatPrev === null ? null : rorelseresultatPrev + (financial.prev_total_ore ?? 0);
   const bokslutsdisp = section('Bokslutsdispositioner', buildLines(RESULT_APPROP, curResult, prevResult, 'credit'));
   const skatt = section('Skatt', buildLines(RESULT_TAX, curResult, prevResult, 'credit'));
-  const aretsResultat = resultForPeriod(curResult);
-  const aretsResultatPrev = prevResult ? resultForPeriod(prevResult) : null;
+  // Årets resultat i resultaträkningen = summan av de VISADE raderna (3000–8989),
+  // så uppställningen stämmer med sig själv även om ett bokslutskonto (8999)
+  // rörts. Balansräkningens EK-post använder hela 3000–8999 (se nedan) för att
+  // gå ihop oavsett om bokslutstransaktionen är bokförd.
+  const aretsResultat = resEfterFin + bokslutsdisp.total_ore + skatt.total_ore;
+  const aretsResultatPrev = resEfterFinPrev === null ? null : resEfterFinPrev + (bokslutsdisp.prev_total_ore ?? 0) + (skatt.prev_total_ore ?? 0);
 
   // ---- Balansräkning ----
   const assets = section('Tillgångar', buildLines(ASSETS, curBalance, prevBalance, 'debit'));

@@ -51,10 +51,12 @@ describe('skattestöd', () => {
     expect(p.periodiseringsfond_max_ore).toBe(20000_00);
     // Skattemässigt: 80 000 − 20 000 (PF) − 10 000 (underskott) = 50 000.
     expect(p.optimized.taxable_income_ore).toBe(50000_00);
-    // Skatt 20,6 % av 50 000 = 10 300; baslinje 20,6 % av 80 000 = 16 480.
+    // Skatt 20,6 % av 50 000 = 10 300. Baslinjen nettar OBLIGATORISKT underskott
+    // (men ingen PF): 20,6 % av (80 000 − 10 000) = 14 420. Besparingen är alltså
+    // enbart PF-effekten: 14 420 − 10 300 = 4 120 (= 20 000 × 20,6 %).
     expect(p.optimized.tax_ore).toBe(10300_00);
-    expect(p.baseline_tax_ore).toBe(16480_00);
-    expect(p.estimated_saving_ore).toBe(6180_00);
+    expect(p.baseline_tax_ore).toBe(14420_00);
+    expect(p.estimated_saving_ore).toBe(4120_00);
   });
 
   it('momsavdrag-genomgång och checklista ingår', async () => {

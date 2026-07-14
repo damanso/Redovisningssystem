@@ -60,23 +60,30 @@ export async function taxPlanning(client: PoolClient, companyId: string, fiscalY
     'SELECT start_date::text, end_date::text FROM fiscal_years WHERE company_id = $1 AND end_date < $2 ORDER BY end_date',
     [companyId, start_date],
   );
-  let priorLosses = 0;
+  // Löpande underskottsbalans i kronologisk ordning: ett förlustår ökar det
+  // inrullade underskottet, ett vinstår FÖRBRUKAR det (underskottsavdrag är
+  // obligatoriskt). Enbart summera förluster överskattar tillgängligt underskott.
+  let runningLoss = openingLoss;
   for (const p of priorFys.rows) {
     const r = plResult(await accountSums(client, companyId, { from: p.start_date, to: p.end_date }));
-    if (r < 0) priorLosses += -r;
+    runningLoss = r < 0 ? runningLoss + -r : Math.max(0, runningLoss - r);
   }
-  const lossAvailable = openingLoss + priorLosses;
+  const lossAvailable = runningLoss;
 
   // Existerande periodiseringsfonder (2110–2149, kreditsaldo).
   const balance = await accountSums(client, companyId, { to: end_date });
   const existingPf = balance.filter((r) => r.account_number >= 2110 && r.account_number <= 2149)
     .reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0);
 
-  // --- Baslinje (ingen optimering) ---
-  const baselineTax = resultBeforeTax > 0 ? Math.round((resultBeforeTax * CORPORATE_TAX_PERMILLE) / 1000) : 0;
-
-  // --- Optimerat: max periodiseringsfond + utnyttja underskott ---
   const overskott = Math.max(0, resultBeforeTax);
+
+  // --- Baslinje: obligatoriskt underskottsavdrag men INGEN periodiseringsfond ---
+  // (Att utnyttja inrullat underskott är tvingande, inte ett valfritt planeringsgrepp,
+  // så det ska ingå i baslinjen — annars överskattas den möjliga besparingen.)
+  const baselineTaxable = Math.max(0, overskott - Math.min(lossAvailable, overskott));
+  const baselineTax = Math.round((baselineTaxable * CORPORATE_TAX_PERMILLE) / 1000);
+
+  // --- Optimerat: max periodiseringsfond + obligatoriskt underskottsavdrag ---
   const pfMax = Math.round((overskott * PERIODISERINGSFOND_PERMILLE) / 1000);
   const afterPf = overskott - pfMax;
   const lossUsed = Math.min(lossAvailable, afterPf);

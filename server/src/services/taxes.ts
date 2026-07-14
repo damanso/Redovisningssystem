@@ -85,6 +85,19 @@ export async function taxOverview(client: PoolClient, companyId: string, asOf?: 
   return { as_of: when, vat_period: vatPeriod, liability, deadlines };
 }
 
+/** Ändrar momsredovisningsperioden (auditloggat). */
+export async function setVatPeriod(client: PoolClient, companyId: string, userId: string, vatPeriod: VatPeriod): Promise<void> {
+  await client.query('UPDATE companies SET vat_period = $2 WHERE id = $1', [companyId, vatPeriod]);
+  await writeAudit(client, { companyId, userId, action: 'tax.vat_period_set', entityType: 'company', entityId: companyId, details: { vat_period: vatPeriod } });
+}
+
+/** Sätter ingående skattemässigt underskott i ören (auditloggat). */
+export async function setOpeningTaxLoss(client: PoolClient, companyId: string, userId: string, openingLossOre: number): Promise<void> {
+  if (!Number.isInteger(openingLossOre) || openingLossOre < 0) throw new Error('opening_loss must be a non-negative integer');
+  await client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [companyId, openingLossOre]);
+  await writeAudit(client, { companyId, userId, action: 'tax.opening_loss_set', entityType: 'company', entityId: companyId, details: { opening_tax_loss_ore: openingLossOre } });
+}
+
 export interface TaxDeadline { type: string; label: string; period_label: string; due_date: string; note: string }
 
 // Förfallodag för deklaration/betalning: normalt den 12:e, men den 17:e om
@@ -124,7 +137,10 @@ export function taxDeadlines(asOf: string, vatPeriod: VatPeriod, fiscalYearEnd: 
 
   // Moms enligt period.
   if (vatPeriod === 'monthly') {
-    for (let i = 0; i <= 7; i += 1) {
+    // Momsdeklarationens deadline ligger 2 månader efter perioden, så vi måste
+    // börja loopa 2 månader tidigare än asOf för att fånga en deadline som infaller
+    // i den aktuella månaden. withinHorizon filtrerar bort passerade datum.
+    for (let i = -3; i <= 7; i += 1) {
       const period = addMonths(ay, am, i - 1);
       const due = addMonths(period.year, period.month, 2); // 12:e i andra månaden efter
       const d = dueDate(due.year, due.month);

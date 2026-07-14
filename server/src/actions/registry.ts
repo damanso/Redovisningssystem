@@ -21,7 +21,7 @@ import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport } from '../services/k2.js';
-import { runTaxReminders, taxOverview } from '../services/taxes.js';
+import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
 
 export interface ActionContext {
@@ -170,7 +170,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ opening_tax_loss_ore: OreSchema }).strict(),
     handler: async (ctx, i: { opening_tax_loss_ore: number }) => {
-      await ctx.client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [ctx.companyId, i.opening_tax_loss_ore]);
+      await setOpeningTaxLoss(ctx.client, ctx.companyId, ctx.userId, i.opening_tax_loss_ore);
       return { opening_tax_loss_ore: i.opening_tax_loss_ore };
     },
   }),
@@ -188,7 +188,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ vat_period: z.enum(['monthly', 'quarterly', 'yearly']) }).strict(),
     handler: async (ctx, i: { vat_period: 'monthly' | 'quarterly' | 'yearly' }) => {
-      await ctx.client.query('UPDATE companies SET vat_period = $2 WHERE id = $1', [ctx.companyId, i.vat_period]);
+      await setVatPeriod(ctx.client, ctx.companyId, ctx.userId, i.vat_period);
       return { vat_period: i.vat_period };
     },
   }),

@@ -34,7 +34,7 @@ import { importBankCsv, listBankTransactions, setBankTransactionReconciled } fro
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
-import { runTaxReminders, taxOverview } from '../../services/taxes.js';
+import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
 
 export const viewRouter = Router();
@@ -864,7 +864,7 @@ viewRouter.post('/c/:companyId/tax/opening-loss', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { opening_loss_kr?: unknown }).opening_loss_kr);
-  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET opening_tax_loss_ore = $2 WHERE id = $1', [companyId, kr * 100]));
+  await withTenantTransaction(userId, companyId, (client) => setOpeningTaxLoss(client, companyId, userId, kr * 100));
   res.redirect(`/app/c/${companyId}/tax`);
 }));
 
@@ -873,7 +873,7 @@ viewRouter.post('/c/:companyId/tax/vat-period', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const vatPeriod = z.enum(['monthly', 'quarterly', 'yearly']).parse((req.body as { vat_period?: unknown }).vat_period);
-  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET vat_period = $2 WHERE id = $1', [companyId, vatPeriod]));
+  await withTenantTransaction(userId, companyId, (client) => setVatPeriod(client, companyId, userId, vatPeriod));
   res.redirect(`/app/c/${companyId}/tax`);
 }));
 
