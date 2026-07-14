@@ -33,14 +33,18 @@ export async function ku10Report(client: PoolClient, companyId: string, incomeYe
   );
   if (!company.rows[0]) throw new NotFoundError('company');
 
+  // Endast BOKFÖRDA lönebesked (utkast = ej verkställd lön ska inte hamna i en
+  // kontrolluppgift). Aggregeras per PERSONNUMMER så att flera anställningsrader för
+  // samma person (t.ex. återanställning) blir EN kontrolluppgift; anställda utan
+  // personnummer grupperas per employee-id (de spärras ändå vid filgenerering).
   const rows = await client.query<{ employee_name: string; personnummer: string | null; gross: string; tax: string }>(
-    `SELECT e.name AS employee_name, e.personnummer,
+    `SELECT MIN(e.name) AS employee_name, MAX(e.personnummer) AS personnummer,
             COALESCE(sum(p.gross_ore), 0) AS gross, COALESCE(sum(p.tax_ore), 0) AS tax
      FROM payslips p JOIN employees e ON e.id = p.employee_id
-     WHERE p.company_id = $1 AND p.period LIKE $2 AND p.status <> 'cancelled'
-     GROUP BY e.id, e.name, e.personnummer
+     WHERE p.company_id = $1 AND p.period LIKE $2 AND p.status = 'booked'
+     GROUP BY COALESCE(e.personnummer, e.id::text)
      HAVING COALESCE(sum(p.gross_ore), 0) <> 0 OR COALESCE(sum(p.tax_ore), 0) <> 0
-     ORDER BY e.name, e.id`,
+     ORDER BY MIN(e.name)`,
     [companyId, `${incomeYear}-%`],
   );
 
@@ -70,28 +74,42 @@ function xmlEsc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function toKr(ore: number): number { return Math.round(ore / 100); }
-function normalizePnr(pnr: string, incomeYear: number): string | null {
-  const d = pnr.replace(/\D/g, '');
+// Normaliserar personnummer till 12 siffror. '+' i det svenska personnumret betyder
+// att personen fyllt 100 — detekteras FÖRE siffrorna strippas och drar ner seklet.
+function normalizePnr(raw: string, incomeYear: number): string | null {
+  const centuryOld = raw.includes('+');
+  const d = raw.replace(/\D/g, '');
   if (d.length === 12) return d;
   if (d.length === 10) {
     const yy = Number(d.slice(0, 2));
-    return (2000 + yy <= incomeYear ? '20' : '19') + d;
+    let prefix = 2000 + yy <= incomeYear ? '20' : '19';
+    if (centuryOld) prefix = prefix === '20' ? '19' : '18';
+    return prefix + d;
   }
   return null;
 }
+// KU10-XML finns för inkomstår med publicerat schema. Versionen följer inkomståret
+// (2024 → 10.0). Utanför detta fönster saknas en verifierad schemaversion.
+const KU10_MIN_YEAR = 2023, KU10_MAX_YEAR = 2027;
 
 export interface Ku10XmlOptions {
   createdIso: string;   // 'YYYY-MM-DDThh:mm:ss'
   contactName?: string;
   contactPhone?: string;
   contactEmail?: string;
-  socialAvgiftsavtal?: boolean; // FK093 — sätts för utländsk arbetsgivare med avtal
+  // FK093 socialavgiftsavtal — sätts på SAMTLIGA mottagare i filen (fil-nivå). Om
+  // bolaget har mottagare både med och utan avtal måste separata filer genereras.
+  socialAvgiftsavtal?: boolean;
 }
 
 export async function generateKu10Xml(client: PoolClient, companyId: string, incomeYear: number, opts: Ku10XmlOptions): Promise<{ xml: string; filename: string; recipient_count: number }> {
+  if (incomeYear < KU10_MIN_YEAR || incomeYear > KU10_MAX_YEAR) {
+    throw new BadRequestError('year_not_supported', `KU10-fil stöds för inkomstår ${KU10_MIN_YEAR}–${KU10_MAX_YEAR} (verifierad schemaversion)`);
+  }
   const rep = await ku10Report(client, companyId, incomeYear);
   const digits = (rep.company.org_number ?? '').replace(/\D/g, '');
   if (digits.length !== 10) throw new BadRequestError('missing_org_number', 'organisationsnummer (10 siffror) krävs för KU10-filen');
+  if (rep.recipients.length === 0) throw new BadRequestError('no_recipients', `inga bokförda lönebesked för inkomstår ${incomeYear}`);
   const orgId = `16${digits}`;
   const c = await client.query<{ email: string | null; phone: string | null }>('SELECT email, phone FROM companies WHERE id = $1', [companyId]);
   opts = { ...opts, contactPhone: opts.contactPhone ?? c.rows[0]?.phone ?? undefined, contactEmail: opts.contactEmail ?? c.rows[0]?.email ?? undefined };

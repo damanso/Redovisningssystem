@@ -8,17 +8,32 @@ import { app, api, createCompany, registerUser, type TestUser } from './helpers.
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
 let companyId: string;
+let fiscalYearId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
+
+async function approveAction(cId: string, name: string, body: Record<string, unknown>) {
+  const req = await api.post(`/api/companies/${cId}/actions/${name}`).set(auth()).send(body);
+  expect(req.status, JSON.stringify(req.body)).toBe(202);
+  return api.post(`/api/companies/${cId}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+}
+async function bookedPayslip(cId: string, fyId: string, employeeId: string, period: string) {
+  const p = await api.post(`/api/companies/${cId}/actions/create_payslip`).set(auth()).send({ employee_id: employeeId, period });
+  await approveAction(cId, 'book_payslip', { payslip_id: p.body.result.id, fiscal_year_id: fyId, payment_date: `${period}-25` });
+}
 
 beforeAll(async () => {
   user = await registerUser('ku10');
   companyId = await createCompany(user.token, 'KU10 AB');
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5560123456' });
+  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
+  fiscalYearId = fy.body.fiscal_year.id;
   const e = await api.post(`${co()}/actions/create_employee`).set(auth()).send({ name: 'Kalle', personnummer: '195111232079', monthly_salary_ore: 3000000, tax_rate: 30 });
-  // Två lönebesked 2024 → årsbrutto 60 000 kr.
-  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2024-01' });
-  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2024-02' });
+  // Två BOKFÖRDA lönebesked 2024 → årsbrutto 60 000 kr.
+  await bookedPayslip(companyId, fiscalYearId, e.body.result.id, '2024-01');
+  await bookedPayslip(companyId, fiscalYearId, e.body.result.id, '2024-02');
+  // Ett UTKAST-lönebesked ska INTE räknas med (grindfynd).
+  await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: e.body.result.id, period: '2024-03' });
 });
 
 describe('KU10-beräkning', () => {
@@ -64,6 +79,34 @@ describe('KU10-XML', () => {
     const res = await api.post(`/api/companies/${c2}/actions/generate_ku10_file`).set(auth()).send({ income_year: 2024 });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toContain('missing_org_number');
+  });
+});
+
+// Grindfynd D3.
+describe('KU10 grindfynd', () => {
+  it('utkast-lönebesked räknas inte med (endast bokförda)', async () => {
+    const res = await api.post(`${co()}/actions/ku10_report`).set(auth()).send({ income_year: 2024 });
+    expect(res.body.result.total_gross_ore).toBe(6000000); // 60 000, inte 90 000 (utkastet exkluderat)
+  });
+  it('100+ åring (+-personnummer) får rätt århundrade', async () => {
+    const c2 = await createCompany(user.token, 'Pension AB');
+    await api.patch(`/api/companies/${c2}`).set(auth()).send({ org_number: '5560123456' });
+    const fy = await api.post(`/api/companies/${c2}/accounting/fiscal-years`).set(auth()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
+    const e = await api.post(`/api/companies/${c2}/actions/create_employee`).set(auth()).send({ name: 'Gammal', personnummer: '010101+1234', monthly_salary_ore: 1000000, tax_rate: 30 });
+    await bookedPayslip(c2, fy.body.fiscal_year.id, e.body.result.id, '2024-01');
+    const res = await api.post(`/api/companies/${c2}/actions/generate_ku10_file`).set(auth()).send({ income_year: 2024 });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.xml).toContain('<ku:Inkomsttagare faltkod="215">190101011234</ku:Inkomsttagare>'); // 1901, inte 2001
+  });
+  it('inkomstår utan verifierad schemaversion vägras', async () => {
+    const res = await api.post(`${co()}/actions/generate_ku10_file`).set(auth()).send({ income_year: 2019 });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('year_not_supported');
+  });
+  it('inget bokfört lönebesked → no_recipients', async () => {
+    const res = await api.post(`${co()}/actions/generate_ku10_file`).set(auth()).send({ income_year: 2025 });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('no_recipients');
   });
 });
 
