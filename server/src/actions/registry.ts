@@ -21,6 +21,7 @@ import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport } from '../services/k2.js';
+import { taxOverview } from '../services/taxes.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -147,6 +148,23 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({}).strict(),
     handler: (ctx) => listMembers(ctx.client, ctx.companyId, ctx.userId),
+  }),
+  def({
+    name: 'tax_overview',
+    title: 'Skatteöversikt (skuld + vägledande deadlines)',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => taxOverview(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    name: 'set_vat_period',
+    title: 'Ställ in momsredovisningsperiod',
+    sensitivity: 'write',
+    inputSchema: z.object({ vat_period: z.enum(['monthly', 'quarterly', 'yearly']) }).strict(),
+    handler: async (ctx, i: { vat_period: 'monthly' | 'quarterly' | 'yearly' }) => {
+      await ctx.client.query('UPDATE companies SET vat_period = $2 WHERE id = $1', [ctx.companyId, i.vat_period]);
+      return { vat_period: i.vat_period };
+    },
   }),
   def({
     name: 'k2_annual_report',

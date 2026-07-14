@@ -34,6 +34,7 @@ import { importBankCsv, listBankTransactions, setBankTransactionReconciled } fro
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
+import { taxOverview } from '../../services/taxes.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -780,6 +781,52 @@ viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (
             <tr class="subtot"><td colspan="2"><strong>Summa kostnader</strong></td><td class="num"><strong>${amount(exp.total_ore, { unit: false })}</strong></td><td></td><td></td></tr>
           </tbody></table></div>`
     }`;
+}));
+
+// Skatt: skatteskuld (moms, AGI, uppskattad bolagsskatt) + vägledande deadlines.
+const VAT_PERIOD_SV: Record<string, string> = { monthly: 'Månad', quarterly: 'Kvartal', yearly: 'Helår' };
+viewRouter.get('/c/:companyId/tax', pageFor('tax', 'Skatt', async (client, companyId) => {
+  const t = await taxOverview(client, companyId);
+  const L = t.liability;
+  const next = t.deadlines[0];
+  return html`<div class="page-head"><div>${eyebrow('Skatt')}<h1>Skatt & skattekonto</h1>
+      <p class="lede">Vad bolaget är skyldigt Skatteverket, beräknat ur bokföringen per ${t.as_of}. Deadlines är vägledande.</p></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Vägledande underlag', 'warn', '!')} <span class="muted">Beloppen kommer ur din bokföring och bolagsskatten är en uppskattning (20,6 % av positivt resultat före skattemässiga justeringar). Detta är inte Skatteverkets skattekonto och ersätter inte din revisor.</span></div>
+    <div class="kpi-grid">
+      ${kpiCell('Moms att betala', amount(L.vat_payable_ore))}
+      ${kpiCell('AGI (skatt + avgifter)', amount(L.agi_total_ore))}
+      ${kpiCell('Uppskattad bolagsskatt', amount(L.estimated_corporate_tax_ore))}
+      ${kpiCell('Summa (vägledande)', amount(L.total_ore))}
+    </div>
+    <h2 style="margin-top:18px">Skatteskuld i detalj</h2>
+    <div class="table-wrap"><table><tbody>
+      <tr><td>Utgående − ingående moms</td><td class="num">${amount(L.vat_payable_ore, { unit: false })}</td></tr>
+      <tr><td>Personalens källskatt (2710)</td><td class="num">${amount(L.employee_tax_ore, { unit: false })}</td></tr>
+      <tr><td>Arbetsgivaravgifter (2730)</td><td class="num">${amount(L.employer_contribution_ore, { unit: false })}</td></tr>
+      <tr><td>Resultat före skatt (räkenskapsåret)</td><td class="num">${amount(L.result_before_tax_ore, { unit: false })}</td></tr>
+      <tr class="subtot"><td><strong>Uppskattad bolagsskatt (20,6 %)</strong></td><td class="num"><strong>${amount(L.estimated_corporate_tax_ore, { unit: false })}</strong></td></tr>
+    </tbody></table></div>
+
+    <h2 style="margin-top:20px">Momsredovisningsperiod</h2>
+    <form method="post" action="/app/c/${companyId}/tax/vat-period" style="display:flex;gap:8px;align-items:center">
+      <select name="vat_period" class="input">${(['monthly', 'quarterly', 'yearly'] as const).map((p) => html`<option value="${p}"${p === t.vat_period ? html` selected` : ''}>${VAT_PERIOD_SV[p]}</option>`)}</select>
+      <button class="btn btn--ghost btn--sm" type="submit">Spara</button>
+      <span class="muted" style="font-size:12.5px">Nuvarande: ${VAT_PERIOD_SV[t.vat_period]}</span></form>
+
+    <h2 style="margin-top:20px">Kommande deadlines (vägledande)</h2>
+    ${next ? html`<p class="lede">Nästa: <strong>${next.label}</strong> — ${next.due_date} (${next.period_label})</p>` : ''}
+    <div class="table-wrap"><table><thead><tr><th>Förfaller</th><th>Deklaration</th><th>Period</th><th></th></tr></thead><tbody>
+      ${t.deadlines.map((d) => html`<tr><td class="code">${d.due_date}</td><td>${d.label}</td><td>${d.period_label}</td><td class="muted" style="font-size:12px">${d.note}</td></tr>`)}
+    </tbody></table></div>`;
+}));
+
+viewRouter.post('/c/:companyId/tax/vat-period', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const vatPeriod = z.enum(['monthly', 'quarterly', 'yearly']).parse((req.body as { vat_period?: unknown }).vat_period);
+  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET vat_period = $2 WHERE id = $1', [companyId, vatPeriod]));
+  res.redirect(`/app/c/${companyId}/tax`);
 }));
 
 // Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.
