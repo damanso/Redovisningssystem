@@ -8,7 +8,8 @@
 // Bolagsverkets K2-taxonomi (se IXBRL_CONCEPTS + TAXONOMY). Kontrollera alltid mot
 // aktuell taxonomiversion innan inlämning.
 import type { PoolClient } from 'pg';
-import { k2AnnualReport, type K2Report, type K2Section } from './k2.js';
+import { BadRequestError } from '../lib/errors.js';
+import { k2AnnualReport, type K2Section } from './k2.js';
 
 // XML-escaping för text- och attributinnehåll (iXBRL är XHTML → strikt XML).
 function xml(s: string): string {
@@ -96,13 +97,13 @@ function formatSv(n: number): string {
   return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
-// En taggad monetär rad. XBRL-konvention: innehållet är ABSOLUTBELOPPET och negativa
-// värden bär sign="-". decimals="INF" (exakta kronor), scale="0", numspacecomma-format.
+// En taggad monetär rad. Innehållet är ett RENT HELTAL (inga tusentalsavgränsare) så
+// ingen ix-transform behövs — negativa värden bär sign="-" och absolutbeloppet
+// (XBRL-konvention). decimals="0" (avrundat till hela kronor, inte påstått exakt).
 function fact(concept: string | null | undefined, contextId: string, kr: number): string {
-  const abs = formatSv(Math.abs(kr));
-  if (!concept) return xml(kr < 0 ? `-${abs}` : abs); // otaggad rad: visa signerat
+  if (!concept) return xml(kr < 0 ? `-${formatSv(Math.abs(kr))}` : formatSv(kr)); // otaggad: läsbart, signerat
   const sign = kr < 0 ? ' sign="-"' : '';
-  return `<ix:nonFraction name="${xml(concept)}" contextRef="${contextId}" unitRef="SEK" decimals="INF" scale="0" format="ixt:numspacecomma"${sign}>${abs}</ix:nonFraction>`;
+  return `<ix:nonFraction name="${xml(concept)}" contextRef="${contextId}" unitRef="SEK" decimals="0"${sign}>${Math.abs(kr)}</ix:nonFraction>`;
 }
 
 function row(label: string, key: string, contextId: string, kr: number, opts: { bold?: boolean } = {}): string {
@@ -110,8 +111,25 @@ function row(label: string, key: string, contextId: string, kr: number, opts: { 
   return `<tr${strong}><td>${xml(label)}</td><td style="text-align:right">${fact(IXBRL_CONCEPTS[key], contextId, kr)}</td></tr>`;
 }
 
-function sectionRows(section: K2Section, contextId: string): string {
-  return section.lines.map((l) => row(l.label, l.key, contextId, toKronor(l.amount_ore))).join('\n');
+// En summarad renderas ALLTID otaggad (plain text). Att tagga en delsumma/total vars
+// barn inte alla är taggade (t.ex. poster utan bekräftat koncept, eller obokfört årets
+// resultat) skulle bryta taxonomins calculation-linkbas. Delposterna taggas var för
+// sig; totalerna visas läsbart men taggas inte. Beloppet är summan av de VISADE
+// radernas kronor (round-per-rad) så tabellen alltid fotar.
+function totalRow(label: string, kr: number): string {
+  return `<tr style="font-weight:600"><td>${xml(label)}</td><td style="text-align:right">${fact(null, '', kr)}</td></tr>`;
+}
+
+// Renderar en sektions rader OCH returnerar summan av de VISADE radernas kronor, så
+// att en efterföljande totalrad alltid fotar mot raderna ovanför (ingen avrundningsdrift).
+function section(sec: K2Section, contextId: string): { html: string; sumKr: number } {
+  let sumKr = 0;
+  const html = sec.lines.map((l) => {
+    const kr = toKronor(l.amount_ore);
+    sumKr += kr;
+    return row(l.label, l.key, contextId, kr);
+  }).join('\n');
+  return { html, sumKr };
 }
 
 export interface IxbrlExport {
@@ -125,38 +143,63 @@ export interface IxbrlExport {
 export async function generateK2Ixbrl(client: PoolClient, companyId: string, fiscalYearId: string): Promise<IxbrlExport> {
   const r = await k2AnnualReport(client, companyId, fiscalYearId);
   const digits = (r.company.org_number ?? '').replace(/\D/g, '');
-  // Bolagsverkets entitetsidentifierare: NNNNNN-NNNN.
-  const orgnr = digits.length === 10 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : (r.company.org_number ?? '0000000000');
+  // Bolagsverkets entitetsidentifierare kräver ett giltigt organisationsnummer
+  // (NNNNNN-NNNN). Utan det avbryter vi hellre än att emittera en falsk identitet.
+  if (digits.length !== 10) {
+    throw new BadRequestError('missing_org_number', 'organisationsnummer (10 siffror) krävs för iXBRL-årsredovisningen — fyll i det i bolagsinställningarna');
+  }
+  const orgnr = `${digits.slice(0, 6)}-${digits.slice(6)}`;
   const ctx: IxbrlContexts = { instant: 'balans', duration: 'period' };
 
   const contexts = buildContexts(orgnr, r.fiscal_year.start, r.fiscal_year.end);
   const is = r.income_statement;
   const bs = r.balance_sheet;
 
+  // Resultaträkning. Totalerna = summan av de visade radernas kronor (fotar exakt).
+  const opSec = section(is.operating, ctx.duration);
+  const finSec = section(is.financial, ctx.duration);
+  const apSec = section(is.bokslutsdispositioner, ctx.duration);
+  const taxSec = section(is.skatt, ctx.duration);
+  const rorelseresultatKr = opSec.sumKr;
+  const resEfterFinKr = rorelseresultatKr + finSec.sumKr;
+  const aretsResultatKr = resEfterFinKr + apSec.sumKr + taxSec.sumKr;
   const incomeRows = [
-    sectionRows(is.operating, ctx.duration),
-    row('Rörelseresultat', 'rorelseresultat', ctx.duration, toKronor(is.rorelseresultat_ore), { bold: true }),
-    sectionRows(is.financial, ctx.duration),
-    row('Resultat efter finansiella poster', 'resultat_efter_finansiella', ctx.duration, toKronor(is.resultat_efter_finansiella_ore), { bold: true }),
-    sectionRows(is.bokslutsdispositioner, ctx.duration),
-    sectionRows(is.skatt, ctx.duration),
-    row('Årets resultat', 'arets_resultat', ctx.duration, toKronor(is.arets_resultat_ore), { bold: true }),
+    opSec.html,
+    totalRow('Rörelseresultat', rorelseresultatKr),
+    finSec.html,
+    totalRow('Resultat efter finansiella poster', resEfterFinKr),
+    apSec.html,
+    taxSec.html,
+    totalRow('Årets resultat', aretsResultatKr),
   ].join('\n');
 
-  const assetRows = [
-    sectionRows(bs.assets, ctx.instant),
-    row('Summa tillgångar', 'summa_tillgangar', ctx.instant, toKronor(bs.total_assets_ore), { bold: true }),
-  ].join('\n');
+  // Balansräkning. Tillgångar och EK/skulder-total = summan av visade rader.
+  const assetsSec = section(bs.assets, ctx.instant);
+  const assetRows = [assetsSec.html, totalRow('Summa tillgångar', assetsSec.sumKr)].join('\n');
+
+  const boundSec = section(bs.equity.bound, ctx.instant);
+  const freeSec = section(bs.equity.free, ctx.instant);
+  const otherSec = section(bs.equity.other, ctx.instant); // 2000–2079, tidigare ej renderad
+  const aretsResultatEkKr = toKronor(bs.equity.arets_resultat_ore); // egen EK-rad (kan vara obokförd)
+  const ekSumKr = boundSec.sumKr + freeSec.sumKr + otherSec.sumKr + aretsResultatEkKr;
+  const untaxedSec = section(bs.untaxed, ctx.instant);
+  const provSec = section(bs.provisions, ctx.instant);
+  const longSec = section(bs.long_liabilities, ctx.instant);
+  const shortSec = section(bs.short_liabilities, ctx.instant);
+  const ekSkulderKr = ekSumKr + untaxedSec.sumKr + provSec.sumKr + longSec.sumKr + shortSec.sumKr;
   const eqRows = [
-    sectionRows(bs.equity.bound, ctx.instant),
-    sectionRows(bs.equity.free, ctx.instant),
-    row('Summa eget kapital', 'summa_ek', ctx.instant, toKronor(bs.equity.total_ore), { bold: true }),
-    sectionRows(bs.untaxed, ctx.instant),
-    sectionRows(bs.provisions, ctx.instant),
-    sectionRows(bs.long_liabilities, ctx.instant),
-    sectionRows(bs.short_liabilities, ctx.instant),
-    row('Summa eget kapital och skulder', 'summa_ek_skulder', ctx.instant, toKronor(bs.total_equity_liabilities_ore), { bold: true }),
-  ].join('\n');
+    boundSec.html,
+    freeSec.html,
+    otherSec.html,
+    // Årets resultat som egen EK-rad (annars saknas beloppet i uppställningen).
+    aretsResultatEkKr !== 0 ? totalRow('Årets resultat', aretsResultatEkKr).replace('font-weight:600', 'font-weight:400') : '',
+    totalRow('Summa eget kapital', ekSumKr),
+    untaxedSec.html,
+    provSec.html,
+    longSec.html,
+    shortSec.html,
+    totalRow('Summa eget kapital och skulder', ekSkulderKr),
+  ].filter(Boolean).join('\n');
 
   const nsAttrs = Object.entries(TAXONOMY.namespaces).filter(([, v]) => v)
     .map(([k, v]) => `xmlns:${k}="${xml(v)}"`).join(' ');

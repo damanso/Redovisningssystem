@@ -21,6 +21,8 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('ixbrl');
   companyId = await createCompany(user.token, 'iXBRL AB');
+  // iXBRL kräver ett giltigt organisationsnummer (entitetsidentifierare).
+  await api.patch(`${co()}`).set(auth()).send({ org_number: '5569999999' });
   const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
   fiscalYearId = fy.body.fiscal_year.id;
   const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Kund' });
@@ -44,7 +46,7 @@ async function ixbrl(): Promise<{ doc: string; balanced: boolean; label: string 
 }
 
 describe('iXBRL-dokumentstruktur', () => {
-  it('har schemaRef, kontext, SEK-enhet och företagsinfo', async () => {
+  it('har schemaRef, kontext, SEK-enhet, org.nr och företagsinfo', async () => {
     const { doc } = await ixbrl();
     expect(doc.startsWith('<?xml')).toBe(true);
     expect(doc).toContain('xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"');
@@ -52,27 +54,46 @@ describe('iXBRL-dokumentstruktur', () => {
     expect(doc).toContain('<xbrli:context id="period">');
     expect(doc).toContain('<xbrli:context id="balans">');
     expect(doc).toContain('<xbrli:measure>iso4217:SEK</xbrli:measure>');
-    expect(doc).toContain('scheme="http://www.bolagsverket.se"');
+    // Entitetsidentifierare = giltigt org.nr NNNNNN-NNNN under Bolagsverkets scheme.
+    expect(doc).toContain('scheme="http://www.bolagsverket.se">556999-9999</xbrli:identifier>');
     expect(doc).toContain('se-cd-base:ForetagetsNamn');
     expect(doc).toContain('se-cd-base:RakenskapsarSistaDag');
   });
 
-  it('taggar resultat- och balansposter med rätt koncept och belopp', async () => {
+  it('taggar radposter med rent heltal, decimals=0 och utan ogiltig transform', async () => {
     const { doc, balanced } = await ixbrl();
     expect(balanced).toBe(true);
-    // Nettoomsättning 100 000.
-    expect(doc).toMatch(/<ix:nonFraction name="se-gen-base:Nettoomsattning"[^>]*>100 000<\/ix:nonFraction>/);
-    // Årets resultat 47 640 (100 000 − 20 000 − 20 000 PF − 12 360 skatt).
-    expect(doc).toMatch(/<ix:nonFraction name="se-gen-base:AretsResultat"[^>]*>47 640<\/ix:nonFraction>/);
-    // Summa tillgångar och summa eget kapital och skulder finns.
-    expect(doc).toContain('se-gen-base:Tillgangar');
-    expect(doc).toContain('se-gen-base:EgetKapitalSkulder');
+    // Leaf-poster taggas; belopp är rena heltal (inga tusentalsblanksteg), decimals="0".
+    expect(doc).toMatch(/<ix:nonFraction name="se-gen-base:Nettoomsattning"[^>]*decimals="0"[^>]*>100000<\/ix:nonFraction>/);
+    expect(doc).toContain('se-gen-base:Kundfordringar');
+    // Ingen ogiltig TR1-transform.
+    expect(doc).not.toContain('numspacecomma');
+    expect(doc).not.toContain('format=');
   });
 
-  it('negativa belopp bär sign="-" och absolutbelopp', async () => {
+  it('taggar INTE roll-up-totaler (calc-linkbas-säkerhet) men visar dem läsbart', async () => {
     const { doc } = await ixbrl();
-    // Skatt på årets resultat är en kostnad (negativt i K2) → sign="-" och 12 360.
-    expect(doc).toMatch(/<ix:nonFraction name="se-gen-base:SkattAretsResultat"[^>]*sign="-"[^>]*>12 360<\/ix:nonFraction>/);
+    // Summakoncept ska inte emitteras som ix:nonFraction (odelbara barn taggas ej fullt).
+    expect(doc).not.toContain('name="se-gen-base:Tillgangar"');
+    expect(doc).not.toContain('name="se-gen-base:EgetKapitalSkulder"');
+    expect(doc).not.toContain('name="se-gen-base:AretsResultat"');
+    // Men de visas som läsbara totalrader.
+    expect(doc).toContain('Summa eget kapital och skulder');
+    expect(doc).toContain('Årets resultat');
+  });
+
+  it('negativa belopp bär sign="-" och absolutbelopp (rent heltal)', async () => {
+    const { doc } = await ixbrl();
+    // Skatt på årets resultat är en kostnad (negativt i K2) → sign="-" och 12360.
+    expect(doc).toMatch(/<ix:nonFraction name="se-gen-base:SkattAretsResultat"[^>]*sign="-"[^>]*>12360<\/ix:nonFraction>/);
+  });
+
+  it('vägrar generera utan giltigt organisationsnummer (grindfynd)', async () => {
+    const noorg = await createCompany(user.token, 'Utan orgnr AB');
+    const fy = await api.post(`/api/companies/${noorg}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    const res = await api.post(`/api/companies/${noorg}/actions/generate_k2_ixbrl`).set(auth()).send({ fiscal_year_id: fy.body.fiscal_year.id });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('missing_org_number');
   });
 });
 
