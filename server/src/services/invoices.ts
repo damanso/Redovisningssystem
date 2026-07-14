@@ -87,10 +87,14 @@ export async function createInvoice(
       description ??= art.rows[0].name;
     }
     // Vid omvänd skattskyldighet debiteras ingen moms (köparen redovisar den) och
-    // intäkten bokförs på konto 3231 om inget annat konto angetts.
+    // intäkten MÅSTE bokföras på ett konto i intervallet 3231–3239 (som momsdeklara-
+    // tionens ruta 41 läser). Tvinga dit den även om en artikel eller indata angav ett
+    // vanligt intäktskonto — annars skulle försäljningen försvinna ur momsdeklarationen.
     if (reverseCharge) {
       vatRate = 0;
-      revenueAccount ??= REVERSE_CHARGE_ACCOUNT;
+      if (revenueAccount === undefined || revenueAccount < 3231 || revenueAccount > 3239) {
+        revenueAccount = REVERSE_CHARGE_ACCOUNT;
+      }
     }
     if (unitPrice === undefined || vatRate === undefined) {
       throw new BadRequestError('invalid_line', `rad ${i + 1}: pris och momssats krävs`);

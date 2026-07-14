@@ -160,7 +160,7 @@ companiesRouter.get('/:companyId', async (req, res) => {
     const result = await client.query(
       `SELECT id, name, org_number, address, postal_code, city, email, phone,
               vat_number, bankgiro, plusgiro, bank_account, iban, payment_terms,
-              created_at, updated_at
+              approved_for_f_tax, created_at, updated_at
        FROM companies WHERE id = $1`,
       [companyId],
     );

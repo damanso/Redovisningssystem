@@ -45,6 +45,12 @@ describe('F-skatt', () => {
     const after = pdfText(await pdfBuffer(inv.body.invoice.id));
     expect(after).toContain('Godkänd för F-skatt');
   });
+
+  it('inställningen kan läsas tillbaka via GET (inte write-only)', async () => {
+    const get = await api.get(`${co()}`).set(auth());
+    expect(get.status).toBe(200);
+    expect(get.body.company.approved_for_f_tax).toBe(true);
+  });
 });
 
 describe('Omvänd skattskyldighet (byggmoms)', () => {
@@ -78,6 +84,25 @@ describe('Omvänd skattskyldighet (byggmoms)', () => {
     const text = pdfText(await pdfBuffer(invoice.id));
     expect(text).toContain('Omvänd betalningsskyldighet');
     expect(text).toContain('5569998888'); // köparens org.nr
+  });
+
+  it('tvingar intäkt till 3231 även när raden kommer från en artikel med vanligt konto (grindfynd E2)', async () => {
+    // Artikel med normalt intäktskonto (3001). Vid omvänd skattskyldighet MÅSTE
+    // intäkten ändå bokföras på 3231, annars försvinner försäljningen ur ruta 41.
+    const art = await api.post(`${co()}/articles`).set(auth()).send({ article_number: 'BYGG-1', name: 'Byggtjänst', unit_price_ore: 300000, vat_rate: 25, revenue_account: 3001 });
+    expect(art.status, JSON.stringify(art.body)).toBe(201);
+    const inv = await api.post(`${co()}/invoices`).set(auth()).send({
+      customer_id: buyerId, invoice_date: '2025-05-10', reverse_charge: true,
+      lines: [{ article_id: art.body.article.id, quantity: 2 }],
+    });
+    expect(inv.status, JSON.stringify(inv.body)).toBe(201);
+    expect(inv.body.invoice.lines[0].revenue_account).toBe(3231); // tvingat, inte 3001
+    expect(inv.body.invoice.lines[0].vat_rate).toBe(0);
+    expect(inv.body.invoice.vat_ore).toBe(0);
+    await api.post(`${co()}/invoices/${inv.body.invoice.id}/book`).set(auth()).send({ fiscal_year_id: fiscalYearId });
+    const vat = await api.post(`${co()}/actions/vat_declaration`).set(auth()).send({ from: '2025-01-01', to: '2025-12-31' });
+    const box41 = vat.body.result.exempt_sales.find((b: { code: string }) => b.code === '41');
+    expect(box41.amount_ore).toBe(5000000 + 600000); // tidigare 50 000 + nu 6 000 kr
   });
 
   it('omvänd skattskyldighet kräver att köparen har org.nr eller vat-nr', async () => {
