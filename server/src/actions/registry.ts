@@ -25,6 +25,7 @@ import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '.
 import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
+import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments } from '../services/ink2.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -264,6 +265,47 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
     handler: (ctx, i: { fiscal_year_id: string }) => k2ManagementReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'ink2r_schema',
+    title: 'INK2R räkenskapsschema (resultat + balans i deklarationsfält)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => ink2rReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'ink2s_adjustments',
+    title: 'INK2S skattemässiga justeringar (bokfört → beskattningsbart)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => ink2sReport(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'list_tax_adjustments',
+    title: 'Lista manuella skattemässiga justeringar',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => listTaxAdjustments(ctx.client, ctx.companyId, i.fiscal_year_id),
+  }),
+  def({
+    name: 'add_tax_adjustment',
+    title: 'Lägg till skattemässig justering (ej avdragsgill/ej skattepliktig)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema,
+      kind: z.enum(['non_deductible', 'non_taxable']),
+      label: safeText(200),
+      amount_ore: OreSchema,
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; kind: 'non_deductible' | 'non_taxable'; label: string; amount_ore: number }) =>
+      addTaxAdjustment(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id, i.kind, i.label, i.amount_ore),
+  }),
+  def({
+    name: 'delete_tax_adjustment',
+    title: 'Ta bort skattemässig justering',
+    sensitivity: 'write',
+    inputSchema: z.object({ id: UuidSchema }).strict(),
+    handler: (ctx, i: { id: string }) => deleteTaxAdjustment(ctx.client, ctx.companyId, ctx.userId, i.id),
   }),
   def({
     name: 'set_business_description',

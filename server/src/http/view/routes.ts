@@ -38,6 +38,7 @@ import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '.
 import { taxPlanning } from '../../services/taxPlanning.js';
 import { listFixedAssets } from '../../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../services/bokslut.js';
+import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type Ink2rReport, type Ink2sResult } from '../../services/ink2.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
@@ -601,6 +602,57 @@ function k2Body(companyId: string, fyId: string, r: K2Report): Raw {
     </section>`;
 }
 
+function ink2Body(companyId: string, fyId: string, r: Ink2rReport, s: Ink2sResult): Raw {
+  const signed = (n: number) => amount(n, { unit: false });
+  const adj = s.adjustments;
+  return html`<div class="page-head"><div>${eyebrow('Deklaration · INK2')}<h1>Inkomstdeklaration 2 — underlag ${r.fiscal_year.label}</h1>
+      <p class="lede">${r.company.name}${r.company.org_number ? html` · org.nr ${r.company.org_number}` : ''} · räkenskapsår ${r.fiscal_year.start} – ${r.fiscal_year.end}</p></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beräknat underlag — ingen digital inlämning', 'warn', '!')} <span class="muted">Beloppen kommer ur din bokföring och ställs i INK2:s standardfält. Fältnumren följer INK2R/INK2S; exakta SRU-koder och filgenerering kommer i en senare fas. Stäm av mot Skatteverkets blankett och din revisor innan inlämning.</span></div>
+
+    <section class="statement"><div class="statement__cap"><h2>INK2R — Räkenskapsschema</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>Fält</th><th>Post</th><th class="num">Belopp</th></tr></thead><tbody>
+        <tr><td colspan="3" class="muted"><strong>Resultaträkning</strong></td></tr>
+        ${r.income_statement.fields.map((f) => html`<tr><td class="code">${f.code}</td><td>${f.label}</td><td class="num">${signed(f.amount_ore)}</td></tr>`)}
+        <tr class="subtot"><td class="code">3.26</td><td><strong>Årets resultat</strong></td><td class="num"><strong>${signed(r.income_statement.arets_resultat_ore)}</strong></td></tr>
+        <tr><td colspan="3" class="muted"><strong>Balansräkning — Tillgångar</strong></td></tr>
+        ${r.balance_sheet.assets.map((f) => html`<tr><td class="code">${f.code}</td><td>${f.label}</td><td class="num">${signed(f.amount_ore)}</td></tr>`)}
+        <tr class="subtot"><td></td><td><strong>Summa tillgångar</strong></td><td class="num"><strong>${signed(r.balance_sheet.total_assets_ore)}</strong></td></tr>
+        <tr><td colspan="3" class="muted"><strong>Eget kapital och skulder</strong></td></tr>
+        ${r.balance_sheet.equity_liabilities.map((f) => html`<tr><td class="code">${f.code}</td><td>${f.label}</td><td class="num">${signed(f.amount_ore)}</td></tr>`)}
+        <tr class="subtot"><td></td><td><strong>Summa eget kapital och skulder</strong></td><td class="num"><strong>${signed(r.balance_sheet.total_equity_liabilities_ore)}</strong></td></tr>
+      </tbody></table></div>
+      <div class="balance-status">${r.balance_sheet.difference_ore === 0 ? chip('Balanserar', 'ok', '✓') : chip(`Avvikelse ${money(r.balance_sheet.difference_ore)} kr`, 'neg', '!')}</div>
+    </section>
+
+    <section class="statement"><div class="statement__cap"><h2>INK2S — Skattemässiga justeringar</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>Fält</th><th>Post</th><th class="num">Belopp</th></tr></thead><tbody>
+        ${s.lines.map((l) => html`<tr${l.code === '1.1' || l.code === '1.2' ? html` class="subtot"` : ''}><td class="code">${l.code}</td><td>${l.code === '1.1' || l.code === '1.2' ? html`<strong>${l.label}</strong>` : l.label}</td><td class="num">${l.code === '1.1' || l.code === '1.2' ? html`<strong>${signed(l.amount_ore)}</strong>` : signed(l.amount_ore)}</td></tr>`)}
+      </tbody></table></div>
+      <div class="kpi-grid" style="margin-top:12px">
+        ${kpiCell('Beskattningsbart resultat', amount(s.taxable_result_ore))}
+        ${kpiCell('Beräknad bolagsskatt (20,6 %)', amount(s.computed_tax_ore))}
+        ${kpiCell('Bokförd skatt', amount(s.booked_tax_ore))}
+        ${kpiCell('Differens (beräknad − bokförd)', amount(s.tax_difference_ore))}
+      </div>
+      <p class="muted" style="font-size:12.5px;margin-top:8px">Tillgängligt inrullat underskott: ${money(s.loss_available_ore)} kr, varav ${money(s.loss_used_ore)} kr utnyttjas i år. En differens mot bokförd skatt betyder att den bokförda skatten bör justeras — bolagsskatten beräknas på det skattemässiga överskottet, inte på det bokförda resultatet.</p>
+    </section>
+
+    <section class="statement"><div class="statement__cap"><h2>Manuella justeringar</h2></div>
+      <p class="lede" style="margin:0 0 8px">Poster som inte kan härledas ur bokföringen: ej avdragsgilla kostnader (ökar överskottet) och ej skattepliktiga intäkter (minskar överskottet). Registrera dem här så räknas de in i INK2S ovan.</p>
+      ${adj.length ? html`<div class="table-wrap"><table><thead><tr><th>Typ</th><th>Benämning</th><th class="num">Belopp</th><th></th></tr></thead><tbody>
+        ${adj.map((a) => html`<tr><td>${a.kind === 'non_deductible' ? 'Ej avdragsgill kostnad' : 'Ej skattepliktig intäkt'}</td><td>${a.label}</td><td class="num">${signed(a.amount_ore)}</td>
+          <td><form method="post" action="/app/c/${companyId}/ink2/adjustment/delete"><input type="hidden" name="fy" value="${fyId}"><input type="hidden" name="id" value="${a.id}"><button class="btn btn--ghost btn--sm" type="submit">Ta bort</button></form></td></tr>`)}
+      </tbody></table></div>` : html`<p class="muted">Inga manuella justeringar registrerade.</p>`}
+      <form method="post" action="/app/c/${companyId}/ink2/adjustment" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px">
+        <input type="hidden" name="fy" value="${fyId}">
+        <label class="field" style="margin:0"><span>Typ</span><select name="kind" class="input"><option value="non_deductible">Ej avdragsgill kostnad</option><option value="non_taxable">Ej skattepliktig intäkt</option></select></label>
+        <label class="field" style="margin:0"><span>Benämning</span><input name="label" maxlength="200" required placeholder="T.ex. ej avdragsgill representation"></label>
+        <label class="field" style="margin:0"><span>Belopp (kr)</span><input type="number" name="amount_kr" min="1" step="1" required style="width:120px"></label>
+        <button class="btn btn--ghost btn--sm" type="submit">Lägg till justering</button>
+      </form>
+    </section>`;
+}
+
 viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1038,6 +1090,53 @@ viewRouter.post('/c/:companyId/tax/vat-period', page(async (req, res) => {
   const vatPeriod = z.enum(['monthly', 'quarterly', 'yearly']).parse((req.body as { vat_period?: unknown }).vat_period);
   await withTenantTransaction(userId, companyId, (client) => setVatPeriod(client, companyId, userId, vatPeriod));
   res.redirect(`/app/c/${companyId}/tax`);
+}));
+
+// Fas C4: INK2 deklarationsunderlag — INK2R räkenskapsschema + INK2S skattemässiga
+// justeringar. Beräknat underlag; ingen digital inlämning i denna fas.
+viewRouter.get('/c/:companyId/ink2', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyParam = typeof req.query.fy === 'string' ? req.query.fy : null;
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const fys = await client.query<{ id: string; label: string }>(
+      'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
+    );
+    if (fys.rows.length === 0) {
+      return { name: company.name, body: html`<div class="page-head"><div>${eyebrow('Deklaration')}<h1>Inkomstdeklaration 2</h1></div></div><div class="empty"><div class="big">Inget räkenskapsår</div>Skapa ett räkenskapsår först.</div>` };
+    }
+    const chosen = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]!.id;
+    const r = await ink2rReport(client, companyId, chosen);
+    const s = await ink2sReport(client, companyId, chosen);
+    const picker = html`<div class="page-head" style="padding-bottom:0"><div>${eyebrow('Välj räkenskapsår')}</div>
+      <div class="actions">${fys.rows.map((f) => html`<a class="btn ${f.id === chosen ? 'btn--primary' : 'btn--ghost'} btn--sm" href="/app/c/${companyId}/ink2?fy=${f.id}">${f.label}</a> `)}</div></div>`;
+    return { name: company.name, body: html`${picker}${ink2Body(companyId, chosen, r, s)}` };
+  });
+  res.type('html').send(layout({ title: 'Inkomstdeklaration 2', companyId, companyName: name, active: 'ink2', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/ink2/adjustment', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  const kind = z.enum(['non_deductible', 'non_taxable']).parse((req.body as { kind?: unknown }).kind);
+  const label = z.string().min(1).max(200).parse((req.body as { label?: unknown }).label)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+  const kr = z.coerce.number().int().min(1).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
+  await withTenantTransaction(userId, companyId, (client) => addTaxAdjustment(client, companyId, userId, fy, kind, label, kr * 100));
+  res.redirect(`/app/c/${companyId}/ink2?fy=${fy}`);
+}));
+
+viewRouter.post('/c/:companyId/ink2/adjustment/delete', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+  const id = z.string().uuid().parse((req.body as { id?: unknown }).id);
+  await withTenantTransaction(userId, companyId, (client) => deleteTaxAdjustment(client, companyId, userId, id));
+  res.redirect(`/app/c/${companyId}/ink2?fy=${fy}`);
 }));
 
 // Kassaflöde & likviditet: månadsvis kassarörelse på 19xx + enkel likviditetsprognos.
