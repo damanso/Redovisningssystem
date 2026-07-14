@@ -20,6 +20,7 @@ import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
 import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
+import { k2AnnualReport } from '../services/k2.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -146,6 +147,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({}).strict(),
     handler: (ctx) => listMembers(ctx.client, ctx.companyId, ctx.userId),
+  }),
+  def({
+    name: 'k2_annual_report',
+    title: 'K2-årsredovisning (resultat + balans + noter)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => k2AnnualReport(ctx.client, ctx.companyId, i.fiscal_year_id),
   }),
   def({
     name: 'key_ratios',

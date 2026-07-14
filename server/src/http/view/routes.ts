@@ -33,6 +33,7 @@ import { emailEnabled } from '../../services/email.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
+import { k2AnnualReport, type K2Report, type K2Section } from '../../services/k2.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -489,6 +490,117 @@ viewRouter.get(
       </section>`;
   }),
 );
+
+// K2-årsredovisning (bokslut): resultat- och balansräkning i K2-uppställning + noter.
+// Ett UNDERLAG för manuell inlämning — ingen digital inlämning till Bolagsverket.
+function k2SectionRows(sec: K2Section, hasPrev: boolean): Raw {
+  return html`${sec.lines.map((l) => html`<tr><td>${l.label}</td><td class="num">${amount(l.amount_ore, { unit: false })}</td>${hasPrev ? html`<td class="num muted">${l.prev_ore === null ? '' : amount(l.prev_ore, { unit: false })}</td>` : ''}</tr>`)}`;
+}
+function k2Body(companyId: string, fyId: string, r: K2Report): Raw {
+  const hasPrev = r.prev_fiscal_year !== null;
+  const yrHead = html`<th class="num">${r.fiscal_year.label}</th>${hasPrev ? html`<th class="num muted">${r.prev_fiscal_year!.label}</th>` : ''}`;
+  const totalRow = (label: string, cur: number, prev: number | null) => html`<tr class="subtot"><td><strong>${label}</strong></td><td class="num"><strong>${amount(cur, { unit: false })}</strong></td>${hasPrev ? html`<td class="num muted"><strong>${prev === null ? '' : amount(prev, { unit: false })}</strong></td>` : ''}</tr>`;
+  const is = r.income_statement;
+  const bs = r.balance_sheet;
+  return html`<div class="page-head"><div>${eyebrow('Bokslut · K2')}<h1>Årsredovisning ${r.fiscal_year.label}</h1>
+      <p class="lede">${r.company.name}${r.company.org_number ? html` · org.nr ${r.company.org_number}` : ''} · räkenskapsår ${r.fiscal_year.start} – ${r.fiscal_year.end}</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/annual/export.csv?fy=${fyId}">Exportera CSV</a></div></div>
+    <div class="empty" style="text-align:left;padding:12px 14px">${chip('Underlag — ej inlämnad årsredovisning', 'warn', '!')} <span class="muted">Detta är ett beräknat underlag ur din bokföring för manuell inmatning (t.ex. till deklarationsprogram). Förvaltningsberättelsens text, resultatdisposition, underskrifter och slutlig granskning görs av dig/din revisor. Ingen digital inlämning till Bolagsverket ingår.</span></div>
+
+    <section class="statement"><div class="statement__cap"><h2>Resultaträkning</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>Post</th>${yrHead}</tr></thead><tbody>
+        ${k2SectionRows(is.operating, hasPrev)}
+        ${totalRow('Rörelseresultat', is.rorelseresultat_ore, is.rorelseresultat_prev_ore)}
+        ${k2SectionRows(is.financial, hasPrev)}
+        ${totalRow('Resultat efter finansiella poster', is.resultat_efter_finansiella_ore, is.resultat_efter_finansiella_prev_ore)}
+        ${is.bokslutsdispositioner.lines.length ? k2SectionRows(is.bokslutsdispositioner, hasPrev) : ''}
+        ${is.skatt.lines.length ? k2SectionRows(is.skatt, hasPrev) : ''}
+        ${totalRow('Årets resultat', is.arets_resultat_ore, is.arets_resultat_prev_ore)}
+      </tbody></table></div></section>
+
+    <section class="statement"><div class="statement__cap"><h2>Balansräkning</h2><p class="lede" style="margin:0 0 8px">Per ${r.fiscal_year.end}</p></div>
+      <div class="table-wrap"><table><thead><tr><th>Tillgångar</th>${yrHead}</tr></thead><tbody>
+        ${k2SectionRows(bs.assets, hasPrev)}
+        ${totalRow('Summa tillgångar', bs.total_assets_ore, bs.assets.prev_total_ore)}
+      </tbody></table></div>
+      <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Eget kapital och skulder</th>${yrHead}</tr></thead><tbody>
+        ${bs.equity.bound.lines.length ? k2SectionRows(bs.equity.bound, hasPrev) : ''}
+        ${bs.equity.free.lines.length ? k2SectionRows(bs.equity.free, hasPrev) : ''}
+        ${bs.equity.other.lines.length ? k2SectionRows(bs.equity.other, hasPrev) : ''}
+        <tr><td>Årets resultat</td><td class="num">${amount(bs.equity.arets_resultat_ore, { unit: false })}</td>${hasPrev ? html`<td class="num muted"></td>` : ''}</tr>
+        ${totalRow('Summa eget kapital', bs.equity.total_ore, null)}
+        ${bs.untaxed.lines.length ? k2SectionRows(bs.untaxed, hasPrev) : ''}
+        ${bs.provisions.lines.length ? k2SectionRows(bs.provisions, hasPrev) : ''}
+        ${bs.long_liabilities.lines.length ? k2SectionRows(bs.long_liabilities, hasPrev) : ''}
+        ${k2SectionRows(bs.short_liabilities, hasPrev)}
+        ${totalRow('Summa eget kapital och skulder', bs.total_equity_liabilities_ore, null)}
+      </tbody></table></div>
+      <div class="balance-status">${bs.difference_ore === 0 ? chip('Balanserar', 'ok', '✓') : chip(`Avvikelse ${money(bs.difference_ore)} kr`, 'neg', '!')}</div>
+    </section>
+
+    <section class="statement"><div class="statement__cap"><h2>Noter</h2></div>
+      <p><strong>Not 1 — Redovisnings- och värderingsprinciper.</strong></p>
+      <ul>${r.notes.principer.map((p) => html`<li class="muted">${p}</li>`)}</ul>
+      <p><strong>Not 2 — Medelantal anställda.</strong> ${String(r.notes.avg_employees)} (baserat på aktiva anställda; justera vid behov).</p>
+      ${r.notes.periodiseringsfonder_ore ? html`<p><strong>Not 3 — Obeskattade reserver.</strong> Periodiseringsfonder: ${money(r.notes.periodiseringsfonder_ore)} kr.</p>` : ''}
+    </section>`;
+}
+
+viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyParam = typeof req.query.fy === 'string' ? req.query.fy : null;
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const fys = await client.query<{ id: string; label: string }>(
+      'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
+    );
+    if (fys.rows.length === 0) {
+      return { name: company.name, body: html`<div class="page-head"><div>${eyebrow('Bokslut')}<h1>Årsredovisning</h1></div></div><div class="empty"><div class="big">Inget räkenskapsår</div>Skapa ett räkenskapsår först.</div>` };
+    }
+    const chosen = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]!.id;
+    const report = await k2AnnualReport(client, companyId, chosen);
+    const picker = html`<div class="page-head" style="padding-bottom:0"><div>${eyebrow('Välj räkenskapsår')}</div>
+      <div class="actions">${fys.rows.map((f) => html`<a class="btn ${f.id === chosen ? 'btn--primary' : 'btn--ghost'} btn--sm" href="/app/c/${companyId}/annual?fy=${f.id}">${f.label}</a> `)}</div></div>`;
+    return { name: company.name, body: html`${picker}${k2Body(companyId, chosen, report)}` };
+  });
+  res.type('html').send(layout({ title: 'Årsredovisning', companyId, companyName: name, active: 'annual', body }).value);
+}));
+
+viewRouter.get('/c/:companyId/annual/export.csv', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const fyId = z.string().uuid().parse(req.query.fy);
+  const csv = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    const r = await k2AnnualReport(client, companyId, fyId);
+    const rows: (string | number)[][] = [['K2-årsredovisning', r.company.name, r.fiscal_year.label],
+      ['Del', 'Post', `Belopp ${r.fiscal_year.label} (kr)`, r.prev_fiscal_year ? `Belopp ${r.prev_fiscal_year.label} (kr)` : '']];
+    const sec = (part: string, s: K2Section) => s.lines.forEach((l) => rows.push([part, l.label, csvKronor(l.amount_ore), l.prev_ore === null ? '' : csvKronor(l.prev_ore)]));
+    const is = r.income_statement;
+    sec('Resultaträkning', is.operating);
+    rows.push(['Resultaträkning', 'Rörelseresultat', csvKronor(is.rorelseresultat_ore), is.rorelseresultat_prev_ore === null ? '' : csvKronor(is.rorelseresultat_prev_ore)]);
+    sec('Resultaträkning', is.financial);
+    sec('Resultaträkning', is.bokslutsdispositioner);
+    sec('Resultaträkning', is.skatt);
+    rows.push(['Resultaträkning', 'Årets resultat', csvKronor(is.arets_resultat_ore), is.arets_resultat_prev_ore === null ? '' : csvKronor(is.arets_resultat_prev_ore)]);
+    const bs = r.balance_sheet;
+    sec('Balansräkning tillgångar', bs.assets);
+    rows.push(['Balansräkning tillgångar', 'Summa tillgångar', csvKronor(bs.total_assets_ore), '']);
+    sec('Balansräkning EK/skulder', bs.equity.bound);
+    sec('Balansräkning EK/skulder', bs.equity.free);
+    sec('Balansräkning EK/skulder', bs.equity.other);
+    rows.push(['Balansräkning EK/skulder', 'Årets resultat', csvKronor(bs.equity.arets_resultat_ore), '']);
+    sec('Balansräkning EK/skulder', bs.untaxed);
+    sec('Balansräkning EK/skulder', bs.provisions);
+    sec('Balansräkning EK/skulder', bs.long_liabilities);
+    sec('Balansräkning EK/skulder', bs.short_liabilities);
+    rows.push(['Balansräkning EK/skulder', 'Summa eget kapital och skulder', csvKronor(bs.total_equity_liabilities_ore), '']);
+    return toCsv(rows);
+  });
+  res.setHeader('Content-Disposition', 'attachment; filename="arsredovisning-k2.csv"');
+  res.type('text/csv; charset=utf-8').send('﻿' + csv);
+}));
 
 // Kundreskontra med åldersanalys (öppna, bokförda, obetalda kundfakturor).
 viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontra', async (client, companyId) => {

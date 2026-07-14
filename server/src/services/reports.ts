@@ -18,7 +18,7 @@ export interface AccountLine {
   balance_ore: number; // debet − kredit
 }
 
-async function accountSums(
+export async function accountSums(
   client: PoolClient,
   companyId: string,
   opts: { from?: string; to?: string },
