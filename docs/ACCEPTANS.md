@@ -5,9 +5,14 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **141 tester passerar** i 16 sviter mot
+**Reproducera allt:** `npm test -w server` → **331 tester passerar** i 50 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
+
+Utöver grundfaserna 0–4 nedan är utökningsfaserna **A1–A14**, bokslut/skatt **B1–B4**,
+deklarationsprogram **C1–C7**, myndighetsfiler **D1–D4** och regelefterlevnad **E1–E3**
+byggda och grindade — se README för fas-för-fas-tabeller med testsvit per rad, och
+avsnittet "B–E-serierna" längst ned här.
 
 Legend: ✅ = byggt och bevisat med test.
 
@@ -63,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 141 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 331 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -80,8 +85,64 @@ Legend: ✅ = byggt och bevisat med test.
 Steg 1–5 och 8 sker via action-/MCP-lagret (Cowork/claude.ai) och/eller HTTP-API:t;
 steg 6–7 i den läsbara webbvyn. Alla känsliga steg kräver ett mänskligt godkännande.
 
-## Medvetet skjutet på framtiden (utanför nuvarande scope)
+## B–E-serierna — bokslut, deklaration, myndighetsfiler, regelefterlevnad
 
-Enligt planens scope-reduktion (`GRANSKNING_OCH_OMSTARTSPLAN.md` §5–6), att besluta om
-senare: Skatteverket-integration, bank/Open Banking, Peppol/e-faktura, ROT/RUT/omvänd
-moms, BankID/Swish, årsredovisning (K2/K3), GDPR-radering vs bevarandekrav, mobilapp.
+Byggda och grindade efter grundfaserna. Varje rad har en egen acceptanstestsvit.
+
+| Fas | Kriterium (klarspråk) | Status | Bevis (testsvit) |
+|---|---|---|---|
+| B1 | K2-årsredovisning: resultat, balans, noter, jämförelseår, CSV-export | ✅ | `k2-annual` |
+| B2 | Skatteskuld & skattekonto: moms, AGI, uppskattad bolagsskatt, deadlines | ✅ | `taxes` |
+| B3 | Skattestöd: underskottsavdrag, periodiseringsfond, momsavdrag, checklista | ✅ | `tax-planning` |
+| B4 | Skattepåminnelser: deadlines → notiser + (SMTP-gated) e-post, idempotent | ✅ | `tax-reminders` |
+| C1 | Anläggningsregister + planenlig avskrivning, bokförs idempotent | ✅ | `fixed-assets` |
+| C2 | Bokförda bokslutstransaktioner (periodiseringsfond, årets skatt, resultat) | ✅ | `bokslut` |
+| C3 | Komplett årsredovisning: förvaltningsberättelse, K2-noter, fastställelseintyg | ✅ | `annual-management` |
+| C4 | Skattemässiga justeringar → INK2R (balanserar) + INK2S | ✅ | `ink2` |
+| C5 | Momsdeklaration alla rutor 05–49 ur bokföringen | ✅ | `vat-declaration` |
+| C6 | SRU-filgenerering för INK2 (SKV 269-fältkoder) | ✅ | `sru-export` |
+| C7 | iXBRL-årsredovisning (K2, XBRL Sweden-taxonomi) för Bolagsverket | ✅ | `ixbrl-export` |
+| D1 | AGI — arbetsgivardeklaration på individnivå, Skatteverkets XML (schema 1.1) | ✅ | `agi` |
+| D2 | K10 — gränsbelopp/3:12, förenklings- & huvudregel, SRU-blankett | ✅ | `k10` |
+| D3 | KU10 — kontrolluppgift (kontant bruttolön), Skatteverkets XML | ✅ | `ku10` |
+| D4 | Periodisk sammanställning (EU-moms), SKV574008, avstämd mot huvudboken | ✅ | `ec-sales-list` |
+| E1 | GDPR-radering/anonymisering av parter — bokföringslagen-säker, känslig åtgärd → godkännandekö; obokförda fakturors PDF + återkommande rensas; namn/org.nr behålls bara vid bokförda transaktioner | ✅ | `gdpr` |
+| E2 | F-skatt på faktura-PDF + omvänd skattskyldighet (ingen moms, konto 3231, ruta 41) | ✅ | `f-tax-reverse-charge` |
+| E3 | ROT/RUT-avdrag (fakturamodellen): 30/50 % kapat mot årets tak, delad fordran (1510/1513) | ✅ | `housework-deduction` |
+
+Varje B/C/D/E-fas passerade dessutom en **adversariell grind** (finansmatte-,
+SRU-, iXBRL-, filformat-, GDPR- och moms-/bokföringsgranskning) där varje bekräftat
+fynd åtgärdades med regressionstest innan fasen stängdes.
+
+## Slutgrind — live-verifiering (`/verify`)
+
+Utöver testsviten startades API:t **på riktigt** mot en färsk Postgres och kärnflödet
++ säkerhetsproberna kördes med curl. Faktisk utfall:
+
+| Prob | Förväntat | Utfall |
+|---|---|---|
+| `POST /api/auth/register` → token | 201 | ✅ 201, token |
+| Skapa bolag, `PATCH` F-skatt, `GET` läser tillbaka | 200 / `approved_for_f_tax=true` | ✅ |
+| Användare B mot A:s bolag + revisionslogg | 404 | ✅ 404 / 404 |
+| Token signerad med `'your-secret'` | 401 | ✅ 401 |
+| `PATCH` med okänd/skadlig nyckel | 400 | ✅ 400 |
+| `audit_log`-UPDATE som postgres | append-only-fel | ✅ "audit_log är append-only: UPDATE tillåts inte" |
+| Uppladdning med `../`-filnamn | 201, lagras som UUID, ingen rymning | ✅ UUID-namn, inget `/etc/evil.png` |
+| `.sh` / fel magic bytes | 400 `invalid_file` | ✅ 400 / `invalid_file` |
+| Omvänd skattskyldighet: faktura → bokför → ruta 41 | ingen moms, 3231, ruta 41 | ✅ `vat_ore=0`, konto 3231, ruta 41 = 50 000 kr, ruta 10 = 0 |
+| ROT-faktura: avdrag beräknas | 30 % av 12 500 = 3 750 kr | ✅ `housework_reduction_ore=375000` |
+| GDPR-anonymisering via agent-token | 202 (godkännandekö, ej direkt körd) | ✅ 202 |
+
+## Medvetet utanför scope (kräver extern integration)
+
+Nedanstående är **inte** byggt eftersom det kräver anslutning till en extern tjänst
+och kan inte levereras som en självständig fil/beräkning:
+
+- **BankID** och direkt **API-inlämning** till Skatteverket/Bolagsverket (nivå 5) — inget signeras eller skickas digitalt.
+- **PSD2 / Open Banking / live bankkoppling** — bankimport sker via manuell CSV-fil.
+- **Peppol / e-faktura-nätverk** och **Swish** — kräver operatörsanslutning.
+
+Systemet producerar i stället **färdiga filer att ladda upp själv** (SRU, iXBRL, AGI-,
+KU10-, SKV574008-XML/CSV) och **beräknat underlag** med tydliga förbehåll. Tidigare
+scope-noteringar om ROT/RUT, omvänd moms, K2-årsredovisning och GDPR-radering är
+**inte längre uppskjutna** — de är byggda (C- och E-serierna ovan).
