@@ -32,7 +32,7 @@ import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../services/agi.js';
 import { k10Computation, generateK10Sru } from '../services/k10.js';
 import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
-import { ku10Report } from '../services/ku10.js';
+import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -300,6 +300,16 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ income_year: z.number().int().min(2000).max(2100) }).strict(),
     handler: (ctx, i: { income_year: number }) => ku10Report(ctx.client, ctx.companyId, i.income_year),
+  }),
+  def({
+    name: 'generate_ku10_file',
+    title: 'Generera KU10-fil (XML) för Skatteverket',
+    sensitivity: 'read',
+    inputSchema: z.object({ income_year: z.number().int().min(2000).max(2100), social_avgiftsavtal: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { income_year: number; social_avgiftsavtal?: boolean }) => {
+      const now = new Date();
+      return generateKu10Xml(ctx.client, ctx.companyId, i.income_year, { createdIso: now.toISOString().slice(0, 19), socialAvgiftsavtal: i.social_avgiftsavtal });
+    },
   }),
   def({
     name: 'ec_sales_list',

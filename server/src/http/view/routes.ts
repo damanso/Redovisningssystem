@@ -43,6 +43,7 @@ import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services
 import { generateInk2Sru } from '../../services/sruExport.js';
 import { generateK2Ixbrl } from '../../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../../services/agi.js';
+import { generateKu10Xml } from '../../services/ku10.js';
 import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
 import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
@@ -1916,7 +1917,10 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
           <td class="num">${amount(i.gross_ore, { unit: false })}</td><td class="num">${amount(i.tax_ore, { unit: false })}</td></tr>`)}
       </tbody></table></div>
       <h3 style="margin-top:14px">Ladda ner AGI-fil (XML) per period</h3>
-      <div class="actions">${periods.map((per) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/payroll/agi.xml?period=${per}">AGI ${per}</a> `)}</div>` : ''}`;
+      <div class="actions">${periods.map((per) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/payroll/agi.xml?period=${per}">AGI ${per}</a> `)}</div>
+      <h3 style="margin-top:16px">KU10 kontrolluppgifter (årsvis)</h3>
+      <p class="muted" style="font-size:12.5px">KU10 används i vissa fall (t.ex. utländsk arbetsgivare med socialavgiftsavtal) — för vanliga anställda lämnas löneuppgifter månadsvis via AGI ovan. KU10 innehåller inte avdragen skatt.</p>
+      <div class="actions">${[...new Set(periods.map((p) => p.slice(0, 4)))].map((y) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/payroll/ku10.xml?year=${y}">KU10 ${y}</a> `)}</div>` : ''}`;
 }));
 
 // Fas D1: AGI-filnedladdning (XML) för en period. Beräknat underlag; ingen digital inlämning.
@@ -1928,6 +1932,21 @@ viewRouter.get('/c/:companyId/payroll/agi.xml', page(async (req, res) => {
   const out = await withTenantTransaction(userId, companyId, async (client) => {
     await loadCompany(client, companyId);
     return generateAgiXml(client, companyId, period, { createdIso: now.toISOString().slice(0, 19) });
+  });
+  res.type('application/xml; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="${out.filename}"`)
+    .send(out.xml);
+}));
+
+// Fas D3: KU10-filnedladdning (XML) för ett inkomstår. Beräknat underlag.
+viewRouter.get('/c/:companyId/payroll/ku10.xml', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const year = z.coerce.number().int().min(2000).max(2100).parse(req.query.year);
+  const now = new Date();
+  const out = await withTenantTransaction(userId, companyId, async (client) => {
+    await loadCompany(client, companyId);
+    return generateKu10Xml(client, companyId, year, { createdIso: now.toISOString().slice(0, 19) });
   });
   res.type('application/xml; charset=utf-8')
     .set('Content-Disposition', `attachment; filename="${out.filename}"`)

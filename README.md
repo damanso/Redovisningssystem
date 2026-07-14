@@ -5,12 +5,12 @@ verifieringsgrindar.
 
 ## Status
 
-Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4 samt
-deklarationsprogram-faserna C1–C7 är byggda och passerade sina grindar
-(`npm run build` rent + acceptanstester gröna, inklusive adversariella
-finansmatte-/SRU-/iXBRL-granskningar där varje bekräftat fynd åtgärdats med test).
-Bevis: **`npm test` → 275 tester passerar** i 43 sviter mot en riktig Postgres
-(`server/test/`), och `npm run build` (tsc) utan fel.
+Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
+deklarationsprogram-faserna C1–C7 samt myndighetsfil-faserna D1–D4 är byggda och
+passerade sina grindar (`npm run build` rent + acceptanstester gröna, inklusive
+adversariella finansmatte-/SRU-/iXBRL-/filformat-granskningar där varje bekräftat fynd
+åtgärdats med test). Bevis: **`npm test` → 302 tester passerar** i 47 sviter mot en
+riktig Postgres (`server/test/`), och `npm run build` (tsc) utan fel.
 
 ### Grundfaser
 
@@ -74,13 +74,30 @@ respektive XBRL Swedens publicerade specifikationer, men allt är **beräknat un
 — verifiera fältårtal/taxonomiversion och stäm av med din revisor före inlämning.
 Ingen digital inlämning och ingen BankID-signering sker i systemet.
 
+### Myndighetsfiler (D-serien)
+
+| Fas | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| D1 | AGI — arbetsgivardeklaration på individnivå, Skatteverkets XML (schema 1.1), huvuduppgift + individuppgift per anställd ur lönekörningen | Klar | `agi` |
+| D2 | K10 — gränsbelopp/utdelningsutrymme (3:12) enligt förenklings- och huvudregeln, konstanter 2022–2025, + K10 SRU-blankett (förenklingsregeln) | Klar | `k10` |
+| D3 | KU10 — kontrolluppgift (kontant bruttolön per anställd/år), Skatteverkets XML (blankett 2300) | Klar | `ku10` |
+| D4 | Periodisk sammanställning (EU-moms) — EU-försäljning per köpare + Skatteverkets SKV574008-fil, avstämd mot huvudboken | Klar | `ec-sales-list` |
+
+D-serien genererar **färdiga myndighetsfiler att ladda upp själv**: AGI-XML och KU10-XML
+(Filöverföring hos Skatteverket), K10 SRU-blankett (bilaga till INK1), och periodisk
+sammanställning (SKV574008). Fältkoder/schema är verifierade mot Skatteverkets publicerade
+specifikationer och exempelfiler. Notera: **AGI (D1) ersatte KU10 för vanliga anställdas
+löneuppgifter från 2019** — KU10 (D3) används i vissa fall (t.ex. utländsk arbetsgivare med
+socialavgiftsavtal) och innehåller inte avdragen skatt. Allt är beräknat underlag; ingen
+digital inlämning och ingen BankID-signering.
+
 ### Utanför scope / integrationsgränser
 
 Följande är medvetet **inte** byggt (eller byggt fram till en tydligt flaggad
 gräns), enligt uppdraget:
 
 - **BankID** och direkt **API-inlämning** till Skatteverket/Bolagsverket (nivå 5): medvetet utanför scope — inget skickas eller signeras digitalt av systemet.
-- **Skatteverket** (moms-/inkomstdeklaration): C5 beräknar momsdeklarationens alla rutor och C6 genererar färdiga SRU-filer för INK2 (INK2R/INK2S) att ladda upp själv. AGI/arbetsgivardeklaration och KU-10 beräknas som underlag (B-serien), ej filgenererade.
+- **Skatteverket** (moms-/inkomstdeklaration): C5 beräknar momsdeklarationens alla rutor och C6 genererar färdiga SRU-filer för INK2 (INK2R/INK2S). AGI (D1), KU10 (D3) och periodisk sammanställning (D4) genereras som färdiga filer att ladda upp själv i Filöverföring.
 - **Bolagsverket**: C7 genererar en iXBRL-årsredovisning (K2) att ladda upp själv i inlämningstjänsten — ingen automatisk inlämning.
 - **PSD2 / live bankkoppling**: ej byggt — bankimport sker via manuell CSV-fil.
 - **SMTP-utskick**: e-post läggs i en outbox men skickas bara om SMTP konfigureras;
