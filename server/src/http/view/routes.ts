@@ -13,7 +13,7 @@ import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } 
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { listReceipts } from '../../services/receipts.js';
 import { listApprovals } from '../../services/approvals.js';
-import { approveAction, rejectApproval } from '../../actions/execute.js';
+import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue } from '../../services/reports.js';
@@ -1596,7 +1596,15 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
           <div class="panel__body" style="padding:6px 4px">${
             crm.notes.length === 0 ? html`<p class="muted" style="padding:10px 12px">Inga anteckningar.</p>`
               : html`<div class="log">${crm.notes.map((nt) => html`<div class="log-row"><div class="log-when">${nt.created_at.replace('T', ' ').slice(0, 16)}</div><div class="log-what">${nt.body}</div></div>`)}</div>`
-          }</div></div>`;
+          }</div></div>
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Dataskydd (GDPR)</h2></div>
+          <div class="panel__body" style="padding:14px 16px">
+            <p class="lede" style="margin-top:0">Anonymisera personuppgifter på begäran (rätten till radering, art. 17). Kontaktpersoner och anteckningar tas bort och kontaktuppgifter nollas. Om parten har <strong>bokförda</strong> affärshändelser behålls namn och org.nr — bokföringslagen kräver att verifikatets motpart kan identifieras och sparas i 7 år.</p>
+            <p class="muted" style="font-size:12.5px">Åtgärden är oåterkallelig och kräver mänskligt godkännande — den läggs i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
+            <form method="post" action="/app/c/${companyId}/${active}/${partyId}/gdpr-anonymize" style="margin:0">
+              <button type="submit" class="btn btn--ghost" style="color:var(--neg);border-color:var(--neg)">Begär anonymisering</button>
+            </form>
+          </div></div>`;
       return { name: company.name, body: b };
     });
     res.type('html').send(layout({ title: name, companyId, companyName: name, active, body }).value);
@@ -1605,6 +1613,20 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
 
 viewRouter.get('/c/:companyId/customers/:partyId', partyDetailPage('customers', 'customer', (c, id, pid) => getCustomer(c, id, pid)));
 viewRouter.get('/c/:companyId/suppliers/:partyId', partyDetailPage('suppliers', 'supplier', (c, id, pid) => getSupplier(c, id, pid)));
+
+// GDPR: begär anonymisering av en part. Känslig → hamnar i godkännandekön (människa-i-loopen).
+function gdprAnonymizeRoute(section: 'customers' | 'suppliers', partyType: PartyType) {
+  return page(async (req, res) => {
+    assertSameOrigin(req);
+    const userId = getUserId(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const partyId = parseApprovalId(req.params.partyId); // UUID-validering
+    await executeAction({ companyId, userId, actor: 'human', actionName: 'anonymize_party', input: { party_type: partyType, party_id: partyId } });
+    res.redirect(303, `/app/c/${companyId}/approvals`);
+  });
+}
+viewRouter.post('/c/:companyId/customers/:partyId/gdpr-anonymize', gdprAnonymizeRoute('customers', 'customer'));
+viewRouter.post('/c/:companyId/suppliers/:partyId/gdpr-anonymize', gdprAnonymizeRoute('suppliers', 'supplier'));
 
 viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'Personer och företag du fakturerar. Klicka på namnet för kontakter, anteckningar och taggar.',
   (c, id) => listCustomers(c, id, { includeInactive: true }),

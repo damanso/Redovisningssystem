@@ -33,6 +33,7 @@ import { agiDeclaration, generateAgiXml } from '../services/agi.js';
 import { k10Computation, generateK10Sru } from '../services/k10.js';
 import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 import { ku10Report, generateKu10Xml } from '../services/ku10.js';
+import { anonymizeParty } from '../services/gdpr.js';
 
 export interface ActionContext {
   client: PoolClient;
@@ -293,6 +294,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "period anges som 'YYYY-MM'") }).strict(),
     handler: (ctx, i: { period: string }) => agiDeclaration(ctx.client, ctx.companyId, i.period),
+  }),
+  def({
+    name: 'anonymize_party',
+    title: 'GDPR: anonymisera personuppgifter på en part (kund/leverantör)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string }) =>
+      anonymizeParty(ctx.client, ctx.companyId, ctx.userId, i.party_type, i.party_id),
   }),
   def({
     name: 'ku10_report',
