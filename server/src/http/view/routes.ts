@@ -128,6 +128,34 @@ viewRouter.post(
   }),
 );
 
+// TILLFÄLLIG DIAGNOS-sida (tas bort efteråt): visar exakt vilken Origin/Host din
+// webbläsare skickar vid en vanlig formulär-POST — samma sorts POST som login gör.
+// Ingen inloggning och ingen origin-kontroll här, så den svarar alltid.
+viewRouter.get('/diag', (_req, res) => {
+  res.type('html').send(html`<!doctype html><html lang="sv"><head><meta charset="utf-8">
+    <title>Inloggnings-diagnos</title></head>
+    <body style="font-family:system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;line-height:1.5">
+    <h1>Inloggnings-diagnos</h1>
+    <p>Klicka på knappen nedan. Nästa sida visar exakt vad din webbläsare skickar.</p>
+    <form method="post" action="/app/diag">
+      <button type="submit" style="font-size:18px;padding:12px 20px;border-radius:8px;cursor:pointer">Testa</button>
+    </form></body></html>`.value);
+});
+
+viewRouter.post('/diag', (req, res) => {
+  const origin = req.get('origin') ?? '(ingen origin skickades)';
+  const host = req.get('host') ?? '(ingen host)';
+  const matchar = req.get('origin') ? (() => { try { return new URL(req.get('origin')!).host === req.get('host'); } catch { return false; } })() : 'saknas';
+  res.type('html').send(html`<!doctype html><html lang="sv"><head><meta charset="utf-8">
+    <title>Diagnos-resultat</title></head>
+    <body style="font-family:system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;line-height:1.5">
+    <h1>Resultat</h1>
+    <p>Kopiera de här tre raderna och klistra in till mig:</p>
+    <pre style="background:#f0f0f0;padding:16px;border-radius:8px;font-size:16px;white-space:pre-wrap">origin  = ${origin}
+host    = ${host}
+matchar = ${String(matchar)}</pre></body></html>`.value);
+});
+
 // Andra steget i 2FA-inloggning: kräver en giltig pending-cookie + TOTP-kod.
 viewRouter.get('/login/2fa', page(async (req, res) => {
   const pending = readPendingUserId(req);
