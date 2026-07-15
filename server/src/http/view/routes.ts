@@ -1840,6 +1840,9 @@ function parseApprovalId(value: unknown): string {
 // (vissa samma-ursprungs-POST:ar) faller vi tillbaka på SameSite-skyddet.
 function assertSameOrigin(req: Request): void {
   const origin = req.get('origin');
+  // TILLFÄLLIG DIAGNOS (tas bort efteråt): skriver ut vad webbläsaren skickar,
+  // så vi kan se varför en lokal inloggning nekas. Ingen säkerhetsändring.
+  console.warn(`>>> CSRF-DIAGNOS: origin=${JSON.stringify(origin)} host=${JSON.stringify(req.get('host'))}`);
   if (!origin) return;
   let originHost: string;
   try { originHost = new URL(origin).host; } catch { throw new ForbiddenError('cross_origin', 'ogiltig origin'); }
