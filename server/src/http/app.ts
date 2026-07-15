@@ -31,6 +31,13 @@ export function createApp(): express.Express {
           frameAncestors: ["'none'"],
         },
       },
+      // Helmets default är 'no-referrer', vilket får webbläsare att skicka
+      // Origin: null på formulär-POST:ar — då nekas VÅRA EGNA inloggnings-/
+      // åtgärds-POST:ar av assertSameOrigin (CSRF-kontrollen). Webbläsarens
+      // standard 'strict-origin-when-cross-origin' skickar en riktig Origin för
+      // samma-ursprung (så kontrollen fungerar) och läcker aldrig full sökväg
+      // till främmande värdar (bara ursprunget). CSRF-skyddet är oförändrat.
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     }),
   );
   app.use(express.json({ limit: '1mb' }));

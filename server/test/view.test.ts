@@ -323,6 +323,13 @@ describe('Registrering i vyn', () => {
     expect(res.text).toContain('minst 8 tecken');
   });
 
+  it('Referrer-Policy tillåter riktig Origin (annars skickar webbläsaren Origin: null → 403)', async () => {
+    // Helmets default 'no-referrer' får webbläsare att POST:a med Origin: null,
+    // vilket assertSameOrigin nekade. Vi kräver standardpolicyn i stället.
+    const res = await api.get('/app/login');
+    expect(res.headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+  });
+
   it('äkta cross-site-origin nekas fortfarande (403)', async () => {
     const res = await api.post('/app/register').set('Origin', 'https://evil.example')
       .type('form').send({ name: 'A', email: `evil-${Date.now()}@test.se`, password: 'ett-riktigt-losen-123' });
