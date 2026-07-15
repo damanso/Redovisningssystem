@@ -23,9 +23,11 @@ fi
 echo "==> Startar Postgres…"
 $DC up -d
 
-echo "==> Väntar på att Postgres svarar på port 5433…"
-for _ in $(seq 1 60); do
-  if node -e 'require("net").connect(5433,"127.0.0.1").on("connect",()=>process.exit(0)).on("error",()=>process.exit(1))' 2>/dev/null; then
+echo "==> Väntar på att Postgres är REDO (inte bara att porten öppnats)…"
+# pg_isready inne i containern kollar faktisk databas-redo — första starten kör
+# initdb, vilket tar några sekunder efter att Docker redan öppnat porten.
+for _ in $(seq 1 90); do
+  if $DC exec -T postgres pg_isready -U postgres -q >/dev/null 2>&1; then
     break
   fi
   sleep 1
