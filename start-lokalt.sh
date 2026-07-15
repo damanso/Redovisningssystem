@@ -56,6 +56,15 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
+# Ladda .env in i skriptets miljö och exportera. npm-skripten körs i server/-mappen,
+# så dotemv skulle annars leta efter server/.env och missa roten. Env-variabler som
+# redan är satta här vinner (dotenv skriver inte över dem).
+echo "==> Laddar miljövariabler från .env…"
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
+
 echo "==> Kör migreringar…"
 npm run migrate
 
