@@ -30,3 +30,6 @@ coverage/
 # Runtime upload storage (utanför webbroten, UUID-namn)
 data/
 uploads/
+
+# Lokala säkerhetskopior (innehåller riktig data)
+backups/

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Starta hela systemet lokalt på din egen dator med ETT kommando.
+# Endast för dig själv: allt lyssnar på localhost, inget exponeras mot internet.
+#
+#   bash start-lokalt.sh
+#
+# Krav: Node >= 22, Docker (för Postgres). Öppnar sedan http://localhost:3000/app
+set -euo pipefail
+cd "$(dirname "$0")"
+
+DB_NAME="redovisning"
+
+# Docker Compose v2 ("docker compose") eller v1 ("docker-compose")?
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "FEL: Docker (compose) hittades inte. Installera Docker Desktop först." >&2
+  exit 1
+fi
+
+echo "==> Startar Postgres…"
+$DC up -d
+
+echo "==> Väntar på att Postgres svarar på port 5433…"
+for _ in $(seq 1 60); do
+  if node -e 'require("net").connect(5433,"127.0.0.1").on("connect",()=>process.exit(0)).on("error",()=>process.exit(1))' 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+
+echo "==> Ser till att databasen '$DB_NAME' finns…"
+if ! $DC exec -T postgres psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1; then
+  $DC exec -T postgres createdb -U postgres "$DB_NAME"
+  echo "    skapade databasen $DB_NAME"
+fi
+
+if [ ! -f .env ]; then
+  echo "==> Skapar .env med en genererad JWT_SECRET…"
+  cp .env.example .env
+  SECRET="$(openssl rand -hex 32)"
+  # Ersätt den tomma JWT_SECRET-raden (funkar på både GNU och BSD/macOS sed).
+  if sed --version >/dev/null 2>&1; then
+    sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$SECRET|" .env
+  else
+    sed -i '' "s|^JWT_SECRET=.*|JWT_SECRET=$SECRET|" .env
+  fi
+fi
+
+if [ ! -d node_modules ]; then
+  echo "==> Installerar beroenden (första gången)…"
+  npm install
+fi
+
+echo "==> Kör migreringar…"
+npm run migrate
+
+echo ""
+echo "======================================================================"
+echo "  Startar API:t. Öppna i webbläsaren på DEN HÄR datorn:"
+echo "      http://localhost:3000/app"
+echo "  Registrera ditt konto, skapa bolag + räkenskapsår — klart."
+echo "  Avsluta med Ctrl+C. Kör 'bash backup.sh' regelbundet för säkerhetskopia."
+echo "======================================================================"
+echo ""
+npm run dev
