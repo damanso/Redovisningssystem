@@ -520,13 +520,63 @@ function parseCompanyId(value: unknown): string {
   return parsed.data.toLowerCase();
 }
 
-function pageFor(active: string, title: string, render: (client: PoolClient, companyId: string) => Promise<Raw>) {
+/**
+ * Kör en action som människa från ett vy-formulär — SAMMA action-lager som AI:t
+ * använder (validering, tenant-härledning, audit). write-actions utförs direkt;
+ * sensitive hamnar i godkännandekön och vi skickar användaren till Att göra.
+ * Valideringsfel ger en redirect tillbaka med ?fel=1 (ingen felsida för formulärslarv).
+ */
+async function runViewAction(
+  req: Request,
+  res: import('express').Response,
+  companyId: string,
+  actionName: string,
+  input: Record<string, unknown>,
+  backTo: string,
+): Promise<void> {
+  const userId = getUserId(req);
+  let result;
+  try {
+    result = await executeAction({ companyId, userId, actor: 'human', actionName, input });
+  } catch (err) {
+    if (err instanceof z.ZodError || err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=1`);
+      return;
+    }
+    throw err;
+  }
+  res.redirect(result.status === 'pending_approval' ? `/app/c/${companyId}/approvals` : backTo);
+}
+
+/** "1 234,56" | "1234.56" → öre (heltal). null om ogiltigt. */
+function kronorTillOre(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const norm = value.replace(/\s/g, '').replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(norm)) return null;
+  return Math.round(Number(norm) * 100);
+}
+
+/** Formulärfel-notis (?fel=1) för sidor med skapa-formulär. */
+function felNotis(req: Request): Raw | '' {
+  return typeof req.query.fel === 'string'
+    ? html`<p class="notice">Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.</p>`
+    : '';
+}
+
+/** Senaste räkenskapsårets id, eller null om inget finns. */
+async function latestFiscalYearId(client: PoolClient, companyId: string): Promise<string | null> {
+  const r = await client.query<{ id: string }>(
+    'SELECT id FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1', [companyId]);
+  return r.rows[0]?.id ?? null;
+}
+
+function pageFor(active: string, title: string, render: (client: PoolClient, companyId: string, req: Request) => Promise<Raw>) {
   return page(async (req, res) => {
     const userId = getUserId(req);
     const companyId = parseCompanyId(req.params.companyId);
     const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
       const company = await loadCompany(client, companyId);
-      return { name: company.name, body: await render(client, companyId) };
+      return { name: company.name, body: await render(client, companyId, req) };
     });
     res.type('html').send(layout({ title, companyId, companyName: name, active, body }).value);
   });
@@ -1780,8 +1830,8 @@ function registerCell(key: string, value: unknown): Raw {
   }
   return html`${(value as string) ?? ''}`;
 }
-function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][], detailPrefix?: string) {
-  return pageFor(active, title, async (client, companyId) => {
+function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][], detailPrefix?: string, createForm?: (companyId: string) => Raw) {
+  return pageFor(active, title, async (client, companyId, req) => {
     const rows = await load(client, companyId);
     const cell = (key: string, r: Record<string, unknown>): Raw =>
       key === 'name' && detailPrefix && r.id
@@ -1789,13 +1839,15 @@ function registerPage(active: string, title: string, lede: string, load: (c: Poo
         : registerCell(key, r[key]);
     return html`<div class="page-head"><div>${eyebrow('Register')}<h1>${title}</h1>
         <p class="lede">${lede}</p></div></div>
+      ${felNotis(req)}
       ${
         rows.length === 0
           ? html`<div class="empty"><div class="big">Inga poster ännu</div>Här samlas dina ${title.toLowerCase()}.</div>`
           : html`<div class="table-wrap"><table><thead><tr>${cols.map(([key, label]) => html`<th class="${key.endsWith('_ore') ? 'num' : ''}">${label}</th>`)}</tr></thead><tbody>
               ${rows.map((r) => html`<tr>${cols.map(([key]) => html`<td class="${key.endsWith('_ore') ? 'num' : ''}">${cell(key, r)}</td>`)}</tr>`)}
               </tbody></table></div>`
-      }`;
+      }
+      ${createForm ? createForm(companyId) : ''}`;
   });
 }
 
@@ -1857,48 +1909,230 @@ function gdprAnonymizeRoute(section: 'customers' | 'suppliers', partyType: Party
 viewRouter.post('/c/:companyId/customers/:partyId/gdpr-anonymize', gdprAnonymizeRoute('customers', 'customer'));
 viewRouter.post('/c/:companyId/suppliers/:partyId/gdpr-anonymize', gdprAnonymizeRoute('suppliers', 'supplier'));
 
+// Skapa-formulär: körs genom SAMMA action-lager som AI:t (create_customer/create_supplier).
+function createPartyForm(kind: 'customers' | 'suppliers'): (companyId: string) => Raw {
+  const isCustomer = kind === 'customers';
+  return (companyId) => html`<div class="panel" style="margin-top:22px;max-width:560px">
+    <div class="panel__head"><h2>${isCustomer ? 'Ny kund' : 'Ny leverantör'}</h2></div>
+    <div class="panel__body" style="padding:16px">
+      <form method="post" action="/app/c/${companyId}/${kind}/create" style="display:flex;flex-direction:column;gap:12px">
+        <label class="field" style="margin:0"><span>Namn</span><input type="text" name="name" required placeholder="${isCustomer ? 'Kund AB' : 'Leverantör AB'}"></label>
+        <div style="display:flex;gap:12px">
+          <label class="field" style="margin:0;flex:1"><span>Org.nr (valfritt)</span><input type="text" name="org_number"></label>
+          ${isCustomer
+            ? html`<label class="field" style="margin:0;flex:1"><span>E-post (valfritt)</span><input type="email" name="email"></label>`
+            : html`<label class="field" style="margin:0;flex:1"><span>Bankgiro (valfritt)</span><input type="text" name="bankgiro"></label>`}
+        </div>
+        <button class="btn btn--primary" type="submit" style="align-self:flex-start">${isCustomer ? 'Skapa kund' : 'Skapa leverantör'}</button>
+      </form>
+    </div>
+  </div>`;
+}
+
 viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'Personer och företag du fakturerar. Klicka på namnet för kontakter, anteckningar och taggar.',
   (c, id) => listCustomers(c, id, { includeInactive: true }),
-  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customers'));
+  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customers', createPartyForm('customers')));
+
+viewRouter.post('/c/:companyId/customers/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const input: Record<string, unknown> = { name: b.name };
+  if (typeof b.org_number === 'string' && b.org_number.trim()) input.org_number = b.org_number.trim();
+  if (typeof b.email === 'string' && b.email.trim()) input.email = b.email.trim();
+  await runViewAction(req, res, companyId, 'create_customer', input, `/app/c/${companyId}/customers`);
+}));
 
 viewRouter.get('/c/:companyId/suppliers', registerPage('suppliers', 'Leverantörer', 'Företag du köper av och betalar.',
   (c, id) => listSuppliers(c, id, { includeInactive: true }),
-  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'suppliers'));
+  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'suppliers', createPartyForm('suppliers')));
+
+viewRouter.post('/c/:companyId/suppliers/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const input: Record<string, unknown> = { name: b.name };
+  if (typeof b.org_number === 'string' && b.org_number.trim()) input.org_number = b.org_number.trim();
+  if (typeof b.bankgiro === 'string' && b.bankgiro.trim()) input.bankgiro = b.bankgiro.trim();
+  await runViewAction(req, res, companyId, 'create_supplier', input, `/app/c/${companyId}/suppliers`);
+}));
 
 viewRouter.get('/c/:companyId/articles', registerPage('articles', 'Artiklar', 'Varor och tjänster du säljer.',
   (c, id) => listArticles(c, id, { includeInactive: true }),
   [['article_number', 'Nr'], ['name', 'Namn'], ['unit_price_ore', 'À-pris'], ['vat_rate', 'Moms%'], ['is_active', 'Status']]));
 
-viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (client, companyId) => {
+viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (client, companyId, req) => {
   const rows = await listInvoices(client, companyId, {});
+  const customers = await listCustomers(client, companyId, {});
+  const fyId = await latestFiscalYearId(client, companyId);
+  const today = new Date().toISOString().slice(0, 10);
+  const vatSelect = (name: string) => html`<select name="${name}"><option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 %</option></select>`;
+  // Radknappar: Bokför (utkast) och Registrera betalning (bokförd/delbetald) går via
+  // godkännandekön (sensitive) — knappen skapar förslaget, du bekräftar under Att göra.
+  const rowActions = (r: Record<string, unknown>): Raw => {
+    const status = String(r.status);
+    if (!fyId || status === 'cancelled') return html``;
+    // voucher_id avgör om fakturan är bokförd (status 'sent' sätts vid bokföring).
+    if (!r.voucher_id) {
+      return html`<form method="post" action="/app/c/${companyId}/invoices/${r.id as string}/book" style="display:inline">
+        <button class="btn btn--ghost btn--sm" type="submit">Bokför…</button></form>`;
+    }
+    if (status !== 'paid') {
+      return html`<form method="post" action="/app/c/${companyId}/invoices/${r.id as string}/pay" style="display:inline">
+        <input type="hidden" name="payment_date" value="${today}">
+        <button class="btn btn--ghost btn--sm" type="submit">Registrera betalning…</button></form>`;
+    }
+    return html``;
+  };
   return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Fakturor</h1>
-      <p class="lede">Det du fakturerat dina kunder. Bokförda fakturor syns i huvudboken.</p></div></div>
+      <p class="lede">Det du fakturerat dina kunder. Bokförda fakturor syns i huvudboken. Bokföring och betalning bekräftas under <a href="/app/c/${companyId}/approvals">Att göra</a>.</p></div></div>
+    ${felNotis(req)}
     ${
       rows.length === 0
-        ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapade fakturor listas här.</div>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th></tr></thead><tbody>
+        ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapa din första faktura nedan.</div>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th><th></th></tr></thead><tbody>
             ${rows.map((r) => html`<tr><td class="code">${r.invoice_number}</td><td>${r.invoice_date}</td><td>${r.customer_name}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
-              <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td></tr>`)}
+              <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td><td>${rowActions(r as Record<string, unknown>)}</td></tr>`)}
             </tbody></table></div>`
     }${
       rows.some((r) => r.housework_type)
         ? html`<div class="empty" style="text-align:left;padding:12px 14px;margin-top:12px">${chip('ROT/RUT — beräknat underlag', 'warn', '!')} <span class="muted">${HOUSEWORK_DISCLAIMER}</span></div>`
         : ''
+    }
+    ${
+      customers.length === 0
+        ? html`<div class="empty" style="margin-top:22px"><div class="big">Skapa en kund först</div>Fakturor ställs ut till en kund — <a href="/app/c/${companyId}/customers">lägg upp din första kund</a>.</div>`
+        : html`<div class="panel" style="margin-top:22px;max-width:720px">
+            <div class="panel__head"><h2>Ny faktura</h2></div>
+            <div class="panel__body" style="padding:16px">
+              <form method="post" action="/app/c/${companyId}/invoices/create" style="display:flex;flex-direction:column;gap:12px">
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                  <label class="field" style="margin:0;flex:2;min-width:220px"><span>Kund</span>
+                    <select name="customer_id" required>${customers.map((c) => html`<option value="${c.id as string}">${c.name as string}</option>`)}</select></label>
+                  <label class="field" style="margin:0;flex:1;min-width:150px"><span>Fakturadatum</span><input type="date" name="invoice_date" required value="${today}"></label>
+                  <label class="field" style="margin:0;flex:1;min-width:150px"><span>Förfallodatum (valfritt)</span><input type="date" name="due_date"></label>
+                </div>
+                ${[1, 2, 3].map((n) => html`<div style="display:flex;gap:12px;flex-wrap:wrap">
+                  <label class="field" style="margin:0;flex:3;min-width:200px"><span>Rad ${String(n)} — beskrivning${n === 1 ? '' : ' (valfri)'}</span><input type="text" name="desc_${String(n)}" ${n === 1 ? html`required` : ''}></label>
+                  <label class="field" style="margin:0;flex:1;min-width:90px"><span>Antal</span><input type="text" name="qty_${String(n)}" value="1"></label>
+                  <label class="field" style="margin:0;flex:1;min-width:120px"><span>À-pris (kr exkl. moms)</span><input type="text" name="price_${String(n)}" placeholder="1000,00"></label>
+                  <label class="field" style="margin:0;flex:1;min-width:90px"><span>Moms</span>${vatSelect(`vat_${String(n)}`)}</label>
+                </div>`)}
+                <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa fakturautkast</button>
+              </form>
+            </div>
+          </div>`
     }`;
 }));
 
-viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (client, companyId) => {
+viewRouter.post('/c/:companyId/invoices/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const back = `/app/c/${companyId}/invoices`;
+  const lines: Record<string, unknown>[] = [];
+  for (const n of [1, 2, 3]) {
+    const desc = typeof b[`desc_${n}`] === 'string' ? (b[`desc_${n}`] as string).trim() : '';
+    const priceRaw = typeof b[`price_${n}`] === 'string' ? (b[`price_${n}`] as string).trim() : '';
+    if (!desc && !priceRaw) continue; // tom rad hoppas över
+    const price = kronorTillOre(priceRaw);
+    const qty = Number(String(b[`qty_${n}`] ?? '1').replace(',', '.'));
+    if (price === null || !Number.isFinite(qty) || qty <= 0) { res.redirect(`${back}?fel=1`); return; }
+    lines.push({ description: desc, quantity: qty, unit_price_ore: price, vat_rate: Number(b[`vat_${n}`] ?? 25) });
+  }
+  if (lines.length === 0) { res.redirect(`${back}?fel=1`); return; }
+  const input: Record<string, unknown> = { customer_id: b.customer_id, invoice_date: b.invoice_date, lines };
+  if (typeof b.due_date === 'string' && b.due_date) input.due_date = b.due_date;
+  await runViewAction(req, res, companyId, 'create_invoice', input, back);
+}));
+
+viewRouter.post('/c/:companyId/invoices/:invoiceId/book', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
+  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
+  await runViewAction(req, res, companyId, 'book_invoice', { invoice_id: invoiceId, fiscal_year_id: fyId }, `/app/c/${companyId}/invoices`);
+}));
+
+viewRouter.post('/c/:companyId/invoices/:invoiceId/pay', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
+  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
+  const input: Record<string, unknown> = { invoice_id: invoiceId, fiscal_year_id: fyId };
+  if (typeof (req.body as { payment_date?: unknown }).payment_date === 'string') input.payment_date = (req.body as { payment_date: string }).payment_date;
+  await runViewAction(req, res, companyId, 'register_invoice_payment', input, `/app/c/${companyId}/invoices`);
+}));
+
+viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (client, companyId, req) => {
   const rows = await listReceipts(client, companyId, {});
+  const fyId = await latestFiscalYearId(client, companyId);
+  const today = new Date().toISOString().slice(0, 10);
+  const bookBtn = (r: Record<string, unknown>): Raw =>
+    fyId && String(r.status) === 'registered'
+      ? html`<form method="post" action="/app/c/${companyId}/receipts/${r.id as string}/book" style="display:inline">
+          <button class="btn btn--ghost btn--sm" type="submit">Bokför…</button></form>`
+      : html``;
   return html`<div class="page-head"><div>${eyebrow('Kvitton')}<h1>Kvitton</h1>
-      <p class="lede">Fota kvittot — AI läser av belopp och moms och föreslår bokföring. Inget bokförs utan att du godkänner.</p></div></div>
+      <p class="lede">Registrera utlägg och inköp. Bokföringen bekräftas under <a href="/app/c/${companyId}/approvals">Att göra</a>.</p></div></div>
+    ${felNotis(req)}
     ${
       rows.length === 0
-        ? html`<div class="empty"><div class="big">Inga kvitton ännu</div>Uppladdade kvitton listas här.</div>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th></tr></thead><tbody>
+        ? html`<div class="empty"><div class="big">Inga kvitton ännu</div>Registrera ditt första kvitto nedan.</div>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th><th></th></tr></thead><tbody>
             ${rows.map((r) => html`<tr><td class="code">${r.receipt_number}</td><td>${r.receipt_date}</td><td>${r.description}</td>
-              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td></tr>`)}
+              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td><td>${bookBtn(r as Record<string, unknown>)}</td></tr>`)}
             </tbody></table></div>`
-    }`;
+    }
+    <div class="panel" style="margin-top:22px;max-width:720px">
+      <div class="panel__head"><h2>Nytt kvitto</h2></div>
+      <div class="panel__body" style="padding:16px">
+        <form method="post" action="/app/c/${companyId}/receipts/create" style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label class="field" style="margin:0;flex:1;min-width:150px"><span>Datum</span><input type="date" name="receipt_date" required value="${today}"></label>
+            <label class="field" style="margin:0;flex:2;min-width:220px"><span>Beskrivning</span><input type="text" name="description" required placeholder="T.ex. Drivmedel"></label>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label class="field" style="margin:0;flex:1;min-width:130px"><span>Netto (kr exkl. moms)</span><input type="text" name="net" required placeholder="800,00"></label>
+            <label class="field" style="margin:0;flex:1;min-width:90px"><span>Moms</span>
+              <select name="vat_rate"><option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 %</option></select></label>
+            <label class="field" style="margin:0;flex:1;min-width:140px"><span>Kostnadskonto</span><input type="text" name="expense_account" required value="4000" title="T.ex. 4000 varor, 5611 drivmedel, 6071 representation"></label>
+            <label class="field" style="margin:0;flex:1;min-width:140px"><span>Betalkonto</span><input type="text" name="payment_account" required value="1930" title="1930 företagskonto, 2893 egna utlägg"></label>
+          </div>
+          <span class="muted" style="font-size:12.5px">Vanliga kostnadskonton: 4000 varor/material · 5611 drivmedel · 5410 förbrukningsinventarier · 6071 representation · 6110 kontorsmateriel. Betalkonto: 1930 företagskonto · 2893 egna utlägg.</span>
+          <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa kvittoutkast</button>
+        </form>
+      </div>
+    </div>`;
+}));
+
+viewRouter.post('/c/:companyId/receipts/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const back = `/app/c/${companyId}/receipts`;
+  const net = kronorTillOre(typeof b.net === 'string' ? b.net.trim() : null);
+  const expense = Number(String(b.expense_account ?? '').trim());
+  const payment = Number(String(b.payment_account ?? '').trim());
+  if (net === null || net <= 0 || !Number.isInteger(expense) || !Number.isInteger(payment)) { res.redirect(`${back}?fel=1`); return; }
+  await runViewAction(req, res, companyId, 'create_receipt', {
+    receipt_date: b.receipt_date, description: b.description, net_ore: net,
+    vat_rate: Number(b.vat_rate ?? 25), expense_account: expense, payment_account: payment,
+  }, back);
+}));
+
+viewRouter.post('/c/:companyId/receipts/:receiptId/book', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const receiptId = UuidSchema.parse(req.params.receiptId);
+  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
+  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
+  await runViewAction(req, res, companyId, 'book_receipt', { receipt_id: receiptId, fiscal_year_id: fyId }, `/app/c/${companyId}/receipts`);
 }));
 
 // Dokumentarkiv

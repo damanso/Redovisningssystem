@@ -16,11 +16,17 @@ Samma kärna, samma regler, samma data bakom båda. Börja alltid med att starta
 
 ## 1. Använda direkt i appen
 
-1. Logga in på `http://localhost:3000/app`.
+1. Logga in på `http://localhost:3000/app` (eller **Skapa konto** på inloggningssidan).
 2. **Skapa bolag** på startsidan (namn + ev. org.nr).
 3. Öppna bolaget → **Skapa räkenskapsår** (kom-igång-kortet på översikten).
-4. Därefter kan du använda menyn: Kunder, Fakturor, Kvitton, Rapporter, Moms,
-   Bokslut, Deklaration m.m. Känsliga steg (t.ex. bokföra) bekräftar du själv.
+4. Bygg upp registret och bokför — allt i webbläsaren:
+   - **Kunder / Leverantörer** → formulär "Ny kund"/"Ny leverantör" under listan.
+   - **Fakturor** → "Ny faktura" (kund, datum, upp till tre rader med à-pris i kr).
+     Klicka **Bokför…** på ett utkast, och **Registrera betalning…** när pengarna kommit.
+   - **Kvitton** → "Nytt kvitto" (datum, beskrivning, netto, moms, konton) + **Bokför…**.
+5. **Viktigt:** allt som rör pengar (bokföra, betala) blir ett förslag under
+   **Att göra** — där bekräftar du med ett klick innan något skrivs i huvudboken.
+   Det är samma skyddsräcke som när AI:t föreslår saker.
 
 ## 2. Använda via Claude Desktop (AI)
 
