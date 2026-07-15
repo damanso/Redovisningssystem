@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../../config.js';
 import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
-import { AppError } from '../../lib/errors.js';
+import { AppError, ConflictError } from '../../lib/errors.js';
 import { signToken } from '../../lib/jwt.js';
 import { writeAudit } from '../../services/auditService.js';
 import { errorPage } from './html.js';
@@ -66,6 +66,34 @@ export async function verifyCredentials(
   // Audit sker vid FULL session (issueSession) — inte här — så en avbruten
   // 2FA-inloggning inte loggas som en lyckad inloggning.
   return { id: user.id, name: user.name, totpEnabled: user.totp_enabled };
+}
+
+/**
+ * Skapar en användare från webbregistreringen. Speglar API:ts /register-logik:
+ * inget SELECT-sen-INSERT — vi litar på unik-indexet users_email_key och fångar
+ * unique_violation (23505) som ConflictError, vilket stänger tävlingsvillkoret.
+ * Returnerar den nya användarens id (för issueSession).
+ */
+export async function registerUser(email: string, password: string, name: string): Promise<string> {
+  const passwordHash = await bcrypt.hash(password, config.BCRYPT_ROUNDS);
+  return withTransaction(async (client) => {
+    let inserted;
+    try {
+      inserted = await client.query<{ id: string }>(
+        `INSERT INTO users (email, password_hash, name)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [email, passwordHash, name],
+      );
+    } catch (err) {
+      if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+        throw new ConflictError('email_taken');
+      }
+      throw err;
+    }
+    const id = inserted.rows[0]!.id;
+    await writeAudit(client, { userId: id, action: 'user.registered', entityType: 'user', entityId: id });
+    return id;
+  });
 }
 
 export function issueSession(res: Response, userId: string): void {

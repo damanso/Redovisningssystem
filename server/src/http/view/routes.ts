@@ -6,7 +6,7 @@ import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
 import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
-import { UuidSchema } from '../../lib/validation.js';
+import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { listInvoices } from '../../services/invoices.js';
 import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
@@ -26,8 +26,8 @@ import { inviteMember, listMembers, removeMember, setMemberRole } from '../../se
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { resolveStoredPath } from '../../services/fileStorage.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, statusChip, totpChallengePage, type Raw } from './html.js';
-import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, verifyCredentials, viewAuth } from './auth.js';
+import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
+import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
 import { emailEnabled } from '../../services/email.js';
@@ -80,6 +80,50 @@ viewRouter.post(
       return;
     }
     issueSession(res, user.id);
+    res.redirect('/app');
+  }),
+);
+
+// Självbetjänad registrering i webbvyn (samma logik som API:ts /register).
+viewRouter.get('/register', (_req, res) => {
+  res.type("html").send(registerAccountPage().value);
+});
+
+viewRouter.post(
+  '/register',
+  rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
+  page(async (req, res) => {
+    assertSameOrigin(req);
+    const parsed = z
+      .object({ name: safeText(200), email: EmailSchema, password: z.string().min(8).max(200) })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) {
+      const body = req.body as { email?: string; name?: string };
+      res.status(400).type('html').send(
+        registerAccountPage('Kontrollera uppgifterna: namn krävs, giltig e-post och lösenord (minst 8 tecken).', {
+          email: typeof body.email === 'string' ? body.email : undefined,
+          name: typeof body.name === 'string' ? body.name : undefined,
+        }).value,
+      );
+      return;
+    }
+    let userId: string;
+    try {
+      userId = await registerUser(parsed.data.email, parsed.data.password, parsed.data.name);
+    } catch (err) {
+      if (err instanceof ConflictError) {
+        res.status(409).type('html').send(
+          registerAccountPage('Det finns redan ett konto med den e-posten. Logga in i stället.', {
+            email: parsed.data.email,
+            name: parsed.data.name,
+          }).value,
+        );
+        return;
+      }
+      throw err;
+    }
+    issueSession(res, userId);
     res.redirect('/app');
   }),
 );

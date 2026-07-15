@@ -282,3 +282,50 @@ describe('dokumentarkiv', () => {
     expect(res.status).toBe(404); // B är inte medlem i A
   });
 });
+
+// Självbetjänad registrering i webbvyn + härdad origin-kontroll (loopback/opak).
+describe('Registrering i vyn', () => {
+  it('registreringssidan renderas och länkas från login', async () => {
+    const reg = await api.get('/app/register');
+    expect(reg.status).toBe(200);
+    expect(reg.text).toContain('Skapa konto');
+    const login = await api.get('/app/login');
+    expect(login.text).toContain('/app/register'); // länk finns på login
+  });
+
+  it('giltig registrering skapar konto och loggar in (session funkar)', async () => {
+    const agent = supertest.agent(app);
+    const email = `vyreg-${Date.now()}@test.se`;
+    const res = await agent.post('/app/register').type('form')
+      .send({ name: 'Ny Användare', email, password: 'ett-riktigt-losen-123' });
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toBe('/app');
+    // Sessionen ska ge åtkomst till appen direkt.
+    const app_ = await agent.get('/app');
+    expect(app_.status).toBe(200);
+  });
+
+  it('dubblettregistrering ger 409 och tydligt fel', async () => {
+    const email = `vydup-${Date.now()}@test.se`;
+    const first = await api.post('/app/register').type('form')
+      .send({ name: 'A', email, password: 'ett-riktigt-losen-123' });
+    expect([302, 303]).toContain(first.status);
+    const second = await api.post('/app/register').type('form')
+      .send({ name: 'A', email, password: 'ett-riktigt-losen-123' });
+    expect(second.status).toBe(409);
+    expect(second.text).toContain('redan ett konto');
+  });
+
+  it('för kort lösenord avvisas (400)', async () => {
+    const res = await api.post('/app/register').type('form')
+      .send({ name: 'A', email: `vyshort-${Date.now()}@test.se`, password: 'kort' });
+    expect(res.status).toBe(400);
+    expect(res.text).toContain('minst 8 tecken');
+  });
+
+  it('äkta cross-site-origin nekas fortfarande (403)', async () => {
+    const res = await api.post('/app/register').set('Origin', 'https://evil.example')
+      .type('form').send({ name: 'A', email: `evil-${Date.now()}@test.se`, password: 'ett-riktigt-losen-123' });
+    expect(res.status).toBe(403);
+  });
+});

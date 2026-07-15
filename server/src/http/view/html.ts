@@ -482,6 +482,25 @@ export function loginPage(error?: string): Raw {
       <label class="field"><span>Lösenord</span>
         <input type="password" name="password" autocomplete="current-password" required></label>
       <button class="btn btn--primary" type="submit">Logga in</button>
+      <p class="lede" style="margin-top:16px">Inget konto än? <a href="/app/register">Skapa konto</a></p>
+    </form></div></body></html>`;
+}
+
+export function registerPage(error?: string, values?: { email?: string; name?: string }): Raw {
+  return html`<!doctype html><html lang="sv"><head>${head('Skapa konto')}</head>
+    <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/register">
+      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <h1>Skapa konto</h1>
+      <p class="lede">Kom igång med din bokföring — det tar en minut.</p>
+      ${error ? html`<p class="notice">${error}</p>` : ''}
+      <label class="field"><span>Namn</span>
+        <input type="text" name="name" autocomplete="name" required autofocus value="${values?.name ?? ''}"></label>
+      <label class="field"><span>E-post</span>
+        <input type="email" name="email" autocomplete="username" required value="${values?.email ?? ''}"></label>
+      <label class="field"><span>Lösenord</span>
+        <input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+      <button class="btn btn--primary" type="submit">Skapa konto</button>
+      <p class="lede" style="margin-top:16px">Har du redan ett konto? <a href="/app/login">Logga in</a></p>
     </form></div></body></html>`;
 }
 
