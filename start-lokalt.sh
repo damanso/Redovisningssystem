@@ -9,6 +9,30 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DB_NAME="redovisning"
+APP_URL="http://localhost:3000/app"
+
+# Redan igång? Öppna bara webbläsaren och var klar (gör app-ikonen idempotent).
+if curl -s -m 2 http://127.0.0.1:3000/health >/dev/null 2>&1; then
+  echo "Systemet är redan igång — öppnar $APP_URL"
+  command -v open >/dev/null 2>&1 && open "$APP_URL"
+  exit 0
+fi
+
+# Docker Desktop måste vara igång; starta den åt användaren på macOS.
+if ! docker info >/dev/null 2>&1; then
+  if command -v open >/dev/null 2>&1; then
+    echo "==> Startar Docker Desktop…"
+    open -a Docker || true
+    for _ in $(seq 1 90); do
+      docker info >/dev/null 2>&1 && break
+      sleep 2
+    done
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "FEL: Docker svarar inte. Starta Docker Desktop och försök igen." >&2
+    exit 1
+  fi
+fi
 
 # Docker Compose v2 ("docker compose") eller v1 ("docker-compose")?
 if docker compose version >/dev/null 2>&1; then
@@ -70,10 +94,16 @@ npm run migrate
 
 echo ""
 echo "======================================================================"
-echo "  Startar API:t. Öppna i webbläsaren på DEN HÄR datorn:"
-echo "      http://localhost:3000/app"
-echo "  Registrera ditt konto, skapa bolag + räkenskapsår — klart."
+echo "  Startar API:t — webbläsaren öppnas automatiskt när allt är uppe:"
+echo "      $APP_URL"
 echo "  Avsluta med Ctrl+C. Kör 'bash backup.sh' regelbundet för säkerhetskopia."
 echo "======================================================================"
 echo ""
+# Öppna webbläsaren när servern svarar (bakgrundsvakt; endast macOS har `open`).
+if command -v open >/dev/null 2>&1; then
+  ( for _ in $(seq 1 60); do
+      if curl -s -m 2 http://127.0.0.1:3000/health >/dev/null 2>&1; then open "$APP_URL"; exit 0; fi
+      sleep 1
+    done ) &
+fi
 npm run dev
