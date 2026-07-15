@@ -5,8 +5,10 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
-import { setTenantContext, withTenantTransaction, withTransaction, withUserTransaction } from '../../db/tx.js';
+import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
 import { writeAudit } from '../../services/auditService.js';
+import { OrgNumberSchema, createOwnedCompany } from '../../services/companies.js';
+import { kronorToOre } from '../../domain/money.js';
 import { signToken as signAgentToken } from '../../lib/jwt.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
@@ -180,6 +182,7 @@ viewRouter.get(
     const created = typeof req.query.skapat === 'string';
     const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}<h1>Dina bolag</h1>
         <p class="lede">Öppna ett bolag för att se dess bokföring.</p></div></div>
+      ${felNotis(req)}
       ${
         companies.length === 0
           ? html`<div class="empty"><div class="big">Inga bolag ännu</div>Skapa ditt första bolag nedan för att komma igång.</div>`
@@ -211,34 +214,23 @@ viewRouter.get(
   }),
 );
 
-// Skapa bolag från vyn (speglar API:ts POST /api/companies). Webbvyn är alltid
-// människa (viewAuth), så ingen agent-kontroll behövs. RLS: id sätts i tenant-
-// kontexten före INSERT eftersom companies_insert-policyn kräver id = app_current_company_id().
+// Skapa bolag från vyn — SAMMA tjänst och validering som API:t (createOwnedCompany:
+// RLS-säker sekvens, ägar-medlemskap, audit, normaliserat org.nr NNNNNN-NNNN).
+// Webbvyn är alltid människa (viewAuth), så ingen agent-kontroll behövs.
 viewRouter.post(
   '/companies',
   page(async (req, res) => {
     assertSameOrigin(req);
     const userId = getUserId(req);
     const parsed = z
-      .object({ name: safeText(200), org_number: safeText(64).optional() })
+      .object({ name: safeText(200), org_number: OrgNumberSchema.optional() })
       .safeParse({ name: (req.body as { name?: unknown }).name, org_number: (req.body as { org_number?: unknown }).org_number || undefined });
     if (!parsed.success) {
-      res.redirect('/app/');
+      res.redirect(`/app/?fel=${encodeURIComponent('Kontrollera namnet och org.numret (NNNNNN-NNNN).')}`);
       return;
     }
-    const companyId = randomUUID();
-    await withTransaction(async (client) => {
-      await setTenantContext(client, userId, companyId);
-      await client.query('INSERT INTO companies (id, name, org_number) VALUES ($1, $2, $3)', [
-        companyId, parsed.data.name, parsed.data.org_number ?? null,
-      ]);
-      await client.query("INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'owner')", [companyId, userId]);
-      await writeAudit(client, {
-        companyId, userId, action: 'company.created', entityType: 'company', entityId: companyId,
-        details: { name: parsed.data.name },
-      });
-    });
-    res.redirect(`/app/c/${companyId}`);
+    const company = await createOwnedCompany(userId, parsed.data);
+    res.redirect(`/app/c/${company.id}`);
   }),
 );
 
@@ -251,7 +243,8 @@ viewRouter.post(
     const companyId = parseCompanyId(req.params.companyId);
     const parsed = z
       .object({
-        label: safeText(100),
+        // safeText(20): samma kontrakt som REST-API:ts CreateFiscalYearSchema.
+        label: safeText(20),
         start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       })
@@ -311,16 +304,29 @@ function connectPageBody(companyId: string, companyName: string, token: string |
     </div>`;
 }
 
-viewRouter.get('/c/:companyId/connect', pageFor('connect', 'Anslut AI', async (client, companyId) => {
-  const company = await loadCompany(client, companyId);
-  return connectPageBody(companyId, company.name, null);
+viewRouter.get('/c/:companyId/connect', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const { name, role } = await withTenantTransaction(userId, companyId, async (client, actorRole) => {
+    const company = await loadCompany(client, companyId);
+    return { name: company.name, role: actorRole };
+  });
+  // Icke-ägare får en förklaring i stället för ett formulär som skulle sluta i 403.
+  const body = role === 'owner'
+    ? connectPageBody(companyId, name, null)
+    : html`<div class="page-head"><div>${eyebrow('Anslut AI')}<h1>Anslut Claude Desktop</h1></div></div>
+        <div class="empty"><div class="big">Endast ägaren</div>AI-token skapas av bolagets ägare — be dem gå hit och skapa ett.</div>`;
+  res.type('html').send(layout({ title: 'Anslut AI', companyId, companyName: name, active: 'connect', body }).value);
 }));
 
 viewRouter.post('/c/:companyId/connect/token', page(async (req, res) => {
   assertSameOrigin(req);
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const name = safeText(100).optional().parse((req.body as { name?: unknown }).name || undefined);
+  // safeParse: ett för långt/ogiltigt namn ska inte ge en 500-sida — namnet är
+  // bara en audit-etikett, så ogiltigt värde ignoreras hellre än stoppar.
+  const nameParsed = safeText(100).optional().safeParse((req.body as { name?: unknown }).name || undefined);
+  const name = nameParsed.success ? nameParsed.data : undefined;
   const result = await withTenantTransaction(userId, companyId, async (client, actorRole) => {
     if (actorRole !== 'owner') throw new ForbiddenError('only_owner', 'Bara ägaren kan skapa AI-token.');
     const company = await loadCompany(client, companyId);
@@ -526,6 +532,8 @@ function parseCompanyId(value: unknown): string {
  * sensitive hamnar i godkännandekön och vi skickar användaren till Att göra.
  * Valideringsfel ger en redirect tillbaka med ?fel=1 (ingen felsida för formulärslarv).
  */
+const FORM_FEL = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
+
 async function runViewAction(
   req: Request,
   res: import('express').Response,
@@ -539,8 +547,16 @@ async function runViewAction(
   try {
     result = await executeAction({ companyId, userId, actor: 'human', actionName, input });
   } catch (err) {
-    if (err instanceof z.ZodError || err instanceof BadRequestError || err instanceof ConflictError) {
-      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=1`);
+    // Skilj på formulärslarv och verksamhetsregler: zod-fel får den generella
+    // formulärtexten; BadRequest/Conflict bär redan ett begripligt svenskt
+    // meddelande (t.ex. "verifikationsdatum utanför räkenskapsåret", "perioden
+    // är låst") — visa DET i stället för en vilseledande beloppshint.
+    if (err instanceof z.ZodError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
+      return;
+    }
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(err.message)}`);
       return;
     }
     throw err;
@@ -548,26 +564,45 @@ async function runViewAction(
   res.redirect(result.status === 'pending_approval' ? `/app/c/${companyId}/approvals` : backTo);
 }
 
-/** "1 234,56" | "1234.56" → öre (heltal). null om ogiltigt. */
+/**
+ * "1 234,56" | "1234.56" → öre (heltal ≥ 0). null om ogiltigt. Delegerar till
+ * domänens kronorToOre (money.ts) — samma decimalsäkra parsning som resten av
+ * systemet, ingen egen flyttalsvariant.
+ */
 function kronorTillOre(value: unknown): number | null {
   if (typeof value !== 'string') return null;
-  const norm = value.replace(/\s/g, '').replace(',', '.');
-  if (!/^\d+(\.\d{1,2})?$/.test(norm)) return null;
-  return Math.round(Number(norm) * 100);
+  try {
+    const ore = kronorToOre(value.replace(/\s/g, ''));
+    return ore >= 0 ? ore : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Formulärfel-notis (?fel=1) för sidor med skapa-formulär. */
+/** Felnotis (?fel=<text>) för sidor med formulär. Texten HTML-escapas av html``. */
 function felNotis(req: Request): Raw | '' {
-  return typeof req.query.fel === 'string'
-    ? html`<p class="notice">Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.</p>`
-    : '';
+  const fel = req.query.fel;
+  if (typeof fel !== 'string' || !fel) return '';
+  return html`<p class="notice">${fel === '1' ? FORM_FEL : fel}</p>`;
 }
 
-/** Senaste räkenskapsårets id, eller null om inget finns. */
-async function latestFiscalYearId(client: PoolClient, companyId: string): Promise<string | null> {
+/**
+ * Räkenskapsåret som innehåller ett givet datum — dokumentets datum styr vilket
+ * år det bokförs i (inte "senaste året": en 2024-faktura ska in i 2024 även när
+ * 2025 finns). null om inget år täcker datumet.
+ */
+async function fiscalYearForDate(client: PoolClient, companyId: string, isoDate: string): Promise<string | null> {
   const r = await client.query<{ id: string }>(
-    'SELECT id FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1', [companyId]);
+    'SELECT id FROM fiscal_years WHERE company_id = $1 AND $2::date BETWEEN start_date AND end_date LIMIT 1',
+    [companyId, isoDate],
+  );
   return r.rows[0]?.id ?? null;
+}
+
+/** Finns något räkenskapsår alls? (styr om bokför-knappar visas). */
+async function hasFiscalYear(client: PoolClient, companyId: string): Promise<boolean> {
+  const r = await client.query('SELECT 1 FROM fiscal_years WHERE company_id = $1 LIMIT 1', [companyId]);
+  return (r.rowCount ?? 0) > 0;
 }
 
 function pageFor(active: string, title: string, render: (client: PoolClient, companyId: string, req: Request) => Promise<Raw>) {
@@ -599,7 +634,7 @@ viewRouter.get(
     // Utan räkenskapsår går ingenting att bokföra — visa ett kom-igång-kort i stället.
     const fyCount = await client.query<{ n: string }>('SELECT COUNT(*)::text AS n FROM fiscal_years WHERE company_id = $1', [companyId]);
     if (fyCount.rows[0]!.n === '0') {
-      const yr = new Date('2025-01-01').getFullYear(); // fast bas; användaren väljer själv nedan
+      const yr = new Date().getFullYear(); // innevarande år som förslag; användaren kan ändra
       return html`<div class="page-head"><div>${eyebrow('Kom igång')}<h1>Skapa räkenskapsår</h1>
           <p class="lede">Bokföringen behöver ett räkenskapsår innan du kan skapa fakturor, kvitton och rapporter.</p></div></div>
         <div class="panel" style="max-width:520px">
@@ -1933,40 +1968,42 @@ viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'P
   (c, id) => listCustomers(c, id, { includeInactive: true }),
   [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customers', createPartyForm('customers')));
 
-viewRouter.post('/c/:companyId/customers/create', page(async (req, res) => {
-  assertSameOrigin(req);
-  const companyId = parseCompanyId(req.params.companyId);
-  const b = req.body as Record<string, unknown>;
-  const input: Record<string, unknown> = { name: b.name };
-  if (typeof b.org_number === 'string' && b.org_number.trim()) input.org_number = b.org_number.trim();
-  if (typeof b.email === 'string' && b.email.trim()) input.email = b.email.trim();
-  await runViewAction(req, res, companyId, 'create_customer', input, `/app/c/${companyId}/customers`);
-}));
+// En POST-handler för båda parttyperna — enda skillnaden är actionnamn + det
+// valfria extrafältet (kund: email, leverantör: bankgiro).
+function createPartyRoute(kind: 'customers' | 'suppliers') {
+  const action = kind === 'customers' ? 'create_customer' : 'create_supplier';
+  const extraField = kind === 'customers' ? 'email' : 'bankgiro';
+  return page(async (req: Request, res: import('express').Response) => {
+    assertSameOrigin(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const b = req.body as Record<string, unknown>;
+    const input: Record<string, unknown> = { name: b.name };
+    if (typeof b.org_number === 'string' && b.org_number.trim()) input.org_number = b.org_number.trim();
+    if (typeof b[extraField] === 'string' && (b[extraField] as string).trim()) input[extraField] = (b[extraField] as string).trim();
+    await runViewAction(req, res, companyId, action, input, `/app/c/${companyId}/${kind}`);
+  });
+}
+
+viewRouter.post('/c/:companyId/customers/create', createPartyRoute('customers'));
 
 viewRouter.get('/c/:companyId/suppliers', registerPage('suppliers', 'Leverantörer', 'Företag du köper av och betalar.',
   (c, id) => listSuppliers(c, id, { includeInactive: true }),
   [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'suppliers', createPartyForm('suppliers')));
 
-viewRouter.post('/c/:companyId/suppliers/create', page(async (req, res) => {
-  assertSameOrigin(req);
-  const companyId = parseCompanyId(req.params.companyId);
-  const b = req.body as Record<string, unknown>;
-  const input: Record<string, unknown> = { name: b.name };
-  if (typeof b.org_number === 'string' && b.org_number.trim()) input.org_number = b.org_number.trim();
-  if (typeof b.bankgiro === 'string' && b.bankgiro.trim()) input.bankgiro = b.bankgiro.trim();
-  await runViewAction(req, res, companyId, 'create_supplier', input, `/app/c/${companyId}/suppliers`);
-}));
+viewRouter.post('/c/:companyId/suppliers/create', createPartyRoute('suppliers'));
 
 viewRouter.get('/c/:companyId/articles', registerPage('articles', 'Artiklar', 'Varor och tjänster du säljer.',
   (c, id) => listArticles(c, id, { includeInactive: true }),
   [['article_number', 'Nr'], ['name', 'Namn'], ['unit_price_ore', 'À-pris'], ['vat_rate', 'Moms%'], ['is_active', 'Status']]));
 
+// Momssats-väljaren delas mellan faktura- och kvittoformuläret (samma satser).
+const vatSelect = (name: string): Raw => html`<select name="${name}"><option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 %</option></select>`;
+
 viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (client, companyId, req) => {
   const rows = await listInvoices(client, companyId, {});
   const customers = await listCustomers(client, companyId, {});
-  const fyId = await latestFiscalYearId(client, companyId);
+  const fyId = await hasFiscalYear(client, companyId);
   const today = new Date().toISOString().slice(0, 10);
-  const vatSelect = (name: string) => html`<select name="${name}"><option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 %</option></select>`;
   // Radknappar: Bokför (utkast) och Registrera betalning (bokförd/delbetald) går via
   // godkännandekön (sensitive) — knappen skapar förslaget, du bekräftar under Att göra.
   const rowActions = (r: Record<string, unknown>): Raw => {
@@ -2046,14 +2083,27 @@ viewRouter.post('/c/:companyId/invoices/create', page(async (req, res) => {
   await runViewAction(req, res, companyId, 'create_invoice', input, back);
 }));
 
+const INGET_AR_FEL = (datum: string) =>
+  `Inget räkenskapsår täcker ${datum} — skapa räkenskapsåret först (kom-igång-kortet på översikten).`;
+
 viewRouter.post('/c/:companyId/invoices/:invoiceId/book', page(async (req, res) => {
   assertSameOrigin(req);
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const invoiceId = UuidSchema.parse(req.params.invoiceId);
-  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
-  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
-  await runViewAction(req, res, companyId, 'book_invoice', { invoice_id: invoiceId, fiscal_year_id: fyId }, `/app/c/${companyId}/invoices`);
+  const back = `/app/c/${companyId}/invoices`;
+  // Fakturans EGET datum avgör räkenskapsåret — en 2024-faktura bokförs i 2024
+  // även om 2025 är öppnat (verifikationsdatum utanför året avvisas av kärnan).
+  const found = await withTenantTransaction(userId, companyId, async (c) => {
+    const inv = await c.query<{ invoice_date: string }>(
+      'SELECT invoice_date::text FROM invoices WHERE id = $1 AND company_id = $2', [invoiceId, companyId]);
+    const date = inv.rows[0]?.invoice_date;
+    if (!date) return null;
+    return { date, fyId: await fiscalYearForDate(c, companyId, date) };
+  });
+  if (!found) { res.redirect(back); return; }
+  if (!found.fyId) { res.redirect(`${back}?fel=${encodeURIComponent(INGET_AR_FEL(found.date))}`); return; }
+  await runViewAction(req, res, companyId, 'book_invoice', { invoice_id: invoiceId, fiscal_year_id: found.fyId }, back);
 }));
 
 viewRouter.post('/c/:companyId/invoices/:invoiceId/pay', page(async (req, res) => {
@@ -2061,16 +2111,21 @@ viewRouter.post('/c/:companyId/invoices/:invoiceId/pay', page(async (req, res) =
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const invoiceId = UuidSchema.parse(req.params.invoiceId);
-  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
-  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
-  const input: Record<string, unknown> = { invoice_id: invoiceId, fiscal_year_id: fyId };
-  if (typeof (req.body as { payment_date?: unknown }).payment_date === 'string') input.payment_date = (req.body as { payment_date: string }).payment_date;
-  await runViewAction(req, res, companyId, 'register_invoice_payment', input, `/app/c/${companyId}/invoices`);
+  const back = `/app/c/${companyId}/invoices`;
+  // Betalningen bokförs på betalningsdagen → det datumets räkenskapsår gäller.
+  const rawDate = (req.body as { payment_date?: unknown }).payment_date;
+  const payDate = typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+    ? rawDate
+    : new Date().toISOString().slice(0, 10);
+  const fyId = await withTenantTransaction(userId, companyId, (c) => fiscalYearForDate(c, companyId, payDate));
+  if (!fyId) { res.redirect(`${back}?fel=${encodeURIComponent(INGET_AR_FEL(payDate))}`); return; }
+  await runViewAction(req, res, companyId, 'register_invoice_payment',
+    { invoice_id: invoiceId, fiscal_year_id: fyId, payment_date: payDate }, back);
 }));
 
 viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (client, companyId, req) => {
   const rows = await listReceipts(client, companyId, {});
-  const fyId = await latestFiscalYearId(client, companyId);
+  const fyId = await hasFiscalYear(client, companyId);
   const today = new Date().toISOString().slice(0, 10);
   const bookBtn = (r: Record<string, unknown>): Raw =>
     fyId && String(r.status) === 'registered'
@@ -2098,8 +2153,7 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
           </div>
           <div style="display:flex;gap:12px;flex-wrap:wrap">
             <label class="field" style="margin:0;flex:1;min-width:130px"><span>Netto (kr exkl. moms)</span><input type="text" name="net" required placeholder="800,00"></label>
-            <label class="field" style="margin:0;flex:1;min-width:90px"><span>Moms</span>
-              <select name="vat_rate"><option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 %</option></select></label>
+            <label class="field" style="margin:0;flex:1;min-width:90px"><span>Moms</span>${vatSelect('vat_rate')}</label>
             <label class="field" style="margin:0;flex:1;min-width:140px"><span>Kostnadskonto</span><input type="text" name="expense_account" required value="4000" title="T.ex. 4000 varor, 5611 drivmedel, 6071 representation"></label>
             <label class="field" style="margin:0;flex:1;min-width:140px"><span>Betalkonto</span><input type="text" name="payment_account" required value="1930" title="1930 företagskonto, 2893 egna utlägg"></label>
           </div>
@@ -2116,9 +2170,12 @@ viewRouter.post('/c/:companyId/receipts/create', page(async (req, res) => {
   const b = req.body as Record<string, unknown>;
   const back = `/app/c/${companyId}/receipts`;
   const net = kronorTillOre(typeof b.net === 'string' ? b.net.trim() : null);
-  const expense = Number(String(b.expense_account ?? '').trim());
-  const payment = Number(String(b.payment_account ?? '').trim());
-  if (net === null || net <= 0 || !Number.isInteger(expense) || !Number.isInteger(payment)) { res.redirect(`${back}?fel=1`); return; }
+  // Kontonummer är exakt fyra siffror (BAS) — Number('') vore 0 och sluppe igenom.
+  const expenseRaw = String(b.expense_account ?? '').trim();
+  const paymentRaw = String(b.payment_account ?? '').trim();
+  if (net === null || net <= 0 || !/^\d{4}$/.test(expenseRaw) || !/^\d{4}$/.test(paymentRaw)) { res.redirect(`${back}?fel=1`); return; }
+  const expense = Number(expenseRaw);
+  const payment = Number(paymentRaw);
   await runViewAction(req, res, companyId, 'create_receipt', {
     receipt_date: b.receipt_date, description: b.description, net_ore: net,
     vat_rate: Number(b.vat_rate ?? 25), expense_account: expense, payment_account: payment,
@@ -2130,9 +2187,18 @@ viewRouter.post('/c/:companyId/receipts/:receiptId/book', page(async (req, res) 
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const receiptId = UuidSchema.parse(req.params.receiptId);
-  const fyId = await withTenantTransaction(userId, companyId, (c) => latestFiscalYearId(c, companyId));
-  if (!fyId) { res.redirect(`/app/c/${companyId}`); return; }
-  await runViewAction(req, res, companyId, 'book_receipt', { receipt_id: receiptId, fiscal_year_id: fyId }, `/app/c/${companyId}/receipts`);
+  const back = `/app/c/${companyId}/receipts`;
+  // Kvittots eget datum avgör räkenskapsåret (samma princip som fakturor).
+  const found = await withTenantTransaction(userId, companyId, async (c) => {
+    const rec = await c.query<{ receipt_date: string }>(
+      'SELECT receipt_date::text FROM receipts WHERE id = $1 AND company_id = $2', [receiptId, companyId]);
+    const date = rec.rows[0]?.receipt_date;
+    if (!date) return null;
+    return { date, fyId: await fiscalYearForDate(c, companyId, date) };
+  });
+  if (!found) { res.redirect(back); return; }
+  if (!found.fyId) { res.redirect(`${back}?fel=${encodeURIComponent(INGET_AR_FEL(found.date))}`); return; }
+  await runViewAction(req, res, companyId, 'book_receipt', { receipt_id: receiptId, fiscal_year_id: found.fyId }, back);
 }));
 
 // Dokumentarkiv
