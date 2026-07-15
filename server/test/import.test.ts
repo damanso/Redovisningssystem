@@ -97,6 +97,34 @@ describe('import end-to-end (actions)', () => {
     expect(text).toContain('#VER I 1');
   });
 
+  it('OMimport när kontona redan finns kraschar inte (grindfynd: 25P02 förgiftad transaktion)', async () => {
+    // Första importen skapade kontona. En andra import med SAMMA #KONTO-poster
+    // gav tidigare 500: INSERT slog i unik-indexet → hela transaktionen i
+    // abortläge → nästa fråga fick "current transaction is aborted".
+    const req = await api.post(`${co()}/actions/import_sie`).set(auth()).send({ fiscal_year_id: fiscalYearId, sie_content: SIE });
+    expect(req.status).toBe(202);
+    const done = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.result.accounts_created).toBe(0); // allt fanns redan
+    expect(done.body.result.accounts_skipped).toBeGreaterThan(0);
+    expect(done.body.result.vouchers_imported).toBe(1);
+  });
+
+  it('godkännande mot fel räkenskapsår ger notis i vyn — inte felsida (grindfynd)', async () => {
+    const supertestModule = await import('supertest');
+    const { app } = await import('./helpers.js');
+    const fyFel = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2030', start_date: '2030-01-01', end_date: '2030-12-31' });
+    const req = await api.post(`${co()}/actions/import_sie`).set(auth()).send({ fiscal_year_id: fyFel.body.fiscal_year.id, sie_content: SIE });
+    expect(req.status).toBe(202);
+    const ua = supertestModule.default.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: 'mycket-hemligt-losen-123' });
+    const res = await ua.post(`/app/c/${companyId}/approvals/${req.body.approval.id}/approve`).send({});
+    expect([302, 303]).toContain(res.status); // ALDRIG 500
+    expect(res.headers.location).toContain('fel=');
+    const page = await ua.get(res.headers.location);
+    expect(page.text).toContain('utanför räkenskapsåret');
+  });
+
   it('bank-CSV-import deduperar vid omkörning', async () => {
     const csv = 'Datum;Text;Belopp\n2025-06-01;Insättning;1000,00\n2025-06-02;Uttag;-250,00';
     const first = await api.post(`${co()}/actions/import_bank_csv`).set(auth()).send({ csv_content: csv });

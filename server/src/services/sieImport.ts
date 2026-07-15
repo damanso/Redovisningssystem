@@ -114,19 +114,23 @@ export async function importSie(
 ): Promise<SieImportResult> {
   let accountsCreated = 0, accountsSkipped = 0, vouchersImported = 0;
 
-  // 1) Konton: skapa de som inte redan finns (standard-BAS eller egna). Dubbletter
-  //    (ConflictError) hoppas över — importen ska vara idempotent-vänlig.
+  // 1) Konton: skapa de som inte redan finns (standard-BAS eller egna).
+  //    Befintliga hämtas FÖRST i en SELECT och hoppas över — vi får ALDRIG låta
+  //    en INSERT slå i unik-indexet inne i importtransaktionen: en misslyckad
+  //    sats försätter hela Postgres-transaktionen i abortläge (25P02) och nästa
+  //    fråga kraschar rått. (Grindfynd: import mot bolag med befintliga konton
+  //    gav 500 exakt så.)
+  const existing = await client.query<{ account_number: number }>(
+    'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
+    [companyId, parsed.accounts.map((a) => a.number)],
+  );
+  const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
   for (const acc of parsed.accounts) {
-    if (acc.number < 1000 || acc.number > 9999) { accountsSkipped += 1; continue; }
-    try {
-      await createCompanyAccount(client, companyId, userId, {
-        account_number: acc.number, name: acc.name, account_type: accountTypeForNumber(acc.number),
-      });
-      accountsCreated += 1;
-    } catch (err) {
-      if (err instanceof ConflictError) { accountsSkipped += 1; continue; }
-      throw err;
-    }
+    if (acc.number < 1000 || acc.number > 9999 || existingNumbers.has(acc.number)) { accountsSkipped += 1; continue; }
+    await createCompanyAccount(client, companyId, userId, {
+      account_number: acc.number, name: acc.name, account_type: accountTypeForNumber(acc.number),
+    });
+    accountsCreated += 1;
   }
 
   // 2) Verifikat: importeras med FÄRSKA nummer i importserien 'I'; ursprungligt

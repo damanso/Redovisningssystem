@@ -2222,7 +2222,7 @@ viewRouter.get('/c/:companyId/documents', pageFor('documents', 'Dokument', async
 }));
 
 // Att göra: AI-/agentförslag som väntar på mänskligt godkännande (read-only vy).
-viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', async (client, companyId) => {
+viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', async (client, companyId, req) => {
   const pending = await listApprovals(client, companyId, 'pending');
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
@@ -2232,6 +2232,7 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   };
   return html`<div class="page-head"><div>${eyebrow('Att göra')}<h1>Väntar på din granskning</h1>
       <p class="lede">AI:t föreslår — du bestämmer. Känsliga åtgärder (bokföra, låsa period) bokförs aldrig automatiskt.</p></div></div>
+    ${felNotis(req)}
     ${
       pending.length === 0
         ? html`<div class="empty"><div class="big">Inget väntar 🎉</div>Alla AI-förslag är hanterade. Nya förslag dyker upp här.</div>`
@@ -2311,12 +2312,19 @@ function assertSameOrigin(req: Request): void {
 
 // Ett redan avgjort förslag (dubbelklick/gammal flik) ger ConflictError — det ska
 // inte visa en felsida, åtgärden är idempotent ur människans synvinkel, så vi
-// omdirigerar tillbaka. NotFoundError (t.ex. en icke-medlem, RLS döljer raden)
-// sväljs INTE — det ska förbli ett 404 så åtkomstgränsen syns.
+// omdirigerar tillbaka. Verksamhetsfel vid utförandet (BadRequest, t.ex.
+// "verifikationsdatum utanför räkenskapsåret") visas som notis på Att göra-sidan
+// i stället för en naken felsida — förslaget ligger kvar och kan avvisas.
+// NotFoundError (t.ex. en icke-medlem, RLS döljer raden) sväljs INTE — det ska
+// förbli ett 404 så åtkomstgränsen syns.
 async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
   try {
     await run();
   } catch (err) {
+    if (err instanceof BadRequestError) {
+      res.redirect(`${redirectTo}?fel=${encodeURIComponent(`Kunde inte utföras: ${err.message}`)}`);
+      return;
+    }
     if (!(err instanceof ConflictError)) throw err;
   }
   res.redirect(redirectTo);
