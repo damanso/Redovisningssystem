@@ -1,10 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { Router, urlencoded, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
-import { withTenantTransaction, withUserTransaction } from '../../db/tx.js';
+import { setTenantContext, withTenantTransaction, withTransaction, withUserTransaction } from '../../db/tx.js';
+import { writeAudit } from '../../services/auditService.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
@@ -48,7 +50,7 @@ import { agiDeclaration, generateAgiXml } from '../../services/agi.js';
 import { generateKu10Xml } from '../../services/ku10.js';
 import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
-import { setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
+import { createFiscalYear, setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -174,11 +176,12 @@ viewRouter.get(
       );
       return r.rows;
     });
+    const created = typeof req.query.skapat === 'string';
     const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}<h1>Dina bolag</h1>
         <p class="lede">Öppna ett bolag för att se dess bokföring.</p></div></div>
       ${
         companies.length === 0
-          ? html`<div class="empty"><div class="big">Inga bolag ännu</div>Du är inte medlem i något bolag.</div>`
+          ? html`<div class="empty"><div class="big">Inga bolag ännu</div>Skapa ditt första bolag nedan för att komma igång.</div>`
           : html`<div class="kpi-grid" style="margin-top:14px">
               ${companies.map(
                 (c) => html`<a class="kpi" href="/app/c/${c.id}" style="text-decoration:none;color:inherit;display:block">
@@ -189,8 +192,80 @@ viewRouter.get(
               )}
             </div>
             ${companies.length > 1 ? html`<p class="lede" style="margin-top:16px"><a class="btn btn--ghost btn--sm" href="/app/consolidated">Se koncernöversikt över alla bolag →</a></p>` : ''}`
-      }`;
+      }
+      <div class="panel" style="margin-top:22px;max-width:520px">
+        <div class="panel__head"><h2>Skapa bolag</h2></div>
+        <div class="panel__body" style="padding:16px">
+          ${created ? html`<p class="notice">Bolaget skapades.</p>` : ''}
+          <form method="post" action="/app/companies" style="display:flex;flex-direction:column;gap:12px">
+            <label class="field" style="margin:0"><span>Bolagsnamn</span>
+              <input type="text" name="name" required autofocus placeholder="T.ex. Mitt Företag AB"></label>
+            <label class="field" style="margin:0"><span>Organisationsnummer (valfritt)</span>
+              <input type="text" name="org_number" placeholder="5560123456"></label>
+            <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa bolag</button>
+          </form>
+        </div>
+      </div>`;
     res.type('html').send(layout({ title: 'Bolag', body }).value);
+  }),
+);
+
+// Skapa bolag från vyn (speglar API:ts POST /api/companies). Webbvyn är alltid
+// människa (viewAuth), så ingen agent-kontroll behövs. RLS: id sätts i tenant-
+// kontexten före INSERT eftersom companies_insert-policyn kräver id = app_current_company_id().
+viewRouter.post(
+  '/companies',
+  page(async (req, res) => {
+    assertSameOrigin(req);
+    const userId = getUserId(req);
+    const parsed = z
+      .object({ name: safeText(200), org_number: safeText(64).optional() })
+      .safeParse({ name: (req.body as { name?: unknown }).name, org_number: (req.body as { org_number?: unknown }).org_number || undefined });
+    if (!parsed.success) {
+      res.redirect('/app/');
+      return;
+    }
+    const companyId = randomUUID();
+    await withTransaction(async (client) => {
+      await setTenantContext(client, userId, companyId);
+      await client.query('INSERT INTO companies (id, name, org_number) VALUES ($1, $2, $3)', [
+        companyId, parsed.data.name, parsed.data.org_number ?? null,
+      ]);
+      await client.query("INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'owner')", [companyId, userId]);
+      await writeAudit(client, {
+        companyId, userId, action: 'company.created', entityType: 'company', entityId: companyId,
+        details: { name: parsed.data.name },
+      });
+    });
+    res.redirect(`/app/c/${companyId}`);
+  }),
+);
+
+// Skapa räkenskapsår från vyn (kom-igång-kortet på översikten).
+viewRouter.post(
+  '/c/:companyId/fiscal-years',
+  page(async (req, res) => {
+    assertSameOrigin(req);
+    const userId = getUserId(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const parsed = z
+      .object({
+        label: safeText(100),
+        start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) { res.redirect(`/app/c/${companyId}`); return; }
+    try {
+      await withTenantTransaction(userId, companyId, (client) =>
+        createFiscalYear(client, companyId, userId, {
+          label: parsed.data.label, startDate: parsed.data.start_date, endDate: parsed.data.end_date,
+        }));
+    } catch (err) {
+      if (err instanceof ConflictError || err instanceof BadRequestError) { res.redirect(`/app/c/${companyId}`); return; }
+      throw err;
+    }
+    res.redirect(`/app/c/${companyId}`);
   }),
 );
 
@@ -406,6 +481,29 @@ async function reportingPeriod(client: PoolClient, companyId: string): Promise<{
 viewRouter.get(
   '/c/:companyId',
   pageFor('', 'Översikt', async (client, companyId) => {
+    // Utan räkenskapsår går ingenting att bokföra — visa ett kom-igång-kort i stället.
+    const fyCount = await client.query<{ n: string }>('SELECT COUNT(*)::text AS n FROM fiscal_years WHERE company_id = $1', [companyId]);
+    if (fyCount.rows[0]!.n === '0') {
+      const yr = new Date('2025-01-01').getFullYear(); // fast bas; användaren väljer själv nedan
+      return html`<div class="page-head"><div>${eyebrow('Kom igång')}<h1>Skapa räkenskapsår</h1>
+          <p class="lede">Bokföringen behöver ett räkenskapsår innan du kan skapa fakturor, kvitton och rapporter.</p></div></div>
+        <div class="panel" style="max-width:520px">
+          <div class="panel__head"><h2>Nytt räkenskapsår</h2></div>
+          <div class="panel__body" style="padding:16px">
+            <form method="post" action="/app/c/${companyId}/fiscal-years" style="display:flex;flex-direction:column;gap:12px">
+              <label class="field" style="margin:0"><span>Namn</span>
+                <input type="text" name="label" required value="${String(yr)}" placeholder="2025"></label>
+              <div style="display:flex;gap:12px">
+                <label class="field" style="margin:0;flex:1"><span>Startdatum</span>
+                  <input type="date" name="start_date" required value="${String(yr)}-01-01"></label>
+                <label class="field" style="margin:0;flex:1"><span>Slutdatum</span>
+                  <input type="date" name="end_date" required value="${String(yr)}-12-31"></label>
+              </div>
+              <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa räkenskapsår</button>
+            </form>
+          </div>
+        </div>`;
+    }
     const period = await reportingPeriod(client, companyId);
     const d = await dashboard(client, companyId, period);
     const trend = await monthlyRevenue(client, companyId);

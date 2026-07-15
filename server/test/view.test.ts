@@ -336,3 +336,32 @@ describe('Registrering i vyn', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// Skapa bolag + räkenskapsår direkt i webbvyn (så en människa kan komma igång utan API).
+describe('Skapa bolag och räkenskapsår i vyn', () => {
+  it('skapar bolag via vyn och det dyker upp i listan', async () => {
+    const res = await agentA.post('/app/companies').type('form').send({ name: 'Vy-bolag AB', org_number: '5561234567' });
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toMatch(/^\/app\/c\/[0-9a-f-]{36}$/);
+    const list = await agentA.get('/app/');
+    expect(list.text).toContain('Vy-bolag AB');
+  });
+
+  it('kom-igång-kortet skapar räkenskapsår och låser upp översikten', async () => {
+    const created = await agentA.post('/app/companies').type('form').send({ name: 'FY-bolag AB' });
+    const cid = created.headers.location.split('/').pop();
+    const dash = await agentA.get(`/app/c/${cid}`);
+    expect(dash.text).toContain('Skapa räkenskapsår'); // kom-igång-kortet
+    const fy = await agentA.post(`/app/c/${cid}/fiscal-years`).type('form')
+      .send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    expect([302, 303]).toContain(fy.status);
+    const dash2 = await agentA.get(`/app/c/${cid}`);
+    expect(dash2.text).toContain('Så går det just nu'); // riktiga översikten nu
+  });
+
+  it('skapa bolag kräver samma ursprung (CSRF)', async () => {
+    const res = await agentA.post('/app/companies').set('Origin', 'https://evil.example')
+      .type('form').send({ name: 'Ond AB' });
+    expect(res.status).toBe(403);
+  });
+});
