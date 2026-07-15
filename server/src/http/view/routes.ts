@@ -7,6 +7,7 @@ import type { Ore } from '../../domain/money.js';
 import { config } from '../../config.js';
 import { setTenantContext, withTenantTransaction, withTransaction, withUserTransaction } from '../../db/tx.js';
 import { writeAudit } from '../../services/auditService.js';
+import { signToken as signAgentToken } from '../../lib/jwt.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
@@ -268,6 +269,70 @@ viewRouter.post(
     res.redirect(`/app/c/${companyId}`);
   }),
 );
+
+// Anslut AI (Claude Desktop / MCP): ägaren mintar ett agent-token och får en
+// färdig konfig. Agent-token kan BEGÄRA åtgärder men aldrig godkänna dem — känsliga
+// operationer hamnar i "Att göra" och måste godkännas av en människa.
+function connectPageBody(companyId: string, companyName: string, token: string | null): Raw {
+  const configJson = token
+    ? `{
+  "mcpServers": {
+    "redovisning": {
+      "command": "node",
+      "args": ["<SÖKVÄG-TILL-REPOT>/server/dist/mcp/server.js"],
+      "env": {
+        "REDOVISNING_API_URL": "http://127.0.0.1:3000",
+        "REDOVISNING_COMPANY_ID": "${companyId}",
+        "REDOVISNING_AGENT_TOKEN": "${token}"
+      }
+    }
+  }
+}`
+    : '';
+  return html`<div class="page-head"><div>${eyebrow('Anslut AI')}<h1>Anslut Claude Desktop</h1>
+      <p class="lede">Låt en AI (via MCP) sköta bokföringen i ${companyName}. AI:t kan <strong>föreslå och begära</strong> åtgärder — men känsliga saker (bokföra, låsa period) hamnar i <strong>Att göra</strong> och måste godkännas av dig som människa.</p></div></div>
+    <div class="panel" style="max-width:720px">
+      <div class="panel__head"><h2>Skapa AI-token</h2></div>
+      <div class="panel__body" style="padding:16px">
+        ${
+          token
+            ? html`<div class="empty" style="text-align:left;padding:12px 14px">${chip('Token skapad', 'ok', '✓')} <span class="muted">Kopiera nu — det visas bara denna enda gång.</span></div>
+                <pre style="background:var(--surface-2);padding:14px;border-radius:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-all;margin-top:12px">${token}</pre>
+                <h3 style="margin:20px 0 6px">Klistra in i Claude Desktop</h3>
+                <p class="lede">Öppna <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> och klistra in nedan. Byt <code>&lt;SÖKVÄG-TILL-REPOT&gt;</code> mot din projektmapp (t.ex. <code>/Users/dittnamn/redovisningssystem</code>). Kör <code>npm run build</code> en gång och starta om Claude Desktop.</p>
+                <pre style="background:var(--surface-2);padding:14px;border-radius:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-all">${configJson}</pre>`
+            : html`<p class="lede">Skapa ett token som Claude Desktop använder för att nå ${companyName}. Det är låst till detta bolag och giltigt i 30 dagar.</p>
+                <form method="post" action="/app/c/${companyId}/connect/token" style="display:flex;gap:12px;align-items:flex-end;margin-top:8px">
+                  <label class="field" style="margin:0;flex:1;max-width:320px"><span>Namn (valfritt)</span><input type="text" name="name" placeholder="Claude Desktop"></label>
+                  <button class="btn btn--primary" type="submit">Skapa AI-token</button>
+                </form>`
+        }
+      </div>
+    </div>`;
+}
+
+viewRouter.get('/c/:companyId/connect', pageFor('connect', 'Anslut AI', async (client, companyId) => {
+  const company = await loadCompany(client, companyId);
+  return connectPageBody(companyId, company.name, null);
+}));
+
+viewRouter.post('/c/:companyId/connect/token', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const name = safeText(100).optional().parse((req.body as { name?: unknown }).name || undefined);
+  const result = await withTenantTransaction(userId, companyId, async (client, actorRole) => {
+    if (actorRole !== 'owner') throw new ForbiddenError('only_owner', 'Bara ägaren kan skapa AI-token.');
+    const company = await loadCompany(client, companyId);
+    await writeAudit(client, {
+      companyId, userId, action: 'agent_token.minted', entityType: 'company', entityId: companyId,
+      details: { name: name ?? null, via: 'web' },
+    });
+    const token = signAgentToken(userId, { actor: 'agent', company_id: companyId }, config.AI_AGENT_TOKEN_TTL_SECONDS);
+    return { token, companyName: company.name };
+  });
+  res.type('html').send(layout({ title: 'Anslut AI', companyId, companyName: result.companyName, active: 'connect', body: connectPageBody(companyId, result.companyName, result.token) }).value);
+}));
 
 // Konsoliderad koncernöversikt: nyckeltal summerade över alla bolag användaren
 // är medlem i. Varje bolags siffror hämtas i sin egen tenant-transaktion.

@@ -365,3 +365,36 @@ describe('Skapa bolag och räkenskapsår i vyn', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// Anslut AI: ägaren mintar agent-token från vyn och får en Claude Desktop-konfig.
+describe('Anslut AI (agent-token i vyn)', () => {
+  it('ägaren ser connect-sidan och kan skapa AI-token med konfig', async () => {
+    const pg = await agentA.get(`/app/c/${companyA}/connect`);
+    expect(pg.status).toBe(200);
+    expect(pg.text).toContain('Anslut Claude Desktop');
+    const res = await agentA.post(`/app/c/${companyA}/connect/token`).type('form').send({ name: 'Claude Desktop' });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('mcpServers');
+    expect(res.text).toContain('REDOVISNING_AGENT_TOKEN');
+    expect(res.text).toContain(companyA); // company id finns i konfigen
+  });
+
+  it('en utomstående kan inte minta token för A:s bolag', async () => {
+    const agentB = supertest.agent(app);
+    await agentB.post('/app/login').type('form').send({ email: userB.email, password: PASSWORD });
+    const res = await agentB.post(`/app/c/${companyA}/connect/token`).type('form').send({});
+    expect([403, 404]).toContain(res.status);
+  });
+
+  it('AI-token mintat i vyn nekas som webbsession (actor=agent)', async () => {
+    const res = await agentA.post(`/app/c/${companyA}/connect/token`).type('form').send({});
+    // JSON:en är HTML-escapad i sidan; plocka ut JWT:n på dess form (eyJ...).
+    const m = res.text.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+    expect(m).toBeTruthy();
+    const agentToken = m![0];
+    // Agent-token får inte ge webbåtkomst (skulle vara en scope-läcka).
+    const abuse = await api.get(`/app/c/${companyA}`).set('Cookie', `session=${agentToken}`);
+    expect([302, 303]).toContain(abuse.status);
+    expect(abuse.headers.location).toBe('/app/login');
+  });
+});
