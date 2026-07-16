@@ -438,13 +438,31 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .auth-brand b { color: var(--ink); font-size: 18px; letter-spacing: -0.01em; }
 .auth-card h1 { font-size: 20px; margin: 12px 0 2px; }
 .auth-card .lede { margin-bottom: 16px; }
-.field { display: block; margin: 12px 0; }
+/* Flexkolumn med bottenjustering: i en rad med flera fält hamnar alla kontroller
+   på SAMMA baslinje även när etiketterna radbryts olika (etiketten trycks uppåt). */
+.field { display: flex; flex-direction: column; justify-content: flex-end; margin: 12px 0; }
 .field > span { display: block; font-size: 12.5px; font-weight: 550; color: var(--ink-2); margin-bottom: 5px; }
-input {
+input, select, textarea {
   font: inherit; width: 100%; padding: 10px 12px; color: var(--ink);
   background: var(--paper); border: 1px solid var(--line-2); border-radius: var(--radius-sm);
 }
-input:focus { border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+/* Dropdowns i samma formspråk som fälten: släck webbläsarens native-utseende och
+   rita en egen chevron (inline-SVG som data-URI — CSP tillåter img data:). */
+select {
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23848b98' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+select::-ms-expand { display: none; }
+/* Filväljaren: samma ram som övriga fält, knappdelen i systemets stil. */
+input[type='file'] { padding: 7px 12px; cursor: pointer; }
+input[type='file']::file-selector-button {
+  font: inherit; font-size: 12.5px; font-weight: 550; color: var(--ink-2);
+  background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 7px;
+  padding: 5px 10px; margin-right: 10px; cursor: pointer;
+}
 .auth-card .btn--primary { width: 100%; margin-top: 8px; padding: 11px; }
 .err { color: var(--neg); font-size: 13.5px; }
 .notice { background: var(--neg-weak); color: var(--neg); border: 1px solid color-mix(in oklch, var(--neg) 26%, transparent); border-radius: var(--radius-sm); padding: 9px 12px; font-size: 13.5px; margin: 8px 0; }
