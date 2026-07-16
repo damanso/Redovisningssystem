@@ -191,3 +191,39 @@ describe('grindfynd-regressioner', () => {
     expect(page.text).not.toContain('belopp med siffror');
   });
 });
+
+// Kvittofoto/PDF direkt i vyn: multipart-uppladdning vid skapandet + 📎-länk.
+describe('kvitto med bifogat underlag (foto/PDF) i vyn', () => {
+  it('kvitto + PDF laddas upp, syns med 📎-länk och kan laddas ner', async () => {
+    const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF');
+    const res = await agent.post(`/app/c/${companyId}/receipts/create`)
+      .field('receipt_date', '2025-05-05').field('description', 'Kvitto med underlag')
+      .field('net', '250').field('vat_rate', '25')
+      .field('expense_account', '6110').field('payment_account', '1930')
+      .attach('file', pdf, 'kvitto-test.pdf');
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toBe(`/app/c/${companyId}/receipts`);
+    const list = await agent.get(`/app/c/${companyId}/receipts`);
+    expect(list.text).toContain('Kvitto med underlag');
+    expect(list.text).toContain('📎 Visa');
+    // Länken går till dokumentarkivet och levererar filen
+    const m = list.text.match(/\/documents\/([0-9a-f-]{36})\/download/);
+    expect(m).toBeTruthy();
+    const dl = await agent.get(`/app/c/${companyId}/documents/${m![1]}/download`).buffer()
+      .parse((r, cb) => { const c: Buffer[] = []; r.on('data', (d: Buffer) => c.push(d)); r.on('end', () => cb(null, Buffer.concat(c))); });
+    expect(dl.status).toBe(200);
+    expect((dl.body as Buffer).toString('latin1').startsWith('%PDF-')).toBe(true);
+  });
+
+  it('otillåten filtyp avvisas med begriplig notis (kvittot skapas ändå)', async () => {
+    const res = await agent.post(`/app/c/${companyId}/receipts/create`)
+      .field('receipt_date', '2025-05-06').field('description', 'Kvitto med konstig fil')
+      .field('net', '100').field('vat_rate', '25')
+      .field('expense_account', '6110').field('payment_account', '1930')
+      .attach('file', Buffer.from('#!/bin/sh\necho hej'), 'skript.sh');
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toContain('fel=');
+    const page = await agent.get(res.headers.location);
+    expect(page.text).toContain('filen avvisades');
+  });
+});

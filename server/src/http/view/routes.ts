@@ -17,7 +17,8 @@ import { listInvoices } from '../../services/invoices.js';
 import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
-import { listReceipts } from '../../services/receipts.js';
+import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
+import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals } from '../../services/approvals.js';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
@@ -2133,20 +2134,22 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
           <button class="btn btn--ghost btn--sm" type="submit">Bokför…</button></form>`
       : html``;
   return html`<div class="page-head"><div>${eyebrow('Kvitton')}<h1>Kvitton</h1>
-      <p class="lede">Registrera utlägg och inköp. Bokföringen bekräftas under <a href="/app/c/${companyId}/approvals">Att göra</a>.</p></div></div>
+      <p class="lede">Registrera utlägg och inköp — bifoga gärna foto/PDF på kvittot. Bokföringen bekräftas under <a href="/app/c/${companyId}/approvals">Att göra</a>.</p></div></div>
     ${felNotis(req)}
     ${
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga kvitton ännu</div>Registrera ditt första kvitto nedan.</div>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th><th></th></tr></thead><tbody>
+        : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th><th>Underlag</th><th></th></tr></thead><tbody>
             ${rows.map((r) => html`<tr><td class="code">${r.receipt_number}</td><td>${r.receipt_date}</td><td>${r.description}</td>
-              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td><td>${bookBtn(r as Record<string, unknown>)}</td></tr>`)}
+              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td>
+              <td>${r.file_id ? html`<a href="/app/c/${companyId}/documents/${r.file_id as string}/download">📎 Visa</a>` : html`<span class="muted">—</span>`}</td>
+              <td>${bookBtn(r as Record<string, unknown>)}</td></tr>`)}
             </tbody></table></div>`
     }
     <div class="panel" style="margin-top:22px;max-width:720px">
       <div class="panel__head"><h2>Nytt kvitto</h2></div>
       <div class="panel__body" style="padding:16px">
-        <form method="post" action="/app/c/${companyId}/receipts/create" style="display:flex;flex-direction:column;gap:12px">
+        <form method="post" action="/app/c/${companyId}/receipts/create" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:12px">
           <div style="display:flex;gap:12px;flex-wrap:wrap">
             <label class="field" style="margin:0;flex:1;min-width:150px"><span>Datum</span><input type="date" name="receipt_date" required value="${today}"></label>
             <label class="field" style="margin:0;flex:2;min-width:220px"><span>Beskrivning</span><input type="text" name="description" required placeholder="T.ex. Drivmedel"></label>
@@ -2157,6 +2160,8 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
             <label class="field" style="margin:0;flex:1;min-width:140px"><span>Kostnadskonto</span><input type="text" name="expense_account" required value="4000" title="T.ex. 4000 varor, 5611 drivmedel, 6071 representation"></label>
             <label class="field" style="margin:0;flex:1;min-width:140px"><span>Betalkonto</span><input type="text" name="payment_account" required value="1930" title="1930 företagskonto, 2893 egna utlägg"></label>
           </div>
+          <label class="field" style="margin:0"><span>Kvittobild eller PDF (valfritt)</span>
+            <input type="file" name="file" accept="image/jpeg,image/png,image/webp,image/heic,.pdf,application/pdf"></label>
           <span class="muted" style="font-size:12.5px">Vanliga kostnadskonton: 4000 varor/material · 5611 drivmedel · 5410 förbrukningsinventarier · 6071 representation · 6110 kontorsmateriel. Betalkonto: 1930 företagskonto · 2893 egna utlägg.</span>
           <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa kvittoutkast</button>
         </form>
@@ -2164,8 +2169,23 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
     </div>`;
 }));
 
-viewRouter.post('/c/:companyId/receipts/create', page(async (req, res) => {
+// Multer-fel (för stor fil, trasig multipart) ska bli en vänlig notis — inte
+// API:ts JSON-felhanterare. Kör uppladdningen och översätt fel till redirect.
+function receiptUpload(req: Request, res: import('express').Response, next: import('express').NextFunction): void {
+  singleFileUpload()(req, res, (err?: unknown) => {
+    if (err) {
+      let companyId = '';
+      try { companyId = parseCompanyId(req.params.companyId); } catch { res.status(404).end(); return; }
+      res.redirect(`/app/c/${companyId}/receipts?fel=${encodeURIComponent('Filen kunde inte tas emot — max 10 MB, bild eller PDF.')}`);
+      return;
+    }
+    next();
+  });
+}
+
+viewRouter.post('/c/:companyId/receipts/create', receiptUpload, page(async (req, res) => {
   assertSameOrigin(req);
+  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const b = req.body as Record<string, unknown>;
   const back = `/app/c/${companyId}/receipts`;
@@ -2176,10 +2196,39 @@ viewRouter.post('/c/:companyId/receipts/create', page(async (req, res) => {
   if (net === null || net <= 0 || !/^\d{4}$/.test(expenseRaw) || !/^\d{4}$/.test(paymentRaw)) { res.redirect(`${back}?fel=1`); return; }
   const expense = Number(expenseRaw);
   const payment = Number(paymentRaw);
-  await runViewAction(req, res, companyId, 'create_receipt', {
-    receipt_date: b.receipt_date, description: b.description, net_ore: net,
-    vat_rate: Number(b.vat_rate ?? 25), expense_account: expense, payment_account: payment,
-  }, back);
+  let result;
+  try {
+    result = await executeAction({
+      companyId, userId, actor: 'human', actionName: 'create_receipt',
+      input: {
+        receipt_date: b.receipt_date, description: b.description, net_ore: net,
+        vat_rate: Number(b.vat_rate ?? 25), expense_account: expense, payment_account: payment,
+      },
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) { res.redirect(`${back}?fel=1`); return; }
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${back}?fel=${encodeURIComponent(err.message)}`); return;
+    }
+    throw err;
+  }
+  // Bifoga kvittofoto/PDF om ett skickades med (samma tjänst som REST-API:t —
+  // validering av filtyp/innehåll + dokumentarkiv + audit).
+  if (result.status === 'ok' && req.file) {
+    const receiptId = (result.result as { id?: string }).id;
+    if (receiptId) {
+      try {
+        await attachReceiptFile(companyId, userId, receiptId, req.file.originalname, req.file.buffer);
+      } catch (err) {
+        if (err instanceof BadRequestError) {
+          res.redirect(`${back}?fel=${encodeURIComponent(`Kvittot skapades men filen avvisades: ${err.message}`)}`);
+          return;
+        }
+        throw err;
+      }
+    }
+  }
+  res.redirect(back);
 }));
 
 viewRouter.post('/c/:companyId/receipts/:receiptId/book', page(async (req, res) => {
