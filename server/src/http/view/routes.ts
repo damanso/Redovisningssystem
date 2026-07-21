@@ -30,7 +30,8 @@ import { getProject, listProjects } from '../../services/projects.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
-import { resolveStoredPath } from '../../services/fileStorage.js';
+import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } from '../../services/fileStorage.js';
+import { listDocuments } from '../../services/documents.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
@@ -2250,24 +2251,124 @@ viewRouter.post('/c/:companyId/receipts/:receiptId/book', page(async (req, res) 
   await runViewAction(req, res, companyId, 'book_receipt', { receipt_id: receiptId, fiscal_year_id: found.fyId }, back);
 }));
 
-// Dokumentarkiv
-viewRouter.get('/c/:companyId/documents', pageFor('documents', 'Dokument', async (client, companyId) => {
-  const rows = await client.query<{ id: string; original_name: string; mime_type: string; size_bytes: number; created_at: string }>(
-    'SELECT id, original_name, mime_type, size_bytes, created_at::text FROM files WHERE company_id = $1 ORDER BY created_at DESC LIMIT 200',
+// Dokumentarkiv. K3: filer kan kopplas till registerposter (lönebesked, faktura,
+// kvitto, leverantörsfaktura, verifikat) — kopplingen visas i listan, och den
+// manuella uppladdningen kan ange en koppling direkt.
+const DOC_ENTITY_LABELS: Record<string, string> = {
+  payslip: 'Lönebesked', invoice: 'Faktura', receipt: 'Kvitto',
+  supplier_invoice: 'Leverantörsfaktura', voucher: 'Verifikat',
+};
+viewRouter.get('/c/:companyId/documents', pageFor('documents', 'Dokument', async (client, companyId, req) => {
+  const rows = await client.query<{ id: string; original_name: string; mime_type: string; size_bytes: number; created_at: string; links: string | null }>(
+    `SELECT f.id, f.original_name, f.mime_type, f.size_bytes, f.created_at::text,
+            string_agg(d.entity_type, ', ' ORDER BY d.created_at) AS links
+     FROM files f LEFT JOIN documents d ON d.file_id = f.id
+     WHERE f.company_id = $1
+     GROUP BY f.id ORDER BY f.created_at DESC LIMIT 200`,
     [companyId],
   );
   const kind = (mime: string) => (mime.includes('pdf') ? 'PDF' : mime.startsWith('image/') ? 'Bild' : mime);
+  const linkLabel = (links: string | null) =>
+    links ? links.split(', ').map((t) => DOC_ENTITY_LABELS[t] ?? t).join(', ') : null;
   return html`<div class="page-head"><div>${eyebrow('Dokument')}<h1>Dokumentarkiv</h1>
       <p class="lede">Underlag och genererade PDF:er. Endast bolagets medlemmar kan öppna filerna.</p></div></div>
+    ${felNotis(req)}
     ${
       rows.rows.length === 0
         ? html`<div class="empty"><div class="big">Inga dokument ännu</div>Fakturor och kvittounderlag hamnar här.</div>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Filnamn</th><th>Typ</th><th class="num">Storlek</th><th>Skapad</th></tr></thead><tbody>
+        : html`<div class="table-wrap"><table><thead><tr><th>Filnamn</th><th>Typ</th><th>Kopplad till</th><th class="num">Storlek</th><th>Skapad</th></tr></thead><tbody>
             ${rows.rows.map((f) => html`<tr>
               <td><a href="/app/c/${companyId}/documents/${f.id}/download">${f.original_name}</a></td>
-              <td>${chip(kind(f.mime_type), 'muted')}</td><td class="num"><span class="num">${Math.round(Number(f.size_bytes) / 1024)} kB</span></td><td>${f.created_at.slice(0, 10)}</td></tr>`)}
+              <td>${chip(kind(f.mime_type), 'muted')}</td>
+              <td>${linkLabel(f.links) ?? html`<span class="muted">—</span>`}</td>
+              <td class="num"><span class="num">${Math.round(Number(f.size_bytes) / 1024)} kB</span></td><td>${f.created_at.slice(0, 10)}</td></tr>`)}
             </tbody></table></div>`
-    }`;
+    }
+    <div class="panel" style="margin-top:22px;max-width:720px">
+      <div class="panel__head"><h2>Ladda upp dokument</h2></div>
+      <div class="panel__body" style="padding:16px">
+        <form method="post" action="/app/c/${companyId}/documents/upload" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:12px">
+          <label class="field" style="margin:0"><span>Fil (PDF, PNG eller JPG)</span>
+            <input type="file" name="file" required accept="image/jpeg,image/png,.pdf,application/pdf"></label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label class="field" style="margin:0;flex:1;min-width:170px"><span>Koppla till (valfritt)</span>
+              <select name="entity_type"><option value="">Ingen koppling</option>
+                ${Object.entries(DOC_ENTITY_LABELS).map(([v, l]) => html`<option value="${v}">${l}</option>`)}
+              </select></label>
+            <label class="field" style="margin:0;flex:2;min-width:260px"><span>Postens ID (UUID)</span>
+              <input type="text" name="entity_id" placeholder="t.ex. lönebeskedets id"></label>
+          </div>
+          <button class="btn btn--primary" type="submit" style="align-self:flex-start">Ladda upp</button>
+        </form>
+      </div>
+    </div>`;
+}));
+
+// Multer-fel vid dokumentuppladdning → vänlig notis (samma mönster som kvitton).
+function documentUpload(req: Request, res: import('express').Response, next: import('express').NextFunction): void {
+  singleFileUpload()(req, res, (err?: unknown) => {
+    if (err) {
+      let companyId = '';
+      try { companyId = parseCompanyId(req.params.companyId); } catch { res.status(404).end(); return; }
+      res.redirect(`/app/c/${companyId}/documents?fel=${encodeURIComponent('Filen kunde inte tas emot — max 10 MB, PDF eller bild.')}`);
+      return;
+    }
+    next();
+  });
+}
+
+viewRouter.post('/c/:companyId/documents/upload', documentUpload, page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const back = `/app/c/${companyId}/documents`;
+  if (!req.file) { res.redirect(`${back}?fel=${encodeURIComponent('Ingen fil bifogad.')}`); return; }
+  const b = req.body as Record<string, unknown>;
+  const entityTypeRaw = typeof b.entity_type === 'string' ? b.entity_type.trim() : '';
+  const entityIdRaw = typeof b.entity_id === 'string' ? b.entity_id.trim() : '';
+  if ((entityTypeRaw === '') !== (entityIdRaw === '')) {
+    res.redirect(`${back}?fel=${encodeURIComponent('Ange både typ och ID för att koppla dokumentet — eller inget av dem.')}`);
+    return;
+  }
+  const contentBase64 = req.file.buffer.toString('base64');
+  try {
+    if (entityTypeRaw) {
+      const entityType = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']).parse(entityTypeRaw);
+      const entityId = UuidSchema.parse(entityIdRaw);
+      await executeAction({
+        companyId, userId, actor: 'human', actionName: 'attach_document',
+        input: { entity_type: entityType, entity_id: entityId, filename: req.file.originalname, content_base64: contentBase64 },
+      });
+    } else {
+      // Utan koppling: lagra i arkivet (samma validering som REST-uppladdningen).
+      const validated = validateUpload(req.file.originalname, req.file.buffer);
+      await writeStoredFile(companyId, validated.storedName, req.file.buffer);
+      try {
+        await withTenantTransaction(userId, companyId, async (client) => {
+          const inserted = await client.query<{ id: string }>(
+            `INSERT INTO files (company_id, original_name, stored_name, mime_type, size_bytes, sha256, uploaded_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+            [companyId, req.file!.originalname, validated.storedName, validated.mimeType, req.file!.size, validated.sha256, userId],
+          );
+          await writeAudit(client, {
+            companyId, userId, action: 'file.uploaded', entityType: 'file', entityId: inserted.rows[0]!.id,
+            details: { original_name: req.file!.originalname, size_bytes: req.file!.size, sha256: validated.sha256 },
+          });
+        });
+      } catch (err) {
+        await removeStoredFile(companyId, validated.storedName);
+        throw err;
+      }
+    }
+  } catch (err) {
+    if (err instanceof z.ZodError) { res.redirect(`${back}?fel=${encodeURIComponent('Ogiltig koppling — kontrollera typ och ID.')}`); return; }
+    if (err instanceof BadRequestError || err instanceof ConflictError || err instanceof NotFoundError) {
+      res.redirect(`${back}?fel=${encodeURIComponent(`Filen avvisades: ${err.message}`)}`);
+      return;
+    }
+    throw err;
+  }
+  res.redirect(back);
 }));
 
 // Att göra: AI-/agentförslag som väntar på mänskligt godkännande (read-only vy).
@@ -2488,6 +2589,14 @@ viewRouter.post('/c/:companyId/team/remove', page(async (req, res) => {
 viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client, companyId) => {
   const employees = await listEmployees(client, companyId, {});
   const payslips = await listPayslips(client, companyId, {});
+  // K3: bilagda dokument (lönespec-PDF m.m.) per lönebesked.
+  const docs = await listDocuments(client, companyId, { entityType: 'payslip' });
+  const docsBySlip = new Map<string, typeof docs>();
+  for (const d of docs) {
+    const list = docsBySlip.get(d.entity_id) ?? [];
+    list.push(d);
+    docsBySlip.set(d.entity_id, list);
+  }
   // Redovisningsperioder med lönebesked (för AGI-generering), nyast först.
   const periods = [...new Set(payslips.map((p) => p.period as string))].sort().reverse();
   const agi = periods[0] ? await agiDeclaration(client, companyId, periods[0]) : null;
@@ -2507,7 +2616,7 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
     ${
       payslips.length === 0
         ? html`<p class="muted">Inga lönebesked ännu.</p>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Period</th><th>Anställd</th><th>Utbet.datum</th><th class="num">Brutto</th><th class="num">Skatt</th><th>Skattekälla</th><th class="num">Netto</th><th class="num">Arb.avgift</th><th>Status</th></tr></thead><tbody>
+        : html`<div class="table-wrap"><table><thead><tr><th>Period</th><th>Anställd</th><th>Utbet.datum</th><th class="num">Brutto</th><th class="num">Skatt</th><th>Skattekälla</th><th class="num">Netto</th><th class="num">Arb.avgift</th><th>Status</th><th>Dokument</th></tr></thead><tbody>
             ${payslips.map((p) => html`<tr><td class="code">${p.period as string}</td><td>${p.employee_name as string}</td>
               <td class="code">${(p.payment_date as string) ?? ''}</td>
               <td class="num">${amount(p.gross_ore as number, { unit: false })}</td>
@@ -2515,7 +2624,9 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
               <td>${p.tax_source === 'table30' ? 'Tabell 30' : p.tax_source === 'manual' ? 'Jämkning' : 'Platt sats'}</td>
               <td class="num">${amount(p.net_ore as number, { unit: false })}</td>
               <td class="num">${amount(p.employer_contribution_ore as number, { unit: false })}</td>
-              <td>${statusChip(String(p.status))}</td></tr>`)}
+              <td>${statusChip(String(p.status))}</td>
+              <td>${(docsBySlip.get(p.id as string) ?? []).map((d) => html`<a href="/app/c/${companyId}/documents/${d.file_id}/download" title="${d.original_name}">📎 PDF</a> `)}
+                ${docsBySlip.has(p.id as string) ? '' : html`<span class="muted">—</span>`}</td></tr>`)}
           </tbody></table></div>`
     }
     ${agi ? html`<h2 style="margin-top:22px">Arbetsgivardeklaration (AGI)</h2>

@@ -34,6 +34,10 @@ import { k10Computation, generateK10Sru } from '../services/k10.js';
 import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
+import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
+import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
+
+const DocumentEntityTypeSchema = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']);
 
 export interface ActionContext {
   client: PoolClient;
@@ -143,6 +147,49 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { fiscal_year_id?: string; from?: string; to?: string; source_type?: string; limit?: number }) =>
       listVouchers(ctx.client, ctx.companyId, { fiscalYearId: i.fiscal_year_id, from: i.from, to: i.to, sourceType: i.source_type, limit: i.limit }),
+  }),
+  def({
+    name: 'attach_document',
+    title: 'Bilägg dokument till en registerpost',
+    sensitivity: 'write',
+    // Filinnehåll som base64 (pdf/png/jpg, max 10 MB) — valideras mot ändelse
+    // OCH magic bytes, lagras med UUID-namn utanför webroten (fileStorage).
+    inputSchema: z.object({
+      entity_type: DocumentEntityTypeSchema,
+      entity_id: UuidSchema,
+      filename: safeText(200),
+      content_base64: z.string().min(1).max(15_000_000),
+      title: safeText(200).optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type: DocumentEntityType; entity_id: string; filename: string; content_base64: string; title?: string }) =>
+      attachDocument(ctx.client, ctx.companyId, ctx.userId, {
+        entityType: i.entity_type, entityId: i.entity_id, filename: i.filename,
+        contentBase64: i.content_base64, title: i.title,
+      }),
+  }),
+  def({
+    name: 'list_documents',
+    title: 'Lista bilagda dokument',
+    sensitivity: 'read',
+    inputSchema: z.object({ entity_type: DocumentEntityTypeSchema.optional(), entity_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { entity_type?: DocumentEntityType; entity_id?: string }) =>
+      listDocuments(ctx.client, ctx.companyId, { entityType: i.entity_type, entityId: i.entity_id }),
+  }),
+  def({
+    name: 'get_document',
+    title: 'Hämta bilagt dokument (metadata + ev. innehåll)',
+    sensitivity: 'read',
+    inputSchema: z.object({ document_id: UuidSchema, include_content: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { document_id: string; include_content?: boolean }) =>
+      getDocument(ctx.client, ctx.companyId, i.document_id, { includeContent: i.include_content }),
+  }),
+  def({
+    name: 'generate_payslip_pdf',
+    title: 'Generera lönespecifikation (PDF) och bilägg på lönebeskedet',
+    sensitivity: 'write',
+    inputSchema: z.object({ payslip_id: UuidSchema }).strict(),
+    handler: (ctx, i: { payslip_id: string }) =>
+      generateAndAttachPayslipPdf(ctx.client, ctx.companyId, ctx.userId, i.payslip_id, new Date().toISOString().slice(0, 10)),
   }),
   def({
     name: 'get_voucher',
