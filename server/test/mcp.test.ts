@@ -111,6 +111,18 @@ describe('MCP-server (stdio) driver kärnan', () => {
     expect(book.inputSchema).toBeTruthy(); // JSON-schema medskickat
   });
 
+  it('self_check rapporterar API-nåbarhet och tokenutgång (K5)', async () => {
+    const res = await mcp.request('tools/call', { name: 'self_check', arguments: {} });
+    const content = (res.result as { content: { type: string; text: string }[] }).content;
+    const check = JSON.parse(content[0]!.text) as Record<string, unknown>;
+    expect(check.ok).toBe(true);
+    expect(check.api_reachable).toBe(true);
+    expect(check.token_valid).toBe(true);
+    expect(String(check.token_expires_at)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(Number(check.token_days_left)).toBeGreaterThan(0);
+    expect(check.warnings).toEqual([]);
+  });
+
   it('tools/call på en läs-action returnerar riktig data ur kärnan', async () => {
     const res = await mcp.request('tools/call', { name: 'list_customers', arguments: {} });
     const content = (res.result as { content: { type: string; text: string }[] }).content;

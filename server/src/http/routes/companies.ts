@@ -194,15 +194,20 @@ companiesRouter.post('/:companyId/agent-tokens', async (req, res) => {
   if (getActor(req) !== 'human' || req.companyRole !== 'owner') {
     throw new ForbiddenError('only_owner_human');
   }
-  const input = z.object({ name: safeText(100).optional() }).strict().parse(req.body);
-  const token = signJwt(userId, { actor: 'agent', company_id: companyId }, config.AI_AGENT_TOKEN_TTL_SECONDS);
+  // K5: valfri giltighet upp till 90 dagar. Längre än standardens 30 är
+  // acceptabelt just för agent-tokens: de kan bara BEGÄRA actions, aldrig
+  // godkänna — mänskligt godkännande krävs alltid för det pengaflyttande.
+  const input = z.object({ name: safeText(100).optional(), ttl_days: z.number().int().min(1).max(90).optional() }).strict().parse(req.body);
+  const ttlSeconds = input.ttl_days ? input.ttl_days * 24 * 60 * 60 : config.AI_AGENT_TOKEN_TTL_SECONDS;
+  const token = signJwt(userId, { actor: 'agent', company_id: companyId }, ttlSeconds);
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
   await withTenantTransaction(userId, companyId, (c) =>
     writeAudit(c, {
       companyId, userId, action: 'agent_token.minted', entityType: 'company', entityId: companyId,
-      details: { name: input.name ?? null },
+      details: { name: input.name ?? null, ttl_days: input.ttl_days ?? null, expires_at: expiresAt },
     }),
   );
-  res.status(201).json({ token, expires_in: config.AI_AGENT_TOKEN_TTL_SECONDS, actor: 'agent' });
+  res.status(201).json({ token, expires_in: ttlSeconds, expires_at: expiresAt, actor: 'agent' });
 });
 
 companiesRouter.use('/:companyId/files', filesRouter);
