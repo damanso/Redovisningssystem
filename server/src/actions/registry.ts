@@ -7,8 +7,8 @@ const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
-import { postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
-import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
+import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
+import { listFiscalYears, setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
@@ -125,6 +125,31 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ invoice_id: UuidSchema }).strict(),
     handler: (ctx, i: { invoice_id: string }) => getInvoice(ctx.client, ctx.companyId, i.invoice_id),
+  }),
+  def({
+    name: 'list_fiscal_years',
+    title: 'Lista räkenskapsår',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listFiscalYears(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'list_vouchers',
+    title: 'Lista verifikat',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema.optional(), from: IsoDateSchema.optional(), to: IsoDateSchema.optional(),
+      source_type: safeText(40).optional(), limit: z.number().int().min(1).max(1000).optional(),
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id?: string; from?: string; to?: string; source_type?: string; limit?: number }) =>
+      listVouchers(ctx.client, ctx.companyId, { fiscalYearId: i.fiscal_year_id, from: i.from, to: i.to, sourceType: i.source_type, limit: i.limit }),
+  }),
+  def({
+    name: 'get_voucher',
+    title: 'Hämta verifikat med rader',
+    sensitivity: 'read',
+    inputSchema: z.object({ voucher_id: UuidSchema }).strict(),
+    handler: (ctx, i: { voucher_id: string }) => getVoucher(ctx.client, ctx.companyId, i.voucher_id),
   }),
   def({
     name: 'vat_report',
@@ -514,19 +539,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'book_supplier_invoice',
     title: 'Bokför leverantörsfaktura',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id?: string }) =>
       bookSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i.supplier_invoice_id, i.fiscal_year_id),
   }),
   def({
     name: 'register_supplier_payment',
     title: 'Registrera betalning på leverantörsfaktura',
     sensitivity: 'sensitive',
+    // fiscal_year_id kan utelämnas — härleds ur payment_date (olåst år krävs).
     inputSchema: z.object({
-      supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema,
+      supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional(), payment_date: IsoDateSchema,
       amount_ore: OreSchema.optional(), bank_account: AccountNumberSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
       recordSupplierPayment(ctx.client, ctx.companyId, ctx.userId, { supplierInvoiceId: i.supplier_invoice_id, fiscalYearId: i.fiscal_year_id, paymentDate: i.payment_date, amountOre: i.amount_ore, bankAccount: i.bank_account }),
   }),
 
@@ -847,16 +873,16 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'book_invoice',
     title: 'Bokför faktura',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ invoice_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id?: string }) =>
       bookInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id, i.fiscal_year_id),
   }),
   def({
     name: 'book_receipt',
     title: 'Bokför kvitto',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ receipt_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { receipt_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ receipt_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { receipt_id: string; fiscal_year_id?: string }) =>
       bookReceipt(ctx.client, ctx.companyId, ctx.userId, i.receipt_id, i.fiscal_year_id),
   }),
   def({
@@ -865,16 +891,17 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'sensitive',
     // amount_ore utelämnas → betalar återstående skuld. Delbetalning stöds:
     // beloppet får aldrig överstiga återstoden (överbetalningsspärr).
+    // fiscal_year_id kan utelämnas — härleds ur payment_date (olåst år krävs).
     inputSchema: z
       .object({
         invoice_id: UuidSchema,
-        fiscal_year_id: UuidSchema,
+        fiscal_year_id: UuidSchema.optional(),
         payment_date: IsoDateSchema,
         amount_ore: OreSchema.optional(),
         bank_account: AccountNumberSchema.optional(),
       })
       .strict(),
-    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
       recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
         invoiceId: i.invoice_id,
         fiscalYearId: i.fiscal_year_id,

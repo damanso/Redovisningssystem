@@ -5,6 +5,7 @@ import { assertSafeOre, roundOre, sumOre, type Ore } from '../domain/money.js';
 import { isVatRate, vatFromNet, type VatRate } from '../domain/vat.js';
 import { generateOcr } from '../domain/ocr.js';
 import { assertAccountsExist } from './accounting/accounts.js';
+import { resolveFiscalYearForDate } from './accounting/fiscalYears.js';
 import { postCustomerInvoice, postCustomerPayment } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { generateInvoicePdf } from './pdfService.js';
@@ -245,7 +246,7 @@ export async function listInvoices(
 
 /** Bokför fakturan till huvudboken (automatkontering). Dubbelbokningsspärr via source. */
 export async function bookInvoice(
-  client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId: string,
+  client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId?: string,
 ): Promise<Record<string, unknown>> {
   const invoice = await getInvoice(client, companyId, id);
   if (invoice.voucher_id) throw new ConflictError('already_booked', 'fakturan är redan bokförd');
@@ -259,8 +260,10 @@ export async function bookInvoice(
   // ROT/RUT: den del köparen inte betalar bokförs som fordran på Skatteverket (1513)
   // i stället för kundfordran (1510). Verifikatet balanserar oförändrat.
   const houseworkReductionOre = Number(invoice.housework_reduction_ore ?? 0);
+  // K4: fiscal_year_id kan utelämnas — härleds ur fakturadatumet (olåst år krävs).
+  const fyId = fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, invoice.invoice_date as string)).id;
   const voucher = await postCustomerInvoice(client, companyId, userId, {
-    fiscalYearId,
+    fiscalYearId: fyId,
     voucherDate: invoice.invoice_date as string,
     sourceId: id,
     description: `Kundfaktura ${invoice.invoice_number}`,
@@ -293,7 +296,7 @@ export async function recordInvoicePayment(
   client: PoolClient,
   companyId: string,
   userId: string,
-  input: { invoiceId: string; fiscalYearId: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
+  input: { invoiceId: string; fiscalYearId?: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
 ): Promise<Record<string, unknown>> {
   // Lås fakturaraden FÖRST (FOR UPDATE) så samtidiga betalningar på samma faktura
   // serialiseras. Utan låset kunde två godkännanden båda läsa paid=0, båda passera
@@ -320,7 +323,7 @@ export async function recordInvoicePayment(
   if (amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
   if (amountOre > outstanding) throw new BadRequestError('overpayment', `betalningen överstiger återstående skuld (${outstanding} ören)`);
   const voucher = await postCustomerPayment(client, companyId, userId, {
-    fiscalYearId: input.fiscalYearId,
+    fiscalYearId: input.fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, input.paymentDate)).id,
     voucherDate: input.paymentDate,
     sourceId: input.invoiceId,
     description: `Betalning faktura ${row.invoice_number}`,

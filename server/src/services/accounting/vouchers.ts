@@ -209,6 +209,31 @@ export async function postVoucher(
   return { ...voucherRow, lines: insertedLines };
 }
 
+/**
+ * K4: listar verifikat (utan rader) så en agent kan slå upp voucher_id via
+ * action-lagret (t.ex. inför reverse_voucher) i stället för att gå via vyn.
+ */
+export async function listVouchers(
+  client: PoolClient,
+  companyId: string,
+  opts: { fiscalYearId?: string; from?: string; to?: string; sourceType?: string; limit?: number } = {},
+): Promise<Record<string, unknown>[]> {
+  const result = await client.query(
+    `SELECT id, series, number, fiscal_year_id, voucher_date::text, description,
+            source_type, source_id, reverses_voucher_id
+     FROM vouchers
+     WHERE company_id = $1
+       AND ($2::uuid IS NULL OR fiscal_year_id = $2)
+       AND ($3::date IS NULL OR voucher_date >= $3)
+       AND ($4::date IS NULL OR voucher_date <= $4)
+       AND ($5::text IS NULL OR source_type = $5)
+     ORDER BY voucher_date DESC, series, number DESC
+     LIMIT $6`,
+    [companyId, opts.fiscalYearId ?? null, opts.from ?? null, opts.to ?? null, opts.sourceType ?? null, Math.min(opts.limit ?? 200, 1000)],
+  );
+  return result.rows;
+}
+
 export async function getVoucher(
   client: PoolClient,
   companyId: string,
