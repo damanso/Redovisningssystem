@@ -227,3 +227,36 @@ describe('kvitto med bifogat underlag (foto/PDF) i vyn', () => {
     expect(page.text).toContain('filen avvisades');
   });
 });
+
+// Godkännande vars UTFÖRANDE stoppas av en verksamhetskonflikt (t.ex. betalning
+// på obokförd faktura) ska visa varför — inte se ut som en död knapp.
+describe('godkännandekonflikt syns i Att göra', () => {
+  it('betalning på OBOKFÖRD faktura: godkännandet visar "måste vara bokförd"', async () => {
+    // Nytt fakturautkast (bokförs INTE)
+    await agent.post(`/app/c/${companyId}/invoices/create`).type('form').send({
+      customer_id: await customerId(), invoice_date: '2025-09-01',
+      desc_1: 'Obokförd', qty_1: '1', price_1: '100', vat_1: '25',
+    });
+    const list = await agent.get(`/app/c/${companyId}/invoices`);
+    const inv = list.text.match(/\/invoices\/([0-9a-f-]{36})\/book/);
+    expect(inv).toBeTruthy();
+    // Begär betalning direkt via vyn (skapar förslaget i kön)...
+    const pay = await agent.post(`/app/c/${companyId}/invoices/${inv![1]}/pay`).type('form')
+      .send({ payment_date: '2025-09-10' });
+    expect(pay.headers.location).toBe(`/app/c/${companyId}/approvals`);
+    // ...och godkänn: utförandet ska stoppas med ett SYNLIGT skäl (inte tyst).
+    const appr = await agent.get(`/app/c/${companyId}/approvals`);
+    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/approve/);
+    const res = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toContain('fel=');
+    const page = await agent.get(res.headers.location);
+    expect(page.text).toContain('måste vara bokförd');
+    // Dubbelklicks-idempotensen är oförändrad: avvisa förslaget, godkänn sedan →
+    // "not_pending" ska fortfarande vara tyst redirect utan felnotis.
+    await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/reject`).send({});
+    const dbl = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
+    expect([302, 303]).toContain(dbl.status);
+    expect(dbl.headers.location).not.toContain('fel=');
+  });
+});

@@ -2370,7 +2370,11 @@ async function decideApproval(redirectTo: string, res: import('express').Respons
   try {
     await run();
   } catch (err) {
-    if (err instanceof BadRequestError) {
+    // Endast "redan avgjort" (not_pending, dubbelklick/gammal flik) är tyst
+    // idempotent. ALLA andra verksamhetsfel — även konflikter som "fakturan
+    // måste vara bokförd först" eller "redan betald" — måste synas, annars ser
+    // Godkänn-knappen död ut och förslaget ligger kvar utan förklaring.
+    if (err instanceof BadRequestError || (err instanceof ConflictError && err.code !== 'not_pending')) {
       res.redirect(`${redirectTo}?fel=${encodeURIComponent(`Kunde inte utföras: ${err.message}`)}`);
       return;
     }
