@@ -9,7 +9,7 @@ let companyId: string;
 let customerId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
-const act = (name: string, body: unknown) => api.post(`${co()}/actions/${name}`).set(auth()).send(body);
+const act = (name: string, body: object) => api.post(`${co()}/actions/${name}`).set(auth()).send(body);
 
 beforeAll(async () => {
   user = await registerUser('crm');

@@ -69,10 +69,10 @@ describe('ROT-faktura', () => {
     expect(book.status, JSON.stringify(book.body)).toBe(200);
     const lines = await voucherLines(book.body.invoice.voucher_id);
     const byAcct = Object.fromEntries(lines.map((l) => [l.account_number, { d: Number(l.debit_ore), c: Number(l.credit_ore) }]));
-    expect(byAcct[1510].d).toBe(1_250_000 - 375_000); // kundfordran = kundens del (8 750 kr)
-    expect(byAcct[1513].d).toBe(375_000);             // fordran Skatteverket = avdraget
-    expect(byAcct[3001].c).toBe(1_000_000);           // intäkt netto
-    expect(byAcct[2611].c).toBe(250_000);             // utgående moms 25 %
+    expect(byAcct[1510]!.d).toBe(1_250_000 - 375_000); // kundfordran = kundens del (8 750 kr)
+    expect(byAcct[1513]!.d).toBe(375_000);             // fordran Skatteverket = avdraget
+    expect(byAcct[3001]!.c).toBe(1_000_000);           // intäkt netto
+    expect(byAcct[2611]!.c).toBe(250_000);             // utgående moms 25 %
     // Debet = kredit (balanserat verifikat).
     const debit = lines.reduce((s, l) => s + Number(l.debit_ore), 0);
     const credit = lines.reduce((s, l) => s + Number(l.credit_ore), 0);

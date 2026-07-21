@@ -90,7 +90,7 @@ describe('konto: tvåfaktor', () => {
 
     // SÄKERHET (grindfynd HIGH): pending-cookien får INTE fungera som Bearer-token
     // mot API:t — annars kringgås 2FA helt.
-    const cookie = (pwStep.headers['set-cookie'][0] as string);
+    const cookie = (pwStep.headers['set-cookie']![0] as string);
     const pendingToken = decodeURIComponent(cookie.split('=')[1]!.split(';')[0]!);
     const apiTry = await supertest(app).get('/api/companies').set('Authorization', `Bearer ${pendingToken}`);
     expect(apiTry.status).toBe(401); // pending_2fa avvisas av authenticate

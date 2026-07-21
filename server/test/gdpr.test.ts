@@ -16,7 +16,7 @@ let companyId: string;
 let fiscalYearId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
-const act = (name: string, body: unknown) => api.post(`${co()}/actions/${name}`).set(auth()).send(body);
+const act = (name: string, body: object) => api.post(`${co()}/actions/${name}`).set(auth()).send(body);
 
 // Känslig åtgärd: begär (202 pending) → godkänn. Returnerar approve-svaret ({ approval, result }).
 async function anonymize(partyType: 'customer' | 'supplier', partyId: string) {

@@ -349,7 +349,7 @@ describe('Skapa bolag och räkenskapsår i vyn', () => {
 
   it('kom-igång-kortet skapar räkenskapsår och låser upp översikten', async () => {
     const created = await agentA.post('/app/companies').type('form').send({ name: 'FY-bolag AB' });
-    const cid = created.headers.location.split('/').pop();
+    const cid = created.headers.location!.split('/').pop();
     const dash = await agentA.get(`/app/c/${cid}`);
     expect(dash.text).toContain('Skapa räkenskapsår'); // kom-igång-kortet
     const fy = await agentA.post(`/app/c/${cid}/fiscal-years`).type('form')
