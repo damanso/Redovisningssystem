@@ -133,7 +133,7 @@ till det så verifierar jag mot dem också.
 
 ## Sammanfattning
 
-- **Alla KICKOFF-acceptanskriterier (Fas 0–4): ✅** med testbevis (`docs/ACCEPTANS.md`), 432 tester gröna.
+- **Alla KICKOFF-acceptanskriterier (Fas 0–4): ✅** med testbevis (`docs/ACCEPTANS.md`), 433 tester gröna.
 - **Kärnan i den ursprungliga kravkällan** (auth, bolag+betaluppgifter, BAS, verifikat, moms, SIE, fakturor+OCR+PDF, kvitton+AI-OCR, register, rapporter, dokumentarkiv, revisionslogg, AI/MCP + godkännanden): **✅ på plats**.
 - **Äkta lucka funnen och åtgärdad denna omgång:** automatkontering av **betalning** var byggd men onåbar → nu exponerad (`register_invoice_payment`). 🔧
 - **Allt övrigt som saknas är medvetet skjutet** enligt planens scope-reduktion (`GRANSKNING §5–6`) — team/roller, rik CRM, e-post/påminnelser, projekt/tid, lön, lager, bank/Open Banking, Skatteverket/Peppol/ROT-RUT, BankID/Swish, mobilapp, multi-bolag, MongoDB/Redis.

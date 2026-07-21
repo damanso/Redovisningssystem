@@ -250,7 +250,7 @@ describe('godkännandekonflikt syns i Att göra', () => {
     const res = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toContain('fel=');
-    const page = await agent.get(res.headers.location);
+    const page = await agent.get(res.headers.location!);
     expect(page.text).toContain('måste vara bokförd');
     // Dubbelklicks-idempotensen är oförändrad: avvisa förslaget, godkänn sedan →
     // "not_pending" ska fortfarande vara tyst redirect utan felnotis.

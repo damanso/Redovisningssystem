@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **432 tester passerar** i 60 sviter mot
+**Reproducera allt:** `npm test -w server` → **433 tester passerar** i 60 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 432 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 433 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
