@@ -36,6 +36,7 @@ import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
 import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
+import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
 
 const DocumentEntityTypeSchema = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']);
 
@@ -147,6 +148,38 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { fiscal_year_id?: string; from?: string; to?: string; source_type?: string; limit?: number }) =>
       listVouchers(ctx.client, ctx.companyId, { fiscalYearId: i.fiscal_year_id, from: i.from, to: i.to, sourceType: i.source_type, limit: i.limit }),
+  }),
+  def({
+    name: 'delete_draft_invoice',
+    title: 'Radera fakturautkast (obokat)',
+    sensitivity: 'write',
+    // K7: oföränderligheten gäller BOKFÖRDA verifikat — ett utkast som aldrig
+    // nått huvudboken får raderas (t.ex. registrerat på fel kund). Bokförda
+    // poster avvisas (409) och rättas via rättelseverifikat. Auditloggas med
+    // snapshot av raden.
+    inputSchema: z.object({ invoice_id: UuidSchema }).strict(),
+    handler: (ctx, i: { invoice_id: string }) => deleteDraftInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id),
+  }),
+  def({
+    name: 'delete_draft_receipt',
+    title: 'Radera kvittoutkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ receipt_id: UuidSchema }).strict(),
+    handler: (ctx, i: { receipt_id: string }) => deleteDraftReceipt(ctx.client, ctx.companyId, ctx.userId, i.receipt_id),
+  }),
+  def({
+    name: 'delete_draft_supplier_invoice',
+    title: 'Radera leverantörsfakturautkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ supplier_invoice_id: UuidSchema }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string }) => deleteDraftSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i.supplier_invoice_id),
+  }),
+  def({
+    name: 'delete_draft_payslip',
+    title: 'Radera lönebeskedsutkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ payslip_id: UuidSchema }).strict(),
+    handler: (ctx, i: { payslip_id: string }) => deleteDraftPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id),
   }),
   def({
     name: 'attach_document',
