@@ -2632,7 +2632,7 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
               <td class="code">${(p.payment_date as string) ?? ''}</td>
               <td class="num">${amount(p.gross_ore as number, { unit: false })}</td>
               <td class="num">${amount(p.tax_ore as number, { unit: false })}</td>
-              <td>${p.tax_source === 'table30' ? 'Tabell 30' : p.tax_source === 'manual' ? 'Jämkning' : 'Platt sats'}</td>
+              <td>${p.tax_source === 'table30' ? 'Tabell 30' : p.tax_source === 'manual' ? 'Jämkning' : p.tax_source === 'historical' ? 'Historiskt avdrag' : 'Platt sats'}</td>
               <td class="num">${amount(p.net_ore as number, { unit: false })}</td>
               <td class="num">${amount(p.employer_contribution_ore as number, { unit: false })}</td>
               <td>${statusChip(String(p.status))}</td>

@@ -88,7 +88,8 @@ export function generatePayslipPdf(data: PayslipPdfData): Promise<Buffer> {
       ['Org.nummer', company.org_number ?? '—'],
       ['Period', periodLabel],
       ['Utbetalningsdatum', (payslip.payment_date ?? '—').replace(/-/g, '')],
-      ['Skattetabell', payslip.tax_source === 'table30' ? '30' : payslip.tax_source === 'manual' ? 'Jämkning' : 'Platt sats'],
+      // historical = tabell 30, fast fjolårets faktiskt tillämpade värde.
+      ['Skattetabell', payslip.tax_source === 'table30' || payslip.tax_source === 'historical' ? '30' : payslip.tax_source === 'manual' ? 'Jämkning' : 'Platt sats'],
     ]);
 
     // Tabellhuvud

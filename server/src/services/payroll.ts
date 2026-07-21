@@ -5,7 +5,7 @@
 // manuell jämkning per lönebesked går alltid före. Belopp i heltal ören.
 import type { PoolClient } from 'pg';
 import { bankDayOnOrBefore, defaultPaymentDate } from '../domain/bankdays.js';
-import { table30TaxOre } from '../domain/taxTable30.js';
+import { historicalTaxOre, table30TaxOre } from '../domain/taxTable30.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { resolveFiscalYearForDate } from './accounting/fiscalYears.js';
 import { postVoucher } from './accounting/vouchers.js';
@@ -40,15 +40,23 @@ export function computePayroll(grossOre: number, taxRatePercent: number): {
   return { gross_ore: grossOre, tax_ore: tax, net_ore: net, employer_contribution_ore: employer };
 }
 
-export type TaxSource = 'flat_rate' | 'table30' | 'manual';
+export type TaxSource = 'flat_rate' | 'table30' | 'manual' | 'historical';
 
 /**
- * Preliminärskatt för ett lönebesked: tabell 30 för årets tabell om bruttot
- * ligger i tabellintervallet, annars den anställdas platta sats (fallback).
+ * Preliminärskatt för ett lönebesked, i prioritetsordning:
+ *   1. Historiskt faktiskt avdrag för perioden (Tillägg 1: perioder som
+ *      betalades med ett äldre års tabellvärde ska spegla vad som hände —
+ *      bank + huvudbok — och aldrig räknas om retroaktivt).
+ *   2. Tabell 30 för utbetalningsårets tabell.
+ *   3. Den anställdas platta sats (fallback utanför tabellintervallet).
  */
 export function computePayslipTax(
-  grossOre: number, year: number, fallbackRatePercent: number,
+  grossOre: number, year: number, fallbackRatePercent: number, period?: string,
 ): { tax_ore: number; tax_source: TaxSource } {
+  if (period !== undefined) {
+    const historical = historicalTaxOre(period, grossOre);
+    if (historical !== null) return { tax_ore: historical, tax_source: 'historical' };
+  }
   const tableTax = table30TaxOre(year, grossOre);
   if (tableTax !== null) return { tax_ore: tableTax, tax_source: 'table30' };
   return { tax_ore: Math.round((grossOre * fallbackRatePercent) / 100), tax_source: 'flat_rate' };
@@ -134,7 +142,7 @@ export async function createPayslip(
     taxOre = input.tax_ore;
     taxSource = 'manual';
   } else {
-    ({ tax_ore: taxOre, tax_source: taxSource } = computePayslipTax(gross, year, emp.rows[0].tax_rate));
+    ({ tax_ore: taxOre, tax_source: taxSource } = computePayslipTax(gross, year, emp.rows[0].tax_rate, input.period));
   }
   if (taxOre > gross) throw new BadRequestError('invalid_tax', 'skatten kan inte överstiga bruttolönen');
   const net = gross - taxOre;
@@ -156,9 +164,12 @@ export async function createPayslip(
 }
 
 /**
- * K1-migrering: räknar om preliminärskatten på OBOKADE utkast (t.ex. perioder
- * skapade med platt sats innan tabell 30 fanns). Bokförda/annullerade poster
- * och manuella jämkningar rörs aldrig. Returnerar de rader som ändrades.
+ * K1-migrering (inkl. Tillägg 1): räknar om preliminärskatten på OBOKADE
+ * utkast. Två regler: perioder med dokumenterat historiskt avdrag (2026-03…06:
+ * 13 360 på 56 500 — vad som faktiskt betalades enligt bank + huvudbok) sätts
+ * till de värdena; övriga får tabell 30 för utbetalningsåret (platt sats som
+ * fallback). Idempotent — säker att köra flera gånger. Bokförda/annullerade
+ * poster och manuella jämkningar rörs aldrig. Returnerar ändrade rader.
  */
 export async function recalculateDraftPayslips(
   client: PoolClient, companyId: string, userId: string,
@@ -180,7 +191,7 @@ export async function recalculateDraftPayslips(
     const gross = Number(row.gross_ore);
     const oldTax = Number(row.tax_ore);
     const year = Number((row.payment_date ?? row.period).slice(0, 4));
-    const c = computePayslipTax(gross, year, row.tax_rate);
+    const c = computePayslipTax(gross, year, row.tax_rate, row.period);
     if (c.tax_ore === oldTax && c.tax_source === row.tax_source) continue;
     await client.query(
       'UPDATE payslips SET tax_ore = $3, net_ore = $4, tax_source = $5 WHERE id = $1 AND company_id = $2',

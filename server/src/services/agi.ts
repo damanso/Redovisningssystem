@@ -95,7 +95,7 @@ export async function agiDeclaration(client: PoolClient, companyId: string, peri
     individuals,
     disclaimer: usesFlatRate
       ? 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. En eller flera lönebesked använder en platt skattesats (fallback utanför skattetabellens intervall) — stäm av mot verkliga skatteavdrag. Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.'
-      : 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. Preliminärskatten följer Skatteverkets tabell 30 (respektive manuellt angiven jämkning). Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.',
+      : 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. Preliminärskatten följer Skatteverkets tabell 30 (respektive manuell jämkning eller historiskt faktiskt avdrag för äldre perioder). Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.',
   };
 }
 

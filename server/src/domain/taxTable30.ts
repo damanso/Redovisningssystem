@@ -39,6 +39,36 @@ export function hasTaxTable(year: number): boolean {
   return TABLES.has(year);
 }
 
+// Tillägg 1 (2026-07-21): historiskt FAKTISKT innehållen preliminärskatt.
+// Mars–juni 2026 betalades med 2025 års tabellvärde (skatt 13 360 → netto
+// 43 140 på 56 500) — verifierat kronexakt mot SEB-kontoutdraget och huvud-
+// bokens 7010/1930-verifikat ([SIE A2xx]). Det är historiska fakta och ska
+// ALDRIG skrivas om retroaktivt med ett senare års tabell — uppslaget görs
+// alltid med det som faktiskt gällde vid utbetalningstillfället. Posterna är
+// beloppsspecifika: bara ett exakt bruttomatchande uppslag ger träff; annat
+// brutto i samma period faller igenom till de vanliga reglerna.
+interface HistoricalWithholding {
+  fromPeriod: string; // 'YYYY-MM' inklusive
+  toPeriod: string;   // 'YYYY-MM' inklusive
+  grossOre: number;
+  taxOre: number;
+}
+
+const HISTORICAL_WITHHOLDING: readonly HistoricalWithholding[] = [
+  { fromPeriod: '2026-03', toPeriod: '2026-06', grossOre: 5_650_000, taxOre: 1_336_000 },
+];
+
+/**
+ * Historiskt faktiskt skatteavdrag för en period + bruttolön (ören), eller
+ * null när perioden/beloppet saknar dokumenterad historik.
+ */
+export function historicalTaxOre(period: string, grossOre: number): number | null {
+  for (const h of HISTORICAL_WITHHOLDING) {
+    if (period >= h.fromPeriod && period <= h.toPeriod && grossOre === h.grossOre) return h.taxOre;
+  }
+  return null;
+}
+
 /**
  * Preliminärskatt (ören) enligt tabell 30 kolumn 1 för en månadsbruttolön
  * (ören) och ett kalenderår. Returnerar null om året saknar tabell eller om

@@ -139,6 +139,11 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
   `tax_rate` är fallback utanför tabellintervallet, `tax_ore` på
   `create_payslip` är manuell jämkning. `recalculate_draft_payslips` (write)
   räknar om obokade utkast — bokförda poster och jämkningar rörs aldrig.
+  **Tillägg 1 (2026-07-21):** perioder som faktiskt betalades med ett äldre
+  års tabellvärde (2026-03…06: skatt 13 360 / netto 43 140 på 56 500,
+  verifierat mot bank + huvudbok) sätts till de historiska värdena
+  (`tax_source = 'historical'`) — aldrig retroaktivt med ett senare års
+  tabell. Uppslaget görs alltid med det som gällde vid utbetalningstillfället.
 - `payment_date` sätts till den 25:e i perioden med svensk bankdagsregel
   (`server/src/domain/bankdays.ts`); semesterersättning via
   `include_vacation_pay` (12 %) eller `vacation_pay_ore`.
