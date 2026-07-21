@@ -27,7 +27,8 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   verifikat per 1 jan om det behövs.
 - Railway-deploy är FÖRBEREDD (Dockerfile, railway.json, docs/DEPLOY_RAILWAY.md)
   men INTE aktiverad — användaren valde lokal drift.
-- Branch: `claude/awesome-edison-n89mid`. Allt arbete committas+pushas dit.
+- Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
+  ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
 ## Byggt och verifierat (allt grönt: `npm test` = 433 tester i 60 sviter, `npm run build` ren)
 
