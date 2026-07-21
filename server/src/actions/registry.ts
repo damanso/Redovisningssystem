@@ -37,6 +37,10 @@ import { anonymizeParty } from '../services/gdpr.js';
 import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
+import { linkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
+import { writeAudit } from '../services/auditService.js';
+
+const LinkableEntityTypeSchema = z.enum(['invoice', 'receipt', 'supplier_invoice', 'payslip']);
 
 const DocumentEntityTypeSchema = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']);
 
@@ -148,6 +152,44 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { fiscal_year_id?: string; from?: string; to?: string; source_type?: string; limit?: number }) =>
       listVouchers(ctx.client, ctx.companyId, { fiscalYearId: i.fiscal_year_id, from: i.from, to: i.to, sourceType: i.source_type, limit: i.limit }),
+  }),
+  def({
+    name: 'link_voucher',
+    title: 'Koppla registerpost till befintligt verifikat (baklänkning)',
+    sensitivity: 'write',
+    // K6: bokför INGENTING nytt — kopplar en importerad/okopplad post till sitt
+    // redan bokförda verifikat så reskontran visar rätt bokförd/betald-status.
+    inputSchema: z.object({
+      entity_type: LinkableEntityTypeSchema,
+      entity_id: UuidSchema,
+      voucher_id: UuidSchema,
+      mark_paid: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string; voucher_id: string; mark_paid?: boolean }) =>
+      linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: i.mark_paid }),
+  }),
+  def({
+    name: 'suggest_voucher_links',
+    title: 'Föreslå verifikatkopplingar för okopplade registerposter',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      entity_type: LinkableEntityTypeSchema.optional(),
+      from: IsoDateSchema.optional(),
+      to: IsoDateSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type?: LinkableEntityType; from?: string; to?: string }) =>
+      suggestVoucherLinks(ctx.client, ctx.companyId, { entityType: i.entity_type, from: i.from, to: i.to }),
+  }),
+  def({
+    name: 'set_vat_method',
+    title: 'Ställ in momsmetod (faktura-/kontantmetod)',
+    sensitivity: 'write',
+    inputSchema: z.object({ vat_method: z.enum(['invoice', 'cash']) }).strict(),
+    handler: async (ctx, i: { vat_method: 'invoice' | 'cash' }) => {
+      await ctx.client.query('UPDATE companies SET vat_method = $2 WHERE id = $1', [ctx.companyId, i.vat_method]);
+      await writeAudit(ctx.client, { companyId: ctx.companyId, userId: ctx.userId, action: 'tax.vat_method_set', entityType: 'company', entityId: ctx.companyId, details: { vat_method: i.vat_method } });
+      return { vat_method: i.vat_method };
+    },
   }),
   def({
     name: 'delete_draft_invoice',

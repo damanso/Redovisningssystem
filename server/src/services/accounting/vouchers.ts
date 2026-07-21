@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../../lib/errors.js';
 import type { Ore } from '../../domain/money.js';
 import { writeAudit } from '../auditService.js';
+import { notify } from '../notifications.js';
 import { assertAccountsExist } from './accounts.js';
 import { nextVoucherNumber } from './numbering.js';
 
@@ -206,7 +207,60 @@ export async function postVoucher(
     },
   });
 
+  await warnOnVatMethodViolation(client, companyId, userId, voucherRow, lines);
+
   return { ...voucherRow, lines: insertedLines };
+}
+
+/**
+ * K6: momsmetodvakt. Varnar (notis till ägare/admin + audit) när ett NYTT
+ * verifikat bryter mot bolagets valda momsmetod — blockerar inte (metoden kan
+ * behöva överskridas medvetet, t.ex. en historisk rättelse).
+ *   fakturametoden: intäkt (3xxx) direkt mot bank/kassa (19xx) utan kund-
+ *                   fordran (15xx) = kontantmetod-style kundinbetalning.
+ *   kontantmetoden: kundfordran (15xx) bokförs = fakturametod-style.
+ * SIE-import och rättelseverifikat undantas (historik ska inte spamma).
+ */
+async function warnOnVatMethodViolation(
+  client: PoolClient,
+  companyId: string,
+  userId: string,
+  voucher: { id: string; series: string; number: number; source_type: string },
+  lines: NormalizedLine[],
+): Promise<void> {
+  if (voucher.source_type === 'sie_import' || voucher.source_type === 'correction') return;
+  const co = await client.query<{ vat_method: 'invoice' | 'cash' }>(
+    'SELECT vat_method FROM companies WHERE id = $1', [companyId],
+  );
+  const method = co.rows[0]?.vat_method ?? 'invoice';
+  const has = (min: number, max: number, side?: 'debit' | 'credit') =>
+    lines.some((l) => l.account_number >= min && l.account_number <= max
+      && (side === 'debit' ? l.debit_ore > 0 : side === 'credit' ? l.credit_ore > 0 : true));
+
+  let warning: string | null = null;
+  if (method === 'invoice' && has(3000, 3799, 'credit') && has(1900, 1999, 'debit') && !has(1500, 1599)) {
+    warning = 'intäkt bokförd direkt mot bank/kassa utan kundfordran (kontantmetod-mönster) trots att bolaget använder fakturametoden';
+  } else if (method === 'cash' && has(1500, 1599)) {
+    warning = 'kundfordran (15xx) bokförd trots att bolaget använder kontantmetoden';
+  }
+  if (!warning) return;
+
+  await writeAudit(client, {
+    companyId, userId, action: 'voucher.vat_method_warning', entityType: 'voucher', entityId: voucher.id,
+    details: { voucher: `${voucher.series}${voucher.number}`, vat_method: method, warning },
+  });
+  const recipients = await client.query<{ user_id: string }>(
+    "SELECT user_id FROM company_members WHERE company_id = $1 AND role IN ('owner', 'admin')",
+    [companyId],
+  );
+  for (const r of recipients.rows) {
+    await notify(client, {
+      userId: r.user_id, companyId, kind: 'vat_method_warning',
+      title: `Momsmetodvarning: verifikat ${voucher.series}${voucher.number}`,
+      body: `Verifikatet ${voucher.series}${voucher.number} avviker från bolagets momsmetod: ${warning}. Kontrollera och rätta vid behov (rättelseverifikat).`,
+      link: `/app/c/${companyId}/ledger`,
+    });
+  }
 }
 
 /**
