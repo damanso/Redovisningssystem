@@ -21,8 +21,8 @@ export const CORPORATE_TAX_PERMILLE = 206;
 export interface TaxLiability {
   as_of: string;
   vat_payable_ore: Ore;          // utgående − ingående moms (positivt = att betala)
-  employee_tax_ore: Ore;         // personalens källskatt (2710)
-  employer_contribution_ore: Ore;// arbetsgivaravgifter (2730)
+  employee_tax_ore: Ore;         // personalens källskatt (2710-saldo + obetalda lönebesked)
+  employer_contribution_ore: Ore;// arbetsgivaravgifter (2730-saldo + obetalda lönebesked)
   agi_total_ore: Ore;            // skatt + avgift att deklarera/betala (AGI)
   estimated_corporate_tax_ore: Ore; // uppskattad bolagsskatt på årets resultat
   result_before_tax_ore: Ore;
@@ -39,8 +39,25 @@ export async function taxLiability(
 ): Promise<TaxLiability> {
   const balance = await accountSums(client, companyId, { to: asOf });
   const vatPayable = creditBalance(balance, 2600, 2699);         // utg. − ing. moms
-  const employeeTax = creditBalance(balance, 2710, 2719);        // personalskatt
-  const employerContribution = creditBalance(balance, 2730, 2739); // arbetsgivaravgift
+
+  // Löneskulden (AGI): kontosaldona 2710/2730 (t.ex. SIE-import eller manuella
+  // verifikat) PLUS bokförda lönebesked vars period ännu inte fått en bokförd
+  // skattekontobetalning. Lönebokföringen sker enligt kontantmetoden (K2):
+  // vid utbetalning bokförs bara nettot (7010/1930) — skatten och avgiften blir
+  // en skuld som syns här tills book_payroll_tax bokför betalningen.
+  const unpaidPayroll = await client.query<{ tax: string | null; employer: string | null }>(
+    `SELECT SUM(p.tax_ore)::text AS tax, SUM(p.employer_contribution_ore)::text AS employer
+     FROM payslips p
+     WHERE p.company_id = $1 AND p.status = 'booked'
+       AND (p.payment_date IS NULL OR p.payment_date <= $2)
+       AND NOT EXISTS (
+         SELECT 1 FROM payroll_tax_payments t
+         WHERE t.company_id = p.company_id AND t.period = p.period AND t.payment_date <= $2
+       )`,
+    [companyId, asOf],
+  );
+  const employeeTax = creditBalance(balance, 2710, 2719) + Number(unpaidPayroll.rows[0]?.tax ?? 0);
+  const employerContribution = creditBalance(balance, 2730, 2739) + Number(unpaidPayroll.rows[0]?.employer ?? 0);
 
   // Resultat före skatt för räkenskapsåret (intäkter − kostnader, exkl. skatt 89xx).
   const periodRows = await accountSums(client, companyId, { from: fiscalYear.from, to: fiscalYear.to });

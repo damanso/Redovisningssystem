@@ -19,7 +19,7 @@ import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
-import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, recalculateDraftPayslips, setEmployeeActive } from '../services/payroll.js';
+import { bookPayrollTax, bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, payrollYearSummary, recalculateDraftPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport, k2ManagementReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
@@ -741,9 +741,25 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Skapa lönebesked (utkast)',
     sensitivity: 'write',
     // tax_ore = manuell jämkning; utelämnad slås skatten upp i tabell 30 för
-    // periodens år (platt tax_rate som fallback utanför tabellintervallet).
-    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), gross_ore: OreSchema.optional(), tax_ore: OreSchema.optional() }).strict(),
-    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number; tax_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+    // utbetalningsårets tabell (platt tax_rate som fallback utanför intervallet).
+    // payment_date default: den 25:e i perioden med svensk bankdagsregel.
+    // Semesterersättning: include_vacation_pay → 12 %, vacation_pay_ore → eget belopp.
+    inputSchema: z.object({
+      employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+      gross_ore: OreSchema.optional(), tax_ore: OreSchema.optional(),
+      payment_date: IsoDateSchema.optional(),
+      vacation_pay_ore: OreSchema.optional(), include_vacation_pay: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number; tax_ore?: number; payment_date?: string; vacation_pay_ore?: number; include_vacation_pay?: boolean }) =>
+      createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'payroll_year_summary',
+    title: 'Ackumulerad lön per kalenderår (brutto/skatt/netto/arbetsgivaravgift)',
+    sensitivity: 'read',
+    inputSchema: z.object({ year: z.number().int().min(2000).max(2100), employee_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { year: number; employee_id?: string }) =>
+      payrollYearSummary(ctx.client, ctx.companyId, i.year, { employee_id: i.employee_id }),
   }),
   def({
     name: 'recalculate_draft_payslips',
@@ -758,11 +774,28 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'book_payslip',
-    title: 'Bokför lönebesked',
+    title: 'Bokför lönebesked (kontantmetod: 7010 D / 1930 K = netto)',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema }).strict(),
-    handler: (ctx, i: { payslip_id: string; fiscal_year_id: string; payment_date: string }) =>
+    // payment_date default: lönebeskedets utbetalningsdatum. fiscal_year_id
+    // utelämnad härleds ur datumet (kräver olåst räkenskapsår).
+    inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema.optional(), payment_date: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { payslip_id: string; fiscal_year_id?: string; payment_date?: string }) =>
       bookPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id, i.fiscal_year_id, i.payment_date),
+  }),
+  def({
+    name: 'book_payroll_tax',
+    title: 'Bokför skattekontobetalning för lön (2510 D / 1930 K = skatt + arbetsgivaravgift)',
+    sensitivity: 'sensitive',
+    // Beloppet föreslås ur periodens lönebesked (avrundat till hela kronor);
+    // payment_date default: den 12:e månaden efter med bankdagsregeln.
+    inputSchema: z.object({
+      period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+      fiscal_year_id: UuidSchema.optional(),
+      payment_date: IsoDateSchema.optional(),
+      amount_ore: OreSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number }) =>
+      bookPayrollTax(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({
     name: 'create_receipt',

@@ -54,6 +54,27 @@ export async function listFiscalYears(client: PoolClient, companyId: string): Pr
   return result.rows;
 }
 
+/**
+ * K4: härleder räkenskapsåret för ett datum (t.ex. ett betalnings- eller
+ * verifikationsdatum) så att en agent inte behöver skicka fiscal_year_id.
+ * Kräver att datumet täcks av ett olåst räkenskapsår.
+ */
+export async function resolveFiscalYearForDate(
+  client: PoolClient,
+  companyId: string,
+  date: string,
+): Promise<FiscalYear> {
+  const result = await client.query<FiscalYear>(
+    `SELECT id, label, start_date::text, end_date::text, is_locked
+     FROM fiscal_years WHERE company_id = $1 AND start_date <= $2 AND end_date >= $2`,
+    [companyId, date],
+  );
+  const fy = result.rows[0];
+  if (!fy) throw new BadRequestError('no_fiscal_year', `inget räkenskapsår täcker ${date} — skapa året eller ange fiscal_year_id`);
+  if (fy.is_locked) throw new ConflictError('period_locked', `räkenskapsåret som täcker ${date} är låst`);
+  return fy;
+}
+
 /** Låser eller låser upp ett räkenskapsår (periodlås). */
 export async function setFiscalYearLock(
   client: PoolClient,

@@ -2507,10 +2507,12 @@ viewRouter.get('/c/:companyId/payroll', pageFor('payroll', 'Lön', async (client
     ${
       payslips.length === 0
         ? html`<p class="muted">Inga lönebesked ännu.</p>`
-        : html`<div class="table-wrap"><table><thead><tr><th>Period</th><th>Anställd</th><th class="num">Brutto</th><th class="num">Skatt</th><th class="num">Netto</th><th class="num">Arb.avgift</th><th>Status</th></tr></thead><tbody>
+        : html`<div class="table-wrap"><table><thead><tr><th>Period</th><th>Anställd</th><th>Utbet.datum</th><th class="num">Brutto</th><th class="num">Skatt</th><th>Skattekälla</th><th class="num">Netto</th><th class="num">Arb.avgift</th><th>Status</th></tr></thead><tbody>
             ${payslips.map((p) => html`<tr><td class="code">${p.period as string}</td><td>${p.employee_name as string}</td>
+              <td class="code">${(p.payment_date as string) ?? ''}</td>
               <td class="num">${amount(p.gross_ore as number, { unit: false })}</td>
               <td class="num">${amount(p.tax_ore as number, { unit: false })}</td>
+              <td>${p.tax_source === 'table30' ? 'Tabell 30' : p.tax_source === 'manual' ? 'Jämkning' : 'Platt sats'}</td>
               <td class="num">${amount(p.net_ore as number, { unit: false })}</td>
               <td class="num">${amount(p.employer_contribution_ore as number, { unit: false })}</td>
               <td>${statusChip(String(p.status))}</td></tr>`)}
