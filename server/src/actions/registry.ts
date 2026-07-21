@@ -19,7 +19,7 @@ import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
-import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
+import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, recalculateDraftPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport, k2ManagementReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
@@ -740,8 +740,21 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'create_payslip',
     title: 'Skapa lönebesked (utkast)',
     sensitivity: 'write',
-    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), gross_ore: OreSchema.optional() }).strict(),
-    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+    // tax_ore = manuell jämkning; utelämnad slås skatten upp i tabell 30 för
+    // periodens år (platt tax_rate som fallback utanför tabellintervallet).
+    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), gross_ore: OreSchema.optional(), tax_ore: OreSchema.optional() }).strict(),
+    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number; tax_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'recalculate_draft_payslips',
+    title: 'Räkna om skatten på obokade lönebesked (tabell 30)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      from_period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+      to_period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+    }).strict(),
+    handler: (ctx, i: { from_period?: string; to_period?: string }) =>
+      recalculateDraftPayslips(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({
     name: 'book_payslip',

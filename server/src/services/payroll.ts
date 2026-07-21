@@ -1,8 +1,10 @@
-// Fas A14: lön & HR (utan AGI/KU-10). Anställda + lönebesked. En lönekörning
-// beräknar brutto, preliminärskatt (platt sats per anställd — förenkling) och
-// arbetsgivaravgifter, och bokför. Ingen arbetsgivardeklaration lämnas till
-// Skatteverket — det är uttryckligen UTANFÖR scope. Belopp i heltal ören.
+// Fas A14 + K1: lön & HR. Anställda + lönebesked. En lönekörning beräknar
+// brutto, preliminärskatt och arbetsgivaravgifter, och bokför. Skatten slås
+// primärt upp i Skatteverkets tabell 30 (årsversionerad, se domain/taxTable30);
+// den anställdas platta tax_rate är fallback utanför tabellintervallet, och en
+// manuell jämkning per lönebesked går alltid före. Belopp i heltal ören.
 import type { PoolClient } from 'pg';
+import { table30TaxOre } from '../domain/taxTable30.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { postVoucher } from './accounting/vouchers.js';
 import { writeAudit } from './auditService.js';
@@ -31,6 +33,20 @@ export function computePayroll(grossOre: number, taxRatePercent: number): {
   const net = grossOre - tax;
   const employer = Math.round((grossOre * EMPLOYER_CONTRIBUTION_PERMILLE) / 10000);
   return { gross_ore: grossOre, tax_ore: tax, net_ore: net, employer_contribution_ore: employer };
+}
+
+export type TaxSource = 'flat_rate' | 'table30' | 'manual';
+
+/**
+ * Preliminärskatt för ett lönebesked: tabell 30 för årets tabell om bruttot
+ * ligger i tabellintervallet, annars den anställdas platta sats (fallback).
+ */
+export function computePayslipTax(
+  grossOre: number, year: number, fallbackRatePercent: number,
+): { tax_ore: number; tax_source: TaxSource } {
+  const tableTax = table30TaxOre(year, grossOre);
+  if (tableTax !== null) return { tax_ore: tableTax, tax_source: 'table30' };
+  return { tax_ore: Math.round((grossOre * fallbackRatePercent) / 100), tax_source: 'flat_rate' };
 }
 
 export async function createEmployee(
@@ -78,10 +94,13 @@ export async function setEmployeeActive(
   return getEmployee(client, companyId, id);
 }
 
-/** Skapar ett lönebesked (utkast) för en anställd och period. Bokför inget. */
+/**
+ * Skapar ett lönebesked (utkast) för en anställd och period. Bokför inget.
+ * Skatten: manuell jämkning (tax_ore) > tabell 30 för periodens år > platt sats.
+ */
 export async function createPayslip(
   client: PoolClient, companyId: string, userId: string,
-  input: { employee_id: string; period: string; gross_ore?: number },
+  input: { employee_id: string; period: string; gross_ore?: number; tax_ore?: number },
 ): Promise<Record<string, unknown>> {
   if (!/^\d{4}-\d{2}$/.test(input.period)) throw new BadRequestError('bad_period', 'period ska vara YYYY-MM');
   const emp = await client.query<{ monthly_salary_ore: string; tax_rate: number; active: boolean }>(
@@ -90,27 +109,78 @@ export async function createPayslip(
   if (!emp.rows[0]) throw new NotFoundError('employee');
   const gross = input.gross_ore ?? Number(emp.rows[0].monthly_salary_ore);
   if (gross <= 0) throw new BadRequestError('no_salary', 'bruttolön saknas');
-  const c = computePayroll(gross, emp.rows[0].tax_rate);
+  const year = Number(input.period.slice(0, 4));
+  let taxOre: number;
+  let taxSource: TaxSource;
+  if (input.tax_ore !== undefined) {
+    taxOre = input.tax_ore;
+    taxSource = 'manual';
+  } else {
+    ({ tax_ore: taxOre, tax_source: taxSource } = computePayslipTax(gross, year, emp.rows[0].tax_rate));
+  }
+  if (taxOre > gross) throw new BadRequestError('invalid_tax', 'skatten kan inte överstiga bruttolönen');
+  const net = gross - taxOre;
+  const employer = Math.round((gross * EMPLOYER_CONTRIBUTION_PERMILLE) / 10000);
   let id: string;
   try {
     const r = await client.query<{ id: string }>(
-      `INSERT INTO payslips (company_id, employee_id, period, gross_ore, tax_ore, net_ore, employer_contribution_ore, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [companyId, input.employee_id, input.period, c.gross_ore, c.tax_ore, c.net_ore, c.employer_contribution_ore, userId],
+      `INSERT INTO payslips (company_id, employee_id, period, gross_ore, tax_ore, net_ore, employer_contribution_ore, tax_source, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [companyId, input.employee_id, input.period, gross, taxOre, net, employer, taxSource, userId],
     );
     id = r.rows[0]!.id;
   } catch (err) {
     if ((err as { code?: string }).code === '23505') throw new ConflictError('duplicate_payslip', 'lönebesked finns redan för perioden');
     throw err;
   }
-  await writeAudit(client, { companyId, userId, action: 'payslip.created', entityType: 'payslip', entityId: id, details: { period: input.period } });
+  await writeAudit(client, { companyId, userId, action: 'payslip.created', entityType: 'payslip', entityId: id, details: { period: input.period, tax_source: taxSource } });
   return getPayslip(client, companyId, id);
+}
+
+/**
+ * K1-migrering: räknar om preliminärskatten på OBOKADE utkast (t.ex. perioder
+ * skapade med platt sats innan tabell 30 fanns). Bokförda/annullerade poster
+ * och manuella jämkningar rörs aldrig. Returnerar de rader som ändrades.
+ */
+export async function recalculateDraftPayslips(
+  client: PoolClient, companyId: string, userId: string,
+  opts: { from_period?: string; to_period?: string } = {},
+): Promise<{ id: string; period: string; old_tax_ore: number; new_tax_ore: number; tax_source: TaxSource }[]> {
+  const rows = await client.query<{
+    id: string; period: string; gross_ore: string; tax_ore: string; tax_source: string; tax_rate: number;
+  }>(
+    `SELECT p.id, p.period, p.gross_ore, p.tax_ore, p.tax_source, e.tax_rate
+     FROM payslips p JOIN employees e ON e.id = p.employee_id
+     WHERE p.company_id = $1 AND p.status = 'draft' AND p.tax_source <> 'manual'
+       AND ($2::text IS NULL OR p.period >= $2) AND ($3::text IS NULL OR p.period <= $3)
+     ORDER BY p.period, p.id
+     FOR UPDATE OF p`,
+    [companyId, opts.from_period ?? null, opts.to_period ?? null],
+  );
+  const changed: { id: string; period: string; old_tax_ore: number; new_tax_ore: number; tax_source: TaxSource }[] = [];
+  for (const row of rows.rows) {
+    const gross = Number(row.gross_ore);
+    const oldTax = Number(row.tax_ore);
+    const year = Number(row.period.slice(0, 4));
+    const c = computePayslipTax(gross, year, row.tax_rate);
+    if (c.tax_ore === oldTax && c.tax_source === row.tax_source) continue;
+    await client.query(
+      'UPDATE payslips SET tax_ore = $3, net_ore = $4, tax_source = $5 WHERE id = $1 AND company_id = $2',
+      [row.id, companyId, c.tax_ore, gross - c.tax_ore, c.tax_source],
+    );
+    await writeAudit(client, {
+      companyId, userId, action: 'payslip.tax_recalculated', entityType: 'payslip', entityId: row.id,
+      details: { period: row.period, old_tax_ore: oldTax, new_tax_ore: c.tax_ore, tax_source: c.tax_source },
+    });
+    changed.push({ id: row.id, period: row.period, old_tax_ore: oldTax, new_tax_ore: c.tax_ore, tax_source: c.tax_source });
+  }
+  return changed;
 }
 
 export async function getPayslip(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const r = await client.query(
     `SELECT p.id, p.employee_id, e.name AS employee_name, p.period, p.gross_ore, p.tax_ore, p.net_ore,
-            p.employer_contribution_ore, p.status, p.voucher_id
+            p.employer_contribution_ore, p.tax_source, p.status, p.voucher_id
      FROM payslips p JOIN employees e ON e.id = p.employee_id
      WHERE p.id = $1 AND p.company_id = $2`, [id, companyId],
   );
@@ -123,7 +193,7 @@ export async function listPayslips(
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT p.id, e.name AS employee_name, p.period, p.gross_ore, p.tax_ore, p.net_ore,
-            p.employer_contribution_ore, p.status
+            p.employer_contribution_ore, p.tax_source, p.status
      FROM payslips p JOIN employees e ON e.id = p.employee_id
      WHERE p.company_id = $1 AND ($2::text IS NULL OR p.period = $2)
      ORDER BY p.period DESC, e.name`,
