@@ -9,8 +9,8 @@ Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
 deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
 faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
 tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
-granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 336
-tester passerar** i 50 sviter mot en riktig Postgres (`server/test/`), och
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 425
+tester passerar** i 59 sviter mot en riktig Postgres (`server/test/`), och
 `npm run build` (tsc) utan fel.
 
 ### Grundfaser
@@ -105,6 +105,18 @@ väger rätten till radering mot bokföringslagens bevarandekrav; F-skatt/omvän
 skattskyldighet och ROT/RUT beräknas och bokförs ur uppgifterna men den slutliga
 skattereduktionen beror på köparens samlade köp och Skatteverkets beslut. Ingen digital
 begäran skickas till Skatteverket.
+
+### Payroll, betalningar & dokument utan workarounds (K-serien, 2026-07)
+
+| Krav | Innehåll | Status | Bevis (testsvit) |
+|---|---|---|---|
+| K1 | Preliminärskatt enligt Skatteverkets tabell 30 kol 1 (årsversionerad; platt sats som fallback, manuell jämkning, omräkning av obokade utkast, AGI på faktisk skatt) | Klar | `payroll-tax` |
+| K2 | Utbetalningsdatum med svensk bankdagsregel, semesterersättning 12 %, pension förberedd (avstängd), kontantmetodsbokföring 7010/1930 + book_payroll_tax 2510/1930, ackumulerat per år | Klar | `payroll-payment` |
+| K3 | Lönespec-PDF (Locollabs mall) lagrad på lönebeskedet + generell dokumentkoppling (attach/list/get_document) | Klar | `documents` |
+| K4 | list_fiscal_years/list_vouchers/get_voucher, härlett räkenskapsår ur datum, beroendemedveten godkännandekö + composite bokning-och-betalning | Klar | `fiscal-year-derivation`, `approval-dependencies` |
+| K5 | npm run mcp:install (idempotent config-reparation + verifiering), npm run mcp:token (ägarinloggning, 90 dagar), self_check i MCP-servern | Klar | `mcp-lifecycle`, `mcp` |
+| K6 | Reskontra-baklänkning (link_voucher + suggest_voucher_links) och momsmetod som inställning med metodvakt | Klar | `voucher-links` |
+| K7 | Radering av obokade registerutkast (RLS-garanterad, auditloggad med snapshot) | Klar | `draft-delete` |
 
 ### Utanför scope / integrationsgränser
 
