@@ -3,6 +3,7 @@ import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js'
 import { assertSafeOre, type Ore } from '../domain/money.js';
 import { isVatRate, vatFromNet, type VatRate } from '../domain/vat.js';
 import { postExpense, postSupplierPayment } from './accounting/autopost.js';
+import { resolveFiscalYearForDate } from './accounting/fiscalYears.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { writeAudit } from './auditService.js';
 
@@ -55,7 +56,7 @@ export async function getSupplierInvoice(client: PoolClient, companyId: string, 
   return r.rows[0];
 }
 
-export async function bookSupplierInvoice(client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId: string): Promise<Record<string, unknown>> {
+export async function bookSupplierInvoice(client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId?: string): Promise<Record<string, unknown>> {
   // Lås raden (FOR UPDATE) så samtidiga bokföringsförsök serialiseras — samma
   // TOCTOU-skydd som betalningsvägen. Dubbelbokningsspärren i
   // vouchers_source_uk är sista linjen, men låset ger ett rent 409 i stället.
@@ -68,8 +69,9 @@ export async function bookSupplierInvoice(client: PoolClient, companyId: string,
   if (!inv) throw new NotFoundError('supplier_invoice');
   if (inv.voucher_id) throw new ConflictError('already_booked', 'leverantörsfakturan är redan bokförd');
   if (inv.status === 'cancelled') throw new ConflictError('cancelled', 'en annullerad faktura kan inte bokföras');
+  const fyId = fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, inv.invoice_date)).id;
   const voucher = await postExpense(client, companyId, userId, {
-    fiscalYearId,
+    fiscalYearId: fyId,
     voucherDate: inv.invoice_date,
     sourceId: id,
     sourceType: 'supplier_invoice',
@@ -83,7 +85,7 @@ export async function bookSupplierInvoice(client: PoolClient, companyId: string,
 
 export async function recordSupplierPayment(
   client: PoolClient, companyId: string, userId: string,
-  input: { supplierInvoiceId: string; fiscalYearId: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
+  input: { supplierInvoiceId: string; fiscalYearId?: string; paymentDate: string; amountOre?: Ore; bankAccount?: number },
 ): Promise<Record<string, unknown>> {
   // Lås raden (FOR UPDATE) så samtidiga betalningar serialiseras — samma skydd
   // mot dubbelutbetalning som på kundsidan.
@@ -104,7 +106,7 @@ export async function recordSupplierPayment(
   if (amountOre <= 0) throw new BadRequestError('invalid_amount', 'beloppet måste vara positivt');
   if (amountOre > outstanding) throw new BadRequestError('overpayment', `betalningen överstiger återstående skuld (${outstanding} ören)`);
   const voucher = await postSupplierPayment(client, companyId, userId, {
-    fiscalYearId: input.fiscalYearId,
+    fiscalYearId: input.fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, input.paymentDate)).id,
     voucherDate: input.paymentDate,
     sourceId: input.supplierInvoiceId,
     description: `Betalning leverantörsfaktura ${row.number}`,

@@ -3,6 +3,7 @@ import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js'
 import { assertSafeOre, type Ore } from '../domain/money.js';
 import { isVatRate, vatFromNet, type VatRate } from '../domain/vat.js';
 import { assertAccountsExist } from './accounting/accounts.js';
+import { resolveFiscalYearForDate } from './accounting/fiscalYears.js';
 import { postExpense } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
@@ -104,14 +105,15 @@ export async function attachReceiptFile(
 
 /** Bokför kvittot (automatkontering). Dubbelbokningsspärr via source. */
 export async function bookReceipt(
-  client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId: string,
+  client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId?: string,
 ): Promise<Record<string, unknown>> {
   const receipt = await getReceipt(client, companyId, id);
   if (receipt.voucher_id) throw new ConflictError('already_booked', 'kvittot är redan bokfört');
   if (receipt.status === 'cancelled') throw new ConflictError('cancelled', 'ett annullerat kvitto kan inte bokföras');
 
+  const fyId = fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, receipt.receipt_date as string)).id;
   const voucher = await postExpense(client, companyId, userId, {
-    fiscalYearId,
+    fiscalYearId: fyId,
     voucherDate: receipt.receipt_date as string,
     sourceId: id,
     description: `Kvitto ${receipt.receipt_number}`,

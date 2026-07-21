@@ -8,11 +8,12 @@ import {
   lockPendingApproval,
   type Approval,
 } from '../services/approvals.js';
+import { checkApprovalDependency, type ApprovalDependency } from './dependencies.js';
 import { getAction } from './registry.js';
 
 export type ActionResult =
   | { status: 'ok'; action: string; result: unknown }
-  | { status: 'pending_approval'; action: string; approval: Approval };
+  | { status: 'pending_approval'; action: string; approval: Approval; dependency?: ApprovalDependency };
 
 /**
  * Kör en action mot kärnan. Icke-känsliga kör direkt (med tenant/RLS/audit).
@@ -36,7 +37,7 @@ export async function executeAction(params: {
   const input = action.inputSchema.parse(params.input);
 
   if (action.sensitivity === 'sensitive') {
-    const approval = await withTenantTransaction(params.userId, params.companyId, async (client) => {
+    const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client) => {
       const created = await createApproval(
         client,
         params.companyId,
@@ -45,17 +46,20 @@ export async function executeAction(params: {
         action.name,
         input,
       );
+      // K4: beroendet beräknas redan när förslaget köas, så begäraren (och
+      // kön) ser ordningen i förväg — inte först vid godkännandeklicket.
+      const dep = await checkApprovalDependency(client, params.companyId, action.name, input as Record<string, unknown>);
       await writeAudit(client, {
         companyId: params.companyId,
         userId: params.userId,
         action: 'action.approval_requested',
         entityType: 'approval',
         entityId: created.id,
-        details: { action: action.name, actor: params.actor },
+        details: { action: action.name, actor: params.actor, ...(dep ? { dependency: dep.message } : {}) },
       });
-      return created;
+      return { approval: created, dependency: dep };
     });
-    return { status: 'pending_approval', action: action.name, approval };
+    return { status: 'pending_approval', action: action.name, approval, ...(dependency ? { dependency } : {}) };
   }
 
   const result = await withTenantTransaction(params.userId, params.companyId, async (client) => {

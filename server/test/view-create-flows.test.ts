@@ -27,7 +27,7 @@ beforeAll(async () => {
   expect([302, 303]).toContain(login.status);
   // Bolag + räkenskapsår skapas OCKSÅ via vyn — hela kedjan utan API.
   const co = await agent.post('/app/companies').type('form').send({ name: 'Reserv AB', org_number: '5561112223' });
-  companyId = co.headers.location.split('/').pop()!;
+  companyId = co.headers.location!.split('/').pop()!;
   const fy = await agent.post(`/app/c/${companyId}/fiscal-years`).type('form')
     .send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
   expect([302, 303]).toContain(fy.status);
@@ -78,7 +78,7 @@ describe('faktura: skapa → bokför (via Att göra) → betala', () => {
       desc_1: 'Trasig rad', qty_1: '1', price_1: 'abc', vat_1: '25',
     });
     expect(res.headers.location).toContain('fel=1');
-    const page = await agent.get(res.headers.location);
+    const page = await agent.get(res.headers.location!);
     expect(page.text).toContain('kontrollera fälten');
   });
 
@@ -162,7 +162,7 @@ describe('grindfynd-regressioner', () => {
   it('org.nr normaliseras till NNNNNN-NNNN vid bolagsskapande i vyn (samma som API)', async () => {
     const res = await agent.post('/app/companies').type('form')
       .send({ name: 'Normtest AB', org_number: '5567654321' }); // utan bindestreck
-    const cid = res.headers.location.split('/').pop();
+    const cid = res.headers.location!.split('/').pop();
     // Bokslutssidan skriver ut org.nr — men enklast: skapa FY och kolla annual?
     // Direktare: bolagsvalssidan visar bara namn; verifiera via API-databasen görs
     // inte här — vi kollar att ogiltigt org.nr avvisas i stället:
@@ -170,7 +170,7 @@ describe('grindfynd-regressioner', () => {
     const bad = await agent.post('/app/companies').type('form')
       .send({ name: 'Trasig AB', org_number: 'abc123' });
     expect(bad.headers.location).toContain('fel=');
-    const page = await agent.get(bad.headers.location);
+    const page = await agent.get(bad.headers.location!);
     expect(page.text).toContain('NNNNNN-NNNN');
   });
 
@@ -186,7 +186,7 @@ describe('grindfynd-regressioner', () => {
     expect(m).toBeTruthy();
     const book = await agent.post(`/app/c/${companyId}/invoices/${m![1]}/book`).send({});
     expect(book.headers.location).toContain('fel=');
-    const page = await agent.get(book.headers.location);
+    const page = await agent.get(book.headers.location!);
     expect(page.text).toContain('Inget räkenskapsår täcker 2030-06-01');
     expect(page.text).not.toContain('belopp med siffror');
   });
@@ -223,7 +223,7 @@ describe('kvitto med bifogat underlag (foto/PDF) i vyn', () => {
       .attach('file', Buffer.from('#!/bin/sh\necho hej'), 'skript.sh');
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toContain('fel=');
-    const page = await agent.get(res.headers.location);
+    const page = await agent.get(res.headers.location!);
     expect(page.text).toContain('filen avvisades');
   });
 });

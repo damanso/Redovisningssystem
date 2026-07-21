@@ -53,7 +53,68 @@ const EXTRA_TOOLS = {
       'här tills en människa godkänner dem i webbvyn.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  self_check: {
+    name: 'self_check',
+    description:
+      'Hälsokoll för MCP-anslutningen: är API:t nåbart, fungerar agent-token, ' +
+      'och när går tokenet ut? Kör denna i början av en session för att flagga ' +
+      'problem I FÖRVÄG i stället för att upptäcka dem mitt i en körning.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
 } as const;
+
+// K5: läser ut exp ur agent-tokenet (utan verifiering — servern verifierar;
+// detta är bara transportens egen varningslampa).
+function tokenExpiry(token: string | undefined): { expires_at: string; days_left: number } | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token!.split('.')[1]!, 'base64url').toString('utf8')) as { exp?: number };
+    if (!payload.exp) return null;
+    const expiresAt = new Date(payload.exp * 1000);
+    return {
+      expires_at: expiresAt.toISOString(),
+      days_left: Math.floor((expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function selfCheck(): Promise<Record<string, unknown>> {
+  const expiry = tokenExpiry(TOKEN);
+  let apiReachable = false;
+  let apiStatus: string | number = 'unreachable';
+  let tokenValid = false;
+  try {
+    const health = await fetch(`${API_URL}/health`);
+    apiReachable = health.ok;
+    apiStatus = health.status;
+  } catch (err) {
+    apiStatus = err instanceof Error ? err.message : String(err);
+  }
+  try {
+    const { status } = await api(`/api/companies/${COMPANY_ID}/actions`);
+    tokenValid = status === 200;
+  } catch {
+    tokenValid = false;
+  }
+  const warnings: string[] = [];
+  if (!apiReachable) warnings.push(`API:t på ${API_URL} svarar inte — är servern igång?`);
+  if (apiReachable && !tokenValid) warnings.push('agent-tokenet avvisas — förnya med `npm run mcp:token`.');
+  if (expiry && expiry.days_left <= 14) {
+    warnings.push(`agent-tokenet går ut ${expiry.expires_at.slice(0, 10)} (${expiry.days_left} dagar kvar) — förnya med \`npm run mcp:token\`.`);
+  }
+  return {
+    api_url: API_URL,
+    api_reachable: apiReachable,
+    api_status: apiStatus,
+    company_id: COMPANY_ID,
+    token_valid: tokenValid,
+    token_expires_at: expiry?.expires_at ?? null,
+    token_days_left: expiry?.days_left ?? null,
+    warnings,
+    ok: apiReachable && tokenValid && (expiry === null || expiry.days_left > 0),
+  };
+}
 
 async function api(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -96,13 +157,16 @@ async function main(): Promise<void> {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...manifest.map(toolFor), EXTRA_TOOLS.list_pending_approvals],
+    tools: [...manifest.map(toolFor), EXTRA_TOOLS.list_pending_approvals, EXTRA_TOOLS.self_check],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const name = req.params.name;
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
+      if (name === 'self_check') {
+        return textResult(JSON.stringify(await selfCheck(), null, 2));
+      }
       if (name === 'list_pending_approvals') {
         const { status, body } = await api(`/api/companies/${COMPANY_ID}/approvals?status=pending`);
         if (status >= 400) return textResult(`Fel (HTTP ${status}): ${JSON.stringify(body)}`, true);
@@ -118,10 +182,14 @@ async function main(): Promise<void> {
       // Känslig action → 202 pending_approval. Aldrig utförd av AI:t.
       if (status === 202 && body && typeof body === 'object' && 'approval' in body) {
         const approval = (body as { approval: { id: string } }).approval;
+        // K4: beroendehint (t.ex. "fakturan är inte bokförd — godkänn book_invoice
+        // först") följer med direkt så agenten kan köa i rätt ordning.
+        const dep = (body as { dependency?: { satisfied: boolean; message: string } }).dependency;
+        const depHint = dep && !dep.satisfied ? `\n⚠ Beroende: ${dep.message}` : '';
         return textResult(
           `⏳ Kräver mänskligt godkännande. Ett förslag har lagts i godkännandekön ` +
             `(id ${approval.id}). En människa godkänner det i webbvyn under "Att göra" ` +
-            `innan det utförs. Ingenting har bokförts ännu.`,
+            `innan det utförs. Ingenting har bokförts ännu.${depHint}`,
         );
       }
       if (status >= 400) {
@@ -135,6 +203,11 @@ async function main(): Promise<void> {
 
   await server.connect(new StdioServerTransport());
   console.error(`[mcp] redovisning MCP-server igång · ${manifest.length} actions · bolag ${COMPANY_ID}`);
+  // K5: flagga tokenutgång redan vid start — inte mitt i en körning.
+  const expiry = tokenExpiry(TOKEN);
+  if (expiry && expiry.days_left <= 14) {
+    console.error(`[mcp] VARNING: agent-tokenet går ut ${expiry.expires_at.slice(0, 10)} (${expiry.days_left} dagar kvar) — förnya med \`npm run mcp:token\`.`);
+  }
 }
 
 main().catch((err) => {

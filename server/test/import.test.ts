@@ -121,7 +121,7 @@ describe('import end-to-end (actions)', () => {
     const res = await ua.post(`/app/c/${companyId}/approvals/${req.body.approval.id}/approve`).send({});
     expect([302, 303]).toContain(res.status); // ALDRIG 500
     expect(res.headers.location).toContain('fel=');
-    const page = await ua.get(res.headers.location);
+    const page = await ua.get(res.headers.location!);
     expect(page.text).toContain('utanför räkenskapsåret');
   });
 

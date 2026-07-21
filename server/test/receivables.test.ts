@@ -79,7 +79,7 @@ describe('kundreskontra åldersanalys', () => {
     for (const [date, bucket] of cases) {
       const inv = await api.post(`${co2}/invoices`).set(a2).send({ customer_id: cust.body.customer.id, invoice_date: date, lines: [{ description: 'X', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }] });
       await api.post(`${co2}/invoices/${inv.body.invoice.id}/book`).set(a2).send({ fiscal_year_id: fy2.body.fiscal_year.id });
-      counts[bucket] += 125_000;
+      counts[bucket] = (counts[bucket] ?? 0) + 125_000;
     }
     const res = await api.post(`${co2}/actions/accounts_receivable_aging`).set(a2).send({ as_of: AS_OF });
     const t = res.body.result.totals;

@@ -7,8 +7,8 @@ const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
-import { postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
-import { setFiscalYearLock } from '../services/accounting/fiscalYears.js';
+import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
+import { listFiscalYears, setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
@@ -19,7 +19,7 @@ import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
 import { importSie, parseSie } from '../services/sieImport.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../services/bankImport.js';
-import { bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, setEmployeeActive } from '../services/payroll.js';
+import { bookPayrollTax, bookPayslip, createEmployee, createPayslip, listEmployees, listPayslips, payrollYearSummary, recalculateDraftPayslips, setEmployeeActive } from '../services/payroll.js';
 import { k2AnnualReport, k2ManagementReport } from '../services/k2.js';
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../services/taxes.js';
 import { taxPlanning } from '../services/taxPlanning.js';
@@ -34,6 +34,15 @@ import { k10Computation, generateK10Sru } from '../services/k10.js';
 import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
+import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
+import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
+import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
+import { linkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
+import { writeAudit } from '../services/auditService.js';
+
+const LinkableEntityTypeSchema = z.enum(['invoice', 'receipt', 'supplier_invoice', 'payslip']);
+
+const DocumentEntityTypeSchema = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']);
 
 export interface ActionContext {
   client: PoolClient;
@@ -125,6 +134,144 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ invoice_id: UuidSchema }).strict(),
     handler: (ctx, i: { invoice_id: string }) => getInvoice(ctx.client, ctx.companyId, i.invoice_id),
+  }),
+  def({
+    name: 'list_fiscal_years',
+    title: 'Lista räkenskapsår',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listFiscalYears(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'list_vouchers',
+    title: 'Lista verifikat',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema.optional(), from: IsoDateSchema.optional(), to: IsoDateSchema.optional(),
+      source_type: safeText(40).optional(), limit: z.number().int().min(1).max(1000).optional(),
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id?: string; from?: string; to?: string; source_type?: string; limit?: number }) =>
+      listVouchers(ctx.client, ctx.companyId, { fiscalYearId: i.fiscal_year_id, from: i.from, to: i.to, sourceType: i.source_type, limit: i.limit }),
+  }),
+  def({
+    name: 'link_voucher',
+    title: 'Koppla registerpost till befintligt verifikat (baklänkning)',
+    sensitivity: 'write',
+    // K6: bokför INGENTING nytt — kopplar en importerad/okopplad post till sitt
+    // redan bokförda verifikat så reskontran visar rätt bokförd/betald-status.
+    inputSchema: z.object({
+      entity_type: LinkableEntityTypeSchema,
+      entity_id: UuidSchema,
+      voucher_id: UuidSchema,
+      mark_paid: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string; voucher_id: string; mark_paid?: boolean }) =>
+      linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: i.mark_paid }),
+  }),
+  def({
+    name: 'suggest_voucher_links',
+    title: 'Föreslå verifikatkopplingar för okopplade registerposter',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      entity_type: LinkableEntityTypeSchema.optional(),
+      from: IsoDateSchema.optional(),
+      to: IsoDateSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type?: LinkableEntityType; from?: string; to?: string }) =>
+      suggestVoucherLinks(ctx.client, ctx.companyId, { entityType: i.entity_type, from: i.from, to: i.to }),
+  }),
+  def({
+    name: 'set_vat_method',
+    title: 'Ställ in momsmetod (faktura-/kontantmetod)',
+    sensitivity: 'write',
+    inputSchema: z.object({ vat_method: z.enum(['invoice', 'cash']) }).strict(),
+    handler: async (ctx, i: { vat_method: 'invoice' | 'cash' }) => {
+      await ctx.client.query('UPDATE companies SET vat_method = $2 WHERE id = $1', [ctx.companyId, i.vat_method]);
+      await writeAudit(ctx.client, { companyId: ctx.companyId, userId: ctx.userId, action: 'tax.vat_method_set', entityType: 'company', entityId: ctx.companyId, details: { vat_method: i.vat_method } });
+      return { vat_method: i.vat_method };
+    },
+  }),
+  def({
+    name: 'delete_draft_invoice',
+    title: 'Radera fakturautkast (obokat)',
+    sensitivity: 'write',
+    // K7: oföränderligheten gäller BOKFÖRDA verifikat — ett utkast som aldrig
+    // nått huvudboken får raderas (t.ex. registrerat på fel kund). Bokförda
+    // poster avvisas (409) och rättas via rättelseverifikat. Auditloggas med
+    // snapshot av raden.
+    inputSchema: z.object({ invoice_id: UuidSchema }).strict(),
+    handler: (ctx, i: { invoice_id: string }) => deleteDraftInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id),
+  }),
+  def({
+    name: 'delete_draft_receipt',
+    title: 'Radera kvittoutkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ receipt_id: UuidSchema }).strict(),
+    handler: (ctx, i: { receipt_id: string }) => deleteDraftReceipt(ctx.client, ctx.companyId, ctx.userId, i.receipt_id),
+  }),
+  def({
+    name: 'delete_draft_supplier_invoice',
+    title: 'Radera leverantörsfakturautkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ supplier_invoice_id: UuidSchema }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string }) => deleteDraftSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i.supplier_invoice_id),
+  }),
+  def({
+    name: 'delete_draft_payslip',
+    title: 'Radera lönebeskedsutkast (obokat)',
+    sensitivity: 'write',
+    inputSchema: z.object({ payslip_id: UuidSchema }).strict(),
+    handler: (ctx, i: { payslip_id: string }) => deleteDraftPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id),
+  }),
+  def({
+    name: 'attach_document',
+    title: 'Bilägg dokument till en registerpost',
+    sensitivity: 'write',
+    // Filinnehåll som base64 (pdf/png/jpg, max 10 MB) — valideras mot ändelse
+    // OCH magic bytes, lagras med UUID-namn utanför webroten (fileStorage).
+    inputSchema: z.object({
+      entity_type: DocumentEntityTypeSchema,
+      entity_id: UuidSchema,
+      filename: safeText(200),
+      content_base64: z.string().min(1).max(15_000_000),
+      title: safeText(200).optional(),
+    }).strict(),
+    handler: (ctx, i: { entity_type: DocumentEntityType; entity_id: string; filename: string; content_base64: string; title?: string }) =>
+      attachDocument(ctx.client, ctx.companyId, ctx.userId, {
+        entityType: i.entity_type, entityId: i.entity_id, filename: i.filename,
+        contentBase64: i.content_base64, title: i.title,
+      }),
+  }),
+  def({
+    name: 'list_documents',
+    title: 'Lista bilagda dokument',
+    sensitivity: 'read',
+    inputSchema: z.object({ entity_type: DocumentEntityTypeSchema.optional(), entity_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { entity_type?: DocumentEntityType; entity_id?: string }) =>
+      listDocuments(ctx.client, ctx.companyId, { entityType: i.entity_type, entityId: i.entity_id }),
+  }),
+  def({
+    name: 'get_document',
+    title: 'Hämta bilagt dokument (metadata + ev. innehåll)',
+    sensitivity: 'read',
+    inputSchema: z.object({ document_id: UuidSchema, include_content: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { document_id: string; include_content?: boolean }) =>
+      getDocument(ctx.client, ctx.companyId, i.document_id, { includeContent: i.include_content }),
+  }),
+  def({
+    name: 'generate_payslip_pdf',
+    title: 'Generera lönespecifikation (PDF) och bilägg på lönebeskedet',
+    sensitivity: 'write',
+    inputSchema: z.object({ payslip_id: UuidSchema }).strict(),
+    handler: (ctx, i: { payslip_id: string }) =>
+      generateAndAttachPayslipPdf(ctx.client, ctx.companyId, ctx.userId, i.payslip_id, new Date().toISOString().slice(0, 10)),
+  }),
+  def({
+    name: 'get_voucher',
+    title: 'Hämta verifikat med rader',
+    sensitivity: 'read',
+    inputSchema: z.object({ voucher_id: UuidSchema }).strict(),
+    handler: (ctx, i: { voucher_id: string }) => getVoucher(ctx.client, ctx.companyId, i.voucher_id),
   }),
   def({
     name: 'vat_report',
@@ -514,19 +661,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'book_supplier_invoice',
     title: 'Bokför leverantörsfaktura',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id?: string }) =>
       bookSupplierInvoice(ctx.client, ctx.companyId, ctx.userId, i.supplier_invoice_id, i.fiscal_year_id),
   }),
   def({
     name: 'register_supplier_payment',
     title: 'Registrera betalning på leverantörsfaktura',
     sensitivity: 'sensitive',
+    // fiscal_year_id kan utelämnas — härleds ur payment_date (olåst år krävs).
     inputSchema: z.object({
-      supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema,
+      supplier_invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional(), payment_date: IsoDateSchema,
       amount_ore: OreSchema.optional(), bank_account: AccountNumberSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+    handler: (ctx, i: { supplier_invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
       recordSupplierPayment(ctx.client, ctx.companyId, ctx.userId, { supplierInvoiceId: i.supplier_invoice_id, fiscalYearId: i.fiscal_year_id, paymentDate: i.payment_date, amountOre: i.amount_ore, bankAccount: i.bank_account }),
   }),
 
@@ -740,16 +888,62 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'create_payslip',
     title: 'Skapa lönebesked (utkast)',
     sensitivity: 'write',
-    inputSchema: z.object({ employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), gross_ore: OreSchema.optional() }).strict(),
-    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number }) => createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+    // tax_ore = manuell jämkning; utelämnad slås skatten upp i tabell 30 för
+    // utbetalningsårets tabell (platt tax_rate som fallback utanför intervallet).
+    // payment_date default: den 25:e i perioden med svensk bankdagsregel.
+    // Semesterersättning: include_vacation_pay → 12 %, vacation_pay_ore → eget belopp.
+    inputSchema: z.object({
+      employee_id: UuidSchema, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+      gross_ore: OreSchema.optional(), tax_ore: OreSchema.optional(),
+      payment_date: IsoDateSchema.optional(),
+      vacation_pay_ore: OreSchema.optional(), include_vacation_pay: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { employee_id: string; period: string; gross_ore?: number; tax_ore?: number; payment_date?: string; vacation_pay_ore?: number; include_vacation_pay?: boolean }) =>
+      createPayslip(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'payroll_year_summary',
+    title: 'Ackumulerad lön per kalenderår (brutto/skatt/netto/arbetsgivaravgift)',
+    sensitivity: 'read',
+    inputSchema: z.object({ year: z.number().int().min(2000).max(2100), employee_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { year: number; employee_id?: string }) =>
+      payrollYearSummary(ctx.client, ctx.companyId, i.year, { employee_id: i.employee_id }),
+  }),
+  def({
+    name: 'recalculate_draft_payslips',
+    title: 'Räkna om skatten på obokade lönebesked (tabell 30)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      from_period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+      to_period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+    }).strict(),
+    handler: (ctx, i: { from_period?: string; to_period?: string }) =>
+      recalculateDraftPayslips(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({
     name: 'book_payslip',
-    title: 'Bokför lönebesked',
+    title: 'Bokför lönebesked (kontantmetod: 7010 D / 1930 K = netto)',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema, payment_date: IsoDateSchema }).strict(),
-    handler: (ctx, i: { payslip_id: string; fiscal_year_id: string; payment_date: string }) =>
+    // payment_date default: lönebeskedets utbetalningsdatum. fiscal_year_id
+    // utelämnad härleds ur datumet (kräver olåst räkenskapsår).
+    inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema.optional(), payment_date: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { payslip_id: string; fiscal_year_id?: string; payment_date?: string }) =>
       bookPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id, i.fiscal_year_id, i.payment_date),
+  }),
+  def({
+    name: 'book_payroll_tax',
+    title: 'Bokför skattekontobetalning för lön (2510 D / 1930 K = skatt + arbetsgivaravgift)',
+    sensitivity: 'sensitive',
+    // Beloppet föreslås ur periodens lönebesked (avrundat till hela kronor);
+    // payment_date default: den 12:e månaden efter med bankdagsregeln.
+    inputSchema: z.object({
+      period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+      fiscal_year_id: UuidSchema.optional(),
+      payment_date: IsoDateSchema.optional(),
+      amount_ore: OreSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number }) =>
+      bookPayrollTax(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({
     name: 'create_receipt',
@@ -801,16 +995,16 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'book_invoice',
     title: 'Bokför faktura',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ invoice_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ invoice_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id?: string }) =>
       bookInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id, i.fiscal_year_id),
   }),
   def({
     name: 'book_receipt',
     title: 'Bokför kvitto',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ receipt_id: UuidSchema, fiscal_year_id: UuidSchema }).strict(),
-    handler: (ctx, i: { receipt_id: string; fiscal_year_id: string }) =>
+    inputSchema: z.object({ receipt_id: UuidSchema, fiscal_year_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { receipt_id: string; fiscal_year_id?: string }) =>
       bookReceipt(ctx.client, ctx.companyId, ctx.userId, i.receipt_id, i.fiscal_year_id),
   }),
   def({
@@ -819,16 +1013,17 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'sensitive',
     // amount_ore utelämnas → betalar återstående skuld. Delbetalning stöds:
     // beloppet får aldrig överstiga återstoden (överbetalningsspärr).
+    // fiscal_year_id kan utelämnas — härleds ur payment_date (olåst år krävs).
     inputSchema: z
       .object({
         invoice_id: UuidSchema,
-        fiscal_year_id: UuidSchema,
+        fiscal_year_id: UuidSchema.optional(),
         payment_date: IsoDateSchema,
         amount_ore: OreSchema.optional(),
         bank_account: AccountNumberSchema.optional(),
       })
       .strict(),
-    handler: (ctx, i: { invoice_id: string; fiscal_year_id: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
+    handler: (ctx, i: { invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) =>
       recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
         invoiceId: i.invoice_id,
         fiscalYearId: i.fiscal_year_id,
@@ -836,6 +1031,37 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         amountOre: i.amount_ore,
         bankAccount: i.bank_account,
       }),
+  }),
+  def({
+    name: 'book_invoice_and_register_payment',
+    title: 'Bokför faktura OCH registrera betalning (ett godkännande)',
+    sensitivity: 'sensitive',
+    // K4: composite-action för det vanligaste beroendet — betalningen kräver
+    // en bokförd faktura. Köas som EN godkännandepost med båda stegen synliga
+    // och körs atomiskt i samma transaktion (redan bokförd faktura tolereras;
+    // då registreras bara betalningen).
+    inputSchema: z
+      .object({
+        invoice_id: UuidSchema,
+        fiscal_year_id: UuidSchema.optional(),
+        payment_date: IsoDateSchema,
+        amount_ore: OreSchema.optional(),
+        bank_account: AccountNumberSchema.optional(),
+      })
+      .strict(),
+    handler: async (ctx, i: { invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) => {
+      const current = await getInvoice(ctx.client, ctx.companyId, i.invoice_id);
+      const bookedNow = !current.voucher_id;
+      if (bookedNow) await bookInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id, i.fiscal_year_id);
+      const paid = await recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
+        invoiceId: i.invoice_id,
+        fiscalYearId: i.fiscal_year_id,
+        paymentDate: i.payment_date,
+        amountOre: i.amount_ore,
+        bankAccount: i.bank_account,
+      });
+      return { booked_now: bookedNow, invoice: paid };
+    },
   }),
   def({
     name: 'post_voucher',

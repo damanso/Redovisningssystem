@@ -49,15 +49,20 @@ export async function agiDeclaration(client: PoolClient, companyId: string, peri
 
   const rows = await client.query<{
     employee_name: string; personnummer: string | null;
-    gross_ore: string; tax_ore: string; employer_contribution_ore: string;
+    gross_ore: string; tax_ore: string; employer_contribution_ore: string; tax_source: string;
   }>(
     `SELECT e.name AS employee_name, e.personnummer,
-            p.gross_ore, p.tax_ore, p.employer_contribution_ore
+            p.gross_ore, p.tax_ore, p.employer_contribution_ore, p.tax_source
      FROM payslips p JOIN employees e ON e.id = p.employee_id
      WHERE p.company_id = $1 AND p.period = $2 AND p.status <> 'cancelled'
      ORDER BY e.name, e.id`,
     [companyId, period],
   );
+
+  // K1: skatten på lönebeskeden kommer nu primärt ur tabell 30 (eller en manuell
+  // jämkning). Schablonvarningen visas bara om någon post fortfarande använder
+  // den platta fallback-satsen.
+  const usesFlatRate = rows.rows.some((r) => r.tax_source === 'flat_rate');
 
   let grossTotal = 0, taxTotal = 0, employerTotal = 0;
   const individuals: AgiIndividual[] = rows.rows.map((r, i) => {
@@ -88,7 +93,9 @@ export async function agiDeclaration(client: PoolClient, companyId: string, peri
       to_pay_total_ore: taxTotal + employerTotal,
     },
     individuals,
-    disclaimer: 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. Preliminärskatten bygger på en platt skattesats per anställd (inte Skatteverkets skattetabell) — stäm av mot verkliga skatteavdrag. Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.',
+    disclaimer: usesFlatRate
+      ? 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. En eller flera lönebesked använder en platt skattesats (fallback utanför skattetabellens intervall) — stäm av mot verkliga skatteavdrag. Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.'
+      : 'Beräknad arbetsgivardeklaration (AGI) ur lönekörningen. Preliminärskatten följer Skatteverkets tabell 30 (respektive manuell jämkning eller historiskt faktiskt avdrag för äldre perioder). Ingen digital inlämning; ladda upp den genererade filen själv i Skatteverkets e-tjänst.',
   };
 }
 
