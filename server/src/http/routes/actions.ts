@@ -7,6 +7,7 @@ import { BadRequestError, ForbiddenError } from '../../lib/errors.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { safeText } from '../../lib/validation.js';
 import { aiOcrReceipt } from '../../services/aiOcr.js';
+import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { listApprovals } from '../../services/approvals.js';
 import { getActor, getUserId } from '../middleware/authenticate.js';
 
@@ -38,7 +39,16 @@ actionsRouter.get('/approvals', async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const status = typeof req.query.status === 'string' ? req.query.status : undefined;
-  const approvals = await withTenantTransaction(userId, companyId, (c) => listApprovals(c, companyId, status));
+  // K4: pending-förslag annoteras med sitt (färskt beräknade) beroende, så
+  // kön visar "godkänn X först" i stället för att fela vid godkännandet.
+  const approvals = await withTenantTransaction(userId, companyId, async (c) => {
+    const rows = await listApprovals(c, companyId, status);
+    return Promise.all(rows.map(async (a) => {
+      if (a.status !== 'pending') return a;
+      const dependency = await checkApprovalDependency(c, companyId, a.action, a.input);
+      return dependency ? { ...a, dependency } : a;
+    }));
+  });
   res.json({ approvals });
 });
 

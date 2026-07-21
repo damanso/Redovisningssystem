@@ -991,6 +991,37 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       }),
   }),
   def({
+    name: 'book_invoice_and_register_payment',
+    title: 'Bokför faktura OCH registrera betalning (ett godkännande)',
+    sensitivity: 'sensitive',
+    // K4: composite-action för det vanligaste beroendet — betalningen kräver
+    // en bokförd faktura. Köas som EN godkännandepost med båda stegen synliga
+    // och körs atomiskt i samma transaktion (redan bokförd faktura tolereras;
+    // då registreras bara betalningen).
+    inputSchema: z
+      .object({
+        invoice_id: UuidSchema,
+        fiscal_year_id: UuidSchema.optional(),
+        payment_date: IsoDateSchema,
+        amount_ore: OreSchema.optional(),
+        bank_account: AccountNumberSchema.optional(),
+      })
+      .strict(),
+    handler: async (ctx, i: { invoice_id: string; fiscal_year_id?: string; payment_date: string; amount_ore?: number; bank_account?: number }) => {
+      const current = await getInvoice(ctx.client, ctx.companyId, i.invoice_id);
+      const bookedNow = !current.voucher_id;
+      if (bookedNow) await bookInvoice(ctx.client, ctx.companyId, ctx.userId, i.invoice_id, i.fiscal_year_id);
+      const paid = await recordInvoicePayment(ctx.client, ctx.companyId, ctx.userId, {
+        invoiceId: i.invoice_id,
+        fiscalYearId: i.fiscal_year_id,
+        paymentDate: i.payment_date,
+        amountOre: i.amount_ore,
+        bankAccount: i.bank_account,
+      });
+      return { booked_now: bookedNow, invoice: paid };
+    },
+  }),
+  def({
     name: 'post_voucher',
     title: 'Bokför verifikat',
     sensitivity: 'sensitive',

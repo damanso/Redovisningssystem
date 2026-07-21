@@ -182,10 +182,14 @@ async function main(): Promise<void> {
       // Känslig action → 202 pending_approval. Aldrig utförd av AI:t.
       if (status === 202 && body && typeof body === 'object' && 'approval' in body) {
         const approval = (body as { approval: { id: string } }).approval;
+        // K4: beroendehint (t.ex. "fakturan är inte bokförd — godkänn book_invoice
+        // först") följer med direkt så agenten kan köa i rätt ordning.
+        const dep = (body as { dependency?: { satisfied: boolean; message: string } }).dependency;
+        const depHint = dep && !dep.satisfied ? `\n⚠ Beroende: ${dep.message}` : '';
         return textResult(
           `⏳ Kräver mänskligt godkännande. Ett förslag har lagts i godkännandekön ` +
             `(id ${approval.id}). En människa godkänner det i webbvyn under "Att göra" ` +
-            `innan det utförs. Ingenting har bokförts ännu.`,
+            `innan det utförs. Ingenting har bokförts ännu.${depHint}`,
         );
       }
       if (status >= 400) {

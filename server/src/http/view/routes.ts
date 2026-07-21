@@ -32,6 +32,7 @@ import { inviteMember, listMembers, removeMember, setMemberRole } from '../../se
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } from '../../services/fileStorage.js';
 import { listDocuments } from '../../services/documents.js';
+import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
@@ -2373,7 +2374,14 @@ viewRouter.post('/c/:companyId/documents/upload', documentUpload, page(async (re
 
 // Att göra: AI-/agentförslag som väntar på mänskligt godkännande (read-only vy).
 viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', async (client, companyId, req) => {
-  const pending = await listApprovals(client, companyId, 'pending');
+  const pendingRaw = await listApprovals(client, companyId, 'pending');
+  // K4: annotera varje förslag med sitt (färskt beräknade) beroende så att
+  // ordningen syns i kön — "godkänn Bokför faktura X först" — i stället för
+  // ett rött fel först vid godkännandeklicket.
+  const pending = await Promise.all(pendingRaw.map(async (a) => ({
+    ...a,
+    dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
+  })));
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
     if (v === null || v === undefined) return '—';
@@ -2397,6 +2405,9 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                 <span class="code" style="margin-left:auto">${a.action}</span>
               </div>
               <div class="ai-card__why">Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.</div>
+              ${a.dependency && !a.dependency.satisfied
+                ? html`<div class="ai-card__why" style="color:#b45309">⚠ ${a.dependency.message}</div>`
+                : ''}
               <div class="ai-fields">
                 ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
               </div>
