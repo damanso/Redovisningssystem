@@ -1,7 +1,12 @@
 # Regler för det här repot
 
-Källa till sanning: `GRANSKNING_OCH_OMSTARTSPLAN.md` (analys + omstartsplan) och
-`KICKOFF_NYSESSION.md` (byggregler + acceptanskriterier per fas). Läs dem först.
+**LÄS FÖRST: `docs/STATUS.md`** — projektets aktuella läge, driftmiljö,
+sessionslogg och lärdomar. En ny session ska ALDRIG börja på noll: läs STATUS,
+fortsätt därifrån, och uppdatera sessionsloggen i STATUS.md innan du avslutar
+en session som ändrat något (committa+pusha den med övriga ändringar).
+
+Källa till sanning för byggreglerna: `GRANSKNING_OCH_OMSTARTSPLAN.md` (analys +
+omstartsplan) och `KICKOFF_NYSESSION.md` (byggregler + acceptanskriterier per fas).
 
 ## Icke förhandlingsbart
 
