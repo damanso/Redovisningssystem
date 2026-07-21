@@ -29,7 +29,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   men INTE aktiverad — användaren valde lokal drift.
 - Branch: `claude/awesome-edison-n89mid`. Allt arbete committas+pushas dit.
 
-## Byggt och verifierat (allt grönt: `npm test` = 364 tester, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 433 tester i 60 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -46,6 +46,14 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   med 📎-länk; "Anslut AI"-sida som mintar MCP-token + färdig konfig.
 - **MCP-server:** `server/src/mcp/server.ts` (env REDOVISNING_API_URL/_COMPANY_ID/
   _AGENT_TOKEN), speglar action-manifestet; agent-token kan aldrig godkänna.
+- **K-serien (2026-07-21, payroll utan workarounds):** tabell 30-skatt
+  (årsversionerad + historiska H1-värden 13 360/43 140 per Tillägg 1),
+  payment_date med bankdagsregel, semesterersättning, kontantmetodsbokföring
+  7010/1930 + book_payroll_tax 2510/1930, lönespec-PDF + dokumentkoppling
+  (attach/list/get_document), list_fiscal_years/list_vouchers + härlett
+  räkenskapsår, beroendemedveten godkännandekö + composite bokning-och-
+  betalning, link_voucher-baklänkning + momsmetodvakt, draft-delete,
+  mcp:install/mcp:token/self_check. Se docs/MCP_ACTIONS.md + ACCEPTANS.md.
 
 ## Viktiga buggfixar (lärdomar — återinför inte)
 
@@ -71,6 +79,10 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - SIE-importens #IB-sektion (ingående balanser) läses inte.
 - E-postutskick kräver SMTP_*-env (annars stannar det i outbox/notiser).
 - Anställd/lönekörning har ingen skapa-UI i vyn (görs via MCP/API-actions).
+- Kvarstår i PRODUKTIONSDATAN (körs av David via actions efter merge):
+  `recalculate_draft_payslips` (H1→13 360, juli→12 943),
+  `suggest_voucher_links`+`link_voucher` (2025/H1-baklänkningen),
+  `delete_draft_invoice` för fakturaregister 13–18 (efter Davids OK).
 
 ## Sandbox-fallgropar (för AI-sessioner i denna repo-miljö)
 
@@ -82,6 +94,14 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-21 (session: payroll-system-workarounds):** Hela K-serien byggd
+  (K1–K7 + Tillägg 1, se ovan) på branchen
+  `claude/payroll-system-workarounds-lctd41` (ombaserad på awesome-edison).
+  Rött CI (LOC-236) fixat. Davids merge av branchen in i awesome-edison
+  (2e5b300) låg röd — ett strict-null-fel i det nya Godkänn-knapp-testet —
+  rättat i d5447a6 som innehåller ALLT (bägge brancherna). main är ännu INTE
+  uppdaterad (pekar på gamla legacy-koden). 433 tester gröna.
 
 - **2026-07-17 (session: awesome-edison):** Fixat "död" Godkänn-knapp (konflikter
   syns nu som notis; rotorsak: betalning föreslagen på obokförd faktura).
