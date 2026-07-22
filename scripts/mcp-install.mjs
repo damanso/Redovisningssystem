@@ -44,7 +44,7 @@ if (!existsSync(entry)) {
 
 config.mcpServers = config.mcpServers ?? {};
 config.mcpServers[SERVER_KEY] = {
-  command: 'node',
+  command: process.execPath,
   args: [entry],
   env: {
     REDOVISNING_API_URL: apiUrl,
