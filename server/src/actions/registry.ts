@@ -36,6 +36,7 @@ import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
 import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
+import { setCompanyLogo, updateCompanySettings } from '../services/companyLogo.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
 import { linkVoucher, unlinkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
@@ -236,6 +237,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ payslip_id: UuidSchema }).strict(),
     handler: (ctx, i: { payslip_id: string }) => deleteDraftPayslip(ctx.client, ctx.companyId, ctx.userId, i.payslip_id),
+  }),
+  def({
+    name: 'update_company_settings',
+    title: 'Uppdatera bolagsuppgifter (adress, kontakt, betalinfo)',
+    sensitivity: 'write',
+    // Fälten som faktura-PDF:en använder. Kolumnnamn via allowlist i
+    // services/companyLogo.ts — aldrig från indata. Namn/org.nr ingår inte.
+    inputSchema: z.object({
+      address: safeText(200).optional(), postal_code: safeText(20).optional(), city: safeText(100).optional(),
+      email: safeText(200).optional(), phone: safeText(50).optional(), vat_number: safeText(30).optional(),
+      bankgiro: safeText(20).optional(), plusgiro: safeText(20).optional(), bank_account: safeText(50).optional(),
+      iban: safeText(50).optional(), bic: safeText(20).optional(), website: safeText(200).optional(),
+    }).strict(),
+    handler: (ctx, i) => updateCompanySettings(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_company_logo',
+    title: 'Sätt bolagets logotyp (visas på faktura-PDF:en)',
+    sensitivity: 'write',
+    // Bild (png/jpg) som base64 — samma validering som all uppladdning.
+    // Komposit-FK:n i 0045 garanterar att logotypen alltid är bolagets egen fil.
+    inputSchema: z.object({
+      filename: safeText(200),
+      content_base64: z.string().min(1).max(15_000_000),
+    }).strict(),
+    handler: (ctx, i: { filename: string; content_base64: string }) =>
+      setCompanyLogo(ctx.client, ctx.companyId, ctx.userId, { filename: i.filename, contentBase64: i.content_base64 }),
   }),
   def({
     name: 'attach_document',
@@ -777,6 +805,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         invoice_date: IsoDateSchema,
         due_date: IsoDateSchema.optional(),
         reference: safeText(200).optional(),
+        // Mallens "Vår referens" resp. "Leveranstidpunkt" (reference är "Er referens").
+        our_reference: safeText(200).optional(),
+        delivery_period: safeText(100).optional(),
         reverse_charge: z.boolean().optional(),
         housework_type: z.enum(['rot', 'rut']).optional(),
         labor_cost_ore: z.number().int().nonnegative().safe().optional(),

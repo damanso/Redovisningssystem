@@ -142,7 +142,9 @@ describe('faktura: nummer/OCR, totaler i ören, bokföring, PDF med Bankgiro', (
     expect(buf.toString('latin1').startsWith('%PDF-')).toBe(true);
     const text = pdfText(buf);
     expect(text).toContain('5555-6666'); // Bankgiro syns på PDF:en
-    expect(text).toContain('Betalningsinformation');
+    // Mallen (porterad från Locollabs riktiga faktura) skriver betalmålet som
+    // "Betalas till: Bankgiro …" i metadatakolumnen — inte ett eget block.
+    expect(text).toContain('Betalas till');
     expect(text).toContain('Handel AB');
   });
 });

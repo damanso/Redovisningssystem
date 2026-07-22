@@ -2232,6 +2232,7 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
   return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.invoice_number)} — ${inv.customer_name as string}</h1>
       <p class="lede"><a href="/app/c/${companyId}/invoices">← Alla fakturor</a></p></div></div>
     ${felNotis(req)}
+    ${req.query.pdfny === '1' ? html`<p class="lede" style="margin-top:10px">${chip('PDF:en är omgenererad med senaste mallen — ladda ner den på nytt nedan', 'ok', '✓')}</p>` : ''}
     <div class="kpi-grid">
       ${kpiCell('Status', html`${statusChip(String(inv.status))}`)}
       ${kpiCell('Totalt inkl. moms', amount(inv.total_ore as number))}
@@ -2240,7 +2241,9 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
     </div>
     <div class="table-wrap" style="margin-top:12px"><table><tbody>
       <tr><td>OCR-nummer</td><td class="code">${(inv.ocr as string) ?? '—'}</td></tr>
-      <tr><td>Referens</td><td>${(inv.reference as string) ?? '—'}</td></tr>
+      ${inv.our_reference ? html`<tr><td>Vår referens</td><td>${inv.our_reference as string}</td></tr>` : ''}
+      <tr><td>Er referens</td><td>${(inv.reference as string) ?? '—'}</td></tr>
+      ${inv.delivery_period ? html`<tr><td>Leveranstidpunkt</td><td>${inv.delivery_period as string}</td></tr>` : ''}
       ${inv.reverse_charge ? html`<tr><td>Moms</td><td>${chip('Omvänd skattskyldighet', 'info')}</td></tr>` : ''}
       ${inv.housework_type ? html`<tr><td>Husavdrag</td><td>${chip(String(inv.housework_type).toUpperCase(), 'ok')} ${amount(inv.housework_reduction_ore as number)}</td></tr>` : ''}
       ${inv.voucher_id ? html`<tr><td>Verifikat</td><td class="code">${inv.voucher_id as string}</td></tr>` : ''}
@@ -2264,6 +2267,8 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
       ${inv.voucher_id && inv.status !== 'paid' ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/pay" style="display:inline">
         <input type="hidden" name="payment_date" value="${today}">
         <button class="btn btn--ghost btn--sm" type="submit">Registrera betalning…</button></form>` : ''}
+      ${inv.pdf_file_id ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/pdf/regenerate" style="display:inline">
+        <button class="btn btn--ghost btn--sm" type="submit">Generera om PDF (senaste mallen)</button></form>` : ''}
       ${isDraft ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/delete" style="display:inline">
         <button class="btn btn--ghost btn--sm" type="submit" style="color:#b91c1c">Radera utkastet</button></form>` : ''}
     </div>
@@ -2293,6 +2298,18 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId/pdf', page(async (req, res) =>
   }
   const { buffer } = await generateInvoicePdfFile(companyId, userId, invoiceId);
   res.send(buffer);
+}));
+
+// Generera om PDF:en med den senaste mallen (t.ex. efter mallporten eller ny
+// logotyp): en NY fil arkiveras och blir fakturans pdf_file_id — den gamla
+// filen finns kvar i arkivet (historik raderas aldrig).
+viewRouter.post('/c/:companyId/invoices/:invoiceId/pdf/regenerate', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  await generateInvoicePdfFile(companyId, userId, invoiceId);
+  res.redirect(`/app/c/${companyId}/invoices/${invoiceId}?pdfny=1`);
 }));
 
 // Radera ett obokat fakturautkast — via action-lagret (delete_draft_invoice,

@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (84
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (109
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 458 tester i 62 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 464 tester i 63 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -103,7 +103,19 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   in i etikettblocket — input ska vara sista barnet i `.field`); en parallell
   session landade samma fix på main (57402d1), versionerna sammanfogade.
   `unlink_voucher` (Davids/parallellsessionens 88b98ba) fick sitt utlovade
-  dedikerade test (4 st) + dokumentation i MCP_ACTIONS.md. 458 tester gröna.
+  dedikerade test (4 st) + dokumentation i MCP_ACTIONS.md.
+  **Fakturamallen porterad från Davids RIKTIGA skickade faktura (0000024)**
+  — inte gamla systemets layout: logotyp uppe till höger (companies.
+  logo_file_id, tenant-säker komposit-FK i 0045, sätts via set_company_logo),
+  Från/Fakturaadress-block, metadatakolumn (OCR, förfallodatum "(N dagar)",
+  Leveranstidpunkt, Betalas till, 7-siffrigt fakturanummer, Vår/Er referens,
+  IBAN, BIC/Swift), tabell Kvantitet/Beskrivning/Pris/Totalt (timpris
+  "SEK/h"), sidfot i fyra kolumner (momsreg/F-skatt, kontakt, hemsida,
+  bankgiro). Nya bolagsfält bic/website + invoices.our_reference/
+  delivery_period; update_company_settings-action (MCP-väg för bolags-
+  uppgifter); "Generera om PDF" på fakturadetaljsidan (ny fil, arkivet
+  behålls). ROT/RUT- och omvänd skattskyldighet-texterna (lagkrav) behållna.
+  464 tester gröna i 63 sviter.
 
 - **2026-07-21 (session: payroll-system-workarounds, forts.):** Tillägg 2 —
   nya 3:12-modellen för K10 (inkomstår 2026+): grundbelopp 4 IBB (322 400 kr

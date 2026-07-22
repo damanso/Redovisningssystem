@@ -190,6 +190,31 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 OBOKADE utkast (RLS-policyn släpper aldrig igenom bokförda poster).
 Auditloggas med snapshot; dokumentkopplingar städas, bilagda filer behålls.
 
+### Fakturamallen (Locollabs riktiga mall)
+
+Faktura-PDF:en (nedladdning i vyn, `POST /invoices/:id/pdf` i API:t) följer
+**Locollabs riktiga, skickade faktura** (porterad 1:1 från faktura 0000024,
+juni 2026) — inte gamla systemets layout: logotyp uppe till höger,
+"Från"- och "Fakturaadress"-block, stor Faktura-rubrik, metadatakolumn
+(OCR-nummer, fakturadatum, förfallodatum med "(N dagar)", Leveranstidpunkt,
+"Betalas till: Bankgiro …", 7-siffrigt fakturanummer, Vår/Er referens, IBAN,
+BIC/Swift), radtabell Kvantitet/Beskrivning/Pris/Totalt (timpris som
+"1 100,00 SEK/h"), summering Exklusive moms/Moms (NN%)/Att betala samt
+sidfot i fyra kolumner (bolag, momsreg.nr + F-skatt, telefon/e-post,
+hemsida/bankgiro). ROT/RUT-specifikationen och hänvisningen vid omvänd
+skattskyldighet är lagkrav och ligger kvar under summeringen.
+
+- `update_company_settings` (write) — bolagsuppgifterna som mallen använder
+  (adress, kontakt, momsreg.nr, bankgiro/plusgiro/bankkonto, IBAN, **bic**,
+  **website**) via allowlist. Namn/org.nr ingår medvetet inte.
+- `set_company_logo` (write) — logotyp som base64 (png/jpg, samma validering
+  som all uppladdning); lagras i dokumentarkivet och kopplas via en
+  tenant-säker komposit-FK (kan aldrig peka på ett annat bolags fil).
+- `create_invoice` har fått `our_reference` ("Vår referens" — `reference` är
+  "Er referens") och `delivery_period` ("Leveranstidpunkt", fritext).
+- Vyns fakturadetaljsida har **Generera om PDF** — ny fil med senaste mallen
+  arkiveras och blir fakturans PDF; den gamla filen ligger kvar i arkivet.
+
 ### K10 / 3:12 — nya modellen 2026+ och autofyll (Tillägg 2)
 
 - Inkomstår **2026+** beräknas enligt **grundbeloppsmodellen** (riksdagsbeslut

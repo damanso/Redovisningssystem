@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **458 tester passerar** i 62 sviter mot
+**Reproducera allt:** `npm test -w server` → **464 tester passerar** i 63 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 458 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 464 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -130,6 +130,7 @@ klarar själv. Acceptansen ur utvecklingsprompten, med testbevis:
 | K6 | link_voucher baklänkar registerposter till befintliga verifikat utan ny bokföring (status härleds, dubbelbokningsspärren består); unlink_voucher ångrar ENBART baklänkningar (auditloggspärr — bokade verifikat rättas via rättelseverifikat); suggest_voucher_links föreslår matchningar som människan bekräftar per rad; momsmetod som inställning + varning vid metodbrott | ✅ | `voucher-links` |
 | T2 (Tillägg 2) | Nya 3:12-modellen för inkomstår 2026+: grundbelopp 322 400 kr (4 × IBB 2025, året före beskattningsåret — källverifierat mot Skatteverket), lönebaserat utrymme (löneavdrag 8 IBB, 50 %, 50×-tak, inga löneuttags-/4 %-krav), sparat utrymme utan uppräkning; ≤2025 oförändrat på öret (regression); persisterade beräkningar autofyller nästa års sparade utrymme; K10-fälten förifylls ur systemdata med källa; utdelningsbarhetsvarning (EK −55 207 → varning vid utdelning > 0); felbadgen för 2026 borta; SRU 2026+ vägras tills fältkoder finns | ✅ | `k10-new-model` |
 | K7 | Draft-delete för obokade utkast (RLS-garanterat, auditloggat med snapshot); bokförda poster avvisas → rättelseverifikat | ✅ | `draft-delete` |
+| Mall | Faktura-PDF:en följer Locollabs RIKTIGA mall (porterad från skickade fakturan 0000024): logotyp uppe till höger (set_company_logo, tenant-säker FK), Från/Fakturaadress-block, metadatakolumn (OCR, "(N dagar)", Leveranstidpunkt, Betalas till, 7-siffrigt nummer, Vår/Er referens, IBAN, BIC/Swift), Kvantitet/Beskrivning/Pris/Totalt med "SEK/h", sidfot i fyra kolumner; update_company_settings via action-lagret; Generera om PDF på detaljsidan (arkivet behålls); ROT/RUT + omvänd skattskyldighet (lagkrav) kvar | ✅ | `invoice-pdf-mall` |
 
 Körbart facit ur prompten, allt testat: lönebesked juli 2026 brutto 56 500 →
 skatt 12 943, netto 43 557, arbavg 17 752,30, payment_date 2026-07-24, PDF

@@ -44,6 +44,8 @@ const UpdateCompanySchema = z
     plusgiro: optText(20),
     bank_account: optText(50),
     iban: optText(50),
+    bic: optText(20),
+    website: optText(200),
     payment_terms: z.number().int().min(0).max(365).optional(),
     approved_for_f_tax: z.boolean().optional(),
     // Tillägg 2 (T2.4): ägaruppgifter för K10-autofyll (inget ägarregister finns).
@@ -66,6 +68,8 @@ const COMPANY_UPDATE_COLUMNS = {
   plusgiro: 'plusgiro',
   bank_account: 'bank_account',
   iban: 'iban',
+  bic: 'bic',
+  website: 'website',
   payment_terms: 'payment_terms',
   approved_for_f_tax: 'approved_for_f_tax',
   owner_share_permille: 'owner_share_permille',
@@ -124,8 +128,8 @@ companiesRouter.get('/:companyId', async (req, res) => {
   const company = await withTenantTransaction(userId, companyId, async (client) => {
     const result = await client.query(
       `SELECT id, name, org_number, address, postal_code, city, email, phone,
-              vat_number, bankgiro, plusgiro, bank_account, iban, payment_terms,
-              approved_for_f_tax, created_at, updated_at
+              vat_number, bankgiro, plusgiro, bank_account, iban, bic, website, payment_terms,
+              approved_for_f_tax, logo_file_id, created_at, updated_at
        FROM companies WHERE id = $1`,
       [companyId],
     );

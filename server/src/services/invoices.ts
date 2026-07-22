@@ -11,7 +11,8 @@ import { writeAudit } from './auditService.js';
 import { generateInvoicePdf } from './pdfService.js';
 import { canonicalPersonnummer, computeHouseworkReduction, HOUSEWORK_RECEIVABLE_ACCOUNT, type HouseworkType } from './housework.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
-import { removeStoredFile, validateUpload, writeStoredFile } from './fileStorage.js';
+import { readFile } from 'node:fs/promises';
+import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } from './fileStorage.js';
 
 export interface InvoiceLineInput {
   article_id?: string;
@@ -29,6 +30,10 @@ export interface CreateInvoiceInput {
   due_date?: string;
   payment_terms?: number;
   reference?: string;
+  /** "Vår referens" på fakturan (reference är "Er referens"). */
+  our_reference?: string;
+  /** "Leveranstidpunkt" på fakturan, fritext (t.ex. "Juni 2026"). */
+  delivery_period?: string;
   notes?: string;
   reverse_charge?: boolean;
   housework_type?: HouseworkType;
@@ -182,11 +187,12 @@ export async function createInvoice(
 
   const inv = await client.query<{ id: string }>(
     `INSERT INTO invoices (company_id, customer_id, invoice_number, ocr, invoice_date, due_date,
-        subtotal_ore, vat_ore, total_ore, reference, notes, reverse_charge,
+        subtotal_ore, vat_ore, total_ore, reference, our_reference, delivery_period, notes, reverse_charge,
         housework_type, labor_cost_ore, housework_reduction_ore, buyer_personnummer, property_designation, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
     [companyId, input.customer_id, number, ocr, input.invoice_date, dueDate,
-      subtotal, vat, total, input.reference ?? null, input.notes ?? null, reverseCharge,
+      subtotal, vat, total, input.reference ?? null, input.our_reference ?? null, input.delivery_period ?? null,
+      input.notes ?? null, reverseCharge,
       houseworkType, houseworkType ? laborCostOre : null, houseworkReductionOre, buyerPersonnummer, propertyDesignation, userId],
   );
   const invoiceId = inv.rows[0]!.id;
@@ -211,7 +217,8 @@ export async function createInvoice(
 export async function getInvoice(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const head = await client.query(
     `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
-            i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.notes,
+            i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.our_reference,
+            i.delivery_period, i.notes,
             i.reverse_charge, i.housework_type, i.labor_cost_ore, i.housework_reduction_ore,
             i.buyer_personnummer, i.property_designation,
             i.pdf_file_id, i.voucher_id, i.customer_id, c.name AS customer_name
@@ -354,9 +361,12 @@ export async function generateInvoicePdfFile(
   companyId: string, userId: string, id: string,
 ): Promise<{ fileId: string; buffer: Buffer }> {
   const buffer = await withTenantTransaction(userId, companyId, async (client) => {
-    const company = await client.query(
-      `SELECT name, org_number, address, postal_code, city, email, phone, vat_number,
-              bankgiro, plusgiro, bank_account, iban, approved_for_f_tax FROM companies WHERE id = $1`,
+    const company = await client.query<{ logo_stored_name: string | null }>(
+      `SELECT c.name, c.org_number, c.address, c.postal_code, c.city, c.email, c.phone, c.vat_number,
+              c.bankgiro, c.plusgiro, c.bank_account, c.iban, c.bic, c.website, c.approved_for_f_tax,
+              f.stored_name AS logo_stored_name
+       FROM companies c LEFT JOIN files f ON f.id = c.logo_file_id
+       WHERE c.id = $1`,
       [companyId],
     );
     const invoice = await getInvoice(client, companyId, id);
@@ -364,15 +374,28 @@ export async function generateInvoicePdfFile(
       'SELECT name, address, postal_code, city, org_number, vat_number FROM customers WHERE id = $1 AND company_id = $2',
       [invoice.customer_id, companyId],
     );
+    // Logotypen läses från arkivet; en saknad/oläsbar fil får aldrig stoppa fakturan.
+    let logo: Buffer | undefined;
+    const logoStoredName = company.rows[0]?.logo_stored_name;
+    if (logoStoredName) {
+      try {
+        logo = await readFile(resolveStoredPath(companyId, logoStoredName));
+      } catch {
+        logo = undefined;
+      }
+    }
     return generateInvoicePdf({
       company: company.rows[0] as never,
       customer: customer.rows[0] as never,
+      logo,
       invoice: {
         invoice_number: invoice.invoice_number as number,
         invoice_date: invoice.invoice_date as string,
         due_date: invoice.due_date as string,
         ocr: invoice.ocr as string | null,
         reference: invoice.reference as string | null,
+        our_reference: invoice.our_reference as string | null,
+        delivery_period: invoice.delivery_period as string | null,
         reverse_charge: invoice.reverse_charge as boolean,
         housework_type: invoice.housework_type as 'rot' | 'rut' | null,
         labor_cost_ore: invoice.labor_cost_ore == null ? null : Number(invoice.labor_cost_ore),

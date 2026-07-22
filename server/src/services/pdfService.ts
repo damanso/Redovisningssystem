@@ -1,10 +1,15 @@
 import PDFDocument from 'pdfkit';
 import { formatOre, type Ore } from '../domain/money.js';
 
-// Skördad och moderniserad från den gamla koden: en A4-faktura-PDF. Skillnader:
-// belopp i heltal ören (aldrig float), Bankgiro/Plusgiro faktiskt med i schemat
-// och på PDF:en (gamla saknade bank_account helt → tom betalinfo), och ingen
-// skrivning till disk här (anroparen lagrar via fileStorage).
+// Fakturamallen är porterad 1:1 från Locollabs riktiga, skickade faktura
+// (0000024, juni 2026) — INTE från gamla systemets layout. Kännetecken:
+// "Från"-block uppe till vänster, logotyp uppe till höger, stor "Faktura"-
+// rubrik, "Fakturaadress"-block till höger, metadatakolumn (OCR, datum,
+// leveranstidpunkt, Betalas till, fakturanummer 7 siffror, referenser,
+// IBAN, BIC/Swift), radtabell Kvantitet/Beskrivning/Pris/Totalt och sidfot
+// i fyra kolumner. Belopp i heltal ören, svenskt format ("114 603,00 SEK").
+// ROT/RUT-blocket och hänvisningen vid omvänd skattskyldighet är lagkrav
+// och behålls under summeringen även om mallfakturan inte hade dem.
 
 export interface InvoicePdfCompany {
   name: string;
@@ -19,6 +24,8 @@ export interface InvoicePdfCompany {
   plusgiro: string | null;
   bank_account: string | null;
   iban: string | null;
+  bic: string | null;
+  website: string | null;
   approved_for_f_tax?: boolean;
 }
 export interface InvoicePdfCustomer {
@@ -46,6 +53,8 @@ export interface InvoicePdfData {
     due_date: string;
     ocr: string | null;
     reference: string | null;
+    our_reference?: string | null;
+    delivery_period?: string | null;
     reverse_charge?: boolean;
     housework_type?: 'rot' | 'rut' | null;
     labor_cost_ore?: Ore | null;
@@ -55,6 +64,28 @@ export interface InvoicePdfData {
   };
   lines: InvoicePdfLine[];
   totals: { subtotal_ore: Ore; vat_ore: Ore; total_ore: Ore };
+  /** Bolagets logotyp (PNG/JPEG) — visas uppe till höger när den finns. */
+  logo?: Buffer;
+}
+
+const GRAY = '#555555';
+const BLACK = '#000000';
+
+function sek(ore: Ore): string {
+  return `${formatOre(ore)} SEK`;
+}
+
+/** "91.000" → "91", "2.500" → "2,5" — mallen skriver antal utan onödiga nollor. */
+function formatQuantity(quantity: string): string {
+  const n = Number(quantity);
+  if (!Number.isFinite(n)) return quantity;
+  return n.toLocaleString('sv-SE', { maximumFractionDigits: 3 });
+}
+
+function daysBetween(fromIso: string, toIso: string): number {
+  const from = new Date(`${fromIso}T00:00:00Z`).getTime();
+  const to = new Date(`${toIso}T00:00:00Z`).getTime();
+  return Math.round((to - from) / 86_400_000);
 }
 
 export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
@@ -73,154 +104,189 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     doc.on('error', reject);
 
     const { company, customer, invoice, lines, totals } = data;
+    const left = 70;
+    const right = 525;
 
-    // Avsändare
-    doc.fontSize(20).font('Helvetica-Bold').text(company.name, 50, 50);
-    doc.fontSize(9).font('Helvetica');
-    let y = 75;
+    // Från-blocket (uppe till vänster).
+    doc.fontSize(8.5).font('Helvetica').fillColor(GRAY).text('Från', left, 78);
+    doc.fontSize(10).fillColor(BLACK);
+    let fy = 92;
     for (const line of [
+      company.name,
       company.address,
       [company.postal_code, company.city].filter(Boolean).join(' ') || null,
-      company.org_number ? `Org.nr: ${company.org_number}` : null,
-      company.vat_number ? `Moms-nr: ${company.vat_number}` : null,
-      company.email,
-      company.phone,
-      company.approved_for_f_tax ? 'Godkänd för F-skatt' : null,
     ]) {
-      if (line) { doc.text(line, 50, y); y += 12; }
+      if (line) { doc.text(line, left, fy); fy += 14; }
     }
 
-    // Fakturarubrik + metadata
-    doc.fontSize(18).font('Helvetica-Bold').text('FAKTURA', 400, 50, { width: 145, align: 'right' });
-    doc.fontSize(9).font('Helvetica');
-    let ry = 78;
-    const meta: [string, string][] = [
-      ['Fakturanr:', String(invoice.invoice_number)],
-      ['Fakturadatum:', invoice.invoice_date],
-      ['Förfallodatum:', invoice.due_date],
-    ];
-    if (invoice.ocr) meta.push(['OCR-nummer:', invoice.ocr]);
-    if (invoice.reference) meta.push(['Referens:', invoice.reference]);
-    for (const [label, value] of meta) {
-      doc.font('Helvetica').text(label, 350, ry, { width: 90, align: 'right' });
-      doc.font('Helvetica-Bold').text(value, 445, ry, { width: 100, align: 'right' });
-      ry += 14;
+    // Logotyp uppe till höger (proportionerna bevaras inom rutan).
+    if (data.logo) {
+      try {
+        doc.image(data.logo, 415, 28, { fit: [115, 135], align: 'right' });
+      } catch {
+        // En trasig bildfil får aldrig stoppa fakturan — PDF:en renderas utan logotyp.
+      }
     }
 
-    // Mottagare
-    doc.fontSize(9).font('Helvetica-Bold').text('Faktureras till:', 50, 150);
-    doc.font('Helvetica');
-    let cy = 164;
+    // Fakturaadress-blocket (till höger, under logotypen).
+    doc.fontSize(8.5).fillColor(GRAY).text('Fakturaadress', 355, 175);
+    doc.fontSize(10).fillColor(BLACK);
+    let cy = 189;
     for (const line of [
       customer.name,
       customer.address,
       [customer.postal_code, customer.city].filter(Boolean).join(' ') || null,
-      customer.org_number ? `Org.nr: ${customer.org_number}` : null,
+      // Vid omvänd skattskyldighet SKA köparen kunna identifieras på fakturan.
+      invoice.reverse_charge ? (customer.org_number ? `Org.nr: ${customer.org_number}` : null) : null,
       invoice.reverse_charge && customer.vat_number ? `Moms-nr: ${customer.vat_number}` : null,
     ]) {
-      if (line) { doc.text(line, 50, cy); cy += 12; }
+      if (line) { doc.text(line, 355, cy, { width: right - 355 }); cy += 14; }
     }
 
-    // Radtabell
-    const tableTop = Math.max(cy, ry) + 25;
-    const cols = { desc: 50, qty: 300, price: 350, vat: 420, amount: 470 };
-    doc.font('Helvetica-Bold').fontSize(9);
-    doc.text('Beskrivning', cols.desc, tableTop);
-    doc.text('Antal', cols.qty, tableTop, { width: 45, align: 'right' });
-    doc.text('À-pris', cols.price, tableTop, { width: 60, align: 'right' });
-    doc.text('Moms%', cols.vat, tableTop, { width: 45, align: 'right' });
-    doc.text('Belopp', cols.amount, tableTop, { width: 75, align: 'right' });
-    doc.moveTo(50, tableTop + 14).lineTo(545, tableTop + 14).stroke();
+    // Stora rubriken.
+    doc.fontSize(30).font('Helvetica-Bold').text('Faktura', left, 182);
+
+    // Metadatakolumnen (etikett vänster, värde vid fast x).
+    const paymentTarget = company.bankgiro
+      ? `Bankgiro ${company.bankgiro}`
+      : company.plusgiro
+        ? `Plusgiro ${company.plusgiro}`
+        : company.bank_account
+          ? `Bankkonto ${company.bank_account}`
+          : null;
+    const dueDays = daysBetween(invoice.invoice_date, invoice.due_date);
+    const meta: [string, string][] = [];
+    if (invoice.ocr) meta.push(['OCR-nummer', invoice.ocr]);
+    meta.push(['Fakturadatum', invoice.invoice_date]);
+    meta.push(['Förfallodatum', `${invoice.due_date}${dueDays > 0 ? ` (${dueDays} dagar)` : ''}`]);
+    if (invoice.delivery_period) meta.push(['Leveranstidpunkt', invoice.delivery_period]);
+    if (paymentTarget) meta.push(['Betalas till', paymentTarget]);
+    meta.push(['Fakturanummer', String(invoice.invoice_number).padStart(7, '0')]);
+    if (invoice.our_reference) meta.push(['Vår referens', invoice.our_reference]);
+    if (invoice.reference) meta.push(['Er referens', invoice.reference]);
+    if (company.iban) meta.push(['IBAN', company.iban]);
+    if (company.bic) meta.push(['BIC/Swift', company.bic]);
+
+    let my = Math.max(250, cy + 20);
+    doc.fontSize(9.5);
+    for (const [label, value] of meta) {
+      doc.font('Helvetica').fillColor(GRAY).text(label, left, my);
+      doc.fillColor(BLACK).text(value, 190, my);
+      my += 14;
+    }
+
+    // Radtabellen: Kvantitet | Beskrivning | Pris | Totalt. Pris-kolumnen
+    // slutar vid priceRight och Totalt-kolumnen börjar FÖRST vid totalLeft —
+    // ett fast mellanrum så beloppen aldrig kolliderar på breda rader.
+    const tableTop = my + 24;
+    const xDesc = 155;
+    const priceRight = 435; // högerkant för priskolumnen
+    const totalLeft = 443;  // vänsterkant för totalkolumnen (right = högerkant)
+    const descWidth = priceRight - 105 - xDesc;
+    doc.font('Helvetica-Bold').fontSize(9.5);
+    doc.text('Kvantitet', left, tableTop);
+    doc.text('Beskrivning', xDesc, tableTop);
+    doc.text('Pris', priceRight - 105, tableTop, { width: 105, align: 'right' });
+    doc.text('Totalt', totalLeft, tableTop, { width: right - totalLeft, align: 'right' });
+    doc.moveTo(left, tableTop + 13).lineTo(right, tableTop + 13).lineWidth(0.7).stroke();
 
     doc.font('Helvetica');
-    let ly = tableTop + 20;
+    let ly = tableTop + 21;
     for (const line of lines) {
-      doc.text(line.description, cols.desc, ly, { width: 240 });
-      doc.text(`${line.quantity} ${line.unit}`, cols.qty, ly, { width: 45, align: 'right' });
-      doc.text(formatOre(line.unit_price_ore), cols.price, ly, { width: 60, align: 'right' });
-      doc.text(`${line.vat_rate}%`, cols.vat, ly, { width: 45, align: 'right' });
-      doc.text(formatOre(line.line_net_ore), cols.amount, ly, { width: 75, align: 'right' });
-      ly += 16;
+      // Timpriser skrivs "1 100,00 SEK/h" — styckpriser utan enhetssuffix.
+      const priceSuffix = line.unit && line.unit !== 'st' ? `/${line.unit}` : '';
+      const descHeight = doc.heightOfString(line.description, { width: descWidth });
+      doc.text(`${formatQuantity(line.quantity)} ${line.unit}`, left, ly);
+      doc.text(line.description, xDesc, ly, { width: descWidth });
+      doc.text(`${sek(line.unit_price_ore)}${priceSuffix}`, priceRight - 105, ly, { width: 105, align: 'right' });
+      doc.text(sek(line.line_net_ore), totalLeft, ly, { width: right - totalLeft, align: 'right' });
+      ly += Math.max(16, descHeight + 4);
     }
-    doc.moveTo(50, ly + 2).lineTo(545, ly + 2).stroke();
 
-    // Summering
-    let ty = ly + 12;
+    // Summeringen (högerställd: etikett + belopp, samma kolumngräns som tabellen).
+    let ty = ly + 16;
     const totalRow = (label: string, value: string, bold = false) => {
       doc.font(bold ? 'Helvetica-Bold' : 'Helvetica');
-      doc.text(label, 350, ty, { width: 90, align: 'right' });
-      doc.text(value, 445, ty, { width: 100, align: 'right' });
+      doc.text(label, priceRight - 160, ty, { width: 160, align: 'right' });
+      doc.text(value, totalLeft, ty, { width: right - totalLeft, align: 'right' });
       ty += 16;
     };
-    totalRow('Delsumma exkl. moms:', `${formatOre(totals.subtotal_ore)} SEK`);
-    totalRow('Moms:', `${formatOre(totals.vat_ore)} SEK`);
-    // ROT/RUT: visa fakturans totalbelopp, avdraget och vad kunden faktiskt betalar.
+    totalRow('Exklusive moms', sek(totals.subtotal_ore));
+    // En momsrad per förekommande sats (mallen: "Moms (25%)").
+    const rates = [...new Set(lines.map((l) => l.vat_rate))].sort((a, b) => b - a);
+    if (rates.length === 1) {
+      totalRow(`Moms (${rates[0]}%)`, sek(totals.vat_ore));
+    } else {
+      totalRow('Moms', sek(totals.vat_ore));
+    }
     const reduction = invoice.housework_reduction_ore ?? 0;
     if (invoice.housework_type && reduction > 0) {
-      totalRow('Fakturabelopp:', `${formatOre(totals.total_ore)} SEK`);
-      const label = invoice.housework_type === 'rot' ? 'ROT-avdrag:' : 'RUT-avdrag:';
-      totalRow(label, `−${formatOre(reduction)} SEK`);
-      ty += 4;
-      doc.fontSize(11);
-      totalRow('Att betala:', `${formatOre(totals.total_ore - reduction)} SEK`, true);
-      doc.fontSize(9);
+      totalRow('Fakturabelopp', sek(totals.total_ore));
+      totalRow(invoice.housework_type === 'rot' ? 'ROT-avdrag' : 'RUT-avdrag', `−${sek(reduction)}`);
+      totalRow('Att betala', sek(totals.total_ore - reduction), true);
     } else {
-      ty += 4;
-      doc.fontSize(11);
-      totalRow('Att betala:', `${formatOre(totals.total_ore)} SEK`, true);
-      doc.fontSize(9);
+      totalRow('Att betala', sek(totals.total_ore), true);
     }
 
-    // ROT/RUT: obligatoriska uppgifter + hänvisning till fakturamodellen.
+    // ROT/RUT: obligatoriska uppgifter + hänvisning till fakturamodellen (lagkrav).
     if (invoice.housework_type && reduction > 0) {
       ty += 12;
       const rc = invoice.housework_type === 'rot' ? 'ROT' : 'RUT';
-      doc.font('Helvetica-Bold').text(`Husavdrag (${rc})`, 50, ty);
+      doc.font('Helvetica-Bold').text(`Husavdrag (${rc})`, left, ty);
       ty += 13;
       doc.font('Helvetica');
       for (const line of [
-        invoice.labor_cost_ore ? `Arbetskostnad (inkl. moms): ${formatOre(invoice.labor_cost_ore)} SEK` : null,
+        invoice.labor_cost_ore ? `Arbetskostnad (inkl. moms): ${sek(invoice.labor_cost_ore)}` : null,
         invoice.buyer_personnummer ? `Köparens personnummer: ${invoice.buyer_personnummer}` : null,
         invoice.property_designation ? `Fastighetsbeteckning: ${invoice.property_designation}` : null,
         'Skattereduktionen begärs av utföraren hos Skatteverket (fakturamodellen).',
       ]) {
-        if (line) { doc.text(line, 50, ty, { width: 460 }); ty += 12; }
+        if (line) { doc.text(line, left, ty, { width: 440 }); ty += 12; }
       }
-      ty += 12;
     }
 
-    // Omvänd skattskyldighet: lagstadgad hänvisning på fakturan (moms redovisas
-    // av köparen, ingen moms debiteras).
+    // Omvänd skattskyldighet: lagstadgad hänvisning på fakturan.
     if (invoice.reverse_charge) {
       ty += 12;
-      doc.font('Helvetica-Bold').fillColor('#000').text('Omvänd betalningsskyldighet', 50, ty);
+      doc.font('Helvetica-Bold').text('Omvänd betalningsskyldighet', left, ty);
       ty += 13;
-      doc.font('Helvetica').text('Omvänd skattskyldighet gäller — köparen redovisar och betalar momsen. Ingen moms har debiterats på denna faktura.', 50, ty, { width: 400 });
-      ty += 26;
+      doc.font('Helvetica').text('Omvänd skattskyldighet gäller — köparen redovisar och betalar momsen. Ingen moms har debiterats på denna faktura.', left, ty, { width: 400 });
     }
 
-    // Betalinformation
-    ty += 20;
-    doc.font('Helvetica-Bold').fontSize(10).text('Betalningsinformation', 50, ty);
-    ty += 16;
-    doc.font('Helvetica').fontSize(9);
-    const payment: [string, string | null][] = [
-      ['Bankgiro:', company.bankgiro],
-      ['Plusgiro:', company.plusgiro],
-      ['Bankkonto:', company.bank_account],
-      ['IBAN:', company.iban],
-      ['OCR-nummer:', invoice.ocr],
-      ['Förfallodatum:', invoice.due_date],
-      // Vid ROT/RUT betalar kunden totalen minus avdraget (samma som i summeringen).
-      ['Att betala:', `${formatOre(totals.total_ore - reduction)} SEK`],
-    ];
-    for (const [label, value] of payment) {
-      if (value) {
-        doc.font('Helvetica').text(label, 50, ty, { width: 90 });
-        doc.font('Helvetica-Bold').text(value, 145, ty);
-        ty += 13;
+    // Sidfoten: linje + fyra kolumner (bolag, momsreg/F-skatt, kontakt, hemsida/bankgiro).
+    // En rad är antingen en grå etikett {label}, ett svart värde {value} eller
+    // ett litet mellanrum (SPACER) mellan grupperna i samma kolumn.
+    type FootRow = { label: string } | { value: string } | 'SPACER';
+    const footTop = 745;
+    doc.moveTo(left, footTop - 7).lineTo(right, footTop - 7).lineWidth(0.7).stroke();
+    const footCol = (x: number, rows: FootRow[]) => {
+      let yy = footTop;
+      doc.fontSize(8).font('Helvetica');
+      for (const row of rows) {
+        if (row === 'SPACER') { yy += 4; continue; }
+        if ('label' in row) doc.fillColor(GRAY).text(row.label, x, yy);
+        else doc.fillColor(BLACK).text(row.value, x, yy);
+        yy += 11;
       }
-    }
+    };
+    const group = (label: string, value: string | null): FootRow[] =>
+      value ? [{ label }, { value }] : [];
+    const withSpacer = (a: FootRow[], b: FootRow[]): FootRow[] =>
+      a.length > 0 && b.length > 0 ? [...a, 'SPACER', ...b] : [...a, ...b];
+    footCol(left, [
+      { value: company.name },
+      ...(company.address ? [{ value: company.address }] : []),
+      ...([company.postal_code, company.city].filter(Boolean).join(' ')
+        ? [{ value: [company.postal_code, company.city].filter(Boolean).join(' ') }]
+        : []),
+    ]);
+    footCol(200, [
+      ...group('Moms reg. nr.', company.vat_number),
+      ...(company.approved_for_f_tax ? [{ value: 'Godkänd för F-skatt' }] : []),
+    ]);
+    footCol(330, withSpacer(group('Telefon', company.phone), group('E-post', company.email)));
+    footCol(455, withSpacer(group('Hemsida', company.website), group('Bankgiro', company.bankgiro)));
+    doc.fillColor(BLACK);
 
     doc.end();
   });
