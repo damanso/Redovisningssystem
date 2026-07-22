@@ -9,7 +9,7 @@ Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
 deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
 faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
 tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
-granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 454
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 458
 tester passerar** i 62 sviter mot en riktig Postgres (`server/test/`), och
 `npm run build` (tsc) utan fel.
 
@@ -115,7 +115,7 @@ begäran skickas till Skatteverket.
 | K3 | Lönespec-PDF (Locollabs mall) lagrad på lönebeskedet + generell dokumentkoppling (attach/list/get_document) | Klar | `documents` |
 | K4 | list_fiscal_years/list_vouchers/get_voucher, härlett räkenskapsår ur datum, beroendemedveten godkännandekö + composite bokning-och-betalning | Klar | `fiscal-year-derivation`, `approval-dependencies` |
 | K5 | npm run mcp:install (idempotent config-reparation + verifiering), npm run mcp:token (ägarinloggning, 90 dagar), self_check i MCP-servern | Klar | `mcp-lifecycle`, `mcp` |
-| K6 | Reskontra-baklänkning (link_voucher + suggest_voucher_links) och momsmetod som inställning med metodvakt | Klar | `voucher-links` |
+| K6 | Reskontra-baklänkning (link_voucher + unlink_voucher + suggest_voucher_links) och momsmetod som inställning med metodvakt | Klar | `voucher-links` |
 | K7 | Radering av obokade registerutkast (RLS-garanterad, auditloggad med snapshot) | Klar | `draft-delete` |
 | T2 | Nya 3:12-modellen för K10 (2026+): grundbelopp 4 IBB, lönebaserat utrymme utan löneuttagskrav, sparat utan uppräkning + persisterade beräkningar och autofyll ur systemdata | Klar | `k10-new-model` |
 

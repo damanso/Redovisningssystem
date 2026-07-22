@@ -170,6 +170,12 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 - `link_voucher` (write) — kopplar en befintlig registerpost till ett
   BEFINTLIGT verifikat (t.ex. importserien) utan att bokföra något nytt;
   status (bokförd/betald via `mark_paid`) härleds ur länken.
+- `unlink_voucher` (write) — ångrar en baklänkning (motsatsen till
+  `link_voucher`). Bokför/raderar INGENTING — verifikatet står orört och
+  posten återgår till utkastläge. Spärr: bara kopplingar som skapades via
+  `link_voucher` kan ångras (verifieras mot auditloggen); verifikat skapade
+  genom bokning rättas via rättelseverifikat. Avsedd för Ethos-rättelsen
+  13–18: unlink fel koppling → link rätt verifikat.
 - `suggest_voucher_links` (read) — halvautomatiska matchningsförslag
   (belopp + datum + text, poängsatta med skäl) som människan bekräftar per
   rad via `link_voucher`.

@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 454 tester i 62 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 458 tester i 62 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,15 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-22 (session: payroll-system-workarounds, forts.):** Livefeedback:
+  fakturadetaljsida i vyn (öppna utkast med rader/totaler/OCR, ladda ner PDF
+  för mail till kund — återanvänder arkivets fil, radera obokat utkast;
+  bokfört kan aldrig raderas). K10-fältens hoppande layout fixad (källtexten
+  in i etikettblocket — input ska vara sista barnet i `.field`); en parallell
+  session landade samma fix på main (57402d1), versionerna sammanfogade.
+  `unlink_voucher` (Davids/parallellsessionens 88b98ba) fick sitt utlovade
+  dedikerade test (4 st) + dokumentation i MCP_ACTIONS.md. 458 tester gröna.
 
 - **2026-07-21 (session: payroll-system-workarounds, forts.):** Tillägg 2 —
   nya 3:12-modellen för K10 (inkomstår 2026+): grundbelopp 4 IBB (322 400 kr

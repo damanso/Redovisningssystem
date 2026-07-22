@@ -3,7 +3,7 @@
 Verifiering av **varje BMAD-story** i `damanso/redovisningssystem1` (BMAD-projektet:
 PRD `docs/PRD-Fas3-Fas4.md`, `docs/epics.md`, och **93 storyfiler** i `docs/stories/`
 — 89 unika stories + arbetsartefakter) mot den **ombyggda kärnan**
-`damanso/redovisningssystem` (454 tester gröna).
+`damanso/redovisningssystem` (458 tester gröna).
 
 Klassning per story: **✅ BUILT** (kärnan täcker mål + acceptanskriterier) ·
 **🟡 PARTIAL** (kärnkapaciteten finns, vissa AC/tillägg saknas) ·

@@ -123,6 +123,86 @@ describe('link_voucher — baklänkning utan ny bokföring', () => {
   });
 });
 
+describe('unlink_voucher — ångra baklänkning (Ethos-rättelsen 13–18)', () => {
+  let invoiceId: string;
+  let voucherId: string;
+
+  it('ångrar en baklänkning: posten återgår till utkast, verifikatet finns kvar orört', async () => {
+    const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({
+      customer_id: customerId, invoice_date: '2025-09-01',
+      lines: [{ description: 'Septembertjänst', quantity: 1, unit_price_ore: 300_000, vat_rate: 25 }],
+    });
+    invoiceId = inv.body.result.id;
+    voucherId = await postManualVoucher('2025-09-02', '[SIE A500] Betald kundfaktura Ethos', [
+      { account_number: 1930, debit_ore: 375_000 },
+      { account_number: 3001, credit_ore: 300_000 },
+      { account_number: 2611, credit_ore: 75_000 },
+    ]);
+    const link = await api.post(`${co()}/actions/link_voucher`).set(auth()).send({
+      entity_type: 'invoice', entity_id: invoiceId, voucher_id: voucherId, mark_paid: true,
+    });
+    expect(link.status, JSON.stringify(link.body)).toBe(200);
+
+    const before = await voucherCount();
+    const res = await api.post(`${co()}/actions/unlink_voucher`).set(auth()).send({
+      entity_type: 'invoice', entity_id: invoiceId,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.unlinked).toBe(true);
+    expect(res.body.result.reverted_status).toBe('draft');
+    expect(await voucherCount()).toBe(before); // verifikatet raderas ALDRIG
+
+    const got = await api.post(`${co()}/actions/get_invoice`).set(auth()).send({ invoice_id: invoiceId });
+    expect(got.body.result.voucher_id).toBeNull();
+    expect(got.body.result.status).toBe('draft');
+    expect(Number(got.body.result.paid_amount_ore)).toBe(0);
+
+    const audit = await withAdmin(async (admin) => (await admin.query(
+      "SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1 AND action = 'invoice.voucher_unlinked' AND entity_id = $2",
+      [companyId, invoiceId],
+    )).rows[0]);
+    expect(audit.n).toBe(1);
+  });
+
+  it('posten kan baklänkas på nytt efter ångrandet (fel koppling → rätt koppling)', async () => {
+    const res = await api.post(`${co()}/actions/link_voucher`).set(auth()).send({
+      entity_type: 'invoice', entity_id: invoiceId, voucher_id: voucherId,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.invoice.status).toBe('sent');
+  });
+
+  it('verifikat skapade genom bokning kan inte unlinkas — rättelseverifikat gäller (409)', async () => {
+    const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({
+      customer_id: customerId, invoice_date: '2025-09-10',
+      lines: [{ description: 'Bokad tjänst', quantity: 1, unit_price_ore: 200_000, vat_rate: 25 }],
+    });
+    const req = await api.post(`${co()}/actions/book_invoice`).set(auth()).send({ invoice_id: inv.body.result.id });
+    expect(req.status).toBe(202);
+    const ok = await approve(req.body);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+
+    const res = await api.post(`${co()}/actions/unlink_voucher`).set(auth()).send({
+      entity_type: 'invoice', entity_id: inv.body.result.id,
+    });
+    expect(res.status).toBe(409);
+    // API:t exponerar bara felkoden (aldrig interna meddelanden) — koden räcker.
+    expect(res.body.error).toBe('not_unlinkable');
+  });
+
+  it('okopplad post avvisas (409 not_linked)', async () => {
+    const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({
+      customer_id: customerId, invoice_date: '2025-09-15',
+      lines: [{ description: 'Okopplad', quantity: 1, unit_price_ore: 100_000, vat_rate: 25 }],
+    });
+    const res = await api.post(`${co()}/actions/unlink_voucher`).set(auth()).send({
+      entity_type: 'invoice', entity_id: inv.body.result.id,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('not_linked');
+  });
+});
+
 describe('suggest_voucher_links — halvautomatisk matchning', () => {
   it('föreslår verifikat på belopp + datum + text; människan bekräftar via link_voucher', async () => {
     const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({
