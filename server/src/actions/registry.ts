@@ -38,7 +38,7 @@ import { anonymizeParty } from '../services/gdpr.js';
 import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
-import { linkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
+import { linkVoucher, unlinkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
 import { writeAudit } from '../services/auditService.js';
 
 const LinkableEntityTypeSchema = z.enum(['invoice', 'receipt', 'supplier_invoice', 'payslip']);
@@ -168,6 +168,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string; voucher_id: string; mark_paid?: boolean }) =>
       linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: i.mark_paid }),
+  }),
+  def({
+    name: 'unlink_voucher',
+    title: 'Ta bort baklänkning (motsatsen till link_voucher)',
+    sensitivity: 'write',
+    // K6: ångrar ENBART kopplingar gjorda via link_voucher (verifieras mot
+    // auditloggen). Bokför/raderar inget — posten återgår till utkastläge.
+    inputSchema: z.object({
+      entity_type: LinkableEntityTypeSchema,
+      entity_id: UuidSchema,
+    }).strict(),
+    handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string }) =>
+      unlinkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id }),
   }),
   def({
     name: 'suggest_voucher_links',
