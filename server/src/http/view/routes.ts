@@ -1019,7 +1019,7 @@ function k10Body(
   // för att designsystemets bottenjustering (justify-content:flex-end) ska
   // hålla fälten i linje oavsett hur många rader etiketten radbryts till.
   const field = (label: string, name: string, value: string, source?: string) =>
-    html`<label class="field" style="margin:0"><span>${label}${source ? html` <span class="muted" style="font-weight:400">· ${source}</span>` : ''}</span><input type="number" name="${name}" value="${value}" min="0" step="1"></label>`;
+    html`<label class="field" style="margin:0"><span>${label}${source ? html` <span class="muted" style="font-weight:400;font-size:11.5px">· ${source}</span>` : ''}</span><input type="number" name="${name}" value="${value}" min="0" step="1"></label>`;
   const pf = (parsedOre: number | undefined, pre: { value: number } | undefined) =>
     parsedOre !== undefined ? kr(parsedOre) : pre ? kr(pre.value) : '0';
   const src = (pre: { source: string } | undefined) => (inp ? undefined : pre?.source);
