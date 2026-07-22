@@ -97,6 +97,61 @@ export async function linkVoucher(
   return { linked: true, voucher: `${v.series}${v.number}`, [input.entityType]: updated.rows[0] };
 }
 
+/**
+ * Tar bort en baklänkning (motsatsen till linkVoucher). Bokför och raderar
+ * INGENTING — verifikatet finns kvar orört; posten återgår till sitt olänkade
+ * utkastläge (faktura/leverantörsfaktura/lönebesked → draft, kvitto → registered).
+ * SPÄRR: får bara ångra kopplingar som skapades via link_voucher — verifieras
+ * mot auditloggen (`<typ>.voucher_linked`). En post vars verifikat skapades av
+ * en bokningsaction (book_invoice m.fl.) rättas via rättelseverifikat, aldrig
+ * via unlink.
+ */
+export async function unlinkVoucher(
+  client: PoolClient, companyId: string, userId: string,
+  input: { entityType: LinkableEntityType; entityId: string },
+): Promise<Record<string, unknown>> {
+  const spec = SPECS[input.entityType];
+  if (!spec) throw new BadRequestError('invalid_entity_type');
+  const row = await client.query<Record<string, unknown>>(
+    `SELECT * FROM ${spec.table} WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.entityId, companyId],
+  );
+  const entity = row.rows[0];
+  if (!entity) throw new NotFoundError(input.entityType);
+  if (!entity.voucher_id) throw new ConflictError('not_linked', `${spec.label}n har ingen verifikatkoppling`);
+
+  const linkedViaAudit = await client.query(
+    `SELECT 1 FROM audit_log
+     WHERE company_id = $1 AND action = $2 AND entity_type = $3 AND entity_id = $4
+       AND details->>'voucher_id' = $5
+     LIMIT 1`,
+    [companyId, `${input.entityType}.voucher_linked`, input.entityType, input.entityId, String(entity.voucher_id)],
+  );
+  if (!linkedViaAudit.rows[0]) {
+    throw new ConflictError('not_unlinkable', `${spec.label}ns verifikat skapades genom bokning — rättelse sker via rättelseverifikat, inte unlink`);
+  }
+
+  const revertStatus = input.entityType === 'receipt' ? 'registered' : 'draft';
+  if (input.entityType === 'invoice' || input.entityType === 'supplier_invoice') {
+    await client.query(
+      `UPDATE ${spec.table} SET voucher_id = NULL, status = $3, paid_amount_ore = 0 WHERE id = $1 AND company_id = $2`,
+      [input.entityId, companyId, revertStatus],
+    );
+  } else {
+    await client.query(
+      `UPDATE ${spec.table} SET voucher_id = NULL, status = $3 WHERE id = $1 AND company_id = $2`,
+      [input.entityId, companyId, revertStatus],
+    );
+  }
+
+  await writeAudit(client, {
+    companyId, userId, action: `${input.entityType}.voucher_unlinked`, entityType: input.entityType, entityId: input.entityId,
+    details: { voucher_id: String(entity.voucher_id), reverted_status: revertStatus },
+  });
+  const updated = await client.query(`SELECT * FROM ${spec.table} WHERE id = $1 AND company_id = $2`, [input.entityId, companyId]);
+  return { unlinked: true, reverted_status: revertStatus, [input.entityType]: updated.rows[0] };
+}
+
 export interface VoucherLinkSuggestion {
   entity_type: LinkableEntityType;
   entity_id: string;
