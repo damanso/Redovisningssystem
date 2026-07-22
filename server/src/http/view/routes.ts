@@ -13,7 +13,7 @@ import { signToken as signAgentToken } from '../../lib/jwt.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
-import { listInvoices } from '../../services/invoices.js';
+import { generateInvoicePdfFile, getInvoice, listInvoices } from '../../services/invoices.js';
 import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
@@ -1015,9 +1015,11 @@ function k10Body(
   const newModel = selectedYear !== null && selectedYear >= 2026;
   // Tillägg 2 (T2.4): förifyllt ur systemdata när inget angetts — redigerbart,
   // med källan angiven vid fältet (beslutsstöd-principen).
+  // Källhinten ligger I etikettraden — inputen måste vara .field:s sista barn
+  // för att designsystemets bottenjustering (justify-content:flex-end) ska
+  // hålla fälten i linje oavsett hur många rader etiketten radbryts till.
   const field = (label: string, name: string, value: string, source?: string) =>
-    html`<label class="field" style="margin:0"><span>${label}</span><input type="number" name="${name}" value="${value}" min="0" step="1">
-      ${source ? html`<span class="muted" style="font-size:11.5px">${source}</span>` : ''}</label>`;
+    html`<label class="field" style="margin:0"><span>${label}${source ? html` <span class="muted" style="font-weight:400">· ${source}</span>` : ''}</span><input type="number" name="${name}" value="${value}" min="0" step="1"></label>`;
   const pf = (parsedOre: number | undefined, pre: { value: number } | undefined) =>
     parsedOre !== undefined ? kr(parsedOre) : pre ? kr(pre.value) : '0';
   const src = (pre: { source: string } | undefined) => (inp ? undefined : pre?.source);
@@ -2117,10 +2119,13 @@ viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapa din första faktura nedan.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th><th></th></tr></thead><tbody>
-            ${rows.map((r) => html`<tr><td class="code">${r.invoice_number}</td><td>${r.invoice_date}</td><td>${r.customer_name}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
-              <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td><td>${rowActions(r as Record<string, unknown>)}</td></tr>`)}
+            ${rows.map((r) => html`<tr><td class="code"><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.invoice_number}</a></td><td>${r.invoice_date}</td>
+              <td><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.customer_name}</a>${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
+              <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td>
+              <td><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/invoices/${r.id as string}">Öppna</a> ${rowActions(r as Record<string, unknown>)}</td></tr>`)}
             </tbody></table></div>`
-    }${
+    }
+    ${typeof req.query.raderad === 'string' ? html`<p class="lede" style="margin-top:10px">${chip(`Fakturautkast ${req.query.raderad} raderat`, 'ok', '✓')}</p>` : ''}${
       rows.some((r) => r.housework_type)
         ? html`<div class="empty" style="text-align:left;padding:12px 14px;margin-top:12px">${chip('ROT/RUT — beräknat underlag', 'warn', '!')} <span class="muted">${HOUSEWORK_DISCLAIMER}</span></div>`
         : ''
@@ -2210,6 +2215,112 @@ viewRouter.post('/c/:companyId/invoices/:invoiceId/pay', page(async (req, res) =
   if (!fyId) { res.redirect(`${back}?fel=${encodeURIComponent(INGET_AR_FEL(payDate))}`); return; }
   await runViewAction(req, res, companyId, 'register_invoice_payment',
     { invoice_id: invoiceId, fiscal_year_id: fyId, payment_date: payDate }, back);
+}));
+
+// Fakturadetalj: se utkastet/fakturan i sin helhet, ladda ner PDF:en (för att
+// maila kunden) och radera ett obokat utkast (K7 delete_draft_invoice via
+// action-lagret). Bokförda fakturor kan aldrig raderas — rättelse via
+// rättelseverifikat.
+viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura', async (client, companyId, req) => {
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  const inv = await getInvoice(client, companyId, invoiceId);
+  const docs = await listDocuments(client, companyId, { entityType: 'invoice', entityId: invoiceId });
+  const fyId = await hasFiscalYear(client, companyId);
+  const today = new Date().toISOString().slice(0, 10);
+  const isDraft = !inv.voucher_id && inv.status === 'draft';
+  const lines = inv.lines as { line_no: number; description: string | null; quantity: string; unit: string | null; unit_price_ore: number; vat_rate: number; line_net_ore: number }[];
+  return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.invoice_number)} — ${inv.customer_name as string}</h1>
+      <p class="lede"><a href="/app/c/${companyId}/invoices">← Alla fakturor</a></p></div></div>
+    ${felNotis(req)}
+    <div class="kpi-grid">
+      ${kpiCell('Status', html`${statusChip(String(inv.status))}`)}
+      ${kpiCell('Totalt inkl. moms', amount(inv.total_ore as number))}
+      ${kpiCell('Fakturadatum', html`${inv.invoice_date as string}`)}
+      ${kpiCell('Förfallodatum', html`${(inv.due_date as string) ?? '—'}`)}
+    </div>
+    <div class="table-wrap" style="margin-top:12px"><table><tbody>
+      <tr><td>OCR-nummer</td><td class="code">${(inv.ocr as string) ?? '—'}</td></tr>
+      <tr><td>Referens</td><td>${(inv.reference as string) ?? '—'}</td></tr>
+      ${inv.reverse_charge ? html`<tr><td>Moms</td><td>${chip('Omvänd skattskyldighet', 'info')}</td></tr>` : ''}
+      ${inv.housework_type ? html`<tr><td>Husavdrag</td><td>${chip(String(inv.housework_type).toUpperCase(), 'ok')} ${amount(inv.housework_reduction_ore as number)}</td></tr>` : ''}
+      ${inv.voucher_id ? html`<tr><td>Verifikat</td><td class="code">${inv.voucher_id as string}</td></tr>` : ''}
+    </tbody></table></div>
+    <h2 style="margin-top:18px">Rader</h2>
+    <div class="table-wrap"><table><thead><tr><th>Beskrivning</th><th class="num">Antal</th><th class="num">À-pris</th><th class="num">Moms</th><th class="num">Netto</th></tr></thead><tbody>
+      ${lines.map((l) => html`<tr><td>${l.description ?? ''}</td><td class="num">${l.quantity} ${l.unit ?? ''}</td>
+        <td class="num">${amount(l.unit_price_ore, { unit: false })}</td><td class="num">${String(l.vat_rate)} %</td>
+        <td class="num">${amount(l.line_net_ore, { unit: false })}</td></tr>`)}
+      <tr class="subtot"><td colspan="4"><strong>Delsumma exkl. moms</strong></td><td class="num"><strong>${amount(inv.subtotal_ore as number, { unit: false })}</strong></td></tr>
+      <tr><td colspan="4">Moms</td><td class="num">${amount(inv.vat_ore as number, { unit: false })}</td></tr>
+      <tr class="subtot"><td colspan="4"><strong>Att betala</strong></td><td class="num"><strong>${amount(inv.total_ore as number, { unit: false })}</strong></td></tr>
+    </tbody></table></div>
+    ${docs.length ? html`<h2 style="margin-top:18px">Bilagda dokument</h2>
+      <div class="actions">${docs.map((d) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/documents/${d.file_id}/download">📎 ${d.original_name}</a> `)}</div>` : ''}
+    <h2 style="margin-top:18px">Åtgärder</h2>
+    <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <a class="btn btn--primary btn--sm" href="/app/c/${companyId}/invoices/${invoiceId}/pdf">Ladda ner PDF (för mail till kund)</a>
+      ${isDraft && fyId ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/book" style="display:inline">
+        <button class="btn btn--ghost btn--sm" type="submit">Bokför…</button></form>` : ''}
+      ${inv.voucher_id && inv.status !== 'paid' ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/pay" style="display:inline">
+        <input type="hidden" name="payment_date" value="${today}">
+        <button class="btn btn--ghost btn--sm" type="submit">Registrera betalning…</button></form>` : ''}
+      ${isDraft ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/delete" style="display:inline">
+        <button class="btn btn--ghost btn--sm" type="submit" style="color:#b91c1c">Radera utkastet</button></form>` : ''}
+    </div>
+    ${isDraft ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Ett utkast kan raderas (auditloggas med innehållet). En bokförd faktura kan aldrig raderas — rättelse sker via rättelseverifikat.</p>` : ''}`;
+}));
+
+// PDF-nedladdning: återanvänder redan genererad PDF (fakturor är oföränderliga
+// efter skapandet); annars genereras och arkiveras den första gången.
+viewRouter.get('/c/:companyId/invoices/:invoiceId/pdf', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  const existing = await withTenantTransaction(userId, companyId, async (client) => {
+    const inv = await getInvoice(client, companyId, invoiceId);
+    if (!inv.pdf_file_id) return { number: inv.invoice_number as number, stored: null as string | null };
+    const f = await client.query<{ stored_name: string }>(
+      'SELECT stored_name FROM files WHERE id = $1 AND company_id = $2', [inv.pdf_file_id as string, companyId],
+    );
+    return { number: inv.invoice_number as number, stored: f.rows[0]?.stored_name ?? null };
+  });
+  res.type('application/pdf').attachment(`Faktura-${existing.number}.pdf`);
+  if (existing.stored) {
+    res.sendFile(resolveStoredPath(companyId, existing.stored), (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
+    return;
+  }
+  const { buffer } = await generateInvoicePdfFile(companyId, userId, invoiceId);
+  res.send(buffer);
+}));
+
+// Radera ett obokat fakturautkast — via action-lagret (delete_draft_invoice,
+// K7): RLS-policyn garanterar att bokfört aldrig kan raderas, auditloggas med
+// snapshot av raden.
+viewRouter.post('/c/:companyId/invoices/:invoiceId/delete', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const invoiceId = UuidSchema.parse(req.params.invoiceId);
+  const back = `/app/c/${companyId}/invoices`;
+  const number = await withTenantTransaction(userId, companyId, async (client) => {
+    const inv = await getInvoice(client, companyId, invoiceId);
+    return inv.invoice_number as number;
+  }).catch(() => null);
+  try {
+    await executeAction({
+      companyId, userId, actor: 'human', actionName: 'delete_draft_invoice',
+      input: { invoice_id: invoiceId },
+    });
+  } catch (err) {
+    if (err instanceof BadRequestError || err instanceof ConflictError || err instanceof NotFoundError) {
+      res.redirect(`/app/c/${companyId}/invoices/${invoiceId}?fel=${encodeURIComponent(err.message)}`);
+      return;
+    }
+    throw err;
+  }
+  res.redirect(`${back}?raderad=${number ?? ''}`);
 }));
 
 viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (client, companyId, req) => {

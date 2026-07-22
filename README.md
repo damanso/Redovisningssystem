@@ -9,8 +9,8 @@ Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
 deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
 faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
 tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
-granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 448
-tester passerar** i 61 sviter mot en riktig Postgres (`server/test/`), och
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 454
+tester passerar** i 62 sviter mot en riktig Postgres (`server/test/`), och
 `npm run build` (tsc) utan fel.
 
 ### Grundfaser
