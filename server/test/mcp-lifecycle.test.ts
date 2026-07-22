@@ -101,7 +101,8 @@ describe('npm run mcp:install', () => {
     expect(res.stdout).toMatch(/går ut \d{4}-\d{2}-\d{2} \(\d+ dagar kvar\)/);
 
     const written = JSON.parse(readFileSync(cfg, 'utf8'));
-    expect(written.mcpServers.redovisning.command).toBe('node');
+    // Absolut node-sökväg (a46fa86): GUI-appar (Claude Desktop) saknar nvm-PATH.
+    expect(written.mcpServers.redovisning.command).toBe(process.execPath);
     expect(written.mcpServers.redovisning.args).toEqual([ENTRY]);
     expect(written.mcpServers.redovisning.env.REDOVISNING_COMPANY_ID).toBe(companyId);
     expect(written.mcpServers.redovisning.env.REDOVISNING_AGENT_TOKEN).toBe(agentToken);
