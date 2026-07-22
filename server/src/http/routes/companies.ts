@@ -46,6 +46,9 @@ const UpdateCompanySchema = z
     iban: optText(50),
     payment_terms: z.number().int().min(0).max(365).optional(),
     approved_for_f_tax: z.boolean().optional(),
+    // Tillägg 2 (T2.4): ägaruppgifter för K10-autofyll (inget ägarregister finns).
+    owner_share_permille: z.number().int().min(1).max(1000).optional(),
+    share_capital_ore: z.number().int().min(0).optional(),
   })
   .strict();
 
@@ -65,6 +68,8 @@ const COMPANY_UPDATE_COLUMNS = {
   iban: 'iban',
   payment_terms: 'payment_terms',
   approved_for_f_tax: 'approved_for_f_tax',
+  owner_share_permille: 'owner_share_permille',
+  share_capital_ore: 'share_capital_ore',
 } as const;
 
 const AuditQuerySchema = z

@@ -31,6 +31,7 @@ import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../services/agi.js';
 import { k10Computation, generateK10Sru } from '../services/k10.js';
+import { k10Prefill, listK10Computations, saveK10Computation, setK10OpeningAllowance } from '../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile } from '../services/ecSalesList.js';
 import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
@@ -491,6 +492,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'k10_computation',
     title: 'K10 — gränsbelopp (3:12) för delägare i fåmansföretag',
     sensitivity: 'read',
+    // Tillägg 2: rule krävs för inkomstår ≤ 2025; för 2026+ gäller nya
+    // grundbeloppsmodellen (rule ignoreras). spouse_salary_ore = makes/makas
+    // kontanta lön (ingår i 50×-taket, makar beräknar gemensamt).
     inputSchema: z.object({
       fiscal_year_id: UuidSchema,
       ownership_permille: z.number().int().min(1).max(1000),
@@ -498,10 +502,53 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       saved_allowance_ore: OreSchema,
       owner_salary_ore: OreSchema,
       dividend_ore: OreSchema,
-      rule: z.enum(['forenkling', 'huvudregel']),
+      rule: z.enum(['forenkling', 'huvudregel']).optional(),
+      spouse_salary_ore: OreSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { fiscal_year_id: string; ownership_permille: number; omkostnadsbelopp_ore: number; saved_allowance_ore: number; owner_salary_ore: number; dividend_ore: number; rule: 'forenkling' | 'huvudregel' }) =>
+    handler: (ctx, i: { fiscal_year_id: string; ownership_permille: number; omkostnadsbelopp_ore: number; saved_allowance_ore: number; owner_salary_ore: number; dividend_ore: number; rule?: 'forenkling' | 'huvudregel'; spouse_salary_ore?: number }) =>
       k10Computation(ctx.client, ctx.companyId, i.fiscal_year_id, i),
+  }),
+  def({
+    name: 'save_k10_computation',
+    title: 'Spara K10-beräkning för inkomståret (autofyller nästa års sparade utrymme)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      fiscal_year_id: UuidSchema,
+      ownership_permille: z.number().int().min(1).max(1000),
+      omkostnadsbelopp_ore: OreSchema,
+      saved_allowance_ore: OreSchema,
+      owner_salary_ore: OreSchema,
+      dividend_ore: OreSchema,
+      rule: z.enum(['forenkling', 'huvudregel']).optional(),
+      spouse_salary_ore: OreSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string; ownership_permille: number; omkostnadsbelopp_ore: number; saved_allowance_ore: number; owner_salary_ore: number; dividend_ore: number; rule?: 'forenkling' | 'huvudregel'; spouse_salary_ore?: number }) =>
+      saveK10Computation(ctx.client, ctx.companyId, ctx.userId, i.fiscal_year_id, i),
+  }),
+  def({
+    name: 'set_k10_opening_allowance',
+    title: 'Mata in historiskt sparat utdelningsutrymme (engångsmigrering, per 2025-12-31)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      income_year: z.number().int().min(2000).max(2100).optional(),
+      saved_to_next_year_ore: OreSchema,
+    }).strict(),
+    handler: (ctx, i: { income_year?: number; saved_to_next_year_ore: number }) =>
+      setK10OpeningAllowance(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'list_k10_computations',
+    title: 'Lista sparade K10-beräkningar',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => listK10Computations(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'k10_prefill',
+    title: 'Autofyll K10-fälten ur systemdata (redigerbara förslag med källa)',
+    sensitivity: 'read',
+    inputSchema: z.object({ fiscal_year_id: UuidSchema }).strict(),
+    handler: (ctx, i: { fiscal_year_id: string }) => k10Prefill(ctx.client, ctx.companyId, i.fiscal_year_id),
   }),
   def({
     name: 'generate_k10_sru',

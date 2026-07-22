@@ -9,8 +9,8 @@ Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
 deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
 faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
 tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
-granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 433
-tester passerar** i 60 sviter mot en riktig Postgres (`server/test/`), och
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 448
+tester passerar** i 61 sviter mot en riktig Postgres (`server/test/`), och
 `npm run build` (tsc) utan fel.
 
 ### Grundfaser
@@ -117,6 +117,7 @@ begäran skickas till Skatteverket.
 | K5 | npm run mcp:install (idempotent config-reparation + verifiering), npm run mcp:token (ägarinloggning, 90 dagar), self_check i MCP-servern | Klar | `mcp-lifecycle`, `mcp` |
 | K6 | Reskontra-baklänkning (link_voucher + suggest_voucher_links) och momsmetod som inställning med metodvakt | Klar | `voucher-links` |
 | K7 | Radering av obokade registerutkast (RLS-garanterad, auditloggad med snapshot) | Klar | `draft-delete` |
+| T2 | Nya 3:12-modellen för K10 (2026+): grundbelopp 4 IBB, lönebaserat utrymme utan löneuttagskrav, sparat utan uppräkning + persisterade beräkningar och autofyll ur systemdata | Klar | `k10-new-model` |
 
 ### Utanför scope / integrationsgränser
 

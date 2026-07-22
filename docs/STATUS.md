@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 433 tester i 60 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 448 tester i 61 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,15 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-21 (session: payroll-system-workarounds, forts.):** Tillägg 2 —
+  nya 3:12-modellen för K10 (inkomstår 2026+): grundbelopp 4 IBB (322 400 kr
+  2026, källverifierat mot Skatteverket inkl. årslänkningen IBB året före),
+  lönebaserat utrymme (8 IBB-avdrag, 50 %, 50×-tak, inga löneuttags-/4 %-krav),
+  sparat utrymme utan uppräkning, persisterade K10-beräkningar (autofyll av
+  sparat f.å.), k10_prefill ur systemdata + utdelningsbarhetsvarning (ABL),
+  ägarandel/aktiekapital i bolagsinställningarna. ≤2025 oförändrat (regression
+  på öret). SRU 2026+ vägras tills fältkoder fastställts. main uppdaterad.
 
 - **2026-07-21 (session: payroll-system-workarounds):** Hela K-serien byggd
   (K1–K7 + Tillägg 1, se ovan) på branchen

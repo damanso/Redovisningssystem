@@ -184,6 +184,30 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 OBOKADE utkast (RLS-policyn släpper aldrig igenom bokförda poster).
 Auditloggas med snapshot; dokumentkopplingar städas, bilagda filer behålls.
 
+### K10 / 3:12 — nya modellen 2026+ och autofyll (Tillägg 2)
+
+- Inkomstår **2026+** beräknas enligt **grundbeloppsmodellen** (riksdagsbeslut
+  2025-12-03, källverifierad mot Skatteverkets vägledning inför deklarationen
+  2027): grundbelopp = 4 IBB på **året före** beskattningsåret (2026:
+  4 × 80 600 = 322 400 kr) fördelat efter ägarandel; lönebaserat utrymme =
+  (löneunderlag × andel − 8 IBB) × 0,5 utan löneuttags-/kapitalandelskrav, med
+  50×-taket kvar (`spouse_salary_ore` för makar); sparat utrymme förs över
+  **utan uppräkning**; omkostnadsbelopp räknas upp endast över 100 000 kr
+  (SLR 2,55 % + 9 pp). Inkomstår ≤ 2025 beräknas oförändrat (förenkling/
+  huvudregel; `rule` krävs då). SRU-generering för 2026+ vägras tills
+  blankettens fältkoder är fastställda.
+- `save_k10_computation` (write) — persisterar årets beräkning per inkomstår;
+  `set_k10_opening_allowance` (write) — engångsinmatning av historiskt sparat
+  utrymme per 2025-12-31; `list_k10_computations` (read).
+- `k10_prefill` (read) — autofyll ur systemdata med källa per fält: ägarandel +
+  aktiekapital (bolagsinställningarna: `owner_share_permille`,
+  `share_capital_ore` via PATCH company), ägarlön ur lönekörningen för
+  underlagsåret, faktisk utdelning ur bokföringen (2898), sparat utrymme ur
+  föregående års persisterade beräkning, plus utdelningsbarhetsvarning när
+  utdelningen överstiger fritt eget kapital (2091–2099) — beslutsstöd, inget
+  hinder. K10-sidan i vyn förifyller fälten (redigerbara) och visar
+  modellbyte-notisen för 2026+.
+
 ### MCP-livscykel (K5)
 
 - `npm run mcp:install` — skriver/reparerar redovisning-blocket i
