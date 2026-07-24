@@ -26,6 +26,7 @@ export interface VatDeclaration {
   input_vat: VatBox;        // F. Ingående moms (48)
   net: VatBox;              // G. Moms att betala/få tillbaka (49)
   net_to_pay_ore: Ore;      // > 0 att betala, < 0 att få tillbaka
+  warnings: string[];       // kompletthetsvarningar (t.ex. ruta 48 = 0 trots momsbärande inköp)
   disclaimer: string;
 }
 
@@ -90,6 +91,23 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   assertSafeOre(inVat);
   assertSafeOre(net);
 
+  // Kompletthetsvakt: ingående moms (ruta 48) får aldrig TYST bli 0 när perioden har
+  // momsbärande inköp. Utlägg/kvitton som importerats brutto (utan att momsen lyfts till
+  // 2640) ger annars en deklaration som ser komplett ut men underrapporterar avdraget —
+  // exakt felet som dolde H1 2026:s ingående moms tills en manuell kvittogenomgång. Konton
+  // 5000–6999 (övriga externa kostnader) bär normalt svensk ingående moms; om ruta 48 = 0
+  // medan de har inköp över tröskeln flaggas det för genomgång.
+  const deductibleCostDebit = debit(rows, 5000, 6999);
+  const warnings: string[] = [];
+  const INPUT_VAT_ALERT_THRESHOLD_ORE = 5000_00;
+  if (inVat === 0 && deductibleCostDebit >= INPUT_VAT_ALERT_THRESHOLD_ORE) {
+    warnings.push(
+      `Ingående moms (ruta 48) är 0 trots kostnadsförda inköp på ${Math.round(deductibleCostDebit / 100)} kr `
+      + 'på konton 5000–6999. Kontrollera att ingående moms bokförts — bruttoimporterade utlägg fångas '
+      + 'inte automatiskt (kör kvittogenomgång/momsomföring).',
+    );
+  }
+
   return {
     from, to,
     sales: [
@@ -128,6 +146,7 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
     input_vat: { code: '48', label: 'Ingående moms att dra av', amount_ore: inVat },
     net: { code: '49', label: net >= 0 ? 'Moms att betala' : 'Moms att få tillbaka', amount_ore: net },
     net_to_pay_ore: net,
+    warnings,
     disclaimer: 'Beräknad momsdeklaration ur bokföringen för perioden. Rutorna för omvänd skattskyldighet antar EU-tjänsteinköp (ruta 21) — omklassa vid varor eller land utanför EU. Ingen digital inlämning; kontrollera mot Skatteverkets blankett.',
   };
 }

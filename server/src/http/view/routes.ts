@@ -978,6 +978,7 @@ function vatDeclarationBody(companyId: string, d: VatDeclaration): Raw {
   return html`<div class="page-head"><div>${eyebrow('Moms · Skattedeklaration')}<h1>Momsdeklaration</h1>
       <p class="lede">Perioden ${d.from} – ${d.to}. Alla rutor 05–49 beräknade ur bokföringen.</p></div></div>
     <div class="empty" style="text-align:left;padding:12px 14px">${chip('Beräknat underlag — ingen digital inlämning', 'warn', '!')} <span class="muted">${d.disclaimer}</span></div>
+    ${d.warnings.length ? html`<div class="empty" style="text-align:left;padding:12px 14px">${chip(`${d.warnings.length} att kontrollera`, 'warn', '!')} <span class="muted">${d.warnings.join(' ')}</span></div>` : ''}
     <form method="get" action="/app/c/${companyId}/vat" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:6px 0 12px">
       <label class="field" style="margin:0"><span>Från</span><input type="date" name="from" value="${d.from}"></label>
       <label class="field" style="margin:0"><span>Till</span><input type="date" name="to" value="${d.to}"></label>

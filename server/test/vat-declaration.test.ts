@@ -70,6 +70,7 @@ describe('momsdeklaration rutor 05–49', () => {
   it('ingående moms (48) och moms att betala (49)', async () => {
     const d = await decl();
     expect(d.input_vat.amount_ore).toBe(5000_00);      // ruta 48
+    expect(d.warnings).toEqual([]);                    // ingående moms finns → ingen kompletthetsvarning
     // 49 = (25 000 + 6 000) − 5 000 = 26 000.
     expect(d.net.amount_ore).toBe(26000_00);
     expect(d.net_to_pay_ore).toBe(26000_00);
@@ -134,5 +135,55 @@ describe('momsdeklarationsvyn', () => {
     expect(res.text).toContain('Utgående moms 25 %');
     expect(res.text).toContain('Moms att betala');
     expect(res.text).toContain('ingen digital inlämning');
+  });
+});
+
+
+// Kompletthetsvakt (2026-07-24): ingående moms (ruta 48) får aldrig TYST bli 0 när
+// perioden har momsbärande inköp. Reproducerar H1 2026-felet: utlägg importerade brutto
+// (kostnad utan 2640-rad) gav en deklaration som såg komplett ut men underrapporterade
+// ingående moms tills en manuell kvittogenomgång upptäckte det.
+describe('kompletthetsvakt: ingående moms 0 trots inköp (regressionsskydd)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  const declFor = async () => {
+    const res = await api.post(`${c()}/actions/vat_declaration`).set(a()).send({ from: '2026-01-01', to: '2026-12-31' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.result;
+  };
+  const postAndApprove = async (body: Record<string, unknown>) => {
+    const v = await api.post(`${c()}/actions/post_voucher`).set(a()).send(body);
+    expect(v.status, JSON.stringify(v.body)).toBe(202);
+    await api.post(`${c()}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+  };
+
+  beforeAll(async () => {
+    u = await registerUser('vat-guard');
+    cid = await createCompany(u.token, 'Bruttoimport AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // Kostnad bokförd BRUTTO utan ingående moms (5410 debet / 1930 kredit, ingen 2640-rad).
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-05-29', description: 'Utlägg bruttoimporterat (AR-glasögon)',
+      lines: [{ account_number: 5410, debit_ore: 20990_00 }, { account_number: 1930, credit_ore: 20990_00 }],
+    });
+  });
+
+  it('varnar (inte tyst) när ruta 48 = 0 men konton 5000–6999 har inköp', async () => {
+    const d = await declFor();
+    expect(d.input_vat.amount_ore).toBe(0);              // ruta 48 = 0 (bruttobokfört)
+    expect(d.warnings.length).toBeGreaterThan(0);        // men flaggat
+    expect(d.warnings.join(' ')).toContain('Ingående moms (ruta 48) är 0');
+  });
+
+  it('varningen försvinner när momsen lyfts till 2640 (momsomföring)', async () => {
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-06-30', description: 'Momsomföring: lyft ingående moms',
+      lines: [{ account_number: 2640, debit_ore: 4198_00 }, { account_number: 5410, credit_ore: 4198_00 }],
+    });
+    const d = await declFor();
+    expect(d.input_vat.amount_ore).toBe(4198_00);        // ruta 48 ifylld
+    expect(d.warnings).toEqual([]);                      // ingen varning kvar
   });
 });
