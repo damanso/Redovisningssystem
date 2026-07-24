@@ -24,10 +24,13 @@ function sumRange(rows: AccountLine[], min: number, max: number, mode: 'credit' 
     .reduce((s, r) => s + (mode === 'credit' ? r.credit_ore - r.debit_ore : r.debit_ore - r.credit_ore), 0);
 }
 
-// Nettoresultat för perioden (alla resultatkonton, kredit − debet). 3000–8999 inkl.
-// skatt och bokslutsdispositioner = bokfört resultat efter skatt.
+// Nettoresultat för perioden = bokfört resultat efter skatt (spann i funktionen).
 function periodResult(rows: AccountLine[]): number {
-  return sumRange(rows, 3000, 8999, 'credit');
+  // Spann 3000–8989 — MÅSTE vara identiskt med INK2R:s aretsResultat nedan.
+  // Resultatbärarna 8990–8999 (t.ex. 8999 Årets resultat) exkluderas: annars
+  // nollar en bokförd resultatöverföring (8999 D / 2099 K) summan, så att
+  // INK2S bokfört resultat blir 0 och INK2R:s balansräkning inte balanserar.
+  return sumRange(rows, 3000, 8989, 'credit');
 }
 
 // ---------------------------------------------------------------------------

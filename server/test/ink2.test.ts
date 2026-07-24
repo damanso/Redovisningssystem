@@ -139,3 +139,50 @@ describe('INK2-vyn', () => {
     expect(res.text).toContain('ingen digital inlämning');
   });
 });
+
+// Regression (2026-07-24): INK2S bokfört resultat får ALDRIG nollas av
+// årsavslutskontot 8999. Före fixen summerade periodResult 3000–8999, så en
+// bokförd resultatöverföring (book_year_result: 8999 D / 2099 K) drog ihop
+// bokfört resultat till 0 → INK2S underutnyttjade underskottsavdraget och
+// INK2R:s balansräkning gick inte ihop. periodResult måste vara identiskt med
+// INK2R:s aretsResultat (3000–8989). Locollabs RÅ 2025 avslöjade detta.
+describe('INK2 efter bokfört årsavslut (book_year_result) — regressionsskydd', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  async function approve(name: string, body: Record<string, unknown>) {
+    const req = await api.post(`${c()}/actions/${name}`).set(a()).send(body);
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    return api.post(`${c()}/approvals/${req.body.approval.id}/approve`).set(a()).send({});
+  }
+
+  beforeAll(async () => {
+    u = await registerUser('ink2-yearclose');
+    cid = await createCompany(u.token, 'Årsavslut AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+    // Vinst 100 000 via en bokförd kundfaktura (intäkt 100 000, utg moms 25 000).
+    const cust = await api.post(`${c()}/customers`).set(a()).send({ name: 'Kund' });
+    const inv = await api.post(`${c()}/actions/create_invoice`).set(a()).send({
+      customer_id: cust.body.customer.id, invoice_date: '2025-03-01', due_date: '2025-03-31',
+      lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 100000_00, vat_rate: 25 }],
+    });
+    await approve('book_invoice', { invoice_id: inv.body.result.id, fiscal_year_id: fyId });
+    // Bokför årsavslutet: 8999 D / 2099 K = 100 000 (samma som Locollabs RÅ 2025).
+    await approve('book_year_result', { fiscal_year_id: fyId });
+  });
+
+  it('INK2S bokfört resultat = INK2R årets resultat (8999 nollar inte) och BR balanserar', async () => {
+    const rRes = await api.post(`${c()}/actions/ink2r_schema`).set(a()).send({ fiscal_year_id: fyId });
+    const sRes = await api.post(`${c()}/actions/ink2s_adjustments`).set(a()).send({ fiscal_year_id: fyId });
+    expect(rRes.status, JSON.stringify(rRes.body)).toBe(200);
+    expect(sRes.status, JSON.stringify(sRes.body)).toBe(200);
+    const r = rRes.body.result; const s = sRes.body.result;
+    // Bokfört resultat får inte vara 0 (buggen) och de två sidorna måste vara överens.
+    expect(s.bokfort_resultat_ore).toBe(100000_00);
+    expect(s.bokfort_resultat_ore).toBe(r.income_statement.arets_resultat_ore);
+    // INK2R:s balansräkning balanserar efter att årsavslutet bokförts.
+    expect(r.balance_sheet.difference_ore).toBe(0);
+    expect(r.balance_sheet.total_assets_ore).toBe(r.balance_sheet.total_equity_liabilities_ore);
+  });
+});
