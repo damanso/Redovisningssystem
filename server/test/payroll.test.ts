@@ -2,7 +2,7 @@
 // arbetsgivaravgift) och bokföring till 7210/2710/1930/7510/2730.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 import { computePayroll, EMPLOYER_CONTRIBUTION_PERMILLE } from '../src/services/payroll.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -21,8 +21,8 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('payroll');
   companyId = await createCompany(user.token, 'Lön AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
 });
 
 describe('lönberäkning', () => {

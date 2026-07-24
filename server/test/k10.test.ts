@@ -3,7 +3,7 @@
 // Konstanter för inkomstår 2024 (schablon 204 325, SLR+9 %=11,62 %, löneuttagskrav).
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -16,8 +16,8 @@ beforeAll(async () => {
   user = await registerUser('k10');
   companyId = await createCompany(user.token, 'Fåmans AB');
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5560269986' });
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2024', start_date: '2024-01-01', end_date: '2024-12-31' });
+  fiscalYearId = fy.id;
   // Löneunderlag för inkomstår 2024 = KALENDERÅRET FÖRE (2023). Lön 2023 (40 000 kr)
   // ska räknas; en lön 2024 ska INTE räknas med i gränsbeloppet för inkomstår 2024.
   const e = await api.post(`${co()}/actions/create_employee`).set(auth()).send({ name: 'Ägare', personnummer: '198001011234', monthly_salary_ore: 4000000, tax_rate: 30 });
@@ -73,8 +73,8 @@ describe('3:12-beräkning (inkomstår 2024)', () => {
   });
 
   it('vägrar inkomstår utan konstanter', async () => {
-    const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2019', start_date: '2019-01-01', end_date: '2019-12-31' });
-    const res = await api.post(`${co()}/actions/k10_computation`).set(auth()).send({ fiscal_year_id: fy.body.fiscal_year.id, rule: 'forenkling', ...BASE });
+    const fy = await createFiscalYear(companyId, auth(), { label: '2019', start_date: '2019-01-01', end_date: '2019-12-31' });
+    const res = await api.post(`${co()}/actions/k10_computation`).set(auth()).send({ fiscal_year_id: fy.id, rule: 'forenkling', ...BASE });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toContain('year_not_supported');
   });

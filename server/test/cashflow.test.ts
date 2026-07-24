@@ -2,7 +2,7 @@
 // likviditetsprognos från öppna kund-/leverantörsfakturors förfallodag.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -21,8 +21,8 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('cash');
   companyId = await createCompany(user.token, 'Likvid AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const c = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Betalare AB', payment_terms: 30 });
   customerId = c.body.customer.id;
 

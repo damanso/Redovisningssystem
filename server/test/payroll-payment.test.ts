@@ -3,7 +3,7 @@
 // utbetalningen) och skattekontobetalningen som egen händelse
 // (2510 D / 1930 K = skatt + arbetsgivaravgift, ~12:e månaden efter).
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { bankDayOnOrBefore, defaultPaymentDate, isBankDay } from '../src/domain/bankdays.js';
 
 let user: TestUser;
@@ -32,8 +32,8 @@ async function voucherLines(voucherId: string): Promise<{ account_number: number
 beforeAll(async () => {
   user = await registerUser('payrollpay');
   companyId = await createCompany(user.token, 'Kontantlön AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+  fiscalYearId = fy.id;
   const emp = await api.post(`${co()}/actions/create_employee`).set(auth()).send({
     name: 'David Testson', monthly_salary_ore: 5_650_000, tax_rate: 23,
   });

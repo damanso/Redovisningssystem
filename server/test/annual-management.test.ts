@@ -2,7 +2,7 @@
 // förändring eget kapital, resultatdisposition), anläggningsnot, fastställelseintyg.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -20,8 +20,8 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('mgmt');
   companyId = await createCompany(user.token, 'Årsredovisning AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   // Vinst 80 000 + en anläggningstillgång.
   const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Kund' });
   const inv = await api.post(`${co()}/actions/create_invoice`).set(auth()).send({

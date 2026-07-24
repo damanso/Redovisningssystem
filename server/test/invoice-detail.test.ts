@@ -3,7 +3,7 @@
 // rad syntes i listan. Bokfört kan aldrig raderas (rättelseverifikat gäller).
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -35,8 +35,8 @@ beforeAll(async () => {
   user = await registerUser('invdetail');
   companyId = await createCompany(user.token, 'Fakturadetalj AB');
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5561234567', bankgiro: '123-4567' });
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const cust = await api.post(`${co()}/actions/create_customer`).set(auth()).send({ name: 'Nordic Vision Retail AB' });
   customerId = cust.body.result.id;
   ua = supertest.agent(app);

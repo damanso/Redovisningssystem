@@ -3,7 +3,7 @@
 // Bokförda poster avvisas; varje radering auditloggas med snapshot; RLS-
 // policyn i migration 0041 är den hårda garantin även mot direkta DELETE.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 let user: TestUser;
 let companyId: string;
@@ -28,8 +28,8 @@ async function createInvoiceDraft(): Promise<string> {
 beforeAll(async () => {
   user = await registerUser('draftdel');
   companyId = await createCompany(user.token, 'Utkast AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const cust = await api.post(`${co()}/actions/create_customer`).set(auth()).send({ name: 'Fel Kund AB' });
   customerId = cust.body.result.id;
 });

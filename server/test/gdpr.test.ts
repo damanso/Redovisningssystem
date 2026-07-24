@@ -7,7 +7,7 @@
 // Åtgärden är känslig → människa-i-loopen (begär 202 → godkänn).
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -38,8 +38,8 @@ async function countRows(table: string, partyType: string, partyId: string): Pro
 beforeAll(async () => {
   user = await registerUser('gdpr');
   companyId = await createCompany(user.token, 'GDPR AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
 });
 
 describe('GDPR-anonymisering är känslig (människa-i-loopen)', () => {

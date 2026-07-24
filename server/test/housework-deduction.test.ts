@@ -4,7 +4,7 @@
 // Beräknat underlag — ingen digital begäran till Skatteverket.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { computeHouseworkReduction } from '../src/services/housework.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -29,8 +29,8 @@ beforeAll(async () => {
   user = await registerUser('housework');
   companyId = await createCompany(user.token, 'Hantverkarn AB');
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5560123456' });
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const c = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Privatkund', payment_terms: 30 });
   customerId = c.body.customer.id;
 });

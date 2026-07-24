@@ -3,7 +3,7 @@
 // 60 000 → 14 643, 70 000 → 19 643 kr. Platt tax_rate är fallback utanför
 // tabellintervallet och manuell jämkning (tax_ore) går alltid före.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { table30TaxOre, hasTaxTable } from '../src/domain/taxTable30.js';
 import { computePayslipTax } from '../src/services/payroll.js';
 
@@ -122,12 +122,11 @@ describe('lönebesked med tabellskatt (action-lagret)', () => {
   });
 
   it('bokförda lönebesked rörs inte av omräkningen', async () => {
-    const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
-    expect(fy.status, JSON.stringify(fy.body)).toBe(201);
+    const fy = await createFiscalYear(companyId, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
     const slips = await api.post(`${co()}/actions/list_payslips`).set(auth()).send({ period: '2026-07' });
     const payslipId = slips.body.result[0].id;
     const req = await api.post(`${co()}/actions/book_payslip`).set(auth()).send({
-      payslip_id: payslipId, fiscal_year_id: fy.body.fiscal_year.id, payment_date: '2026-07-24',
+      payslip_id: payslipId, fiscal_year_id: fy.id, payment_date: '2026-07-24',
     });
     expect(req.status, JSON.stringify(req.body)).toBe(202);
     const ok = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});

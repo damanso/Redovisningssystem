@@ -2,7 +2,7 @@
 // betala (debet 2440) och åldersanalys (AP aging).
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -26,8 +26,8 @@ async function apTotal(): Promise<number> {
 beforeAll(async () => {
   user = await registerUser('apinv');
   companyId = await createCompany(user.token, 'Inköp AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const s = await api.post(`${co()}/suppliers`).set(auth()).send({ name: 'Leverantör X AB', bankgiro: '123-4567' });
   supplierId = s.body.supplier.id;
 });

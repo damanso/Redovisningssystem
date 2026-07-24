@@ -4,7 +4,7 @@
 // matchningar som människan bekräftar per rad. Momsmetoden är en bolags-
 // inställning och verifikat som bryter mot den ger varning (notis + audit).
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 let user: TestUser;
 let companyId: string;
@@ -36,8 +36,8 @@ async function voucherCount(): Promise<number> {
 beforeAll(async () => {
   user = await registerUser('links');
   companyId = await createCompany(user.token, 'Baklänk AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const cust = await api.post(`${co()}/actions/create_customer`).set(auth()).send({ name: 'Ethos International' });
   customerId = cust.body.result.id;
 });

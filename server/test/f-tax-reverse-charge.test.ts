@@ -3,7 +3,7 @@
 // text på PDF:en och flöde till momsdeklarationens ruta 41. Beräknat underlag.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, pdfText, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, pdfText, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -26,8 +26,8 @@ beforeAll(async () => {
   user = await registerUser('ftax');
   companyId = await createCompany(user.token, 'Bygg & Co AB');
   await api.patch(`${co()}`).set(auth()).send({ org_number: '5560123456', bankgiro: '1234-5678' });
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const b = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Underentreprenör AB', org_number: '5569998888', vat_number: 'SE556999888801', payment_terms: 30 });
   buyerId = b.body.customer.id;
   const p = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Privatperson', payment_terms: 30 });

@@ -5,6 +5,10 @@
 // körs — ALDRIG kan få testsviten att köra mot en dev-databas. Explicit omval
 // sker via TEST_*-variabler, inte via .env.
 export const TEST_DB_NAME = process.env.TEST_DB_NAME ?? 'redovisning_test';
+// Mall-databas: migreras EN gång i globalSetup och används sedan för att
+// återskapa TEST_DB_NAME (färsk + seedad) före varje testfil, så att sviten
+// aldrig blir beroende av filordning (se test/setup.ts + globalSetup.ts).
+export const TEST_TEMPLATE_DB_NAME = `${TEST_DB_NAME}_template`;
 
 const HOST = process.env.TEST_PG_HOST ?? '127.0.0.1';
 const PORT = process.env.TEST_PG_PORT ?? '5433';

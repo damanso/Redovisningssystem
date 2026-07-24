@@ -2,7 +2,7 @@
 // ur huvudboken. Verifierar att uppställningen stämmer och att balansräkningen går ihop.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { createCompanyAccount } from '../src/services/accounting/accounts.js';
 
@@ -22,8 +22,8 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('k2');
   companyId = await createCompany(user.token, 'Bokslut AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
 
   // Försäljning: faktura netto 100 000, moms 25 % → 3001 kredit 100000, 1510 debet 125000.
   const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Kund AB' });

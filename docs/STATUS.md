@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 464 tester i 63 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 469 tester i 63 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-24 (session: testisolering, T3):** Sviten var ORDNINGSBEROENDE —
+  den delade Postgres-databasen skapades färsk en gång men nollställdes
+  ALDRIG mellan testfiler, så en fil kunde läcka tillstånd in i nästa
+  (symptom: k10:s `beforeAll` föll i full svit men passerade isolerat, med det
+  kryptiska `Cannot read properties of undefined (reading 'id')`). Fix:
+  **(T3.1)** `createFiscalYear`-hjälpare i `test/helpers.ts` som asserterar
+  HTTP-status (201) med hela svarskroppen — blinda `fy.body.fiscal_year.id`
+  ersatta i k10 + 18 andra filers setup, så framtida setup-fel namnger
+  verklig orsak i stället för "undefined.id". **(T3.2, rotfix)** `globalSetup`
+  migrerar en gång och tar en MALL-databas (`redovisning_test_template`);
+  `test/setup.ts` återskapar `redovisning_test` FRÅN mallen i ett `beforeAll`
+  före varje fil (DROP … WITH FORCE + CREATE … TEMPLATE) → varje fil startar
+  mot en pristin, seedad databas och sviten blir oberoende av filordning.
+  `fileParallelism:false` gör att bara en fil kör i taget (ingen DROP/CREATE-
+  kapplöpning). **(T3.3)** Läckan visade sig vara STRUKTURELL, inte en enskild
+  fil: varje dat* skapande fil läckte bolag/användare till nästa (direkt
+  bevisat med en temporär bevisfil: utan resetten såg nästa fil `expected 1
+  to be 0`, med resetten `0`). Verifierat: full svit grön deterministiskt
+  (default-ordning) + grön under `--sequence.shuffle.files`. 469 tester i 63
+  sviter, `npm run build` ren. OBS: `--sequence.shuffle.files` (FILordning) —
+  tester INOM en fil körs medvetet i definitionsordning (många delar
+  describe-tillstånd), vilket är avsiktligt och inte ändrat.
 
 - **2026-07-22 (session: payroll-system-workarounds, forts.):** Livefeedback:
   fakturadetaljsida i vyn (öppna utkast med rader/totaler/OCR, ladda ner PDF

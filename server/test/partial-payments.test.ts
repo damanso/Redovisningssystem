@@ -1,7 +1,7 @@
 // Fas A3: riktiga delbetalningar — flera betalningsverifikat per faktura,
 // paid_amount räknas upp, aging räknar netto, överbetalning spärras.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 let user: TestUser;
 let companyId: string;
@@ -32,8 +32,8 @@ async function agingTotal(): Promise<number> {
 beforeAll(async () => {
   user = await registerUser('partpay');
   companyId = await createCompany(user.token, 'Delbetalning AB');
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fiscalYearId = fy.body.fiscal_year.id;
+  const fy = await createFiscalYear(companyId, auth(), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+  fiscalYearId = fy.id;
   const c = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Delkund', payment_terms: 0 });
   customerId = c.body.customer.id;
 });
