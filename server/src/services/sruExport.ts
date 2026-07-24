@@ -9,6 +9,7 @@
 // Se SRU_FIELD_CODES. Blankett-id:t bär inkomståret (t.ex. INK2R-2023P4).
 import type { PoolClient } from 'pg';
 import { ink2rReport, ink2sReport } from './ink2.js';
+import { BadRequestError } from '../lib/errors.js';
 
 // Ett fält i en SRU-blankett: fältkod (4 siffror) + belopp i hela kronor.
 export interface SruField { kod: string; value: number }
@@ -108,16 +109,25 @@ export async function generateInk2Sru(client: PoolClient, companyId: string, fis
   const s = await ink2sReport(client, companyId, fiscalYearId);
   const incomeYear = Number(r.fiscal_year.end.slice(0, 4));
 
-  const company = await client.query<{ name: string; org_number: string | null; email: string | null }>(
-    'SELECT name, org_number, email FROM companies WHERE id = $1', [companyId],
+  const company = await client.query<{ name: string; org_number: string | null; email: string | null; address: string | null; postal_code: string | null; city: string | null }>(
+    'SELECT name, org_number, email, address, postal_code, city FROM companies WHERE id = $1', [companyId],
   );
   const c = company.rows[0]!;
   const sender: SruSender = {
     orgnr: (c.org_number ?? '').replace(/\D/g, '') || '0000000000',
     name: c.name,
+    address: c.address ?? undefined,
+    postnr: c.postal_code ? c.postal_code.replace(/\s/g, '') : undefined,
+    postort: c.city ?? undefined,
     email: c.email ?? undefined,
     program: 'Redovisningssystem',
   };
+  // Skatteverket kräver POSTNR och POSTORT i info.sru:s MEDIELEV-block — saknas de
+  // avvisas HELA inlämningen ("Posten POSTNR saknas"). Fånga det med ett tydligt fel
+  // vid genereringen i stället för att låta Skatteverket studsa filen.
+  if (!sender.postnr || !sender.postort) {
+    throw new BadRequestError('company_postal_missing', 'Bolagets postnummer och postort krävs i INK2-filen (info.sru). Fyll i dem under bolagsuppgifter innan du genererar SRU.');
+  }
 
   const ink2rFields = mapInk2rFields(r);
   const ink2sFields = mapInk2sFields(s);

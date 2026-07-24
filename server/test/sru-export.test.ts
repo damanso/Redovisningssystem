@@ -21,6 +21,7 @@ async function approveAction(name: string, body: Record<string, unknown>) {
 beforeAll(async () => {
   user = await registerUser('sru');
   companyId = await createCompany(user.token, 'SRU AB');
+  await api.post(`${co()}/actions/update_company_settings`).set(auth()).send({ address: 'Testgatan 1', postal_code: '111 22', city: 'Stockholm' });
   const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
   fiscalYearId = fy.body.fiscal_year.id;
   // Vinst före dispositioner 80 000; PF-avsättning 20 000; skatt 12 360 → resultat 47 640.
@@ -53,6 +54,8 @@ describe('SRU-filformat', () => {
     expect(info).toContain('#FILNAMN blanketter.sru');
     expect(info).toContain('#MEDIELEV_START');
     expect(info).toContain('#ORGNR ');
+    expect(info).toContain('#POSTNR 11122');      // obligatoriskt — Skatteverket avvisar HELA filen annars
+    expect(info).toContain('#POSTORT Stockholm');
     expect(info).toContain('#MEDIELEV_SLUT');
     // CRLF-radslut.
     expect(info).toContain('\r\n');
@@ -102,6 +105,7 @@ describe('negativt resultat från andelar emitteras till 7518 (grindfynd)', () =
   beforeAll(async () => {
     u = await registerUser('sru-neg');
     cid = await createCompany(u.token, 'Nedskrivning AB');
+    await api.post(`${c()}/actions/update_company_settings`).set(a()).send({ postal_code: '222 33', city: 'Göteborg' });
     const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
     fyId = fy.body.fiscal_year.id;
     // Nedskrivning av andelar i koncernföretag: konto 8070 (inom 8000–8199) debet mot bank.
@@ -133,5 +137,37 @@ describe('SRU-nedladdning', () => {
     expect(file.status).toBe(200);
     expect(file.headers['content-disposition']).toContain('blanketter.sru');
     expect(file.text).toContain('#BLANKETT INK2R-2025P4');
+  });
+});
+
+// Regression (2026-07-24): info.sru:s MEDIELEV kräver POSTNR + POSTORT (obligatoriska
+// hos Skatteverket — annars "Posten POSTNR saknas" och HELA inlämningen avvisas).
+// generateInk2Sru hämtade aldrig bolagets adress, så filen saknade fälten. Nu hämtas
+// de, och saknas de avvisas genereringen med tydligt fel i förväg (ingen trasig fil).
+describe('info.sru POSTNR/POSTORT (regressionsskydd)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  beforeAll(async () => {
+    u = await registerUser('sru-postnr');
+    cid = await createCompany(u.token, 'Adresslös AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+  });
+
+  it('utan postnummer/postort avvisas genereringen med tydligt fel', async () => {
+    const res = await api.post(`${c()}/actions/generate_ink2_sru`).set(a()).send({ fiscal_year_id: fyId });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('company_postal_missing');
+  });
+
+  it('med postnummer/postort bär info.sru #POSTNR, #POSTORT och #ADRESS', async () => {
+    await api.post(`${c()}/actions/update_company_settings`).set(a()).send({ address: 'Adressgatan 5', postal_code: '123 43', city: 'Farsta' });
+    const res = await api.post(`${c()}/actions/generate_ink2_sru`).set(a()).send({ fiscal_year_id: fyId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const info = res.body.result.info_sru as string;
+    expect(info).toContain('#POSTNR 12343');
+    expect(info).toContain('#POSTORT Farsta');
+    expect(info).toContain('#ADRESS Adressgatan 5');
   });
 });
