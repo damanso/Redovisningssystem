@@ -215,6 +215,43 @@ skattskyldighet är lagkrav och ligger kvar under summeringen.
 - Vyns fakturadetaljsida har **Generera om PDF** — ny fil med senaste mallen
   arkiveras och blir fakturans PDF; den gamla filen ligger kvar i arkivet.
 
+### Fakturaserien och bilagan (LOC-263)
+
+**Seriesynk.** Systemets interna fakturaräknare kan ha glidit isär från den
+externa kundserien (numren kunderna faktiskt fått). Modellen är **EN serie
+framåt**: räknaren flyttas fram, och gamla avvikande fakturor får kundnumret i
+ett eget fält. Bokförd historik numreras aldrig om.
+
+- `get_invoice_number_series` (read) — nästa nummer, högsta utställda och en
+  `out_of_sync`-flagga.
+- `set_invoice_number_series` (**sensitive**) — flyttar räknaren, **endast
+  framåt** (att backa skulle ge dubbla fakturanummer). Auditloggas med gammalt
+  och nytt värde.
+- `set_external_invoice_numbers` (**sensitive**) — registrerar kundens nummer på
+  befintliga fakturor, som en batch i en transaktion med unikhetskontrollen
+  uppskjuten (ordningen i listan spelar ingen roll). Flyttar samtidigt räknaren
+  förbi det högsta registrerade numret.
+- Databasgaranti: `effective_invoice_number` (genererad kolumn = externt när det
+  finns, annars internt) med en DEFERRABLE unik nyckel per bolag → **två
+  fakturor kan aldrig visa samma nummer för en kund**. PDF, vy och filnamn
+  använder alltid det numret; internnumret syns kvar på detaljsidan.
+- **OCR:** systemets Luhn-giltiga OCR gäller framåt. Husmallens 12-siffriga
+  variant (t.ex. `202626010027`) är **inte** Luhn-giltig och riskerar avvisad
+  betalning om bankgiroavtalets OCR-kontroll är påslagen.
+
+**Bilagan (sida 2).** Två varianter ur Locollabs verkliga fakturor: `time`
+(tidsspecifikation per datum, kolumn Timmar, "Summa fakturerbar tid") och
+`expense` (utläggsspecifikation, kolumn SEK, summering exkl./moms/inkl. moms).
+Tid lagras som **heltal minuter** (0,42 h = 25 min), utlägg som **heltal ören**.
+
+- `set_invoice_appendix` (write) — sätter bilagan explicit; ersätter hela
+  bilagan (idempotent). Endast på obokade utkast — en bokförd fakturas underlag
+  är oföränderligt.
+- `get_invoice_appendix` (read).
+- `invoice_appendix_from_time_entries` (write) — fyller tidsbilagan ur systemets
+  **egen tidrapportering** (fakturerbar, ofakturerad tid i perioden) och
+  markerar posterna som fakturerade, så samma timmar inte kan faktureras igen.
+
 ### K10 / 3:12 — nya modellen 2026+ och autofyll (Tillägg 2)
 
 - Inkomstår **2026+** beräknas enligt **grundbeloppsmodellen** (riksdagsbeslut

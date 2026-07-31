@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (109
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (115
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 469 tester i 63 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 482 tester i 64 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-31 (session: LOC-263 fakturadesign + seriesynk):** Del 1 av LOC-263
+  (husmallen på sida 1) var redan gjord 2026-07-22; denna session byggde
+  resten. **Bilagan (sida 2)** porterad ur Davids verkliga fakturor: tidsvariant
+  (facit faktura 0000027 — Datum/Beskrivning/Timmar, "Summa fakturerbar tid
+  31,42 h") och utläggsvariant (facit 0000024 — SEK + exkl./moms/inkl. moms +
+  fotnoter). Tid lagras som HELTAL MINUTER (0,42 h = 25 min; totalen 1885 min),
+  utlägg som ören — aldrig flyttal. Sida 2 har ingen logga (mallen släppte den
+  i den nyare varianten 27). Bilagan kan fyllas explicit ELLER hämtas ur
+  systemets egen tidrapportering (`invoice_appendix_from_time_entries`, som
+  markerar tidsposterna fakturerade så de inte kan dubbelfaktureras).
+  **Seriesynk** (vägval David): EN serie framåt — `set_invoice_number_series`
+  flyttar räknaren (endast FRAMÅT, auditloggat) och `set_external_invoice_numbers`
+  registrerar kundens nummer på gamla avvikande fakturor (internt 14 = externt
+  26, internt 26 = externt 27). Båda är `sensitive` → mänskligt godkännande.
+  DB-garanti: genererad kolumn `effective_invoice_number` + DEFERRABLE unik
+  nyckel per bolag → två fakturor kan ALDRIG visa samma nummer för kunden, och
+  en batchomnumrering funkar i valfri ordning. Registrering av kundnummer
+  flyttar räknaren förbi det (annars krockade nästa nya faktura — fångades av
+  testet). **OCR (vägval David): systemets Luhn-giltiga OCR gäller framåt** —
+  husmallens 12-siffriga (202626010027) är INTE Luhn-giltigt och riskerar
+  avvisad betalning om bankgiroavtalets OCR-kontroll är på; värt att stämma av
+  med banken. Bokförd historik numreras aldrig om; originalen finns arkiverade
+  som bilagda dokument. Testhjälparen `pdfText` fixad: PDFKit skriver WinAnsi,
+  där 0x80–0x9F är typografiska tecken — tankstreck (–) blev tidigare ett
+  osynligt kontrolltecken och gav falskt röda PDF-assertions. 482 tester i 64
+  sviter gröna. KVAR: `locollabs-fakturamall.md` har jag inte sett — mallen är
+  porterad ur de två verkliga PDF:erna, så stäm av mot referensdokumentet.
 
 - **2026-07-24 (session: testisolering, T3):** Sviten var ORDNINGSBEROENDE —
   den delade Postgres-databasen skapades färsk en gång men nollställdes

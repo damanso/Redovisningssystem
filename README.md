@@ -9,8 +9,8 @@ Grundfaserna 0–4, utökningsfaserna A1–A14, bokslut/skatt-faserna B1–B4,
 deklarationsprogram-faserna C1–C7, myndighetsfil-faserna D1–D4 samt regelefterlevnads-
 faserna E1–E3 är byggda och passerade sina grindar (`npm run build` rent + acceptans-
 tester gröna, inklusive adversariella finansmatte-/SRU-/iXBRL-/filformat-/GDPR-/moms-
-granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 469
-tester passerar** i 63 sviter mot en riktig Postgres (`server/test/`), och
+granskningar där varje bekräftat fynd åtgärdats med test). Bevis: **`npm test` → 482
+tester passerar** i 64 sviter mot en riktig Postgres (`server/test/`), och
 `npm run build` (tsc) utan fel.
 
 ### Grundfaser
@@ -119,6 +119,7 @@ begäran skickas till Skatteverket.
 | K7 | Radering av obokade registerutkast (RLS-garanterad, auditloggad med snapshot) | Klar | `draft-delete` |
 | T2 | Nya 3:12-modellen för K10 (2026+): grundbelopp 4 IBB, lönebaserat utrymme utan löneuttagskrav, sparat utan uppräkning + persisterade beräkningar och autofyll ur systemdata | Klar | `k10-new-model` |
 | Mall | Faktura-PDF enligt Locollabs riktiga mall (logotyp via set_company_logo, Från/Fakturaadress-block, Vår/Er referens, Leveranstidpunkt, IBAN/BIC, sidfot i fyra kolumner) + update_company_settings + Generera om PDF | Klar | `invoice-pdf-mall` |
+| LOC-263 | Bilaga på sida 2 (tidsspecifikation per datum / utläggsspecifikation) + fakturaserien synkad med kundserien (externt nummer, räknaren endast framåt) | Klar | `invoice-series-appendix` |
 
 ### Utanför scope / integrationsgränser
 

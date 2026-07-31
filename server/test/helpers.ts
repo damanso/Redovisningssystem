@@ -64,6 +64,17 @@ export async function createFiscalYear(
  * text som hex-strängar i TJ-arrayer (<48616e...> = "Han..."), så en ren grep
  * på bufferten hittar inget — vi avkodar hex-runorna och slår ihop dem.
  */
+// PDFKit skriver text i WinAnsi (CP1252), där 0x80–0x9F är typografiska tecken
+// och INTE latin1:s kontrolltecken. Utan den här tabellen blev t.ex. tankstreck
+// (–, 0x96) ett osynligt kontrolltecken och en assertion på "Bilaga – tid…"
+// föll trots att PDF:en var helt korrekt.
+const WINANSI_HIGH: Record<number, string> = {
+  0x80: '€', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…', 0x86: '†', 0x87: '‡',
+  0x88: 'ˆ', 0x89: '‰', 0x8a: 'Š', 0x8b: '‹', 0x8c: 'Œ', 0x8e: 'Ž', 0x91: '‘',
+  0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—', 0x98: '˜',
+  0x99: '™', 0x9a: 'š', 0x9b: '›', 0x9c: 'œ', 0x9e: 'ž', 0x9f: 'Ÿ',
+};
+
 export function pdfText(buffer: Buffer): string {
   const raw = buffer.toString('latin1');
   let out = '';
@@ -71,7 +82,8 @@ export function pdfText(buffer: Buffer): string {
     const hex = match[1]!;
     if (hex.length % 2 !== 0) continue;
     for (let i = 0; i < hex.length; i += 2) {
-      out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+      const code = parseInt(hex.slice(i, i + 2), 16);
+      out += WINANSI_HIGH[code] ?? String.fromCharCode(code);
     }
   }
   return out;

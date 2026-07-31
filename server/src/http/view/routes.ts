@@ -14,6 +14,7 @@ import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '.
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { generateInvoicePdfFile, getInvoice, listInvoices } from '../../services/invoices.js';
+import { getInvoiceAppendix } from '../../services/invoiceAppendix.js';
 import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
@@ -581,6 +582,11 @@ function kronorTillOre(value: unknown): number | null {
   } catch {
     return null;
   }
+}
+
+/** Minuter → svenska timmar med två decimaler (25 → "0,42") — samma som PDF:en. */
+function timmar(minutes: number): string {
+  return new Intl.NumberFormat('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(minutes / 60);
 }
 
 /** Felnotis (?fel=<text>) för sidor med formulär. Texten HTML-escapas av html``. */
@@ -2120,7 +2126,7 @@ viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapa din första faktura nedan.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th><th></th></tr></thead><tbody>
-            ${rows.map((r) => html`<tr><td class="code"><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.invoice_number}</a></td><td>${r.invoice_date}</td>
+            ${rows.map((r) => html`<tr><td class="code"><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.effective_invoice_number ?? r.invoice_number}</a></td><td>${r.invoice_date}</td>
               <td><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.customer_name}</a>${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
               <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td>
               <td><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/invoices/${r.id as string}">Öppna</a> ${rowActions(r as Record<string, unknown>)}</td></tr>`)}
@@ -2225,12 +2231,13 @@ viewRouter.post('/c/:companyId/invoices/:invoiceId/pay', page(async (req, res) =
 viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura', async (client, companyId, req) => {
   const invoiceId = UuidSchema.parse(req.params.invoiceId);
   const inv = await getInvoice(client, companyId, invoiceId);
+  const appendix = await getInvoiceAppendix(client, companyId, invoiceId);
   const docs = await listDocuments(client, companyId, { entityType: 'invoice', entityId: invoiceId });
   const fyId = await hasFiscalYear(client, companyId);
   const today = new Date().toISOString().slice(0, 10);
   const isDraft = !inv.voucher_id && inv.status === 'draft';
   const lines = inv.lines as { line_no: number; description: string | null; quantity: string; unit: string | null; unit_price_ore: number; vat_rate: number; line_net_ore: number }[];
-  return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.invoice_number)} — ${inv.customer_name as string}</h1>
+  return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.effective_invoice_number ?? inv.invoice_number)} — ${inv.customer_name as string}</h1>
       <p class="lede"><a href="/app/c/${companyId}/invoices">← Alla fakturor</a></p></div></div>
     ${felNotis(req)}
     ${req.query.pdfny === '1' ? html`<p class="lede" style="margin-top:10px">${chip('PDF:en är omgenererad med senaste mallen — ladda ner den på nytt nedan', 'ok', '✓')}</p>` : ''}
@@ -2242,6 +2249,7 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
     </div>
     <div class="table-wrap" style="margin-top:12px"><table><tbody>
       <tr><td>OCR-nummer</td><td class="code">${(inv.ocr as string) ?? '—'}</td></tr>
+      ${inv.external_invoice_number ? html`<tr><td>Internt nummer</td><td class="code">${String(inv.invoice_number)} <span class="muted">· kunden ser ${String(inv.external_invoice_number)}</span></td></tr>` : ''}
       ${inv.our_reference ? html`<tr><td>Vår referens</td><td>${inv.our_reference as string}</td></tr>` : ''}
       <tr><td>Er referens</td><td>${(inv.reference as string) ?? '—'}</td></tr>
       ${inv.delivery_period ? html`<tr><td>Leveranstidpunkt</td><td>${inv.delivery_period as string}</td></tr>` : ''}
@@ -2258,6 +2266,14 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
       <tr><td colspan="4">Moms</td><td class="num">${amount(inv.vat_ore as number, { unit: false })}</td></tr>
       <tr class="subtot"><td colspan="4"><strong>Att betala</strong></td><td class="num"><strong>${amount(inv.total_ore as number, { unit: false })}</strong></td></tr>
     </tbody></table></div>
+    ${appendix.kind ? html`<h2 style="margin-top:18px">Bilaga (sida 2 i PDF:en) — ${appendix.kind === 'time' ? 'tidsspecifikation' : 'utläggsspecifikation'}</h2>
+      <div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th class="num">${appendix.kind === 'time' ? 'Timmar' : 'SEK'}</th></tr></thead><tbody>
+        ${(appendix.rows as { row_no: number; entry_date: string; description: string; minutes: number | null; amount_ore: number | null }[]).map((r) => html`<tr>
+          <td class="code">${r.entry_date}</td><td>${r.description}</td>
+          <td class="num">${r.minutes !== null ? timmar(r.minutes) : amount(r.amount_ore ?? 0, { unit: false })}</td></tr>`)}
+        <tr class="subtot"><td colspan="2"><strong>${appendix.kind === 'time' ? 'Summa fakturerbar tid' : 'Summa utlägg exkl. moms'}</strong></td>
+          <td class="num"><strong>${appendix.kind === 'time' ? `${timmar(appendix.total_minutes as number)} h` : amount(appendix.total_amount_ore as number, { unit: false })}</strong></td></tr>
+      </tbody></table></div>` : ''}
     ${docs.length ? html`<h2 style="margin-top:18px">Bilagda dokument</h2>
       <div class="actions">${docs.map((d) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/documents/${d.file_id}/download">📎 ${d.original_name}</a> `)}</div>` : ''}
     <h2 style="margin-top:18px">Åtgärder</h2>
@@ -2284,11 +2300,11 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId/pdf', page(async (req, res) =>
   const invoiceId = UuidSchema.parse(req.params.invoiceId);
   const existing = await withTenantTransaction(userId, companyId, async (client) => {
     const inv = await getInvoice(client, companyId, invoiceId);
-    if (!inv.pdf_file_id) return { number: inv.invoice_number as number, stored: null as string | null };
+    if (!inv.pdf_file_id) return { number: (inv.effective_invoice_number ?? inv.invoice_number) as number, stored: null as string | null };
     const f = await client.query<{ stored_name: string }>(
       'SELECT stored_name FROM files WHERE id = $1 AND company_id = $2', [inv.pdf_file_id as string, companyId],
     );
-    return { number: inv.invoice_number as number, stored: f.rows[0]?.stored_name ?? null };
+    return { number: (inv.effective_invoice_number ?? inv.invoice_number) as number, stored: f.rows[0]?.stored_name ?? null };
   });
   res.type('application/pdf').attachment(`Faktura-${existing.number}.pdf`);
   if (existing.stored) {
@@ -2324,7 +2340,7 @@ viewRouter.post('/c/:companyId/invoices/:invoiceId/delete', page(async (req, res
   const back = `/app/c/${companyId}/invoices`;
   const number = await withTenantTransaction(userId, companyId, async (client) => {
     const inv = await getInvoice(client, companyId, invoiceId);
-    return inv.invoice_number as number;
+    return (inv.effective_invoice_number ?? inv.invoice_number) as number;
   }).catch(() => null);
   try {
     await executeAction({

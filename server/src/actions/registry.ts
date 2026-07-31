@@ -37,6 +37,11 @@ import { ku10Report, generateKu10Xml } from '../services/ku10.js';
 import { anonymizeParty } from '../services/gdpr.js';
 import { attachDocument, getDocument, listDocuments, type DocumentEntityType } from '../services/documents.js';
 import { setCompanyLogo, updateCompanySettings } from '../services/companyLogo.js';
+import { getInvoiceNumberSeries, setExternalInvoiceNumbers, setInvoiceNumberSeries } from '../services/invoiceNumbering.js';
+import {
+  appendixFromTimeEntries, getInvoiceAppendix, setInvoiceAppendix,
+  type AppendixKind, type AppendixRowInput,
+} from '../services/invoiceAppendix.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
 import { linkVoucher, unlinkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
@@ -251,6 +256,91 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       iban: safeText(50).optional(), bic: safeText(20).optional(), website: safeText(200).optional(),
     }).strict(),
     handler: (ctx, i) => updateCompanySettings(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'get_invoice_number_series',
+    title: 'Visa fakturaräknaren (nästa nummer + högsta utställda)',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => getInvoiceNumberSeries(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'set_invoice_number_series',
+    title: 'Flytta fakturaräknaren framåt (synka med kundserien)',
+    // LOC-263: påverkar vilket nummer kundens nästa faktura får — en
+    // bokföringsintegritetsåtgärd, därför mänskligt godkännande. Endast framåt.
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ next_invoice_number: z.number().int().min(1).max(1_000_000) }).strict(),
+    handler: (ctx, i: { next_invoice_number: number }) =>
+      setInvoiceNumberSeries(ctx.client, ctx.companyId, ctx.userId, i.next_invoice_number),
+  }),
+  def({
+    name: 'set_external_invoice_numbers',
+    title: 'Registrera kundens fakturanummer på befintliga fakturor',
+    // LOC-263: ändrar numret kunden ser på fakturan — samma vikt som ovan.
+    sensitivity: 'sensitive',
+    inputSchema: z.object({
+      assignments: z.array(z.object({
+        invoice_id: UuidSchema,
+        external_invoice_number: z.number().int().min(1).max(1_000_000),
+      }).strict()).min(1).max(200),
+    }).strict(),
+    handler: (ctx, i: { assignments: { invoice_id: string; external_invoice_number: number }[] }) =>
+      setExternalInvoiceNumbers(ctx.client, ctx.companyId, ctx.userId,
+        i.assignments.map((a) => ({ invoiceId: a.invoice_id, externalNumber: a.external_invoice_number }))),
+  }),
+  def({
+    name: 'set_invoice_appendix',
+    title: 'Sätt fakturans bilaga (tids- eller utläggsspecifikation, sida 2)',
+    sensitivity: 'write',
+    // Tid som heltal minuter, utlägg som heltal ören — aldrig flyttal.
+    inputSchema: z.object({
+      invoice_id: UuidSchema,
+      kind: z.enum(['time', 'expense']),
+      title: safeText(150).optional(),
+      preamble: safeText(400).optional(),
+      notes: safeText(800).optional(),
+      rows: z.array(z.object({
+        entry_date: IsoDateSchema,
+        description: safeText(300),
+        minutes: z.number().int().positive().max(100_000).optional(),
+        amount_ore: z.number().int().nonnegative().safe().optional(),
+      }).strict()).min(1).max(500),
+    }).strict(),
+    handler: (ctx, i) => setInvoiceAppendix(ctx.client, ctx.companyId, ctx.userId, {
+      invoiceId: (i as { invoice_id: string }).invoice_id,
+      kind: (i as { kind: AppendixKind }).kind,
+      title: (i as { title?: string }).title,
+      preamble: (i as { preamble?: string }).preamble,
+      notes: (i as { notes?: string }).notes,
+      rows: (i as { rows: AppendixRowInput[] }).rows,
+    }),
+  }),
+  def({
+    name: 'get_invoice_appendix',
+    title: 'Hämta fakturans bilaga',
+    sensitivity: 'read',
+    inputSchema: z.object({ invoice_id: UuidSchema }).strict(),
+    handler: (ctx, i: { invoice_id: string }) => getInvoiceAppendix(ctx.client, ctx.companyId, i.invoice_id),
+  }),
+  def({
+    name: 'invoice_appendix_from_time_entries',
+    title: 'Fyll tidsbilagan ur systemets tidrapportering',
+    sensitivity: 'write',
+    // Markerar de använda tidsposterna som fakturerade (kan inte dubbelfaktureras).
+    inputSchema: z.object({
+      invoice_id: UuidSchema,
+      project_id: UuidSchema.optional(),
+      from: IsoDateSchema,
+      to: IsoDateSchema,
+      title: safeText(150).optional(),
+      preamble: safeText(400).optional(),
+    }).strict(),
+    handler: (ctx, i: { invoice_id: string; project_id?: string; from: string; to: string; title?: string; preamble?: string }) =>
+      appendixFromTimeEntries(ctx.client, ctx.companyId, ctx.userId, {
+        invoiceId: i.invoice_id, projectId: i.project_id, from: i.from, to: i.to,
+        title: i.title, preamble: i.preamble,
+      }),
   }),
   def({
     name: 'set_company_logo',

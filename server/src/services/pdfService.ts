@@ -44,10 +44,29 @@ export interface InvoicePdfLine {
   vat_rate: number;
   line_net_ore: Ore;
 }
+export interface InvoicePdfAppendixRow {
+  entry_date: string;
+  description: string;
+  /** Tidsbilaga: heltal minuter (0,42 h = 25 min). */
+  minutes: number | null;
+  /** Utläggsbilaga: heltal ören. */
+  amount_ore: number | null;
+}
+export interface InvoicePdfAppendix {
+  kind: 'time' | 'expense';
+  title: string | null;
+  preamble: string | null;
+  notes: string | null;
+  rows: InvoicePdfAppendixRow[];
+  total_minutes: number;
+  total_amount_ore: number;
+}
+
 export interface InvoicePdfData {
   company: InvoicePdfCompany;
   customer: InvoicePdfCustomer;
   invoice: {
+    /** Numret KUNDEN ser (externt när det finns, annars systemets egna). */
     invoice_number: number;
     invoice_date: string;
     due_date: string;
@@ -66,6 +85,14 @@ export interface InvoicePdfData {
   totals: { subtotal_ore: Ore; vat_ore: Ore; total_ore: Ore };
   /** Bolagets logotyp (PNG/JPEG) — visas uppe till höger när den finns. */
   logo?: Buffer;
+  /** Bilaga på sida 2 (tids- eller utläggsspecifikation) när fakturan har en. */
+  appendix?: InvoicePdfAppendix;
+}
+
+/** Minuter → svenska timmar med två decimaler ("25" → "0,42", "1885" → "31,42"). */
+function hours(minutes: number): string {
+  return new Intl.NumberFormat('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    .format(minutes / 60);
 }
 
 const GRAY = '#555555';
@@ -287,6 +314,91 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     footCol(330, withSpacer(group('Telefon', company.phone), group('E-post', company.email)));
     footCol(455, withSpacer(group('Hemsida', company.website), group('Bankgiro', company.bankgiro)));
     doc.fillColor(BLACK);
+
+    // ---- Sida 2: bilagan (tids- eller utläggsspecifikation) ----
+    // Mönster: faktura 0000027 (tid) resp. 0000024 (utlägg). Sida 2 har INGEN
+    // logotyp — mallen släppte den i den nyare varianten (27).
+    if (data.appendix && data.appendix.rows.length > 0) {
+      const ap = data.appendix;
+      doc.addPage();
+      const invNo = String(invoice.invoice_number).padStart(7, '0');
+      doc.fontSize(8.5).font('Helvetica').fillColor(BLACK)
+        .text(`Tillhör faktura ${invNo} · ${company.name} · ${customer.name}`, left, 78);
+
+      const isTime = ap.kind === 'time';
+      doc.fontSize(20).font('Helvetica-Bold')
+        .text(ap.title ?? (isTime ? 'Bilaga – tidsspecifikation' : 'Bilaga – specifikation av utlägg'), left, 108);
+
+      let ay = 150;
+      if (ap.preamble) {
+        doc.fontSize(9.5).font('Helvetica').text(ap.preamble, left, ay, { width: right - left });
+        ay += doc.heightOfString(ap.preamble, { width: right - left }) + 18;
+      }
+
+      // Tabellhuvud: Datum | Beskrivning | Timmar/SEK
+      const axDesc = 155;
+      const valueWidth = 90;
+      const descWidth = right - valueWidth - 10 - axDesc;
+      doc.fontSize(9.5).font('Helvetica-Bold');
+      doc.text('Datum', left, ay);
+      doc.text('Beskrivning', axDesc, ay);
+      doc.text(isTime ? 'Timmar' : 'SEK', right - valueWidth, ay, { width: valueWidth, align: 'right' });
+      ay += 13;
+      doc.moveTo(left, ay).lineTo(right, ay).lineWidth(0.7).stroke();
+      ay += 9;
+
+      doc.font('Helvetica');
+      for (const row of ap.rows) {
+        const h = doc.heightOfString(row.description, { width: descWidth });
+        // Ny sida om raden inte får plats ovanför sidfoten.
+        if (ay + h > 760) {
+          doc.addPage();
+          ay = 78;
+          doc.fontSize(8.5).text(`Tillhör faktura ${invNo} · ${company.name} · ${customer.name} (forts.)`, left, ay);
+          ay += 26;
+          doc.fontSize(9.5);
+        }
+        doc.text(row.entry_date, left, ay);
+        doc.text(row.description, axDesc, ay, { width: descWidth });
+        doc.text(
+          isTime ? hours(row.minutes ?? 0) : formatOre(row.amount_ore ?? 0),
+          right - valueWidth, ay, { width: valueWidth, align: 'right' },
+        );
+        ay += Math.max(14, h + 3);
+      }
+
+      ay += 3;
+      doc.moveTo(left, ay).lineTo(right, ay).lineWidth(0.7).stroke();
+      ay += 10;
+
+      const sumRow = (label: string, value: string, bold = false) => {
+        doc.font(bold ? 'Helvetica-Bold' : 'Helvetica');
+        doc.text(label, left, ay);
+        doc.text(value, right - valueWidth, ay, { width: valueWidth, align: 'right' });
+        ay += 15;
+      };
+      if (isTime) {
+        sumRow('Summa fakturerbar tid', `${hours(ap.total_minutes)} h`, true);
+      } else {
+        // Vidarefakturerade utlägg summeras exkl./moms/inkl. — momssatsen tas
+        // från fakturan när den är entydig (mönster: faktura 0000024, 25 %).
+        const apRates = [...new Set(lines.map((l) => l.vat_rate))];
+        sumRow('Summa utlägg exkl. moms', formatOre(ap.total_amount_ore));
+        if (apRates.length === 1) {
+          const rate = apRates[0]!;
+          const vat = Math.round((ap.total_amount_ore * rate) / 100);
+          sumRow(`Moms ${rate} % (vidarefakturering)`, formatOre(vat));
+          sumRow('Summa utlägg inkl. moms', formatOre(ap.total_amount_ore + vat), true);
+        }
+      }
+
+      if (ap.notes) {
+        ay += 10;
+        doc.fontSize(8).font('Helvetica').fillColor(GRAY)
+          .text(ap.notes, left, ay, { width: right - left });
+        doc.fillColor(BLACK);
+      }
+    }
 
     doc.end();
   });

@@ -12,6 +12,7 @@ import { generateInvoicePdf } from './pdfService.js';
 import { canonicalPersonnummer, computeHouseworkReduction, HOUSEWORK_RECEIVABLE_ACCOUNT, type HouseworkType } from './housework.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { readFile } from 'node:fs/promises';
+import { getInvoiceAppendix } from './invoiceAppendix.js';
 import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } from './fileStorage.js';
 
 export interface InvoiceLineInput {
@@ -216,7 +217,8 @@ export async function createInvoice(
 
 export async function getInvoice(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const head = await client.query(
-    `SELECT i.id, i.invoice_number, i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
+    `SELECT i.id, i.invoice_number, i.external_invoice_number, i.effective_invoice_number,
+            i.ocr, i.invoice_date::text, i.due_date::text, i.status, i.currency,
             i.subtotal_ore, i.vat_ore, i.total_ore, i.paid_amount_ore, i.reference, i.our_reference,
             i.delivery_period, i.notes,
             i.reverse_charge, i.housework_type, i.labor_cost_ore, i.housework_reduction_ore,
@@ -240,7 +242,8 @@ export async function listInvoices(
   client: PoolClient, companyId: string, opts: { status?: string } = {},
 ): Promise<Record<string, unknown>[]> {
   const result = await client.query(
-    `SELECT i.id, i.invoice_number, i.invoice_date::text, i.due_date::text, i.status,
+    `SELECT i.id, i.invoice_number, i.external_invoice_number, i.effective_invoice_number,
+            i.invoice_date::text, i.due_date::text, i.status,
             i.total_ore, i.voucher_id, i.reverse_charge, i.housework_type, i.housework_reduction_ore,
             c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
@@ -384,12 +387,16 @@ export async function generateInvoicePdfFile(
         logo = undefined;
       }
     }
+    // Bilagan (sida 2) när fakturan har en.
+    const appendix = await getInvoiceAppendix(client, companyId, id);
     return generateInvoicePdf({
       company: company.rows[0] as never,
       customer: customer.rows[0] as never,
       logo,
+      appendix: appendix.kind ? (appendix as never) : undefined,
       invoice: {
-        invoice_number: invoice.invoice_number as number,
+        // Kundens nummer: externt när det finns, annars systemets eget (LOC-263).
+        invoice_number: invoice.effective_invoice_number as number,
         invoice_date: invoice.invoice_date as string,
         due_date: invoice.due_date as string,
         ocr: invoice.ocr as string | null,
