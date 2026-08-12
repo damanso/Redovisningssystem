@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **482 tester passerar** i 64 sviter mot
+**Reproducera allt:** `npm test -w server` → **489 tester passerar** i 65 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 482 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 489 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -132,6 +132,9 @@ klarar själv. Acceptansen ur utvecklingsprompten, med testbevis:
 | K7 | Draft-delete för obokade utkast (RLS-garanterat, auditloggat med snapshot); bokförda poster avvisas → rättelseverifikat | ✅ | `draft-delete` |
 | Mall | Faktura-PDF:en följer Locollabs RIKTIGA mall (porterad från skickade fakturan 0000024): logotyp uppe till höger (set_company_logo, tenant-säker FK), Från/Fakturaadress-block, metadatakolumn (OCR, "(N dagar)", Leveranstidpunkt, Betalas till, 7-siffrigt nummer, Vår/Er referens, IBAN, BIC/Swift), Kvantitet/Beskrivning/Pris/Totalt med "SEK/h", sidfot i fyra kolumner; update_company_settings via action-lagret; Generera om PDF på detaljsidan (arkivet behålls); ROT/RUT + omvänd skattskyldighet (lagkrav) kvar | ✅ | `invoice-pdf-mall` |
 | LOC-263 | "Ladda ner faktura" ger dokumentet som skickas till kund: sida 2-bilaga i husmallen (tidsspecifikation per datum med "Summa fakturerbar tid 31,42 h" enligt faktura 0000027; utläggsspecifikation med exkl./moms/inkl. moms enligt 0000024; tid som heltal minuter, utlägg som ören) och fakturanumret synkat med kundserien (effective_invoice_number + DEFERRABLE unik nyckel → två fakturor kan aldrig visa samma nummer; räknaren endast framåt, auditloggad; båda åtgärderna kräver mänskligt godkännande). OCR: systemets Luhn-giltiga gäller framåt — husmallens är inte Luhn-giltigt | ✅ | `invoice-series-appendix` |
+| UX.1 | Ett okänt kontonummer avvisas inte bara — svaret föreslår närmaste giltiga konton ur bolagets kontoplan, alltid inom samma kontoklass (ett kostnadskonto föreslås aldrig för en intäkt). Förslaget når klienten som strukturerad `details` och syns som notis i vyn | ✅ | `usability-fixes` |
+| UX.2 | "Att göra" visar vilken post varje förslag gäller (faktura + kund + belopp, lön + period + anställd, verifikat + datum + text) i stället för råa UUID:n | ✅ | `usability-fixes` |
+| UX.3 | Konto 6992 (övriga externa kostnader, ej avdragsgilla) finns i standardkontoplanen och går att bokföra på | ✅ | `usability-fixes` |
 
 Körbart facit ur prompten, allt testat: lönebesked juli 2026 brutto 56 500 →
 skatt 12 943, netto 43 557, arbavg 17 752,30, payment_date 2026-07-24, PDF

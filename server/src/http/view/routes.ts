@@ -21,6 +21,7 @@ import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals } from '../../services/approvals.js';
+import { describeApproval } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -2612,6 +2613,9 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   const pending = await Promise.all(pendingRaw.map(async (a) => ({
     ...a,
     dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
+    // Identifierande rad så att den som godkänner ser VILKEN faktura/lön/
+    // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
+    summary: await describeApproval(client, companyId, a.input),
   })));
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
@@ -2635,6 +2639,7 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                 <span class="ai-card__title">${def?.title ?? a.action}</span>
                 <span class="code" style="margin-left:auto">${a.action}</span>
               </div>
+              ${a.summary ? html`<div class="ai-card__subject"><strong>${a.summary}</strong></div>` : ''}
               <div class="ai-card__why">Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.</div>
               ${a.dependency && !a.dependency.satisfied
                 ? html`<div class="ai-card__why" style="color:#b45309">⚠ ${a.dependency.message}</div>`

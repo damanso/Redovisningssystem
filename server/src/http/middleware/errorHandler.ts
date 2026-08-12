@@ -28,7 +28,11 @@ export function errorHandler(
     return;
   }
   if (err instanceof AppError) {
-    res.status(err.status).json({ error: err.code });
+    // `details` sätts bara där innehållet medvetet är säkert att visa (t.ex.
+    // förslag på närmaste giltiga konto). Felets `message` stannar på servern.
+    res.status(err.status).json(
+      err.details === undefined ? { error: err.code } : { error: err.code, details: err.details },
+    );
     return;
   }
   if (err instanceof multer.MulterError) {

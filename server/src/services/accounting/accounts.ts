@@ -23,8 +23,61 @@ export async function assertAccountsExist(
   const found = new Set(result.rows.map((r) => r.account_number));
   const missing = unique.filter((n) => !found.has(n));
   if (missing.length > 0) {
-    throw new BadRequestError('unknown_account', `okända/inaktiva konton: ${missing.join(', ')}`);
+    // Att bara avvisa hjälper ingen — föreslå de närmaste giltiga kontona ur
+    // BOLAGETS egen kontoplan, så att ett tryckfel (6892 i stället för 6992)
+    // eller ett konto från en annan kontoplan går att rätta direkt ur felet.
+    const suggestions = await suggestNearestAccounts(client, companyId, missing);
+    const hint = suggestions.length > 0
+      ? ` — menade du ${suggestions.map((s) => `${s.account_number} ${s.name}`).join(', ')}?`
+      : ' — kontot finns inte i bolagets kontoplan (lägg upp det först)';
+    // details skickas vidare till klienten (se errorHandler): både människan i
+    // vyn och AI:n via MCP kan rätta kontot direkt ur svaret.
+    throw new BadRequestError(
+      'unknown_account',
+      `okända/inaktiva konton: ${missing.join(', ')}${hint}`,
+      { unknown_accounts: missing, suggestions },
+    );
   }
+}
+
+export interface AccountSuggestion {
+  account_number: number;
+  name: string;
+}
+
+/**
+ * Närmaste giltiga konton för ett eller flera okända kontonummer.
+ *
+ * Rankas på numerisk närhet, men bara inom SAMMA kontoklass (första siffran) —
+ * ett kostnadskonto ska aldrig föreslås som ersättning för ett intäktskonto,
+ * eftersom det skulle leda till en felaktig men "godkänd" kontering.
+ */
+export async function suggestNearestAccounts(
+  client: PoolClient,
+  companyId: string,
+  missing: number[],
+  perAccount = 2,
+): Promise<AccountSuggestion[]> {
+  const out: AccountSuggestion[] = [];
+  const seen = new Set<number>();
+  for (const wanted of missing) {
+    const klass = Math.floor(wanted / 1000);
+    const result = await client.query<AccountSuggestion>(
+      `SELECT DISTINCT ON (account_number) account_number, name
+       FROM accounts
+       WHERE is_active AND (company_id IS NULL OR company_id = $1)
+         AND account_number BETWEEN $2 AND $3
+       ORDER BY account_number, company_id NULLS LAST`,
+      [companyId, klass * 1000, klass * 1000 + 999],
+    );
+    const nearest = result.rows
+      .sort((a, b) => Math.abs(a.account_number - wanted) - Math.abs(b.account_number - wanted))
+      .slice(0, perAccount);
+    for (const s of nearest) {
+      if (!seen.has(s.account_number)) { seen.add(s.account_number); out.push(s); }
+    }
+  }
+  return out;
 }
 
 export type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';

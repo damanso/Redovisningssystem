@@ -399,6 +399,8 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .ai-card__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 16px 4px; }
 .ai-card__title { font-weight: 600; }
 .ai-card__why { padding: 4px 16px 6px; color: var(--ink-2); font-size: 13px; }
+/* Identifierande rad: vilken faktura/lön/verifikat förslaget gäller. */
+.ai-card__subject { padding: 2px 16px 0; font-size: 14.5px; color: var(--ink); }
 .ai-fields { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 6px 16px 12px; }
 .ai-field { display: flex; flex-direction: column; gap: 1px; }
 .ai-field .l { font-size: 11px; color: var(--ink-3); letter-spacing: 0.03em; text-transform: uppercase; }

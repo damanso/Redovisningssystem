@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 482 tester i 64 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 489 tester i 65 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-31 (session: tre flaggade förbättringar):** Låg bara som
+  anteckningar i systemnoten, nu byggda med test (`usability-fixes`).
+  **F1 — okänt konto föreslår närmaste giltiga.** `assertAccountsExist` avvisade
+  bara ("okända konton: 6892"). Nu föreslås närmaste giltiga konton ur bolagets
+  EGEN kontoplan, begränsat till SAMMA kontoklass (ett kostnadskonto föreslås
+  aldrig för ett intäktskonto — det skulle ge en felaktig men "godkänd"
+  kontering). Upptäckt under bygget: API:t returnerade medvetet BARA felkoden,
+  så förslaget hade aldrig nått fram. `AppError` fick därför ett frivilligt,
+  strukturerat `details`-fält som errorHandler skickar med (samma mönster som
+  zod-felen redan använde) — `message` stannar fortfarande på servern. Nu ser
+  både människan (notis i vyn) och AI:n via MCP (`details.suggestions`) vilket
+  konto som menades. OBS: känsliga åtgärder validerar kontot när de UTFÖRS, så
+  för t.ex. post_voucher syns förslaget vid godkännandet, inte vid förslaget.
+  **F2 — Att göra visar vilken post förslaget gäller.** Kortet visade råa
+  UUID:n, så den som skulle godkänna inte såg vilken faktura/lön det gällde.
+  `describeApproval` löser upp ID:n till "Faktura 27 · ILT Inläsningstjänst AB ·
+  43 202,50 kr", "Lön 2026-07 · David Mancilla · netto …", "Verifikat A12 · …".
+  Felsäker: en post som inte kan läsas utelämnas — kön ska alltid gå att visa.
+  **F3 — konto 6992** (övriga externa kostnader, ej avdragsgilla) saknades i
+  standardkontoplanen trots att 6991 och 6072 fanns; ej avdragsgilla kostnader
+  hamnade därför på ett avdragsgillt konto. Migration 0048. OBS: kontot bokför
+  bara kostnaden — återläggningen i INK2S (ruta 4.3 c) registreras fortfarande
+  separat via `tax_adjustments`, systemet härleder den inte ur kontonumret.
+  489 tester i 65 sviter gröna.
 
 - **2026-07-31 (session: LOC-263 fakturadesign + seriesynk):** Del 1 av LOC-263
   (husmallen på sida 1) var redan gjord 2026-07-22; denna session byggde

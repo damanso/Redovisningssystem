@@ -2,13 +2,23 @@
 // översätts till JSON-svar i felmiddlewaren — aldrig stacktraces till klienten.
 
 export class AppError extends Error {
+  /**
+   * Strukturerad, MEDVETET exponerbar extrainformation (t.ex. förslag på
+   * närmaste giltiga konto). Skickas till klienten av errorHandler — sätt den
+   * bara till data som är säker att visa, aldrig interna meddelanden eller
+   * stacktraces. `message` fortsätter att stanna på servern.
+   */
+  readonly details?: unknown;
+
   constructor(
     readonly status: number,
     readonly code: string,
     message?: string,
+    details?: unknown,
   ) {
     super(message ?? code);
     this.name = new.target.name;
+    this.details = details;
   }
 }
 
@@ -41,7 +51,7 @@ export class ConflictError extends AppError {
 }
 
 export class BadRequestError extends AppError {
-  constructor(code = 'bad_request', message?: string) {
-    super(400, code, message);
+  constructor(code = 'bad_request', message?: string, details?: unknown) {
+    super(400, code, message, details);
   }
 }
