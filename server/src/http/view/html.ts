@@ -120,36 +120,101 @@ export function monthlyChart(points: readonly { ym: string; revenue_ore: number;
   return raw(`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Intäkter och kostnader per månad, senaste 12 månaderna">${baseline}${bars}</svg>`);
 }
 
-const NAV = [
-  ['', 'Översikt'],
-  ['ledger', 'Huvudbok'],
-  ['reports', 'Rapporter'],
-  ['annual', 'Bokslut'],
-  ['assets', 'Anläggningar'],
-  ['tax', 'Skatt'],
-  ['vat', 'Moms'],
-  ['ec-sales', 'EU-moms'],
-  ['ink2', 'Deklaration'],
-  ['k10', 'K10 (3:12)'],
-  ['analytics', 'Analys'],
-  ['cashflow', 'Kassaflöde'],
-  ['receivables', 'Kundreskontra'],
-  ['payables', 'Leverantörsreskontra'],
-  ['invoices', 'Fakturor'],
-  ['recurring', 'Abonnemang'],
-  ['projects', 'Projekt'],
-  ['payroll', 'Lön'],
-  ['receipts', 'Kvitton'],
-  ['approvals', 'Att göra'],
-  ['customers', 'Kunder'],
-  ['suppliers', 'Leverantörer'],
-  ['articles', 'Artiklar'],
-  ['documents', 'Dokument'],
-  ['import', 'Import'],
-  ['team', 'Team'],
-  ['connect', 'Anslut AI'],
-  ['audit', 'Revisionslogg'],
-] as const;
+// Navigationen är ordnad efter HUR OFTA sidorna används, inte efter i vilken
+// ordning de råkade byggas. 28 länkar på en rad gick varken att överblicka
+// eller använda i ett smalt fönster; nu ligger de i namngivna grupper bakom en
+// menyknapp, med de vanligaste alltid framme i en snabbrad.
+interface NavGroup { label: string; hint: string; items: readonly (readonly [string, string])[] }
+
+const NAV_GROUPS: readonly NavGroup[] = [
+  {
+    label: 'Dagligen',
+    hint: 'Det du öppnar oftast',
+    items: [
+      ['', 'Översikt'],
+      ['approvals', 'Att göra'],
+      ['invoices', 'Fakturor'],
+      ['receipts', 'Kvitton'],
+    ],
+  },
+  {
+    label: 'Kunder & leverantörer',
+    hint: 'Register och obetalt',
+    items: [
+      ['customers', 'Kunder'],
+      ['receivables', 'Kundreskontra'],
+      ['suppliers', 'Leverantörer'],
+      ['payables', 'Leverantörsreskontra'],
+      ['recurring', 'Abonnemang'],
+    ],
+  },
+  {
+    label: 'Lön & projekt',
+    hint: 'Varje månad',
+    items: [
+      ['payroll', 'Lön'],
+      ['projects', 'Projekt'],
+    ],
+  },
+  {
+    label: 'Moms, skatt & bokslut',
+    hint: 'Period och årsslut',
+    items: [
+      ['vat', 'Moms'],
+      ['tax', 'Skatt'],
+      ['ec-sales', 'EU-moms'],
+      ['ink2', 'Deklaration'],
+      ['k10', 'K10 (3:12)'],
+      ['annual', 'Bokslut'],
+      ['assets', 'Anläggningar'],
+      ['cashflow', 'Kassaflöde'],
+    ],
+  },
+  {
+    label: 'Rapporter & arkiv',
+    hint: 'Följa upp och slå upp',
+    items: [
+      ['reports', 'Rapporter'],
+      ['ledger', 'Huvudbok'],
+      ['analytics', 'Analys'],
+      ['documents', 'Dokument'],
+      ['audit', 'Revisionslogg'],
+    ],
+  },
+  {
+    label: 'System',
+    hint: 'Ställs in sällan',
+    items: [
+      ['articles', 'Artiklar'],
+      ['import', 'Import'],
+      ['team', 'Team'],
+      ['connect', 'Anslut AI'],
+    ],
+  },
+];
+
+// Snabbraden: alltid framme (viker undan först på riktigt smala skärmar).
+const NAV_QUICK: readonly string[] = ['', 'approvals', 'invoices', 'receipts', 'payroll'];
+
+/** Var är jag? Gruppen + sidans namn, för brödsmulan i navraden. */
+function navLocate(active: string | undefined): { group: string; label: string } | null {
+  if (active === undefined) return null;
+  for (const g of NAV_GROUPS) {
+    const hit = g.items.find(([path]) => path === active);
+    if (hit) return { group: g.label, label: hit[1] };
+  }
+  return null;
+}
+
+// Hamburgare / kryss — ren SVG, byts via [open] i CSS (inget skript).
+const ICON_MENU = raw(
+  `<svg class="navmenu__ico" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">` +
+    `<path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+);
+const ICON_CLOSE = raw(
+  `<svg class="navmenu__ico navmenu__ico--close" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">` +
+    `<path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+);
 
 // Litet, tydligt bomärke — tre liggarkolumner. Ren SVG (inget skript, ingen
 // extern resurs), ärver accentfärg via currentColor.
@@ -253,7 +318,6 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* App-skal */
 .appbar {
-  position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between;
   gap: 16px; padding: 13px clamp(16px, 4vw, 28px);
   background: color-mix(in oklch, var(--surface) 88%, transparent);
@@ -266,20 +330,99 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 .brand b { font-weight: 650; letter-spacing: -0.01em; }
 .brand .sep { color: var(--line-2); font-weight: 400; }
 .brand .co { color: var(--ink-2); font-weight: 500; }
+/* Navigation: snabbrad + grupperad meny bakom en knapp. Hela sidhuvudet
+   (appbar + nav) flyter som en enhet med suddig bakgrund. */
+.topbar { position: sticky; top: 0; z-index: 30; }
 .nav {
-  display: flex; gap: 2px; padding: 0 clamp(10px, 4vw, 24px);
-  background: var(--surface); border-bottom: 1px solid var(--line);
-  overflow-x: auto; scrollbar-width: thin;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px clamp(10px, 4vw, 24px);
+  background: color-mix(in oklch, var(--surface) 88%, transparent);
+  backdrop-filter: saturate(1.2) blur(8px);
+  border-bottom: 1px solid var(--line);
 }
-.nav a {
-  position: relative; padding: 12px 13px 11px; color: var(--ink-2);
-  font-size: 13.5px; font-weight: 500; white-space: nowrap; border-radius: 0;
+.navmenu { position: relative; flex: none; }
+.navmenu > summary {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px 7px 10px; border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2); background: var(--surface);
+  color: var(--ink); font-size: 13.5px; font-weight: 550;
+  cursor: pointer; list-style: none; user-select: none;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
-.nav a:hover { color: var(--ink); text-decoration: none; }
-.nav a.active { color: var(--accent-ink); }
-.nav a.active::after {
-  content: ""; position: absolute; left: 9px; right: 9px; bottom: -1px;
-  height: 2px; background: var(--accent); border-radius: 2px 2px 0 0;
+.navmenu > summary::-webkit-details-marker { display: none; }
+.navmenu > summary:hover { border-color: var(--accent); box-shadow: var(--shadow-1); }
+.navmenu__ico--close, .navmenu[open] .navmenu__ico { display: none; }
+.navmenu[open] .navmenu__ico--close { display: inline; }
+.navmenu[open] > summary { background: var(--accent-weak); border-color: var(--accent); color: var(--accent-ink); }
+
+/* Panelen: flytande kort som reser sig mjukt. */
+.navmenu__panel {
+  position: absolute; top: calc(100% + 9px); left: 0; z-index: 40;
+  width: min(880px, calc(100vw - 24px));
+  padding: 16px 18px 18px;
+  background: color-mix(in oklch, var(--surface) 97%, transparent);
+  backdrop-filter: saturate(1.3) blur(14px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  max-height: min(72vh, 640px); overflow-y: auto; overscroll-behavior: contain;
+}
+@keyframes navrise { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+.navmenu[open] .navmenu__panel { animation: navrise .17s cubic-bezier(.2,.7,.3,1) both; }
+@media (prefers-reduced-motion: reduce) { .navmenu[open] .navmenu__panel { animation: none; } }
+/* Kolumnflöde (inte grid): grupperna packas tätt utan döda rader när de är
+   olika höga, och antalet kolumner följer bredden av sig självt. */
+.navmenu__grid { columns: 196px 4; column-gap: 26px; }
+.navmenu__grp { break-inside: avoid; margin: 0 0 17px; }
+.navmenu__grp > .eyebrow { display: block; margin-bottom: 1px; }
+.navmenu__hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
+.navmenu__link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500;
+}
+.navmenu__link:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.navmenu__link.is-active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
+.navmenu__link.is-active::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none;
+}
+.navmenu__link:not(.is-active)::before { content: ""; width: 5px; flex: none; }
+
+/* Snabbrad */
+.nav__quick { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nav__quick::-webkit-scrollbar { display: none; }
+.nav__quick a {
+  padding: 7px 11px; border-radius: var(--radius-pill);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500; white-space: nowrap;
+}
+.nav__quick a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.nav__quick a.active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
+
+/* "Du är här" — visas när sidan inte finns i snabbraden. */
+.nav__here {
+  display: inline-flex; align-items: baseline; gap: 7px; flex: none;
+  padding: 6px 12px; border-radius: var(--radius-pill);
+  background: var(--accent-weak); color: var(--accent-ink);
+  font-size: 13.5px; font-weight: 600; white-space: nowrap;
+}
+.nav__here span { font-size: 11.5px; font-weight: 500; opacity: .75; }
+.nav__sep { width: 1px; height: 20px; background: var(--line); flex: none; }
+
+@media (max-width: 700px) {
+  .nav__quick { display: none; }
+  .nav__sep { display: none; }
+}
+/* Smala fönster: knapparna får aldrig radbrytas, och bolagsnamnet viker undan
+   före dem (det står ändå i sidhuvudet på varje sida). */
+.appbar .btn { white-space: nowrap; }
+@media (max-width: 620px) {
+  .appbar { gap: 10px; padding-left: 14px; padding-right: 14px; }
+  .brand .sep, .brand .co { display: none; }
+}
+/* Telefonbredd: bara bomärket kvar i varumärket, så de tre knapparna får plats
+   utan att sidan börjar scrolla i sidled. */
+@media (max-width: 480px) {
+  .brand b { display: none; }
+  .appbar .btn { padding-left: 9px; padding-right: 9px; }
 }
 main { max-width: var(--maxw); margin: clamp(20px, 4vw, 34px) auto; padding: 0 clamp(16px, 4vw, 24px); }
 
@@ -549,14 +692,45 @@ export function layout(opts: {
   unread?: number;
   body: Raw;
 }): Raw {
+  const here = navLocate(opts.active);
+  const inQuick = opts.active !== undefined && NAV_QUICK.includes(opts.active);
+  const link = (path: string, label: string, cls: string) =>
+    html`<a class="${cls}" href="/app/c/${opts.companyId}/${path}"${
+      opts.active === path ? raw(' aria-current="page"') : ''
+    }>${label}</a>`;
+
   const nav = opts.companyId
-    ? html`<nav class="nav">${NAV.map(
-        ([path, label]) =>
-          html`<a class="${opts.active === path ? 'active' : ''}" href="/app/c/${opts.companyId}/${path}">${label}</a>`,
-      )}</nav>`
+    ? html`<nav class="nav" aria-label="Huvudmeny">
+        <details class="navmenu">
+          <summary aria-label="Visa alla sidor">${ICON_MENU}${ICON_CLOSE}<span>Meny</span></summary>
+          <div class="navmenu__panel">
+            <div class="navmenu__grid">
+              ${NAV_GROUPS.map(
+                (g) => html`<div class="navmenu__grp">
+                  <span class="eyebrow">${g.label}</span>
+                  <span class="navmenu__hint">${g.hint}</span>
+                  ${g.items.map(([path, label]) =>
+                    link(path, label, `navmenu__link${opts.active === path ? ' is-active' : ''}`))}
+                </div>`,
+              )}
+            </div>
+          </div>
+        </details>
+        <span class="nav__sep"></span>
+        <div class="nav__quick">
+          ${NAV_QUICK.map((path) => {
+            const item = NAV_GROUPS.flatMap((g) => g.items).find(([p]) => p === path);
+            return item ? link(item[0], item[1], opts.active === path ? 'active' : '') : '';
+          })}
+        </div>
+        ${here && !inQuick
+          ? html`<span class="nav__here"><span>${here.group}</span>${here.label}</span>`
+          : ''}
+      </nav>`
     : '';
   return html`<!doctype html><html lang="sv"><head>${head(opts.title)}</head>
     <body>
+      <header class="topbar">
       <div class="appbar">
         <a class="brand" href="/app">${MARK}<b>Redovisning</b>${
           opts.companyName ? html`<span class="sep">/</span><span class="co">${opts.companyName}</span>` : ''
@@ -570,6 +744,7 @@ export function layout(opts: {
         </div>
       </div>
       ${nav}
+      </header>
       <main>${opts.body}</main>
     </body></html>`;
 }

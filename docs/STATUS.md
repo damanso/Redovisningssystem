@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 496 tester i 66 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 503 tester i 67 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-31 (session: navigationen omgjord):** 28 länkar låg på EN rad i
+  byggordning — omöjlig att överblicka och obrukbar i ett smalt fönster. Nu:
+  en **snabbrad** med de vanligaste sidorna (Översikt, Att göra, Fakturor,
+  Kvitton, Lön) + en **Meny-knapp** som fäller ut en grupperad panel, ordnad
+  efter hur ofta sidorna används: Dagligen → Kunder & leverantörer → Lön &
+  projekt → Moms, skatt & bokslut → Rapporter & arkiv → System. Varje grupp har
+  en förklarande underrubrik ("Det du öppnar oftast", "Ställs in sällan").
+  **Helt JS-fritt** — `<details>/<summary>` enligt husets mönster (CSP:n
+  förbjuder skript); ingen `onclick`, inget bibliotek. Panelen använder
+  KOLUMNFLÖDE (`columns`), inte grid: grid lämnade stora döda hål under de
+  korta grupperna. Höjden är kapad (72vh) med intern scroll. **Var man är**
+  syns alltid: aktiv sida får pill + prick + `aria-current="page"` i menyn, och
+  ligger sidan utanför snabbraden visas en pill i navraden med BÅDE grupp och
+  sidnamn ("Moms, skatt & bokslut · Skatt"). Sidhuvudet (appbar + nav) är nu en
+  gemensam sticky enhet med suddig bakgrund. Mätt i Chromium på 1440/900/560/380
+  px: ingen sidledsscroll, panelen får plats i alla bredder (appbaren radbröt
+  förut — bolagsnamnet och sedan varumärkestexten viker undan i stället).
+  Testerna vaktar att INGEN av de 28 sidorna tappas bort i grupperingen.
+  503 tester i 67 sviter gröna.
 
 - **2026-07-31 (session: ej avdragsgilla kostnader härleds automatiskt):**
   Uppföljning på F3 ovan — den noten sa att kopplingen till deklarationen var
