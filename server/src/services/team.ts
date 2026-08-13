@@ -9,7 +9,10 @@ import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '.
 import { writeAudit } from './auditService.js';
 import { notify } from './notifications.js';
 
-export type ManageableRole = 'admin' | 'member';
+// 'contractor' = underkonsult. Kan bjudas in och tilldelas uppdrag, men har
+// enligt RLS (migration 0053) ingen bolagsåtkomst — bara sina egna tilldelade
+// projekt och sin egen tid. Ägarrollen sätts aldrig via inbjudan.
+export type ManageableRole = 'admin' | 'member' | 'contractor';
 
 export interface Member { user_id: string; email: string; name: string; role: CompanyRole; created_at: string; is_you: boolean }
 

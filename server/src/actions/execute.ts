@@ -1,4 +1,4 @@
-import { withTenantTransaction } from '../db/tx.js';
+import { withTenantTransaction, type CompanyRole } from '../db/tx.js';
 import { ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
@@ -14,6 +14,19 @@ import { getAction } from './registry.js';
 export type ActionResult =
   | { status: 'ok'; action: string; result: unknown }
   | { status: 'pending_approval'; action: string; approval: Approval; dependency?: ApprovalDependency };
+
+/**
+ * Underkonsulten (rollen 'contractor') kör inga actions. RLS stänger redan
+ * varje tabell för rollen (migration 0053), men ett tydligt 403 är bättre än en
+ * tom lista eller ett obegripligt databasfel — och det gör spärren läsbar här,
+ * där behörigheten faktiskt avgörs. Ytan för underkonsulten byggs i E7b och får
+ * öppna det den behöver, uttryckligen.
+ */
+function assertActionAllowed(role: CompanyRole): void {
+  if (role === 'contractor') {
+    throw new ForbiddenError('contractor_not_permitted', 'underkonsulter kan inte köra åtgärder i systemet');
+  }
+}
 
 /**
  * Kör en action mot kärnan. Icke-känsliga kör direkt (med tenant/RLS/audit).
@@ -37,7 +50,8 @@ export async function executeAction(params: {
   const input = action.inputSchema.parse(params.input);
 
   if (action.sensitivity === 'sensitive') {
-    const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client) => {
+    const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
+      assertActionAllowed(role);
       const created = await createApproval(
         client,
         params.companyId,
@@ -62,8 +76,9 @@ export async function executeAction(params: {
     return { status: 'pending_approval', action: action.name, approval, ...(dependency ? { dependency } : {}) };
   }
 
-  const result = await withTenantTransaction(params.userId, params.companyId, async (client) => {
-    const value = await action.handler({ client, companyId: params.companyId, userId: params.userId }, input as never);
+  const result = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
+    assertActionAllowed(role);
+    const value = await action.handler({ client, companyId: params.companyId, userId: params.userId, role }, input as never);
     await writeAudit(client, {
       companyId: params.companyId,
       userId: params.userId,
@@ -95,7 +110,8 @@ export async function approveAction(params: {
   if (params.approverActor !== 'human') {
     throw new ForbiddenError('human_approval_required', 'endast en människa kan godkänna');
   }
-  return withTenantTransaction(params.approverId, params.companyId, async (client) => {
+  return withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
+    assertActionAllowed(role);
     const appr = await lockPendingApproval(client, params.companyId, params.approvalId);
     const action = getAction(appr.action);
     if (!action) throw new NotFoundError('action');
@@ -103,7 +119,7 @@ export async function approveAction(params: {
     // medan godkännandet legat i kö.
     const input = action.inputSchema.parse(appr.input);
     const result = await action.handler(
-      { client, companyId: params.companyId, userId: params.approverId },
+      { client, companyId: params.companyId, userId: params.approverId, role },
       input as never,
     );
     const updated = await client.query<Approval>(
@@ -129,7 +145,8 @@ export async function rejectApproval(params: {
   approverId: string;
   approvalId: string;
 }): Promise<Approval> {
-  return withTenantTransaction(params.approverId, params.companyId, async (client) => {
+  return withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
+    assertActionAllowed(role);
     await lockPendingApproval(client, params.companyId, params.approvalId);
     await client.query(
       "UPDATE action_approvals SET status = 'rejected', decided_by = $1, decided_at = now() WHERE id = $2",

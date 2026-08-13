@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (124
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (140
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 525 tester i 69 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 549 tester i 71 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -132,8 +132,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   tidpost med registrerare fick en aktör, två likanamniga användare fick var sin
   (den andra via e-post), en post utan registrerare lämnades utan aktör, och en
   omkörning applicerade 0 migrationer utan dubbletter.
-  **525 tester i 69 sviter gröna, `npm run build` ren.** Kvar på grenen: E2
-  (schemat crm + rollmodell), E4 (härledningsjobb), E5/E6 (vyer), slutgrind.
+  **525 tester i 69 sviter gröna, `npm run build` ren** vid den punkten.
+  **E2 (schemat crm + RLS + audit + rollmodell):** relationsdata fick ett eget
+  schema `crm` (migration 0052) med organisationer, personer, kontaktpunkter,
+  åtaganden, egen append-only auditlogg och gallringspolicy. Två skäl, båda
+  strukturella: ett prospekt kan inte bo i kundtabellen (regeln "aldrig kund före
+  vunnen affär" gjorde att affären före fakturan saknade plats), och relationsdata
+  är inte räkenskapsinformation — den ska varken följa med i SIE-exporten till
+  revisorn eller omfattas av sjuårig arkivering. Schemat gör den gränsen till en
+  namnrymd i databasen i stället för en regel någon ska minnas. `crm.deals`
+  skapas men står TOM: beslut B2 säger att affärsobjektet inte byggs nu, bara att
+  modellen ska ha plats för det. Tidrapportering är medvetet ingen giltig källa
+  för kontaktpunkter (spärr 7) — CHECK-villkoret i databasen är spärren.
+  **Rollmodellen (migration 0053)** var det som kunde blivit farligt: alla
+  befintliga RLS-policyer frågar `app_has_company_access`, så en ny roll hade
+  fått läsa fakturor, löner och bokföring från dag ett. I stället utesluts
+  `contractor` ur den funktionen — en rad som stänger varje tabell — och åtkomst
+  öppnas explicit, en tabell i taget: sitt tilldelade projekt och sin egen tid,
+  inget annat. Nya `project_assignments`, `set_work_actor_user` (kräver ägare/
+  admin OCH att målanvändaren är medlem) och 403 `contractor_not_permitted` på
+  hela action-lagret. Mätt i databasen med rollens egen identitet i
+  RLS-kontexten, inte bara genom API:t.
+  **549 tester i 71 sviter gröna, `npm run build` ren.** Uppgraderingsvägen körd:
+  databas på 0051 med data → 0052+0053 → ägaren har kvar åtkomst till bolag,
+  kunder, projekt och tid, kan skriva i `crm`, och omkörning applicerar 0.
+  Kvar på grenen: E4 (härledningsjobb), E5/E6 (vyer), slutgrind.
+  **Öppen fråga till David:** gallringsperiod för relationsdata (`set_crm_retention`)
+  — systemet gissar aldrig, så tills du säger ett antal månader gallras ingenting.
 
 - **2026-08-13 (session: granskningspass på navigationen före produktion):**
   Kodgranskning av 999fe5b gav 7 fynd, alla åtgärdade före release:

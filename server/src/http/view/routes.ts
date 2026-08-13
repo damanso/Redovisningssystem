@@ -1382,7 +1382,7 @@ viewRouter.get('/c/:companyId/recurring', pageFor('recurring', 'Abonnemang', asy
 // Projekt & tid. Listvy med upparbetad/fakturerbar tid; detaljvy med tidposter.
 const hhmm = (minutes: number): string => `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
 const kpiCell = (label: string, value: Raw): Raw => html`<div class="kpi"><div class="l">${label}</div><div class="v">${value}</div></div>`;
-const roleLabel = (r: string): string => (r === 'owner' ? 'Ägare' : r === 'admin' ? 'Administratör' : r === 'member' ? 'Medlem' : r);
+const roleLabel = (r: string): string => (r === 'owner' ? 'Ägare' : r === 'admin' ? 'Administratör' : r === 'member' ? 'Medlem' : r === 'contractor' ? 'Underkonsult' : r);
 viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (client, companyId) => {
   const rows = await listProjects(client, companyId, {});
   return html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>Projekt & tid</h1>
@@ -2774,7 +2774,7 @@ viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
 }));
 
 // Team & roller. Alla medlemmar ser rostern; ägare/admin ser hanteringskontroller.
-const roleOptions = (current: string): Raw => html`${(['admin', 'member'] as const).map((r) => html`<option value="${r}"${r === current ? html` selected` : ''}>${roleLabel(r)}</option>`)}`;
+const roleOptions = (current: string): Raw => html`${(['admin', 'member', 'contractor'] as const).map((r) => html`<option value="${r}"${r === current ? html` selected` : ''}>${roleLabel(r)}</option>`)}`;
 viewRouter.get('/c/:companyId/team', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -2788,7 +2788,7 @@ viewRouter.get('/c/:companyId/team', page(async (req, res) => {
         ${members.map((m) => html`<tr>
           <td>${m.name}${m.is_you ? html` ${chip('Du', 'info')}` : ''}</td>
           <td>${m.email}</td>
-          <td>${m.role === 'owner' ? chip('Ägare', 'info') : m.role === 'admin' ? chip('Administratör', 'ok') : chip('Medlem', 'muted')}</td>
+          <td>${m.role === 'owner' ? chip('Ägare', 'info') : m.role === 'admin' ? chip('Administratör', 'ok') : m.role === 'contractor' ? chip('Underkonsult', 'warn') : chip('Medlem', 'muted')}</td>
           ${
             canManage
               ? html`<td class="actions">${
@@ -2809,7 +2809,7 @@ viewRouter.get('/c/:companyId/team', page(async (req, res) => {
         canManage
           ? html`<div class="panel" style="margin-top:16px"><div class="panel__head"><h2>Bjud in medlem</h2></div>
               <div class="panel__body" style="padding:14px 16px">
-                <p class="muted" style="font-size:12.5px;margin-bottom:10px">Användaren måste redan ha ett konto. Inbjudan via e-postlänk till nya användare kräver e-postutskick (byggs i e-post/notiser-fasen).</p>
+                <p class="muted" style="font-size:12.5px;margin-bottom:10px">Användaren måste redan ha ett konto. Inbjudan via e-postlänk till nya användare kräver e-postutskick (byggs i e-post/notiser-fasen). <strong>Underkonsult</strong> ser bara de projekt hen tilldelats — aldrig fakturor, löner eller bokföring.</p>
                 <form method="post" action="/app/c/${companyId}/team/invite" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
                   <input class="input" type="email" name="email" placeholder="namn@exempel.se" required style="min-width:240px">
                   <select name="role" class="input">${roleOptions('member')}</select>
@@ -2821,7 +2821,7 @@ viewRouter.get('/c/:companyId/team', page(async (req, res) => {
   res.type('html').send(layout({ title: 'Team', companyId, companyName: name, active: 'team', body }).value);
 }));
 
-const TeamActionSchema = z.object({ user_id: UuidSchema, role: z.enum(['admin', 'member']).optional() });
+const TeamActionSchema = z.object({ user_id: UuidSchema, role: z.enum(['admin', 'member', 'contractor']).optional() });
 function teamRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
   // Konflikter (sista ägaren, redan medlem) är begripliga tillstånd → tillbaka till
   // teamsidan snarare än felsida. Behörighetsfel (403/404) bubblar upp.
@@ -2836,7 +2836,7 @@ viewRouter.post('/c/:companyId/team/invite', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const email = z.string().email().max(254).parse((req.body as { email?: unknown }).email);
-  const role = z.enum(['admin', 'member']).parse((req.body as { role?: unknown }).role);
+  const role = z.enum(['admin', 'member', 'contractor']).parse((req.body as { role?: unknown }).role);
   await teamRedirect(companyId, res, () =>
     withTenantTransaction(userId, companyId, (client, actorRole) => inviteMember(client, companyId, actorRole, userId, email, role)));
 }));

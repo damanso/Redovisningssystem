@@ -10,7 +10,8 @@
 // inloggade användarens aktör, som skapas vid första tidposten. Kostnaden
 // hämtas från aktörens standardtaxa. Ingen behöver fylla i något.
 import type { PoolClient } from 'pg';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import type { CompanyRole } from '../db/tx.js';
 import { writeAudit } from './auditService.js';
 
 export type ActorKind = 'internal' | 'subcontractor';
@@ -58,11 +59,10 @@ async function assertLinks(client: PoolClient, companyId: string, input: UpsertW
  * Angivna fält skrivs, övriga lämnas — en synk utan kostnadstaxa får inte nolla
  * en taxa någon annan satt.
  *
- * user_id går medvetet INTE att sätta härifrån. Kopplingen aktör→användare
- * kommer att styra åtkomst (E7b), och app-rollen kan enligt RLS bara se sitt
- * EGET medlemskap — den kan alltså inte verifiera att ett inskickat user_id
- * hör till bolaget. Kopplingen sätts därför bara av `ensureActorForUser`, för
- * den inloggade användaren, som per definition är medlem.
+ * user_id sätts INTE här. Kopplingen aktör→användare styr åtkomst (0053), och
+ * den ska inte kunna smyga med i en vanlig synk: den sätts av
+ * `ensureActorForUser` (den inloggade själv) eller av `setWorkActorUser`, som
+ * kräver ägare/admin och att målanvändaren verkligen är medlem i bolaget.
  */
 export async function upsertWorkActor(
   client: PoolClient, companyId: string, userId: string, input: UpsertWorkActorInput,
@@ -177,6 +177,39 @@ export async function ensureActorForUser(
     'actor_name_conflict',
     'kunde inte skapa en aktör för användaren — namnet är redan upptaget av en annan aktör',
   );
+}
+
+/**
+ * Kopplar en aktör till ett användarkonto — det som gör att underkonsulten kan
+ * logga in och se sitt uppdrag (RLS i 0053 går via aktörens user_id).
+ *
+ * Två spärrar: bara ägare/admin får göra det, och målanvändaren måste vara
+ * medlem i bolaget. Utan medlemskapskollen hade ett gissat uuid räckt för att
+ * ge en utomstående läsrätt till ett projekt. Unik-indexet
+ * `work_actors_user_uk` ser till att en användare inte kan vara två aktörer.
+ */
+export async function setWorkActorUser(
+  client: PoolClient, companyId: string, userId: string, role: CompanyRole,
+  actorId: string, targetUserId: string | null,
+): Promise<WorkActor> {
+  if (role !== 'owner' && role !== 'admin') {
+    throw new ForbiddenError('not_admin', 'endast ägare eller admin kan koppla en aktör till ett konto');
+  }
+  if (targetUserId) {
+    const m = await client.query(
+      'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2', [companyId, targetUserId]);
+    if (!m.rows[0]) throw new NotFoundError('member');
+  }
+  const r = await client.query<WorkActor>(
+    `UPDATE work_actors SET user_id = $3 WHERE id = $1 AND company_id = $2 RETURNING ${COLUMNS}`,
+    [actorId, companyId, targetUserId],
+  );
+  if (!r.rows[0]) throw new NotFoundError('work_actor');
+  await writeAudit(client, {
+    companyId, userId, action: 'work_actor.user_linked', entityType: 'work_actor', entityId: actorId,
+    details: { user_id: targetUserId },
+  });
+  return r.rows[0];
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import type { CompanyRole } from '../db/tx.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
@@ -18,7 +19,8 @@ import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForec
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
-import { listWorkActors, upsertWorkActor } from '../services/workActors.js';
+import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
+import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
 import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
@@ -62,6 +64,9 @@ export interface ActionContext {
   // userId = den som faktiskt AUKTORISERAR körningen (begäraren för icke-känsliga,
   // godkännaren för känsliga). Auditloggen kopplas till denna.
   userId: string;
+  // Rollen kommer ur medlemskapet i SAMMA transaktion — aldrig ur indata. Bara
+  // actions som verkligen skiljer på ägare/admin och medlem läser den.
+  role: CompanyRole;
 }
 
 // read      = ingen mutation. write = skapar utkast/register (ej pengaflyttande).
@@ -1026,6 +1031,42 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_work_actor_user',
+    title: 'Koppla aktör till användarkonto',
+    // Kopplingen styr vad en underkonsult ser (RLS i 0053). Ägare/admin, och
+    // målanvändaren måste vara medlem — kontrolleras i tjänstelagret.
+    sensitivity: 'write',
+    inputSchema: z.object({ actor_id: UuidSchema, user_id: UuidSchema.nullable() }).strict(),
+    handler: (ctx, i: { actor_id: string; user_id: string | null }) =>
+      setWorkActorUser(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.actor_id, i.user_id),
+  }),
+  def({
+    name: 'assign_project_actor',
+    title: 'Tilldela aktör till projekt',
+    // Tilldelningen är det som avgör vad en underkonsult får se (RLS i 0053).
+    // Därför ägare/admin, kontrollerat i tjänstelagret OCH i policyn.
+    sensitivity: 'write',
+    inputSchema: z.object({ project_id: UuidSchema, actor_id: UuidSchema }).strict(),
+    handler: (ctx, i: { project_id: string; actor_id: string }) =>
+      assignProjectActor(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.project_id, i.actor_id),
+  }),
+  def({
+    name: 'unassign_project_actor',
+    title: 'Ta bort aktör från projekt',
+    sensitivity: 'write',
+    inputSchema: z.object({ project_id: UuidSchema, actor_id: UuidSchema }).strict(),
+    handler: (ctx, i: { project_id: string; actor_id: string }) =>
+      unassignProjectActor(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.project_id, i.actor_id),
+  }),
+  def({
+    name: 'list_project_assignments',
+    title: 'Lista uppdragstilldelningar',
+    sensitivity: 'read',
+    inputSchema: z.object({ project_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { project_id?: string }) =>
+      listProjectAssignments(ctx.client, ctx.companyId, { project_id: i.project_id }),
   }),
   def({
     name: 'list_work_actors',

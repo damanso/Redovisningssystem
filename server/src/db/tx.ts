@@ -3,7 +3,10 @@ import { pool } from './pool.js';
 import { NotFoundError } from '../lib/errors.js';
 
 export type Queryable = Pool | PoolClient;
-export type CompanyRole = 'owner' | 'admin' | 'member';
+// 'contractor' = underkonsult: medlem i bolaget men UTAN bolagsåtkomst. RLS
+// räknar inte rollen som åtkomst (migration 0053), så den ser bara sina egna
+// tilldelade uppdrag och sin egen tid — aldrig fakturor, löner eller bokföring.
+export type CompanyRole = 'owner' | 'admin' | 'member' | 'contractor';
 
 /**
  * Sätter transaktionslokal RLS-kontext (app.user_id + valfritt app.company_id).
