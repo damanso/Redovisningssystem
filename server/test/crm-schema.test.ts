@@ -130,7 +130,11 @@ describe('senaste kontakt härleds ur mail och möten — aldrig ur tidrapporter
     });
     const list = await act('list_crm_organizations', {});
     const org = list.body.result.find((o: { id: string }) => o.id === orgId);
-    expect(new Date(org.last_contact_at as string).toISOString()).toBe('2026-05-02T09:00:00.000Z');
+    // Mailet gick till Mikaela, inte till organisationen — men ett mail till
+    // kundens beställare ÄR kontakt med kunden. Räknades bara kontaktpunkter
+    // som hänger direkt på organisationen skulle en kund se övergiven ut fast
+    // all dialog gått via personen.
+    expect(new Date(org.last_contact_at as string).toISOString()).toBe('2026-07-15T13:30:00.000Z');
 
     const people = await act('list_crm_people', {});
     const p = people.body.result.find((x: { id: string }) => x.id === personId);

@@ -7,6 +7,8 @@ import {
   getOrganization, getRetention, listCommitments, listOrganizations, listPeople, purgeCrmData,
   recordCommitment, recordInteraction, setCommitmentStatus, setRetention, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
+import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
+import { ingestCrmEvents } from '../services/crmIngest.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
@@ -1423,6 +1425,80 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string }) =>
       listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before }),
+  }),
+  // --- CRM E4: API-kontraktet och härledningsjobben -------------------------
+  // Källorna (mailindex, kalender, Linear) ligger utanför systemet. Det här
+  // repot ringer dem aldrig — det tar emot en batch och räknar fram resten.
+  def({
+    name: 'ingest_crm_events',
+    title: 'Ta emot kontaktpunkter och åtaganden (API-kontraktet)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        events: z
+          .array(
+            z.object({
+              kind: z.enum(['interaction', 'commitment']),
+              // Naturliga nycklar: avsändaren känner inte våra uuid:n.
+              organization: z.object({
+                name: safeText(200),
+                org_number: safeText(20).optional(),
+                website: safeText(200).optional(),
+              }).strict().optional(),
+              person: z.object({
+                name: safeText(150),
+                email: EmailSchema.optional(),
+                role_title: safeText(150).optional(),
+                external_ref: safeText(300).optional(),
+              }).strict().optional(),
+              occurred_at: IsoDateTimeSchema,
+              source_system: z.enum(['gmail', 'calendar', 'linear', 'manual']),
+              // Källans eget id. Utan det kan samma händelse inte kännas igen
+              // vid nästa körning — synken blir en dubblettgenerator.
+              source_ref: safeText(300).optional(),
+              channel: z.enum(['email', 'meeting', 'call', 'issue', 'note']).optional(),
+              direction: z.enum(['inbound', 'outbound', 'internal']).optional(),
+              summary: safeText(2000).optional(),
+              commitment_direction: z.enum(['we_owe', 'they_owe']).optional(),
+              body: safeText(2000).optional(),
+              due_date: IsoDateSchema.optional(),
+            }).strict(),
+          )
+          .min(1)
+          .max(500),
+      })
+      .strict(),
+    handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events),
+  }),
+  def({
+    name: 'crm_relation_state',
+    title: 'Relationsläget per organisation (härlett)',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => relationState(ctx.client, ctx.companyId, { as_of: i.as_of }),
+  }),
+  def({
+    name: 'crm_silence_report',
+    title: 'Vem vi varit tysta mot för länge',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      as_of: IsoDateSchema.optional(),
+      silence_days: z.number().int().min(1).max(3650).optional(),
+    }).strict(),
+    handler: (ctx, i: { as_of?: string; silence_days?: number }) =>
+      silenceReport(ctx.client, ctx.companyId, { as_of: i.as_of, silence_days: i.silence_days }),
+  }),
+  def({
+    name: 'crm_contact_suggestions',
+    title: 'Vilka som bör kontaktas, och varför',
+    // Läsning: ett FÖRSLAG. Systemet skickar aldrig något till en kund.
+    sensitivity: 'read',
+    inputSchema: z.object({
+      as_of: IsoDateSchema.optional(),
+      silence_days: z.number().int().min(1).max(3650).optional(),
+    }).strict(),
+    handler: (ctx, i: { as_of?: string; silence_days?: number }) =>
+      contactSuggestions(ctx.client, ctx.companyId, { as_of: i.as_of, silence_days: i.silence_days }),
   }),
   def({
     name: 'get_crm_retention',

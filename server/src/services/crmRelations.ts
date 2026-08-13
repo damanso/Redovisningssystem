@@ -116,8 +116,14 @@ export async function listOrganizations(
   const r = await client.query(
     `SELECT o.${ORG_COLUMNS.split(', ').join(', o.')},
             c.name AS customer_name,
+            -- Senaste kontakt räknas på organisationen OCH på dess personer: ett
+            -- mail till kundens beställare ÄR kontakt med kunden.
             (SELECT max(i.occurred_at) FROM crm.interactions i
-              WHERE i.company_id = o.company_id AND i.organization_id = o.id) AS last_contact_at,
+              WHERE i.company_id = o.company_id
+                AND (i.organization_id = o.id
+                     OR i.person_id IN (SELECT p.id FROM crm.people p
+                                         WHERE p.company_id = o.company_id AND p.organization_id = o.id))
+            ) AS last_contact_at,
             (SELECT count(*)::int FROM crm.commitments cm
               WHERE cm.company_id = o.company_id AND cm.organization_id = o.id AND cm.status = 'open') AS open_commitments
      FROM crm.organizations o
@@ -156,10 +162,15 @@ export async function getOrganization(
   const people = await client.query(
     `SELECT id, name, email, phone, role_title, external_ref FROM crm.people
      WHERE company_id = $1 AND organization_id = $2 ORDER BY name`, [companyId, id]);
+  // Även kontaktpunkter som bara hänger på en av organisationens personer —
+  // annars ser en kundbild tom ut fast all dialog gått via beställaren.
   const interactions = await client.query(
     `SELECT i.id, i.occurred_at, i.channel, i.direction, i.summary, i.source_system, i.source_ref, p.name AS person_name
      FROM crm.interactions i LEFT JOIN crm.people p ON p.id = i.person_id AND p.company_id = i.company_id
-     WHERE i.company_id = $1 AND i.organization_id = $2 ORDER BY i.occurred_at DESC LIMIT 50`, [companyId, id]);
+     WHERE i.company_id = $1
+       AND (i.organization_id = $2
+            OR i.person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = $2))
+     ORDER BY i.occurred_at DESC LIMIT 50`, [companyId, id]);
   const commitments = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref, p.name AS person_name
      FROM crm.commitments c LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
