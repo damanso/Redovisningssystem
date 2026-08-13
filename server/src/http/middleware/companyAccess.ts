@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { fetchMembership, withUserTransaction } from '../../db/tx.js';
-import { NotFoundError } from '../../lib/errors.js';
+import { ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import { UuidSchema } from '../../lib/validation.js';
 import { getUserId } from './authenticate.js';
 
@@ -36,6 +36,17 @@ export async function requireCompanyAccess(
   );
 
   if (!membership) throw new NotFoundError('company');
+
+  // Underkonsulten (rollen 'contractor') har ingen bolagsåtkomst: RLS räknar
+  // inte rollen som medlemskap (migration 0053), så varje tabell är stängd.
+  // Utan spärren HÄR svarade REST-lagret ändå 200 med tom lista — vilket en
+  // agent läser som "det finns inga kunder" — och skrivförsök blev obegripliga
+  // 500-fel ur RLS i stället för ett tydligt nej. Ytan för rollen byggs i E7b
+  // och får öppna det den behöver, uttryckligen.
+  if (membership.role === 'contractor') {
+    throw new ForbiddenError('contractor_not_permitted', 'underkonsulter har ännu ingen åtkomst till bolagets data');
+  }
+
   req.companyId = companyId;
   req.companyRole = membership.role;
   next();

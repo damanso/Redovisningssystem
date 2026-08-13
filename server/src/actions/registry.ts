@@ -1037,9 +1037,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'set_work_actor_user',
     title: 'Koppla aktör till användarkonto',
-    // Kopplingen styr vad en underkonsult ser (RLS i 0053). Ägare/admin, och
-    // målanvändaren måste vara medlem — kontrolleras i tjänstelagret.
-    sensitivity: 'write',
+    // KÄNSLIG: kopplingen aktör→konto är det RLS läser för att avgöra vem som
+    // får se ett projekt och dess tid (0053). En AI som kunde ändra den utan
+    // godkännande kunde flytta åtkomst — samma sorts konsekvens som att flytta
+    // pengar. Ägare/admin krävs dessutom, och målanvändaren måste vara medlem.
+    sensitivity: 'sensitive',
     inputSchema: z.object({ actor_id: UuidSchema, user_id: UuidSchema.nullable() }).strict(),
     handler: (ctx, i: { actor_id: string; user_id: string | null }) =>
       setWorkActorUser(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.actor_id, i.user_id),
@@ -1047,9 +1049,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'assign_project_actor',
     title: 'Tilldela aktör till projekt',
-    // Tilldelningen är det som avgör vad en underkonsult får se (RLS i 0053).
-    // Därför ägare/admin, kontrollerat i tjänstelagret OCH i policyn.
-    sensitivity: 'write',
+    // KÄNSLIG av samma skäl som set_work_actor_user: tilldelningen ÄR
+    // behörigheten. Ägare/admin kontrolleras både i tjänstelagret och i policyn.
+    sensitivity: 'sensitive',
     inputSchema: z.object({ project_id: UuidSchema, actor_id: UuidSchema }).strict(),
     handler: (ctx, i: { project_id: string; actor_id: string }) =>
       assignProjectActor(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.project_id, i.actor_id),
@@ -1057,7 +1059,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'unassign_project_actor',
     title: 'Ta bort aktör från projekt',
-    sensitivity: 'write',
+    // Känslig som sin motsats: att dra tillbaka åtkomst ska också synas i kön.
+    sensitivity: 'sensitive',
     inputSchema: z.object({ project_id: UuidSchema, actor_id: UuidSchema }).strict(),
     handler: (ctx, i: { project_id: string; actor_id: string }) =>
       unassignProjectActor(ctx.client, ctx.companyId, ctx.userId, ctx.role, i.project_id, i.actor_id),

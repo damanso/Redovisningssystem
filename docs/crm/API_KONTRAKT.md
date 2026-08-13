@@ -72,7 +72,13 @@ savepoint. Det som inte gick igenom returneras i `skipped` med index och skäl.
 Ett jobb som faller på rad 400 och rullar tillbaka de 399 första är värre än ett
 som levererar 399 och säger vad som fattades.
 
-**4. Tidrapportering är inte en giltig källa.** `source_system` accepterar
+**4. En raderad källa kan inte återuppspelas.** När en kund raderats enligt
+GDPR sparas källnycklarna som gravstenar. Skickas samma historiska händelser om
+avvisas de (`skipped` med skälet att källan är raderad enligt GDPR) i stället för
+att återskapa personen och mailsammanfattningarna. Nya händelser — nya
+`source_ref` — släpps igenom som vanligt: det är ny behandling med ny grund.
+
+**5. Tidrapportering är inte en giltig källa.** `source_system` accepterar
 `gmail`, `calendar`, `linear` och `manual`. Databasen avvisar allt annat.
 Skälet är mätt, inte principiellt: två av tre aktiva projekt har noll loggade
 minuter men betalda fakturor, så en "senaste kontakt" byggd på tidrapporter

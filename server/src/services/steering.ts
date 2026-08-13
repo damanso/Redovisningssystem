@@ -83,10 +83,18 @@ export async function steeringOverview(
     [companyId],
   );
   // Abonnemangens värde per månad: radsumman delad på intervallets längd.
+  //
+  // Raden kan prissättas på TVÅ sätt: ett uttryckligt pris, eller en artikel
+  // vars pris hämtas när fakturan genereras. Lästes bara det uttryckliga blev
+  // artikelrader tysta nollor, och täckningen underskattades på precis den sida
+  // som ska svara på hur vi ligger till.
   const recurring = await client.query<{ ore: string }>(
     `SELECT COALESCE(sum(
-              (SELECT COALESCE(sum((l->>'quantity')::numeric * (l->>'unit_price_ore')::numeric), 0)
-                 FROM jsonb_array_elements(r.lines) l)
+              (SELECT COALESCE(sum((l->>'quantity')::numeric
+                                   * COALESCE((l->>'unit_price_ore')::numeric, a.unit_price_ore)), 0)
+                 FROM jsonb_array_elements(r.lines) l
+                 LEFT JOIN articles a
+                        ON a.id = nullif(l->>'article_id', '')::uuid AND a.company_id = r.company_id)
               / CASE r.interval WHEN 'monthly' THEN 1 WHEN 'quarterly' THEN 3 ELSE 12 END
             ), 0)::bigint AS ore
      FROM recurring_invoices r

@@ -130,6 +130,24 @@ describe('aktörsregistret är idempotent och tenant-isolerat', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('actor_inactive');
   });
+
+  it('...inte heller via den HÄRLEDDA vägen', async () => {
+    // Granskningsfynd: spärren låg bara på den uttryckligen angivna aktören. Den
+    // som loggade tid utan att ange någon fick sin egen aktör tillbaka — även
+    // inaktiverad — och via 0053:s policyer öppnades projektåtkomsten igen.
+    const mig = (await act('list_work_actors', {})).body.result
+      .find((x: { name: string }) => x.name === 'aktor');
+    expect(mig, 'den inloggades egen aktör').toBeTruthy();
+    await act('upsert_work_actor', { name: 'aktor', active: false });
+
+    const res = await act('log_time', {
+      project_id: projectId, work_date: '2026-06-06', minutes: 30, description: 'Utan angiven aktör',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('actor_inactive');
+
+    await act('upsert_work_actor', { name: 'aktor', active: true });
+  });
 });
 
 describe('inköpskostnad och marginal', () => {

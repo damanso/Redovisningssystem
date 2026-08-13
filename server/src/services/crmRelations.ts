@@ -206,7 +206,19 @@ export interface UpsertPersonInput {
   notes?: string;
 }
 
-/** Samma nyckelval som kontakterna i E1: e-post när den finns, annars namn. */
+/**
+ * Nyckelvalet, i två steg — men med en avgörande skillnad mot kontakterna i E1:
+ * NAMNET är bara unikt inom ORGANISATIONEN, aldrig inom hela bolaget. "Anna
+ * Andersson" är inte en identitet i ett bolag, den är en identitet hos EN
+ * motpart; matchades namnet bolagsbrett slogs två olika personer på två olika
+ * företag ihop och den ena flyttades — med hela sin kontakthistorik.
+ *
+ * E-posten identifierar däremot personen oavsett organisation och matchas brett.
+ *
+ * Saknar händelsen e-post matchas namnet inom organisationen ÄVEN mot rader som
+ * redan har en e-post. Ett kalenderevent bär sällan adressen, och utan det här
+ * hade varje möte lagt en ny namnlös dubblett bredvid den riktiga personen.
+ */
 export async function upsertPerson(
   client: PoolClient, companyId: string, userId: string, input: UpsertPersonInput,
 ): Promise<Person & { created: boolean }> {
@@ -221,7 +233,15 @@ export async function upsertPerson(
   const byName = byEmail?.rows[0]
     ? null
     : await client.query<{ id: string }>(
-        'SELECT id FROM crm.people WHERE company_id = $1 AND email IS NULL AND lower(name) = lower($2)', [companyId, name]);
+        `SELECT id FROM crm.people
+         WHERE company_id = $1
+           AND organization_id IS NOT DISTINCT FROM $2::uuid
+           AND lower(name) = lower($3)
+           -- Med e-post i indata söker vi bara raden som ännu saknar en, så att
+           -- den kan kompletteras. Utan e-post i indata duger vilken som helst.
+           AND ($4::boolean OR email IS NULL)
+         ORDER BY created_at LIMIT 1`,
+        [companyId, input.organization_id ?? null, name, !input.email]);
   const hit = byEmail?.rows[0] ?? byName?.rows[0];
 
   if (!hit) {
@@ -288,6 +308,35 @@ export interface RecordInteractionInput {
   source_ref?: string;
 }
 
+/**
+ * Vägrar återskapa något som raderats enligt GDPR.
+ *
+ * Raderingen tar bort kontaktpunkterna — och därmed också nycklarna som gör
+ * synken idempotent. Utan den här spärren återskapade nästa körning av samma
+ * historiska batch personen, e-posten och mailsammanfattningarna: en rättsligt
+ * utförd radering gjord ogjord, i tysthet, av ett jobb som gjorde precis vad
+ * det var byggt för. Gravstenen (migration 0054) överlever raderingen.
+ *
+ * NYA händelser släpps fortfarande igenom. Det är ny behandling med ny grund;
+ * det som stoppas är återuppspelning av just det som raderats.
+ */
+export async function assertNotErased(
+  client: PoolClient, companyId: string, sourceSystem: string, sourceRef?: string,
+): Promise<void> {
+  if (!sourceRef) return;
+  const r = await client.query(
+    'SELECT 1 FROM crm.erased_sources WHERE company_id = $1 AND source_system = $2 AND source_ref = $3',
+    [companyId, sourceSystem, sourceRef],
+  );
+  if (r.rows[0]) {
+    throw new BadRequestError(
+      'erased_source',
+      'källan är raderad enligt GDPR och får inte återskapas',
+      { source_system: sourceSystem, source_ref: sourceRef },
+    );
+  }
+}
+
 async function assertTarget(
   client: PoolClient, companyId: string, input: { person_id?: string; organization_id?: string },
 ): Promise<void> {
@@ -313,6 +362,7 @@ async function assertTarget(
 export async function recordInteraction(
   client: PoolClient, companyId: string, userId: string, input: RecordInteractionInput,
 ): Promise<Record<string, unknown> & { created: boolean }> {
+  await assertNotErased(client, companyId, input.source_system, input.source_ref);
   await assertTarget(client, companyId, input);
 
   const existing = input.source_ref
@@ -332,6 +382,12 @@ export async function recordInteraction(
       [existing.rows[0].id, companyId, input.person_id ?? null, input.organization_id ?? null,
         input.occurred_at, input.channel, input.direction ?? 'outbound', input.summary],
     );
+    // Även uppdateringen auditloggas. En omsänd händelse med ändrad text skriver
+    // om historiken, och en ändring utan spår är en ändring som inte hände.
+    await writeCrmAudit(client, {
+      companyId, userId, action: 'crm.interaction_updated', entityType: 'interaction',
+      entityId: existing.rows[0].id, details: { source_system: input.source_system },
+    });
     return { ...r.rows[0], created: false };
   }
 
@@ -365,6 +421,7 @@ export interface RecordCommitmentInput {
 export async function recordCommitment(
   client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput,
 ): Promise<Record<string, unknown> & { created: boolean }> {
+  await assertNotErased(client, companyId, input.source_system, input.source_ref);
   await assertTarget(client, companyId, input);
 
   const existing = input.source_ref
@@ -384,6 +441,10 @@ export async function recordCommitment(
       [existing.rows[0].id, companyId, input.person_id ?? null, input.organization_id ?? null,
         input.direction, input.body, input.due_date ?? null, input.occurred_at],
     );
+    await writeCrmAudit(client, {
+      companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment',
+      entityId: existing.rows[0].id, details: { source_system: input.source_system },
+    });
     return { ...r.rows[0], created: false };
   }
 

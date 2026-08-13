@@ -142,10 +142,15 @@ export interface ContactSuggestion {
  * för rad, vilket är poängen med en kontrollyta.
  */
 export async function contactSuggestions(
-  client: PoolClient, companyId: string, opts: { as_of?: string; silence_days?: number } = {},
+  client: PoolClient, companyId: string,
+  // `rows` låter en anropare som REDAN räknat fram relationsläget skicka in
+  // det. Relationsvyn visar både tabellen och förslagen, och utan detta kördes
+  // den tunga aggregeringen (kontaktpunkter, åtaganden, 12 månaders fakturor)
+  // två gånger per sidladdning.
+  opts: { as_of?: string; silence_days?: number; rows?: RelationRow[] } = {},
 ): Promise<{ as_of: string; silence_days: number; suggestions: ContactSuggestion[] }> {
   const days = opts.silence_days ?? DEFAULT_SILENCE_DAYS;
-  const rows = await relationState(client, companyId, opts);
+  const rows = opts.rows ?? await relationState(client, companyId, opts);
   const asOf = opts.as_of ?? new Date().toISOString().slice(0, 10);
 
   // Kontaktpersonen: den som senast var i kontakt, annars den enda som finns.

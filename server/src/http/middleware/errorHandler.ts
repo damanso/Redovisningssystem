@@ -81,6 +81,11 @@ function pgErrorStatus(err: unknown): { status: number; code: string } | null {
       return { status: 409, code: 'conflict' };
     case '23503': // foreign_key_violation
       return { status: 409, code: 'conflict' };
+    case '42501':
+      // insufficient_privilege — RLS nekade raden. Att det blev ett 500
+      // ("obegripligt databasfel") dolde att svaret egentligen är ett tydligt
+      // nej. Meddelandet stannar serverside; klienten får koden.
+      return { status: 403, code: 'forbidden' };
     case '23514': // check_violation
     case '22021': // character_not_in_repertoire (t.ex. ogiltig UTF8-byte)
     case '22P02': // invalid_text_representation

@@ -1500,7 +1500,9 @@ const orgStatusChip = (status: string): Raw =>
     : chip(status, 'muted');
 
 viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId) => {
-  const [state, suggestions] = [await relationState(client, companyId), await contactSuggestions(client, companyId)];
+  const state = await relationState(client, companyId);
+  // Förslagen räknas ur samma resultat — inte ur en andra körning av samma fråga.
+  const suggestions = await contactSuggestions(client, companyId, { rows: state });
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
       <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div></div>
     ${

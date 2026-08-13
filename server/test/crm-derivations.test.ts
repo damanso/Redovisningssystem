@@ -11,8 +11,11 @@
 //
 // Dessutom: "senaste kontakt" räknas på organisationen OCH dess personer, och
 // aldrig ur tidrapportering (spärr 7 i briefen).
+import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+
+const PASSWORD = 'mycket-hemligt-losen-123';
 
 let user: TestUser;
 let companyId: string;
@@ -104,6 +107,31 @@ describe('API-kontraktet: en batch in, naturliga nycklar, idempotent', () => {
               (SELECT count(*)::int FROM crm.organizations WHERE company_id = $1) AS o`,
       [companyId])).rows[0]);
     expect(after).toEqual(before);
+  });
+
+  it('räknarna ljuger inte när en händelse rullas tillbaka', async () => {
+    // Granskningsfynd: organisationen räknades som skapad innan händelsen kunde
+    // falla. Savepointen rullade tillbaka raden, men svaret och auditloggen
+    // påstod ändå att den skapats — och mottagarens avstämning ("idel unchanged
+    // är kvittot") såg spökskapelser vid varje omkörning av en trasig händelse.
+    const res = await act('ingest_crm_events', {
+      events: [{
+        kind: 'interaction', organization: { name: 'Spöket AB' },
+        person: { name: 'Spök Person' },
+        occurred_at: '2026-08-12T10:00:00Z', channel: 'call',
+        // summary saknas → händelsen faller EFTER att org och person hunnit skapas
+        source_system: 'manual', source_ref: 'spoke-1',
+      }],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.skipped).toHaveLength(1);
+    expect(res.body.result.organizations_created, 'inget skapades — allt rullades tillbaka').toBe(0);
+    expect(res.body.result.people_created).toBe(0);
+
+    const finns = await withAdmin(async (a) => (await a.query(
+      `SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND name = 'Spöket AB'`,
+      [companyId])).rows[0].n);
+    expect(finns).toBe(0);
   });
 
   it('en trasig händelse stoppar inte batchen — den rapporteras', async () => {
@@ -215,6 +243,33 @@ describe('härledningarna räknas fram, de matas inte in', () => {
     const after = await withAdmin(async (a) => (await a.query(
       'SELECT count(*)::int AS n FROM email_outbox')).rows[0].n);
     expect(after).toBe(before);
+  });
+
+  it('artikelprissatta abonnemang räknas med i täckningen', async () => {
+    // Granskningsfynd: täckningen läste bara uttryckligt satt pris. En
+    // abonnemangsrad som prissätts via en artikel blev en tyst nolla, och
+    // styrvyn underskattade precis den siffra den finns för att visa.
+    const art = await api.post(`${co()}/articles`).set(auth()).send({
+      article_number: 'AB-1', name: 'Månadsabonnemang', unit_price_ore: 500_000, vat_rate: 25,
+    });
+    expect(art.status, JSON.stringify(art.body)).toBe(201);
+
+    const before = (await act('crm_relation_state', {})).status; // sanity: API:t svarar
+    expect(before).toBe(200);
+
+    const rec = await act('create_recurring_invoice', {
+      customer_id: customerId, title: 'Drift och förvaltning', interval: 'monthly',
+      next_run_date: '2026-09-01',
+      lines: [{ article_id: art.body.article.id, quantity: 1 }],
+    });
+    expect(rec.status, JSON.stringify(rec.body)).toBe(200);
+
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    const sida = await ua.get(`/app/c/${companyId}/steering`);
+    expect(sida.status).toBe(200);
+    // 500 000 öre = 5 000,00 kr per månad — inte noll.
+    expect(sida.text.replace(/[\s\u00A0\u202F]/g, '')).toContain('5000,00');
   });
 
   it('härledningarna är tenant-isolerade', async () => {

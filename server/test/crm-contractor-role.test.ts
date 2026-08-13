@@ -29,6 +29,19 @@ const co = () => `/api/companies/${companyId}`;
 const act = (name: string, body: Record<string, unknown> = {}) =>
   api.post(`${co()}/actions/${name}`).set(auth()).send(body);
 
+/**
+ * Kör en KÄNSLIG åtgärd hela vägen: förslag → mänskligt godkännande.
+ * Tilldelningar och kontokopplingar är behörighetsändringar och passerar
+ * därför godkännandekön, precis som allt annat med konsekvens.
+ */
+async function actApproved(name: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const queued = await act(name, body);
+  expect(queued.status, JSON.stringify(queued.body)).toBe(202);
+  const done = await api.post(`${co()}/approvals/${queued.body.approval.id}/approve`).set(auth()).send({});
+  expect(done.status, JSON.stringify(done.body)).toBe(200);
+  return done.body.result as Record<string, unknown>;
+}
+
 /** Kör en fråga som app-rollen MED en viss användares RLS-kontext. */
 async function asUser<T>(userId: string, fn: (q: (sql: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>) => Promise<void>): Promise<void> {
   const client = await pool.connect();
@@ -85,10 +98,8 @@ beforeAll(async () => {
 
   // Kopplingen aktör→användare finns inte förrän kontot gör det. Ägaren gör den
   // efter inbjudan; tjänstelagret kräver att målanvändaren ÄR medlem.
-  const link = await act('set_work_actor_user', { actor_id: contractorActorId, user_id: contractor.userId });
-  expect(link.status, JSON.stringify(link.body)).toBe(200);
-  const assign = await act('assign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
-  expect(assign.status, JSON.stringify(assign.body)).toBe(200);
+  await actApproved('set_work_actor_user', { actor_id: contractorActorId, user_id: contractor.userId });
+  await actApproved('assign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
 });
 
 describe('underkonsulten är stängd ute från bolagets data', () => {
@@ -134,15 +145,29 @@ describe('underkonsulten är stängd ute från bolagets data', () => {
     }
   });
 
-  it('inga åtgärder får köras — tydligt 403 i stället för tomma listor', async () => {
-    const res = await api.post(`${co()}/actions/list_customers`)
-      .set({ Authorization: `Bearer ${contractor.token}` }).send({});
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('contractor_not_permitted');
+  it('HELA REST-lagret säger nej — inte bara åtgärderna', async () => {
+    // Granskningsfynd: spärren låg bara i action-lagret, så de äldre
+    // REST-rutterna svarade 200 med tom lista (som en agent läser som "det
+    // finns inga kunder") och skrivningar blev 500 ur RLS. Nu nekas rollen i
+    // förtroendegränsen, före varje handler.
+    const ch = { Authorization: `Bearer ${contractor.token}` };
+    const read = await api.post(`${co()}/actions/list_customers`).set(ch).send({});
+    expect(read.status).toBe(403);
+    expect(read.body.error).toBe('contractor_not_permitted');
 
-    const write = await api.post(`${co()}/actions/create_customer`)
-      .set({ Authorization: `Bearer ${contractor.token}` }).send({ name: 'Smygkund AB' });
+    const write = await api.post(`${co()}/actions/create_customer`).set(ch).send({ name: 'Smygkund AB' });
     expect(write.status).toBe(403);
+
+    // De äldre REST-rutterna, som saknade spärr helt:
+    const list = await api.get(`${co()}/customers`).set(ch);
+    expect(list.status, JSON.stringify(list.body)).toBe(403);
+    expect(list.body).not.toHaveProperty('customers');
+
+    const post = await api.post(`${co()}/customers`).set(ch).send({ name: 'Smygkund AB' });
+    expect(post.status, JSON.stringify(post.body)).toBe(403); // inte 500
+
+    const company = await api.get(`${co()}`).set(ch);
+    expect(company.status).toBe(403);
   });
 });
 
@@ -165,14 +190,14 @@ describe('...men ser sina egna uppdrag', () => {
   });
 
   it('en borttagen tilldelning stänger dörren igen', async () => {
-    const off = await act('unassign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
-    expect(off.body.result.removed).toBe(true);
+    const off = await actApproved('unassign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
+    expect(off.removed).toBe(true);
     await asUser(contractor.userId, async (q) => {
       expect((await q('SELECT id FROM projects WHERE company_id = $1', [companyId])).rowCount).toBe(0);
       expect((await q('SELECT id FROM time_entries WHERE company_id = $1', [companyId])).rowCount).toBe(0);
     });
-    const on = await act('assign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
-    expect(on.body.result.assigned).toBe(true);
+    const on = await actApproved('assign_project_actor', { project_id: assignedProject, actor_id: contractorActorId });
+    expect(on.assigned).toBe(true);
   });
 
   it('en inaktiverad aktör tappar åtkomsten även med tilldelningen kvar', async () => {
@@ -186,9 +211,14 @@ describe('...men ser sina egna uppdrag', () => {
 
 describe('tilldelningen är en behörighetsåtgärd', () => {
   it('en vanlig medlem kan inte tilldela uppdrag', async () => {
-    const res = await api.post(`${co()}/actions/assign_project_actor`)
+    // Åtgärden är känslig: förslaget får köas, men körningen sker vid
+    // godkännandet — och där avgörs behörigheten av GODKÄNNARENS roll.
+    const queued = await api.post(`${co()}/actions/assign_project_actor`)
       .set({ Authorization: `Bearer ${colleague.token}` })
       .send({ project_id: secretProject, actor_id: ownActorId });
+    expect(queued.status, JSON.stringify(queued.body)).toBe(202);
+    const res = await api.post(`${co()}/approvals/${queued.body.approval.id}/approve`)
+      .set({ Authorization: `Bearer ${colleague.token}` }).send({});
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('not_admin');
   });

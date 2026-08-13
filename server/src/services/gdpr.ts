@@ -64,6 +64,25 @@ async function purgeCrmRelationData(
   if (orgs.rows.length === 0) return { people: 0, interactions: 0, commitments: 0 };
   const orgIds = orgs.rows.map((o) => o.id);
 
+  // Gravstenarna FÖRST, medan källnycklarna fortfarande finns. Raderar vi
+  // raderna först försvinner (source_system, source_ref) — och nästa nattliga
+  // synk som skickar om samma historiska mail återskapar allt vi just tog bort.
+  // Gravstenen bär enbart källnycklar, inga personuppgifter.
+  await client.query(
+    `INSERT INTO crm.erased_sources (company_id, source_system, source_ref)
+     SELECT $1, source_system, source_ref FROM crm.interactions
+      WHERE company_id = $1 AND source_ref IS NOT NULL
+        AND (organization_id = ANY($2::uuid[])
+          OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))
+     UNION
+     SELECT $1, source_system, source_ref FROM crm.commitments
+      WHERE company_id = $1 AND source_ref IS NOT NULL
+        AND (organization_id = ANY($2::uuid[])
+          OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))
+     ON CONFLICT DO NOTHING`,
+    [companyId, orgIds],
+  );
+
   const interactions = await client.query(
     `DELETE FROM crm.interactions
      WHERE company_id = $1 AND (organization_id = ANY($2::uuid[])
@@ -81,7 +100,11 @@ async function purgeCrmRelationData(
   );
   await client.query(
     `UPDATE crm.organizations
-     SET name = CASE WHEN $3 THEN name ELSE 'Raderad (GDPR)' END,
+     -- Namnet måste vara unikt inom bolaget (organizations_name_uk). En fast
+     -- text hade krockat med förra raderingen och avbrutit hela transaktionen —
+     -- alltså en raderingsbegäran som inte gick att uppfylla. Radens egen
+     -- id-prefix gör namnet unikt utan att avslöja något om personen.
+     SET name = CASE WHEN $3 THEN name ELSE 'Raderad (GDPR) ' || left(id::text, 8) END,
          org_number = CASE WHEN $3 THEN org_number ELSE NULL END,
          website = NULL, source = NULL, notes = NULL, status = 'archived'
      WHERE company_id = $1 AND id = ANY($2::uuid[])`,

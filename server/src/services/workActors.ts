@@ -220,8 +220,12 @@ export async function setWorkActorUser(
 export async function resolveTimeEntryActor(
   client: PoolClient, companyId: string, userId: string, actorId?: string,
 ): Promise<WorkActor> {
-  if (!actorId) return ensureActorForUser(client, companyId, userId);
-  const actor = await getWorkActor(client, companyId, actorId);
+  // Kontrollen gäller BÅDA vägarna. Låg den bara på den explicita kunde en
+  // inaktiverad aktör fortsätta få tid så fort ägaren loggade utan att ange
+  // någon — och via 0053:s policyer öppnades då projektåtkomsten igen.
+  const actor = actorId
+    ? await getWorkActor(client, companyId, actorId)
+    : await ensureActorForUser(client, companyId, userId);
   if (!actor.active) throw new BadRequestError('actor_inactive', 'aktören är inaktiverad');
   return actor;
 }

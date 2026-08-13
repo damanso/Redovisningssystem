@@ -289,3 +289,121 @@ describe('GDPR: raderingen når ÄVEN relationsdatan', () => {
     expect(kvar.status).toBe('archived');
   });
 });
+
+describe('granskningsfixar: fynden som hittades före produktionssläppet', () => {
+  // Varje test nedan är skrivet som FELET såg ut, inte som fixen. Faller ett av
+  // dem är regressionen tillbaka.
+
+  async function anonymize(customerId: string): Promise<Record<string, number>> {
+    const req = await act('anonymize_party', { party_type: 'customer', party_id: customerId });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const done = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    return done.body.result as Record<string, number>;
+  }
+
+  it('TVÅ raderingar i samma bolag går igenom — namnet krockar inte', async () => {
+    // Fyndet: organisationen döptes om till exakt "Raderad (GDPR)", som är
+    // unikt per bolag. Andra raderingen kraschade → en raderingsbegäran som
+    // inte gick att uppfylla.
+    for (const namn of ['Radering Ett AB', 'Radering Två AB']) {
+      const c = await api.post(`${co()}/customers`).set(auth()).send({ name: namn });
+      expect(c.status).toBe(201);
+      await act('upsert_crm_organization', { name: namn, customer_id: c.body.customer.id });
+      const res = await anonymize(c.body.customer.id);
+      expect(res.crm_people_removed).toBe(0);
+    }
+    const namn = await withAdmin(async (a) => (await a.query<{ name: string }>(
+      `SELECT name FROM crm.organizations
+       WHERE company_id = $1 AND status = 'archived' AND name LIKE 'Raderad (GDPR)%'`,
+      [companyId])).rows.map((r) => r.name));
+    expect(namn.length).toBeGreaterThanOrEqual(2);
+    // Egenskapen som saknades: namnen är UNIKA. Var de identiska föll andra
+    // raderingen på unik-indexet i stället för att gå igenom.
+    expect(new Set(namn).size).toBe(namn.length);
+  });
+
+  it('en raderad källa kan INTE återuppspelas av nästa synk', async () => {
+    // Fyndet: raderingen tog bort kontaktpunkterna — och därmed nycklarna som
+    // gör synken idempotent. Nästa nattkörning återskapade personen, e-posten
+    // och mailsammanfattningen. En utförd radering gjord ogjord, i tysthet.
+    const c = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Återuppstånden AB' });
+    const customerId = c.body.customer.id;
+    const batch = {
+      events: [{
+        kind: 'interaction',
+        organization: { name: 'Återuppstånden AB' },
+        person: { name: 'Rebecka Radering', email: 'rebecka@ater.example' },
+        occurred_at: '2026-08-01T10:00:00Z', channel: 'email',
+        summary: 'Mail som ska kunna raderas för gott.',
+        source_system: 'gmail', source_ref: 'gmail:ater-1',
+      }],
+    };
+    expect((await act('ingest_crm_events', batch)).status).toBe(200);
+    await act('upsert_crm_organization', { name: 'Återuppstånden AB', customer_id: customerId });
+
+    const res = await anonymize(customerId);
+    expect(res.crm_people_removed).toBe(1);
+    expect(res.crm_interactions_removed).toBe(1);
+
+    // Hermes skickar om exakt samma historiska batch.
+    const replay = await act('ingest_crm_events', batch);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.result.interactions_created).toBe(0);
+    expect(replay.body.result.skipped).toHaveLength(1);
+    expect(replay.body.result.skipped[0].reason).toContain('GDPR');
+
+    const kvar = await withAdmin(async (a) => (await a.query(
+      `SELECT count(*)::int AS n FROM crm.people WHERE company_id = $1 AND lower(email) = 'rebecka@ater.example'`,
+      [companyId])).rows[0].n);
+    expect(kvar, 'personen får inte återuppstå').toBe(0);
+  });
+
+  it('två personer med samma namn på OLIKA företag slås inte ihop', async () => {
+    // Fyndet: namnuppslaget var bolagsbrett, så "Anna Andersson" på företag B
+    // kapade Anna Andersson på företag A — och flyttade hennes historik dit.
+    const a = await act('upsert_crm_organization', { name: 'Namnkrock A AB' });
+    const b = await act('upsert_crm_organization', { name: 'Namnkrock B AB' });
+    const p1 = await act('upsert_crm_person', { name: 'Anna Andersson', organization_id: a.body.result.id });
+    expect(p1.body.result.created).toBe(true);
+    const p2 = await act('upsert_crm_person', { name: 'Anna Andersson', organization_id: b.body.result.id });
+    expect(p2.body.result.created, 'ny person hos nytt företag').toBe(true);
+    expect(p2.body.result.id).not.toBe(p1.body.result.id);
+
+    // ...men samma namn hos SAMMA företag är samma person.
+    const p3 = await act('upsert_crm_person', { name: 'anna andersson', organization_id: a.body.result.id });
+    expect(p3.body.result.created).toBe(false);
+    expect(p3.body.result.id).toBe(p1.body.result.id);
+  });
+
+  it('en händelse utan e-post matchar en person som redan har en', async () => {
+    // Fyndet: namnuppslaget krävde att den lagrade raden saknade e-post, så ett
+    // kalenderevent (som sällan bär adressen) lade en dubblett bredvid personen.
+    const org = await act('upsert_crm_organization', { name: 'Kalenderfallet AB' });
+    const med = await act('upsert_crm_person', {
+      name: 'Kalle Kalender', email: 'kalle@kalender.example', organization_id: org.body.result.id,
+    });
+    expect(med.body.result.created).toBe(true);
+    const utan = await act('upsert_crm_person', { name: 'Kalle Kalender', organization_id: org.body.result.id });
+    expect(utan.body.result.created, 'ingen dubblett från ett möte utan adress').toBe(false);
+    expect(utan.body.result.id).toBe(med.body.result.id);
+    expect(utan.body.result.email).toBe('kalle@kalender.example'); // e-posten står kvar
+  });
+
+  it('uppdatering av en befintlig kontaktpunkt auditloggas också', async () => {
+    // Fyndet: bara nyskapade rader auditloggades. En omsänd händelse med ändrad
+    // text kunde skriva om historiken utan spår.
+    const org = await act('upsert_crm_organization', { name: 'Auditfallet AB' });
+    const first = {
+      organization_id: org.body.result.id, occurred_at: '2026-08-05T10:00:00Z', channel: 'email' as const,
+      summary: 'Ursprunglig text.', source_system: 'gmail' as const, source_ref: 'gmail:audit-1',
+    };
+    await act('record_crm_interaction', first);
+    await act('record_crm_interaction', { ...first, summary: 'Omskriven text.' });
+
+    const rader = await withAdmin(async (a) => (await a.query(
+      `SELECT action FROM crm.audit_log WHERE company_id = $1 AND action = 'crm.interaction_updated'`,
+      [companyId])).rows);
+    expect(rader.length).toBeGreaterThan(0);
+  });
+});

@@ -74,6 +74,11 @@ export async function ingestCrmEvents(
     // Savepoint per händelse: en krock (t.ex. en e-post som redan hör till en
     // annan person) får inte förgifta transaktionen för resten av batchen.
     await client.query('SAVEPOINT crm_event');
+    // Räknas UPP lokalt och slås ihop först när händelsen gått hela vägen.
+    // Räknades det direkt i svaret rapporterades en organisation som skapad
+    // även när savepointen rullade tillbaka den — och mottagarens avstämning
+    // ("idel unchanged är kvittot") såg spökskapelser vid varje omkörning.
+    const delta = { organizations: 0, people: 0 };
     try {
       if (!e.organization && !e.person) {
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
@@ -87,7 +92,7 @@ export async function ingestCrmEvents(
           website: e.organization.website,
         });
         organizationId = org.id;
-        if (org.created) result.organizations_created += 1;
+        if (org.created) delta.organizations += 1;
       }
 
       let personId: string | undefined;
@@ -100,7 +105,7 @@ export async function ingestCrmEvents(
           organization_id: organizationId,
         });
         personId = person.id;
-        if (person.created) result.people_created += 1;
+        if (person.created) delta.people += 1;
       }
 
       if (e.kind === 'interaction') {
@@ -121,6 +126,8 @@ export async function ingestCrmEvents(
         if (r.created) result.commitments_created += 1; else result.commitments_unchanged += 1;
       }
       await client.query('RELEASE SAVEPOINT crm_event');
+      result.organizations_created += delta.organizations;
+      result.people_created += delta.people;
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
       result.skipped.push({ index, reason: err instanceof Error ? err.message : 'okänt fel' });

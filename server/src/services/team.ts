@@ -76,7 +76,9 @@ export async function inviteMember(
   await notify(client, {
     userId: targetId, companyId, kind: 'team_invite',
     title: `Du har lagts till i ${companyName}`,
-    body: `Du är nu ${role === 'admin' ? 'administratör' : 'medlem'} i ${companyName}.`,
+    body: role === 'contractor'
+      ? `Du är inbjuden som underkonsult i ${companyName} och ser de uppdrag du tilldelas.`
+      : `Du är nu ${role === 'admin' ? 'administratör' : 'medlem'} i ${companyName}.`,
     link: `/app/c/${companyId}`,
     email: { toEmail: u.rows[0].email },
   });

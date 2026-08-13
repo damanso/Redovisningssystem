@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 571 tester i 73 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 579 tester i 73 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-13 (session: granskningspass på hela CRM-bygget före produktion):**
+  En full kodgranskning av `3f45cd8..main` gav 13 fynd, alla åtgärdade. De fyra
+  tyngsta var verkliga fel, inte stilfrågor:
+  (1) **GDPR-raderingen kraschade på andra kunden** — organisationen döptes om
+  till exakt "Raderad (GDPR)", som krockade med unik-indexet. En raderingsbegäran
+  som inte gick att uppfylla. Nu bär namnet radens egen id-prefix.
+  (2) **En radering kunde återuppstå.** Raderingen tog bort kontaktpunkterna —
+  och därmed nycklarna som gör synken idempotent — så nästa nattkörning
+  återskapade personen, e-posten och mailsammanfattningarna. Nu skrivs
+  gravstenar (`crm.erased_sources`, migration 0054) INNAN raderingen, och
+  återuppspelning avvisas. Nya händelser släpps fortfarande igenom.
+  (3) **Underkonsulten var bara spärrad i action-lagret och vyn.** De äldre
+  REST-rutterna svarade 200 med tom lista (som en agent läser som "det finns
+  inga kunder") och skrivningar blev 500 ur RLS. Spärren ligger nu i
+  förtroendegränsen (`requireCompanyAccess`), och 42501 mappas till 403.
+  (4) **Personmatchningen var bolagsbred**, så två personer med samma namn på
+  olika företag slogs ihop och den ena flyttades med hela sin historik. Namnet är
+  nu unikt inom ORGANISATIONEN (index bytt i 0054), och en händelse utan e-post
+  matchar en person som redan har en — annars lade varje kalenderevent en dubblett.
+  Övriga: artikelprissatta abonnemang räknades som noll i styrvyns täckning;
+  `set_work_actor_user`/`assign_project_actor`/`unassign_project_actor` är nu
+  KÄNSLIGA (de ÄR behörigheten, en AI ska inte kunna flytta åtkomst utan
+  godkännande); inaktiverad aktör stoppas nu även på den härledda vägen;
+  uppdateringar i synken auditloggas; ingest-räknarna ljuger inte längre vid
+  rollback; relationsvyn kör inte samma tunga fråga två gånger; `get_party_crm`
+  gör en existenskontroll i stället för tre; inbjudan säger inte längre "medlem"
+  till en underkonsult. **579 tester i 73 sviter gröna.** Uppgraderingsvägen körd
+  mot databas med data: 0053 → 0054, inga rader tappade i indexbytet, dubblett
+  inom samma organisation fälls, samma namn hos annan organisation tillåts,
+  omkörning applicerar 0.
 
 - **2026-08-13 (session: CRM-bygget på sidogrenen `feature/crm`, E1 + E7a):**
   Underlaget är `docs/bmadcrmunderlag.md` (Davids BMAD-brief). Arbetet sker på en

@@ -110,8 +110,11 @@ export async function upsertContact(
   return { ...r.rows[0]!, created: false };
 }
 
-export async function listContacts(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Contact[]> {
-  await assertParty(client, companyId, partyType, partyId);
+// Läsningarna finns i två skepnader: en publik som kontrollerar att parten hör
+// till bolaget, och en intern som förutsätter att kontrollen redan gjorts.
+// getPartyCrm hämtar tre saker om SAMMA part — utan uppdelningen blev det tre
+// identiska existenskontroller mot databasen på varje CRM-läsning.
+async function readContacts(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Contact[]> {
   const r = await client.query<Contact>(
     `SELECT id, name, email, phone, role, is_primary FROM party_contacts
      WHERE company_id = $1 AND party_type = $2 AND party_id = $3
@@ -119,6 +122,11 @@ export async function listContacts(client: PoolClient, companyId: string, partyT
     [companyId, partyType, partyId],
   );
   return r.rows;
+}
+
+export async function listContacts(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Contact[]> {
+  await assertParty(client, companyId, partyType, partyId);
+  return readContacts(client, companyId, partyType, partyId);
 }
 
 export interface Note { id: string; body: string; created_at: string; user_id: string | null }
@@ -137,8 +145,7 @@ export async function addNote(
   return r.rows[0]!;
 }
 
-export async function listNotes(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Note[]> {
-  await assertParty(client, companyId, partyType, partyId);
+async function readNotes(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Note[]> {
   const r = await client.query<Note>(
     `SELECT id, body, created_at::text, user_id FROM party_notes
      WHERE company_id = $1 AND party_type = $2 AND party_id = $3
@@ -146,6 +153,11 @@ export async function listNotes(client: PoolClient, companyId: string, partyType
     [companyId, partyType, partyId],
   );
   return r.rows;
+}
+
+export async function listNotes(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Note[]> {
+  await assertParty(client, companyId, partyType, partyId);
+  return readNotes(client, companyId, partyType, partyId);
 }
 
 export async function setTags(
@@ -168,8 +180,9 @@ export async function getPartyCrm(client: PoolClient, companyId: string, partyTy
   const table = PARTY_TABLE[partyType];
   // Sekventiellt: alla tre går på SAMMA anslutning, och pg kan inte köra
   // parallella frågor på en klient — den köar dem och varnar (bort i pg@9).
-  const contacts = await listContacts(client, companyId, partyType, partyId);
-  const notes = await listNotes(client, companyId, partyType, partyId);
+  // Läs-varianterna utan egen existenskontroll: parten är redan kontrollerad ovan.
+  const contacts = await readContacts(client, companyId, partyType, partyId);
+  const notes = await readNotes(client, companyId, partyType, partyId);
   const tagRow = await client.query<{ tags: string[] }>(
     `SELECT tags FROM ${table} WHERE id = $1 AND company_id = $2`, [partyId, companyId]);
   return { contacts, notes, tags: tagRow.rows[0]?.tags ?? [] };
