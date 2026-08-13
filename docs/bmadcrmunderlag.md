@@ -5,6 +5,44 @@
 > Underlag: deep research 13/8 (12 agenter) → `02-Områden/hermes/beslutsunderlag-crm-yta-2026-08-13.md`. Beslut: **väg C+A** — redovisningen äger det pengar tvingar fram, ytan är en projektion.
 
 ---
+DEL 0 — Davids beslut 13/8 
+
+Tre vägval besvarade av beställaren. De styr arkitekturen och byggordningen. Fråga inte om dem igen.
+
+B1 — Åtkomst: tailnet nu, publik när underkonsult finns
+
+Systemet nås tills vidare bara inom beställarens privata nätverk (Tailscale). Men arkitekturen ska förbereda publik åtkomst — autentisering, sessionshantering och roller ska byggas så att bytet är en konfigurationsändring, inte en omskrivning.
+
+Konkret för arkitekturfasen: anta att ytan en dag exponeras med inloggning. Bygg inte något som förutsätter att bara en betrodd person kan nå den. Inga hemligheter i URL:er, ingen åtkomst som vilar på nätverksgränsen ensam.
+
+B2 — Pipeline: börja med att se, bygg om det inte räcker
+
+Affärsobjektet byggs inte i första omgången. Öppna affärer bor kvar i Linear och märks med en etikett; CRM-ytan renderar dem via API-kontraktet. Efter tre veckors användning avgör beställaren om affärsläget känns synligt.
+
+Konkret: E3 (affärsobjektet) planeras men byggs inte förrän beslutet omprövats. Datamodellen i E2 ska ha plats för det utan att kräva ombyggnad — men tabellen står tom tills behovet är bevisat. Skälet är dokumenterat: en pipeline utan tvingfunktion ruttnar på fyra veckor, och det är exakt så det tidigare CRM-försöket dog.
+
+B3 — Underkonsulter: inom sex månader, ska se sina egna uppdrag
+
+Detta flyttar E7 från sist till tidigt. Aktörsfältet på tidrapporter och åtkomstrollerna byggs medan datan är liten — i dag finns 1 985 loggade minuter totalt, och migreringen rör fakturaunderlaget. Om ett halvår är samma migrering större och farligare.
+
+Krav som följer:
+
+Aktör på tidrapport. Utan den går varken attribuering, beläggning per person, marginal (pris minus inköpskostnad) eller utbetalning till underkonsult att räkna. Fältet hourly_rate_ore är ett pris — en inköpskostnad saknas och behövs.
+Åtkomst per uppdrag. En underkonsult ska se sina egna uppdrag, inte hela bolaget. Modellen ska bära det även om UI:t byggs enanvändar-först.
+Agentens skrivningar behöver proveniens. I dag skriver AI:n med en enda delad identitet. När fler människor finns har agentskriven data ingen spårbarhet — lös det i datamodellen nu.
+Ny byggordning efter besluten
+Ordning	Epic	Varför här
+1	E1 Läs-tillbaka-primitiver	Ingen synk får byggas innan agenten kan läsa vad den skrivit. Oförändrat.
+2	E7a Aktör på tidrapport + inköpskostnad	Flyttad hit av B3. Migreringen är billig nu och rör fakturaunderlaget — gör den vid 1 985 minuter, inte vid 50 000.
+3	E2 Schemat crm + RLS + audit + rollmodell	Rollmodellen ingår nu, av B1 och B3.
+4	E4 Härledningsjobben mot API-kontraktet	Ger relations- och åtagandedata utan inmatning.
+5	E5 Vyerna i den serverrenderade webbvyn	Relationsvy, åtagandevy — affärsvyn renderar Linear-etiketten enligt B2.
+6	E6 Ekonomisk styrvy	Intäktstakt, kundkoncentration, täckning.
+7	E7b Åtkomst-UI för underkonsult	När den första faktiskt finns.
+—	E3 Affärsobjektet	Byggs inte nu. Omprövas efter tre veckor med Linear-etiketten (B2).
+Konsekvens som beställaren ska känna till
+
+Beslut B3 gör ett annat problem brådskande, utanför det här repot: Linear-arbetsytan kan inte delas som den ser ut i dag. Ett team, en användare. Den som släpps in ser privata ärenden, en bostadsadress, momsbelopp, offertsummor, timpriser och konkurrentbedömningar. Det ska delas upp i team innan den första underkonsulten bjuds in — det arbetet hör till Hermes-sidan, inte till det här repot, och är bokfört där.
 
 # DEL 1 — Projektbrief (BMAD: analyst → PM)
 
