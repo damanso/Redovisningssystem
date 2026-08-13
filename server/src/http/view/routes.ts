@@ -29,6 +29,9 @@ import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, 
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
+import { getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { contactSuggestions, relationState } from '../../services/crmDerivations.js';
+import { steeringOverview } from '../../services/steering.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
@@ -1461,6 +1464,216 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// ---------------------------------------------------------------------------
+// CRM E5 + E6: relationsvy, åtagandevy och ekonomisk styrvy.
+//
+// Kontrollytetestet ur briefen: kan beställaren se läget UTAN att fråga? En
+// siffra han måste be en agent om är en konversation, inte en kontrollyta.
+// Därför ligger allt här i den befintliga serverrenderade vyn — JS-fri, tål att
+// laddas om, fungerar i telefonens webbläsare.
+//
+// Ingenting på de här sidorna skickar något till en kund. De föreslår.
+// ---------------------------------------------------------------------------
+
+/**
+ * Datumdelen av en tidpunkt. pg ger timestamptz som Date-objekt, inte sträng —
+ * en rå .slice(0,10) på det ger antingen ett typfel eller "Mon Aug 10". Här
+ * finns EN plats som vet det, i stället för fyra callsites som råkar ha rätt.
+ */
+const dayOf = (v: unknown): string =>
+  v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? '').slice(0, 10);
+
+/** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
+function silenceChip(days: number | null): Raw {
+  if (days === null) return chip('Ingen kontakt', 'neg', '!');
+  if (days >= 90) return chip(`${days} dagar`, 'neg', '!');
+  if (days >= 30) return chip(`${days} dagar`, 'warn', '!');
+  return chip(`${days} dagar`, 'ok', '✓');
+}
+
+const orgStatusChip = (status: string): Raw =>
+  status === 'customer' ? chip('Kund', 'ok')
+    : status === 'prospect' ? chip('Prospekt', 'info')
+    : status === 'partner' ? chip('Partner', 'muted')
+    : chip(status, 'muted');
+
+viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId) => {
+  const [state, suggestions] = [await relationState(client, companyId), await contactSuggestions(client, companyId)];
+  return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
+      <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div></div>
+    ${
+      suggestions.suggestions.length > 0
+        ? html`<div class="panel"><div class="panel__head"><h2>Att höra av sig till</h2></div>
+            <div class="panel__body">
+              <div class="table-wrap"><table><thead><tr><th>Vem</th><th>Kontaktperson</th><th>Varför</th></tr></thead><tbody>
+                ${suggestions.suggestions.slice(0, 8).map((s) => html`<tr>
+                  <td><a href="/app/c/${companyId}/relations/${s.organization_id}">${s.organization}</a></td>
+                  <td>${s.person ? html`${s.person.name}${s.person.email ? html` <span class="muted">${s.person.email}</span>` : ''}` : '—'}</td>
+                  <td>${s.reasons.map((r, i) => html`${i > 0 ? ' · ' : ''}${r}`)}</td></tr>`)}
+                </tbody></table></div>
+              <p class="muted" style="font-size:12.5px;margin:10px 14px 0">Förslag, inget utskick. Systemet skickar aldrig något till en kund — du skriver och skickar själv.</p>
+            </div></div>`
+        : ''
+    }
+    <h2 style="margin-top:18px">Alla relationer</h2>
+    ${
+      state.length === 0
+        ? html`<div class="empty"><div class="big">Inga relationer ännu</div>Kontaktpunkter kommer in via API-kontraktet (mail, kalender, ärenden) eller läggs upp med <span class="code">upsert_crm_organization</span>.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th></tr></thead>
+            <tbody>${state.map((r) => html`<tr>
+              <td><a href="/app/c/${companyId}/relations/${r.organization_id}">${r.name}</a></td>
+              <td>${orgStatusChip(r.status)}</td>
+              <td>${silenceChip(r.days_silent)}</td>
+              <td class="num">${r.open_commitments}${r.overdue_commitments > 0 ? html` ${chip(`${r.overdue_commitments} förfallna`, 'neg', '!')}` : ''}</td>
+              <td class="num">${amount(r.revenue_12m_ore, { unit: false })}</td>
+              <td class="num">${pct(r.revenue_share_permille)}</td></tr>`)}
+            </tbody></table></div>`
+    }`;
+}));
+
+viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const orgId = parseApprovalId(req.params.orgId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const o = await getOrganization(client, companyId, orgId) as {
+      id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
+      org_number: string | null; website: string | null; source: string | null; notes: string | null;
+      people: Array<{ id: string; name: string; email: string | null; phone: string | null; role_title: string | null }>;
+      interactions: Array<{ occurred_at: string; channel: string; direction: string; summary: string; source_system: string; source_ref: string | null; person_name: string | null }>;
+      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string; occurred_at: string; source_system: string; source_ref: string | null; person_name: string | null }>;
+      last_contact_at: string | null;
+    };
+    const b = html`<div class="page-head"><div>${eyebrow('Relation')}<h1>${o.name}</h1>
+        <p class="lede">${o.customer_id ? html`Kund i registret · <a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a> · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
+        <div class="actions">${orgStatusChip(o.status)}</div></div>
+      <div class="kpi-grid">
+        ${kpiCell('Senaste kontakt', html`${o.last_contact_at ? dayOf(o.last_contact_at) : '—'}`)}
+        ${kpiCell('Personer', html`${o.people.length}`)}
+        ${kpiCell('Öppna löften', html`${o.commitments.filter((c) => c.status === 'open').length}`)}
+      </div>
+      <h2 style="margin-top:18px">Personer</h2>
+      ${
+        o.people.length === 0
+          ? html`<p class="muted">Inga personer registrerade ännu.</p>`
+          : html`<div class="table-wrap"><table><thead><tr><th>Namn</th><th>Roll</th><th>E-post</th><th>Telefon</th></tr></thead><tbody>
+              ${o.people.map((p) => html`<tr><td>${p.name}</td><td>${p.role_title ?? '—'}</td>
+                <td>${p.email ?? '—'}</td><td>${p.phone ?? '—'}</td></tr>`)}
+              </tbody></table></div>`
+      }
+      <h2 style="margin-top:18px">Vad vi lovat varandra</h2>
+      ${
+        o.commitments.length === 0
+          ? html`<p class="muted">Inga registrerade åtaganden.</p>`
+          : html`<div class="table-wrap"><table><thead><tr><th>Riktning</th><th>Vad</th><th>Senast</th><th>Läge</th><th>Källa</th></tr></thead><tbody>
+              ${o.commitments.map((c) => html`<tr>
+                <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
+                <td>${c.body}${c.person_name ? html` <span class="muted">· ${c.person_name}</span>` : ''}</td>
+                <td class="code">${c.due_date ?? '—'}</td>
+                <td>${c.status === 'open' ? chip('Öppet', 'warn') : c.status === 'done' ? chip('Klart', 'ok', '✓') : chip('Avskrivet', 'muted')}</td>
+                <td class="muted">${c.source_system}${c.source_ref ? html` · ${c.source_ref}` : ''}</td></tr>`)}
+              </tbody></table></div>`
+      }
+      <h2 style="margin-top:18px">Vad som sagts</h2>
+      ${
+        o.interactions.length === 0
+          ? html`<p class="muted">Inga kontaktpunkter ännu.</p>`
+          : html`<div class="table-wrap"><table><thead><tr><th>När</th><th>Kanal</th><th>Med</th><th>Vad</th><th>Källa</th></tr></thead><tbody>
+              ${o.interactions.map((i) => html`<tr>
+                <td class="code">${dayOf(i.occurred_at)}</td>
+                <td>${i.channel}${i.direction === 'inbound' ? ' ←' : i.direction === 'outbound' ? ' →' : ''}</td>
+                <td>${i.person_name ?? '—'}</td>
+                <td>${i.summary}</td>
+                <td class="muted">${i.source_system}${i.source_ref ? html` · ${i.source_ref}` : ''}</td></tr>`)}
+              </tbody></table></div>`
+      }`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', body }).value);
+}));
+
+viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden', async (client, companyId, req) => {
+  const filter = typeof req.query.status === 'string' && ['open', 'done', 'dropped'].includes(req.query.status)
+    ? req.query.status as 'open' | 'done' | 'dropped'
+    : 'open';
+  const rows = await listCommitments(client, companyId, { status: filter });
+  const today = new Date().toISOString().slice(0, 10);
+  return html`<div class="page-head"><div>${eyebrow('Åtaganden')}<h1>Vem har lovat vad</h1>
+      <p class="lede">Löften åt båda håll, med datum och källa — så att det går att styrka var något sades, inte bara att det sades.</p></div>
+      <div class="actions">
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=open">Öppna</a>
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=done">Klara</a>
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=dropped">Avskrivna</a>
+      </div></div>
+    ${
+      rows.length === 0
+        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>Löften fångas ur mail, möten och ärenden via API-kontraktet — ingen behöver komma ihåg att registrera dem.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Sades</th><th>Källa</th></tr></thead>
+            <tbody>${rows.map((c) => html`<tr>
+              <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
+              <td>${c.body as string}</td>
+              <td>${(c.person_name as string) ?? (c.organization_name as string) ?? '—'}</td>
+              <td class="code">${(c.due_date as string) ?? '—'}${
+                c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
+              }</td>
+              <td class="code">${dayOf(c.occurred_at)}</td>
+              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td></tr>`)}
+            </tbody></table></div>`
+    }`;
+}));
+
+viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (client, companyId) => {
+  const s = await steeringOverview(client, companyId);
+  const top = s.concentration.customers[0];
+  const risk = (s.concentration.top_share_permille ?? 0) >= 500;
+  return html`<div class="page-head"><div>${eyebrow('Styrning')}<h1>Hur vi ligger till</h1>
+      <p class="lede">Intäktstakt, kundkoncentration och känd täckning framåt — räknat ur bokförda verifikat, obetalda fakturor, abonnemang och ofakturerad tid.</p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Intäkt 12 mån', amount(s.revenue.total_12m_ore))}
+      ${kpiCell('Takt per månad', amount(s.revenue.avg_month_ore))}
+      ${kpiCell('Senaste 3 mån (snitt)', amount(s.revenue.last3_avg_ore))}
+      ${kpiCell('Kostnad per månad', amount(s.cost.avg_month_ore))}
+    </div>
+    ${
+      risk && top
+        ? html`<div class="empty" style="text-align:left;padding:12px 14px;margin-top:14px">${chip('Koncentrationsrisk', 'neg', '!')}
+            <span class="muted"><strong>${top.name}</strong> står för ${pct(top.share_permille)} av omsättningen senaste 12 månaderna.
+            Tappas den kunden faller intäkten med lika mycket — det är den enskilt största risken i bolaget, och den ska synas här, inte i en bilaga.</span></div>`
+        : ''
+    }
+    <h2 style="margin-top:18px">Kundkoncentration (12 mån)</h2>
+    ${
+      s.concentration.customers.length === 0
+        ? html`<p class="muted">Inga bokförda kundfakturor de senaste 12 månaderna.</p>`
+        : html`<div class="table-wrap"><table><thead><tr><th>Kund</th><th class="num">Omsättning</th><th class="num">Andel</th></tr></thead><tbody>
+            ${s.concentration.customers.map((c) => html`<tr>
+              <td>${c.name}</td>
+              <td class="num">${amount(c.net_ore, { unit: false })}</td>
+              <td class="num">${pct(c.share_permille)}${c.share_permille >= 500 ? html` ${chip('Stor andel', 'neg', '!')}` : ''}</td></tr>`)}
+            </tbody></table></div>`
+    }
+    <h2 style="margin-top:18px">Känd täckning framåt</h2>
+    <div class="table-wrap"><table><thead><tr><th>Källa</th><th class="num">Belopp</th><th>Vad det är</th></tr></thead><tbody>
+      <tr><td>Obetalda bokförda fakturor</td><td class="num">${amount(s.coverage.receivables_ore, { unit: false })}</td>
+        <td class="muted">Fakturerat men ännu inte betalt</td></tr>
+      <tr><td>Ofakturerad fakturerbar tid</td><td class="num">${amount(s.coverage.unbilled_time_ore, { unit: false })}</td>
+        <td class="muted">Utfört arbete som ännu inte fakturerats</td></tr>
+      <tr><td>Abonnemang per månad</td><td class="num">${amount(s.coverage.recurring_month_ore, { unit: false })}</td>
+        <td class="muted">Avtalad återkommande intäkt</td></tr>
+      <tr><td><strong>Känt de närmaste 3 månaderna</strong></td>
+        <td class="num"><strong>${amount(s.coverage.known_next_3_months_ore, { unit: false })}</strong></td>
+        <td class="muted">${
+          s.coverage.months_covered === null
+            ? 'Inga bokförda kostnader att jämföra med ännu'
+            : html`Räcker till ca ${String(s.coverage.months_covered).replace('.', ',')} månaders kostnader`
+        }</td></tr>
+    </tbody></table></div>
+    <p class="muted" style="font-size:12.5px;margin-top:10px">Öppna affärer räknas inte in: de bor i Linear med sin etikett och blir intäkt först när de fakturerats. Täckningen här är avtalat och utfört arbete — inte förhoppningar.</p>`;
 }));
 
 // Avancerad analys: nyckeltal, toppkunder och kostnadsfördelning för perioden.

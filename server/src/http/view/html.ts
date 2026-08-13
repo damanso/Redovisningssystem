@@ -139,8 +139,10 @@ const NAV_GROUPS: readonly NavGroup[] = [
   },
   {
     label: 'Kunder & leverantörer',
-    hint: 'Register och obetalt',
+    hint: 'Register, relation och obetalt',
     items: [
+      ['relations', 'Relationer'],
+      ['commitments', 'Åtaganden'],
       ['customers', 'Kunder'],
       ['receivables', 'Kundreskontra'],
       ['suppliers', 'Leverantörer'],
@@ -174,6 +176,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
     label: 'Rapporter & arkiv',
     hint: 'Följa upp och slå upp',
     items: [
+      ['steering', 'Styrning'],
       ['reports', 'Rapporter'],
       ['ledger', 'Huvudbok'],
       ['analytics', 'Analys'],

@@ -15,10 +15,10 @@ let ua: ReturnType<typeof supertest.agent>;
 // oåtkomlig för användaren (även om rutten finns kvar).
 const ALLA_SIDOR = [
   '', 'approvals', 'invoices', 'receipts',
-  'customers', 'receivables', 'suppliers', 'payables', 'recurring',
+  'relations', 'commitments', 'customers', 'receivables', 'suppliers', 'payables', 'recurring',
   'payroll', 'projects',
   'vat', 'tax', 'ec-sales', 'ink2', 'k10', 'annual', 'assets', 'cashflow',
-  'reports', 'ledger', 'analytics', 'documents', 'audit',
+  'steering', 'reports', 'ledger', 'analytics', 'documents', 'audit',
   'articles', 'import', 'team', 'connect',
 ] as const;
 

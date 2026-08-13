@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (140
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (144
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 549 tester i 71 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 569 tester i 73 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -156,7 +156,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   **549 tester i 71 sviter gröna, `npm run build` ren.** Uppgraderingsvägen körd:
   databas på 0051 med data → 0052+0053 → ägaren har kvar åtkomst till bolag,
   kunder, projekt och tid, kan skriva i `crm`, och omkörning applicerar 0.
-  Kvar på grenen: E4 (härledningsjobb), E5/E6 (vyer), slutgrind.
+  **E4 (API-kontrakt + härledningsjobb):** källorna (mailindex, kalender, Linear)
+  ligger utanför systemet, hos Hermes. Kontraktet är enkelriktat med flit — det
+  här repot ringer aldrig Hermes, det tar emot. `ingest_crm_events` tar en batch
+  med NATURLIGA nycklar (organisationsnamn, e-post) eftersom avsändaren inte
+  känner våra uuid:n, kör varje händelse i en egen savepoint så en trasig rad
+  inte rullar tillbaka de 399 andra, och är idempotent på
+  `source_system + source_ref`. Härledningarna räknas fram vid LÄSNING i stället
+  för att lagras — en materialiserad härledd sanning blir gammal i tysthet:
+  `crm_relation_state`, `crm_silence_report` (30 dagar som standard, parameter)
+  och `crm_contact_suggestions` (förfallet löfte väger tyngst, koncentrationen
+  syns). Senaste kontakt räknas nu på organisationen OCH dess personer — ett mail
+  till kundens beställare är kontakt med kunden. `docs/crm/API_KONTRAKT.md`
+  beskriver gränssnittet för andra sidan.
+  **E5+E6 (vyerna):** tre nya sidor i den JS-fria vyn — **Relationer** (förslag
+  överst med skäl, sedan alla relationer med tystnad, löften och värde),
+  **Åtaganden** (vem lovade vad, när, och VAR det sades, med källhänvisning) och
+  **Styrning** (intäktstakt, kundkoncentration med varning vid ≥50 %, känd
+  täckning framåt = obetalda fakturor + ofakturerad tid + abonnemang, uttryckt i
+  antal månaders kostnader). Öppna affärer räknas inte som täckning — de bor i
+  Linear enligt B2. Ingen av sidorna kan skicka något till en kund.
+  **569 tester i 73 sviter gröna, `npm run build` ren.**
+  Kvar på grenen: slutgrind (granskning + merge till main).
   **Öppen fråga till David:** gallringsperiod för relationsdata (`set_crm_retention`)
   — systemet gissar aldrig, så tills du säger ett antal månader gallras ingenting.
 
