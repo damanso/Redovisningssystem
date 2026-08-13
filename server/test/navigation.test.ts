@@ -49,8 +49,11 @@ describe('navigationens meny', () => {
   it('varje sida går att nå från menyn — ingen tappas bort i grupperingen', async () => {
     const page = await ua.get(`/app/c/${companyId}/`);
     expect(page.status).toBe(200);
+    // Enbart nav-markupen: en länk i SIDINNEHÅLLET (t.ex. översiktens
+    // Att göra-kort) får inte maskera att menyposten tappats.
+    const nav = navMarkup(page.text);
     for (const path of ALLA_SIDOR) {
-      expect(page.text, `sidan "${path}" saknas i menyn`)
+      expect(nav, `sidan "${path}" saknas i menyn`)
         .toContain(`href="/app/c/${companyId}/${path}"`);
     }
   });

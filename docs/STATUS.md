@@ -96,7 +96,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
-- **2026-07-31 (session: navigationen omgjord):** 28 länkar låg på EN rad i
+- **2026-08-13 (session: granskningspass på navigationen före produktion):**
+  Kodgranskning av 999fe5b gav 7 fynd, alla åtgärdade före release:
+  (1) "du är här"-pillen spillde SIDAN i sidled på telefonbredd när grupp +
+  sidnamn var långa (Leverantörsreskontra) — flex:none → 0 1 auto + ellips på
+  sidnamnet, och på ≤480px viker gruppdelen undan; (2) menypanelens bredd var
+  100vw-baserad, som INKLUDERAR en klassisk rullist (~17px på Windows/Linux) →
+  vågrät rullist så fort menyn öppnades där; headless Chromium (overlay-
+  rullister) kunde aldrig se det — nu 48px headroom och verifierat med
+  clientWidth−17-matte; (3) aria-label="Visa alla sidor" skrev över synliga
+  "Meny" (WCAG 2.5.3, röststyrning bryts) — borttagen; (4) heltäckningstestet
+  läste hela sidan i stället för nav-markupen, så en tappad menypost kunde
+  maskeras av en länk i sidinnehållet — skärpt till navMarkup(); (5) tre
+  sessionsloggposter var feldaterade 2026-07-31 (committade 2026-08-12/13) —
+  rättade; (6) flatMap per rendering → modulnivå-Map; (7) dubblerad
+  reduced-motion-regel borttagen (global kill switch finns). Ommätt på VÄRSTA
+  sidan (payables) i 1440/900/560/390/380/320 px, stängd + öppen meny: noll
+  sidledsspill, panelen klarar klassiska rullister. 503 tester i 67 sviter.
+
+- **2026-08-13 (session: navigationen omgjord):** 28 länkar låg på EN rad i
   byggordning — omöjlig att överblicka och obrukbar i ett smalt fönster. Nu:
   en **snabbrad** med de vanligaste sidorna (Översikt, Att göra, Fakturor,
   Kvitton, Lön) + en **Meny-knapp** som fäller ut en grupperad panel, ordnad
@@ -116,7 +134,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   Testerna vaktar att INGEN av de 28 sidorna tappas bort i grupperingen.
   503 tester i 67 sviter gröna.
 
-- **2026-07-31 (session: ej avdragsgilla kostnader härleds automatiskt):**
+- **2026-08-13 (session: ej avdragsgilla kostnader härleds automatiskt):**
   Uppföljning på F3 ovan — den noten sa att kopplingen till deklarationen var
   manuell; det gäller inte längre. Konton som är ej avdragsgilla till sin natur
   har nu en flagga (`accounts.is_non_deductible`, satt för 6072 och 6992 i
@@ -130,7 +148,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   skuggkopia av standardkontot, eftersom RLS inte tillåter bolaget att ändra
   standardplanen). Förbehållet i INK2S är uppdaterat. 496 tester i 66 sviter.
 
-- **2026-07-31 (session: tre flaggade förbättringar):** Låg bara som
+- **2026-08-12 (session: tre flaggade förbättringar):** Låg bara som
   anteckningar i systemnoten, nu byggda med test (`usability-fixes`).
   **F1 — okänt konto föreslår närmaste giltiga.** `assertAccountsExist` avvisade
   bara ("okända konton: 6892"). Nu föreslås närmaste giltiga konton ur bolagets

@@ -196,14 +196,15 @@ const NAV_GROUPS: readonly NavGroup[] = [
 // Snabbraden: alltid framme (viker undan först på riktigt smala skärmar).
 const NAV_QUICK: readonly string[] = ['', 'approvals', 'invoices', 'receipts', 'payroll'];
 
+// Uppslag sökväg → { etikett, grupp }, byggt EN gång (layout() körs per request).
+const NAV_INDEX = new Map<string, { label: string; group: string }>(
+  NAV_GROUPS.flatMap((g) => g.items.map(([path, label]) => [path, { label, group: g.label }] as const)),
+);
+
 /** Var är jag? Gruppen + sidans namn, för brödsmulan i navraden. */
 function navLocate(active: string | undefined): { group: string; label: string } | null {
   if (active === undefined) return null;
-  for (const g of NAV_GROUPS) {
-    const hit = g.items.find(([path]) => path === active);
-    if (hit) return { group: g.label, label: hit[1] };
-  }
-  return null;
+  return NAV_INDEX.get(active) ?? null;
 }
 
 // Hamburgare / kryss — ren SVG, byts via [open] i CSS (inget skript).
@@ -358,7 +359,10 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* Panelen: flytande kort som reser sig mjukt. */
 .navmenu__panel {
   position: absolute; top: calc(100% + 9px); left: 0; z-index: 40;
-  width: min(880px, calc(100vw - 24px));
+  /* 48px headroom: 100vw inkluderar en ev. klassisk rullist (~17px på
+     Windows/Linux) — med bara 24px spiller panelens högerkant utanför
+     clientWidth och skapar en vågrät rullist så fort menyn öppnas. */
+  width: min(880px, calc(100vw - 48px));
   padding: 16px 18px 18px;
   background: color-mix(in oklch, var(--surface) 97%, transparent);
   backdrop-filter: saturate(1.3) blur(14px);
@@ -368,7 +372,6 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 }
 @keyframes navrise { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
 .navmenu[open] .navmenu__panel { animation: navrise .17s cubic-bezier(.2,.7,.3,1) both; }
-@media (prefers-reduced-motion: reduce) { .navmenu[open] .navmenu__panel { animation: none; } }
 /* Kolumnflöde (inte grid): grupperna packas tätt utan döda rader när de är
    olika höga, och antalet kolumner följer bredden av sig självt. */
 .navmenu__grid { columns: 196px 4; column-gap: 26px; }
@@ -399,12 +402,17 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* "Du är här" — visas när sidan inte finns i snabbraden. */
 .nav__here {
-  display: inline-flex; align-items: baseline; gap: 7px; flex: none;
+  display: inline-flex; align-items: baseline; gap: 7px;
+  /* Får KRYMPA (inte flex:none): på telefonbredd kan grupp + sidnamn vara
+     bredare än raden ("Kunder & leverantörer · Leverantörsreskontra") och
+     spillde då hela sidan i sidled. Nu ellipsas sidnamnet i stället. */
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
   padding: 6px 12px; border-radius: var(--radius-pill);
   background: var(--accent-weak); color: var(--accent-ink);
   font-size: 13.5px; font-weight: 600; white-space: nowrap;
 }
-.nav__here span { font-size: 11.5px; font-weight: 500; opacity: .75; }
+.nav__here .nav__here-grp { font-size: 11.5px; font-weight: 500; opacity: .75; flex: none; }
+.nav__here .nav__here-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav__sep { width: 1px; height: 20px; background: var(--line); flex: none; }
 
 @media (max-width: 700px) {
@@ -423,6 +431,7 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 @media (max-width: 480px) {
   .brand b { display: none; }
   .appbar .btn { padding-left: 9px; padding-right: 9px; }
+  .nav__here .nav__here-grp { display: none; }
 }
 main { max-width: var(--maxw); margin: clamp(20px, 4vw, 34px) auto; padding: 0 clamp(16px, 4vw, 24px); }
 
@@ -702,7 +711,7 @@ export function layout(opts: {
   const nav = opts.companyId
     ? html`<nav class="nav" aria-label="Huvudmeny">
         <details class="navmenu">
-          <summary aria-label="Visa alla sidor">${ICON_MENU}${ICON_CLOSE}<span>Meny</span></summary>
+          <summary>${ICON_MENU}${ICON_CLOSE}<span>Meny</span></summary>
           <div class="navmenu__panel">
             <div class="navmenu__grid">
               ${NAV_GROUPS.map(
@@ -719,12 +728,12 @@ export function layout(opts: {
         <span class="nav__sep"></span>
         <div class="nav__quick">
           ${NAV_QUICK.map((path) => {
-            const item = NAV_GROUPS.flatMap((g) => g.items).find(([p]) => p === path);
-            return item ? link(item[0], item[1], opts.active === path ? 'active' : '') : '';
+            const item = NAV_INDEX.get(path);
+            return item ? link(path, item.label, opts.active === path ? 'active' : '') : '';
           })}
         </div>
         ${here && !inQuick
-          ? html`<span class="nav__here"><span>${here.group}</span>${here.label}</span>`
+          ? html`<span class="nav__here"><span class="nav__here-grp">${here.group}</span><span class="nav__here-lbl">${here.label}</span></span>`
           : ''}
       </nav>`
     : '';
