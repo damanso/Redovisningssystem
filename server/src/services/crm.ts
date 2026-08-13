@@ -166,10 +166,11 @@ export async function getPartyCrm(client: PoolClient, companyId: string, partyTy
 }> {
   await assertParty(client, companyId, partyType, partyId);
   const table = PARTY_TABLE[partyType];
-  const [contacts, notes, tagRow] = await Promise.all([
-    listContacts(client, companyId, partyType, partyId),
-    listNotes(client, companyId, partyType, partyId),
-    client.query<{ tags: string[] }>(`SELECT tags FROM ${table} WHERE id = $1 AND company_id = $2`, [partyId, companyId]),
-  ]);
+  // Sekventiellt: alla tre går på SAMMA anslutning, och pg kan inte köra
+  // parallella frågor på en klient — den köar dem och varnar (bort i pg@9).
+  const contacts = await listContacts(client, companyId, partyType, partyId);
+  const notes = await listNotes(client, companyId, partyType, partyId);
+  const tagRow = await client.query<{ tags: string[] }>(
+    `SELECT tags FROM ${table} WHERE id = $1 AND company_id = $2`, [partyId, companyId]);
   return { contacts, notes, tags: tagRow.rows[0]?.tags ?? [] };
 }

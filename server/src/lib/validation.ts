@@ -50,3 +50,13 @@ export const IsoDateSchema = z
     const d = new Date(`${v}T00:00:00Z`);
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, 'ogiltigt kalenderdatum');
+
+// Tidpunkt med tidszon (ISO 8601). Används av CRM:ets kontaktpunkter, där det
+// spelar roll NÄR något sades — inte bara vilken dag. Zonen krävs: utan den
+// tolkar Postgres strängen i serverns zon, och "senaste kontakt" hade blivit en
+// timme fel beroende på var koden råkar köra.
+export const IsoDateTimeSchema = z
+  .string()
+  .max(40)
+  .refine((v) => /(?:Z|[+-]\d{2}:?\d{2})$/.test(v) && !Number.isNaN(Date.parse(v)),
+    'tidpunkt anges som ISO 8601 med tidszon, t.ex. 2026-08-13T09:30:00Z');

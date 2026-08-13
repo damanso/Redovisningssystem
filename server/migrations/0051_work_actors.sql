@@ -55,7 +55,9 @@ CREATE UNIQUE INDEX work_actors_user_uk ON work_actors (company_id, user_id) WHE
 CREATE INDEX work_actors_company_active_idx ON work_actors (company_id, active);
 
 -- Tenant-säkra kopplingar till lön och leverantörsreskontra. Kräver unikhet på
--- (id, company_id) i måltabellerna — den fanns inte, så den läggs till här.
+-- (id, company_id) i måltabellerna: suppliers fick den redan i 0011, employees
+-- saknade den. IF NOT EXISTS matchar på indexnamnet, så 0011:s constraint står
+-- kvar orörd.
 CREATE UNIQUE INDEX IF NOT EXISTS employees_id_company_uk ON employees (id, company_id);
 CREATE UNIQUE INDEX IF NOT EXISTS suppliers_id_company_uk ON suppliers (id, company_id);
 -- Inget ON DELETE: varken employees eller suppliers har DELETE-grant för

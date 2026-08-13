@@ -1,7 +1,11 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { AccountNumberSchema, EmailSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import {
+  getOrganization, getRetention, listCommitments, listOrganizations, listPeople, purgeCrmData,
+  recordCommitment, recordInteraction, setCommitmentStatus, setRetention, upsertOrganization, upsertPerson,
+} from '../services/crmRelations.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
@@ -1256,6 +1260,153 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ supplier_id: UuidSchema }).strict(),
     handler: (ctx, i: { supplier_id: string }) => getSupplier(ctx.client, ctx.companyId, i.supplier_id),
+  }),
+
+  // --- CRM E2: relationsdata i schemat `crm` ---------------------------------
+  // Skilt från kund-/leverantörsregistret ovan: ett prospekt får inte läggas
+  // som kund innan affären är vunnen, och relationsdata är inte
+  // räkenskapsinformation (egen gallring, aldrig med i SIE eller revisorsvy).
+  def({
+    name: 'upsert_crm_organization',
+    title: 'Lägg upp/uppdatera organisation (prospekt eller kund)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        name: safeText(200),
+        org_number: safeText(20).optional(),
+        website: safeText(200).optional(),
+        // Sätts när prospektet blivit kund. Kunduppgifterna kopieras inte hit.
+        customer_id: UuidSchema.optional(),
+        status: z.enum(['prospect', 'customer', 'partner', 'former', 'archived']).optional(),
+        source: safeText(200).optional(),
+        notes: safeText(2000).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_crm_organizations',
+    title: 'Lista organisationer med senaste kontakt',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      status: z.enum(['prospect', 'customer', 'partner', 'former', 'archived']).optional(),
+    }).strict(),
+    handler: (ctx, i: { status?: 'prospect' | 'customer' | 'partner' | 'former' | 'archived' }) =>
+      listOrganizations(ctx.client, ctx.companyId, { status: i.status }),
+  }),
+  def({
+    name: 'get_crm_organization',
+    title: 'Hämta organisationens relation (personer, kontakter, åtaganden)',
+    sensitivity: 'read',
+    inputSchema: z.object({ organization_id: UuidSchema }).strict(),
+    handler: (ctx, i: { organization_id: string }) => getOrganization(ctx.client, ctx.companyId, i.organization_id),
+  }),
+  def({
+    name: 'upsert_crm_person',
+    title: 'Lägg upp/uppdatera person',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        name: safeText(150),
+        email: EmailSchema.optional(),
+        phone: safeText(40).optional(),
+        role_title: safeText(150).optional(),
+        organization_id: UuidSchema.optional(),
+        // Personkortet i brain-vaulten. CRM:et äger inte omdömet — det pekar på det.
+        external_ref: safeText(300).optional(),
+        notes: safeText(2000).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_crm_people',
+    title: 'Lista personer med senaste kontakt',
+    sensitivity: 'read',
+    inputSchema: z.object({ organization_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i: { organization_id?: string }) =>
+      listPeople(ctx.client, ctx.companyId, { organization_id: i.organization_id }),
+  }),
+  def({
+    name: 'record_crm_interaction',
+    title: 'Registrera kontaktpunkt (mail, möte, samtal, ärende)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        person_id: UuidSchema.optional(),
+        organization_id: UuidSchema.optional(),
+        occurred_at: IsoDateTimeSchema,
+        channel: z.enum(['email', 'meeting', 'call', 'issue', 'note']),
+        direction: z.enum(['inbound', 'outbound', 'internal']).optional(),
+        summary: safeText(2000),
+        // Tidrapportering är medvetet ingen giltig källa — se migration 0052.
+        source_system: z.enum(['gmail', 'calendar', 'linear', 'manual']),
+        source_ref: safeText(300).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => recordInteraction(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'record_crm_commitment',
+    title: 'Registrera åtagande (vem lovade vad, var det sades)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        person_id: UuidSchema.optional(),
+        organization_id: UuidSchema.optional(),
+        direction: z.enum(['we_owe', 'they_owe']),
+        body: safeText(2000),
+        due_date: IsoDateSchema.optional(),
+        occurred_at: IsoDateTimeSchema,
+        source_system: z.enum(['gmail', 'calendar', 'linear', 'manual']),
+        source_ref: safeText(300).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => recordCommitment(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'set_crm_commitment_status',
+    title: 'Markera åtagande som klart/avskrivet',
+    sensitivity: 'write',
+    inputSchema: z.object({ commitment_id: UuidSchema, status: z.enum(['open', 'done', 'dropped']) }).strict(),
+    handler: (ctx, i: { commitment_id: string; status: 'open' | 'done' | 'dropped' }) =>
+      setCommitmentStatus(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.status),
+  }),
+  def({
+    name: 'list_crm_commitments',
+    title: 'Lista åtaganden',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      status: z.enum(['open', 'done', 'dropped']).optional(),
+      due_before: IsoDateSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string }) =>
+      listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before }),
+  }),
+  def({
+    name: 'get_crm_retention',
+    title: 'Visa gallringspolicy för relationsdata',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => getRetention(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'set_crm_retention',
+    title: 'Sätt gallringspolicy för relationsdata (månader)',
+    sensitivity: 'write',
+    inputSchema: z.object({ retention_months: z.number().int().min(1).max(240).nullable() }).strict(),
+    handler: (ctx, i: { retention_months: number | null }) =>
+      setRetention(ctx.client, ctx.companyId, ctx.userId, i.retention_months),
+  }),
+  def({
+    name: 'purge_crm_data',
+    title: 'Gallra relationsdata äldre än angiven period',
+    // Känslig: raderar data. Kräver mänskligt godkännande i Att göra, och
+    // perioden gissas aldrig — den måste anges eller vara satt som policy.
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ older_than_months: z.number().int().min(1).max(240).optional() }).strict(),
+    handler: (ctx, i: { older_than_months?: number }) =>
+      purgeCrmData(ctx.client, ctx.companyId, ctx.userId, { older_than_months: i.older_than_months }),
   }),
   def({
     name: 'add_note',
