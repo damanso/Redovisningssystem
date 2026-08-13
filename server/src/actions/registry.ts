@@ -2,9 +2,9 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, EmailSchema, IsoDateSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
-import { addContact, addNote, setTags } from '../services/crm.js';
+import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
-import { createCustomer, createSupplier, listCustomers, listSuppliers } from '../services/parties.js';
+import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
 import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
@@ -1167,6 +1167,63 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; name: string; email?: string; phone?: string; role?: string; is_primary?: boolean }) =>
       addContact(ctx.client, ctx.companyId, ctx.userId, { partyType: i.party_type, partyId: i.party_id, name: i.name, email: i.email, phone: i.phone, role: i.role, isPrimary: i.is_primary }),
+  }),
+  def({
+    name: 'upsert_contact',
+    title: 'Skapa eller uppdatera kontaktperson (idempotent)',
+    sensitivity: 'write',
+    // CRM E1: körs en synk om ska den UPPDATERA, inte lägga en dubblett.
+    // Nyckel: e-post när den finns, annars namnet inom samma part.
+    inputSchema: z.object({
+      party_type: PartyTypeSchema, party_id: UuidSchema, name: safeText(150),
+      email: EmailSchema.optional(), phone: safeText(40).optional(),
+      role: safeText(80).optional(), is_primary: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; name: string; email?: string; phone?: string; role?: string; is_primary?: boolean }) =>
+      upsertContact(ctx.client, ctx.companyId, ctx.userId, {
+        partyType: i.party_type, partyId: i.party_id, name: i.name,
+        email: i.email, phone: i.phone, role: i.role, isPrimary: i.is_primary,
+      }),
+  }),
+  def({
+    name: 'list_contacts',
+    title: 'Lista kontaktpersoner på en part',
+    sensitivity: 'read',
+    // CRM E1: utan denna kan agenten skriva kontakter men aldrig läsa tillbaka
+    // dem — och därmed inte veta om den redan skrivit dem.
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string }) =>
+      listContacts(ctx.client, ctx.companyId, i.party_type, i.party_id),
+  }),
+  def({
+    name: 'list_notes',
+    title: 'Lista anteckningar på en part',
+    sensitivity: 'read',
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string }) =>
+      listNotes(ctx.client, ctx.companyId, i.party_type, i.party_id),
+  }),
+  def({
+    name: 'get_party_crm',
+    title: 'Hämta partens CRM-bild (kontakter, anteckningar, taggar)',
+    sensitivity: 'read',
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string }) =>
+      getPartyCrm(ctx.client, ctx.companyId, i.party_type, i.party_id),
+  }),
+  def({
+    name: 'get_customer',
+    title: 'Hämta en kund',
+    sensitivity: 'read',
+    inputSchema: z.object({ customer_id: UuidSchema }).strict(),
+    handler: (ctx, i: { customer_id: string }) => getCustomer(ctx.client, ctx.companyId, i.customer_id),
+  }),
+  def({
+    name: 'get_supplier',
+    title: 'Hämta en leverantör',
+    sensitivity: 'read',
+    inputSchema: z.object({ supplier_id: UuidSchema }).strict(),
+    handler: (ctx, i: { supplier_id: string }) => getSupplier(ctx.client, ctx.companyId, i.supplier_id),
   }),
   def({
     name: 'add_note',

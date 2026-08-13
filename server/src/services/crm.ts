@@ -38,7 +38,80 @@ export async function addContact(
   return r.rows[0]!;
 }
 
+/**
+ * CRM E1: idempotent kontaktskrivning. Körs samma synk två gånger ska den
+ * UPPDATERA, inte lägga en dubblett — annars blir varje nattligt härlednings-
+ * jobb i E4 en dubblettgenerator (det var briefens uttalade krav).
+ *
+ * Nyckel: e-post när den finns (identifierar personen), annars namnet inom
+ * samma part. Samma nyckel som de unika indexen i migration 0050, så
+ * databasen är den yttersta garanten även vid samtidiga körningar.
+ *
+ * Endast angivna fält skrivs — en synk som saknar telefonnummer får inte nolla
+ * ett nummer någon annan fyllt i.
+ */
+export async function upsertContact(
+  client: PoolClient, companyId: string, userId: string,
+  input: { partyType: PartyType; partyId: string; name: string; email?: string; phone?: string; role?: string; isPrimary?: boolean },
+): Promise<Contact & { created: boolean }> {
+  await assertParty(client, companyId, input.partyType, input.partyId);
+
+  // Radlås på parten serialiserar samtidiga upsertar för samma kund.
+  const table = PARTY_TABLE[input.partyType];
+  await client.query(`SELECT 1 FROM ${table} WHERE id = $1 AND company_id = $2 FOR UPDATE`, [input.partyId, companyId]);
+
+  // Uppslag i två steg. Först e-posten när den finns — den identifierar
+  // personen. Hittas inget: leta bland kontakter UTAN e-post på namnet, och
+  // komplettera den raden. Utan det andra steget blir "samma person, nu med
+  // e-post" en ny rad — exakt den dubblett E1 finns för att förhindra.
+  const byEmail = input.email
+    ? await client.query<{ id: string }>(
+        `SELECT id FROM party_contacts
+         WHERE company_id = $1 AND party_type = $2 AND party_id = $3 AND lower(email) = lower($4)`,
+        [companyId, input.partyType, input.partyId, input.email])
+    : null;
+  const byName = byEmail?.rows[0]
+    ? null
+    : await client.query<{ id: string }>(
+        `SELECT id FROM party_contacts
+         WHERE company_id = $1 AND party_type = $2 AND party_id = $3 AND email IS NULL AND lower(name) = lower($4)`,
+        [companyId, input.partyType, input.partyId, input.name]);
+
+  const hit = byEmail?.rows[0] ?? byName?.rows[0];
+  if (!hit) {
+    const created = await addContact(client, companyId, userId, input);
+    return { ...created, created: true };
+  }
+
+  if (input.isPrimary) {
+    await client.query(
+      'UPDATE party_contacts SET is_primary = false WHERE company_id = $1 AND party_type = $2 AND party_id = $3',
+      [companyId, input.partyType, input.partyId]);
+  }
+  const r = await client.query<Contact>(
+    `UPDATE party_contacts SET
+       name       = $4,
+       -- En kontakt som lagts upp utan e-post ska kunna få en senare. Krockar
+       -- den med en annan kontakts e-post fälls den av unik-indexet (409) —
+       -- det är en äkta konflikt som en människa ska reda ut, inte tysta bort.
+       email      = COALESCE($5, email),
+       phone      = COALESCE($6, phone),
+       role       = COALESCE($7, role),
+       is_primary = CASE WHEN $8 THEN true ELSE is_primary END
+     WHERE id = $1 AND company_id = $2 AND party_type = $3
+     RETURNING id, name, email, phone, role, is_primary`,
+    [hit.id, companyId, input.partyType, input.name, input.email ?? null,
+      input.phone ?? null, input.role ?? null, input.isPrimary ?? false],
+  );
+  await writeAudit(client, {
+    companyId, userId, action: 'party.contact_upserted', entityType: input.partyType, entityId: input.partyId,
+    details: { contact: hit.id, matched_on: byEmail?.rows[0] ? 'email' : 'name' },
+  });
+  return { ...r.rows[0]!, created: false };
+}
+
 export async function listContacts(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Contact[]> {
+  await assertParty(client, companyId, partyType, partyId);
   const r = await client.query<Contact>(
     `SELECT id, name, email, phone, role, is_primary FROM party_contacts
      WHERE company_id = $1 AND party_type = $2 AND party_id = $3
@@ -65,6 +138,7 @@ export async function addNote(
 }
 
 export async function listNotes(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<Note[]> {
+  await assertParty(client, companyId, partyType, partyId);
   const r = await client.query<Note>(
     `SELECT id, body, created_at::text, user_id FROM party_notes
      WHERE company_id = $1 AND party_type = $2 AND party_id = $3
