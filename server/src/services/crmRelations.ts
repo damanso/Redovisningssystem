@@ -54,9 +54,60 @@ export interface UpsertOrganizationInput {
 }
 
 /**
+ * Slår upp kunden i redovisningen med samma sorts NATURLIGA nyckel som resten
+ * av kontraktet använder: organisationsnumret när det finns, annars namnet.
+ *
+ * Skälet är ett fel som gick att missa just för att det inte såg ut som ett
+ * fel: ingest-vägen — kontraktets primära producent — kan inte skicka något
+ * customer_id, eftersom avsändaren inte känner våra uuid:n. Kopplingen blev
+ * därför aldrig satt, organisationen låg kvar som prospekt, och styr- och
+ * relationsvyerna (som hämtar omsättningen via just den kopplingen) räknade
+ * noll för bolagets största kund. Raden fanns, namnet stämde, inget fel
+ * returnerades.
+ *
+ * Två fall länkas ALDRIG automatiskt, båda för att en gissning är värre än en
+ * tom koppling: flera kunder som matchar (vilken av dem?), och en kund som
+ * redan hör till en annan organisation (unik-indexet skulle ändå fälla det).
+ * De fallen rapporteras i stället uppåt så att de syns.
+ */
+async function matchCustomer(
+  client: PoolClient, companyId: string, name: string, orgNumber: string | undefined, excludeOrgId?: string,
+): Promise<string | null> {
+  // Organisationsnummer först — det är den starkare nyckeln. Jämförs på siffror
+  // så att 559348-1111 och 5593481111 är samma bolag.
+  const digits = orgNumber?.replace(/\D/g, '');
+  const candidates = digits && digits.length >= 10
+    ? await client.query<{ id: string }>(
+        `SELECT c.id FROM customers c
+         WHERE c.company_id = $1 AND regexp_replace(COALESCE(c.org_number, ''), '\\D', '', 'g') = $2
+           AND NOT EXISTS (SELECT 1 FROM crm.organizations o
+                            WHERE o.company_id = $1 AND o.customer_id = c.id AND o.id IS DISTINCT FROM $3::uuid)
+         LIMIT 2`,
+        [companyId, digits, excludeOrgId ?? null])
+    : { rows: [] as { id: string }[] };
+
+  if (candidates.rows.length === 1) return candidates.rows[0]!.id;
+  if (candidates.rows.length > 1) return null; // tvetydigt → gissa inte
+
+  const byName = await client.query<{ id: string }>(
+    `SELECT c.id FROM customers c
+     WHERE c.company_id = $1 AND lower(btrim(c.name)) = lower(btrim($2))
+       AND NOT EXISTS (SELECT 1 FROM crm.organizations o
+                        WHERE o.company_id = $1 AND o.customer_id = c.id AND o.id IS DISTINCT FROM $3::uuid)
+     LIMIT 2`,
+    [companyId, name, excludeOrgId ?? null],
+  );
+  return byName.rows.length === 1 ? byName.rows[0]!.id : null;
+}
+
+/**
  * Prospekt och kund är SAMMA rad. Den dag affären vinns pekas raden mot
  * kundregistret — relationshistoriken bryts inte, och kunduppgifterna kopieras
  * inte hit (de bor kvar i `customers`).
+ *
+ * Kopplingen sätts uttryckligen när anroparen kan den, annars slås den upp på
+ * organisationsnummer eller namn (se matchCustomer). Utan uppslaget blir
+ * omsättningen blind för allt som kommer in via API-kontraktet.
  */
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, input: UpsertOrganizationInput,
@@ -68,22 +119,27 @@ export async function upsertOrganization(
     if (!c.rows[0]) throw new NotFoundError('customer');
   }
 
-  const found = await client.query<{ id: string }>(
-    'SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+  const found = await client.query<{ id: string; customer_id: string | null }>(
+    'SELECT id, customer_id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
     [companyId, name],
   );
   const hit = found.rows[0];
+
+  // Uppslaget görs bara när kopplingen saknas. En befintlig koppling ska aldrig
+  // flyttas av en synk — det är ett beslut för en människa.
+  const customerId = input.customer_id
+    ?? (hit?.customer_id ? null : await matchCustomer(client, companyId, name, input.org_number, hit?.id));
 
   if (!hit) {
     const r = await client.query<Organization>(
       `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${ORG_COLUMNS}`,
-      [companyId, name, input.org_number ?? null, input.website ?? null, input.customer_id ?? null,
-        input.status ?? (input.customer_id ? 'customer' : 'prospect'), input.source ?? null, input.notes ?? null, userId],
+      [companyId, name, input.org_number ?? null, input.website ?? null, customerId,
+        input.status ?? (customerId ? 'customer' : 'prospect'), input.source ?? null, input.notes ?? null, userId],
     );
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.organization_created', entityType: 'organization', entityId: r.rows[0]!.id,
-      details: { status: r.rows[0]!.status },
+      details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id) },
     });
     return { ...r.rows[0]!, created: true };
   }
@@ -100,12 +156,12 @@ export async function upsertOrganization(
        source      = COALESCE($8, source),
        notes       = COALESCE($9, notes)
      WHERE id = $1 AND company_id = $2 RETURNING ${ORG_COLUMNS}`,
-    [hit.id, companyId, name, input.org_number ?? null, input.website ?? null, input.customer_id ?? null,
+    [hit.id, companyId, name, input.org_number ?? null, input.website ?? null, customerId,
       input.status ?? null, input.source ?? null, input.notes ?? null],
   );
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organization_updated', entityType: 'organization', entityId: hit.id,
-    details: { status: r.rows[0]!.status },
+    details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id) },
   });
   return { ...r.rows[0]!, created: false };
 }

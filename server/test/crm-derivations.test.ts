@@ -84,6 +84,41 @@ describe('API-kontraktet: en batch in, naturliga nycklar, idempotent', () => {
     expect(r.skipped).toEqual([]);
   });
 
+  it('kopplar organisationen till kundregistret — och SÄGER vilka som inte gick', async () => {
+    // Buggen: ingest-vägen satte aldrig customer_id (avsändaren känner inte
+    // våra uuid:n), så omsättningen blev blind medan allt såg rätt ut. Nu slås
+    // kunden upp på namn/org.nr, och det som INTE gick att koppla rapporteras —
+    // annars vore en tom koppling återigen ett tyst nollresultat.
+    const list = await act('list_crm_organizations', {});
+    const nvr = list.body.result.find((o: { name: string }) => o.name === 'Nordic Vision Retail AB');
+    expect(nvr.customer_id, 'kunden finns i registret med exakt samma namn').toBe(customerId);
+    expect(nvr.status).toBe('customer');
+
+    const res = await act('ingest_crm_events', BATCH);
+    expect(res.body.result.organizations_linked).toBe(1);
+    expect(res.body.result.unlinked_organizations).toEqual(['Tystlåtna Prospektet AB']);
+  });
+
+  it('två kunder med samma namn ger INGEN koppling — en gissning är värre', async () => {
+    for (const n of ['Tvillingen AB', 'Tvillingen AB']) {
+      const c = await api.post(`${co()}/customers`).set(auth()).send({ name: n });
+      expect(c.status).toBe(201);
+    }
+    const res = await act('ingest_crm_events', {
+      events: [{
+        kind: 'interaction', organization: { name: 'Tvillingen AB' },
+        occurred_at: '2026-08-12T09:00:00Z', channel: 'call',
+        summary: 'Vilken av dem?', source_system: 'manual', source_ref: 'tvilling-1',
+      }],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.unlinked_organizations).toContain('Tvillingen AB');
+
+    const list = await act('list_crm_organizations', {});
+    const org = list.body.result.find((o: { name: string }) => o.name === 'Tvillingen AB');
+    expect(org.customer_id, 'tvetydigt → lämnas tomt, men syns i svaret').toBeNull();
+  });
+
   it('samma batch en gång till ändrar ingenting — annars vore synken en dubblettgenerator', async () => {
     const before = await withAdmin(async (a) => (await a.query(
       `SELECT (SELECT count(*)::int FROM crm.interactions WHERE company_id = $1) AS i,

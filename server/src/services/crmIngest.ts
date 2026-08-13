@@ -49,6 +49,17 @@ export interface IngestResult {
   commitments_unchanged: number;
   organizations_created: number;
   people_created: number;
+  /** Organisationer som nu hänger ihop med en kund i redovisningen. */
+  organizations_linked: number;
+  /**
+   * Organisationer i batchen som INTE gick att knyta till kundregistret.
+   *
+   * Rapporteras uttryckligen därför att konsekvensen annars är osynlig: raden
+   * finns, namnet stämmer, inget fel returneras — men omsättningen hämtas via
+   * just den kopplingen, så styr- och relationsvyerna räknar noll för parten.
+   * Ett tomt fält här är kvittot på att siffrorna går att lita på.
+   */
+  unlinked_organizations: string[];
   skipped: { index: number; reason: string }[];
 }
 
@@ -67,8 +78,11 @@ export async function ingestCrmEvents(
     interactions_created: 0, interactions_unchanged: 0,
     commitments_created: 0, commitments_unchanged: 0,
     organizations_created: 0, people_created: 0,
+    organizations_linked: 0, unlinked_organizations: [],
     skipped: [],
   };
+  const linked = new Set<string>();
+  const unlinked = new Set<string>();
 
   for (const [index, e] of events.entries()) {
     // Savepoint per händelse: en krock (t.ex. en e-post som redan hör till en
@@ -78,7 +92,7 @@ export async function ingestCrmEvents(
     // Räknades det direkt i svaret rapporterades en organisation som skapad
     // även när savepointen rullade tillbaka den — och mottagarens avstämning
     // ("idel unchanged är kvittot") såg spökskapelser vid varje omkörning.
-    const delta = { organizations: 0, people: 0 };
+    const delta = { organizations: 0, people: 0, linked: '', unlinked: '' };
     try {
       if (!e.organization && !e.person) {
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
@@ -93,6 +107,9 @@ export async function ingestCrmEvents(
         });
         organizationId = org.id;
         if (org.created) delta.organizations += 1;
+        // Kopplingen mot kundregistret slås upp i tjänstelagret (namn eller
+        // org.nr). Utfallet redovisas så att en utebliven koppling syns.
+        if (org.customer_id) delta.linked = org.name; else delta.unlinked = org.name;
       }
 
       let personId: string | undefined;
@@ -128,11 +145,16 @@ export async function ingestCrmEvents(
       await client.query('RELEASE SAVEPOINT crm_event');
       result.organizations_created += delta.organizations;
       result.people_created += delta.people;
+      if (delta.linked) linked.add(delta.linked);
+      if (delta.unlinked) unlinked.add(delta.unlinked);
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
       result.skipped.push({ index, reason: err instanceof Error ? err.message : 'okänt fel' });
     }
   }
+
+  result.organizations_linked = linked.size;
+  result.unlinked_organizations = [...unlinked];
 
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.ingested',
@@ -140,6 +162,8 @@ export async function ingestCrmEvents(
       received: result.received,
       interactions: result.interactions_created,
       commitments: result.commitments_created,
+      linked: result.organizations_linked,
+      unlinked: result.unlinked_organizations.length,
       skipped: result.skipped.length,
     },
   });

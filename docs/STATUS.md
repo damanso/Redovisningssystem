@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 579 tester i 73 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 584 tester i 73 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-13 (bugg funnen av David i drift: ingesten kopplade aldrig kunden):**
+  `ingest_crm_events` — API-kontraktets PRIMÄRA producent — satte aldrig
+  `customer_id`. Kolumnen fanns, `upsert_crm_organization` stödde den, men
+  ingest-vägen kunde inte skicka den eftersom avsändaren (Hermes) inte känner
+  systemets uuid:n. NVR och ILT, som finns i kundregistret med exakt matchande
+  namn, landade som prospekt med tom koppling. Eftersom omsättningen hämtas via
+  just den kopplingen räknade styr- och relationsvyerna NOLL för de största
+  kunderna — och det såg ut att fungera: raden fanns, namnet stämde, inget fel
+  returnerades. Samma felklass som localhost-fallbacken och de tysta nollorna.
+  **Fix:** kunden slås nu upp i tjänstelagret (alla skrivvägar) med samma sorts
+  naturliga nyckel som resten av kontraktet — organisationsnummer först (jämfört
+  på siffror), annars exakt namn. Två fall länkas ALDRIG automatiskt: flera
+  matchande kunder, och en kund som redan hör till en annan organisation. De
+  rapporteras i stället i `unlinked_organizations` i ingest-svaret, och märks ut
+  med "Ej i kundregistret" i relationsvyn — annars vore en tom koppling återigen
+  ett tyst nollresultat. Migration 0055 gör samma uppslag en gång för det som
+  redan ligger inne. **Lärdom:** testet maskerade buggen genom att kalla
+  `upsert_crm_organization` med `customer_id` direkt efter ingesten, alltså göra
+  något ingest-vägen aldrig kan göra. Den raden är borttagen; testet kräver nu
+  att kopplingen uppstår av sig själv. **584 tester i 73 sviter gröna.**
+  Uppgraderingsvägen körd mot data i Davids form: prospekt med tomma kopplingar
+  → 0055 → NVR/ILT kopplade och status satt till kund, tvetydiga namn och äkta
+  prospekt orörda, omkörning applicerar 0.
 
 - **2026-08-13 (session: granskningspass på hela CRM-bygget före produktion):**
   En full kodgranskning av `3f45cd8..main` gav 13 fynd, alla åtgärdade. De fyra

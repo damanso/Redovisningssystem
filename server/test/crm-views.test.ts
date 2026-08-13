@@ -78,13 +78,45 @@ beforeAll(async () => {
   });
   expect(ingest.status, JSON.stringify(ingest.body)).toBe(200);
 
-  const link = await act('upsert_crm_organization', {
-    name: 'Nordic Vision Retail AB', customer_id: bigCustomerId,
-  });
-  orgId = link.body.result.id;
+  // INGEN manuell koppling här. Testet maskerade tidigare buggen genom att
+  // kalla upsert_crm_organization med customer_id direkt efter ingesten —
+  // vilket ingest-vägen aldrig kan göra, eftersom avsändaren inte känner våra
+  // uuid:n. Kopplingen ska uppstå av sig själv, på namnet.
+  const orgs = await act('list_crm_organizations', {});
+  orgId = orgs.body.result.find((o: { name: string }) => o.name === 'Nordic Vision Retail AB').id;
 
   ua = supertest.agent(app);
   await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+});
+
+describe('ingesten kopplar ihop relationen med redovisningen', () => {
+  it('organisationen hittar sin kund på namnet — utan att någon anger ett id', async () => {
+    // Buggen: ingest-vägen satte aldrig customer_id, så NVR låg kvar som
+    // prospekt med tom koppling. Omsättningen hämtas via just den kopplingen,
+    // så styrvyn räknade noll för bolagets största kund — utan felmeddelande.
+    const list = await act('list_crm_organizations', {});
+    const nvr = list.body.result.find((o: { name: string }) => o.name === 'Nordic Vision Retail AB');
+    expect(nvr.customer_id, 'kopplingen ska ha uppstått ur namnet').toBe(bigCustomerId);
+    expect(nvr.status).toBe('customer');
+
+    // ...och prospektet utan motsvarighet i kundregistret förblir prospekt.
+    const tyst = list.body.result.find((o: { name: string }) => o.name === 'Tystlåtna Prospektet AB');
+    expect(tyst.customer_id).toBeNull();
+    expect(tyst.status).toBe('prospect');
+  });
+
+  it('omsättningen syns för den kopplade kunden — inte en tyst nolla', async () => {
+    const state = await act('crm_relation_state', {});
+    const nvr = state.body.result.find((r: { name: string }) => r.name === 'Nordic Vision Retail AB');
+    expect(nvr.revenue_12m_ore).toBeGreaterThan(0);
+    expect(nvr.revenue_share_permille).toBe(750); // 75 %, samma som styrvyn visar
+  });
+
+  it('en organisation UTAN koppling märks ut i vyn i stället för att visa 0 kr', async () => {
+    const res = await ua.get(`/app/c/${companyId}/relations`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Ej i kundregistret');
+  });
 });
 
 describe('relationsvyn svarar på "vem bör jag kontakta, och varför"', () => {

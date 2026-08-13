@@ -55,6 +55,15 @@ Max 500 händelser per anrop.
 
 ## De fyra reglerna
 
+**0. Kopplingen till kundregistret sker här, inte hos avsändaren.** Organisationen
+knyts automatiskt till en kund i redovisningen när organisationsnumret eller
+namnet matchar exakt. Det är avgörande: omsättning och koncentration hämtas via
+just den kopplingen, så utan den räknar styrvyn noll — utan att något ser fel ut.
+Går uppslaget inte att göra entydigt (flera kunder matchar, eller kunden hör
+redan till en annan organisation) lämnas kopplingen tom **och namnet returneras i
+`unlinked_organizations`**. En gissning vore värre än en tom koppling; ett tyst
+nollresultat vore värst.
+
 **1. Naturliga nycklar, inte våra id:n.** Avsändaren känner inte systemets
 uuid:n och ska inte behöva göra det. Organisationen slås upp på namn,
 personen på e-post när den finns och annars på namn. Saknas de skapas de.
@@ -98,6 +107,8 @@ hade visat den största kunden som kontaktlös.
     "commitments_unchanged": 0,
     "organizations_created": 1,
     "people_created": 1,
+    "organizations_linked": 1,
+    "unlinked_organizations": [],
     "skipped": []
   }
 }

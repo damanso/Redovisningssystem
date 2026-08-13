@@ -1527,7 +1527,11 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
             <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th></tr></thead>
             <tbody>${state.map((r) => html`<tr>
               <td><a href="/app/c/${companyId}/relations/${r.organization_id}">${r.name}</a></td>
-              <td>${orgStatusChip(r.status)}</td>
+              <td>${orgStatusChip(r.status)}${
+                /* Utan koppling till kundregistret hämtas ingen omsättning, och
+                   raden skulle visa 0 kr utan att säga varför. Gör det synligt. */
+                r.customer_id ? '' : html` ${chip('Ej i kundregistret', 'warn', '!')}`
+              }</td>
               <td>${silenceChip(r.days_silent)}</td>
               <td class="num">${r.open_commitments}${r.overdue_commitments > 0 ? html` ${chip(`${r.overdue_commitments} förfallna`, 'neg', '!')}` : ''}</td>
               <td class="num">${amount(r.revenue_12m_ore, { unit: false })}</td>
