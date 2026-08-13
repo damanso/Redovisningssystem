@@ -5,7 +5,7 @@ steg i användarresan, skriven för att godkännas av en produktägare utan
 programmeringskunskaper. Varje rad pekar på det **test** som bevisar den — inget
 här är ett påstående utan körd bevisning.
 
-**Reproducera allt:** `npm test -w server` → **489 tester passerar** i 65 sviter mot
+**Reproducera allt:** `npm test -w server` → **496 tester passerar** i 66 sviter mot
 en riktig Postgres. `npm run build -w server` (tsc) utan fel. Samma körs i CI
 (`.github/workflows/ci.yml`) på varje push.
 
@@ -68,7 +68,7 @@ Legend: ✅ = byggt och bevisat med test.
 
 | # | Kriterium | Status | Bevis |
 |---|---|---|---|
-| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 489 tester) |
+| L.1 | Enhetstester på kärnlogiken körs i **CI**, grönt med testantal > 0 | ✅ | `.github/workflows/ci.yml` (typecheck + build + 496 tester) |
 | L.2 | De gamla vilseledande `*_COMPLETE.md`-rapporterna är arkiverade | ✅ | `docs/archive/` |
 
 ## Användarresan, ände till ände (produktägarens vy)
@@ -135,6 +135,7 @@ klarar själv. Acceptansen ur utvecklingsprompten, med testbevis:
 | UX.1 | Ett okänt kontonummer avvisas inte bara — svaret föreslår närmaste giltiga konton ur bolagets kontoplan, alltid inom samma kontoklass (ett kostnadskonto föreslås aldrig för en intäkt). Förslaget når klienten som strukturerad `details` och syns som notis i vyn | ✅ | `usability-fixes` |
 | UX.2 | "Att göra" visar vilken post varje förslag gäller (faktura + kund + belopp, lön + period + anställd, verifikat + datum + text) i stället för råa UUID:n | ✅ | `usability-fixes` |
 | UX.3 | Konto 6992 (övriga externa kostnader, ej avdragsgilla) finns i standardkontoplanen och går att bokföra på | ✅ | `usability-fixes` |
+| UX.4 | Bokförs en kostnad på ett ej avdragsgillt konto (6072/6992 eller ett eget flaggat) hamnar återläggningen automatiskt i INK2S ruta 4.3 c — ingen manuell justering behövs. Härlett och manuellt registrerat visas som skilda rader med belopp per konto, så att inget dubbelräknas oupptäckt | ✅ | `non-deductible-accounts` |
 
 Körbart facit ur prompten, allt testat: lönebesked juli 2026 brutto 56 500 →
 skatt 12 943, netto 43 557, arbavg 17 752,30, payment_date 2026-07-24, PDF

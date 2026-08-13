@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 489 tester i 65 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 496 tester i 66 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,20 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-07-31 (session: ej avdragsgilla kostnader härleds automatiskt):**
+  Uppföljning på F3 ovan — den noten sa att kopplingen till deklarationen var
+  manuell; det gäller inte längre. Konton som är ej avdragsgilla till sin natur
+  har nu en flagga (`accounts.is_non_deductible`, satt för 6072 och 6992 i
+  migration 0049). INK2S räknar fram beloppet till ruta 4.3 c direkt ur
+  huvudboken — bokför man en förseningsavgift på 6992 hamnar återläggningen där
+  utan handpåläggning. Härlett och manuellt registrerat redovisas som SEPARATA
+  rader (med kontonummer och belopp per konto i `derived_non_deductible`) så att
+  inget dubbelräknas oupptäckt; manuella justeringar finns kvar för det som inte
+  har eget konto (t.ex. ej avdragsgill del av en blandad kostnad). Egna konton
+  kan flaggas via `set_account_non_deductible` (skapar en bolagsspecifik
+  skuggkopia av standardkontot, eftersom RLS inte tillåter bolaget att ändra
+  standardplanen). Förbehållet i INK2S är uppdaterat. 496 tester i 66 sviter.
 
 - **2026-07-31 (session: tre flaggade förbättringar):** Låg bara som
   anteckningar i systemnoten, nu byggda med test (`usability-fixes`).

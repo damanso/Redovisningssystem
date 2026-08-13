@@ -215,6 +215,24 @@ skattskyldighet är lagkrav och ligger kvar under summeringen.
 - Vyns fakturadetaljsida har **Generera om PDF** — ny fil med senaste mallen
   arkiveras och blir fakturans PDF; den gamla filen ligger kvar i arkivet.
 
+### Ej avdragsgilla kostnader → INK2S automatiskt
+
+Konton som är ej avdragsgilla till sin natur är flaggade i kontoplanen (6072
+representation ej avdragsgill, 6992 övriga externa kostnader ej avdragsgilla).
+Bokförs en kostnad där räknas beloppet fram till **INK2S ruta 4.3 c direkt ur
+huvudboken** — återläggningen är en följd av konteringen och behöver inte matas
+in för hand.
+
+- `set_account_non_deductible` (write) — flaggar/avflaggar ett konto. Gäller
+  bolagets egen kontoplan; för ett standardkonto skapas en bolagsspecifik
+  skuggkopia med flaggan (RLS tillåter inte att standardplanen ändras).
+- `ink2s_adjustments` (read) returnerar nu `derived_non_deductible_ore`
+  (härlett), `manual_non_deductible_ore` (registrerat via `add_tax_adjustment`)
+  och `derived_non_deductible` med belopp per konto. De redovisas som **separata
+  rader** i INK2S så att inget dubbelräknas oupptäckt.
+- Manuella justeringar behövs fortfarande för det som inte har eget konto —
+  t.ex. den ej avdragsgilla delen av en blandad kostnad.
+
 ### Fakturaserien och bilagan (LOC-263)
 
 **Seriesynk.** Systemets interna fakturaräknare kan ha glidit isär från den

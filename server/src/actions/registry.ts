@@ -25,7 +25,7 @@ import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '.
 import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
-import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments } from '../services/ink2.js';
+import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments, setAccountNonDeductible } from '../services/ink2.js';
 import { vatDeclaration } from '../services/vatDeclaration.js';
 import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
@@ -341,6 +341,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         invoiceId: i.invoice_id, projectId: i.project_id, from: i.from, to: i.to,
         title: i.title, preamble: i.preamble,
       }),
+  }),
+  def({
+    name: 'set_account_non_deductible',
+    title: 'Flagga konto som ej avdragsgillt (räknas med i INK2S 4.3 c)',
+    sensitivity: 'write',
+    // Kostnader på flaggade konton härleds automatiskt till INK2S ruta 4.3 c —
+    // ingen manuell justering behövs. 6072 och 6992 är flaggade från start.
+    inputSchema: z.object({
+      account_number: z.number().int().min(1000).max(9999),
+      non_deductible: z.boolean(),
+    }).strict(),
+    handler: (ctx, i: { account_number: number; non_deductible: boolean }) =>
+      setAccountNonDeductible(ctx.client, ctx.companyId, ctx.userId, i.account_number, i.non_deductible),
   }),
   def({
     name: 'set_company_logo',

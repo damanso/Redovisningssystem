@@ -191,6 +191,75 @@ export async function listTaxAdjustments(client: PoolClient, companyId: string, 
 }
 
 // ---------------------------------------------------------------------------
+// Ej avdragsgilla kostnader HÄRLEDDA ur bokföringen
+// ---------------------------------------------------------------------------
+export interface DerivedNonDeductible { account_number: number; name: string; amount_ore: Ore }
+
+/**
+ * Debetsaldon på konton som är flaggade ej avdragsgilla (6072, 6992 …) under
+ * räkenskapsåret. Bolagets egna konton kan flaggas via set_account_non_deductible;
+ * ett bolagskonto skuggar standardkontot med samma nummer.
+ */
+export async function derivedNonDeductible(
+  client: PoolClient, companyId: string, from: string, to: string,
+): Promise<DerivedNonDeductible[]> {
+  const r = await client.query<{ account_number: number; name: string; amount_ore: string }>(
+    `WITH plan AS (
+       SELECT DISTINCT ON (account_number) account_number, name, is_non_deductible
+       FROM accounts
+       WHERE company_id IS NULL OR company_id = $1
+       ORDER BY account_number, company_id NULLS LAST
+     )
+     SELECT p.account_number, p.name,
+            sum(vl.debit_ore - vl.credit_ore) AS amount_ore
+     FROM voucher_lines vl
+     JOIN vouchers v ON v.id = vl.voucher_id
+     JOIN plan p ON p.account_number = vl.account_number
+     WHERE vl.company_id = $1 AND p.is_non_deductible
+       AND v.voucher_date >= $2 AND v.voucher_date <= $3
+     GROUP BY p.account_number, p.name
+     HAVING sum(vl.debit_ore - vl.credit_ore) > 0
+     ORDER BY p.account_number`,
+    [companyId, from, to],
+  );
+  return r.rows.map((x) => ({ account_number: x.account_number, name: x.name, amount_ore: Number(x.amount_ore) }));
+}
+
+/** Flaggar/avflaggar ett konto som ej avdragsgillt (bolagets egen kontoplan). */
+export async function setAccountNonDeductible(
+  client: PoolClient, companyId: string, userId: string, accountNumber: number, nonDeductible: boolean,
+): Promise<{ account_number: number; is_non_deductible: boolean }> {
+  const exists = await client.query(
+    `SELECT 1 FROM accounts WHERE account_number = $1 AND (company_id IS NULL OR company_id = $2)`,
+    [accountNumber, companyId],
+  );
+  if (!exists.rows[0]) throw new NotFoundError('account');
+  // Standardkonton ägs inte av bolaget — RLS tillåter bara bolagets egna rader.
+  // Finns inget bolagskonto skapas en skuggkopia med rätt flagga.
+  const own = await client.query<{ id: string }>(
+    'SELECT id FROM accounts WHERE account_number = $1 AND company_id = $2', [accountNumber, companyId]);
+  if (own.rows[0]) {
+    await client.query('UPDATE accounts SET is_non_deductible = $3 WHERE id = $1 AND company_id = $2',
+      [own.rows[0].id, companyId, nonDeductible]);
+  } else {
+    const std = await client.query<{ name: string; account_type: string }>(
+      'SELECT name, account_type FROM accounts WHERE account_number = $1 AND company_id IS NULL', [accountNumber]);
+    const s = std.rows[0];
+    if (!s) throw new NotFoundError('account');
+    await client.query(
+      `INSERT INTO accounts (company_id, account_number, name, account_type, is_non_deductible)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [companyId, accountNumber, s.name, s.account_type, nonDeductible],
+    );
+  }
+  await writeAudit(client, {
+    companyId, userId, action: 'account.non_deductible_set', entityType: 'account', entityId: String(accountNumber),
+    details: { account_number: accountNumber, is_non_deductible: nonDeductible },
+  });
+  return { account_number: accountNumber, is_non_deductible: nonDeductible };
+}
+
+// ---------------------------------------------------------------------------
 // INK2S — skattemässiga justeringar
 // ---------------------------------------------------------------------------
 export interface Ink2sLine { code: string; label: string; amount_ore: Ore }
@@ -199,7 +268,10 @@ export interface Ink2sResult {
   lines: Ink2sLine[];
   bokfort_resultat_ore: Ore;         // 4.1/4.2 årets resultat efter skatt
   tax_addback_ore: Ore;              // 4.3 a återläggning av bokförd skatt
-  non_deductible_ore: Ore;           // 4.3 övriga ej avdragsgilla kostnader
+  non_deductible_ore: Ore;           // 4.3 c totalt (härlett + manuellt)
+  derived_non_deductible_ore: Ore;   // härlett ur konton flaggade ej avdragsgilla
+  manual_non_deductible_ore: Ore;    // manuellt registrerade justeringar
+  derived_non_deductible: DerivedNonDeductible[];
   non_taxable_ore: Ore;              // 4.4 ej skattepliktiga intäkter
   result_before_loss_ore: Ore;       // skattemässigt resultat före underskottsavdrag
   loss_available_ore: Ore;           // inrullat underskott
@@ -249,8 +321,16 @@ export async function ink2sReport(client: PoolClient, companyId: string, fiscalY
   const taxAddback = sumRange(rows, 8900, 8989, 'debit');            // återläggning bokförd skatt (kostnad = debet)
 
   const adjustments = await listTaxAdjustments(client, companyId, fiscalYearId);
-  const nonDeductible = adjustments.filter((a) => a.kind === 'non_deductible').reduce((s, a) => s + a.amount_ore, 0);
+  const manualNonDeductible = adjustments.filter((a) => a.kind === 'non_deductible').reduce((s, a) => s + a.amount_ore, 0);
   const nonTaxable = adjustments.filter((a) => a.kind === 'non_taxable').reduce((s, a) => s + a.amount_ore, 0);
+
+  // Konton som är ej avdragsgilla till sin natur (6072, 6992 …) räknas fram
+  // direkt ur huvudboken — återläggningen är en följd av konteringen och ska
+  // inte behöva matas in för hand. Manuella justeringar finns kvar för det som
+  // inte syns på ett eget konto, och redovisas separat så inget dubbelräknas.
+  const derived = await derivedNonDeductible(client, companyId, start_date, end_date);
+  const derivedNonDeductibleOre = derived.reduce((s, a) => s + a.amount_ore, 0);
+  const nonDeductible = derivedNonDeductibleOre + manualNonDeductible;
 
   const resultBeforeLoss = bokfortResultat + taxAddback + nonDeductible - nonTaxable;
 
@@ -263,7 +343,13 @@ export async function ink2sReport(client: PoolClient, companyId: string, fiscalY
   const lines: Ink2sLine[] = [
     { code: bokfortResultat >= 0 ? '4.1' : '4.2', label: bokfortResultat >= 0 ? 'Årets resultat, vinst' : 'Årets resultat, förlust', amount_ore: bokfortResultat },
     { code: '4.3 a', label: 'Skatt på årets resultat (återläggs)', amount_ore: taxAddback },
-    { code: '4.3 c', label: 'Andra ej avdragsgilla kostnader', amount_ore: nonDeductible },
+    // Delas upp så att det syns VARIFRÅN beloppet kommer.
+    ...(derivedNonDeductibleOre > 0
+      ? [{ code: '4.3 c', label: 'Ej avdragsgilla kostnader (härlett ur bokföringen)', amount_ore: derivedNonDeductibleOre }]
+      : []),
+    ...(manualNonDeductible > 0 || derivedNonDeductibleOre === 0
+      ? [{ code: '4.3 c', label: 'Andra ej avdragsgilla kostnader (manuellt registrerade)', amount_ore: manualNonDeductible }]
+      : []),
     { code: '4.4 c', label: 'Andra bokförda intäkter som inte ska tas upp', amount_ore: -nonTaxable },
     { code: '4.14 a', label: 'Outnyttjat underskott från tidigare år (utnyttjas)', amount_ore: -lossUsed },
     { code: taxableResult >= 0 ? '1.1' : '1.2', label: taxableResult >= 0 ? 'Överskott' : 'Underskott', amount_ore: taxableResult },
@@ -275,6 +361,9 @@ export async function ink2sReport(client: PoolClient, companyId: string, fiscalY
     bokfort_resultat_ore: bokfortResultat,
     tax_addback_ore: taxAddback,
     non_deductible_ore: nonDeductible,
+    derived_non_deductible_ore: derivedNonDeductibleOre,
+    manual_non_deductible_ore: manualNonDeductible,
+    derived_non_deductible: derived,
     non_taxable_ore: nonTaxable,
     result_before_loss_ore: resultBeforeLoss,
     loss_available_ore: lossAvailable,
@@ -284,6 +373,6 @@ export async function ink2sReport(client: PoolClient, companyId: string, fiscalY
     booked_tax_ore: bookedTax,
     tax_difference_ore: computedTax - bookedTax,
     adjustments,
-    disclaimer: 'Beräknade skattemässiga justeringar (INK2S). Härleder bokfört resultat, återläggning av bokförd skatt och underskottsavdrag ur bokföringen; ej avdragsgilla kostnader och ej skattepliktiga intäkter registreras manuellt. Beslutsstöd — inte skatterådgivning. Ingen digital inlämning.',
+    disclaimer: 'Beräknade skattemässiga justeringar (INK2S). Härleder bokfört resultat, återläggning av bokförd skatt och underskottsavdrag ur bokföringen; ej avdragsgilla kostnader härleds ur konton som är flaggade ej avdragsgilla (6072, 6992 …) och kompletteras med manuella justeringar för det som inte har eget konto; ej skattepliktiga intäkter registreras manuellt. Beslutsstöd — inte skatterådgivning. Ingen digital inlämning.',
   };
 }
