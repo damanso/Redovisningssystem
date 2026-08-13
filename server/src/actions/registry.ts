@@ -14,6 +14,7 @@ import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForec
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
+import { listWorkActors, upsertWorkActor } from '../services/workActors.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
 import { listMembers } from '../services/team.js';
 import { listNotifications } from '../services/notifications.js';
@@ -1010,11 +1011,42 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         work_date: IsoDateSchema,
         minutes: z.number().int().min(1).max(1440),
         description: safeText(300),
+        // Pris mot kund. Utelämnat = projektets taxa.
         hourly_rate_ore: OreSchema.optional(),
         billable: z.boolean().optional(),
+        // Vem som UTFÖRDE arbetet. Utelämnat = den inloggade användarens aktör,
+        // som skapas automatiskt. Ingen behöver komma ihåg att fylla i det.
+        performed_by_actor_id: UuidSchema.optional(),
+        // Vad timmen kostar OSS. Utelämnat = aktörens standardtaxa, fryst nu.
+        cost_rate_ore: OreSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_work_actors',
+    title: 'Lista aktörer (vem som utför arbete)',
+    sensitivity: 'read',
+    inputSchema: z.object({ active: z.boolean().optional() }).strict(),
+    handler: (ctx, i: { active?: boolean }) => listWorkActors(ctx.client, ctx.companyId, { active: i.active }),
+  }),
+  def({
+    name: 'upsert_work_actor',
+    title: 'Lägg upp/uppdatera aktör med inköpskostnad',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        name: safeText(150),
+        kind: z.enum(['internal', 'subcontractor']).optional(),
+        employee_id: UuidSchema.optional(),
+        supplier_id: UuidSchema.optional(),
+        // INKÖPSKOSTNAD per timme — inte priset mot kund. Marginal = pris − kostnad.
+        cost_rate_ore: OreSchema.optional(),
+        active: z.boolean().optional(),
+        notes: safeText(500).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => upsertWorkActor(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   def({
     name: 'import_sie',

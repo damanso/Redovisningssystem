@@ -1412,8 +1412,15 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     const p = await getProject(client, companyId, projectId) as {
       id: string; number: number; name: string; status: string; customer_name: string | null;
       hourly_rate_ore: number | null; budget_ore: number | null; notes: string | null;
-      entries: Array<{ work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean; hourly_rate_ore: number | null }>;
-      summary: { total_minutes: number; billable_minutes: number; billable_amount_ore: number };
+      entries: Array<{
+        work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean;
+        hourly_rate_ore: number | null; performed_by: string | null;
+      }>;
+      summary: {
+        total_minutes: number; billable_minutes: number; billable_amount_ore: number;
+        cost_amount_ore: number; margin_ore: number;
+      };
+      by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${p.customer_name} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
@@ -1422,14 +1429,31 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
         ${kpiCell('Total tid', html`${hhmm(p.summary.total_minutes)}`)}
         ${kpiCell('Fakturerbar tid', html`${hhmm(p.summary.billable_minutes)}`)}
         ${kpiCell('Fakturerbart belopp', amount(p.summary.billable_amount_ore))}
+        ${/* Kostnad och marginal visas bara när någon timme faktiskt har en
+              inköpskostnad — annars är marginalen bara intäkten igen, och en
+              KPI som alltid upprepar grannrutan är brus. */ ''}
+        ${p.summary.cost_amount_ore > 0 ? kpiCell('Inköpskostnad', amount(p.summary.cost_amount_ore)) : ''}
+        ${p.summary.cost_amount_ore > 0 ? kpiCell('Marginal', amount(p.summary.margin_ore)) : ''}
         ${p.budget_ore != null ? kpiCell('Budget', amount(p.budget_ore)) : ''}
       </div>
+      ${
+        p.by_actor.length > 1 || p.summary.cost_amount_ore > 0
+          ? html`<h2 style="margin-top:18px">Per utförare</h2>
+              <div class="table-wrap"><table><thead><tr><th>Utförd av</th><th class="num">Tid</th><th class="num">Fakturerbar</th><th class="num">Inköpskostnad</th><th class="num">Marginal</th></tr></thead><tbody>
+                ${p.by_actor.map((a) => html`<tr><td>${a.name}</td>
+                  <td class="num">${hhmm(a.minutes)}</td><td class="num">${hhmm(a.billable_minutes)}</td>
+                  <td class="num">${amount(a.cost_ore, { unit: false })}</td>
+                  <td class="num">${amount(a.margin_ore, { unit: false })}</td></tr>`)}
+                </tbody></table></div>`
+          : ''
+      }
       <h2 style="margin-top:18px">Tidposter</h2>
       ${
         p.entries.length === 0
           ? html`<p class="muted">Inga tidposter ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th></tr></thead><tbody>
+          : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th>Utförd av</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th></tr></thead><tbody>
               ${p.entries.map((e) => html`<tr><td class="code">${e.work_date}</td><td>${e.description}</td>
+                <td>${e.performed_by ?? '—'}</td>
                 <td class="num">${hhmm(e.minutes)}</td><td>${e.billable ? chip('Ja', 'ok') : chip('Nej', 'muted')}</td>
                 <td>${e.invoiced ? chip('Ja', 'info') : ''}</td></tr>`)}
               </tbody></table></div>`

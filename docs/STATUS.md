@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (115
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (124
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 503 tester i 67 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 525 tester i 69 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-13 (session: CRM-bygget på sidogrenen `feature/crm`, E1 + E7a):**
+  Underlaget är `docs/bmadcrmunderlag.md` (Davids BMAD-brief). Arbetet sker på en
+  sidogren och mergas till main först när hela lösningen är prövad.
+  **E1 (läs-tillbaka-primitiver):** agenten kunde SKRIVA kontakter och
+  anteckningar men inte läsa tillbaka dem, och ingen unik-spärr fanns — en
+  nattlig synk som kördes om lade dubbletter för alltid. Nya actions
+  `list_contacts`, `list_notes`, `get_party_crm`, `get_customer`,
+  `get_supplier` samt idempotent `upsert_contact`. Nyckel: e-post när den finns,
+  annars namn inom samma part; uppslaget sker i TVÅ steg, annars blev "samma
+  person, nu med e-post" en dubblett (testet fångade det i bygget). Migration
+  0050 slår ihop befintliga dubbletter utan informationsförlust och lägger två
+  partiella unika index som yttersta garanti. Läsvägarna fick `assertParty` —
+  utan den svarade en främmande part `200 []`, vilket agenten läser som "inga
+  kontakter finns".
+  **E7a (aktör + inköpskostnad på tidrapport):** flyttad tidigt i byggordningen
+  av beslut B3 — underkonsulter inom sex månader, och migreringen rör
+  fakturaunderlaget. Ny tabell `work_actors` (intern/underkonsult, valfri
+  koppling till användare/anställd/leverantör, standardtaxa för INKÖPSKOSTNAD),
+  `time_entries.performed_by_actor_id` + `cost_rate_ore` (migration 0051).
+  Två skillnader som lätt slarvas bort och därför är låsta med tester:
+  `hourly_rate_ore` är PRISET mot kund, `cost_rate_ore` är vad timmen kostar
+  OSS; `created_by` betyder fortfarande vem som REGISTRERADE posten, aktören är
+  vem som UTFÖRDE arbetet. Härledningskälla: aktören sätts automatiskt till den
+  inloggades — som skapas vid första tidposten — så ingen behöver komma ihåg att
+  fylla i den. Kostnaden fryses vid registreringen (en höjd taxa i morgon ska
+  inte skriva om gårdagens marginal). Marginal räknas som fakturerbar intäkt
+  minus kostnad för ALL tid, även ofakturerbar. Projektvyn visar utförare,
+  inköpskostnad och marginal per person. `user_id` går medvetet inte att sätta
+  utifrån: kopplingen ska styra åtkomst (E7b) och app-rollen kan enligt RLS bara
+  se sitt EGET medlemskap — den kan alltså inte verifiera ett inskickat
+  användar-id.
+  Uppgraderingsvägen är körd, inte påstådd: databas på 0050 med data (1 985
+  minuter, samma storleksordning som produktionen) → 0051 → varje historisk
+  tidpost med registrerare fick en aktör, två likanamniga användare fick var sin
+  (den andra via e-post), en post utan registrerare lämnades utan aktör, och en
+  omkörning applicerade 0 migrationer utan dubbletter.
+  **525 tester i 69 sviter gröna, `npm run build` ren.** Kvar på grenen: E2
+  (schemat crm + rollmodell), E4 (härledningsjobb), E5/E6 (vyer), slutgrind.
 
 - **2026-08-13 (session: granskningspass på navigationen före produktion):**
   Kodgranskning av 999fe5b gav 7 fynd, alla åtgärdade före release:
