@@ -238,3 +238,54 @@ describe('gallring enligt GDPR — men aldrig på en gissad period', () => {
     expect(JSON.stringify(kvar.body.result.interactions)).not.toContain('Uråldrig');
   });
 });
+
+describe('GDPR: raderingen når ÄVEN relationsdatan', () => {
+  // Regressionen som granskningen fann: anonymize_party rensade party_contacts
+  // och party_notes men kände inte till schemat `crm`. En raderingsbegäran hade
+  // därmed lämnat kvar personer, mailsammanfattningar och löften. Att datan
+  // ligger i ett eget schema är skälet till att den GÅR att radera — inte en
+  // ursäkt för att låta bli.
+  it('personer, kontaktpunkter och åtaganden försvinner när kunden anonymiseras', async () => {
+    const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Raderingskund AB' });
+    expect(cust.status).toBe(201);
+    const customerId = cust.body.customer.id;
+
+    const org = await act('upsert_crm_organization', {
+      name: 'Raderingskund AB', customer_id: customerId, notes: 'Känslig anteckning om personen.',
+    });
+    const organizationId = org.body.result.id;
+    const person = await act('upsert_crm_person', {
+      name: 'Petra Personuppgift', email: 'petra@radering.example', organization_id: organizationId,
+    });
+    expect(person.status, JSON.stringify(person.body)).toBe(200);
+    await act('record_crm_interaction', {
+      person_id: person.body.result.id, occurred_at: '2026-08-01T10:00:00Z', channel: 'email',
+      summary: 'Personligt mail som ska bort.', source_system: 'gmail', source_ref: 'radera-1',
+    });
+    await act('record_crm_commitment', {
+      organization_id: organizationId, direction: 'we_owe', body: 'Löfte som ska bort.',
+      occurred_at: '2026-08-01T10:05:00Z', source_system: 'gmail', source_ref: 'radera-2',
+    });
+
+    const req = await act('anonymize_party', { party_type: 'customer', party_id: customerId });
+    expect(req.status).toBe(202); // känslig → godkännandekö
+    const done = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.result.crm_people_removed).toBe(1);
+    expect(done.body.result.crm_interactions_removed).toBe(1);
+    expect(done.body.result.crm_commitments_removed).toBe(1);
+
+    const kvar = await withAdmin(async (a) => (await a.query(
+      `SELECT (SELECT count(*)::int FROM crm.people WHERE organization_id = $1) AS people,
+              (SELECT count(*)::int FROM crm.interactions WHERE company_id = $2 AND summary LIKE 'Personligt%') AS inter,
+              (SELECT count(*)::int FROM crm.commitments WHERE organization_id = $1) AS commits,
+              (SELECT notes FROM crm.organizations WHERE id = $1) AS notes,
+              (SELECT status FROM crm.organizations WHERE id = $1) AS status`,
+      [organizationId, companyId])).rows[0]);
+    expect(kvar.people).toBe(0);
+    expect(kvar.inter).toBe(0);
+    expect(kvar.commits).toBe(0);
+    expect(kvar.notes).toBeNull();
+    expect(kvar.status).toBe('archived');
+  });
+});

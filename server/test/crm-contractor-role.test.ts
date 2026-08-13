@@ -122,6 +122,18 @@ describe('underkonsulten är stängd ute från bolagets data', () => {
     });
   });
 
+  it('webbvyn läcker inget heller — sidorna finns inte för rollen', async () => {
+    const cua = supertest.agent(app);
+    const login = await cua.post('/app/login').type('form')
+      .send({ email: contractor.email, password: PASSWORD });
+    expect(login.status).toBe(302); // inloggningen fungerar — rollen finns
+    for (const path of ['', 'invoices', 'relations', 'steering']) {
+      const res = await cua.get(`/app/c/${companyId}/${path}`);
+      // 404, aldrig 200 och aldrig 500: bolaget ska inte ens synas existera.
+      expect(res.status, `/${path}`).toBe(404);
+    }
+  });
+
   it('inga åtgärder får köras — tydligt 403 i stället för tomma listor', async () => {
     const res = await api.post(`${co()}/actions/list_customers`)
       .set({ Authorization: `Bearer ${contractor.token}` }).send({});

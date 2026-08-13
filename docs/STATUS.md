@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 569 tester i 73 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 571 tester i 73 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -176,8 +176,16 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   täckning framåt = obetalda fakturor + ofakturerad tid + abonnemang, uttryckt i
   antal månaders kostnader). Öppna affärer räknas inte som täckning — de bor i
   Linear enligt B2. Ingen av sidorna kan skicka något till en kund.
-  **569 tester i 73 sviter gröna, `npm run build` ren.**
-  Kvar på grenen: slutgrind (granskning + merge till main).
+  **Slutgranskning mot Del 6-checklistan** fann en verklig regression:
+  `anonymize_party` (GDPR) kände inte till det nya schemat, så en
+  raderingsbegäran hade lämnat kvar personer, mailsammanfattningar och löften i
+  `crm`. Åtgärdat — relationsdatan har ingen bevarandegrund alls och tas nu
+  ALLTID bort i sin helhet, med antalen redovisade i svaret. Att datan ligger i
+  ett eget schema är skälet till att den GÅR att radera, inte en ursäkt för att
+  låta bli. Övriga punkter kontrollerade: inga nya env-läsare, inga dynamiska
+  kolumnnamn, ören som heltal, allt bakom RLS, inget skickas till kund,
+  migrationerna körbara två gånger.
+  **571 tester i 73 sviter gröna, `npm run build` ren.**
   **Öppen fråga till David:** gallringsperiod för relationsdata (`set_crm_retention`)
   — systemet gissar aldrig, så tills du säger ett antal månader gallras ingenting.
 

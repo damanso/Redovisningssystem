@@ -2,7 +2,9 @@
 // Rätten till radering (GDPR art. 17) vägs mot bokföringslagens bevarandekrav: ett
 // verifikat måste kunna identifiera motparten och sparas i 7 år. Därför:
 //   - CRM-lagrets rena personuppgifter (kontaktpersoner, anteckningar, taggar) tas
-//     ALLTID bort.
+//     ALLTID bort. Detsamma gäller relationsdatan i schemat `crm` (personer,
+//     kontaktpunkter, åtaganden) — den är inte räkenskapsinformation och har
+//     därför ingen bevarandegrund alls.
 //   - Extra kontaktuppgifter (e-post, telefon, adress, bankgiro/plusgiro) nollas alltid.
 //   - Partens IDENTITET (namn, org.nr, vat-nr) raderas bara om parten SAKNAR bokförda
 //     transaktioner; finns bokförda affärshändelser behålls namn + org.nr (rättslig
@@ -34,8 +36,62 @@ export interface AnonymizeResult {
   notes_removed: number;
   pdfs_removed: number;
   recurring_deactivated: number;
+  // Relationsdatan i schemat `crm` (E2). Den har ingen bevarandegrund alls —
+  // den är inte räkenskapsinformation — så den tas ALLTID bort i sin helhet.
+  crm_people_removed: number;
+  crm_interactions_removed: number;
+  crm_commitments_removed: number;
   accounting_identity_retained: boolean; // true = namn/org.nr behölls pga bokföringslagen
   disclaimer: string;
+}
+
+/**
+ * Rensar relationsdatan för en kund. Utan det här skulle raderingen missa hela
+ * `crm`-schemat: kontaktpunkter med mailsammanfattningar, personer med namn och
+ * e-post, löften med fritext. Att det ligger i ett eget schema är skälet till
+ * att det GÅR att radera — inte en ursäkt för att låta bli.
+ *
+ * Ordningen är styrd av främmandenycklarna: kontaktpunkter och åtaganden först
+ * (de pekar på personerna), sedan personerna, sist organisationen som skrubbas
+ * men behålls om identiteten måste bevaras för bokföringens skull.
+ */
+async function purgeCrmRelationData(
+  client: PoolClient, companyId: string, customerId: string, retainIdentity: boolean,
+): Promise<{ people: number; interactions: number; commitments: number }> {
+  const orgs = await client.query<{ id: string }>(
+    'SELECT id FROM crm.organizations WHERE company_id = $1 AND customer_id = $2', [companyId, customerId],
+  );
+  if (orgs.rows.length === 0) return { people: 0, interactions: 0, commitments: 0 };
+  const orgIds = orgs.rows.map((o) => o.id);
+
+  const interactions = await client.query(
+    `DELETE FROM crm.interactions
+     WHERE company_id = $1 AND (organization_id = ANY($2::uuid[])
+       OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))`,
+    [companyId, orgIds],
+  );
+  const commitments = await client.query(
+    `DELETE FROM crm.commitments
+     WHERE company_id = $1 AND (organization_id = ANY($2::uuid[])
+       OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))`,
+    [companyId, orgIds],
+  );
+  const people = await client.query(
+    'DELETE FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])', [companyId, orgIds],
+  );
+  await client.query(
+    `UPDATE crm.organizations
+     SET name = CASE WHEN $3 THEN name ELSE 'Raderad (GDPR)' END,
+         org_number = CASE WHEN $3 THEN org_number ELSE NULL END,
+         website = NULL, source = NULL, notes = NULL, status = 'archived'
+     WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+    [companyId, orgIds, retainIdentity],
+  );
+  return {
+    people: people.rowCount ?? 0,
+    interactions: interactions.rowCount ?? 0,
+    commitments: commitments.rowCount ?? 0,
+  };
 }
 
 // Har parten en BOKFÖRD affärshändelse (ett verifikat) som pekar på den? I så fall
@@ -103,6 +159,7 @@ export async function anonymizeParty(client: PoolClient, companyId: string, user
 
   let pdfsRemoved = 0;
   let recurringDeactivated = 0;
+  let crmPurged = { people: 0, interactions: 0, commitments: 0 };
 
   // Nolla kontaktuppgifter + taggar; radera identiteten bara om inga bokförda
   // transaktioner finns. Taggar (fritext) rensas alltid — de saknar bevarandegrund.
@@ -115,6 +172,8 @@ export async function anonymizeParty(client: PoolClient, companyId: string, user
     // Projekt kopplade till kunden är inga verifikat → rensa fritext-PII och stäng.
     await client.query("UPDATE projects SET name = 'Raderad (GDPR)', notes = NULL, status = 'closed' WHERE company_id = $1 AND customer_id = $2", [companyId, partyId]);
     pdfsRemoved = await purgeUnbookedInvoicePdfs(client, companyId, partyId);
+    // Relationsdatan i `crm` har ingen bevarandegrund — den tas alltid bort.
+    crmPurged = await purgeCrmRelationData(client, companyId, partyId, retain);
     if (retain) {
       // vat_number BEHÅLLS här: läses live av periodisk sammanställning (D4) över
       // bokförda EU-fakturor; det är härlett ur org.nr som ändå bevaras.
@@ -135,6 +194,8 @@ export async function anonymizeParty(client: PoolClient, companyId: string, user
     details: {
       contacts_removed: contactsDel.rowCount ?? 0, notes_removed: notesDel.rowCount ?? 0,
       pdfs_removed: pdfsRemoved, recurring_deactivated: recurringDeactivated,
+      crm_people_removed: crmPurged.people, crm_interactions_removed: crmPurged.interactions,
+      crm_commitments_removed: crmPurged.commitments,
       accounting_identity_retained: retain,
     },
   });
@@ -146,9 +207,12 @@ export async function anonymizeParty(client: PoolClient, companyId: string, user
     notes_removed: notesDel.rowCount ?? 0,
     pdfs_removed: pdfsRemoved,
     recurring_deactivated: recurringDeactivated,
+    crm_people_removed: crmPurged.people,
+    crm_interactions_removed: crmPurged.interactions,
+    crm_commitments_removed: crmPurged.commitments,
     accounting_identity_retained: retain,
     disclaimer: retain
-      ? 'Kontaktpersoner, anteckningar, taggar och kontaktuppgifter borttagna; obokförda fakturors PDF, återkommande fakturor och projekt rensade. Partens namn, org.nr och vat-nr BEHÖLLS eftersom det finns bokförda transaktioner — bokföringslagen kräver att verifikatens motpart kan identifieras och sparas i 7 år, och vat-nr behövs för periodisk sammanställning. Full radering kan göras när bevarandetiden löpt ut. OBS: kontrollen bygger på strukturerade dokumentkopplingar; förekommer parten i manuella verifikat måste det kontrolleras separat.'
-      : 'Personuppgifter borttagna. Parten saknade bokförda transaktioner (enligt strukturerade dokumentkopplingar), så även namn och org.nr har anonymiserats. OBS: manuella verifikat kopplas inte automatiskt till en part — kontrollera att parten inte förekommer i sådana innan du betraktar raderingen som fullständig.',
+      ? 'Kontaktpersoner, anteckningar, taggar, kontaktuppgifter och all relationsdata (personer, kontaktpunkter, åtaganden) borttagna; obokförda fakturors PDF, återkommande fakturor och projekt rensade. Partens namn, org.nr och vat-nr BEHÖLLS eftersom det finns bokförda transaktioner — bokföringslagen kräver att verifikatens motpart kan identifieras och sparas i 7 år, och vat-nr behövs för periodisk sammanställning. Full radering kan göras när bevarandetiden löpt ut. OBS: kontrollen bygger på strukturerade dokumentkopplingar; förekommer parten i manuella verifikat måste det kontrolleras separat.'
+      : 'Personuppgifter borttagna, inklusive all relationsdata (personer, kontaktpunkter, åtaganden). Parten saknade bokförda transaktioner (enligt strukturerade dokumentkopplingar), så även namn och org.nr har anonymiserats. OBS: manuella verifikat kopplas inte automatiskt till en part — kontrollera att parten inte förekommer i sådana innan du betraktar raderingen som fullständig.',
   };
 }
