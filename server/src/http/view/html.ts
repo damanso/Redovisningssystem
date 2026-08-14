@@ -297,6 +297,30 @@ const STYLE = `
   }
 }
 
+/* F6: övergångar mellan sidor.
+ *
+ * Vyn är helt serverrenderad, och det har en kostnad som inte syns i något
+ * test: varje klick blänker till vitt och man tappar var man var. En SPA löser
+ * det med JavaScript vi inte får ha (CSP script-src 'none'). Cross-document
+ * view transitions löser det i webbläsaren — två rader CSS, noll skript.
+ *
+ * Sidhuvudet får ett eget namn och står därför STILL medan innehållet växlar.
+ * Det är hela skillnaden mellan "sidan laddades om" och "jag gick vidare".
+ *
+ * Saknar webbläsaren stödet händer ingenting alls — sidan byts som förut. */
+@view-transition { navigation: auto; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 180ms; }
+.topbar { view-transition-name: topbar; }
+
+/* Rörelse är inte gratis för alla. Har användaren sagt ifrån i sitt
+ * operativsystem gäller det här, utan undantag. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+    animation: none !important;
+  }
+  * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
@@ -450,7 +474,19 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
   .appbar .btn { padding-left: 9px; padding-right: 9px; }
   .nav__here .nav__here-grp { display: none; }
 }
-main { max-width: var(--maxw); margin: clamp(20px, 4vw, 34px) auto; padding: 0 clamp(16px, 4vw, 24px); }
+/* F6: innehållsytan är en CONTAINER, inte bara en bredd.
+ *
+ * Skillnaden mot @media är verklig och inte kosmetisk: fönstret är inte det
+ * som avgör om ett kort får plats — det gör spalten kortet ligger i, efter
+ * marginaler och sidopadding. En layout som frågar fönstret gissar; en som
+ * frågar sin behållare vet. På iPhone i landskapsläge, med delad skärm eller
+ * med förstorad text är gissningen fel med tiotals pixlar, och just då bryts
+ * layouten. */
+main {
+  max-width: var(--maxw); margin: clamp(20px, 4vw, 34px) auto;
+  padding: 0 clamp(16px, 4vw, 24px);
+  container-type: inline-size; container-name: sida;
+}
 
 /* Sidhuvud */
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -657,12 +693,23 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 a.today__who:hover { color: var(--accent-ink); }
 .today__amt { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink-2); }
 .today__why { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+/* Smal spalt: knapparna får hela bredden var. Ett tumträffsmål som är 40 px
+   brett för att det RÅKADE bli över är inte ett träffmål — och dagsytan är den
+   sida som faktiskt öppnas på telefon. */
+@container sida (max-width: 420px) {
+  .today__card .quick { flex-direction: column; align-items: stretch; }
+  .today__card .quick form, .today__card .quick .btn { width: 100%; }
+  .today__amt { margin-left: 0; }
+}
 
 /* Relationssidan: fakta till vänster, kronologi till höger.
-   Under 860px staplas de — fakta först, för att "vad är det här för relation"
-   ska besvaras innan man börjar läsa historik. */
+   Under 820px SPALTBREDD staplas de — fakta först, för att "vad är det här för
+   relation" ska besvaras innan man börjar läsa historik. Mätt på behållaren,
+   inte på fönstret: det är spalten som avgör om två kolumner får plats. */
 .relation { display: grid; gap: 16px; grid-template-columns: 1fr; margin-top: 16px; }
-@media (min-width: 860px) { .relation { grid-template-columns: 290px minmax(0, 1fr); align-items: start; } }
+@container sida (min-width: 820px) {
+  .relation { grid-template-columns: 290px minmax(0, 1fr); align-items: start; }
+}
 .relation__facts { display: flex; flex-direction: column; gap: 12px; }
 .relation__thread { min-width: 0; }
 

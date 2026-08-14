@@ -1737,7 +1737,9 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
     <h2 style="margin-top:18px">Alla relationer</h2>
     ${
       state.length === 0
-        ? html`<div class="empty"><div class="big">Inga relationer ännu</div>Kontaktpunkter kommer in via API-kontraktet (mail, kalender, ärenden) eller läggs upp med <span class="code">upsert_crm_organization</span>.</div>`
+        ? html`<div class="empty"><div class="big">Inga relationer ännu</div>
+            De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.
+            Vill du börja nu lägger du upp den första nedan — det tar tio sekunder och kräver ingen AI.</div>`
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th><th></th></tr></thead>
             <tbody>${state.map((r) => html`<tr>
@@ -1764,7 +1766,37 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
                   { fields: { muted: 'true' }, back: `/app/c/${companyId}/relations`, neg: true }),
               ])}</div></td></tr>`)}
             </tbody></table></div>`
-    }`;
+    }
+    ${/* F6: ett tomt tillstånd utan nästa steg är en återvändsgränd. Formuläret
+         står här av samma skäl som på kund- och fakturasidorna: den som vill
+         börja för hand ska kunna det, utan AI och utan API-kontraktet. */ ''}
+    <div class="panel" style="margin-top:22px;max-width:560px">
+      <div class="panel__head"><h2>Ny relation</h2></div>
+      <div class="panel__body" style="padding:16px">
+        <form method="post" action="/app/c/${companyId}/relations/create" style="display:flex;flex-direction:column;gap:12px">
+          <label class="field" style="margin:0"><span>Namn</span><input type="text" name="name" required maxlength="200" placeholder="Nordic Vision Retail AB"></label>
+          <label class="field" style="margin:0"><span>Org.nr (valfritt)</span><input type="text" name="org_number" maxlength="20"></label>
+          <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa relation</button>
+          <p class="hint" style="margin:0">Finns bolaget redan i kundregistret kopplas det ihop automatiskt, och omsättningen räknas fram direkt.</p>
+        </form>
+      </div>
+    </div>`;
+}));
+
+// F6: skapa en relation för hand. Samma action som AI:t använder — men eftersom
+// en människa kör den blir ursprunget 'human' (F4) och skyddat mot nästa synk.
+viewRouter.post('/c/:companyId/relations/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const text = (k: string): string | undefined => {
+    const v = b[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  await runViewAction(req, res, companyId, 'upsert_crm_organization', {
+    name: text('name') ?? '',
+    ...(text('org_number') ? { org_number: text('org_number') } : {}),
+  }, `/app/c/${companyId}/relations`);
 }));
 
 viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
@@ -1982,7 +2014,11 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
       </div></div>
     ${
       rows.length === 0
-        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>Löften fångas ur mail, möten och ärenden via API-kontraktet — ingen behöver komma ihåg att registrera dem.</div>`
+        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>
+            Löften fångas ur mail, möten och ärenden — ingen behöver komma ihåg att registrera dem.
+            ${filter === 'open'
+              ? html`Är listan tom är den avbetad. Se <a href="/app/c/${companyId}/commitments?status=done">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.`
+              : html`Gå tillbaka till <a href="/app/c/${companyId}/commitments?status=open">de öppna</a>.`}</div>`
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
             <tbody>${rows.map((c) => {
