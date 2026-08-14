@@ -14,7 +14,7 @@ let ua: ReturnType<typeof supertest.agent>;
 // Varje sida som navigationen ska nå. Faller detta har en sida blivit
 // oåtkomlig för användaren (även om rutten finns kvar).
 const ALLA_SIDOR = [
-  '', 'approvals', 'invoices', 'receipts',
+  '', 'idag', 'approvals', 'invoices', 'receipts',
   'relations', 'commitments', 'customers', 'receivables', 'suppliers', 'payables', 'recurring',
   'payroll', 'projects',
   'vat', 'tax', 'ec-sales', 'ink2', 'k10', 'annual', 'assets', 'cashflow',
@@ -100,8 +100,14 @@ describe('var är jag?', () => {
   it('de vanligaste sidorna ligger alltid framme i snabbraden', async () => {
     const nav = navMarkup(await ua.get(`/app/c/${companyId}/`).then((r) => r.text));
     const quick = nav.slice(nav.indexOf('<div class="nav__quick">'));
-    for (const label of ['Översikt', 'Att göra', 'Fakturor', 'Kvitton', 'Lön']) {
+    // Ordningsprincipen är hur OFTA sidan används. Idag öppnas dagligen, Lön en
+    // gång i månaden — därför bytte de plats när dagsytan kom till. Snabbraden
+    // växer inte: fem poster är vad som får plats utan att spilla på telefon.
+    for (const label of ['Översikt', 'Idag', 'Att göra', 'Fakturor', 'Kvitton']) {
       expect(quick, `${label} saknas i snabbraden`).toContain(`>${label}</a>`);
     }
+    expect(quick.match(/<a /g) ?? [], 'snabbraden får inte växa').toHaveLength(5);
+    // Lön är inte borta — den finns kvar i menyn, ett klick bort.
+    expect(nav, 'Lön ska finnas i menyn').toContain(`href="/app/c/${companyId}/payroll"`);
   });
 });

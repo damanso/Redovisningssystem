@@ -30,7 +30,7 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { contactSuggestions, relationState } from '../../services/crmDerivations.js';
+import { contactSuggestions, relationState, todayView } from '../../services/crmDerivations.js';
 import { steeringOverview } from '../../services/steering.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
@@ -1534,6 +1534,91 @@ const orgStatusChip = (status: string): Raw =>
     : status === 'prospect' ? chip('Prospekt', 'info')
     : status === 'partner' ? chip('Partner', 'muted')
     : chip(status, 'muted');
+
+// ---------------------------------------------------------------------------
+// Dagsytan (F2). Landningen för relationsdelen.
+//
+// Designens viktigaste beslut sitter här: listan är KAPAD och visar aldrig
+// totalen. "412 kontakter försenade" förvandlar verktyget från assistent till
+// anklagelse; en lista som kan nå noll skapar ett arbetspass med slut.
+// Varje kort bär sitt skäl, och skälet är både rangordningen och
+// öppningsrepliken.
+// ---------------------------------------------------------------------------
+viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, companyId, req) => {
+  const t = await todayView(client, companyId);
+  const back = `/app/c/${companyId}/idag`;
+  const antal = t.relations.length + t.commitments.length;
+
+  return html`<div class="page-head"><div>${eyebrow('Idag')}<h1>Vad som behöver dig nu</h1>
+      <p class="lede">${
+        t.quiet
+          ? 'Inget väntar. Nya rader dyker upp när något förfaller eller när det blir tyst för länge.'
+          : html`${String(antal)} ${antal === 1 ? 'sak' : 'saker'} — dagens lista, inte alla relationer.`
+      }</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations">Alla relationer →</a></div></div>
+    ${felNotis(req)}
+    ${
+      t.quiet
+        ? html`<div class="empty"><div class="big">Avbetat för i dag 🎉</div>
+            Loggade kontakter och stängda löften försvinner härifrån. Kommer något in via mail eller kalender dyker det upp automatiskt.</div>`
+        : ''
+    }
+    ${
+      t.relations.length > 0
+        ? html`<h2 style="margin-top:6px">Att höra av sig till</h2>
+            <div class="today">${t.relations.map((s) => html`<article class="today__card">
+              <div class="today__head">
+                <a class="today__who" href="/app/c/${companyId}/relations/${s.organization_id}">${s.organization}</a>
+                ${s.overdue_commitments > 0 ? chip(`${s.overdue_commitments} förfallet löfte`, 'neg', '!') : ''}
+                ${s.status === 'prospect' ? chip('Prospekt', 'info') : ''}
+                ${(s.revenue_share_permille ?? 0) >= 200 ? chip(`${pct(s.revenue_share_permille)} av omsättningen`, 'muted') : ''}
+                ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${amount(s.revenue_12m_ore, { unit: false })}</span>` : ''}
+              </div>
+              <p class="today__why">${s.reasons.join(' · ')}${
+                s.person ? html` <span class="muted">Kontakt: ${s.person.name}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
+              }</p>
+              <div class="quick">
+                ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/log`, 'Hörde av mig', { primary: true, back })}
+                ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp', { fields: { days: '14' }, back })}
+                ${rowMenu(`t-${s.organization_id}`, [
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp 3 dagar', { fields: { days: '3' }, back }),
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp 3 månader', { fields: { days: '90' }, back }),
+                  html`<div class="rowmenu__sep"></div>`,
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/mute`, 'Föreslå aldrig', { fields: { muted: 'true' }, back, neg: true }),
+                ])}
+              </div>
+            </article>`)}</div>`
+        : ''
+    }
+    ${
+      t.commitments.length > 0
+        ? html`<h2 style="margin-top:18px">Löften som förfaller</h2>
+            <div class="today">${t.commitments.map((c) => html`<article class="today__card">
+              <div class="today__head">
+                ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
+                ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
+                ${c.organization_id
+                  ? html`<a class="today__who" href="/app/c/${companyId}/relations/${c.organization_id as string}">${(c.organization_name as string) ?? ''}</a>`
+                  : html`<span class="today__who">${(c.person_name as string) ?? '—'}</span>`}
+              </div>
+              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${c.source_system as string}</span></p>
+              <div class="quick">
+                ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/done`, 'Klar', { primary: true, back })}
+                ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
+                ${rowMenu(`tc-${c.id as string}`, [
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp 1 dag', { fields: { days: '1' }, back }),
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp 30 dagar', { fields: { days: '30' }, back }),
+                  html`<div class="rowmenu__sep"></div>`,
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/drop`, 'Avskriv löftet', { back, neg: true }),
+                ])}
+              </div>
+            </article>`)}</div>`
+        : ''
+    }
+    ${
+      t.quiet ? '' : html`<p class="muted" style="font-size:12.5px;margin-top:16px">Systemet föreslår — du skriver och skickar. Ingenting går härifrån ut till en kund.</p>`
+    }`;
+}));
 
 viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId) => {
   const state = await relationState(client, companyId);

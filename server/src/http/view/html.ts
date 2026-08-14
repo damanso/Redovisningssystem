@@ -132,6 +132,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
     hint: 'Det du öppnar oftast',
     items: [
       ['', 'Översikt'],
+      ['idag', 'Idag'],
       ['approvals', 'Att göra'],
       ['invoices', 'Fakturor'],
       ['receipts', 'Kvitton'],
@@ -197,7 +198,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
 ];
 
 // Snabbraden: alltid framme (viker undan först på riktigt smala skärmar).
-const NAV_QUICK: readonly string[] = ['', 'approvals', 'invoices', 'receipts', 'payroll'];
+const NAV_QUICK: readonly string[] = ['', 'idag', 'approvals', 'invoices', 'receipts'];
 
 // Uppslag sökväg → { etikett, grupp }, byggt EN gång (layout() körs per request).
 const NAV_INDEX = new Map<string, { label: string; group: string }>(
@@ -622,6 +623,18 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
   .quickcapture { align-items: stretch; }
   .quickcapture input[type='text'] { flex: 1 1 100%; }
 }
+
+/* Dagsytans kort. Ett kort = en sak att göra, med skälet synligt. */
+.today { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.today__card {
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius);
+  padding: 13px 15px; display: flex; flex-direction: column; gap: 8px;
+}
+.today__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.today__who { font-weight: 600; font-size: 15px; color: var(--ink); }
+a.today__who:hover { color: var(--accent-ink); }
+.today__amt { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink-2); }
+.today__why { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
 
 /* Tomt tillstånd */
 .empty { text-align: center; padding: 40px 20px; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: var(--radius); background: var(--surface); }
