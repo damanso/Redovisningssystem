@@ -419,9 +419,22 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 .nav__here .nav__here-lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nav__sep { width: 1px; height: 20px; background: var(--line); flex: none; }
 
+/* Sökrutan ligger sist i navraden och trycks åt höger. På telefon får den ta
+   den plats snabbraden lämnar — att söka är det man gör när man inte vet var
+   något ligger, och det gäller i än högre grad på en liten skärm. */
+.nav__sok { margin-left: auto; flex: 0 1 220px; min-width: 0; }
+.nav__sok input {
+  width: 100%; padding: 6px 12px; font-size: 13.5px;
+  border-radius: var(--radius-pill); border: 1px solid var(--line-2);
+  background: var(--surface); color: var(--ink);
+}
+.nav__sok input::placeholder { color: var(--ink-3); }
+.nav__sok input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+
 @media (max-width: 700px) {
   .nav__quick { display: none; }
   .nav__sep { display: none; }
+  .nav__sok { flex: 1 1 auto; margin-left: 0; }
 }
 /* Smala fönster: knapparna får aldrig radbrytas, och bolagsnamnet viker undan
    före dem (det står ändå i sidhuvudet på varje sida). */
@@ -678,6 +691,24 @@ a.today__who:hover { color: var(--accent-ink); }
 .prov--guess { color: var(--ai); font-weight: 700; }
 .prov--fact { color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 
+/* F5: kadensen. Ett tal på en rad — inte ett eget kort, för det är en
+   inställning man rör en gång och sedan glömmer. */
+.kadens { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 0; }
+.kadens label { font-size: 12.5px; color: var(--ink-3); }
+.kadens input { width: 74px; padding: 6px 9px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.kadens__enhet { font-size: 12.5px; color: var(--ink-3); }
+.kadens .hint { flex: 1 1 100%; margin: 2px 0 0; font-size: 11.5px; }
+
+/* F5: sökträffar. En rad per träff, med register som chip — man ska se VAR
+   träffen bor utan att klicka. */
+.soksida { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.soksida input { flex: 1 1 260px; min-width: 0; padding: 9px 13px; font-size: 14.5px; }
+.sok { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.sok__rad { display: flex; align-items: baseline; gap: 9px; padding: 10px 15px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.sok__rad:first-child { border-top: 0; }
+.sok__t { font-size: 14px; font-weight: 600; }
+.sok__u { font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+
 /* Rättningsformuläret: hopfällt tills man behöver det. details/summary, ingen JS. */
 .rattaform > summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; padding: 2px 0; }
 .rattaform > summary:hover { color: var(--ink-2); }
@@ -863,6 +894,13 @@ export function layout(opts: {
         ${here && !inQuick
           ? html`<span class="nav__here"><span class="nav__here-grp">${here.group}</span><span class="nav__here-lbl">${here.label}</span></span>`
           : ''}
+        ${/* F5: sökrutan ligger i navraden, inte på en egen sida man måste hitta
+             till först. Poängen är att slippa VETA var något ligger — samma
+             bolag kan vara prospekt i relationen och kund i redovisningen.
+             Ett GET-formulär: ingen JS, och träfflistan går att bokmärka. */ ''}
+        <form class="nav__sok" method="get" action="/app/c/${opts.companyId}/sok" role="search">
+          <input type="search" name="q" placeholder="Sök bolag eller person" aria-label="Sök" maxlength="120">
+        </form>
       </nav>`
     : '';
   return html`<!doctype html><html lang="sv"><head>${head(opts.title)}</head>

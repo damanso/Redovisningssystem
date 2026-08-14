@@ -10,6 +10,7 @@ import {
   snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
+import { mergeOrganizations, mergePeople, searchCrm } from '../services/crmMerge.js';
 import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
@@ -1483,10 +1484,43 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       organization_id: UuidSchema,
       snooze_days: z.number().int().min(1).max(3650).optional(),
       muted: z.boolean().optional(),
+      // F5: egen tystnadsgräns. null = återgå till bolagets standard.
+      cadence_days: z.number().int().min(1).max(3650).nullable().optional(),
     }).strict(),
-    handler: (ctx, i: { organization_id: string; snooze_days?: number; muted?: boolean }) =>
+    handler: (ctx, i: { organization_id: string; snooze_days?: number; muted?: boolean; cadence_days?: number | null }) =>
       setRelationNudge(ctx.client, ctx.companyId, ctx.userId, i.organization_id,
-        { snooze_days: i.snooze_days, muted: i.muted }),
+        {
+          snooze_days: i.snooze_days, muted: i.muted,
+          ...('cadence_days' in i ? { cadence_days: i.cadence_days } : {}),
+        }),
+  }),
+  // F5: dubbletter är ingen bugg i synken utan en följd av att data kommer från
+  // flera håll — Gmail säger "Nordic Vision Retail", kundregistret säger
+  // "Nordic Vision Retail AB". Utan sammanslagning delas historiken i två, och
+  // ett kort som ser komplett ut saknar hälften.
+  def({
+    name: 'merge_crm_organizations',
+    title: 'Slå ihop två organisationer (dubbletter)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ keep_id: UuidSchema, merge_id: UuidSchema }).strict(),
+    handler: (ctx, i: { keep_id: string; merge_id: string }) =>
+      mergeOrganizations(ctx.client, ctx.companyId, ctx.userId, i.keep_id, i.merge_id),
+  }),
+  def({
+    name: 'merge_crm_people',
+    title: 'Slå ihop två personer (dubbletter)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ keep_id: UuidSchema, merge_id: UuidSchema }).strict(),
+    handler: (ctx, i: { keep_id: string; merge_id: string }) =>
+      mergePeople(ctx.client, ctx.companyId, ctx.userId, i.keep_id, i.merge_id),
+  }),
+  def({
+    name: 'search_crm',
+    title: 'Sök i relationer, personer, kunder och leverantörer',
+    sensitivity: 'read',
+    inputSchema: z.object({ query: safeText(120), limit: z.number().int().min(1).max(50).optional() }).strict(),
+    handler: (ctx, i: { query: string; limit?: number }) =>
+      searchCrm(ctx.client, ctx.companyId, i.query, i.limit),
   }),
   def({
     name: 'list_crm_commitments',

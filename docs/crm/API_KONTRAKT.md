@@ -141,8 +141,29 @@ som en synk som lyckades helt.
 `upsert_crm_organization` tar `organization_id` när raden redan är känd. Utan den
 matchas namnet, och då går namnet inte att rätta — en ändring hade lagt upp en ny
 organisation bredvid den gamla. Krockar det nya namnet med en befintlig rad
-avvisas skrivningen med `name_taken`; två rader för samma bolag ska slås ihop,
-inte döpas om till varandra.
+avvisas skrivningen med `name_taken`; två rader för samma bolag ska slås ihop
+(`merge_crm_organizations`), inte döpas om till varandra.
+
+## Kadens, dubbletter och sökning
+
+| Åtgärd | Gör |
+| :---- | :---- |
+| `set_crm_relation_nudge` | Skjut upp, tysta — och sätt `cadence_days` (egen tystnadsgräns; `null` = bolagets standard) |
+| `merge_crm_organizations` | Slår ihop två organisationer. **Känslig** — går inte att ångra |
+| `merge_crm_people` | Slår ihop två personer. **Känslig** |
+| `search_crm` | Söker i relationer, personer, kundregistret och leverantörsregistret på en gång |
+
+Sammanslagningen följer två regler: **ingenting kastas** (kontaktpunkter, löften
+och personer flyttas över) och **tomma fält fylls, ifyllda rörs inte** — annars
+vore sammanslagningen en väg runt regeln att människan vinner.
+
+Två fall avvisas i stället för att gissas: organisationer som pekar på **olika**
+kunder i redovisningen (`customer_conflict`) och personer med **olika**
+e-postadresser (`email_conflict`). Det är då inte dubbletter.
+
+Kadensen finns för att en gemensam tystnadsgräns passar ingen: en kund på
+månadsretainer och en kund vartannat år kan inte dela gräns. Klockan nollställs
+av **kontakt**, aldrig av inställningen.
 
 ## Vad som räknas fram på den här sidan
 

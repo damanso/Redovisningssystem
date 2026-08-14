@@ -27,6 +27,8 @@ export interface RelationRow {
   /** Dämpningen (F1): "inte nu" respektive "föreslå aldrig". */
   snoozed_until: string | null;
   muted: boolean;
+  /** Kadensen (F5): egen tystnadsgräns i dagar. NULL = bolagets standard. */
+  cadence_days: number | null;
 }
 
 /**
@@ -72,7 +74,7 @@ export async function relationState(
      ),
      total AS (SELECT COALESCE(sum(net_ore), 0) AS all_ore FROM revenue)
      SELECT o.id AS organization_id, o.name, o.status, o.customer_id,
-            o.snoozed_until::text, o.muted,
+            o.snoozed_until::text, o.muted, o.cadence_days,
             ct.last_contact_at,
             CASE WHEN ct.last_contact_at IS NULL THEN NULL
                  ELSE ((SELECT d FROM asof) - ct.last_contact_at::date) END AS days_silent,
@@ -130,7 +132,8 @@ export async function silenceReport(
   return {
     as_of: asOf,
     silence_days: days,
-    rows: all.filter((r) => r.days_silent === null || r.days_silent >= days),
+    // Samma regel som förslagen: relationens egen kadens går före standarden.
+    rows: all.filter((r) => r.days_silent === null || r.days_silent >= (r.cadence_days ?? days)),
   };
 }
 
@@ -191,6 +194,12 @@ export async function contactSuggestions(
     const reasons: string[] = [];
     let priority = 0;
 
+    // F5: relationens EGEN kadens går före bolagets standard. En kund på
+    // månadsretainer och en kund vartannat år kan inte dela gräns — med en
+    // gemensam gräns fylls listan med namn som inte borde ligga där, och en
+    // lista med brus i lär användaren att ignorera den.
+    const grans = r.cadence_days ?? days;
+
     if (r.overdue_commitments > 0) {
       reasons.push(`${r.overdue_commitments} förfallet åtagande${r.overdue_commitments > 1 ? 'n' : ''} — vi har lovat något som passerat sitt datum`);
       priority += 100 * r.overdue_commitments;
@@ -198,8 +207,10 @@ export async function contactSuggestions(
     if (r.days_silent === null) {
       reasons.push('ingen registrerad kontakt alls');
       priority += 40;
-    } else if (r.days_silent >= days) {
-      reasons.push(`tyst i ${r.days_silent} dagar`);
+    } else if (r.days_silent >= grans) {
+      reasons.push(r.cadence_days
+        ? `tyst i ${r.days_silent} dagar — kadensen är ${r.cadence_days}`
+        : `tyst i ${r.days_silent} dagar`);
       priority += Math.min(r.days_silent, 365);
     }
     if (reasons.length === 0) continue;

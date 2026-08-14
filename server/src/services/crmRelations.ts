@@ -807,21 +807,28 @@ export async function snoozeCommitment(
  */
 export async function setRelationNudge(
   client: PoolClient, companyId: string, userId: string, id: string,
-  opts: { snooze_days?: number; muted?: boolean },
+  opts: { snooze_days?: number; muted?: boolean; cadence_days?: number | null },
 ): Promise<Record<string, unknown>> {
   const r = await client.query(
     `UPDATE crm.organizations SET
        snoozed_until = CASE WHEN $3::int IS NULL THEN snoozed_until
                             ELSE current_date + make_interval(days => $3::int) END,
-       muted         = COALESCE($4, muted)
+       muted         = COALESCE($4, muted),
+       -- F5: kadensen. $6 skiljer "rör inte" från "återgå till standard", som
+       -- båda skrivs som frånvaro av ett tal och annars vore omöjliga att skilja.
+       cadence_days  = CASE WHEN $6::boolean THEN $5::int ELSE cadence_days END
      WHERE id = $1 AND company_id = $2
-     RETURNING id, name, snoozed_until::text, muted`,
-    [id, companyId, opts.snooze_days ?? null, opts.muted ?? null],
+     RETURNING id, name, snoozed_until::text, muted, cadence_days`,
+    [id, companyId, opts.snooze_days ?? null, opts.muted ?? null,
+      opts.cadence_days ?? null, opts.cadence_days !== undefined],
   );
   if (!r.rows[0]) throw new NotFoundError('organization');
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.relation_nudge_set', entityType: 'organization', entityId: id,
-    details: { snooze_days: opts.snooze_days ?? null, muted: opts.muted ?? null },
+    details: {
+      snooze_days: opts.snooze_days ?? null, muted: opts.muted ?? null,
+      ...(opts.cadence_days !== undefined ? { cadence_days: opts.cadence_days } : {}),
+    },
   });
   return r.rows[0];
 }

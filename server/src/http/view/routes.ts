@@ -30,7 +30,8 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { contactSuggestions, relationState, todayView } from '../../services/crmDerivations.js';
+import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
+import { searchCrm } from '../../services/crmMerge.js';
 import { steeringOverview } from '../../services/steering.js';
 import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
@@ -1673,6 +1674,46 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
     }`;
 }));
 
+// F5: sökning över fyra register på en gång.
+//
+// Poängen är inte fulltext utan att man slipper VETA var något ligger. Samma
+// bolag kan finnas som prospekt i relationen och som kund i redovisningen; en
+// person kan bo i kundregistrets kontakter eller i relationen. Att kräva att
+// användaren håller reda på vilket innan hen får söka är att lägga systemets
+// struktur på användaren.
+viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, companyId, req) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : '';
+  const hits = q.trim().length >= 2 ? await searchCrm(client, companyId, q) : [];
+  const href = (h: { kind: string; href_id: string }): string =>
+    h.kind === 'organization' ? `/app/c/${companyId}/relations/${h.href_id}`
+      : h.kind === 'person' ? `/app/c/${companyId}/relations?person=${h.href_id}`
+      : h.kind === 'customer' ? `/app/c/${companyId}/customers/${h.href_id}`
+      : `/app/c/${companyId}/suppliers/${h.href_id}`;
+  const märke = (kind: string): Raw =>
+    kind === 'organization' ? chip('Relation', 'info') : kind === 'person' ? chip('Person', 'muted')
+      : kind === 'customer' ? chip('Kund', 'ok') : chip('Leverantör', 'muted');
+
+  return html`<div class="page-head"><div>${eyebrow('Sök')}<h1>Hitta ett bolag eller en person</h1>
+      <p class="lede">Söker i relationer, personer, kundregistret och leverantörsregistret på en gång — du ska slippa veta var något ligger.</p></div></div>
+    <form class="soksida" method="get" action="/app/c/${companyId}/sok" role="search">
+      <input type="search" name="q" value="${q}" placeholder="Namn, org.nr eller e-post" aria-label="Sök" maxlength="120" autofocus>
+      <button class="btn btn--primary btn--sm" type="submit">Sök</button>
+    </form>
+    ${
+      q.trim().length < 2
+        ? html`<div class="empty"><div class="big">Skriv minst två tecken</div>
+            Namn, organisationsnummer eller e-postadress. Exakta träffar hamnar överst.</div>`
+        : hits.length === 0
+          ? html`<div class="empty"><div class="big">Inget matchade "${q}"</div>
+              Prova en del av namnet. En relation som aldrig fått en kontaktpunkt syns fortfarande under <a href="/app/c/${companyId}/relations">Relationer</a>.</div>`
+          : html`<ol class="sok">${hits.map((h) => html`<li class="sok__rad">
+              ${märke(h.kind)}
+              <a class="sok__t" href="${href(h)}">${h.title}</a>
+              ${h.subtitle ? html`<span class="sok__u">${h.subtitle}</span>` : ''}
+            </li>`)}</ol>`
+    }`;
+}));
+
 viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId) => {
   const state = await relationState(client, companyId);
   // Förslagen räknas ur samma resultat — inte ur en andra körning av samma fråga.
@@ -1744,8 +1785,12 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       last_contact_at: string | null;
       provenance: Record<string, ProvenanceView>;
     };
-    const [state] = await relationState(client, companyId, {}).then(
-      (rows) => [rows.find((r) => r.organization_id === orgId)]);
+    const alla = await relationState(client, companyId, {});
+    const state = alla.find((r) => r.organization_id === orgId);
+    // Kandidater för sammanslagning: alla ANDRA relationer. Ingen automatisk
+    // dubblettgissning — att avgöra att två rader är samma bolag är ett omdöme,
+    // och ett felaktigt förslag som ser auktoritativt ut är farligare än inget.
+    const andra = alla.filter((r) => r.organization_id !== orgId);
     const thread = await relationThread(client, companyId, orgId, { filter });
     const back = `/app/c/${companyId}/relations/${o.id}`;
     const oppna = o.commitments.filter((c) => c.status === 'open').length;
@@ -1830,12 +1875,45 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
           </div>
 
           <div class="factcard">
-            <div class="factcard__head">Dämpning</div>
+            <div class="factcard__head">Kadens &amp; dämpning</div>
+            ${/* F5: en kund på månadsretainer och en kund vartannat år kan inte
+                 dela tystnadsgräns. Med en gemensam gräns fylls dagsytan med
+                 namn som inte borde ligga där — och en lista med brus i lär
+                 användaren att ignorera den. */ ''}
+            <form method="post" action="/app/c/${companyId}/relations/${o.id}/cadence" class="kadens">
+              <input type="hidden" name="back" value="${back}">
+              <label for="kadens-${o.id}">Hör av mig var</label>
+              <input id="kadens-${o.id}" type="number" name="cadence_days" min="1" max="3650"
+                value="${state?.cadence_days === null || state?.cadence_days === undefined ? '' : String(state.cadence_days)}"
+                placeholder="${String(DEFAULT_SILENCE_DAYS)}" inputmode="numeric">
+              <span class="kadens__enhet">dagar</span>
+              <button class="btn btn--ghost btn--sm" type="submit">Spara</button>
+              <p class="hint">Tomt = bolagets standard (${String(DEFAULT_SILENCE_DAYS)} dagar). Klockan nollställs av kontakt, aldrig av inställningen.</p>
+            </form>
             <div class="quick">
               ${rowAction(`/app/c/${companyId}/relations/${o.id}/snooze`, 'Skjut upp 2 v', { fields: { days: '14' }, back })}
               ${rowAction(`/app/c/${companyId}/relations/${o.id}/mute`, 'Föreslå aldrig', { fields: { muted: 'true' }, back })}
             </div>
           </div>
+
+          ${/* F5: dubbletter är ingen bugg i synken utan en följd av att data
+               kommer från flera håll. Utan sammanslagning delas historiken i
+               två, och kortet ser komplett ut fast hälften saknas. */ ''}
+          ${andra.length === 0 ? '' : html`<div class="factcard">
+            <div class="factcard__head">Dubblett?</div>
+            <details class="rattaform">
+              <summary>Slå ihop en annan relation hit</summary>
+              <form method="post" action="/app/c/${companyId}/relations/${o.id}/merge">
+                <input type="hidden" name="back" value="${back}">
+                <label>Den här försvinner<select name="merge_id" required>
+                  <option value="">Välj relation…</option>
+                  ${andra.map((a) => html`<option value="${a.organization_id}">${a.name}</option>`)}
+                </select></label>
+                <button class="btn btn--ghost btn--sm" type="submit">Slå ihop</button>
+                <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i — ifyllda rörs inte. Går inte att ångra, så förslaget hamnar först i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
+              </form>
+            </details>
+          </div>`}
         </aside>
 
         <div class="relation__thread">
@@ -2019,6 +2097,30 @@ viewRouter.post('/c/:companyId/relations/:id/mute', page(async (req, res) => {
   const muted = String((req.body as { muted?: unknown }).muted) !== 'false';
   await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
     { organization_id: id, muted }, backToCrm(req, companyId, 'relations'));
+}));
+
+// F5: kadensen. Tomt fält = återgå till bolagets standard, vilket är något
+// ANNAT än "rör inte" — därför skickas null uttryckligen.
+viewRouter.post('/c/:companyId/relations/:id/cadence', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const raw = String((req.body as { cadence_days?: unknown }).cadence_days ?? '').trim();
+  const days = Number(raw);
+  const cadence = raw === '' ? null : (Number.isInteger(days) && days >= 1 && days <= 3650 ? days : null);
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, cadence_days: cadence }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F5: sammanslagning. Åtgärden är känslig (går inte att ångra), så den hamnar i
+// Att göra för en andra titt — samma väg som en betalning tar.
+viewRouter.post('/c/:companyId/relations/:id/merge', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const mergeId = UuidSchema.parse((req.body as { merge_id?: unknown }).merge_id);
+  await runViewAction(req, res, companyId, 'merge_crm_organizations',
+    { keep_id: id, merge_id: mergeId }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 // F4: "stämmer" — ett klick som gör en gissning till ett beslut. Fältnamnet
