@@ -636,6 +636,51 @@ a.today__who:hover { color: var(--accent-ink); }
 .today__amt { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink-2); }
 .today__why { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
 
+/* Relationssidan: fakta till vänster, kronologi till höger.
+   Under 860px staplas de — fakta först, för att "vad är det här för relation"
+   ska besvaras innan man börjar läsa historik. */
+.relation { display: grid; gap: 16px; grid-template-columns: 1fr; margin-top: 16px; }
+@media (min-width: 860px) { .relation { grid-template-columns: 290px minmax(0, 1fr); align-items: start; } }
+.relation__facts { display: flex; flex-direction: column; gap: 12px; }
+.relation__thread { min-width: 0; }
+
+.factcard {
+  background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: var(--radius); padding: 13px 15px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.factcard__head { font-size: 12px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3); }
+.fact { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.fact .k { font-size: 12.5px; color: var(--ink-3); }
+.fact .v { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
+.person { display: flex; flex-direction: column; gap: 1px; font-size: 13.5px; }
+.person__n { font-weight: 600; }
+.person__r, .person__e { font-size: 12.5px; color: var(--ink-3); }
+
+/* Trådens filterflikar — vanliga länkar, ingen JS. */
+.threadtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.threadtab {
+  font-size: 13px; font-weight: 550; padding: 5px 12px; border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2); color: var(--ink-2); background: var(--surface);
+}
+.threadtab:hover { border-color: var(--ink-3); text-decoration: none; }
+.threadtab.is-active { background: var(--accent-weak); border-color: transparent; color: var(--accent-ink); }
+
+/* Kronologin. En rad = en händelse, oavsett om den kom från ett mail eller
+   från bokföringen. Det är hela poängen med tråden. */
+.thread { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--surface); }
+.thread__ev { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; padding: 11px 15px; border-top: 1px solid var(--line); }
+.thread__ev:first-child { border-top: 0; }
+.thread__when { font-family: var(--mono); font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; padding-top: 2px; }
+.thread__what { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.thread__title { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.thread__amt { font-variant-numeric: tabular-nums; font-weight: 650; }
+.thread__src { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .thread__ev { grid-template-columns: 1fr; gap: 3px; }
+  .thread__when { padding-top: 0; }
+}
+
 /* Tomt tillstånd */
 .empty { text-align: center; padding: 40px 20px; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: var(--radius); background: var(--surface); }
 .empty .big { font-size: 15px; color: var(--ink-2); font-weight: 550; margin-bottom: 4px; }

@@ -32,6 +32,7 @@ import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, relationState, todayView } from '../../services/crmDerivations.js';
 import { steeringOverview } from '../../services/steering.js';
+import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
@@ -1521,6 +1522,26 @@ function menuAction(
   </form>`;
 }
 
+/** Trådens händelsemärke. Färgen bär typen: pengar in är grönt, ett förfallet
+ *  löfte rött, kontakt neutralt. Formen gör kronologin läsbar utan att man
+ *  behöver läsa varje rad. */
+function threadChip(e: ThreadEvent): Raw {
+  switch (e.kind) {
+    case 'payment': return html`${chip('Betald', 'ok', '✓')} `;
+    case 'invoice': return html`${chip('Faktura', 'info')} `;
+    case 'commitment':
+      return html`${chip(e.tag === 'we_owe' ? 'Vi lovade' : 'De lovade', 'warn')} `;
+    case 'commitment_closed':
+      return html`${chip(e.tag === 'done' ? 'Löfte klart' : 'Avskrivet', e.tag === 'done' ? 'ok' : 'muted', e.tag === 'done' ? '✓' : undefined)} `;
+    default:
+      return e.tag ? html`${chip(kanalNamn(e.tag), 'muted')} ` : html``;
+  }
+}
+
+const kanalNamn = (c: string): string =>
+  c === 'email' ? 'Mail' : c === 'call' ? 'Samtal' : c === 'meeting' ? 'Möte'
+    : c === 'issue' ? 'Ärende' : 'Anteckning';
+
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
 function silenceChip(days: number | null): Raw {
   if (days === null) return chip('Ingen kontakt', 'neg', '!');
@@ -1677,72 +1698,112 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const orgId = parseApprovalId(req.params.orgId);
+  const filter: ThreadFilter = isThreadFilter(req.query.visa) ? req.query.visa : 'allt';
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const o = await getOrganization(client, companyId, orgId) as {
       id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
       org_number: string | null; website: string | null; source: string | null; notes: string | null;
       people: Array<{ id: string; name: string; email: string | null; phone: string | null; role_title: string | null }>;
-      interactions: Array<{ occurred_at: string; channel: string; direction: string; summary: string; source_system: string; source_ref: string | null; person_name: string | null }>;
-      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string; occurred_at: string; source_system: string; source_ref: string | null; person_name: string | null }>;
+      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string }>;
       last_contact_at: string | null;
     };
+    const [state] = await relationState(client, companyId, {}).then(
+      (rows) => [rows.find((r) => r.organization_id === orgId)]);
+    const thread = await relationThread(client, companyId, orgId, { filter });
+    const back = `/app/c/${companyId}/relations/${o.id}`;
+    const oppna = o.commitments.filter((c) => c.status === 'open').length;
+
+    // Sex nyckeltal, inte fler. Attio kapar sina "highlights" vid sex av samma
+    // skäl: en ruta till kostar ingenting att lägga till och allt att läsa.
+    // Alla sex är HÄRLEDDA ur bokföringen — ingen skriver in dem.
     const b = html`<div class="page-head"><div>${eyebrow('Relation')}<h1>${o.name}</h1>
         <p class="lede">${o.customer_id ? html`Kund i registret · <a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a> · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
-        <div class="actions">${orgStatusChip(o.status)}</div></div>
-      <div class="kpi-grid">
-        ${kpiCell('Senaste kontakt', html`${o.last_contact_at ? dayOf(o.last_contact_at) : '—'}`)}
-        ${kpiCell('Personer', html`${o.people.length}`)}
-        ${kpiCell('Öppna löften', html`${o.commitments.filter((c) => c.status === 'open').length}`)}
-      </div>
-      <h2 style="margin-top:18px">Personer</h2>
-      ${
-        o.people.length === 0
-          ? html`<p class="muted">Inga personer registrerade ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Namn</th><th>Roll</th><th>E-post</th><th>Telefon</th></tr></thead><tbody>
-              ${o.people.map((p) => html`<tr><td>${p.name}</td><td>${p.role_title ?? '—'}</td>
-                <td>${p.email ?? '—'}</td><td>${p.phone ?? '—'}</td></tr>`)}
-              </tbody></table></div>`
-      }
-      <h2 style="margin-top:18px">Vad vi lovat varandra</h2>
-      ${
-        o.commitments.length === 0
-          ? html`<p class="muted">Inga registrerade åtaganden.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Riktning</th><th>Vad</th><th>Senast</th><th>Läge</th><th>Källa</th></tr></thead><tbody>
-              ${o.commitments.map((c) => html`<tr>
-                <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
-                <td>${c.body}${c.person_name ? html` <span class="muted">· ${c.person_name}</span>` : ''}</td>
-                <td class="code">${c.due_date ?? '—'}</td>
-                <td>${c.status === 'open' ? chip('Öppet', 'warn') : c.status === 'done' ? chip('Klart', 'ok', '✓') : chip('Avskrivet', 'muted')}</td>
-                <td class="muted">${c.source_system}${c.source_ref ? html` · ${c.source_ref}` : ''}</td></tr>`)}
-              </tbody></table></div>`
-      }
-      <h2 style="margin-top:18px">Vad som sagts</h2>
-      ${/* Snabbregistrering: post-it-testet. Tre kanaler, ett fritextfält, ett
-           klick — och tystnadsklockan nollställs. Ingen AI inblandad. */ ''}
-      <form method="post" action="/app/c/${companyId}/relations/${o.id}/log" class="quickcapture">
-        <input type="hidden" name="back" value="/app/c/${companyId}/relations/${o.id}">
-        <input type="text" name="summary" maxlength="2000" placeholder="Vad hände? (valfritt)">
-        <select name="channel" aria-label="Kanal">
-          <option value="note">Anteckning</option>
-          <option value="email">Mail</option>
-          <option value="call">Samtal</option>
-          <option value="meeting">Möte</option>
-        </select>
-        <button class="btn btn--primary btn--sm" type="submit">Logga kontakt</button>
-      </form>
-      ${
-        o.interactions.length === 0
-          ? html`<p class="muted">Inga kontaktpunkter ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>När</th><th>Kanal</th><th>Med</th><th>Vad</th><th>Källa</th></tr></thead><tbody>
-              ${o.interactions.map((i) => html`<tr>
-                <td class="code">${dayOf(i.occurred_at)}</td>
-                <td>${i.channel}${i.direction === 'inbound' ? ' ←' : i.direction === 'outbound' ? ' →' : ''}</td>
-                <td>${i.person_name ?? '—'}</td>
-                <td>${i.summary}</td>
-                <td class="muted">${i.source_system}${i.source_ref ? html` · ${i.source_ref}` : ''}</td></tr>`)}
-              </tbody></table></div>`
-      }`;
+        <div class="actions">${orgStatusChip(o.status)}${
+          o.customer_id ? '' : html` ${chip('Ej i kundregistret', 'warn', '!')}`
+        }</div></div>
+      ${felNotis(req)}
+
+      <div class="relation">
+        <aside class="relation__facts">
+          <div class="factcard">
+            <div class="fact"><span class="k">Senaste kontakt</span><span class="v">${state?.last_contact_at ? dayOf(state.last_contact_at) : '—'}</span></div>
+            <div class="fact"><span class="k">Tyst i</span><span class="v">${state?.days_silent === null || state?.days_silent === undefined ? '—' : `${String(state.days_silent)} dagar`}</span></div>
+            <div class="fact"><span class="k">Omsättning 12 mån</span><span class="v">${amount(state?.revenue_12m_ore ?? 0, { unit: false })}</span></div>
+            <div class="fact"><span class="k">Andel</span><span class="v">${pct(state?.revenue_share_permille ?? null)}</span></div>
+            <div class="fact"><span class="k">Öppna löften</span><span class="v">${String(oppna)}${
+              (state?.overdue_commitments ?? 0) > 0 ? html` ${chip(`${state!.overdue_commitments} förfallna`, 'neg', '!')}` : ''
+            }</span></div>
+            <div class="fact"><span class="k">Personer</span><span class="v">${String(o.people.length)}</span></div>
+          </div>
+
+          <div class="factcard">
+            <div class="factcard__head">Personer</div>
+            ${
+              o.people.length === 0
+                ? html`<p class="muted" style="font-size:13px;margin:0">Inga personer ännu. De läggs upp av synken när ett mail kommer in.</p>`
+                : o.people.map((p) => html`<div class="person">
+                    <span class="person__n">${p.name}</span>
+                    ${p.role_title ? html`<span class="person__r">${p.role_title}</span>` : ''}
+                    ${p.email ? html`<span class="person__e">${p.email}</span>` : ''}</div>`)
+            }
+          </div>
+
+          <div class="factcard">
+            <div class="factcard__head">Dämpning</div>
+            <div class="quick">
+              ${rowAction(`/app/c/${companyId}/relations/${o.id}/snooze`, 'Skjut upp 2 v', { fields: { days: '14' }, back })}
+              ${rowAction(`/app/c/${companyId}/relations/${o.id}/mute`, 'Föreslå aldrig', { fields: { muted: 'true' }, back })}
+            </div>
+          </div>
+        </aside>
+
+        <div class="relation__thread">
+          ${/* Snabbregistrering överst i tråden: post-it-testet. Ett fält, en
+               kanal, ett klick — och tystnadsklockan nollställs. Ingen AI. */ ''}
+          <form method="post" action="/app/c/${companyId}/relations/${o.id}/log" class="quickcapture">
+            <input type="hidden" name="back" value="${back}">
+            <input type="text" name="summary" maxlength="2000" placeholder="Vad hände?">
+            <select name="channel" aria-label="Kanal">
+              <option value="note">Anteckning</option>
+              <option value="email">Mail</option>
+              <option value="call">Samtal</option>
+              <option value="meeting">Möte</option>
+            </select>
+            <button class="btn btn--primary btn--sm" type="submit">Logga kontakt</button>
+          </form>
+
+          <div class="threadtabs">
+            ${(['allt', 'kontakt', 'pengar', 'loften'] as const).map((f) => html`<a
+              class="threadtab ${f === filter ? 'is-active' : ''}"
+              href="${back}?visa=${f}"${f === filter ? html` aria-current="page"` : ''}>${
+                f === 'allt' ? 'Allt' : f === 'kontakt' ? 'Kontakt' : f === 'pengar' ? 'Pengar' : 'Löften'
+              }</a>`)}
+          </div>
+
+          ${
+            thread.length === 0
+              ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
+                  Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
+              : html`<ol class="thread">${thread.map((e) => html`<li class="thread__ev">
+                  <time class="thread__when" datetime="${String(e.at)}">${dayOf(e.at)}</time>
+                  <div class="thread__what">
+                    <div class="thread__title">${threadChip(e)}${e.title}${
+                      e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
+                    }</div>
+                    ${
+                      e.who || e.source_system
+                        ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${
+                            e.who && e.source_system ? ' · ' : ''
+                          }${e.source_system ? html`${e.source_system}` : ''}${
+                            e.source_ref ? html` · ${e.source_ref}` : ''
+                          }</div>`
+                        : ''
+                    }
+                  </div></li>`)}</ol>`
+          }
+        </div>
+      </div>`;
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', body }).value);

@@ -10,6 +10,7 @@ import {
 } from '../services/crmRelations.js';
 import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
+import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
@@ -1509,6 +1510,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events),
+  }),
+  def({
+    name: 'get_crm_thread',
+    title: 'Relationens hela historia i en kronologi',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      organization_id: UuidSchema,
+      filter: z.enum(['allt', 'kontakt', 'pengar', 'loften']).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }).strict(),
+    handler: (ctx, i: { organization_id: string; filter?: string; limit?: number }) =>
+      relationThread(ctx.client, ctx.companyId, i.organization_id, {
+        filter: isThreadFilter(i.filter) ? i.filter : 'allt', limit: i.limit,
+      }),
   }),
   def({
     name: 'crm_relation_state',
