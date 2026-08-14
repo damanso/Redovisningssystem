@@ -333,6 +333,61 @@ export async function upsertPerson(
   return { ...r.rows[0]!, created: false };
 }
 
+/**
+ * Relationen sedd FRÅN kundkortet.
+ *
+ * Personer kan i dag finnas på två ställen: `party_contacts` (kundregistret,
+ * ifyllt för hand) och `crm.people` (relationen, ifylld av synken). Kundkortet
+ * läste bara det första, så alla som kommit in via API-kontraktet var osynliga
+ * där man naturligt letar efter dem.
+ *
+ * Läsningen JOINar i stället för att kopiera — det finns fortfarande bara en
+ * sanning per person, och de två listorna hålls åtskilda i vyn så att det syns
+ * VAR en uppgift kommer ifrån (de har olika gallring: relationsdatan får
+ * raderas, kundregistret styrs av bokföringslagen).
+ *
+ * null = kunden har ingen relation registrerad. Då visas inget extra alls.
+ */
+export async function customerRelationSummary(
+  client: PoolClient, companyId: string, customerId: string,
+): Promise<{
+  organization_id: string; organization_name: string; status: string;
+  people: Record<string, unknown>[]; last_contact_at: string | null; open_commitments: number;
+} | null> {
+  const org = await client.query<{ id: string; name: string; status: string }>(
+    'SELECT id, name, status FROM crm.organizations WHERE company_id = $1 AND customer_id = $2',
+    [companyId, customerId],
+  );
+  if (!org.rows[0]) return null;
+  const { id, name, status } = org.rows[0];
+
+  const people = await client.query(
+    `SELECT p.id, p.name, p.email, p.phone, p.role_title,
+            (SELECT max(i.occurred_at) FROM crm.interactions i
+              WHERE i.company_id = p.company_id AND i.person_id = p.id) AS last_contact_at
+     FROM crm.people p WHERE p.company_id = $1 AND p.organization_id = $2 ORDER BY p.name`,
+    [companyId, id],
+  );
+  const meta = await client.query<{ last_contact_at: string | null; open_commitments: number }>(
+    `SELECT (SELECT max(i.occurred_at) FROM crm.interactions i
+              WHERE i.company_id = $1 AND (i.organization_id = $2
+                OR i.person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = $2))
+            ) AS last_contact_at,
+            (SELECT count(*)::int FROM crm.commitments c
+              WHERE c.company_id = $1 AND c.organization_id = $2 AND c.status = 'open') AS open_commitments`,
+    [companyId, id],
+  );
+
+  return {
+    organization_id: id,
+    organization_name: name,
+    status,
+    people: people.rows,
+    last_contact_at: meta.rows[0]?.last_contact_at ?? null,
+    open_commitments: meta.rows[0]?.open_commitments ?? 0,
+  };
+}
+
 export async function listPeople(
   client: PoolClient, companyId: string, opts: { organization_id?: string } = {},
 ): Promise<Record<string, unknown>[]> {

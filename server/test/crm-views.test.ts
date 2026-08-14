@@ -112,6 +112,29 @@ describe('ingesten kopplar ihop relationen med redovisningen', () => {
     expect(nvr.revenue_share_permille).toBe(750); // 75 %, samma som styrvyn visar
   });
 
+  it('kundkortet visar personerna från relationen — där man letar efter dem', async () => {
+    // Personer som kommer in via API-kontraktet hamnar i relationen, inte i
+    // kundregistret. Kundkortet läste bara registret, så de var osynliga på
+    // precis den sida man öppnar när man undrar vem man pratar med hos kunden.
+    const res = await ua.get(`/app/c/${companyId}/customers/${bigCustomerId}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Eva Larsson');
+    expect(res.text).toContain('Ekonomichef');
+    // Ursprunget syns — de två registren har olika gallring och slås inte ihop.
+    expect(res.text).toContain('Från relationen');
+    expect(res.text).toContain('Senaste kontakt 2026-08-10');
+    expect(res.text).toContain(`/app/c/${companyId}/relations/${orgId}`);
+  });
+
+  it('en kund utan relation får ingen extra text på kortet', async () => {
+    const ensam = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Utan Relation AB' });
+    expect(ensam.status).toBe(201);
+    const res = await ua.get(`/app/c/${companyId}/customers/${ensam.body.customer.id}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Inga kontaktpersoner.');
+    expect(res.text).not.toContain('Öppna relationen');
+  });
+
   it('en organisation UTAN koppling märks ut i vyn i stället för att visa 0 kr', async () => {
     const res = await ua.get(`/app/c/${companyId}/relations`);
     expect(res.status).toBe(200);

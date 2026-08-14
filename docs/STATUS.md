@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 584 tester i 73 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 586 tester i 73 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -95,6 +95,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-14 (David i drift: personerna syntes inte på kundkortet):**
+  Följdfynd till kopplingsbuggen. En människa kan nu finnas på TVÅ ställen:
+  `party_contacts` (kundregistret, ifyllt för hand) och `crm.people`
+  (relationen, ifylld av synken). Kundkortet läste bara det första, så alla som
+  kommit in via API-kontraktet var osynliga på precis den sida man öppnar när
+  man undrar vem man pratar med hos kunden. **Fix:** kortet JOINar nu in
+  relationens personer (kopierar dem inte — det finns fortfarande en sanning per
+  person) och visar dem i samma tabell men märkta "Från relationen", med
+  senaste kontakt, öppna åtaganden och en länk vidare till relationssidan. De
+  hålls åtskilda med flit: registren har olika ursprung och olika gallring
+  (relationsdata får raderas, kundregistret styrs av bokföringslagen), och en
+  hopslagning hade dolt var en uppgift kommer ifrån. GDPR-texten på kortet säger
+  nu också att relationens personer, kontaktpunkter och åtaganden raderas.
+  **586 tester i 73 sviter gröna.**
+  *Kvarstår som designskuld:* två personregister är ett glapp, inte en design.
+  Nästa naturliga steg är att låta kundkortets kontaktformulär skriva till
+  relationen i stället — men det rör E1:s befintliga data och tas som ett eget
+  pass, inte som en sidoeffekt av en buggfix.
 
 - **2026-08-13 (bugg funnen av David i drift: ingesten kopplade aldrig kunden):**
   `ingest_crm_events` — API-kontraktets PRIMÄRA producent — satte aldrig

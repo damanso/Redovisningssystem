@@ -29,7 +29,7 @@ import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, 
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
-import { getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, relationState } from '../../services/crmDerivations.js';
 import { steeringOverview } from '../../services/steering.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
@@ -2238,17 +2238,37 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
       const company = await loadCompany(client, companyId);
       const party = await load(client, companyId, partyId);
       const crm = await getPartyCrm(client, companyId, partyType, partyId);
+      // Personerna som kommit in via API-kontraktet bor i relationen, inte i
+      // kundregistret. De ska synas HÄR, där man naturligt letar efter dem.
+      const rel = partyType === 'customer' ? await customerRelationSummary(client, companyId, partyId) : null;
       const backLabel = partyType === 'customer' ? 'Kunder' : 'Leverantörer';
       const b = html`<div class="page-head"><div>${eyebrow(backLabel)}<h1>${party.name as string}</h1>
           <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div></div>
         <div class="panel"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
           ${crm.tags.length ? crm.tags.map((t) => html`${chip(t, 'info')} `) : html`<span class="muted">Inga taggar.</span>`}</div></div>
-        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Kontaktpersoner</h2><span class="muted" style="font-size:12.5px">${String(crm.contacts.length)} st</span></div>
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Kontaktpersoner</h2><span class="muted" style="font-size:12.5px">${String(crm.contacts.length + (rel?.people.length ?? 0))} st</span></div>
           <div class="panel__body" style="padding:6px 4px">${
-            crm.contacts.length === 0 ? html`<p class="muted" style="padding:10px 12px">Inga kontaktpersoner.</p>`
+            crm.contacts.length === 0 && !(rel?.people.length)
+              ? html`<p class="muted" style="padding:10px 12px">Inga kontaktpersoner.</p>`
               : html`<div class="table-wrap" style="border:0;box-shadow:none"><table><thead><tr><th>Namn</th><th>Roll</th><th>E-post</th><th>Telefon</th><th></th></tr></thead><tbody>
                 ${crm.contacts.map((c) => html`<tr><td>${c.name}</td><td>${c.role ?? ''}</td><td>${c.email ?? ''}</td><td>${c.phone ?? ''}</td><td>${c.is_primary ? chip('Primär', 'ok', '★') : ''}</td></tr>`)}
+                ${/* Personerna från relationen hålls ÅTSKILDA från registret ovan:
+                      de har olika ursprung och olika gallring (relationsdata får
+                      raderas, kundregistret styrs av bokföringslagen). Att slå
+                      ihop dem hade dolt var en uppgift kommer ifrån. */ ''}
+                ${(rel?.people ?? []).map((p) => html`<tr>
+                  <td>${p.name as string}</td><td>${(p.role_title as string) ?? ''}</td>
+                  <td>${(p.email as string) ?? ''}</td><td>${(p.phone as string) ?? ''}</td>
+                  <td>${chip('Från relationen', 'info')}</td></tr>`)}
                 </tbody></table></div>`
+          }${
+            rel
+              ? html`<p class="muted" style="padding:10px 12px;font-size:12.5px">
+                  ${rel.people.length > 0 ? 'Personer märkta “Från relationen” kommer ur mail, möten och ärenden via API-kontraktet — de fylls i utan att någon matar in dem. ' : ''}
+                  ${rel.last_contact_at ? html`Senaste kontakt ${dayOf(rel.last_contact_at)}. ` : ''}
+                  ${rel.open_commitments > 0 ? html`${String(rel.open_commitments)} öppet åtagande. ` : ''}
+                  <a href="/app/c/${companyId}/relations/${rel.organization_id}">Öppna relationen →</a></p>`
+              : ''
           }</div></div>
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Anteckningar</h2></div>
           <div class="panel__body" style="padding:6px 4px">${
@@ -2257,7 +2277,7 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
           }</div></div>
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Dataskydd (GDPR)</h2></div>
           <div class="panel__body" style="padding:14px 16px">
-            <p class="lede" style="margin-top:0">Anonymisera personuppgifter på begäran (rätten till radering, art. 17). Kontaktpersoner, anteckningar, taggar och kontaktuppgifter tas bort; obokförda fakturors PDF och aktiva återkommande fakturor rensas. Om parten har <strong>bokförda</strong> affärshändelser behålls namn och org.nr — bokföringslagen kräver att verifikatets motpart kan identifieras och sparas i 7 år.</p>
+            <p class="lede" style="margin-top:0">Anonymisera personuppgifter på begäran (rätten till radering, art. 17). Kontaktpersoner, anteckningar, taggar och kontaktuppgifter tas bort — liksom relationens personer, kontaktpunkter och åtaganden; obokförda fakturors PDF och aktiva återkommande fakturor rensas. Om parten har <strong>bokförda</strong> affärshändelser behålls namn och org.nr — bokföringslagen kräver att verifikatets motpart kan identifieras och sparas i 7 år.</p>
             <p class="muted" style="font-size:12.5px">Kontrollen bygger på strukturerade dokumentkopplingar (fakturor, kvitton). Förekommer parten i <strong>manuella verifikat</strong> upptäcks det inte automatiskt — kontrollera det innan du raderar namn/org.nr. Åtgärden är oåterkallelig och kräver mänskligt godkännande — den läggs i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
             <form method="post" action="/app/c/${companyId}/${active}/${partyId}/gdpr-anonymize" style="margin:0">
               <button type="submit" class="btn btn--ghost" style="color:var(--neg);border-color:var(--neg)">Begär anonymisering</button>
