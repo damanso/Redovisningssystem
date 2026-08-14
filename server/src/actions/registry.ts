@@ -1,14 +1,19 @@
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
+import type { Actor } from '../http/middleware/authenticate.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
-  getOrganization, getRetention, listCommitments, listOrganizations, listPeople, purgeCrmData,
-  recordCommitment, recordInteraction, setCommitmentStatus, setRetention, upsertOrganization, upsertPerson,
+  confirmCrmValue, getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact,
+  purgeCrmData, recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
+  snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
-import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
+import { sourceForActor } from '../services/crmProvenance.js';
+import { mergeOrganizations, mergePeople, searchCrm } from '../services/crmMerge.js';
+import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
+import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
@@ -69,6 +74,10 @@ export interface ActionContext {
   // Rollen kommer ur medlemskapet i SAMMA transaktion — aldrig ur indata. Bara
   // actions som verkligen skiljer på ägare/admin och medlem läser den.
   role: CompanyRole;
+  // Vem som faktiskt skriver: en människa eller AI:t. Avgör INTE behörigheten
+  // (den sitter i medlemskapet) utan sanningsanspråket — ett fält som AI:t satt
+  // är en gissning, ett fält en människa satt är ett beslut. Se crmProvenance.
+  actor: Actor;
 }
 
 // read      = ingen mutation. write = skapar utkast/register (ej pengaflyttande).
@@ -1318,6 +1327,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z
       .object({
+        // Anges när raden redan är känd (rättning i vyn). Utan den matchas namnet.
+        organization_id: UuidSchema.optional(),
         name: safeText(200),
         org_number: safeText(20).optional(),
         website: safeText(200).optional(),
@@ -1328,7 +1339,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         notes: safeText(2000).optional(),
       })
       .strict(),
-    handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never,
+      { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'list_crm_organizations',
@@ -1347,6 +1359,28 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ organization_id: UuidSchema }).strict(),
     handler: (ctx, i: { organization_id: string }) => getOrganization(ctx.client, ctx.companyId, i.organization_id),
   }),
+  // F4: "stämmer". Det billigaste handgreppet i hela ytan — en människa intygar
+  // ett värde AI:t gissat, utan att ändra det. Därefter kan ingen synk skriva
+  // över det. Fältnamnet kommer ur en enum, aldrig ur fri text: en skrivning som
+  // pekar ut en kolumn byggs på allowlist.
+  def({
+    name: 'confirm_crm_value',
+    title: 'Bekräfta en uppgift (gissning blir beslut)',
+    sensitivity: 'write',
+    inputSchema: z.union([
+      z.object({
+        organization_id: UuidSchema,
+        field: z.enum(['name', 'org_number', 'website', 'customer_id', 'status', 'notes']),
+      }).strict(),
+      z.object({
+        person_id: UuidSchema,
+        field: z.enum(['name', 'email', 'phone', 'role_title', 'organization_id']),
+      }).strict(),
+    ]),
+    handler: (ctx, i: { organization_id?: string; person_id?: string; field: string }) =>
+      confirmCrmValue(ctx.client, ctx.companyId, ctx.userId, ctx.actor,
+        i.organization_id ? { organization_id: i.organization_id } : { person_id: i.person_id! }, i.field),
+  }),
   def({
     name: 'upsert_crm_person',
     title: 'Lägg upp/uppdatera person',
@@ -1363,7 +1397,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         notes: safeText(2000).optional(),
       })
       .strict(),
-    handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never,
+      { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'list_crm_people',
@@ -1417,6 +1452,75 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ commitment_id: UuidSchema, status: z.enum(['open', 'done', 'dropped']) }).strict(),
     handler: (ctx, i: { commitment_id: string; status: 'open' | 'done' | 'dropped' }) =>
       setCommitmentStatus(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.status),
+  }),
+  def({
+    name: 'log_contact',
+    title: 'Logga kontakt (snabbregistrering)',
+    // Handgreppet som INTE ska kräva AI: fem sekunder, ett klick, klockan
+    // nollställd. Går det inte snabbare än en papperslapp används det inte.
+    sensitivity: 'write',
+    inputSchema: z.object({
+      organization_id: UuidSchema.optional(),
+      person_id: UuidSchema.optional(),
+      channel: z.enum(['email', 'meeting', 'call', 'note']).optional(),
+      summary: safeText(2000).optional(),
+      occurred_at: IsoDateTimeSchema.optional(),
+    }).strict(),
+    handler: (ctx, i) => logContact(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'snooze_crm_commitment',
+    title: 'Skjut upp åtagande i dagsytan',
+    sensitivity: 'write',
+    inputSchema: z.object({ commitment_id: UuidSchema, days: z.number().int().min(1).max(365) }).strict(),
+    handler: (ctx, i: { commitment_id: string; days: number }) =>
+      snoozeCommitment(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.days),
+  }),
+  def({
+    name: 'set_crm_relation_nudge',
+    title: 'Skjut upp eller tysta en relations påminnelser',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      organization_id: UuidSchema,
+      snooze_days: z.number().int().min(1).max(3650).optional(),
+      muted: z.boolean().optional(),
+      // F5: egen tystnadsgräns. null = återgå till bolagets standard.
+      cadence_days: z.number().int().min(1).max(3650).nullable().optional(),
+    }).strict(),
+    handler: (ctx, i: { organization_id: string; snooze_days?: number; muted?: boolean; cadence_days?: number | null }) =>
+      setRelationNudge(ctx.client, ctx.companyId, ctx.userId, i.organization_id,
+        {
+          snooze_days: i.snooze_days, muted: i.muted,
+          ...('cadence_days' in i ? { cadence_days: i.cadence_days } : {}),
+        }),
+  }),
+  // F5: dubbletter är ingen bugg i synken utan en följd av att data kommer från
+  // flera håll — Gmail säger "Nordic Vision Retail", kundregistret säger
+  // "Nordic Vision Retail AB". Utan sammanslagning delas historiken i två, och
+  // ett kort som ser komplett ut saknar hälften.
+  def({
+    name: 'merge_crm_organizations',
+    title: 'Slå ihop två organisationer (dubbletter)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ keep_id: UuidSchema, merge_id: UuidSchema }).strict(),
+    handler: (ctx, i: { keep_id: string; merge_id: string }) =>
+      mergeOrganizations(ctx.client, ctx.companyId, ctx.userId, i.keep_id, i.merge_id),
+  }),
+  def({
+    name: 'merge_crm_people',
+    title: 'Slå ihop två personer (dubbletter)',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ keep_id: UuidSchema, merge_id: UuidSchema }).strict(),
+    handler: (ctx, i: { keep_id: string; merge_id: string }) =>
+      mergePeople(ctx.client, ctx.companyId, ctx.userId, i.keep_id, i.merge_id),
+  }),
+  def({
+    name: 'search_crm',
+    title: 'Sök i relationer, personer, kunder och leverantörer',
+    sensitivity: 'read',
+    inputSchema: z.object({ query: safeText(120), limit: z.number().int().min(1).max(50).optional() }).strict(),
+    handler: (ctx, i: { query: string; limit?: number }) =>
+      searchCrm(ctx.client, ctx.companyId, i.query, i.limit),
   }),
   def({
     name: 'list_crm_commitments',
@@ -1474,11 +1578,41 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events),
   }),
   def({
+    name: 'get_crm_thread',
+    title: 'Relationens hela historia i en kronologi',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      organization_id: UuidSchema,
+      filter: z.enum(['allt', 'kontakt', 'pengar', 'loften']).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }).strict(),
+    handler: (ctx, i: { organization_id: string; filter?: string; limit?: number }) =>
+      relationThread(ctx.client, ctx.companyId, i.organization_id, {
+        filter: isThreadFilter(i.filter) ? i.filter : 'allt', limit: i.limit,
+      }),
+  }),
+  def({
     name: 'crm_relation_state',
     title: 'Relationsläget per organisation (härlett)',
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => relationState(ctx.client, ctx.companyId, { as_of: i.as_of }),
+  }),
+  // Dagsytan som fråga. Vyn har haft den sedan F2, men AI:t har inte kunnat
+  // ställa den — och "vad ska jag göra i dag?" är den vanligaste frågan i hela
+  // ytan. Kapad på samma tal som vyn, av samma skäl: svaret ska gå att beta av.
+  def({
+    name: 'crm_today',
+    title: 'Dagens lista: vilka att höra av sig till och vilka löften som förfaller',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      as_of: IsoDateSchema.optional(),
+      silence_days: z.number().int().min(1).max(3650).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+      horizon_days: z.number().int().min(0).max(365).optional(),
+    }).strict(),
+    handler: (ctx, i: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number }) =>
+      todayView(ctx.client, ctx.companyId, i),
   }),
   def({
     name: 'crm_silence_report',

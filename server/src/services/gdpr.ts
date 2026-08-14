@@ -98,6 +98,15 @@ async function purgeCrmRelationData(
   const people = await client.query(
     'DELETE FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])', [companyId, orgIds],
   );
+  // Ursprunget (F4) för de raderade personerna försvann med dem via CASCADE.
+  // Organisationens rad BEHÅLLS däremot (bokföringslagen), och dess ursprung
+  // pekar ut de mail som just raderades — "org.nr hämtat ur gmail:abc". En
+  // sådan pekare är kvarlämnad persondata: en gravsten över ett raderat fält,
+  // precis det migration 0057 säger inte får finnas. Den går bort här.
+  await client.query(
+    'DELETE FROM crm.field_provenance WHERE company_id = $1 AND organization_id = ANY($2::uuid[])',
+    [companyId, orgIds],
+  );
   await client.query(
     `UPDATE crm.organizations
      -- Namnet måste vara unikt inom bolaget (organizations_name_uk). En fast

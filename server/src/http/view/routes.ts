@@ -20,7 +20,7 @@ import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } 
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
-import { listApprovals } from '../../services/approvals.js';
+import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
@@ -30,8 +30,10 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { contactSuggestions, relationState } from '../../services/crmDerivations.js';
+import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
+import { searchCrm } from '../../services/crmMerge.js';
 import { steeringOverview } from '../../services/steering.js';
+import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
@@ -1485,6 +1487,62 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
 const dayOf = (v: unknown): string =>
   v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? '').slice(0, 10);
 
+/**
+ * En radhandling: ett formulär, en knapp, ett klick. Ingen AI, inga tokens.
+ * `back` följer med så att man landar där man stod, inte på en standardsida.
+ */
+function rowAction(
+  action: string, label: string, opts: { primary?: boolean; fields?: Record<string, string>; back: string } ,
+): Raw {
+  return html`<form method="post" action="${action}">
+    <input type="hidden" name="back" value="${opts.back}">
+    ${Object.entries(opts.fields ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+    <button class="btn ${opts.primary ? 'btn--primary' : 'btn--ghost'} btn--sm" type="submit">${label}</button>
+  </form>`;
+}
+
+/**
+ * Överflödsmenyn under ⋯. Bygger på HTML:s popover — noll JavaScript, baseline
+ * sedan 2025. Allt som ligger här är sekundärt: de handgrepp man behöver
+ * dagligen står som egna knappar på raden, aldrig gömda bakom tre prickar.
+ */
+function rowMenu(id: string, items: Raw[]): Raw {
+  return html`<span class="rowmenu">
+    <button class="btn btn--ghost btn--sm rowmenu__btn" popovertarget="${id}" aria-label="Fler val">⋯</button>
+    <div class="rowmenu__pop" popover id="${id}">${items}</div>
+  </span>`;
+}
+
+function menuAction(
+  action: string, label: string, opts: { fields?: Record<string, string>; back: string; neg?: boolean },
+): Raw {
+  return html`<form method="post" action="${action}">
+    <input type="hidden" name="back" value="${opts.back}">
+    ${Object.entries(opts.fields ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+    <button class="rowmenu__item ${opts.neg ? 'rowmenu__item--neg' : ''}" type="submit">${label}</button>
+  </form>`;
+}
+
+/** Trådens händelsemärke. Färgen bär typen: pengar in är grönt, ett förfallet
+ *  löfte rött, kontakt neutralt. Formen gör kronologin läsbar utan att man
+ *  behöver läsa varje rad. */
+function threadChip(e: ThreadEvent): Raw {
+  switch (e.kind) {
+    case 'payment': return html`${chip('Betald', 'ok', '✓')} `;
+    case 'invoice': return html`${chip('Faktura', 'info')} `;
+    case 'commitment':
+      return html`${chip(e.tag === 'we_owe' ? 'Vi lovade' : 'De lovade', 'warn')} `;
+    case 'commitment_closed':
+      return html`${chip(e.tag === 'done' ? 'Löfte klart' : 'Avskrivet', e.tag === 'done' ? 'ok' : 'muted', e.tag === 'done' ? '✓' : undefined)} `;
+    default:
+      return e.tag ? html`${chip(kanalNamn(e.tag), 'muted')} ` : html``;
+  }
+}
+
+const kanalNamn = (c: string): string =>
+  c === 'email' ? 'Mail' : c === 'call' ? 'Samtal' : c === 'meeting' ? 'Möte'
+    : c === 'issue' ? 'Ärende' : 'Anteckning';
+
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
 function silenceChip(days: number | null): Raw {
   if (days === null) return chip('Ingen kontakt', 'neg', '!');
@@ -1493,18 +1551,183 @@ function silenceChip(days: number | null): Raw {
   return chip(`${days} dagar`, 'ok', '✓');
 }
 
+const orgStatusText = (status: string): string =>
+  status === 'customer' ? 'Kund' : status === 'prospect' ? 'Prospekt'
+    : status === 'partner' ? 'Partner' : status === 'former' ? 'Tidigare' : 'Arkiverad';
+
 const orgStatusChip = (status: string): Raw =>
   status === 'customer' ? chip('Kund', 'ok')
     : status === 'prospect' ? chip('Prospekt', 'info')
     : status === 'partner' ? chip('Partner', 'muted')
     : chip(status, 'muted');
 
-viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId) => {
+// ---------------------------------------------------------------------------
+// F4: ursprunget, utskrivet.
+//
+// När AI:t är den huvudsakliga inmatningen blir "vem påstod det här?" en av de
+// viktigaste sakerna på skärmen. Tre sorters påstående ser i dag identiska ut:
+// ett faktum ur bokföringen, ett beslut av en människa och en gissning ur en
+// mailsignatur. Märkningen skiljer dem åt — och den är TYST för det som en
+// människa bestämt: den vanliga, säkra uppgiften ska inte bära dekoration.
+// Bara det osäkra kostar uppmärksamhet.
+// ---------------------------------------------------------------------------
+interface ProvenanceView {
+  source: string; reason: string | null; source_system: string | null; source_ref: string | null;
+}
+
+function ursprungsMark(p: ProvenanceView | undefined): Raw {
+  if (!p || p.source === 'human') return html``;
+  if (p.source === 'accounting') {
+    return html` <span class="prov prov--fact" title="Härlett ur bokföringen${p.reason ? ` · ${p.reason}` : ''}">ur bokföringen</span>`;
+  }
+  const varifran = p.source_system ? `${p.source_system}${p.source_ref ? ` · ${p.source_ref}` : ''}` : 'AI:ts tolkning';
+  return html` <span class="prov prov--guess" title="Inte bekräftad av dig · ${p.reason ?? varifran}">✦</span>`;
+}
+
+/** Behöver uppgiften bekräftas? Ett faktum ur bokföringen gör det inte — det är
+ *  redan verifierbart mot kundregistret. En gissning gör det. */
+const behoverBekraftas = (p: ProvenanceView | undefined): boolean =>
+  Boolean(p) && p!.source !== 'human' && p!.source !== 'accounting';
+
+// ---------------------------------------------------------------------------
+// Dagsytan (F2). Landningen för relationsdelen.
+//
+// Designens viktigaste beslut sitter här: listan är KAPAD och visar aldrig
+// totalen. "412 kontakter försenade" förvandlar verktyget från assistent till
+// anklagelse; en lista som kan nå noll skapar ett arbetspass med slut.
+// Varje kort bär sitt skäl, och skälet är både rangordningen och
+// öppningsrepliken.
+// ---------------------------------------------------------------------------
+viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, companyId, req) => {
+  const t = await todayView(client, companyId);
+  const back = `/app/c/${companyId}/idag`;
+  const antal = t.relations.length + t.commitments.length;
+
+  return html`<div class="page-head"><div>${eyebrow('Idag')}<h1>Vad som behöver dig nu</h1>
+      <p class="lede">${
+        t.quiet
+          ? 'Inget väntar. Nya rader dyker upp när något förfaller eller när det blir tyst för länge.'
+          : html`${String(antal)} ${antal === 1 ? 'sak' : 'saker'} — dagens lista, inte alla relationer.`
+      }</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations">Alla relationer →</a></div></div>
+    ${felNotis(req)}
+    ${
+      t.quiet
+        ? html`<div class="empty"><div class="big">Avbetat för i dag 🎉</div>
+            Loggade kontakter och stängda löften försvinner härifrån. Kommer något in via mail eller kalender dyker det upp automatiskt.</div>`
+        : ''
+    }
+    ${
+      t.relations.length > 0
+        ? html`<h2 style="margin-top:6px">Att höra av sig till</h2>
+            <div class="today">${t.relations.map((s) => html`<article class="today__card">
+              <div class="today__head">
+                <a class="today__who" href="/app/c/${companyId}/relations/${s.organization_id}">${s.organization}</a>
+                ${s.overdue_commitments > 0 ? chip(`${s.overdue_commitments} förfallet löfte`, 'neg', '!') : ''}
+                ${s.status === 'prospect' ? chip('Prospekt', 'info') : ''}
+                ${(s.revenue_share_permille ?? 0) >= 200 ? chip(`${pct(s.revenue_share_permille)} av omsättningen`, 'muted') : ''}
+                ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${amount(s.revenue_12m_ore, { unit: false })}</span>` : ''}
+              </div>
+              <p class="today__why">${s.reasons.join(' · ')}${
+                s.person ? html` <span class="muted">Kontakt: ${s.person.name}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
+              }</p>
+              <div class="quick">
+                ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/log`, 'Hörde av mig', { primary: true, back })}
+                ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp', { fields: { days: '14' }, back })}
+                ${rowMenu(`t-${s.organization_id}`, [
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp 3 dagar', { fields: { days: '3' }, back }),
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/snooze`, 'Skjut upp 3 månader', { fields: { days: '90' }, back }),
+                  html`<div class="rowmenu__sep"></div>`,
+                  menuAction(`/app/c/${companyId}/relations/${s.organization_id}/mute`, 'Föreslå aldrig', { fields: { muted: 'true' }, back, neg: true }),
+                ])}
+              </div>
+            </article>`)}</div>`
+        : ''
+    }
+    ${
+      t.commitments.length > 0
+        ? html`<h2 style="margin-top:18px">Löften som förfaller</h2>
+            <div class="today">${t.commitments.map((c) => html`<article class="today__card">
+              <div class="today__head">
+                ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
+                ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
+                ${c.organization_id
+                  ? html`<a class="today__who" href="/app/c/${companyId}/relations/${c.organization_id as string}">${(c.organization_name as string) ?? ''}</a>`
+                  : html`<span class="today__who">${(c.person_name as string) ?? '—'}</span>`}
+              </div>
+              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${c.source_system as string}</span></p>
+              <div class="quick">
+                ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/done`, 'Klar', { primary: true, back })}
+                ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
+                ${rowMenu(`tc-${c.id as string}`, [
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp 1 dag', { fields: { days: '1' }, back }),
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp 30 dagar', { fields: { days: '30' }, back }),
+                  html`<div class="rowmenu__sep"></div>`,
+                  menuAction(`/app/c/${companyId}/commitments/${c.id as string}/drop`, 'Avskriv löftet', { back, neg: true }),
+                ])}
+              </div>
+            </article>`)}</div>`
+        : ''
+    }
+    ${
+      t.quiet ? '' : html`<p class="muted" style="font-size:12.5px;margin-top:16px">Systemet föreslår — du skriver och skickar. Ingenting går härifrån ut till en kund.</p>`
+    }`;
+}));
+
+// F5: sökning över fyra register på en gång.
+//
+// Poängen är inte fulltext utan att man slipper VETA var något ligger. Samma
+// bolag kan finnas som prospekt i relationen och som kund i redovisningen; en
+// person kan bo i kundregistrets kontakter eller i relationen. Att kräva att
+// användaren håller reda på vilket innan hen får söka är att lägga systemets
+// struktur på användaren.
+viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, companyId, req) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : '';
+  const hits = q.trim().length >= 2 ? await searchCrm(client, companyId, q) : [];
+  // En person öppnas i sin RELATION — det är där hennes historik finns. Saknar
+  // hon organisation går länken till listan; ett sökresultat som inte går att
+  // öppna är en återvändsgränd.
+  const href = (h: { kind: string; href_id: string; organization_id: string | null }): string =>
+    h.kind === 'organization' ? `/app/c/${companyId}/relations/${h.href_id}`
+      : h.kind === 'person'
+        ? (h.organization_id ? `/app/c/${companyId}/relations/${h.organization_id}` : `/app/c/${companyId}/relations`)
+      : h.kind === 'customer' ? `/app/c/${companyId}/customers/${h.href_id}`
+      : `/app/c/${companyId}/suppliers/${h.href_id}`;
+  const märke = (kind: string): Raw =>
+    kind === 'organization' ? chip('Relation', 'info') : kind === 'person' ? chip('Person', 'muted')
+      : kind === 'customer' ? chip('Kund', 'ok') : chip('Leverantör', 'muted');
+
+  return html`<div class="page-head"><div>${eyebrow('Sök')}<h1>Hitta ett bolag eller en person</h1>
+      <p class="lede">Söker i relationer, personer, kundregistret och leverantörsregistret på en gång — du ska slippa veta var något ligger.</p></div></div>
+    <form class="soksida" method="get" action="/app/c/${companyId}/sok" role="search">
+      <input type="search" name="q" value="${q}" placeholder="Namn, org.nr eller e-post" aria-label="Sök" maxlength="120" autofocus>
+      <button class="btn btn--primary btn--sm" type="submit">Sök</button>
+    </form>
+    ${
+      q.trim().length < 2
+        ? html`<div class="empty"><div class="big">Skriv minst två tecken</div>
+            Namn, organisationsnummer eller e-postadress. Exakta träffar hamnar överst.</div>`
+        : hits.length === 0
+          ? html`<div class="empty"><div class="big">Inget matchade "${q}"</div>
+              Prova en del av namnet. En relation som aldrig fått en kontaktpunkt syns fortfarande under <a href="/app/c/${companyId}/relations">Relationer</a>.</div>`
+          : html`<ol class="sok">${hits.map((h) => html`<li class="sok__rad">
+              ${märke(h.kind)}
+              <a class="sok__t" href="${href(h)}">${h.title}</a>
+              ${h.subtitle ? html`<span class="sok__u">${h.subtitle}</span>` : ''}
+            </li>`)}</ol>`
+    }`;
+}));
+
+viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId, req) => {
   const state = await relationState(client, companyId);
   // Förslagen räknas ur samma resultat — inte ur en andra körning av samma fråga.
   const suggestions = await contactSuggestions(client, companyId, { rows: state });
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
       <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div></div>
+    ${/* Utan notisen försvinner varje fel från handgreppen som landar här —
+         formuläret ser ut att inte ha gjort någonting alls. Exakt den tystnad
+         som gjorde de tidigare felen svåra att upptäcka. */ ''}
+    ${felNotis(req)}
     ${
       suggestions.suggestions.length > 0
         ? html`<div class="panel"><div class="panel__head"><h2>Att höra av sig till</h2></div>
@@ -1522,9 +1745,11 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
     <h2 style="margin-top:18px">Alla relationer</h2>
     ${
       state.length === 0
-        ? html`<div class="empty"><div class="big">Inga relationer ännu</div>Kontaktpunkter kommer in via API-kontraktet (mail, kalender, ärenden) eller läggs upp med <span class="code">upsert_crm_organization</span>.</div>`
+        ? html`<div class="empty"><div class="big">Inga relationer ännu</div>
+            De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.
+            Vill du börja nu lägger du upp den första nedan — det tar tio sekunder och kräver ingen AI.</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th></tr></thead>
+            <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th><th></th></tr></thead>
             <tbody>${state.map((r) => html`<tr>
               <td><a href="/app/c/${companyId}/relations/${r.organization_id}">${r.name}</a></td>
               <td>${orgStatusChip(r.status)}${
@@ -1535,68 +1760,263 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
               <td>${silenceChip(r.days_silent)}</td>
               <td class="num">${r.open_commitments}${r.overdue_commitments > 0 ? html` ${chip(`${r.overdue_commitments} förfallna`, 'neg', '!')}` : ''}</td>
               <td class="num">${amount(r.revenue_12m_ore, { unit: false })}</td>
-              <td class="num">${pct(r.revenue_share_permille)}</td></tr>`)}
+              <td class="num">${pct(r.revenue_share_permille)}</td>
+              <td><div class="quick">${
+                rowAction(`/app/c/${companyId}/relations/${r.organization_id}/log`, 'Hörde av mig',
+                  { primary: true, back: `/app/c/${companyId}/relations` })
+              }${rowMenu(`r-${r.organization_id}`, [
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/snooze`, 'Skjut upp 2 veckor',
+                  { fields: { days: '14' }, back: `/app/c/${companyId}/relations` }),
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/snooze`, 'Skjut upp 3 månader',
+                  { fields: { days: '90' }, back: `/app/c/${companyId}/relations` }),
+                html`<div class="rowmenu__sep"></div>`,
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/mute`, 'Föreslå aldrig',
+                  { fields: { muted: 'true' }, back: `/app/c/${companyId}/relations`, neg: true }),
+              ])}</div></td></tr>`)}
             </tbody></table></div>`
-    }`;
+    }
+    ${/* F6: ett tomt tillstånd utan nästa steg är en återvändsgränd. Formuläret
+         står här av samma skäl som på kund- och fakturasidorna: den som vill
+         börja för hand ska kunna det, utan AI och utan API-kontraktet. */ ''}
+    <div class="panel" style="margin-top:22px;max-width:560px">
+      <div class="panel__head"><h2>Ny relation</h2></div>
+      <div class="panel__body" style="padding:16px">
+        <form method="post" action="/app/c/${companyId}/relations/create" style="display:flex;flex-direction:column;gap:12px">
+          <label class="field" style="margin:0"><span>Namn</span><input type="text" name="name" required maxlength="200" placeholder="Nordic Vision Retail AB"></label>
+          <label class="field" style="margin:0"><span>Org.nr (valfritt)</span><input type="text" name="org_number" maxlength="20"></label>
+          <button class="btn btn--primary" type="submit" style="align-self:flex-start">Skapa relation</button>
+          <p class="hint" style="margin:0">Finns bolaget redan i kundregistret kopplas det ihop automatiskt, och omsättningen räknas fram direkt.</p>
+        </form>
+      </div>
+    </div>`;
+}));
+
+// F6: skapa en relation för hand. Samma action som AI:t använder — men eftersom
+// en människa kör den blir ursprunget 'human' (F4) och skyddat mot nästa synk.
+viewRouter.post('/c/:companyId/relations/create', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const text = (k: string): string | undefined => {
+    const v = b[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  await runViewAction(req, res, companyId, 'upsert_crm_organization', {
+    name: text('name') ?? '',
+    ...(text('org_number') ? { org_number: text('org_number') } : {}),
+  }, `/app/c/${companyId}/relations`);
 }));
 
 viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const orgId = parseApprovalId(req.params.orgId);
+  const filter: ThreadFilter = isThreadFilter(req.query.visa) ? req.query.visa : 'allt';
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const o = await getOrganization(client, companyId, orgId) as {
       id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
       org_number: string | null; website: string | null; source: string | null; notes: string | null;
-      people: Array<{ id: string; name: string; email: string | null; phone: string | null; role_title: string | null }>;
-      interactions: Array<{ occurred_at: string; channel: string; direction: string; summary: string; source_system: string; source_ref: string | null; person_name: string | null }>;
-      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string; occurred_at: string; source_system: string; source_ref: string | null; person_name: string | null }>;
+      people: Array<{
+        id: string; name: string; email: string | null; phone: string | null; role_title: string | null;
+        provenance: Record<string, ProvenanceView>;
+      }>;
+      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string }>;
       last_contact_at: string | null;
+      provenance: Record<string, ProvenanceView>;
     };
+    // EN rad, inte hela bolagets aggregering — och arkiverade relationer får
+    // visa sina egna tal på det kort man uttryckligen öppnat.
+    const [state] = await relationState(client, companyId, { organization_id: orgId });
+    // Kandidater för sammanslagning: alla ANDRA relationer, arkiverade
+    // inräknade (en arkiverad dubblett är fortfarande en dubblett). Ingen
+    // automatisk dubblettgissning — att avgöra att två rader är samma bolag är
+    // ett omdöme, och ett felaktigt förslag som ser auktoritativt ut är
+    // farligare än inget.
+    const andra = (await listOrganizations(client, companyId))
+      .filter((r) => r.id !== orgId) as Array<{ id: string; name: string }>;
+    const thread = await relationThread(client, companyId, orgId, { filter });
+    const back = `/app/c/${companyId}/relations/${o.id}`;
+    const oppna = o.commitments.filter((c) => c.status === 'open').length;
+
+    // Fyra uppgifter som kan komma varsomifrån — därför bär de sitt ursprung.
+    const uppgifter: Array<{ field: string; label: string; value: Raw }> = [
+      { field: 'name', label: 'Namn', value: html`${o.name}` },
+      { field: 'org_number', label: 'Org.nr', value: html`${o.org_number ?? '—'}` },
+      { field: 'website', label: 'Webbplats', value: html`${o.website ?? '—'}` },
+      {
+        field: 'customer_id',
+        label: 'Kund i registret',
+        value: o.customer_id
+          ? html`<a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a>`
+          : html`—`,
+      },
+    ];
+
+    // Sex nyckeltal, inte fler. Attio kapar sina "highlights" vid sex av samma
+    // skäl: en ruta till kostar ingenting att lägga till och allt att läsa.
+    // Alla sex är HÄRLEDDA ur bokföringen — ingen skriver in dem.
     const b = html`<div class="page-head"><div>${eyebrow('Relation')}<h1>${o.name}</h1>
         <p class="lede">${o.customer_id ? html`Kund i registret · <a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a> · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
-        <div class="actions">${orgStatusChip(o.status)}</div></div>
-      <div class="kpi-grid">
-        ${kpiCell('Senaste kontakt', html`${o.last_contact_at ? dayOf(o.last_contact_at) : '—'}`)}
-        ${kpiCell('Personer', html`${o.people.length}`)}
-        ${kpiCell('Öppna löften', html`${o.commitments.filter((c) => c.status === 'open').length}`)}
-      </div>
-      <h2 style="margin-top:18px">Personer</h2>
-      ${
-        o.people.length === 0
-          ? html`<p class="muted">Inga personer registrerade ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Namn</th><th>Roll</th><th>E-post</th><th>Telefon</th></tr></thead><tbody>
-              ${o.people.map((p) => html`<tr><td>${p.name}</td><td>${p.role_title ?? '—'}</td>
-                <td>${p.email ?? '—'}</td><td>${p.phone ?? '—'}</td></tr>`)}
-              </tbody></table></div>`
-      }
-      <h2 style="margin-top:18px">Vad vi lovat varandra</h2>
-      ${
-        o.commitments.length === 0
-          ? html`<p class="muted">Inga registrerade åtaganden.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Riktning</th><th>Vad</th><th>Senast</th><th>Läge</th><th>Källa</th></tr></thead><tbody>
-              ${o.commitments.map((c) => html`<tr>
-                <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
-                <td>${c.body}${c.person_name ? html` <span class="muted">· ${c.person_name}</span>` : ''}</td>
-                <td class="code">${c.due_date ?? '—'}</td>
-                <td>${c.status === 'open' ? chip('Öppet', 'warn') : c.status === 'done' ? chip('Klart', 'ok', '✓') : chip('Avskrivet', 'muted')}</td>
-                <td class="muted">${c.source_system}${c.source_ref ? html` · ${c.source_ref}` : ''}</td></tr>`)}
-              </tbody></table></div>`
-      }
-      <h2 style="margin-top:18px">Vad som sagts</h2>
-      ${
-        o.interactions.length === 0
-          ? html`<p class="muted">Inga kontaktpunkter ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>När</th><th>Kanal</th><th>Med</th><th>Vad</th><th>Källa</th></tr></thead><tbody>
-              ${o.interactions.map((i) => html`<tr>
-                <td class="code">${dayOf(i.occurred_at)}</td>
-                <td>${i.channel}${i.direction === 'inbound' ? ' ←' : i.direction === 'outbound' ? ' →' : ''}</td>
-                <td>${i.person_name ?? '—'}</td>
-                <td>${i.summary}</td>
-                <td class="muted">${i.source_system}${i.source_ref ? html` · ${i.source_ref}` : ''}</td></tr>`)}
-              </tbody></table></div>`
-      }`;
+        <div class="actions">${orgStatusChip(o.status)}${
+          o.customer_id ? '' : html` ${chip('Ej i kundregistret', 'warn', '!')}`
+        }</div></div>
+      ${felNotis(req)}
+
+      <div class="relation">
+        <aside class="relation__facts">
+          <div class="factcard">
+            <div class="fact"><span class="k">Senaste kontakt</span><span class="v">${state?.last_contact_at ? dayOf(state.last_contact_at) : '—'}</span></div>
+            <div class="fact"><span class="k">Tyst i</span><span class="v">${state?.days_silent === null || state?.days_silent === undefined ? '—' : `${String(state.days_silent)} dagar`}</span></div>
+            <div class="fact"><span class="k">Omsättning 12 mån</span><span class="v">${amount(state?.revenue_12m_ore ?? 0, { unit: false })}</span></div>
+            <div class="fact"><span class="k">Andel</span><span class="v">${pct(state?.revenue_share_permille ?? null)}</span></div>
+            <div class="fact"><span class="k">Öppna löften</span><span class="v">${String(oppna)}${
+              (state?.overdue_commitments ?? 0) > 0 ? html` ${chip(`${state!.overdue_commitments} förfallna`, 'neg', '!')}` : ''
+            }</span></div>
+            <div class="fact"><span class="k">Personer</span><span class="v">${String(o.people.length)}</span></div>
+          </div>
+
+          ${/* F4: uppgifterna om bolaget — med sitt ursprung. Här, och inte i
+               nyckeltalen ovanför, för att nyckeltalen ALLTID är härledda ur
+               bokföringen; de här fyra kan komma varsomifrån. */ ''}
+          <div class="factcard">
+            <div class="factcard__head">Uppgifter</div>
+            ${uppgifter.map((u) => html`<div class="uppgift">
+              <span class="k">${u.label}</span>
+              <span class="v">${u.value}${ursprungsMark(o.provenance[u.field])}</span>
+              ${behoverBekraftas(o.provenance[u.field])
+                ? html`<form method="post" action="/app/c/${companyId}/relations/${o.id}/confirm">
+                    <input type="hidden" name="back" value="${back}">
+                    <input type="hidden" name="field" value="${u.field}">
+                    <button class="btn btn--ghost btn--sm" type="submit" title="Bekräfta uppgiften — då skriver ingen synk över den">Stämmer</button>
+                  </form>`
+                : ''}
+            </div>`)}
+            <details class="rattaform">
+              <summary>Rätta uppgifter</summary>
+              <form method="post" action="/app/c/${companyId}/relations/${o.id}/edit">
+                <input type="hidden" name="back" value="${back}">
+                <label>Namn<input type="text" name="name" maxlength="200" value="${o.name}" required></label>
+                <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
+                <label>Webbplats<input type="text" name="website" maxlength="200" value="${o.website ?? ''}"></label>
+                <label>Status<select name="status">${(['prospect', 'customer', 'partner', 'former', 'archived'] as const).map((s) => html`<option value="${s}"${s === o.status ? html` selected` : ''}>${orgStatusText(s)}</option>`)}</select></label>
+                <button class="btn btn--primary btn--sm" type="submit">Spara</button>
+                <p class="hint">Det du sparar här räknas som ditt beslut. Ingen synk skriver över det efteråt.</p>
+              </form>
+            </details>
+          </div>
+
+          <div class="factcard">
+            <div class="factcard__head">Personer</div>
+            ${
+              o.people.length === 0
+                ? html`<p class="muted" style="font-size:13px;margin:0">Inga personer ännu. De läggs upp av synken när ett mail kommer in.</p>`
+                : o.people.map((p) => html`<div class="person">
+                    <span class="person__n">${p.name}</span>
+                    ${p.role_title ? html`<span class="person__r">${p.role_title}${ursprungsMark(p.provenance?.role_title)}</span>` : ''}
+                    ${p.email ? html`<span class="person__e">${p.email}${ursprungsMark(p.provenance?.email)}</span>` : ''}</div>`)
+            }
+          </div>
+
+          <div class="factcard">
+            <div class="factcard__head">Kadens &amp; dämpning</div>
+            ${/* F5: en kund på månadsretainer och en kund vartannat år kan inte
+                 dela tystnadsgräns. Med en gemensam gräns fylls dagsytan med
+                 namn som inte borde ligga där — och en lista med brus i lär
+                 användaren att ignorera den. */ ''}
+            <form method="post" action="/app/c/${companyId}/relations/${o.id}/cadence" class="kadens">
+              <input type="hidden" name="back" value="${back}">
+              <label for="kadens-${o.id}">Hör av mig var</label>
+              <input id="kadens-${o.id}" type="number" name="cadence_days" min="1" max="3650"
+                value="${state?.cadence_days === null || state?.cadence_days === undefined ? '' : String(state.cadence_days)}"
+                placeholder="${String(DEFAULT_SILENCE_DAYS)}" inputmode="numeric">
+              <span class="kadens__enhet">dagar</span>
+              <button class="btn btn--ghost btn--sm" type="submit">Spara</button>
+              <p class="hint">Tomt = bolagets standard (${String(DEFAULT_SILENCE_DAYS)} dagar). Klockan nollställs av kontakt, aldrig av inställningen.</p>
+            </form>
+            ${/* Dämpningen måste gå att ÅNGRA. En knapp som bara kan sättas är
+                 en återvändsgränd: klickar man fel på en rad i dagsytan är
+                 relationen tyst för alltid, och enda vägen tillbaka vore ett
+                 API-anrop. Läget står utskrivet, och knappen växlar. */ ''}
+            ${state?.muted || (state?.snoozed_until && state.snoozed_until >= new Date().toISOString().slice(0, 10))
+              ? html`<p class="hint" style="margin:0">${state?.muted
+                  ? html`${chip('Tystad', 'muted', '○')} Föreslås aldrig i dagsytan.`
+                  : html`${chip('Uppskjuten', 'muted')} Tillbaka ${state!.snoozed_until}.`}</p>`
+              : ''}
+            <div class="quick">
+              ${rowAction(`/app/c/${companyId}/relations/${o.id}/snooze`, 'Skjut upp 2 v', { fields: { days: '14' }, back })}
+              ${state?.muted
+                ? rowAction(`/app/c/${companyId}/relations/${o.id}/mute`, 'Föreslå igen', { primary: true, fields: { muted: 'false' }, back })
+                : rowAction(`/app/c/${companyId}/relations/${o.id}/mute`, 'Föreslå aldrig', { fields: { muted: 'true' }, back })}
+            </div>
+          </div>
+
+          ${/* F5: dubbletter är ingen bugg i synken utan en följd av att data
+               kommer från flera håll. Utan sammanslagning delas historiken i
+               två, och kortet ser komplett ut fast hälften saknas. */ ''}
+          ${andra.length === 0 ? '' : html`<div class="factcard">
+            <div class="factcard__head">Dubblett?</div>
+            <details class="rattaform">
+              <summary>Slå ihop en annan relation hit</summary>
+              <form method="post" action="/app/c/${companyId}/relations/${o.id}/merge">
+                <input type="hidden" name="back" value="${back}">
+                <label>Den här försvinner<select name="merge_id" required>
+                  <option value="">Välj relation…</option>
+                  ${andra.map((a) => html`<option value="${a.id}">${a.name}</option>`)}
+                </select></label>
+                <button class="btn btn--ghost btn--sm" type="submit">Slå ihop</button>
+                <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i — ifyllda rörs inte. Går inte att ångra, så förslaget hamnar först i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
+              </form>
+            </details>
+          </div>`}
+        </aside>
+
+        <div class="relation__thread">
+          ${/* Snabbregistrering överst i tråden: post-it-testet. Ett fält, en
+               kanal, ett klick — och tystnadsklockan nollställs. Ingen AI. */ ''}
+          <form method="post" action="/app/c/${companyId}/relations/${o.id}/log" class="quickcapture">
+            <input type="hidden" name="back" value="${back}">
+            <input type="text" name="summary" maxlength="2000" placeholder="Vad hände?">
+            <select name="channel" aria-label="Kanal">
+              <option value="note">Anteckning</option>
+              <option value="email">Mail</option>
+              <option value="call">Samtal</option>
+              <option value="meeting">Möte</option>
+            </select>
+            <button class="btn btn--primary btn--sm" type="submit">Logga kontakt</button>
+          </form>
+
+          <div class="threadtabs">
+            ${(['allt', 'kontakt', 'pengar', 'loften'] as const).map((f) => html`<a
+              class="threadtab ${f === filter ? 'is-active' : ''}"
+              href="${back}?visa=${f}"${f === filter ? html` aria-current="page"` : ''}>${
+                f === 'allt' ? 'Allt' : f === 'kontakt' ? 'Kontakt' : f === 'pengar' ? 'Pengar' : 'Löften'
+              }</a>`)}
+          </div>
+
+          ${
+            thread.length === 0
+              ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
+                  Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
+              : html`<ol class="thread">${thread.map((e) => html`<li class="thread__ev">
+                  <time class="thread__when" datetime="${String(e.at)}">${dayOf(e.at)}</time>
+                  <div class="thread__what">
+                    <div class="thread__title">${threadChip(e)}${e.title}${
+                      e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
+                    }</div>
+                    ${
+                      e.who || e.source_system
+                        ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${
+                            e.who && e.source_system ? ' · ' : ''
+                          }${e.source_system ? html`${e.source_system}` : ''}${
+                            e.source_ref ? html` · ${e.source_ref}` : ''
+                          }</div>`
+                        : ''
+                    }
+                  </div></li>`)}</ol>`
+          }
+        </div>
+      </div>`;
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', body }).value);
@@ -1615,22 +2035,189 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=done">Klara</a>
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=dropped">Avskrivna</a>
       </div></div>
+    ${felNotis(req)}
     ${
       rows.length === 0
-        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>Löften fångas ur mail, möten och ärenden via API-kontraktet — ingen behöver komma ihåg att registrera dem.</div>`
+        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>
+            Löften fångas ur mail, möten och ärenden — ingen behöver komma ihåg att registrera dem.
+            ${filter === 'open'
+              ? html`Är listan tom är den avbetad. Se <a href="/app/c/${companyId}/commitments?status=done">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.`
+              : html`Gå tillbaka till <a href="/app/c/${companyId}/commitments?status=open">de öppna</a>.`}</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Sades</th><th>Källa</th></tr></thead>
-            <tbody>${rows.map((c) => html`<tr>
+            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
+            <tbody>${rows.map((c) => {
+              const id = c.id as string;
+              const back = `/app/c/${companyId}/commitments?status=${filter}`;
+              return html`<tr>
               <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
               <td>${c.body as string}</td>
               <td>${(c.person_name as string) ?? (c.organization_name as string) ?? '—'}</td>
               <td class="code">${(c.due_date as string) ?? '—'}${
                 c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
+              }${
+                c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="code">${dayOf(c.occurred_at)}</td>
-              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td></tr>`)}
+              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td>
+              <td><div class="quick">${
+                c.status === 'open'
+                  ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}
+                      ${rowAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
+                      ${rowMenu(`m-${id}`, [
+                        menuAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp 1 dag', { fields: { days: '1' }, back }),
+                        menuAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp 30 dagar', { fields: { days: '30' }, back }),
+                        html`<div class="rowmenu__sep"></div>`,
+                        menuAction(`/app/c/${companyId}/commitments/${id}/drop`, 'Avskriv löftet', { back, neg: true }),
+                      ])}`
+                  : rowAction(`/app/c/${companyId}/commitments/${id}/reopen`, 'Öppna igen', { back })
+              }</div></td></tr>`;
+            })}
             </tbody></table></div>`
     }`;
+}));
+
+// ---------------------------------------------------------------------------
+// Handgreppen (F1). Vyn hade 47 POST-rutter för fakturor och lön men NOLL för
+// relationer — varje handgrepp, även "markera klar", krävde AI eller API. Det
+// är den strukturella orsaken till att ytan kändes död. Allt nedan går via
+// runViewAction, alltså samma validering, godkännandelogik och auditlogg som
+// AI-vägen; skillnaden är bara att det tar ett klick och noll tokens.
+// ---------------------------------------------------------------------------
+
+/** Tillbaka dit man kom ifrån, så att en åtgärd inte kastar ut en ur flödet. */
+function backToCrm(req: Request, companyId: string, fallback: string): string {
+  const raw = typeof req.body === 'object' && req.body !== null
+    ? (req.body as { back?: unknown }).back : undefined;
+  // Endast egna, relativa sökvägar — aldrig en öppen omdirigering ur indata.
+  return typeof raw === 'string' && /^\/app\/c\/[0-9a-f-]+\/[a-z0-9/?=&-]*$/i.test(raw)
+    ? raw
+    : `/app/c/${companyId}/${fallback}`;
+}
+
+viewRouter.post('/c/:companyId/commitments/:id/done', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'done' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/drop', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'dropped' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/reopen', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'open' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/snooze', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const days = Number((req.body as { days?: unknown }).days);
+  await runViewAction(req, res, companyId, 'snooze_crm_commitment',
+    { commitment_id: id, days: Number.isInteger(days) && days > 0 ? days : 7 },
+    backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/log', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const body = req.body as { channel?: unknown; summary?: unknown };
+  const channel = typeof body.channel === 'string' && ['email', 'meeting', 'call', 'note'].includes(body.channel)
+    ? body.channel : 'note';
+  const summary = typeof body.summary === 'string' && body.summary.trim() ? body.summary.trim() : undefined;
+  await runViewAction(req, res, companyId, 'log_contact',
+    { organization_id: id, channel, ...(summary ? { summary } : {}) },
+    backToCrm(req, companyId, `relations/${id}`));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/snooze', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const days = Number((req.body as { days?: unknown }).days);
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, snooze_days: Number.isInteger(days) && days > 0 ? days : 14 },
+    backToCrm(req, companyId, 'relations'));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/mute', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const muted = String((req.body as { muted?: unknown }).muted) !== 'false';
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, muted }, backToCrm(req, companyId, 'relations'));
+}));
+
+// F5: kadensen. Tomt fält = återgå till bolagets standard, vilket är något
+// ANNAT än "rör inte" — därför skickas null uttryckligen.
+viewRouter.post('/c/:companyId/relations/:id/cadence', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const raw = String((req.body as { cadence_days?: unknown }).cadence_days ?? '').trim();
+  // Ett OGILTIGT tal skickas vidare som det är, inte tyst om till null. Att
+  // tolka "5000" som "återgå till standard" hade raderat den kadens användaren
+  // redan hade, som svar på att hen bad om en längre — schemat avvisar det i
+  // stället, och notisen syns på sidan.
+  const cadence = raw === '' ? null : Number(raw);
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, cadence_days: cadence }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F5: sammanslagning. Åtgärden är känslig (går inte att ångra), så den hamnar i
+// Att göra för en andra titt — samma väg som en betalning tar.
+viewRouter.post('/c/:companyId/relations/:id/merge', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const mergeId = UuidSchema.parse((req.body as { merge_id?: unknown }).merge_id);
+  await runViewAction(req, res, companyId, 'merge_crm_organizations',
+    { keep_id: id, merge_id: mergeId }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F4: "stämmer" — ett klick som gör en gissning till ett beslut. Fältnamnet
+// valideras av actionens enum, så indata kan inte peka ut en godtycklig kolumn.
+viewRouter.post('/c/:companyId/relations/:id/confirm', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const field = String((req.body as { field?: unknown }).field ?? '');
+  await runViewAction(req, res, companyId, 'confirm_crm_value',
+    { organization_id: id, field }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F4: rättning för hand. Går genom samma action som AI-vägen — men eftersom en
+// människa kör den blir ursprunget 'human', och därmed skyddat mot nästa synk.
+// Tomma fält betyder "oförändrat", inte "radera": annars hade ett halvifyllt
+// formulär tömt uppgifter man inte ens tittat på.
+viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const text = (k: string): string | undefined => {
+    const v = body[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  const status = text('status');
+  await runViewAction(req, res, companyId, 'upsert_crm_organization', {
+    organization_id: id,
+    name: text('name') ?? '',
+    ...(text('org_number') ? { org_number: text('org_number') } : {}),
+    ...(text('website') ? { website: text('website') } : {}),
+    ...(status && ['prospect', 'customer', 'partner', 'former', 'archived'].includes(status) ? { status } : {}),
+  }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (client, companyId) => {
@@ -2880,6 +3467,11 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
     // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
     summary: await describeApproval(client, companyId, a.input),
   })));
+  // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
+  const decidedRaw = await listRecentDecisions(client, companyId, 5);
+  const decided = await Promise.all(decidedRaw.map(async (d) => ({
+    ...d, summary: await describeApproval(client, companyId, d.input),
+  })));
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
     if (v === null || v === undefined) return '—';
@@ -2921,6 +3513,26 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
               </div>
             </article>`;
           })
+    }
+    ${
+      /* F4, kvittot. Ett godkänt förslag försvann tidigare spårlöst: man
+         klickade, sidan laddades om, raden var borta. Det är samma tystnad som
+         gjorde de andra felen svåra att se — ingenting sa om det gick vägen,
+         bara att det inte längre väntade. Listan är kort med flit: en
+         bekräftelse, inte ett arkiv (hela historiken ligger i revisionsloggen). */
+      decided.length === 0 ? '' : html`<h2 class="kvitton__rubrik">Nyss avgjort</h2>
+        <ol class="kvitton">${decided.map((d) => html`<li class="kvitto">
+          ${d.status === 'rejected'
+            ? chip('Avvisad', 'muted', '×')
+            : d.status === 'failed' ? chip('Misslyckades', 'neg', '!') : chip('Utförd', 'ok', '✓')}
+          <span class="kvitto__vad">${getAction(d.action)?.title ?? d.action}${
+            d.summary ? html` · <span class="muted">${d.summary}</span>` : ''
+          }</span>
+          <time class="kvitto__nar" datetime="${d.decided_at ? new Date(d.decided_at).toISOString() : ''}">${
+            d.decided_at ? dayOf(d.decided_at) : ''
+          }</time>
+        </li>`)}</ol>
+        <p class="hint">Allt som hänt finns kvar i <a href="/app/c/${companyId}/audit">revisionsloggen</a>.</p>`
     }`;
 }));
 

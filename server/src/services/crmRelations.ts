@@ -8,7 +8,11 @@
 // Alla skrivningar är idempotenta. Härledningsjobben i E4 körs om natten och
 // körs om; en skrivning som inte tål att upprepas är en dubblettgenerator.
 import type { PoolClient } from 'pg';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import {
+  confirmValue, guardHumanFields, readProvenance, recordProvenance,
+  type ProvenanceSource, type ProvenanceWrite,
+} from './crmProvenance.js';
 
 export type SourceSystem = 'gmail' | 'calendar' | 'linear' | 'manual';
 export type OrganizationStatus = 'prospect' | 'customer' | 'partner' | 'former' | 'archived';
@@ -44,6 +48,13 @@ export interface Organization {
 const ORG_COLUMNS = 'id, name, org_number, website, customer_id, status, source, notes';
 
 export interface UpsertOrganizationInput {
+  /**
+   * Pekar ut raden när anroparen redan vet vilken det gäller — vilket bara en
+   * människa i vyn gör. Utan den matchas raden på namnet, och då går namnet inte
+   * att rätta: en ändring hade lagt upp en ny organisation bredvid den gamla i
+   * stället för att döpa om den.
+   */
+  organization_id?: string;
   name: string;
   org_number?: string;
   website?: string;
@@ -51,6 +62,38 @@ export interface UpsertOrganizationInput {
   status?: OrganizationStatus;
   source?: string;
   notes?: string;
+}
+
+/**
+ * Vem som skriver, och varifrån. Skickas med VARJE skrivning i relationsdatan —
+ * inte som ett valfritt tillägg med förvald "människa", för då hade varje
+ * anropare som glömt det tyst fått sina gissningar stämplade som beslut.
+ */
+export interface WriteOrigin {
+  source: ProvenanceSource;
+  source_system?: string;
+  source_ref?: string;
+}
+
+/** Fälten vars ursprung vi håller reda på. Resten är metadata om raden, inte påståenden om världen. */
+const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes'] as const;
+const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id'] as const;
+
+/** Ursprungsposter för de fält anroparen faktiskt fyllde i — tomma fält påstår ingenting. */
+function provenanceFor(
+  fields: readonly string[], input: Record<string, unknown>, origin: WriteOrigin,
+): ProvenanceWrite[] {
+  return fields
+    .filter((f) => input[f] !== undefined && input[f] !== null)
+    .map((field) => ({
+      field,
+      source: origin.source,
+      ...(origin.source_system ? { source_system: origin.source_system } : {}),
+      ...(origin.source_ref ? { source_ref: origin.source_ref } : {}),
+      ...(origin.source === 'sync' && origin.source_system
+        ? { reason: `hämtad från ${origin.source_system}` }
+        : {}),
+    }));
 }
 
 /**
@@ -110,8 +153,8 @@ async function matchCustomer(
  * omsättningen blind för allt som kommer in via API-kontraktet.
  */
 export async function upsertOrganization(
-  client: PoolClient, companyId: string, userId: string, input: UpsertOrganizationInput,
-): Promise<Organization & { created: boolean }> {
+  client: PoolClient, companyId: string, userId: string, input: UpsertOrganizationInput, origin: WriteOrigin,
+): Promise<Organization & { created: boolean; kept_human_fields: string[] }> {
   const name = input.name.trim();
   if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.customer_id) {
@@ -119,16 +162,33 @@ export async function upsertOrganization(
     if (!c.rows[0]) throw new NotFoundError('customer');
   }
 
-  const found = await client.query<{ id: string; customer_id: string | null }>(
-    'SELECT id, customer_id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
-    [companyId, name],
-  );
+  const found = input.organization_id
+    ? await client.query<{ id: string; name: string; customer_id: string | null }>(
+        'SELECT id, name, customer_id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
+        [companyId, input.organization_id])
+    : await client.query<{ id: string; name: string; customer_id: string | null }>(
+        'SELECT id, name, customer_id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+        [companyId, name]);
+  if (input.organization_id && !found.rows[0]) throw new NotFoundError('organization');
   const hit = found.rows[0];
+
+  // Namnbyte: krocken fångas här i stället för som ett rått unik-indexfel, och
+  // svaret pekar mot rätt åtgärd — två rader för samma bolag ska slås ihop, inte
+  // döpas om till varandra.
+  if (hit && name.toLowerCase() !== hit.name.toLowerCase()) {
+    const taken = await client.query(
+      'SELECT 1 FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
+      [companyId, name, hit.id],
+    );
+    if (taken.rows[0]) {
+      throw new BadRequestError('name_taken', 'en annan organisation heter redan så — slå ihop dem i stället');
+    }
+  }
 
   // Uppslaget görs bara när kopplingen saknas. En befintlig koppling ska aldrig
   // flyttas av en synk — det är ett beslut för en människa.
-  const customerId = input.customer_id
-    ?? (hit?.customer_id ? null : await matchCustomer(client, companyId, name, input.org_number, hit?.id));
+  const matched = hit?.customer_id ? null : await matchCustomer(client, companyId, name, input.org_number, hit?.id);
+  const customerId = input.customer_id ?? matched;
 
   if (!hit) {
     const r = await client.query<Organization>(
@@ -137,12 +197,25 @@ export async function upsertOrganization(
       [companyId, name, input.org_number ?? null, input.website ?? null, customerId,
         input.status ?? (customerId ? 'customer' : 'prospect'), input.source ?? null, input.notes ?? null, userId],
     );
+    const link = customerLinkProvenance(matched, input.org_number);
+    await recordProvenance(client, companyId, userId, { organization_id: r.rows[0]!.id }, [
+      ...provenanceFor(ORG_PROVENANCE_FIELDS, { ...input, name, customer_id: link.length ? undefined : input.customer_id }, origin),
+      ...link,
+    ]);
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.organization_created', entityType: 'organization', entityId: r.rows[0]!.id,
-      details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id) },
+      details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source },
     });
-    return { ...r.rows[0]!, created: true };
+    return { ...r.rows[0]!, created: true, kept_human_fields: [] };
   }
+
+  // Människan vinner: fält hon bestämt plockas ur skrivningen innan den körs.
+  // Namnet är sökt på lower(name), så det enda en blockering hindrar där är att
+  // en synk skriver om versaliseringen — men det är också ett beslut.
+  const { input: patch, blocked } = await guardHumanFields(
+    client, companyId, { organization_id: hit.id }, origin.source,
+    { ...input, name, customer_id: customerId } as Record<string, unknown>,
+  );
 
   const r = await client.query<Organization>(
     `UPDATE crm.organizations SET
@@ -156,14 +229,47 @@ export async function upsertOrganization(
        source      = COALESCE($8, source),
        notes       = COALESCE($9, notes)
      WHERE id = $1 AND company_id = $2 RETURNING ${ORG_COLUMNS}`,
-    [hit.id, companyId, name, input.org_number ?? null, input.website ?? null, customerId,
-      input.status ?? null, input.source ?? null, input.notes ?? null],
+    [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
+      patch.org_number ?? null, patch.website ?? null, patch.customer_id ?? null,
+      patch.status ?? null, input.source ?? null, patch.notes ?? null],
   );
+  // Kopplingen som systemet självt slog upp bär sitt eget ursprung; övriga fält
+  // bär skrivarens.
+  const link = patch.customer_id && patch.customer_id === matched
+    ? customerLinkProvenance(matched, input.org_number)
+    : [];
+  await recordProvenance(client, companyId, userId, { organization_id: hit.id }, [
+    ...provenanceFor(ORG_PROVENANCE_FIELDS, link.length ? { ...patch, customer_id: undefined } : patch, origin),
+    ...link,
+  ]);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organization_updated', entityType: 'organization', entityId: hit.id,
-    details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id) },
+    details: {
+      status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
+      // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
+      ...(blocked.length ? { kept_human_fields: blocked } : {}),
+    },
   });
-  return { ...r.rows[0]!, created: false };
+  return { ...r.rows[0]!, created: false, kept_human_fields: blocked };
+}
+
+/**
+ * Kopplingen mot kundregistret när den slagits upp av systemet.
+ *
+ * Ursprunget är 'accounting' och inte 'ai': uppslaget är ingen bedömning, det är
+ * en exakt jämförelse mot en rad som finns i redovisningen. Skälet skrivs ut så
+ * att det syns VARFÖR relationen räknas som samma bolag som kunden — det var
+ * precis det som saknades när kopplingen tidigare aldrig sattes och omsättningen
+ * tyst blev noll.
+ */
+function customerLinkProvenance(matchedCustomerId: string | null, orgNumber?: string): ProvenanceWrite[] {
+  if (!matchedCustomerId) return [];
+  const digits = orgNumber?.replace(/\D/g, '');
+  return [{
+    field: 'customer_id',
+    source: 'accounting',
+    reason: digits && digits.length >= 10 ? 'matchad på organisationsnummer' : 'matchad på namn i kundregistret',
+  }];
 }
 
 export async function listOrganizations(
@@ -215,9 +321,17 @@ export async function getOrganization(
 
   // Sekventiellt, inte Promise.all: frågorna delar EN anslutning och pg kan inte
   // köra dem parallellt — den köar dem och varnar (borttaget i pg@9).
+  // Personernas ursprung hämtas i SAMMA fråga. En läsning per person hade gett
+  // en fråga per rad i ett kort som ofta har tio.
   const people = await client.query(
-    `SELECT id, name, email, phone, role_title, external_ref FROM crm.people
-     WHERE company_id = $1 AND organization_id = $2 ORDER BY name`, [companyId, id]);
+    `SELECT p.id, p.name, p.email, p.phone, p.role_title, p.external_ref,
+            COALESCE((SELECT jsonb_object_agg(fp.field, jsonb_build_object(
+                        'source', fp.source, 'reason', fp.reason,
+                        'source_system', fp.source_system, 'source_ref', fp.source_ref))
+                      FROM crm.field_provenance fp
+                      WHERE fp.company_id = p.company_id AND fp.person_id = p.id), '{}'::jsonb) AS provenance
+     FROM crm.people p
+     WHERE p.company_id = $1 AND p.organization_id = $2 ORDER BY p.name`, [companyId, id]);
   // Även kontaktpunkter som bara hänger på en av organisationens personer —
   // annars ser en kundbild tom ut fast all dialog gått via beställaren.
   const interactions = await client.query(
@@ -232,13 +346,52 @@ export async function getOrganization(
      FROM crm.commitments c LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
      WHERE c.company_id = $1 AND c.organization_id = $2 ORDER BY c.status, c.due_date NULLS LAST`, [companyId, id]);
 
+  const provenance = await readProvenance(client, companyId, { organization_id: id });
+
   return {
     ...head.rows[0],
     people: people.rows,
     interactions: interactions.rows,
     commitments: commitments.rows,
     last_contact_at: interactions.rows[0]?.occurred_at ?? null,
+    // F4: varje uppgift bär sitt ursprung. Läses ut här så att både vyn och
+    // AI:t ser samma sak — den som frågar "vad vet vi om NVR?" ska få veta
+    // vilka delar av svaret som är fakta och vilka som är gissningar.
+    provenance: Object.fromEntries(provenance),
   };
+}
+
+/**
+ * "Stämmer" — en människa intygar ett värde utan att ändra det.
+ *
+ * Fältnamnet kommer ur en enum i actionens schema, aldrig ur fri indata: det här
+ * är en skrivning som pekar ut en kolumn, och sådana byggs på allowlist.
+ */
+export async function confirmCrmValue(
+  client: PoolClient, companyId: string, userId: string, actor: 'human' | 'agent',
+  target: { organization_id: string } | { person_id: string }, field: string,
+): Promise<{ field: string; source: ProvenanceSource }> {
+  // Bekräftelsen är per definition en mänsklig handling. Utan den här spärren
+  // kunde AI:t stämpla sin EGEN gissning som ett människobeslut och därmed låsa
+  // den mot all framtida rättelse — alltså använda F4:s skydd mot F4:s syfte.
+  if (actor !== 'human') {
+    throw new ForbiddenError('human_confirmation_required', 'bara en människa kan bekräfta en uppgift');
+  }
+  if ('organization_id' in target) {
+    await assertOrganization(client, companyId, target.organization_id);
+  } else {
+    const p = await client.query('SELECT 1 FROM crm.people WHERE id = $1 AND company_id = $2',
+      [target.person_id, companyId]);
+    if (!p.rows[0]) throw new NotFoundError('person');
+  }
+  await confirmValue(client, companyId, userId, target, field);
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.value_confirmed',
+    entityType: 'organization_id' in target ? 'organization' : 'person',
+    entityId: 'organization_id' in target ? target.organization_id : target.person_id,
+    details: { field },
+  });
+  return { field, source: 'human' };
 }
 
 // ---------------------------------------------------------------------------
@@ -276,20 +429,20 @@ export interface UpsertPersonInput {
  * hade varje möte lagt en ny namnlös dubblett bredvid den riktiga personen.
  */
 export async function upsertPerson(
-  client: PoolClient, companyId: string, userId: string, input: UpsertPersonInput,
-): Promise<Person & { created: boolean }> {
+  client: PoolClient, companyId: string, userId: string, input: UpsertPersonInput, origin: WriteOrigin,
+): Promise<Person & { created: boolean; kept_human_fields: string[] }> {
   const name = input.name.trim();
   if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.organization_id) await assertOrganization(client, companyId, input.organization_id);
 
   const byEmail = input.email
-    ? await client.query<{ id: string }>(
-        'SELECT id FROM crm.people WHERE company_id = $1 AND lower(email) = lower($2)', [companyId, input.email])
+    ? await client.query<{ id: string; name: string }>(
+        'SELECT id, name FROM crm.people WHERE company_id = $1 AND lower(email) = lower($2)', [companyId, input.email])
     : null;
   const byName = byEmail?.rows[0]
     ? null
-    : await client.query<{ id: string }>(
-        `SELECT id FROM crm.people
+    : await client.query<{ id: string; name: string }>(
+        `SELECT id, name FROM crm.people
          WHERE company_id = $1
            AND organization_id IS NOT DISTINCT FROM $2::uuid
            AND lower(name) = lower($3)
@@ -307,11 +460,20 @@ export async function upsertPerson(
       [companyId, name, input.email ?? null, input.phone ?? null, input.role_title ?? null,
         input.organization_id ?? null, input.external_ref ?? null, input.notes ?? null, userId],
     );
+    await recordProvenance(client, companyId, userId, { person_id: r.rows[0]!.id },
+      provenanceFor(PERSON_PROVENANCE_FIELDS, { ...input, name }, origin));
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.person_created', entityType: 'person', entityId: r.rows[0]!.id,
+      details: { source: origin.source },
     });
-    return { ...r.rows[0]!, created: true };
+    return { ...r.rows[0]!, created: true, kept_human_fields: [] };
   }
+
+  // Samma regel som för organisationen: en rättad titel eller ett rättat
+  // telefonnummer överlever nästa synkkörning.
+  const { input: patch, blocked } = await guardHumanFields(
+    client, companyId, { person_id: hit.id }, origin.source, { ...input, name } as Record<string, unknown>,
+  );
 
   const r = await client.query<Person>(
     `UPDATE crm.people SET
@@ -323,14 +485,25 @@ export async function upsertPerson(
        external_ref    = COALESCE($8, external_ref),
        notes           = COALESCE($9, notes)
      WHERE id = $1 AND company_id = $2 RETURNING ${PERSON_COLUMNS}`,
-    [hit.id, companyId, name, input.email ?? null, input.phone ?? null, input.role_title ?? null,
-      input.organization_id ?? null, input.external_ref ?? null, input.notes ?? null],
+    // ALLA värden ur `patch`, inte ur `input`: external_ref och notes saknar
+    // ursprung i dag och filtreras därför inte, men den dagen de får det skulle
+    // en bindning mot `input` rapportera fältet som skyddat i kept_human_fields
+    // och skriva över det ändå — tyst filtrering OCH tyst överskrivning i
+    // samma sats, precis det modulen finns för att omöjliggöra.
+    [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
+      patch.email ?? null, patch.phone ?? null, patch.role_title ?? null,
+      patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null],
   );
+  await recordProvenance(client, companyId, userId, { person_id: hit.id },
+    provenanceFor(PERSON_PROVENANCE_FIELDS, patch, origin));
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: hit.id,
-    details: { matched_on: byEmail?.rows[0] ? 'email' : 'name' },
+    details: {
+      matched_on: byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
+      ...(blocked.length ? { kept_human_fields: blocked } : {}),
+    },
   });
-  return { ...r.rows[0]!, created: false };
+  return { ...r.rows[0]!, created: false, kept_human_fields: blocked };
 }
 
 /**
@@ -597,6 +770,7 @@ export async function listCommitments(
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
+            c.snoozed_until::text, c.organization_id,
             p.name AS person_name, o.name AS organization_name
      FROM crm.commitments c
      LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
@@ -608,6 +782,91 @@ export async function listCommitments(
     [companyId, opts.status ?? null, opts.due_before ?? null],
   );
   return r.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Handgreppen (F1): det som ska gå på ett klick, utan AI
+// ---------------------------------------------------------------------------
+
+/**
+ * "Inte nu." Skjuter fram raden i dagsytan utan att röra FÖRFALLODATUMET —
+ * löftet är löftet, även när jag väljer att inte agera i dag. Skrivs om
+ * datumet i stället förvanskas historiken om vad som utlovades.
+ */
+export async function snoozeCommitment(
+  client: PoolClient, companyId: string, userId: string, id: string, days: number,
+): Promise<Record<string, unknown>> {
+  const r = await client.query(
+    `UPDATE crm.commitments
+     SET snoozed_until = current_date + make_interval(days => $3::int)
+     WHERE id = $1 AND company_id = $2 AND status = 'open'
+     RETURNING id, body, due_date::text, snoozed_until::text, status`,
+    [id, companyId, days],
+  );
+  if (!r.rows[0]) throw new NotFoundError('commitment');
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.commitment_snoozed', entityType: 'commitment', entityId: id,
+    details: { days },
+  });
+  return r.rows[0];
+}
+
+/**
+ * Dagsytans två sätt att säga nej: "inte nu" (kommer tillbaka) och "sluta
+ * fråga" (finns kvar, knackar aldrig på). Att bara ha det ena gör listan
+ * antingen glömsk eller tjatig.
+ */
+export async function setRelationNudge(
+  client: PoolClient, companyId: string, userId: string, id: string,
+  opts: { snooze_days?: number; muted?: boolean; cadence_days?: number | null },
+): Promise<Record<string, unknown>> {
+  const r = await client.query(
+    `UPDATE crm.organizations SET
+       snoozed_until = CASE WHEN $3::int IS NULL THEN snoozed_until
+                            ELSE current_date + make_interval(days => $3::int) END,
+       muted         = COALESCE($4, muted),
+       -- F5: kadensen. $6 skiljer "rör inte" från "återgå till standard", som
+       -- båda skrivs som frånvaro av ett tal och annars vore omöjliga att skilja.
+       cadence_days  = CASE WHEN $6::boolean THEN $5::int ELSE cadence_days END
+     WHERE id = $1 AND company_id = $2
+     RETURNING id, name, snoozed_until::text, muted, cadence_days`,
+    [id, companyId, opts.snooze_days ?? null, opts.muted ?? null,
+      opts.cadence_days ?? null, opts.cadence_days !== undefined],
+  );
+  if (!r.rows[0]) throw new NotFoundError('organization');
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.relation_nudge_set', entityType: 'organization', entityId: id,
+    details: {
+      snooze_days: opts.snooze_days ?? null, muted: opts.muted ?? null,
+      ...(opts.cadence_days !== undefined ? { cadence_days: opts.cadence_days } : {}),
+    },
+  });
+  return r.rows[0];
+}
+
+/**
+ * Snabbregistrering: kontakt loggad för hand, på fem sekunder, utan AI.
+ *
+ * Post-it-testet ur designunderlaget — går det inte snabbare än en papperslapp
+ * kommer det inte att användas. Registreringen nollställer tystnadsklockan,
+ * vilket är hela poängen: det är den enda handling som ändrar dagsytan.
+ *
+ * Ingen source_ref sätts. Det här är inte en återuppspelningsbar källa utan en
+ * mänsklig anteckning, och två knapptryck ska ge två rader.
+ */
+export async function logContact(
+  client: PoolClient, companyId: string, userId: string,
+  input: { organization_id?: string; person_id?: string; channel?: 'email' | 'meeting' | 'call' | 'note'; summary?: string; occurred_at?: string },
+): Promise<Record<string, unknown> & { created: boolean }> {
+  return recordInteraction(client, companyId, userId, {
+    organization_id: input.organization_id,
+    person_id: input.person_id,
+    occurred_at: input.occurred_at ?? new Date().toISOString(),
+    channel: input.channel ?? 'note',
+    direction: 'outbound',
+    summary: input.summary?.trim() || 'Kontakt loggad för hand',
+    source_system: 'manual',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -646,7 +905,10 @@ export async function setRetention(
  */
 export async function purgeCrmData(
   client: PoolClient, companyId: string, userId: string, opts: { older_than_months?: number } = {},
-): Promise<{ interactions_deleted: number; commitments_deleted: number; older_than_months: number }> {
+): Promise<{
+  interactions_deleted: number; commitments_deleted: number;
+  source_refs_cleared: number; older_than_months: number;
+}> {
   const policy = await getRetention(client, companyId);
   const months = opts.older_than_months ?? policy.retention_months;
   if (!months) {
@@ -666,13 +928,31 @@ export async function purgeCrmData(
      WHERE company_id = $1 AND status <> 'open' AND occurred_at < now() - make_interval(months => $2::int)`,
     [companyId, months],
   );
+  // Ursprunget (F4) pekar ut källan till ett värde — "org.nr hämtat ur
+  // gmail:abc". Gallras mailet bort ska pekaren inte bli kvar och överleva den
+  // gallring den var tänkt att träffas av. Klassificeringen (human/sync/ai)
+  // beskriver värdet som står kvar och behålls; det är BARA pekaren som går.
+  const refs = await client.query(
+    `UPDATE crm.field_provenance fp
+     SET source_ref = NULL, source_system = NULL
+     WHERE fp.company_id = $1 AND fp.source_ref IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM crm.interactions i
+                        WHERE i.company_id = fp.company_id AND i.source_ref = fp.source_ref)
+       AND NOT EXISTS (SELECT 1 FROM crm.commitments c
+                        WHERE c.company_id = fp.company_id AND c.source_ref = fp.source_ref)`,
+    [companyId],
+  );
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.purged',
-    details: { older_than_months: months, interactions: interactions.rowCount ?? 0, commitments: commitments.rowCount ?? 0 },
+    details: {
+      older_than_months: months, interactions: interactions.rowCount ?? 0,
+      commitments: commitments.rowCount ?? 0, source_refs_cleared: refs.rowCount ?? 0,
+    },
   });
   return {
     interactions_deleted: interactions.rowCount ?? 0,
     commitments_deleted: commitments.rowCount ?? 0,
+    source_refs_cleared: refs.rowCount ?? 0,
     older_than_months: months,
   };
 }

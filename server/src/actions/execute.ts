@@ -78,7 +78,10 @@ export async function executeAction(params: {
 
   const result = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
     assertActionAllowed(role);
-    const value = await action.handler({ client, companyId: params.companyId, userId: params.userId, role }, input as never);
+    const value = await action.handler(
+      { client, companyId: params.companyId, userId: params.userId, role, actor: params.actor },
+      input as never,
+    );
     await writeAudit(client, {
       companyId: params.companyId,
       userId: params.userId,
@@ -118,8 +121,11 @@ export async function approveAction(params: {
     // Omvalidera det lagrade indatat — stänger fönstret där ett schema skärpts
     // medan godkännandet legat i kö.
     const input = action.inputSchema.parse(appr.input);
+    // actor är 'human' här även när AI:t begärde åtgärden: en människa har läst
+    // det lagrade indatat och godkänt exakt det. Beslutet är hennes, och det som
+    // skrivs är därmed ett människobeslut — inte en gissning.
     const result = await action.handler(
-      { client, companyId: params.companyId, userId: params.approverId, role },
+      { client, companyId: params.companyId, userId: params.approverId, role, actor: 'human' },
       input as never,
     );
     const updated = await client.query<Approval>(

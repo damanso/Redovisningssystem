@@ -24,6 +24,11 @@ export interface RelationRow {
   overdue_commitments: number;
   revenue_12m_ore: number;
   revenue_share_permille: number | null;
+  /** Dämpningen (F1): "inte nu" respektive "föreslå aldrig". */
+  snoozed_until: string | null;
+  muted: boolean;
+  /** Kadensen (F5): egen tystnadsgräns i dagar. NULL = bolagets standard. */
+  cadence_days: number | null;
 }
 
 /**
@@ -37,7 +42,15 @@ export interface RelationRow {
  * bokfört är inte intäkt, och koncentrationen ska visa verkligheten.
  */
 export async function relationState(
-  client: PoolClient, companyId: string, opts: { as_of?: string } = {},
+  client: PoolClient, companyId: string,
+  // `organization_id` gör två saker som hänger ihop: den hämtar EN rad i stället
+  // för att aggregera hela bolagets kontaktpunkter, åtaganden och tolv månaders
+  // fakturor för att läsa ut en enda (relationskortet gjorde det vid varje
+  // sidvisning) — och den tar med ARKIVERADE relationer. Listan ska inte visa
+  // dem, men kortet man uttryckligen öppnat måste kunna visa sina egna tal;
+  // annars står nyckeltalen på "—" och kadensfältet tomt, och att spara det
+  // tomma fältet raderade den kadens som fanns.
+  opts: { as_of?: string; organization_id?: string } = {},
 ): Promise<RelationRow[]> {
   const r = await client.query<RelationRow & { revenue_12m_ore: string }>(
     `WITH asof AS (SELECT COALESCE($2::date, current_date) AS d),
@@ -69,6 +82,7 @@ export async function relationState(
      ),
      total AS (SELECT COALESCE(sum(net_ore), 0) AS all_ore FROM revenue)
      SELECT o.id AS organization_id, o.name, o.status, o.customer_id,
+            o.snoozed_until::text, o.muted, o.cadence_days,
             ct.last_contact_at,
             CASE WHEN ct.last_contact_at IS NULL THEN NULL
                  ELSE ((SELECT d FROM asof) - ct.last_contact_at::date) END AS days_silent,
@@ -82,20 +96,43 @@ export async function relationState(
      LEFT JOIN contact ct ON ct.organization_id = o.id
      LEFT JOIN commitments cm ON cm.organization_id = o.id
      LEFT JOIN revenue rv ON rv.customer_id = o.customer_id
-     WHERE o.company_id = $1 AND o.status <> 'archived'
+     -- Andelen mäts fortfarande mot HELA bolagets omsättning även när bara en
+     -- rad efterfrågas: "23 % av omsättningen" betyder ingenting annars.
+     WHERE o.company_id = $1
+       AND ($3::uuid IS NULL OR o.id = $3::uuid)
+       AND ($3::uuid IS NOT NULL OR o.status <> 'archived')
      ORDER BY COALESCE(rv.net_ore, 0) DESC, ct.last_contact_at ASC NULLS FIRST, o.name`,
-    [companyId, opts.as_of ?? null],
+    [companyId, opts.as_of ?? null, opts.organization_id ?? null],
   );
   return r.rows.map((x) => ({ ...x, revenue_12m_ore: Number(x.revenue_12m_ore) }));
 }
+
+/**
+ * Hur många kort dagsytan visar. Kapet är designens viktigaste tal.
+ *
+ * Skälet är psykologiskt och det är hårt: "412 kontakter försenade" förvandlar
+ * verktyget från assistent till anklagelse, och en backlog man aldrig kan
+ * beta av leder till att man slutar öppna sidan. En kapad lista som KAN nå noll
+ * skapar i stället ett arbetspass med början och slut. Vi visar därför aldrig
+ * totalen — bara dagens uppsättning.
+ */
+export const DEFAULT_TODAY_LIMIT = 5;
 
 /** Standardgräns för tystnad. Ett vägval — därför en parameter, inte en sanning. */
 export const DEFAULT_SILENCE_DAYS = 30;
 
 export interface SilenceReport {
   as_of: string;
+  /** Bolagets standardgräns. Enskilda rader kan ha en egen — se threshold_days. */
   silence_days: number;
-  rows: RelationRow[];
+  /**
+   * Varje rad bär den gräns som FAKTISKT tillämpades på den.
+   *
+   * Utan det beskriver svaret en gräns som inte användes: en rad med 180 dagars
+   * kadens och 200 dagars tystnad hade sammanfattats som "tyst mer än 30 dagar",
+   * och den som läser kan inte se varför en 25 dagar tyst relation saknas.
+   */
+  rows: (RelationRow & { threshold_days: number })[];
 }
 
 /**
@@ -115,7 +152,10 @@ export async function silenceReport(
   return {
     as_of: asOf,
     silence_days: days,
-    rows: all.filter((r) => r.days_silent === null || r.days_silent >= days),
+    // Samma regel som förslagen: relationens egen kadens går före standarden.
+    rows: all
+      .map((r) => ({ ...r, threshold_days: r.cadence_days ?? days }))
+      .filter((r) => r.days_silent === null || r.days_silent >= r.threshold_days),
   };
 }
 
@@ -168,8 +208,19 @@ export async function contactSuggestions(
 
   const suggestions: ContactSuggestion[] = [];
   for (const r of rows) {
+    // Dämpningen respekteras HÄR, inte i relationState: listan ska fortfarande
+    // visa relationen, det är bara förslaget som ska tiga.
+    if (r.muted) continue;
+    if (r.snoozed_until && r.snoozed_until >= asOf) continue;
+
     const reasons: string[] = [];
     let priority = 0;
+
+    // F5: relationens EGEN kadens går före bolagets standard. En kund på
+    // månadsretainer och en kund vartannat år kan inte dela gräns — med en
+    // gemensam gräns fylls listan med namn som inte borde ligga där, och en
+    // lista med brus i lär användaren att ignorera den.
+    const grans = r.cadence_days ?? days;
 
     if (r.overdue_commitments > 0) {
       reasons.push(`${r.overdue_commitments} förfallet åtagande${r.overdue_commitments > 1 ? 'n' : ''} — vi har lovat något som passerat sitt datum`);
@@ -178,8 +229,10 @@ export async function contactSuggestions(
     if (r.days_silent === null) {
       reasons.push('ingen registrerad kontakt alls');
       priority += 40;
-    } else if (r.days_silent >= days) {
-      reasons.push(`tyst i ${r.days_silent} dagar`);
+    } else if (r.days_silent >= grans) {
+      reasons.push(r.cadence_days
+        ? `tyst i ${r.days_silent} dagar — kadensen är ${r.cadence_days}`
+        : `tyst i ${r.days_silent} dagar`);
       priority += Math.min(r.days_silent, 365);
     }
     if (reasons.length === 0) continue;
@@ -212,4 +265,67 @@ export async function contactSuggestions(
 
   suggestions.sort((a, b) => b.priority - a.priority || a.organization.localeCompare(b.organization, 'sv'));
   return { as_of: asOf, silence_days: days, suggestions };
+}
+
+export interface TodayView {
+  as_of: string;
+  /** Kapad uppsättning relationer att höra av sig till, med skäl. */
+  relations: ContactSuggestion[];
+  /** Löften som förfaller snart eller redan förfallit, och inte är uppskjutna. */
+  commitments: Record<string, unknown>[];
+  /** Sant när dagen är avbetad. Det är hela poängen att det går att uppnå. */
+  quiet: boolean;
+}
+
+/**
+ * Dagsytan: vad ska jag göra nu, utan att veta vad jag ska leta efter.
+ *
+ * Två avslutbara högar och inget mer. Uppskjutet och tystat filtreras bort,
+ * annars går listan aldrig att beta av — och en lista som aldrig kan bli tom
+ * slutar man öppna.
+ */
+export async function todayView(
+  client: PoolClient, companyId: string,
+  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number } = {},
+): Promise<TodayView> {
+  const asOf = opts.as_of ?? new Date().toISOString().slice(0, 10);
+  const limit = opts.limit ?? DEFAULT_TODAY_LIMIT;
+
+  const rows = await relationState(client, companyId, { as_of: asOf });
+  const { suggestions } = await contactSuggestions(client, companyId, {
+    as_of: asOf, silence_days: opts.silence_days, rows,
+  });
+
+  // Löften inom horisonten. Sju dagar framåt som standard: tillräckligt nära för
+  // att vara dagens sak, tillräckligt långt för att hinna göra något åt det.
+  //
+  // KAPAD på samma tal som relationerna. Kapet är dagsytans viktigaste beslut
+  // och det gäller båda högarna: 120 förfallna löften under en rubrik är exakt
+  // den anklagelse listan finns för att inte vara. De äldsta först — ett löfte
+  // som passerat sitt datum är mer angeläget än ett som förfaller på fredag.
+  const horizon = opts.horizon_days ?? 7;
+  const commitments = await client.query(
+    `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
+            c.source_system, c.source_ref, c.organization_id,
+            p.name AS person_name, o.name AS organization_name,
+            (c.due_date < $2::date) AS overdue
+     FROM crm.commitments c
+     LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
+     LEFT JOIN crm.organizations o ON o.id = c.organization_id AND o.company_id = c.company_id
+     WHERE c.company_id = $1 AND c.status = 'open'
+       AND c.due_date IS NOT NULL
+       AND c.due_date <= $2::date + make_interval(days => $3::int)
+       AND (c.snoozed_until IS NULL OR c.snoozed_until < $2::date)
+     ORDER BY c.due_date, c.occurred_at
+     LIMIT $4`,
+    [companyId, asOf, horizon, limit],
+  );
+
+  const relations = suggestions.slice(0, limit);
+  return {
+    as_of: asOf,
+    relations,
+    commitments: commitments.rows,
+    quiet: relations.length === 0 && commitments.rows.length === 0,
+  };
 }
