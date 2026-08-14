@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
-  getOrganization, getRetention, listCommitments, listOrganizations, listPeople, purgeCrmData,
-  recordCommitment, recordInteraction, setCommitmentStatus, setRetention, upsertOrganization, upsertPerson,
+  getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact, purgeCrmData,
+  recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
+  snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
 import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
@@ -1417,6 +1418,42 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ commitment_id: UuidSchema, status: z.enum(['open', 'done', 'dropped']) }).strict(),
     handler: (ctx, i: { commitment_id: string; status: 'open' | 'done' | 'dropped' }) =>
       setCommitmentStatus(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.status),
+  }),
+  def({
+    name: 'log_contact',
+    title: 'Logga kontakt (snabbregistrering)',
+    // Handgreppet som INTE ska kräva AI: fem sekunder, ett klick, klockan
+    // nollställd. Går det inte snabbare än en papperslapp används det inte.
+    sensitivity: 'write',
+    inputSchema: z.object({
+      organization_id: UuidSchema.optional(),
+      person_id: UuidSchema.optional(),
+      channel: z.enum(['email', 'meeting', 'call', 'note']).optional(),
+      summary: safeText(2000).optional(),
+      occurred_at: IsoDateTimeSchema.optional(),
+    }).strict(),
+    handler: (ctx, i) => logContact(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'snooze_crm_commitment',
+    title: 'Skjut upp åtagande i dagsytan',
+    sensitivity: 'write',
+    inputSchema: z.object({ commitment_id: UuidSchema, days: z.number().int().min(1).max(365) }).strict(),
+    handler: (ctx, i: { commitment_id: string; days: number }) =>
+      snoozeCommitment(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.days),
+  }),
+  def({
+    name: 'set_crm_relation_nudge',
+    title: 'Skjut upp eller tysta en relations påminnelser',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      organization_id: UuidSchema,
+      snooze_days: z.number().int().min(1).max(3650).optional(),
+      muted: z.boolean().optional(),
+    }).strict(),
+    handler: (ctx, i: { organization_id: string; snooze_days?: number; muted?: boolean }) =>
+      setRelationNudge(ctx.client, ctx.companyId, ctx.userId, i.organization_id,
+        { snooze_days: i.snooze_days, muted: i.muted }),
   }),
   def({
     name: 'list_crm_commitments',

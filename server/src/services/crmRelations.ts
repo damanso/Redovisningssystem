@@ -597,6 +597,7 @@ export async function listCommitments(
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
+            c.snoozed_until::text, c.organization_id,
             p.name AS person_name, o.name AS organization_name
      FROM crm.commitments c
      LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
@@ -608,6 +609,84 @@ export async function listCommitments(
     [companyId, opts.status ?? null, opts.due_before ?? null],
   );
   return r.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Handgreppen (F1): det som ska gå på ett klick, utan AI
+// ---------------------------------------------------------------------------
+
+/**
+ * "Inte nu." Skjuter fram raden i dagsytan utan att röra FÖRFALLODATUMET —
+ * löftet är löftet, även när jag väljer att inte agera i dag. Skrivs om
+ * datumet i stället förvanskas historiken om vad som utlovades.
+ */
+export async function snoozeCommitment(
+  client: PoolClient, companyId: string, userId: string, id: string, days: number,
+): Promise<Record<string, unknown>> {
+  const r = await client.query(
+    `UPDATE crm.commitments
+     SET snoozed_until = current_date + make_interval(days => $3::int)
+     WHERE id = $1 AND company_id = $2 AND status = 'open'
+     RETURNING id, body, due_date::text, snoozed_until::text, status`,
+    [id, companyId, days],
+  );
+  if (!r.rows[0]) throw new NotFoundError('commitment');
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.commitment_snoozed', entityType: 'commitment', entityId: id,
+    details: { days },
+  });
+  return r.rows[0];
+}
+
+/**
+ * Dagsytans två sätt att säga nej: "inte nu" (kommer tillbaka) och "sluta
+ * fråga" (finns kvar, knackar aldrig på). Att bara ha det ena gör listan
+ * antingen glömsk eller tjatig.
+ */
+export async function setRelationNudge(
+  client: PoolClient, companyId: string, userId: string, id: string,
+  opts: { snooze_days?: number; muted?: boolean },
+): Promise<Record<string, unknown>> {
+  const r = await client.query(
+    `UPDATE crm.organizations SET
+       snoozed_until = CASE WHEN $3::int IS NULL THEN snoozed_until
+                            ELSE current_date + make_interval(days => $3::int) END,
+       muted         = COALESCE($4, muted)
+     WHERE id = $1 AND company_id = $2
+     RETURNING id, name, snoozed_until::text, muted`,
+    [id, companyId, opts.snooze_days ?? null, opts.muted ?? null],
+  );
+  if (!r.rows[0]) throw new NotFoundError('organization');
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.relation_nudge_set', entityType: 'organization', entityId: id,
+    details: { snooze_days: opts.snooze_days ?? null, muted: opts.muted ?? null },
+  });
+  return r.rows[0];
+}
+
+/**
+ * Snabbregistrering: kontakt loggad för hand, på fem sekunder, utan AI.
+ *
+ * Post-it-testet ur designunderlaget — går det inte snabbare än en papperslapp
+ * kommer det inte att användas. Registreringen nollställer tystnadsklockan,
+ * vilket är hela poängen: det är den enda handling som ändrar dagsytan.
+ *
+ * Ingen source_ref sätts. Det här är inte en återuppspelningsbar källa utan en
+ * mänsklig anteckning, och två knapptryck ska ge två rader.
+ */
+export async function logContact(
+  client: PoolClient, companyId: string, userId: string,
+  input: { organization_id?: string; person_id?: string; channel?: 'email' | 'meeting' | 'call' | 'note'; summary?: string; occurred_at?: string },
+): Promise<Record<string, unknown> & { created: boolean }> {
+  return recordInteraction(client, companyId, userId, {
+    organization_id: input.organization_id,
+    person_id: input.person_id,
+    occurred_at: input.occurred_at ?? new Date().toISOString(),
+    channel: input.channel ?? 'note',
+    direction: 'outbound',
+    summary: input.summary?.trim() || 'Kontakt loggad för hand',
+    source_system: 'manual',
+  });
 }
 
 // ---------------------------------------------------------------------------

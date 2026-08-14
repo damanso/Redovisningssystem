@@ -1485,6 +1485,42 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
 const dayOf = (v: unknown): string =>
   v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? '').slice(0, 10);
 
+/**
+ * En radhandling: ett formulär, en knapp, ett klick. Ingen AI, inga tokens.
+ * `back` följer med så att man landar där man stod, inte på en standardsida.
+ */
+function rowAction(
+  action: string, label: string, opts: { primary?: boolean; fields?: Record<string, string>; back: string } ,
+): Raw {
+  return html`<form method="post" action="${action}">
+    <input type="hidden" name="back" value="${opts.back}">
+    ${Object.entries(opts.fields ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+    <button class="btn ${opts.primary ? 'btn--primary' : 'btn--ghost'} btn--sm" type="submit">${label}</button>
+  </form>`;
+}
+
+/**
+ * Överflödsmenyn under ⋯. Bygger på HTML:s popover — noll JavaScript, baseline
+ * sedan 2025. Allt som ligger här är sekundärt: de handgrepp man behöver
+ * dagligen står som egna knappar på raden, aldrig gömda bakom tre prickar.
+ */
+function rowMenu(id: string, items: Raw[]): Raw {
+  return html`<span class="rowmenu">
+    <button class="btn btn--ghost btn--sm rowmenu__btn" popovertarget="${id}" aria-label="Fler val">⋯</button>
+    <div class="rowmenu__pop" popover id="${id}">${items}</div>
+  </span>`;
+}
+
+function menuAction(
+  action: string, label: string, opts: { fields?: Record<string, string>; back: string; neg?: boolean },
+): Raw {
+  return html`<form method="post" action="${action}">
+    <input type="hidden" name="back" value="${opts.back}">
+    ${Object.entries(opts.fields ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`)}
+    <button class="rowmenu__item ${opts.neg ? 'rowmenu__item--neg' : ''}" type="submit">${label}</button>
+  </form>`;
+}
+
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
 function silenceChip(days: number | null): Raw {
   if (days === null) return chip('Ingen kontakt', 'neg', '!');
@@ -1524,7 +1560,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
       state.length === 0
         ? html`<div class="empty"><div class="big">Inga relationer ännu</div>Kontaktpunkter kommer in via API-kontraktet (mail, kalender, ärenden) eller läggs upp med <span class="code">upsert_crm_organization</span>.</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th></tr></thead>
+            <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th><th></th></tr></thead>
             <tbody>${state.map((r) => html`<tr>
               <td><a href="/app/c/${companyId}/relations/${r.organization_id}">${r.name}</a></td>
               <td>${orgStatusChip(r.status)}${
@@ -1535,7 +1571,19 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
               <td>${silenceChip(r.days_silent)}</td>
               <td class="num">${r.open_commitments}${r.overdue_commitments > 0 ? html` ${chip(`${r.overdue_commitments} förfallna`, 'neg', '!')}` : ''}</td>
               <td class="num">${amount(r.revenue_12m_ore, { unit: false })}</td>
-              <td class="num">${pct(r.revenue_share_permille)}</td></tr>`)}
+              <td class="num">${pct(r.revenue_share_permille)}</td>
+              <td><div class="quick">${
+                rowAction(`/app/c/${companyId}/relations/${r.organization_id}/log`, 'Hörde av mig',
+                  { primary: true, back: `/app/c/${companyId}/relations` })
+              }${rowMenu(`r-${r.organization_id}`, [
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/snooze`, 'Skjut upp 2 veckor',
+                  { fields: { days: '14' }, back: `/app/c/${companyId}/relations` }),
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/snooze`, 'Skjut upp 3 månader',
+                  { fields: { days: '90' }, back: `/app/c/${companyId}/relations` }),
+                html`<div class="rowmenu__sep"></div>`,
+                menuAction(`/app/c/${companyId}/relations/${r.organization_id}/mute`, 'Föreslå aldrig',
+                  { fields: { muted: 'true' }, back: `/app/c/${companyId}/relations`, neg: true }),
+              ])}</div></td></tr>`)}
             </tbody></table></div>`
     }`;
 }));
@@ -1585,6 +1633,19 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               </tbody></table></div>`
       }
       <h2 style="margin-top:18px">Vad som sagts</h2>
+      ${/* Snabbregistrering: post-it-testet. Tre kanaler, ett fritextfält, ett
+           klick — och tystnadsklockan nollställs. Ingen AI inblandad. */ ''}
+      <form method="post" action="/app/c/${companyId}/relations/${o.id}/log" class="quickcapture">
+        <input type="hidden" name="back" value="/app/c/${companyId}/relations/${o.id}">
+        <input type="text" name="summary" maxlength="2000" placeholder="Vad hände? (valfritt)">
+        <select name="channel" aria-label="Kanal">
+          <option value="note">Anteckning</option>
+          <option value="email">Mail</option>
+          <option value="call">Samtal</option>
+          <option value="meeting">Möte</option>
+        </select>
+        <button class="btn btn--primary btn--sm" type="submit">Logga kontakt</button>
+      </form>
       ${
         o.interactions.length === 0
           ? html`<p class="muted">Inga kontaktpunkter ännu.</p>`
@@ -1619,18 +1680,119 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga åtaganden här</div>Löften fångas ur mail, möten och ärenden via API-kontraktet — ingen behöver komma ihåg att registrera dem.</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Sades</th><th>Källa</th></tr></thead>
-            <tbody>${rows.map((c) => html`<tr>
+            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
+            <tbody>${rows.map((c) => {
+              const id = c.id as string;
+              const back = `/app/c/${companyId}/commitments?status=${filter}`;
+              return html`<tr>
               <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
               <td>${c.body as string}</td>
               <td>${(c.person_name as string) ?? (c.organization_name as string) ?? '—'}</td>
               <td class="code">${(c.due_date as string) ?? '—'}${
                 c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
+              }${
+                c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="code">${dayOf(c.occurred_at)}</td>
-              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td></tr>`)}
+              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td>
+              <td><div class="quick">${
+                c.status === 'open'
+                  ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}
+                      ${rowAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
+                      ${rowMenu(`m-${id}`, [
+                        menuAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp 1 dag', { fields: { days: '1' }, back }),
+                        menuAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Skjut upp 30 dagar', { fields: { days: '30' }, back }),
+                        html`<div class="rowmenu__sep"></div>`,
+                        menuAction(`/app/c/${companyId}/commitments/${id}/drop`, 'Avskriv löftet', { back, neg: true }),
+                      ])}`
+                  : rowAction(`/app/c/${companyId}/commitments/${id}/reopen`, 'Öppna igen', { back })
+              }</div></td></tr>`;
+            })}
             </tbody></table></div>`
     }`;
+}));
+
+// ---------------------------------------------------------------------------
+// Handgreppen (F1). Vyn hade 47 POST-rutter för fakturor och lön men NOLL för
+// relationer — varje handgrepp, även "markera klar", krävde AI eller API. Det
+// är den strukturella orsaken till att ytan kändes död. Allt nedan går via
+// runViewAction, alltså samma validering, godkännandelogik och auditlogg som
+// AI-vägen; skillnaden är bara att det tar ett klick och noll tokens.
+// ---------------------------------------------------------------------------
+
+/** Tillbaka dit man kom ifrån, så att en åtgärd inte kastar ut en ur flödet. */
+function backToCrm(req: Request, companyId: string, fallback: string): string {
+  const raw = typeof req.body === 'object' && req.body !== null
+    ? (req.body as { back?: unknown }).back : undefined;
+  // Endast egna, relativa sökvägar — aldrig en öppen omdirigering ur indata.
+  return typeof raw === 'string' && /^\/app\/c\/[0-9a-f-]+\/[a-z0-9/?=&-]*$/i.test(raw)
+    ? raw
+    : `/app/c/${companyId}/${fallback}`;
+}
+
+viewRouter.post('/c/:companyId/commitments/:id/done', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'done' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/drop', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'dropped' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/reopen', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  await runViewAction(req, res, companyId, 'set_crm_commitment_status',
+    { commitment_id: id, status: 'open' }, backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/commitments/:id/snooze', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const days = Number((req.body as { days?: unknown }).days);
+  await runViewAction(req, res, companyId, 'snooze_crm_commitment',
+    { commitment_id: id, days: Number.isInteger(days) && days > 0 ? days : 7 },
+    backToCrm(req, companyId, 'commitments'));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/log', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const body = req.body as { channel?: unknown; summary?: unknown };
+  const channel = typeof body.channel === 'string' && ['email', 'meeting', 'call', 'note'].includes(body.channel)
+    ? body.channel : 'note';
+  const summary = typeof body.summary === 'string' && body.summary.trim() ? body.summary.trim() : undefined;
+  await runViewAction(req, res, companyId, 'log_contact',
+    { organization_id: id, channel, ...(summary ? { summary } : {}) },
+    backToCrm(req, companyId, `relations/${id}`));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/snooze', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const days = Number((req.body as { days?: unknown }).days);
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, snooze_days: Number.isInteger(days) && days > 0 ? days : 14 },
+    backToCrm(req, companyId, 'relations'));
+}));
+
+viewRouter.post('/c/:companyId/relations/:id/mute', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const muted = String((req.body as { muted?: unknown }).muted) !== 'false';
+  await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
+    { organization_id: id, muted }, backToCrm(req, companyId, 'relations'));
 }));
 
 viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (client, companyId) => {

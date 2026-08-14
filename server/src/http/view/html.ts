@@ -584,6 +584,45 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .badge { display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 3px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; line-height: 17px; }
 .actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
 
+/* Radmeny (⋯) — HTML:s popover, alltså noll JavaScript. Baseline sedan 2025.
+   I en webbläsare utan stöd faller <div popover> tillbaka till att vara dold
+   tills den öppnas; knappen blir då verkningslös men inget går sönder — och
+   varje handgrepp i menyn finns ALLTID också som en synlig knapp på raden. */
+.rowmenu { position: relative; display: inline-flex; }
+.rowmenu__btn { padding: 6px 9px; line-height: 1; }
+.rowmenu__pop {
+  position: absolute; inset: auto; margin: 0; padding: 5px;
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 8px 24px oklch(0 0 0 / 0.14); min-width: 190px;
+}
+.rowmenu__pop:popover-open { display: flex; flex-direction: column; gap: 2px; }
+.rowmenu__pop::backdrop { background: transparent; }
+.rowmenu__item {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: 13.5px;
+  padding: 7px 10px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--ink); cursor: pointer;
+}
+.rowmenu__item:hover, .rowmenu__item:focus-visible { background: var(--accent-weak); color: var(--accent-ink); }
+.rowmenu__item--neg:hover, .rowmenu__item--neg:focus-visible { background: var(--neg-weak); color: var(--neg); }
+.rowmenu__sep { height: 1px; background: var(--line); margin: 3px 2px; }
+
+/* Radhandlingar: knapparna som gör ytan levande. Kompakta, alltid synliga. */
+.quick { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.quick form { display: inline-flex; }
+.quick .btn { padding: 5px 10px; font-size: 12.5px; font-weight: 600; }
+
+/* Snabbregistrering: en rad, tre kontroller, inget formulärskal. Fälten ärver
+   husets input-stil men får bredd av flexraden i stället för width:100%. */
+.quickcapture { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
+.quickcapture input[type='text'] { flex: 1 1 240px; width: auto; min-width: 0; padding: 8px 11px; }
+.quickcapture select { flex: 0 0 auto; width: auto; padding: 8px 30px 8px 11px; }
+.quickcapture .btn { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  .quickcapture { align-items: stretch; }
+  .quickcapture input[type='text'] { flex: 1 1 100%; }
+}
+
 /* Tomt tillstånd */
 .empty { text-align: center; padding: 40px 20px; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: var(--radius); background: var(--surface); }
 .empty .big { font-size: 15px; color: var(--ink-2); font-weight: 550; margin-bottom: 4px; }
