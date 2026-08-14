@@ -29,7 +29,7 @@ import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, 
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
-import { customerRelationSummary, getOrganization, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
 import { steeringOverview } from '../../services/steering.js';
@@ -1722,6 +1722,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
   const state = await relationState(client, companyId);
   // Förslagen räknas ur samma resultat — inte ur en andra körning av samma fråga.
   const suggestions = await contactSuggestions(client, companyId, { rows: state });
+  const policy = await getRetention(client, companyId);
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
       <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div></div>
     ${/* Utan notisen försvinner varje fel från handgreppen som landar här —
@@ -1788,7 +1789,71 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
           <p class="hint" style="margin:0">Finns bolaget redan i kundregistret kopplas det ihop automatiskt, och omsättningen räknas fram direkt.</p>
         </form>
       </div>
+    </div>
+
+    ${/* Gallringen är den enda inställning som styr att relationsdata FÖRSVINNER,
+         och den gick tidigare bara att sätta via AI eller API. Det är samma
+         strukturella brist som resten av ombyggnaden handlat om: ett handgrepp
+         utan knapp. Den bor här, hos datan den gallrar, och inte under System —
+         beslutet hör ihop med det man ser på sidan. */ ''}
+    <div class="panel" style="margin-top:18px;max-width:560px">
+      <div class="panel__head"><h2>Gallring av relationsdata</h2></div>
+      <div class="panel__body" style="padding:16px">
+        <p class="lede" style="margin-top:0">Kontaktpunkter och stängda löften raderas när de blivit äldre än perioden. ${
+          policy.retention_months === null
+            ? html`${chip('Ingen period satt', 'warn', '!')} Gallring körs aldrig på en gissad period — den måste anges.`
+            : html`${chip(manaderText(policy.retention_months), 'ok', '✓')} är satt.`
+        }</p>
+        <form method="post" action="/app/c/${companyId}/relations/retention" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <label class="field" style="margin:0"><span>Spara i (månader)</span>
+            <input type="number" name="retention_months" min="1" max="240" inputmode="numeric" style="width:120px"
+              value="${policy.retention_months === null ? '' : String(policy.retention_months)}" placeholder="84"></label>
+          <button class="btn btn--primary btn--sm" type="submit">Spara period</button>
+        </form>
+        <p class="hint" style="margin:10px 0 0">
+          12 = 1 år · 36 = 3 år · 84 = 7 år. Tomt fält stänger av gallringen helt.
+          Relationsdata är <strong>inte</strong> räkenskapsinformation: bokföringens sjuårskrav
+          gäller verifikaten, inte mailhistoriken. Perioden är därför ditt val, inte lagens.
+        </p>
+        <div class="quick" style="margin-top:12px">
+          <form method="post" action="/app/c/${companyId}/relations/purge" style="margin:0">
+            <button class="btn btn--ghost btn--sm" type="submit" ${
+              policy.retention_months === null ? html`disabled` : ''
+            }>Gallra nu…</button>
+          </form>
+          <span class="hint">Raderingen går inte att ångra, så den läggs som förslag i <a href="/app/c/${companyId}/approvals">Att göra</a> — inget försvinner förrän du godkänt det där.</span>
+        </div>
+      </div>
     </div>`;
+}));
+
+/** "84" → "84 månader (7 år)". Ett tal i månader säger en människa ingenting. */
+function manaderText(months: number): string {
+  const ar = Math.floor(months / 12);
+  const rest = months % 12;
+  if (ar === 0) return `${months} månader`;
+  const arDel = ar === 1 ? '1 år' : `${ar} år`;
+  return `${months} månader (${rest === 0 ? arDel : `${arDel} ${rest} mån`})`;
+}
+
+// Gallringsperioden. Tomt fält = stäng av gallringen (null), vilket är något
+// ANNAT än ett ogiltigt tal — det senare skickas vidare och avvisas av schemat
+// så att notisen syns, i stället för att tyst tolkas som "stäng av".
+viewRouter.post('/c/:companyId/relations/retention', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const raw = String((req.body as { retention_months?: unknown }).retention_months ?? '').trim();
+  await runViewAction(req, res, companyId, 'set_crm_retention',
+    { retention_months: raw === '' ? null : Number(raw) }, `/app/c/${companyId}/relations`);
+}));
+
+// Gallringen själv är känslig och hamnar i Att göra. Perioden skickas INTE med:
+// den läses ur bolagets policy vid körningen, så det som faktiskt raderas är
+// det som står på sidan — inte ett tal som råkade ligga i ett formulärfält.
+viewRouter.post('/c/:companyId/relations/purge', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  await runViewAction(req, res, companyId, 'purge_crm_data', {}, `/app/c/${companyId}/relations`);
 }));
 
 // F6: skapa en relation för hand. Samma action som AI:t använder — men eftersom

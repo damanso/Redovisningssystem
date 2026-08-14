@@ -170,8 +170,16 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   Ny läsåtgärd `crm_today` — vyn har haft dagsytan sedan F2 men AI:t kunde inte
   ställa frågan.
 
-  **Öppen fråga till David (obesvarad):** gallringsperiod i månader för
-  relationsdata (`set_crm_retention`). Gallring körs aldrig på en gissad period.
+  **Gallringsperioden är BESVARAD:** David valde **7 år (84 månader)**.
+  Flaggat för honom att 7 år är bokföringslagens arkiveringstid och att
+  relationsdata medvetet INTE är räkenskapsinformation — det var hela skälet
+  till ett eget schema. Här styr GDPR:s lagringsminimering, så perioden är hans
+  verksamhetsbeslut, inte en följd av lagen. Han stod fast, och inställningen
+  finns nu som handgrepp i vyn (Relationer → Gallring av relationsdata) i
+  stället för att bara gå via AI/API — samma brist som resten av F1–F6 rättade.
+  Perioden visas som "84 månader (7 år)"; ett tal i månader säger en människa
+  ingenting. Gallringen läser policyn vid körning (inte ett formulärfält) och
+  hamnar i Att göra — ett klick raderar ingenting.
 
 - **2026-08-14 (David i drift: personerna syntes inte på kundkortet):**
   Följdfynd till kopplingsbuggen. En människa kan nu finnas på TVÅ ställen:

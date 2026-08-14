@@ -165,6 +165,26 @@ Kadensen finns för att en gemensam tystnadsgräns passar ingen: en kund på
 månadsretainer och en kund vartannat år kan inte dela gräns. Klockan nollställs
 av **kontakt**, aldrig av inställningen.
 
+## Gallring
+
+`set_crm_retention` / `get_crm_retention` sätter och läser perioden i månader;
+`purge_crm_data` kör gallringen (**känslig** — hamnar i Att göra). Allt tre går
+också att sköta i vyn, under Relationer.
+
+Gallringen körs **aldrig på en gissad period**: utan satt policy och utan
+`older_than_months` avvisas anropet med `no_retention_period`.
+
+Perioden är ett **verksamhetsbeslut, inte en följd av lagen.** Relationsdata är
+inte räkenskapsinformation — det var hela skälet till ett eget schema — så
+bokföringslagens sjuårskrav gäller verifikaten, inte mailhistoriken. Här styr
+GDPR:s lagringsminimering. Locollabs har valt **84 månader (7 år)**.
+
+Gallringen tar kontaktpunkter och stängda löften, och rensar dessutom
+`source_ref`/`source_system` ur `crm.field_provenance` när källan de pekar på
+gallrats bort — en pekare till ett raderat mail får inte överleva sin egen
+gallring. Klassificeringen (`human`/`sync`/`ai`) beskriver värdet som står kvar
+och behålls.
+
 ## Vad som räknas fram på den här sidan
 
 Ingenting av det nedanstående ska skickas in — det härleds ur det som kommit in
