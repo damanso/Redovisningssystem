@@ -563,6 +563,15 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .ai-field .v { font-size: 13.5px; font-weight: 550; }
 .ai-actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; padding: 11px 16px; border-top: 1px solid var(--ai-line); background: color-mix(in oklch, var(--ai-weak) 40%, transparent); }
 .ai-actions .hint { color: var(--ai-ink); font-size: 12px; }
+/* F4: kvittona under kön. Avsiktligt underordnade — de bekräftar, de kräver
+   ingenting. Därför ingen ram, ingen färgplatta och inga knappar. */
+.kvitton__rubrik { margin: 22px 0 8px; font-size: 14px; color: var(--ink-3); font-weight: 650; }
+.kvitton { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.kvitto { display: flex; align-items: baseline; gap: 9px; padding: 6px 2px; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+.kvitto:last-child { border-bottom: 0; }
+.kvitto__vad { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.kvitto__nar { flex: 0 0 auto; font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+
 .confidence { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); }
 .confidence .bar { width: 54px; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--line); }
 .confidence .bar > i { display: block; height: 100%; background: var(--ai); border-radius: 3px; }
@@ -656,6 +665,25 @@ a.today__who:hover { color: var(--accent-ink); }
 .person { display: flex; flex-direction: column; gap: 1px; font-size: 13.5px; }
 .person__n { font-weight: 600; }
 .person__r, .person__e { font-size: 12.5px; color: var(--ink-3); }
+
+/* F4: ursprunget. Märkningen är medvetet TYST för det en människa bestämt —
+   den vanliga, säkra uppgiften ska inte bära dekoration. Bara det osäkra
+   kostar uppmärksamhet, och då i bärnsten (samma färg som AI:t har överallt
+   annars i ytan) så att "AI har gissat det här" alltid ser likadant ut. */
+.uppgift { display: flex; align-items: baseline; gap: 8px; }
+.uppgift .k { font-size: 12.5px; color: var(--ink-3); flex: 0 0 auto; min-width: 92px; }
+.uppgift .v { font-size: 13.5px; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.uppgift form { flex: 0 0 auto; margin: 0; }
+.prov { font-size: 11px; cursor: help; }
+.prov--guess { color: var(--ai); font-weight: 700; }
+.prov--fact { color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Rättningsformuläret: hopfällt tills man behöver det. details/summary, ingen JS. */
+.rattaform > summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; padding: 2px 0; }
+.rattaform > summary:hover { color: var(--ink-2); }
+.rattaform form { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; }
+.rattaform label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--ink-3); }
+.rattaform input, .rattaform select { width: 100%; padding: 7px 10px; font-size: 13.5px; }
 
 /* Trådens filterflikar — vanliga länkar, ingen JS. */
 .threadtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }

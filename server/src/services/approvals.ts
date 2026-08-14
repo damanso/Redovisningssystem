@@ -13,6 +13,8 @@ export interface Approval {
   requested_by: string;
   requested_actor: Actor;
   decided_by: string | null;
+  decided_at: Date | null;
+  created_at: Date;
   result: unknown;
   error: string | null;
 }
@@ -43,6 +45,28 @@ export async function listApprovals(
      WHERE company_id = $1 AND ($2::text IS NULL OR status = $2)
      ORDER BY created_at DESC LIMIT 200`,
     [companyId, status ?? null],
+  );
+  return result.rows;
+}
+
+/**
+ * De senast AVGJORDA förslagen — kvittot.
+ *
+ * Ett godkännande som utförts försvinner i dag spårlöst ur kön: man klickar,
+ * sidan laddas om, raden är borta. Det är samma tystnad som gjorde de andra
+ * felen svåra att se — ingenting säger om det gick vägen, bara att det inte
+ * längre väntar. Kvittolistan stänger den slingan, och den är kort med flit:
+ * det här är en bekräftelse, inte ett arkiv (hela historiken ligger i
+ * revisionsloggen).
+ */
+export async function listRecentDecisions(
+  client: PoolClient, companyId: string, limit = 5,
+): Promise<Approval[]> {
+  const result = await client.query<Approval>(
+    `SELECT ${COLUMNS} FROM action_approvals
+     WHERE company_id = $1 AND decided_at IS NOT NULL
+     ORDER BY decided_at DESC LIMIT $2`,
+    [companyId, limit],
   );
   return result.rows;
 }

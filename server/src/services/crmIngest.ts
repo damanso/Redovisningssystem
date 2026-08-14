@@ -60,6 +60,14 @@ export interface IngestResult {
    * Ett tomt fält här är kvittot på att siffrorna går att lita på.
    */
   unlinked_organizations: string[];
+  /**
+   * Fält som INTE skrevs över för att en människa bestämt dem (F4).
+   *
+   * Redovisas i klartext av samma skäl som unlinked_organizations: en synk som
+   * tyst kastar bort en del av sin egen skrivning ser ut som en synk som
+   * lyckades helt. Den som läser svaret ska kunna se vad som faktiskt hände.
+   */
+  kept_human_fields: string[];
   skipped: { index: number; reason: string }[];
 }
 
@@ -78,11 +86,12 @@ export async function ingestCrmEvents(
     interactions_created: 0, interactions_unchanged: 0,
     commitments_created: 0, commitments_unchanged: 0,
     organizations_created: 0, people_created: 0,
-    organizations_linked: 0, unlinked_organizations: [],
+    organizations_linked: 0, unlinked_organizations: [], kept_human_fields: [],
     skipped: [],
   };
   const linked = new Set<string>();
   const unlinked = new Set<string>();
+  const kept = new Set<string>();
 
   for (const [index, e] of events.entries()) {
     // Savepoint per händelse: en krock (t.ex. en e-post som redan hör till en
@@ -92,7 +101,7 @@ export async function ingestCrmEvents(
     // Räknades det direkt i svaret rapporterades en organisation som skapad
     // även när savepointen rullade tillbaka den — och mottagarens avstämning
     // ("idel unchanged är kvittot") såg spökskapelser vid varje omkörning.
-    const delta = { organizations: 0, people: 0, linked: '', unlinked: '' };
+    const delta = { organizations: 0, people: 0, linked: '', unlinked: '', kept: [] as string[] };
     try {
       if (!e.organization && !e.person) {
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
@@ -104,9 +113,10 @@ export async function ingestCrmEvents(
           name: e.organization.name,
           org_number: e.organization.org_number,
           website: e.organization.website,
-        });
+        }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
         organizationId = org.id;
         if (org.created) delta.organizations += 1;
+        delta.kept.push(...org.kept_human_fields.map((f) => `${org.name}: ${f}`));
         // Kopplingen mot kundregistret slås upp i tjänstelagret (namn eller
         // org.nr). Utfallet redovisas så att en utebliven koppling syns.
         if (org.customer_id) delta.linked = org.name; else delta.unlinked = org.name;
@@ -120,9 +130,10 @@ export async function ingestCrmEvents(
           role_title: e.person.role_title,
           external_ref: e.person.external_ref,
           organization_id: organizationId,
-        });
+        }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
         personId = person.id;
         if (person.created) delta.people += 1;
+        delta.kept.push(...person.kept_human_fields.map((f) => `${person.name}: ${f}`));
       }
 
       if (e.kind === 'interaction') {
@@ -147,6 +158,7 @@ export async function ingestCrmEvents(
       result.people_created += delta.people;
       if (delta.linked) linked.add(delta.linked);
       if (delta.unlinked) unlinked.add(delta.unlinked);
+      for (const k of delta.kept) kept.add(k);
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
       result.skipped.push({ index, reason: err instanceof Error ? err.message : 'okänt fel' });
@@ -155,6 +167,7 @@ export async function ingestCrmEvents(
 
   result.organizations_linked = linked.size;
   result.unlinked_organizations = [...unlinked];
+  result.kept_human_fields = [...kept].sort();
 
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.ingested',
@@ -164,6 +177,7 @@ export async function ingestCrmEvents(
       commitments: result.commitments_created,
       linked: result.organizations_linked,
       unlinked: result.unlinked_organizations.length,
+      kept_human_fields: result.kept_human_fields.length,
       skipped: result.skipped.length,
     },
   });

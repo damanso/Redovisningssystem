@@ -20,7 +20,7 @@ import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } 
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
-import { listApprovals } from '../../services/approvals.js';
+import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
@@ -1550,11 +1550,43 @@ function silenceChip(days: number | null): Raw {
   return chip(`${days} dagar`, 'ok', '✓');
 }
 
+const orgStatusText = (status: string): string =>
+  status === 'customer' ? 'Kund' : status === 'prospect' ? 'Prospekt'
+    : status === 'partner' ? 'Partner' : status === 'former' ? 'Tidigare' : 'Arkiverad';
+
 const orgStatusChip = (status: string): Raw =>
   status === 'customer' ? chip('Kund', 'ok')
     : status === 'prospect' ? chip('Prospekt', 'info')
     : status === 'partner' ? chip('Partner', 'muted')
     : chip(status, 'muted');
+
+// ---------------------------------------------------------------------------
+// F4: ursprunget, utskrivet.
+//
+// När AI:t är den huvudsakliga inmatningen blir "vem påstod det här?" en av de
+// viktigaste sakerna på skärmen. Tre sorters påstående ser i dag identiska ut:
+// ett faktum ur bokföringen, ett beslut av en människa och en gissning ur en
+// mailsignatur. Märkningen skiljer dem åt — och den är TYST för det som en
+// människa bestämt: den vanliga, säkra uppgiften ska inte bära dekoration.
+// Bara det osäkra kostar uppmärksamhet.
+// ---------------------------------------------------------------------------
+interface ProvenanceView {
+  source: string; reason: string | null; source_system: string | null; source_ref: string | null;
+}
+
+function ursprungsMark(p: ProvenanceView | undefined): Raw {
+  if (!p || p.source === 'human') return html``;
+  if (p.source === 'accounting') {
+    return html` <span class="prov prov--fact" title="Härlett ur bokföringen${p.reason ? ` · ${p.reason}` : ''}">ur bokföringen</span>`;
+  }
+  const varifran = p.source_system ? `${p.source_system}${p.source_ref ? ` · ${p.source_ref}` : ''}` : 'AI:ts tolkning';
+  return html` <span class="prov prov--guess" title="Inte bekräftad av dig · ${p.reason ?? varifran}">✦</span>`;
+}
+
+/** Behöver uppgiften bekräftas? Ett faktum ur bokföringen gör det inte — det är
+ *  redan verifierbart mot kundregistret. En gissning gör det. */
+const behoverBekraftas = (p: ProvenanceView | undefined): boolean =>
+  Boolean(p) && p!.source !== 'human' && p!.source !== 'accounting';
 
 // ---------------------------------------------------------------------------
 // Dagsytan (F2). Landningen för relationsdelen.
@@ -1704,15 +1736,33 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const o = await getOrganization(client, companyId, orgId) as {
       id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
       org_number: string | null; website: string | null; source: string | null; notes: string | null;
-      people: Array<{ id: string; name: string; email: string | null; phone: string | null; role_title: string | null }>;
+      people: Array<{
+        id: string; name: string; email: string | null; phone: string | null; role_title: string | null;
+        provenance: Record<string, ProvenanceView>;
+      }>;
       commitments: Array<{ direction: string; body: string; due_date: string | null; status: string }>;
       last_contact_at: string | null;
+      provenance: Record<string, ProvenanceView>;
     };
     const [state] = await relationState(client, companyId, {}).then(
       (rows) => [rows.find((r) => r.organization_id === orgId)]);
     const thread = await relationThread(client, companyId, orgId, { filter });
     const back = `/app/c/${companyId}/relations/${o.id}`;
     const oppna = o.commitments.filter((c) => c.status === 'open').length;
+
+    // Fyra uppgifter som kan komma varsomifrån — därför bär de sitt ursprung.
+    const uppgifter: Array<{ field: string; label: string; value: Raw }> = [
+      { field: 'name', label: 'Namn', value: html`${o.name}` },
+      { field: 'org_number', label: 'Org.nr', value: html`${o.org_number ?? '—'}` },
+      { field: 'website', label: 'Webbplats', value: html`${o.website ?? '—'}` },
+      {
+        field: 'customer_id',
+        label: 'Kund i registret',
+        value: o.customer_id
+          ? html`<a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a>`
+          : html`—`,
+      },
+    ];
 
     // Sex nyckeltal, inte fler. Attio kapar sina "highlights" vid sex av samma
     // skäl: en ruta till kostar ingenting att lägga till och allt att läsa.
@@ -1737,6 +1787,36 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
             <div class="fact"><span class="k">Personer</span><span class="v">${String(o.people.length)}</span></div>
           </div>
 
+          ${/* F4: uppgifterna om bolaget — med sitt ursprung. Här, och inte i
+               nyckeltalen ovanför, för att nyckeltalen ALLTID är härledda ur
+               bokföringen; de här fyra kan komma varsomifrån. */ ''}
+          <div class="factcard">
+            <div class="factcard__head">Uppgifter</div>
+            ${uppgifter.map((u) => html`<div class="uppgift">
+              <span class="k">${u.label}</span>
+              <span class="v">${u.value}${ursprungsMark(o.provenance[u.field])}</span>
+              ${behoverBekraftas(o.provenance[u.field])
+                ? html`<form method="post" action="/app/c/${companyId}/relations/${o.id}/confirm">
+                    <input type="hidden" name="back" value="${back}">
+                    <input type="hidden" name="field" value="${u.field}">
+                    <button class="btn btn--ghost btn--sm" type="submit" title="Bekräfta uppgiften — då skriver ingen synk över den">Stämmer</button>
+                  </form>`
+                : ''}
+            </div>`)}
+            <details class="rattaform">
+              <summary>Rätta uppgifter</summary>
+              <form method="post" action="/app/c/${companyId}/relations/${o.id}/edit">
+                <input type="hidden" name="back" value="${back}">
+                <label>Namn<input type="text" name="name" maxlength="200" value="${o.name}" required></label>
+                <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
+                <label>Webbplats<input type="text" name="website" maxlength="200" value="${o.website ?? ''}"></label>
+                <label>Status<select name="status">${(['prospect', 'customer', 'partner', 'former', 'archived'] as const).map((s) => html`<option value="${s}"${s === o.status ? html` selected` : ''}>${orgStatusText(s)}</option>`)}</select></label>
+                <button class="btn btn--primary btn--sm" type="submit">Spara</button>
+                <p class="hint">Det du sparar här räknas som ditt beslut. Ingen synk skriver över det efteråt.</p>
+              </form>
+            </details>
+          </div>
+
           <div class="factcard">
             <div class="factcard__head">Personer</div>
             ${
@@ -1744,8 +1824,8 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 ? html`<p class="muted" style="font-size:13px;margin:0">Inga personer ännu. De läggs upp av synken när ett mail kommer in.</p>`
                 : o.people.map((p) => html`<div class="person">
                     <span class="person__n">${p.name}</span>
-                    ${p.role_title ? html`<span class="person__r">${p.role_title}</span>` : ''}
-                    ${p.email ? html`<span class="person__e">${p.email}</span>` : ''}</div>`)
+                    ${p.role_title ? html`<span class="person__r">${p.role_title}${ursprungsMark(p.provenance?.role_title)}</span>` : ''}
+                    ${p.email ? html`<span class="person__e">${p.email}${ursprungsMark(p.provenance?.email)}</span>` : ''}</div>`)
             }
           </div>
 
@@ -1939,6 +2019,40 @@ viewRouter.post('/c/:companyId/relations/:id/mute', page(async (req, res) => {
   const muted = String((req.body as { muted?: unknown }).muted) !== 'false';
   await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
     { organization_id: id, muted }, backToCrm(req, companyId, 'relations'));
+}));
+
+// F4: "stämmer" — ett klick som gör en gissning till ett beslut. Fältnamnet
+// valideras av actionens enum, så indata kan inte peka ut en godtycklig kolumn.
+viewRouter.post('/c/:companyId/relations/:id/confirm', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const field = String((req.body as { field?: unknown }).field ?? '');
+  await runViewAction(req, res, companyId, 'confirm_crm_value',
+    { organization_id: id, field }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F4: rättning för hand. Går genom samma action som AI-vägen — men eftersom en
+// människa kör den blir ursprunget 'human', och därmed skyddat mot nästa synk.
+// Tomma fält betyder "oförändrat", inte "radera": annars hade ett halvifyllt
+// formulär tömt uppgifter man inte ens tittat på.
+viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const text = (k: string): string | undefined => {
+    const v = body[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  const status = text('status');
+  await runViewAction(req, res, companyId, 'upsert_crm_organization', {
+    organization_id: id,
+    name: text('name') ?? '',
+    ...(text('org_number') ? { org_number: text('org_number') } : {}),
+    ...(text('website') ? { website: text('website') } : {}),
+    ...(status && ['prospect', 'customer', 'partner', 'former', 'archived'].includes(status) ? { status } : {}),
+  }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (client, companyId) => {
@@ -3188,6 +3302,11 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
     // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
     summary: await describeApproval(client, companyId, a.input),
   })));
+  // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
+  const decidedRaw = await listRecentDecisions(client, companyId, 5);
+  const decided = await Promise.all(decidedRaw.map(async (d) => ({
+    ...d, summary: await describeApproval(client, companyId, d.input),
+  })));
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
     if (v === null || v === undefined) return '—';
@@ -3229,6 +3348,26 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
               </div>
             </article>`;
           })
+    }
+    ${
+      /* F4, kvittot. Ett godkänt förslag försvann tidigare spårlöst: man
+         klickade, sidan laddades om, raden var borta. Det är samma tystnad som
+         gjorde de andra felen svåra att se — ingenting sa om det gick vägen,
+         bara att det inte längre väntade. Listan är kort med flit: en
+         bekräftelse, inte ett arkiv (hela historiken ligger i revisionsloggen). */
+      decided.length === 0 ? '' : html`<h2 class="kvitton__rubrik">Nyss avgjort</h2>
+        <ol class="kvitton">${decided.map((d) => html`<li class="kvitto">
+          ${d.status === 'rejected'
+            ? chip('Avvisad', 'muted', '×')
+            : d.status === 'failed' ? chip('Misslyckades', 'neg', '!') : chip('Utförd', 'ok', '✓')}
+          <span class="kvitto__vad">${getAction(d.action)?.title ?? d.action}${
+            d.summary ? html` · <span class="muted">${d.summary}</span>` : ''
+          }</span>
+          <time class="kvitto__nar" datetime="${d.decided_at ? new Date(d.decided_at).toISOString() : ''}">${
+            d.decided_at ? dayOf(d.decided_at) : ''
+          }</time>
+        </li>`)}</ol>
+        <p class="hint">Allt som hänt finns kvar i <a href="/app/c/${companyId}/audit">revisionsloggen</a>.</p>`
     }`;
 }));
 

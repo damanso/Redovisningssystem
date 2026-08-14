@@ -1,13 +1,15 @@
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
+import type { Actor } from '../http/middleware/authenticate.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
-  getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact, purgeCrmData,
-  recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
+  confirmCrmValue, getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact,
+  purgeCrmData, recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
   snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
+import { sourceForActor } from '../services/crmProvenance.js';
 import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
@@ -71,6 +73,10 @@ export interface ActionContext {
   // Rollen kommer ur medlemskapet i SAMMA transaktion — aldrig ur indata. Bara
   // actions som verkligen skiljer på ägare/admin och medlem läser den.
   role: CompanyRole;
+  // Vem som faktiskt skriver: en människa eller AI:t. Avgör INTE behörigheten
+  // (den sitter i medlemskapet) utan sanningsanspråket — ett fält som AI:t satt
+  // är en gissning, ett fält en människa satt är ett beslut. Se crmProvenance.
+  actor: Actor;
 }
 
 // read      = ingen mutation. write = skapar utkast/register (ej pengaflyttande).
@@ -1320,6 +1326,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z
       .object({
+        // Anges när raden redan är känd (rättning i vyn). Utan den matchas namnet.
+        organization_id: UuidSchema.optional(),
         name: safeText(200),
         org_number: safeText(20).optional(),
         website: safeText(200).optional(),
@@ -1330,7 +1338,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         notes: safeText(2000).optional(),
       })
       .strict(),
-    handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never,
+      { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'list_crm_organizations',
@@ -1349,6 +1358,28 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ organization_id: UuidSchema }).strict(),
     handler: (ctx, i: { organization_id: string }) => getOrganization(ctx.client, ctx.companyId, i.organization_id),
   }),
+  // F4: "stämmer". Det billigaste handgreppet i hela ytan — en människa intygar
+  // ett värde AI:t gissat, utan att ändra det. Därefter kan ingen synk skriva
+  // över det. Fältnamnet kommer ur en enum, aldrig ur fri text: en skrivning som
+  // pekar ut en kolumn byggs på allowlist.
+  def({
+    name: 'confirm_crm_value',
+    title: 'Bekräfta en uppgift (gissning blir beslut)',
+    sensitivity: 'write',
+    inputSchema: z.union([
+      z.object({
+        organization_id: UuidSchema,
+        field: z.enum(['name', 'org_number', 'website', 'customer_id', 'status', 'notes']),
+      }).strict(),
+      z.object({
+        person_id: UuidSchema,
+        field: z.enum(['name', 'email', 'phone', 'role_title', 'organization_id']),
+      }).strict(),
+    ]),
+    handler: (ctx, i: { organization_id?: string; person_id?: string; field: string }) =>
+      confirmCrmValue(ctx.client, ctx.companyId, ctx.userId,
+        i.organization_id ? { organization_id: i.organization_id } : { person_id: i.person_id! }, i.field),
+  }),
   def({
     name: 'upsert_crm_person',
     title: 'Lägg upp/uppdatera person',
@@ -1365,7 +1396,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         notes: safeText(2000).optional(),
       })
       .strict(),
-    handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never,
+      { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'list_crm_people',

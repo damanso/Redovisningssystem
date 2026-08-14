@@ -109,6 +109,7 @@ hade visat den största kunden som kontaktlös.
     "people_created": 1,
     "organizations_linked": 1,
     "unlinked_organizations": [],
+    "kept_human_fields": [],
     "skipped": []
   }
 }
@@ -117,6 +118,31 @@ hade visat den största kunden som kontaktlös.
 `*_unchanged` betyder att händelsen redan fanns och uppdaterades i stället för
 att dubbleras. Ett jobb som körs om ska ge idel `unchanged` — det är kvittot på
 att synken är idempotent.
+
+`kept_human_fields` listar de fält som **inte** skrevs, för att en människa
+bestämt dem. Se nästa avsnitt.
+
+## Människan vinner
+
+Varje fält bär sitt ursprung: `human`, `sync`, `ai`, `accounting` eller
+`import`. En skrivning från synken skriver **aldrig** över ett fält en människa
+satt eller bekräftat. Det är inte artighet — utan regeln är det meningslöst att
+rätta något, eftersom nästa körning sätter tillbaka gissningen i tysthet.
+
+Filtreringen redovisas i `kept_human_fields` (`"Nordic Vision Retail AB:
+org_number"`). En synk som tyst kastar bort en del av sin egen skrivning ser ut
+som en synk som lyckades helt.
+
+| Åtgärd | Gör |
+| :---- | :---- |
+| `get_crm_organization` | Returnerar `provenance` — ursprunget per fält, för organisationen och för varje person |
+| `confirm_crm_value` | Bekräftar ett fält utan att ändra värdet: gissningen blir ett beslut och skyddas |
+
+`upsert_crm_organization` tar `organization_id` när raden redan är känd. Utan den
+matchas namnet, och då går namnet inte att rätta — en ändring hade lagt upp en ny
+organisation bredvid den gamla. Krockar det nya namnet med en befintlig rad
+avvisas skrivningen med `name_taken`; två rader för samma bolag ska slås ihop,
+inte döpas om till varandra.
 
 ## Vad som räknas fram på den här sidan
 
