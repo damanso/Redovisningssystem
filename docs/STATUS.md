@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 586 tester i 73 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 672 tester i 80 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -55,6 +55,11 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   räkenskapsår, beroendemedveten godkännandekö + composite bokning-och-
   betalning, link_voucher-baklänkning + momsmetodvakt, draft-delete,
   mcp:install/mcp:token/self_check. Se docs/MCP_ACTIONS.md + ACCEPTANS.md.
+- **CRM E-serien + Relationsytan F1–F6 (2026-08-14):** eget schema `crm` med RLS
+  och egen gallring (relationsdata är inte räkenskapsinformation), rollen
+  `contractor`, API-kontraktet för mail/kalender/ärenden (docs/crm/API_KONTRAKT.md),
+  härledda nyckeltal, dagsyta, tråd med pengahändelser, ursprung per fält med
+  regeln att människan vinner, kadens, sammanslagning och sökning.
 
 ## Viktiga buggfixar (lärdomar — återinför inte)
 
@@ -72,6 +77,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
    validering/audit som AI-vägen. Bygg aldrig parallella vägar.
 6. Bolagsskapande delas via `services/companies.ts` (API+vy). Org.nr normaliseras
    till NNNNNN-NNNN. Kronparsning via `domain/money.ts` (aldrig egen flyttalsvariant).
+7. **Ingest-vägen måste sätta kopplingen till kundregistret.** `ingest_crm_events`
+   rörde aldrig `customer_id`, så NVR och ILT låg som prospekt med NULL — och
+   läsvyerna som hämtar omsättning via just den kopplingen räknade tyst noll för
+   bolagets största kund. Raden fanns, namnet stämde, inget fel returnerades.
+   Uppslaget sker nu i tjänstelagret (org.nr, annars namn) och utfallet redovisas
+   i `unlinked_organizations`. Samma felklass som localhost-fallbacken.
+8. **En människas rättelse ska överleva nästa synk** (F4). Utan regeln "människan
+   vinner" är ursprungsmärkningen dekoration: man rättar org.numret, nästa
+   körning sätter tillbaka gissningen, i tysthet. Och filtreringen måste
+   redovisas — en synk som tyst kastar bort en del av sin egen skrivning ser ut
+   som en synk som lyckades helt.
+9. **`in` är inte `Object.hasOwn`.** `?visa=constructor` passerade en
+   `v in OBJEKT`-vakt, plockade ut Object-konstruktorn och gav 500. Vakter mot
+   objektnycklar ska alltid använda `Object.hasOwn`.
+10. **Ursprunget måste dö med det det pekar på.** GDPR-raderingen behåller
+    organisationsraden (bokföringslagen) men `crm.field_provenance` bar
+    `source_ref` till de raderade mailen. Både raderingen och gallringen rensar
+    nu pekarna. Samma regel som `crm.audit_log.details`: aldrig fritext eller
+    namn i något som överlever gallringen.
 
 ## INTE byggt (utanför scope / kvarstår)
 
@@ -95,6 +119,59 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-14 (Relationsytan F1–F6, branch `feature/crm-ux`):**
+  Ombyggnaden av CRM-ytan från funktionell till färdig, efter Davids
+  deep-research-underlag. Diagnosen mätt i koden: vyn hade **47 POST-rutter för
+  fakturor/kvitton/lön och NOLL för relationer** — alla tre CRM-sidorna var rena
+  läsytor, så varje handgrepp krävde AI eller API. Det var den strukturella
+  orsaken till att ytan kändes död, inte en saknad knapp.
+
+  Bärande tes: bygg inte ett CRM till, bygg det enda CRM som redan VET vad
+  relationen är värd. Pengarna är ett faktum här och en gissning överallt annars.
+
+  - **F1 Handgreppen** — POST-rutter för klar/öppna/skjut upp/avskriv, hörde av
+    mig, tysta; popover-överflödsmeny (noll JS); snabbregistrering av kontakt.
+    Migration 0056: `snoozed_until` + `muted`. Uppskjutning rör ALDRIG
+    förfallodatumet — löftet är löftet.
+  - **F2 Dagsytan** (`/idag`) — kapad lista (5) som KAN bli tom, aldrig totalen.
+    Varje kort bär sitt skäl; skälet är både rangordning och öppningsreplik.
+  - **F3 Tråden** — en kronologi per relation i EN `UNION ALL`-fråga, med
+    fakturan och betalningen bredvid mailet. Filterflikar som länkar.
+  - **F4 Ursprung** — migration 0057 `crm.field_provenance`: ursprung PER FÄLT.
+    **Människan vinner:** en synk skriver aldrig över ett människobeslut, och
+    filtreringen redovisas (`kept_human_fields`). `ActionContext` bär nu `actor`.
+    "Stämmer" = ett klick gör gissningen till ett beslut. Kvitton på Att göra.
+  - **F5 Kadens/sammanslagning/sökning** — migration 0058 `cadence_days` per
+    relation; `merge_crm_organizations`/`merge_crm_people` (känsliga, ingenting
+    kastas, tomma fält fylls); `search_crm` över fyra register i navraden.
+  - **F6 Finputs** — cross-document view transitions (två rader CSS, noll JS),
+    container queries på innehållsytan, tomma tillstånd med nästa steg + ett
+    riktigt "Ny relation"-formulär.
+
+  Grind: `npx vitest run` → **80 filer, 672 tester gröna**, `npm run build` ren.
+  `/code-review` gav 15 fynd — ALLA åtgärdade, med test per fynd i
+  `server/test/crm-review-fixes.test.ts`. De fem viktigaste:
+  1. `confirm_crm_value` satte alltid `human` oavsett aktör → en agent kunde
+     stämpla sin EGEN gissning som människobeslut och låsa den mot rättelse.
+     Nu 403 för `actor='agent'`.
+  2. GDPR-raderingen tog inte bort `crm.field_provenance` för organisationen
+     (raden behålls enligt bokföringslagen) → pekare till raderade mail levde
+     kvar. Gallringen nollar nu också `source_ref` till det som gallrats bort.
+  3. `isThreadFilter` använde `in` → `?visa=constructor` gav 500.
+  4. Dagsytans löfteshög var INTE kapad — bara relationerna. 120 rader under en
+     rubrik är exakt den anklagelse kapet finns för att undvika.
+  5. Sammanslagning av två organisationer med samma e-postlösa person fällde
+     hela transaktionen på `people_name_uk` — i exakt det läge sammanslagningen
+     finns för. Kolliderande namnlösa personer slås nu ihop först.
+  Dessutom: `?fel=`-notiser renderades inte på relations-/åtagandesidorna (tyst
+  misslyckande), en orimlig kadens raderade den som fanns, arkiverade relationer
+  visade tomma nyckeltal, och "Föreslå aldrig" gick inte att ångra i vyn.
+  Ny läsåtgärd `crm_today` — vyn har haft dagsytan sedan F2 men AI:t kunde inte
+  ställa frågan.
+
+  **Öppen fråga till David (obesvarad):** gallringsperiod i månader för
+  relationsdata (`set_crm_retention`). Gallring körs aldrig på en gissad period.
 
 - **2026-08-14 (David i drift: personerna syntes inte på kundkortet):**
   Följdfynd till kopplingsbuggen. En människa kan nu finnas på TVÅ ställen:

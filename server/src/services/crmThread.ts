@@ -39,8 +39,13 @@ export interface ThreadEvent {
   ref_id: string | null;
 }
 
+/**
+ * `hasOwn`, inte `in`: `in` går upp genom prototypkedjan, så ?visa=constructor
+ * hade släppts igenom och sedan spridit Object-konstruktorn — ett 500 i stället
+ * för en relationssida, utlöst av en gäst som skriver i adressfältet.
+ */
 export function isThreadFilter(v: unknown): v is ThreadFilter {
-  return typeof v === 'string' && v in THREAD_FILTERS;
+  return typeof v === 'string' && Object.hasOwn(THREAD_FILTERS, v);
 }
 
 /**

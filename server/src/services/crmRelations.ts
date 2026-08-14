@@ -8,7 +8,7 @@
 // Alla skrivningar är idempotenta. Härledningsjobben i E4 körs om natten och
 // körs om; en skrivning som inte tål att upprepas är en dubblettgenerator.
 import type { PoolClient } from 'pg';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance,
   type ProvenanceSource, type ProvenanceWrite,
@@ -368,9 +368,15 @@ export async function getOrganization(
  * är en skrivning som pekar ut en kolumn, och sådana byggs på allowlist.
  */
 export async function confirmCrmValue(
-  client: PoolClient, companyId: string, userId: string,
+  client: PoolClient, companyId: string, userId: string, actor: 'human' | 'agent',
   target: { organization_id: string } | { person_id: string }, field: string,
 ): Promise<{ field: string; source: ProvenanceSource }> {
+  // Bekräftelsen är per definition en mänsklig handling. Utan den här spärren
+  // kunde AI:t stämpla sin EGEN gissning som ett människobeslut och därmed låsa
+  // den mot all framtida rättelse — alltså använda F4:s skydd mot F4:s syfte.
+  if (actor !== 'human') {
+    throw new ForbiddenError('human_confirmation_required', 'bara en människa kan bekräfta en uppgift');
+  }
   if ('organization_id' in target) {
     await assertOrganization(client, companyId, target.organization_id);
   } else {
@@ -479,9 +485,14 @@ export async function upsertPerson(
        external_ref    = COALESCE($8, external_ref),
        notes           = COALESCE($9, notes)
      WHERE id = $1 AND company_id = $2 RETURNING ${PERSON_COLUMNS}`,
+    // ALLA värden ur `patch`, inte ur `input`: external_ref och notes saknar
+    // ursprung i dag och filtreras därför inte, men den dagen de får det skulle
+    // en bindning mot `input` rapportera fältet som skyddat i kept_human_fields
+    // och skriva över det ändå — tyst filtrering OCH tyst överskrivning i
+    // samma sats, precis det modulen finns för att omöjliggöra.
     [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
       patch.email ?? null, patch.phone ?? null, patch.role_title ?? null,
-      patch.organization_id ?? null, input.external_ref ?? null, input.notes ?? null],
+      patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null],
   );
   await recordProvenance(client, companyId, userId, { person_id: hit.id },
     provenanceFor(PERSON_PROVENANCE_FIELDS, patch, origin));
@@ -894,7 +905,10 @@ export async function setRetention(
  */
 export async function purgeCrmData(
   client: PoolClient, companyId: string, userId: string, opts: { older_than_months?: number } = {},
-): Promise<{ interactions_deleted: number; commitments_deleted: number; older_than_months: number }> {
+): Promise<{
+  interactions_deleted: number; commitments_deleted: number;
+  source_refs_cleared: number; older_than_months: number;
+}> {
   const policy = await getRetention(client, companyId);
   const months = opts.older_than_months ?? policy.retention_months;
   if (!months) {
@@ -914,13 +928,31 @@ export async function purgeCrmData(
      WHERE company_id = $1 AND status <> 'open' AND occurred_at < now() - make_interval(months => $2::int)`,
     [companyId, months],
   );
+  // Ursprunget (F4) pekar ut källan till ett värde — "org.nr hämtat ur
+  // gmail:abc". Gallras mailet bort ska pekaren inte bli kvar och överleva den
+  // gallring den var tänkt att träffas av. Klassificeringen (human/sync/ai)
+  // beskriver värdet som står kvar och behålls; det är BARA pekaren som går.
+  const refs = await client.query(
+    `UPDATE crm.field_provenance fp
+     SET source_ref = NULL, source_system = NULL
+     WHERE fp.company_id = $1 AND fp.source_ref IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM crm.interactions i
+                        WHERE i.company_id = fp.company_id AND i.source_ref = fp.source_ref)
+       AND NOT EXISTS (SELECT 1 FROM crm.commitments c
+                        WHERE c.company_id = fp.company_id AND c.source_ref = fp.source_ref)`,
+    [companyId],
+  );
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.purged',
-    details: { older_than_months: months, interactions: interactions.rowCount ?? 0, commitments: commitments.rowCount ?? 0 },
+    details: {
+      older_than_months: months, interactions: interactions.rowCount ?? 0,
+      commitments: commitments.rowCount ?? 0, source_refs_cleared: refs.rowCount ?? 0,
+    },
   });
   return {
     interactions_deleted: interactions.rowCount ?? 0,
     commitments_deleted: commitments.rowCount ?? 0,
+    source_refs_cleared: refs.rowCount ?? 0,
     older_than_months: months,
   };
 }

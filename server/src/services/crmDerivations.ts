@@ -42,7 +42,15 @@ export interface RelationRow {
  * bokfört är inte intäkt, och koncentrationen ska visa verkligheten.
  */
 export async function relationState(
-  client: PoolClient, companyId: string, opts: { as_of?: string } = {},
+  client: PoolClient, companyId: string,
+  // `organization_id` gör två saker som hänger ihop: den hämtar EN rad i stället
+  // för att aggregera hela bolagets kontaktpunkter, åtaganden och tolv månaders
+  // fakturor för att läsa ut en enda (relationskortet gjorde det vid varje
+  // sidvisning) — och den tar med ARKIVERADE relationer. Listan ska inte visa
+  // dem, men kortet man uttryckligen öppnat måste kunna visa sina egna tal;
+  // annars står nyckeltalen på "—" och kadensfältet tomt, och att spara det
+  // tomma fältet raderade den kadens som fanns.
+  opts: { as_of?: string; organization_id?: string } = {},
 ): Promise<RelationRow[]> {
   const r = await client.query<RelationRow & { revenue_12m_ore: string }>(
     `WITH asof AS (SELECT COALESCE($2::date, current_date) AS d),
@@ -88,9 +96,13 @@ export async function relationState(
      LEFT JOIN contact ct ON ct.organization_id = o.id
      LEFT JOIN commitments cm ON cm.organization_id = o.id
      LEFT JOIN revenue rv ON rv.customer_id = o.customer_id
-     WHERE o.company_id = $1 AND o.status <> 'archived'
+     -- Andelen mäts fortfarande mot HELA bolagets omsättning även när bara en
+     -- rad efterfrågas: "23 % av omsättningen" betyder ingenting annars.
+     WHERE o.company_id = $1
+       AND ($3::uuid IS NULL OR o.id = $3::uuid)
+       AND ($3::uuid IS NOT NULL OR o.status <> 'archived')
      ORDER BY COALESCE(rv.net_ore, 0) DESC, ct.last_contact_at ASC NULLS FIRST, o.name`,
-    [companyId, opts.as_of ?? null],
+    [companyId, opts.as_of ?? null, opts.organization_id ?? null],
   );
   return r.rows.map((x) => ({ ...x, revenue_12m_ore: Number(x.revenue_12m_ore) }));
 }
@@ -111,8 +123,16 @@ export const DEFAULT_SILENCE_DAYS = 30;
 
 export interface SilenceReport {
   as_of: string;
+  /** Bolagets standardgräns. Enskilda rader kan ha en egen — se threshold_days. */
   silence_days: number;
-  rows: RelationRow[];
+  /**
+   * Varje rad bär den gräns som FAKTISKT tillämpades på den.
+   *
+   * Utan det beskriver svaret en gräns som inte användes: en rad med 180 dagars
+   * kadens och 200 dagars tystnad hade sammanfattats som "tyst mer än 30 dagar",
+   * och den som läser kan inte se varför en 25 dagar tyst relation saknas.
+   */
+  rows: (RelationRow & { threshold_days: number })[];
 }
 
 /**
@@ -133,7 +153,9 @@ export async function silenceReport(
     as_of: asOf,
     silence_days: days,
     // Samma regel som förslagen: relationens egen kadens går före standarden.
-    rows: all.filter((r) => r.days_silent === null || r.days_silent >= (r.cadence_days ?? days)),
+    rows: all
+      .map((r) => ({ ...r, threshold_days: r.cadence_days ?? days }))
+      .filter((r) => r.days_silent === null || r.days_silent >= r.threshold_days),
   };
 }
 
@@ -276,6 +298,11 @@ export async function todayView(
 
   // Löften inom horisonten. Sju dagar framåt som standard: tillräckligt nära för
   // att vara dagens sak, tillräckligt långt för att hinna göra något åt det.
+  //
+  // KAPAD på samma tal som relationerna. Kapet är dagsytans viktigaste beslut
+  // och det gäller båda högarna: 120 förfallna löften under en rubrik är exakt
+  // den anklagelse listan finns för att inte vara. De äldsta först — ett löfte
+  // som passerat sitt datum är mer angeläget än ett som förfaller på fredag.
   const horizon = opts.horizon_days ?? 7;
   const commitments = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
@@ -289,8 +316,9 @@ export async function todayView(
        AND c.due_date IS NOT NULL
        AND c.due_date <= $2::date + make_interval(days => $3::int)
        AND (c.snoozed_until IS NULL OR c.snoozed_until < $2::date)
-     ORDER BY c.due_date, c.occurred_at`,
-    [companyId, asOf, horizon],
+     ORDER BY c.due_date, c.occurred_at
+     LIMIT $4`,
+    [companyId, asOf, horizon, limit],
   );
 
   const relations = suggestions.slice(0, limit);

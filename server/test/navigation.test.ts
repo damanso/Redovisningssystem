@@ -14,7 +14,7 @@ let ua: ReturnType<typeof supertest.agent>;
 // Varje sida som navigationen ska nå. Faller detta har en sida blivit
 // oåtkomlig för användaren (även om rutten finns kvar).
 const ALLA_SIDOR = [
-  '', 'idag', 'approvals', 'invoices', 'receipts',
+  '', 'idag', 'approvals', 'invoices', 'receipts', 'sok',
   'relations', 'commitments', 'customers', 'receivables', 'suppliers', 'payables', 'recurring',
   'payroll', 'projects',
   'vat', 'tax', 'ec-sales', 'ink2', 'k10', 'annual', 'assets', 'cashflow',

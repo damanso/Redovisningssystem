@@ -110,6 +110,30 @@ export async function mergeOrganizations(
     );
   }
 
+  // Personerna FÖRST, och den kolliderande sorten för sig.
+  //
+  // Det här är inte ett kantfall utan huvudfallet: Gmail lägger upp "Eva
+  // Larsson" utan e-post ur ett kalenderevent på den ena raden, kundregistrets
+  // väg lägger upp samma namnlösa Eva på den andra. people_name_uk (migration
+  // 0054) är unikt per organisation för e-postlösa personer, så en rak
+  // omflyttning fäller hela sammanslagningen med ett rått databasfel — i exakt
+  // det läge sammanslagningen finns för.
+  //
+  // Två rader med samma namn och ingen e-post ÄR samma person enligt systemets
+  // egen nyckelregel. De slås därför ihop, med samma regler som allt annat här:
+  // ingenting kastas, tomma fält fylls.
+  const krockar = await client.query<{ keep_person: string; gone_person: string }>(
+    `SELECT k.id AS keep_person, g.id AS gone_person
+     FROM crm.people g
+     JOIN crm.people k ON k.company_id = g.company_id AND k.organization_id = $2
+                      AND lower(k.name) = lower(g.name) AND k.email IS NULL
+     WHERE g.company_id = $1 AND g.organization_id = $3 AND g.email IS NULL`,
+    [companyId, keepId, mergeId],
+  );
+  for (const k of krockar.rows) {
+    await mergePeople(client, companyId, userId, k.keep_person, k.gone_person);
+  }
+
   const people = await client.query(
     'UPDATE crm.people SET organization_id = $2 WHERE company_id = $1 AND organization_id = $3',
     [companyId, keepId, mergeId]);
@@ -126,14 +150,21 @@ export async function mergeOrganizations(
   await client.query('DELETE FROM crm.organizations WHERE id = $1 AND company_id = $2', [mergeId, companyId]);
 
   const moved = {
-    people: people.rowCount ?? 0, interactions: interactions.rowCount ?? 0,
+    // De ihopslagna personerna räknas med: de flyttade också, om än genom att
+    // uppgå i en rad som redan fanns. Att utelämna dem hade gjort svaret till
+    // en underrapportering.
+    people: (people.rowCount ?? 0) + krockar.rows.length,
+    interactions: interactions.rowCount ?? 0,
     commitments: commitments.rowCount ?? 0, deals: deals.rowCount ?? 0,
   };
-  // Auditloggen bär namnet på den som försvann — det är den enda kvarvarande
-  // spåret av att raden funnits, och den behövs för att förstå historiken.
+  // Bara id:n och antal i loggen — aldrig namnet på den rad som försvann.
+  // crm.audit_log är append-only och nås varken av GDPR-raderingen eller av
+  // gallringen, och en organisation kan vara en enskild firma som heter som en
+  // fysisk person. Ett namn här hade överlevt den radering det var tänkt att
+  // träffas av. Samma regel som resten av loggen (migration 0052).
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organizations_merged', entityType: 'organization', entityId: keepId,
-    details: { merged_id: mergeId, merged_name: gone.name, moved, filled_fields: filled },
+    details: { merged_id: mergeId, moved, filled_fields: filled },
   });
   return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled };
 }

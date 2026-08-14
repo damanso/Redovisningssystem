@@ -136,6 +136,10 @@ const NAV_GROUPS: readonly NavGroup[] = [
       ['approvals', 'Att göra'],
       ['invoices', 'Fakturor'],
       ['receipts', 'Kvitton'],
+      // Sökrutan står i navraden, men sidan måste ändå finnas i menyn: annars
+      // står användaren på en sida som navigationen påstår inte existerar —
+      // ingen markering, ingen "du är här".
+      ['sok', 'Sök'],
     ],
   },
   {

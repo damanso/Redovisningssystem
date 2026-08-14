@@ -11,7 +11,7 @@ import {
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
 import { mergeOrganizations, mergePeople, searchCrm } from '../services/crmMerge.js';
-import { contactSuggestions, relationState, silenceReport } from '../services/crmDerivations.js';
+import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
@@ -1378,7 +1378,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       }).strict(),
     ]),
     handler: (ctx, i: { organization_id?: string; person_id?: string; field: string }) =>
-      confirmCrmValue(ctx.client, ctx.companyId, ctx.userId,
+      confirmCrmValue(ctx.client, ctx.companyId, ctx.userId, ctx.actor,
         i.organization_id ? { organization_id: i.organization_id } : { person_id: i.person_id! }, i.field),
   }),
   def({
@@ -1597,6 +1597,22 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => relationState(ctx.client, ctx.companyId, { as_of: i.as_of }),
+  }),
+  // Dagsytan som fråga. Vyn har haft den sedan F2, men AI:t har inte kunnat
+  // ställa den — och "vad ska jag göra i dag?" är den vanligaste frågan i hela
+  // ytan. Kapad på samma tal som vyn, av samma skäl: svaret ska gå att beta av.
+  def({
+    name: 'crm_today',
+    title: 'Dagens lista: vilka att höra av sig till och vilka löften som förfaller',
+    sensitivity: 'read',
+    inputSchema: z.object({
+      as_of: IsoDateSchema.optional(),
+      silence_days: z.number().int().min(1).max(3650).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+      horizon_days: z.number().int().min(0).max(365).optional(),
+    }).strict(),
+    handler: (ctx, i: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number }) =>
+      todayView(ctx.client, ctx.companyId, i),
   }),
   def({
     name: 'crm_silence_report',

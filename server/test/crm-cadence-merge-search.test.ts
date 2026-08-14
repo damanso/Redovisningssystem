@@ -180,13 +180,34 @@ describe('sammanslagning: ingenting kastas, tomma fält fylls', () => {
     expect(godkann.status).toBe(400);
   });
 
-  it('sammanslagningen syns i relationsloggen med namnet som försvann', async () => {
-    const n = await withAdmin(async (a) => (await a.query(
-      `SELECT count(*)::int AS n FROM crm.audit_log
+  it('kolliderande namnlösa personer slås ihop i stället för att fälla flytten', async () => {
+    // Huvudfallet, inte ett kantfall: kalendern lägger upp "Karin Ek" utan
+    // e-post på båda raderna. people_name_uk är unikt per organisation för
+    // e-postlösa personer — en rak omflyttning hade fällt hela transaktionen.
+    const behall = await nyOrg('Krockbolaget AB');
+    const dubblett = await nyOrg('Krockbolaget');
+    const a = await act('upsert_crm_person', { name: 'Karin Ek', organization_id: behall });
+    const b = await act('upsert_crm_person', { name: 'Karin Ek', organization_id: dubblett });
+    expect(a.body.result.id).not.toBe(b.body.result.id);
+
+    const r = await utfor(await act('merge_crm_organizations', { keep_id: behall, merge_id: dubblett }));
+    expect(r.moved).toMatchObject({ people: 1 });
+
+    const kvar = await act('get_crm_organization', { organization_id: behall });
+    expect(kvar.body.result.people).toHaveLength(1);
+    expect(kvar.body.result.people[0].name).toBe('Karin Ek');
+  });
+
+  it('loggen bär id:n och antal — aldrig namnet på raden som försvann', async () => {
+    const rad = await withAdmin(async (a) => (await a.query(
+      `SELECT details FROM crm.audit_log
        WHERE company_id = $1 AND action = 'crm.organizations_merged'
-         AND details->>'merged_name' = 'Nordic Vision Retail'`,
-      [companyId])).rows[0].n);
-    expect(n, 'det enda kvarvarande spåret av raden som togs bort').toBe(1);
+       ORDER BY occurred_at LIMIT 1`,
+      [companyId])).rows[0]);
+    expect(rad.details.merged_id, 'spåret ska finnas').toBeTruthy();
+    // crm.audit_log är append-only och nås varken av GDPR-raderingen eller av
+    // gallringen. En enskild firma heter som en fysisk person.
+    expect(rad.details.merged_name, 'ett namn här hade överlevt sin egen radering').toBeUndefined();
   });
 });
 
