@@ -30,7 +30,7 @@ async function newCommitment(body: string, due: string): Promise<string> {
   return res.body.result.id as string;
 }
 
-const openCommitments = async (): Promise<Record<string, unknown>[]> =>
+const openCommitments = async (): Promise<{ id: string }[]> =>
   (await act('list_crm_commitments', { status: 'open' })).body.result;
 
 beforeAll(async () => {
