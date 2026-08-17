@@ -154,7 +154,7 @@ async function matchCustomer(
  */
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, input: UpsertOrganizationInput, origin: WriteOrigin,
-): Promise<Organization & { created: boolean; kept_human_fields: string[] }> {
+): Promise<Organization & { created: boolean; kept_human_fields: string[]; redirected_from: string | null }> {
   const name = input.name.trim();
   if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.customer_id) {
@@ -170,15 +170,41 @@ export async function upsertOrganization(
         'SELECT id, name, customer_id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
         [companyId, name]);
   if (input.organization_id && !found.rows[0]) throw new NotFoundError('organization');
-  const hit = found.rows[0];
+
+  // Gravstenen efter en sammanslagning (migration 0059).
+  //
+  // Källorna utanför systemet vet ingenting om att två rader slagits ihop: nästa
+  // nattkörning skickar samma gamla organisationsnamn igen. Utan uppslaget här
+  // skapas en ny, tom rad med det namnet — och sammanslagningen är giltig till
+  // nästa natt, varje natt.
+  //
+  // Tre spärrar mot att aliaset kapar en framtida ÄKTA organisation med samma
+  // namn: den riktiga organisationen slås upp först (finns namnet på riktigt
+  // rörs ingenting), bara synken styrs om (en människas uttryckliga upsert
+  // träffar alltid raden hon pekat ut), och omstyrningen redovisas i svaret.
+  const alias = !found.rows[0] && !input.organization_id && origin.source === 'sync'
+    ? await client.query<{ id: string; name: string; customer_id: string | null }>(
+        `SELECT o.id, o.name, o.customer_id
+         FROM crm.organization_name_aliases a
+         JOIN crm.organizations o ON o.id = a.organization_id AND o.company_id = a.company_id
+         WHERE a.company_id = $1 AND lower(a.name) = lower($2)
+         FOR UPDATE OF o`,
+        [companyId, name])
+    : null;
+  const hit = found.rows[0] ?? alias?.rows[0];
+  const redirectedFrom = !found.rows[0] && alias?.rows[0] ? name : null;
+  // Det gamla namnet får ALDRIG döpa om den kvarvarande raden — då hade
+  // gravstenen gjort exakt det den finns för att förhindra, fast tvärtom.
+  // Skrivningen fortsätter mot rätt rad, med rätt namn.
+  const writeName = redirectedFrom ? hit!.name : name;
 
   // Namnbyte: krocken fångas här i stället för som ett rått unik-indexfel, och
   // svaret pekar mot rätt åtgärd — två rader för samma bolag ska slås ihop, inte
   // döpas om till varandra.
-  if (hit && name.toLowerCase() !== hit.name.toLowerCase()) {
+  if (hit && writeName.toLowerCase() !== hit.name.toLowerCase()) {
     const taken = await client.query(
       'SELECT 1 FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
-      [companyId, name, hit.id],
+      [companyId, writeName, hit.id],
     );
     if (taken.rows[0]) {
       throw new BadRequestError('name_taken', 'en annan organisation heter redan så — slå ihop dem i stället');
@@ -187,26 +213,26 @@ export async function upsertOrganization(
 
   // Uppslaget görs bara när kopplingen saknas. En befintlig koppling ska aldrig
   // flyttas av en synk — det är ett beslut för en människa.
-  const matched = hit?.customer_id ? null : await matchCustomer(client, companyId, name, input.org_number, hit?.id);
+  const matched = hit?.customer_id ? null : await matchCustomer(client, companyId, writeName, input.org_number, hit?.id);
   const customerId = input.customer_id ?? matched;
 
   if (!hit) {
     const r = await client.query<Organization>(
       `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${ORG_COLUMNS}`,
-      [companyId, name, input.org_number ?? null, input.website ?? null, customerId,
+      [companyId, writeName, input.org_number ?? null, input.website ?? null, customerId,
         input.status ?? (customerId ? 'customer' : 'prospect'), input.source ?? null, input.notes ?? null, userId],
     );
     const link = customerLinkProvenance(matched, input.org_number);
     await recordProvenance(client, companyId, userId, { organization_id: r.rows[0]!.id }, [
-      ...provenanceFor(ORG_PROVENANCE_FIELDS, { ...input, name, customer_id: link.length ? undefined : input.customer_id }, origin),
+      ...provenanceFor(ORG_PROVENANCE_FIELDS, { ...input, name: writeName, customer_id: link.length ? undefined : input.customer_id }, origin),
       ...link,
     ]);
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.organization_created', entityType: 'organization', entityId: r.rows[0]!.id,
       details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source },
     });
-    return { ...r.rows[0]!, created: true, kept_human_fields: [] };
+    return { ...r.rows[0]!, created: true, kept_human_fields: [], redirected_from: null };
   }
 
   // Människan vinner: fält hon bestämt plockas ur skrivningen innan den körs.
@@ -214,7 +240,10 @@ export async function upsertOrganization(
   // en synk skriver om versaliseringen — men det är också ett beslut.
   const { input: patch, blocked } = await guardHumanFields(
     client, companyId, { organization_id: hit.id }, origin.source,
-    { ...input, name, customer_id: customerId } as Record<string, unknown>,
+    // Vid omstyrning bär händelsen det GAMLA namnet. Det är inget påstående om
+    // den kvarvarande raden, så det skrivs inte alls — och rapporteras därför
+    // inte heller som ett stoppat människofält: synken bad aldrig om det.
+    { ...input, name: redirectedFrom ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
   );
 
   const r = await client.query<Organization>(
@@ -248,9 +277,13 @@ export async function upsertOrganization(
       status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
       ...(blocked.length ? { kept_human_fields: blocked } : {}),
+      // Att skrivningen landade på en annan rad än avsändaren trodde ska synas i
+      // efterhand — men bara som ett JA, aldrig som namnet: loggen är
+      // append-only och en organisation kan vara en enskild firma.
+      ...(redirectedFrom ? { redirected: true } : {}),
     },
   });
-  return { ...r.rows[0]!, created: false, kept_human_fields: blocked };
+  return { ...r.rows[0]!, created: false, kept_human_fields: blocked, redirected_from: redirectedFrom };
 }
 
 /**
@@ -347,12 +380,20 @@ export async function getOrganization(
      WHERE c.company_id = $1 AND c.organization_id = $2 ORDER BY c.status, c.due_date NULLS LAST`, [companyId, id]);
 
   const provenance = await readProvenance(client, companyId, { organization_id: id });
+  // Namn som styrs hit efter en sammanslagning (migration 0059). Läses ut med
+  // kortet därför att omstyrningen annars vore osynlig: den syns bara som en
+  // organisation som INTE dök upp vid nästa synk. Är bedömningen fel — namnet
+  // blir ett annat, riktigt bolag — måste den gå att se innan den går att ångra.
+  const aliases = await client.query(
+    `SELECT name, created_at FROM crm.organization_name_aliases
+     WHERE company_id = $1 AND organization_id = $2 ORDER BY name`, [companyId, id]);
 
   return {
     ...head.rows[0],
     people: people.rows,
     interactions: interactions.rows,
     commitments: commitments.rows,
+    name_aliases: aliases.rows,
     last_contact_at: interactions.rows[0]?.occurred_at ?? null,
     // F4: varje uppgift bär sitt ursprung. Läses ut här så att både vyn och
     // AI:t ser samma sak — den som frågar "vad vet vi om NVR?" ska få veta

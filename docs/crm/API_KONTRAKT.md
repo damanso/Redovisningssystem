@@ -110,6 +110,7 @@ hade visat den största kunden som kontaktlös.
     "organizations_linked": 1,
     "unlinked_organizations": [],
     "kept_human_fields": [],
+    "redirected_organizations": [],
     "skipped": []
   }
 }
@@ -121,6 +122,10 @@ att synken är idempotent.
 
 `kept_human_fields` listar de fält som **inte** skrevs, för att en människa
 bestämt dem. Se nästa avsnitt.
+
+`redirected_organizations` listar namn som styrts om till en organisation de
+slagits ihop med (`"Hermes → Hermes Bevakning AB"`). Se *Ett hopslaget namn
+återuppstår inte*.
 
 ## Människan vinner
 
@@ -160,6 +165,36 @@ vore sammanslagningen en väg runt regeln att människan vinner.
 Två fall avvisas i stället för att gissas: organisationer som pekar på **olika**
 kunder i redovisningen (`customer_conflict`) och personer med **olika**
 e-postadresser (`email_conflict`). Det är då inte dubbletter.
+
+### Ett hopslaget namn återuppstår inte
+
+Avsändaren vet ingenting om att två rader slagits ihop här inne — mailindexet
+fortsätter skicka det gamla namnet. Och eftersom organisationen slås upp på
+**namn** innan `source_ref` ens konsulteras skapade nästa nattkörning raden igen:
+ett **tomt skal** (åtagandena ligger kvar på rätt rad) som ändå syntes i
+tystnadslistan och på dagsytan. Sammanslagningen var alltså giltig till nästa
+natt, varje natt.
+
+Sammanslagningen lämnar därför en **gravsten över namnet**
+(`crm.organization_name_aliases`, migration 0059). Tre spärrar mot att den kapar
+en framtida äkta organisation med samma namn:
+
+1. Den riktiga organisationen slås upp **först** — finns namnet på riktigt rörs
+   ingenting.
+2. Bara skrivningar med ursprung `sync` styrs om. En människas uttryckliga
+   `upsert_crm_organization` träffar alltid raden hon pekat ut.
+3. Varje omstyrning **redovisas** i `redirected_organizations`
+   (`"Hermes → Hermes Bevakning AB"`).
+
+| Åtgärd | Gör |
+| :---- | :---- |
+| `remove_crm_name_alias` | Tar bort ett tidigare namn, så att det får en egen relation vid nästa körning |
+
+Till skillnad från GDPR-gravstenarna (regel 4 ovan) **får** aliaset tas bort: en
+sammanslagning är ett omdöme, inte en rättslig radering, och ett omdöme ska gå
+att ändra den dag namnet blir ett riktigt bolag. Namnen syns på relationssidan
+under **Tidigare namn**, med knapp — en spärr man inte kan läsa går inte att
+ångra.
 
 Kadensen finns för att en gemensam tystnadsgräns passar ingen: en kund på
 månadsretainer och en kund vartannat år kan inte dela gräns. Klockan nollställs

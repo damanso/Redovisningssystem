@@ -10,7 +10,7 @@ import {
   snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
-import { mergeOrganizations, mergePeople, searchCrm } from '../services/crmMerge.js';
+import { mergeOrganizations, mergePeople, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
 import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
@@ -1505,6 +1505,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ keep_id: UuidSchema, merge_id: UuidSchema }).strict(),
     handler: (ctx, i: { keep_id: string; merge_id: string }) =>
       mergeOrganizations(ctx.client, ctx.companyId, ctx.userId, i.keep_id, i.merge_id),
+  }),
+  // Gravstenens ångerknapp. Sammanslagningen är känslig (den flyttar historik
+  // och går inte att göra ogjord) — att lyfta ett namn ur gravstenen är
+  // motsatsen: det förstör ingenting, det öppnar bara namnet för en egen rad
+  // igen. Blir "Hermes" en riktig kund 2027 ska det inte kräva ett godkännande
+  // att säga så; en ångerknapp bakom en kö är ingen ångerknapp. Går den fel går
+  // den att gå tillbaka: nästa synk lägger upp raden, och den kan slås ihop igen.
+  def({
+    name: 'remove_crm_name_alias',
+    title: 'Ta bort ett tidigare namn (öppna det för en egen relation igen)',
+    sensitivity: 'write',
+    inputSchema: z.object({ name: safeText(200) }).strict(),
+    handler: (ctx, i: { name: string }) =>
+      removeOrganizationNameAlias(ctx.client, ctx.companyId, ctx.userId, i.name),
   }),
   def({
     name: 'merge_crm_people',

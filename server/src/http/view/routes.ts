@@ -1889,6 +1889,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       commitments: Array<{ direction: string; body: string; due_date: string | null; status: string }>;
       last_contact_at: string | null;
       provenance: Record<string, ProvenanceView>;
+      name_aliases: Array<{ name: string }>;
     };
     // EN rad, inte hela bolagets aggregering — och arkiverade relationer får
     // visa sina egna tal på det kort man uttryckligen öppnat.
@@ -2033,6 +2034,21 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i — ifyllda rörs inte. Går inte att ångra, så förslaget hamnar först i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
               </form>
             </details>
+          </div>`}
+
+          ${/* Gravstenen efter en sammanslagning. Den syns här därför att den
+               annars bara märks som något som INTE händer: synken slutar skapa
+               en rad med det gamla namnet. Blir samma namn ett riktigt bolag
+               längre fram måste man kunna se aliaset innan man tar bort det —
+               en spärr man inte kan läsa går inte att ångra. */ ''}
+          ${o.name_aliases.length === 0 ? '' : html`<div class="factcard">
+            <div class="factcard__head">Tidigare namn</div>
+            ${o.name_aliases.map((a) => html`<div class="uppgift">
+              <span class="k">${a.name}</span>
+              <span class="v">styrs hit</span>
+              ${rowAction(`/app/c/${companyId}/relations/${o.id}/alias/remove`, 'Ta bort', { fields: { name: a.name }, back })}
+            </div>`)}
+            <p class="hint">Synken skapar ingen ny relation för de här namnen — de landar här i stället. Blir ett av dem ett eget bolag: ta bort det, så får det en egen rad vid nästa körning.</p>
           </div>`}
         </aside>
 
@@ -2249,6 +2265,18 @@ viewRouter.post('/c/:companyId/relations/:id/merge', page(async (req, res) => {
   const mergeId = UuidSchema.parse((req.body as { merge_id?: unknown }).merge_id);
   await runViewAction(req, res, companyId, 'merge_crm_organizations',
     { keep_id: id, merge_id: mergeId }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// F5: ta bort ett tidigare namn. Motsatsen till sammanslagningen: ingenting
+// flyttas och ingenting förstörs, namnet öppnas bara för en egen relation igen.
+// Därför ingen godkännandekö — en ångerknapp bakom en kö är ingen ångerknapp.
+viewRouter.post('/c/:companyId/relations/:id/alias/remove', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const name = String((req.body as { name?: unknown }).name ?? '').trim();
+  await runViewAction(req, res, companyId, 'remove_crm_name_alias',
+    { name }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 // F4: "stämmer" — ett klick som gör en gissning till ett beslut. Fältnamnet
