@@ -42,8 +42,11 @@ async function actApproved(name: string, body: Record<string, unknown>): Promise
   return done.body.result as Record<string, unknown>;
 }
 
+/** En fråga i RLS-kontexten; radformen anges per anrop. */
+type RlsQuery = <T>(sql: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>;
+
 /** Kör en fråga som app-rollen MED en viss användares RLS-kontext. */
-async function asUser<T>(userId: string, fn: (q: (sql: string, params?: unknown[]) => Promise<{ rows: T[]; rowCount: number | null }>) => Promise<void>): Promise<void> {
+async function asUser(userId: string, fn: (q: RlsQuery) => Promise<void>): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -185,7 +188,8 @@ describe('...men ser sina egna uppdrag', () => {
     await asUser(contractor.userId, async (q) => {
       const rows = await q<{ description: string }>('SELECT description FROM time_entries WHERE company_id = $1', [companyId]);
       expect(rows.rowCount).toBe(1);
-      expect(rows.rows[0].description).toBe('Underkonsultens tid');
+      const [rad] = rows.rows;
+      expect(rad?.description).toBe('Underkonsultens tid');
     });
   });
 

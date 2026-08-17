@@ -107,6 +107,15 @@ async function purgeCrmRelationData(
     'DELETE FROM crm.field_provenance WHERE company_id = $1 AND organization_id = ANY($2::uuid[])',
     [companyId, orgIds],
   );
+  // Samma sak för de tidigare namnen (migration 0059): organisationsraden
+  // behålls, men de namn den burit före en sammanslagning är partsuppgifter som
+  // inte har någon bevarandegrund alls — bokföringslagen kräver identiteten på
+  // motparten i affären, inte varje stavning mailindexet råkat använda. Ett
+  // namn kan dessutom vara en enskild firma, alltså en fysisk person.
+  await client.query(
+    'DELETE FROM crm.organization_name_aliases WHERE company_id = $1 AND organization_id = ANY($2::uuid[])',
+    [companyId, orgIds],
+  );
   await client.query(
     `UPDATE crm.organizations
      -- Namnet måste vara unikt inom bolaget (organizations_name_uk). En fast

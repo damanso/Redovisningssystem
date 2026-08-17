@@ -30,6 +30,13 @@ interface Prov { source: string; reason: string | null; source_system: string | 
 const ursprung = async (orgId: string): Promise<Record<string, Prov>> =>
   (await act('get_crm_organization', { organization_id: orgId })).body.result.provenance;
 
+/** Ett omärkt fält är inget "undefined" att hoppa över — det är ett underkänt test. */
+function marke(p: Record<string, Prov>, falt: string): Prov {
+  const v = p[falt];
+  if (!v) throw new Error(`ursprung saknas för ${falt}`);
+  return v;
+}
+
 const orgIdFor = async (namn: string): Promise<string> =>
   (await act('list_crm_organizations', {})).body.result.find((o: { name: string }) => o.name === namn).id;
 
@@ -58,16 +65,16 @@ describe('tre sorters påstående, tre sorters märkning', () => {
     await synka([mail({ name: 'Synkade Bolaget AB', org_number: '556000-1111', website: 'https://synk.example' })]);
     const p = await ursprung(await orgIdFor('Synkade Bolaget AB'));
 
-    expect(p.org_number.source).toBe('sync');
-    expect(p.org_number.source_system).toBe('gmail');
-    expect(p.website.source).toBe('sync');
+    expect(marke(p, 'org_number').source).toBe('sync');
+    expect(marke(p, 'org_number').source_system).toBe('gmail');
+    expect(marke(p, 'website').source).toBe('sync');
   });
 
   it('en människas skrivning är ett beslut', async () => {
     const r = await act('upsert_crm_organization', { name: 'Handskrivna AB', org_number: '556000-2222' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     const p = await ursprung(r.body.result.id);
-    expect(p.org_number.source, 'API-token utan agent-aktör är en människa').toBe('human');
+    expect(marke(p, 'org_number').source, 'API-token utan agent-aktör är en människa').toBe('human');
   });
 
   it('kundkopplingen märks som härledd ur bokföringen — med skälet', async () => {
@@ -79,8 +86,8 @@ describe('tre sorters påstående, tre sorters märkning', () => {
     const orgId = await orgIdFor('Kopplade Kunden AB');
     const p = await ursprung(orgId);
 
-    expect(p.customer_id.source, 'uppslaget är ingen bedömning — det är en jämförelse').toBe('accounting');
-    expect(p.customer_id.reason).toBe('matchad på organisationsnummer');
+    expect(marke(p, 'customer_id').source, 'uppslaget är ingen bedömning — det är en jämförelse').toBe('accounting');
+    expect(marke(p, 'customer_id').reason).toBe('matchad på organisationsnummer');
   });
 });
 
@@ -94,7 +101,7 @@ describe('människan vinner — annars är märkningen bara dekoration', () => {
     const fix = await ua.post(`/app/c/${companyId}/relations/${orgId}/edit`).type('form')
       .send({ name: 'Rättade Bolaget AB', org_number: '556000-4444' });
     expect(fix.status).toBe(302);
-    expect((await ursprung(orgId)).org_number.source).toBe('human');
+    expect(marke(await ursprung(orgId), 'org_number').source).toBe('human');
 
     // Synken kör igen med sin gamla gissning.
     const res = await synka([mail({ name: 'Rättade Bolaget AB', org_number: '556000-9999' })]);
@@ -117,15 +124,15 @@ describe('människan vinner — annars är märkningen bara dekoration', () => {
   it('"Stämmer" gör en gissning till ett beslut — ett klick, ingen AI', async () => {
     await synka([mail({ name: 'Bekräftade Bolaget AB', org_number: '556000-5555' })]);
     const orgId = await orgIdFor('Bekräftade Bolaget AB');
-    expect((await ursprung(orgId)).org_number.source).toBe('sync');
+    expect(marke(await ursprung(orgId), 'org_number').source).toBe('sync');
 
     const res = await ua.post(`/app/c/${companyId}/relations/${orgId}/confirm`).type('form')
       .send({ field: 'org_number' });
     expect(res.status).toBe(302);
 
     const p = await ursprung(orgId);
-    expect(p.org_number.source).toBe('human');
-    expect(p.org_number.reason).toBe('bekräftad av människa');
+    expect(marke(p, 'org_number').source).toBe('human');
+    expect(marke(p, 'org_number').reason).toBe('bekräftad av människa');
 
     // Och därefter biter synken inte på det.
     await synka([mail({ name: 'Bekräftade Bolaget AB', org_number: '556000-0000' })]);
@@ -170,7 +177,7 @@ describe('rättning för hand är ett riktigt handgrepp', () => {
     const res = await ua.post(`/app/c/${companyId}/relations/${tva.body.result.id}/edit`).type('form')
       .send({ name: 'Krockande Ett AB' });
     expect(res.status).toBe(302);
-    expect(decodeURIComponent(res.headers.location)).toContain('slå ihop');
+    expect(decodeURIComponent(res.headers.location ?? '')).toContain('slå ihop');
   });
 });
 

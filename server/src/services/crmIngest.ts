@@ -68,6 +68,19 @@ export interface IngestResult {
    * lyckades helt. Den som läser svaret ska kunna se vad som faktiskt hände.
    */
   kept_human_fields: string[];
+  /**
+   * Namn som styrdes om till en hopslagen organisation, som `"Hermes → Hermes AB"`.
+   *
+   * En sammanslagning här inne är osynlig för avsändaren: mailindexet fortsätter
+   * skicka det gamla namnet. Utan gravstenen (migration 0059) skapades en ny,
+   * tom rad varje natt; med den landar skrivningen på rätt rad — men då måste
+   * det SYNAS, av samma skäl som unlinked_organizations och kept_human_fields.
+   * En synk som tyst skickar en skrivning någon annanstans än avsändaren tror är
+   * ett tyst utfall, och det är just tysta utfall kontraktet finns för att
+   * undvika. Står ett namn här som borde ha blivit en egen relation tas aliaset
+   * bort med `remove_crm_name_alias`.
+   */
+  redirected_organizations: string[];
   skipped: { index: number; reason: string }[];
 }
 
@@ -87,11 +100,13 @@ export async function ingestCrmEvents(
     commitments_created: 0, commitments_unchanged: 0,
     organizations_created: 0, people_created: 0,
     organizations_linked: 0, unlinked_organizations: [], kept_human_fields: [],
+    redirected_organizations: [],
     skipped: [],
   };
   const linked = new Set<string>();
   const unlinked = new Set<string>();
   const kept = new Set<string>();
+  const redirected = new Set<string>();
 
   for (const [index, e] of events.entries()) {
     // Savepoint per händelse: en krock (t.ex. en e-post som redan hör till en
@@ -101,7 +116,7 @@ export async function ingestCrmEvents(
     // Räknades det direkt i svaret rapporterades en organisation som skapad
     // även när savepointen rullade tillbaka den — och mottagarens avstämning
     // ("idel unchanged är kvittot") såg spökskapelser vid varje omkörning.
-    const delta = { organizations: 0, people: 0, linked: '', unlinked: '', kept: [] as string[] };
+    const delta = { organizations: 0, people: 0, linked: '', unlinked: '', redirected: '', kept: [] as string[] };
     try {
       if (!e.organization && !e.person) {
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
@@ -117,6 +132,10 @@ export async function ingestCrmEvents(
         organizationId = org.id;
         if (org.created) delta.organizations += 1;
         delta.kept.push(...org.kept_human_fields.map((f) => `${org.name}: ${f}`));
+        // Namnet fanns bara som gravsten efter en sammanslagning — skrivningen
+        // landade på den kvarvarande raden i stället för att skapa ett tomt
+        // skal. Redovisas: avsändaren tror fortfarande att det är två bolag.
+        if (org.redirected_from) delta.redirected = `${org.redirected_from} → ${org.name}`;
         // Kopplingen mot kundregistret slås upp i tjänstelagret (namn eller
         // org.nr). Utfallet redovisas så att en utebliven koppling syns.
         if (org.customer_id) delta.linked = org.name; else delta.unlinked = org.name;
@@ -158,6 +177,7 @@ export async function ingestCrmEvents(
       result.people_created += delta.people;
       if (delta.linked) linked.add(delta.linked);
       if (delta.unlinked) unlinked.add(delta.unlinked);
+      if (delta.redirected) redirected.add(delta.redirected);
       for (const k of delta.kept) kept.add(k);
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
@@ -168,6 +188,7 @@ export async function ingestCrmEvents(
   result.organizations_linked = linked.size;
   result.unlinked_organizations = [...unlinked];
   result.kept_human_fields = [...kept].sort();
+  result.redirected_organizations = [...redirected].sort();
 
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.ingested',
@@ -178,6 +199,7 @@ export async function ingestCrmEvents(
       linked: result.organizations_linked,
       unlinked: result.unlinked_organizations.length,
       kept_human_fields: result.kept_human_fields.length,
+      redirected: result.redirected_organizations.length,
       skipped: result.skipped.length,
     },
   });

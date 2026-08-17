@@ -97,6 +97,17 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
     nu pekarna. Samma regel som `crm.audit_log.details`: aldrig fritext eller
     namn i något som överlever gallringen.
 
+11. **En sammanslagning måste överleva nästa nattkörning.** Källorna utanför
+    systemet vet inte att två rader slagits ihop, och `ingestCrmEvents` slår upp
+    organisationen på NAMN innan `source_ref` konsulteras — så det gamla namnet
+    skapade raden igen varje natt. Det som återuppstod var värre än dubbletten:
+    ett TOMT skal (åtagandena låg kvar på rätt rad) som ändå syntes i
+    tystnadslistan. Samma familj som lärdom 8: ett människobeslut som synken gör
+    ogjort i tysthet. Gravstenen (`crm.organization_name_aliases`, 0059) styr om
+    namnet — men bara för `source: 'sync'`, aldrig för en människas upsert, och
+    varje omstyrning redovisas (`redirected_organizations`). Till skillnad från
+    GDPR-gravstenen FÅR den tas bort: en sammanslagning är ett omdöme.
+
 ## INTE byggt (utanför scope / kvarstår)
 
 - Digital inlämning till Skatteverket/Bolagsverket, BankID, PSD2-bankkoppling —
@@ -119,6 +130,44 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-17 (LOC-322, gravstenen efter en sammanslagning):** Sista biten av
+  överlämningen "CRM saknar sätt att slå ihop eller döpa om en organisation".
+  Sammanslagningen (`merge_crm_organizations`) och namnbytet
+  (`upsert_crm_organization` med `organization_id`) byggdes i F5; det som saknades
+  var att beslutet inte överlevde natten. Diagnosen är mätt i koden:
+  `ingestCrmEvents` slår upp organisationen på **namn** innan `source_ref` ens
+  konsulteras, så Hermes/ILT-Education/NVR-001 skapades på nytt vid varje
+  körning — och eftersom de sex åtagandena redan låg rätt efter sammanslagningen
+  var det som återuppstod ett **tomt skal** som förorenade tystnadslistan och
+  dagsytan. David hade fått göra om samma sammanslagning efter varje nattkörning.
+  - **Migration 0059** `crm.organization_name_aliases` (nyckel
+    `company_id + lower(name)`, RLS, SELECT/INSERT/**DELETE** men ingen UPDATE —
+    ett alias skrivs aldrig om). CASCADE på organisationen: aliaset lever med
+    raden, inte med händelserna, och gallras därför inte på tid.
+  - `crmMerge.ts` skriver gravstenen för den inslagna radens namn och **ärver
+    dess egna alias** (A→B, B→C ⇒ "A" leder hela vägen till C). Flytten sker som
+    DELETE+INSERT eftersom tabellen medvetet saknar UPDATE-rättighet.
+  - `upsertOrganization` slår upp aliaset först när den riktiga organisationen
+    INTE finns, och bara för `source: 'sync'`. Det gamla namnet får aldrig döpa
+    om den kvarvarande raden (`writeName`) — då hade gravstenen gjort tvärtom
+    mot vad den finns för.
+  - **Redovisat, inte tyst:** `redirected_organizations` i ingest-svaret
+    (`"Hermes → Hermes Bevakning AB"`), samma regel som `unlinked_organizations`
+    och `kept_human_fields`. Loggen bär bara antal — aldrig namnet.
+  - **Ångerknapp:** `remove_crm_name_alias` (write, ingen godkännandekö — en
+    ångerknapp bakom en kö är ingen ångerknapp) + "Tidigare namn" med knapp på
+    relationssidan. Risken aliaset bär är att det tyst kapar ett riktigt bolag
+    med samma namn 2027; den bärs av tre spärrar (riktig rad först, bara synken,
+    allt redovisas) och av att en människa kan lyfta det. GDPR-raderingen tar
+    bort aliasen — ett tidigare namn har ingen bevarandegrund.
+  - Tester: `server/test/crm-name-alias.test.ts` (slå ihop → kör om ingesten →
+    ingen ny rad; nya mail landar rätt; kedjan; människans upsert styrs aldrig
+    om; borttaget alias ger egen rad igen; loggen namnfri; vyns handgrepp;
+    GDPR). Dokumentation: `docs/crm/API_KONTRAKT.md` ("Ett hopslaget namn
+    återuppstår inte").
+  - **Grind:** typecheck och svit kördes INTE i den här sessionen (kördes av
+    körskriptet efteråt) — utfallet ska klistras in här innan LOC-322 stängs.
 
 - **2026-08-14 (Relationsytan F1–F6, branch `feature/crm-ux`):**
   Ombyggnaden av CRM-ytan från funktionell till färdig, efter Davids

@@ -23,6 +23,13 @@ export interface MergeResult {
   merged_id: string;
   moved: { people: number; interactions: number; commitments: number; deals: number };
   filled_fields: string[];
+  /**
+   * Antal namn som nu pekar hit i stället för att skapa en ny rad — det egna
+   * plus dem den inslagna raden redan bar. Redovisas därför att omstyrningen
+   * annars vore osynlig: den syns först nästa natt, som en organisation som
+   * INTE dök upp.
+   */
+  aliases_kept?: number;
 }
 
 /** Fält som fylls i från den inslagna raden när den kvarvarande saknar värde. */
@@ -147,6 +154,43 @@ export async function mergeOrganizations(
     'UPDATE crm.deals SET organization_id = $2 WHERE company_id = $1 AND organization_id = $3',
     [companyId, keepId, mergeId]);
 
+  // Gravstenen (migration 0059). Utan den är sammanslagningen bara giltig till
+  // nästa nattkörning: ingesten slår upp organisationen på NAMN innan den
+  // konsulterar source_ref, så det gamla namnet skapar en ny, tom rad — och ett
+  // tomt skal i tystnadslistan är värre än dubbletten var, eftersom åtagandena
+  // nu ligger kvar på rätt rad.
+  //
+  // Den inslagna radens EGNA alias ärvs först: slås A in i B och sedan B in i C
+  // måste "A" leda hela vägen till C, annars återuppstår A vid nästa körning.
+  // Flytten sker som DELETE + INSERT därför att tabellen medvetet saknar
+  // UPDATE-rättighet — ett alias skrivs aldrig om, det läggs till eller tas bort.
+  const arvda = await client.query(
+    `WITH flyttade AS (
+       DELETE FROM crm.organization_name_aliases
+        WHERE company_id = $1 AND organization_id = $3
+        RETURNING name, created_by, created_at
+     )
+     INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by, created_at)
+     SELECT $1, name, $2, created_by, created_at FROM flyttade`,
+    [companyId, keepId, mergeId],
+  );
+  // Sedan namnet som försvinner. De två raderna kan aldrig heta samma sak —
+  // organizations_name_uk är unikt på lower(name) inom bolaget — så det finns
+  // alltid ett namn att sätta gravsten över.
+  //
+  // Ett namn kan bara peka åt ETT håll: fanns det redan som alias (en människa
+  // kan ha lagt upp en organisation med ett tidigare hopslaget namn igen)
+  // ersätts det, för det är den här sammanslagningen som gäller nu.
+  await client.query(
+    'DELETE FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)',
+    [companyId, gone.name],
+  );
+  await client.query(
+    `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by)
+     VALUES ($1, $2, $3, $4)`,
+    [companyId, gone.name, keepId, userId],
+  );
+
   await client.query('DELETE FROM crm.organizations WHERE id = $1 AND company_id = $2', [mergeId, companyId]);
 
   const moved = {
@@ -162,11 +206,14 @@ export async function mergeOrganizations(
   // gallringen, och en organisation kan vara en enskild firma som heter som en
   // fysisk person. Ett namn här hade överlevt den radering det var tänkt att
   // träffas av. Samma regel som resten av loggen (migration 0052).
+  const aliasesKept = (arvda.rowCount ?? 0) + 1;
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organizations_merged', entityType: 'organization', entityId: keepId,
-    details: { merged_id: mergeId, moved, filled_fields: filled },
+    // Antalet alias, aldrig namnen: se kommentaren ovan — ett namn i loggen
+    // överlever den radering det var tänkt att träffas av.
+    details: { merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept },
   });
-  return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled };
+  return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept };
 }
 
 async function loadPerson(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
@@ -257,6 +304,38 @@ export async function mergePeople(
     details: { merged_id: mergeId, moved, filled_fields: filled },
   });
   return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled };
+}
+
+/**
+ * Tar bort ett namnalias — sammanslagningens enda ångerknapp.
+ *
+ * En sammanslagning går inte att göra ogjord (historiken är flyttad), men
+ * gravstenen över namnet MÅSTE gå att lyfta. Skälet är risken den bär: aliaset
+ * hindrar synken från att skapa en rad med det gamla namnet, och blir samma
+ * namn en riktig motpart längre fram hade beslutet från i år tyst kapat en
+ * verklig relation. Till skillnad från crm.erased_sources bär det här ingen
+ * rättslig radering, bara ett omdöme — och ett omdöme ska gå att ändra.
+ *
+ * Efter borttagningen skapar nästa synk en egen rad för namnet igen, vilket är
+ * precis vad man ber om.
+ */
+export async function removeOrganizationNameAlias(
+  client: PoolClient, companyId: string, userId: string, name: string,
+): Promise<{ removed_name: string; organization_id: string }> {
+  const r = await client.query<{ organization_id: string; name: string }>(
+    `DELETE FROM crm.organization_name_aliases
+      WHERE company_id = $1 AND lower(name) = lower($2)
+      RETURNING organization_id, name`,
+    [companyId, name.trim()],
+  );
+  if (!r.rows[0]) throw new NotFoundError('name_alias');
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.name_alias_removed', entityType: 'organization',
+    entityId: r.rows[0].organization_id,
+    // Antal, inte namnet: loggen överlever både gallring och GDPR-radering.
+    details: { removed: 1 },
+  });
+  return { removed_name: r.rows[0].name, organization_id: r.rows[0].organization_id };
 }
 
 // ---------------------------------------------------------------------------
