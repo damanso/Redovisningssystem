@@ -155,7 +155,7 @@ describe('relationsvyn svarar på "vem bör jag kontakta, och varför"', () => {
   it('förslagen står högst upp och säger VARFÖR — men skickar ingenting', async () => {
     const res = await ua.get(`/app/c/${companyId}/relations`);
     expect(res.text).toContain('Att höra av sig till');
-    expect(res.text).toContain('förfallet åtagande');
+    expect(res.text, 'skälet ska säga VAD som lovats').toContain('vi lovade: Skicka tidplan');
     expect(res.text).toContain('Eva Larsson');
     expect(res.text).toContain('Systemet skickar aldrig något till en kund');
   });

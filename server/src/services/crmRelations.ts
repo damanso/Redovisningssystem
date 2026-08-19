@@ -144,6 +144,22 @@ async function matchCustomer(
 }
 
 /**
+ * Organisationsnummer skrivs som NNNNNN-NNNN, precis som i kundregistret.
+ *
+ * Synken levererar dem som råa siffror ur mailsignaturer. Utan normalisering
+ * står samma bolag med bindestreck på kundkortet och utan på relationskortet —
+ * och den som jämför de två sidorna får för sig att det är olika bolag.
+ * Matchningen mot kundregistret jämför ändå bara siffror, så det här är enbart
+ * en fråga om hur numret LÄSES.
+ */
+function normaliseraOrgnummer(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const t = v.trim();
+  const digits = t.replace(/\D/g, '');
+  return digits.length === 10 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : t;
+}
+
+/**
  * Prospekt och kund är SAMMA rad. Den dag affären vinns pekas raden mot
  * kundregistret — relationshistoriken bryts inte, och kunduppgifterna kopieras
  * inte hit (de bor kvar i `customers`).
@@ -153,8 +169,9 @@ async function matchCustomer(
  * omsättningen blind för allt som kommer in via API-kontraktet.
  */
 export async function upsertOrganization(
-  client: PoolClient, companyId: string, userId: string, input: UpsertOrganizationInput, origin: WriteOrigin,
+  client: PoolClient, companyId: string, userId: string, rawInput: UpsertOrganizationInput, origin: WriteOrigin,
 ): Promise<Organization & { created: boolean; kept_human_fields: string[]; redirected_from: string | null }> {
+  const input: UpsertOrganizationInput = { ...rawInput, org_number: normaliseraOrgnummer(rawInput.org_number) };
   const name = input.name.trim();
   if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.customer_id) {

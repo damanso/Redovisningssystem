@@ -138,9 +138,14 @@ describe('relationssidan renderar tråden', () => {
   it('sex nyckeltal, tråd och filterflikar — allt utan skript', async () => {
     const res = await ua.get(`/app/c/${companyId}/relations/${orgId}`);
     expect(res.status).toBe(200);
-    // Nyckeltalen är härledda ur bokföringen, inte inmatade.
+    // Nyckeltalen är härledda ur bokföringen, inte inmatade — och de två som
+    // ingen konkurrent kan visa står bland dem.
     expect(res.text).toContain('Omsättning 12 mån');
-    expect(res.text).toContain('Tyst i');
+    expect(res.text).toContain('Obetalt');
+    expect(res.text).toContain('Ofakturerad tid');
+    // Tystnaden står kvar, men som en läsning av senaste kontakt i stället för
+    // ett eget nyckeltal — samma fakta, en ruta mindre.
+    expect(res.text).toMatch(/\d+ d sedan/);
     // Tråden väver ihop de två världarna på samma sida.
     expect(res.text).toContain('Svar om pilotens omfattning.');
     expect(res.text).toContain('Betalning · faktura');

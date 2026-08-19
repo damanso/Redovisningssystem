@@ -260,7 +260,11 @@ describe('härledningarna räknas fram, de matas inte in', () => {
     const nvr = s.find((x) => x.organization === 'Nordic Vision Retail AB');
     expect(nvr, 'kunden med förfallet åtagande ska föreslås').toBeTruthy();
     expect(nvr!.overdue_commitments).toBe(1);
-    expect(nvr!.reasons.join(' ')).toContain('förfallet åtagande');
+    // Skälet ska gå att läsa som en öppningsreplik: VAD som lovats och när det
+    // förföll. "1 förfallet åtagande" säger vad systemet vet, inte vad man ska
+    // skriva i mailet — och det senare är vad raden är till för.
+    expect(nvr!.reasons.join(' ')).toContain('vi lovade: Skicka tidplan för pilotens fas 2.');
+    expect(nvr!.reasons.join(' ')).toMatch(/förföll \d{4}-\d{2}-\d{2}/);
     expect(nvr!.reasons.join(' ')).toContain('% av omsättningen'); // koncentrationen döljs inte
     expect(nvr!.person?.name).toBe('Eva Larsson');
     expect(s[0]!.organization).toBe('Nordic Vision Retail AB'); // högst prioritet

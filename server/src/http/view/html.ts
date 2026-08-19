@@ -57,6 +57,21 @@ export function amount(
   return raw(`<span class="${cls}">${esc(text + unit)}</span>`);
 }
 
+/**
+ * Belopp i HELA kronor — för kort och nyckeltal, inte för bokföringen.
+ *
+ * "605 900,00" och "605 900 kr" bär samma information, men på ett kort man
+ * ögnar är öresdelen ren dekoration: två tecken som drar blicken utan att
+ * påverka beslutet. I huvudboken är de däremot obligatoriska, så det här är ett
+ * EGET format och inte en ändring av `amount` — verifikat och fakturor visar
+ * fortfarande varenda öre.
+ */
+export function kronor(ore: Ore | null | undefined): Raw {
+  if (ore === null || ore === undefined) return raw('<span class="amount amount--nil">—</span>');
+  const text = new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 0 }).format(Math.round(ore / 100));
+  return raw(`<span class="amount">${esc(`${text} kr`)}</span>`);
+}
+
 /** En liten statuspill. `kind` styr färg; ikon ger en icke-färg-ledtråd. */
 export function chip(label: string, kind: ChipKind = 'muted', icon?: string): Raw {
   const glyph = icon ? `<span class="chip__i" aria-hidden="true">${esc(icon)}</span>` : '';
@@ -701,8 +716,15 @@ a.today__who:hover { color: var(--accent-ink); }
    brett för att det RÅKADE bli över är inte ett träffmål — och dagsytan är den
    sida som faktiskt öppnas på telefon. */
 @container sida (max-width: 420px) {
-  .today__card .quick { flex-direction: column; align-items: stretch; }
-  .today__card .quick form, .today__card .quick .btn { width: 100%; }
+  /* De HANDLINGAR man faktiskt utför får hela bredden var — ett tumträffsmål
+     som är 40 px brett för att det råkade bli över är inget träffmål. Men
+     överflödsmenyn är inte en handling, den är en dörr till fler: får den
+     också hela bredden ser den lika viktig ut som "Klar", och kortet växer med
+     en rad utan att något vinns. Den behåller därför sin naturliga storlek. */
+  .today__card .quick { flex-wrap: wrap; align-items: stretch; }
+  .today__card .quick > form { flex: 1 1 100%; }
+  .today__card .quick > form .btn { width: 100%; }
+  .today__card .quick > .rowmenu { flex: 0 0 auto; align-self: flex-start; }
   .today__amt { margin-left: 0; }
 }
 
@@ -734,13 +756,41 @@ a.today__who:hover { color: var(--accent-ink); }
    den vanliga, säkra uppgiften ska inte bära dekoration. Bara det osäkra
    kostar uppmärksamhet, och då i bärnsten (samma färg som AI:t har överallt
    annars i ytan) så att "AI har gissat det här" alltid ser likadant ut. */
-.uppgift { display: flex; align-items: baseline; gap: 8px; }
-.uppgift .k { font-size: 12.5px; color: var(--ink-3); flex: 0 0 auto; min-width: 92px; }
-.uppgift .v { font-size: 13.5px; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.uppgift form { flex: 0 0 auto; margin: 0; }
+/* Etikett över värde i stället för bredvid: i en 290 px-spalt blev tre
+   kolumner (etikett, värde, knapp) så trånga att ett bolagsnamn bröts över
+   fyra rader. Nu får värdet hela bredden och knappen står under. */
+.uppgift { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: baseline; }
+.uppgift .k { font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); grid-column: 1 / -1; }
+.uppgift .v { font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; }
+.uppgift form { margin: 0; grid-column: 2; grid-row: 2; }
+.uppgift + .uppgift { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line); }
+/* Tystnaden hänger under datumet i stället för bredvid: sida vid sida trängde
+   den ihop etiketten till två rader så fort talet blev tvåsiffrigt. */
+.fact__sub { display: block; font-size: 11.5px; font-weight: 400; color: var(--ink-3); }
 .prov { font-size: 11px; cursor: help; }
 .prov--guess { color: var(--ai); font-weight: 700; }
 .prov--fact { color: var(--ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* "Lova något" — hopfällt tills det behövs, som rättningsformuläret. */
+.loftesform > summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; padding: 2px 0; margin-bottom: 8px; }
+.loftesform > summary:hover { color: var(--ink-2); }
+.loftesform form { display: flex; flex-direction: column; gap: 9px; margin: 0 0 14px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.loftesform label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--ink-3); }
+.loftesform input, .loftesform select { width: 100%; padding: 7px 10px; font-size: 13.5px; }
+.loftesform__rad { display: flex; gap: 10px; flex-wrap: wrap; }
+.loftesform__rad label { flex: 1 1 160px; }
+.loftesform .btn { align-self: flex-start; }
+.loftesform .hint { margin: 0; }
+
+/* Granskningsraden: före → efter. Pilen är avsiktligt stor nog att läsas i
+   ögonvrån — det är den som säger att något FÖRÄNDRAS. */
+.andring { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; padding: 8px 16px 2px; font-size: 13.5px; }
+.andring__f { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-2); }
+.andring__p { color: var(--ai); font-weight: 700; }
+.andring__t { font-weight: 650; }
+.ai-raw > summary { font-size: 12px; color: var(--ink-3); cursor: pointer; padding: 4px 16px; }
+.ai-raw > summary:hover { color: var(--ink-2); }
+.ai-card__why.muted { color: var(--ink-3); font-size: 12px; padding-top: 0; }
 
 /* F5: kadensen. Ett tal på en rad — inte ett eget kort, för det är en
    inställning man rör en gång och sedan glömmer. */
@@ -786,6 +836,7 @@ a.today__who:hover { color: var(--accent-ink); }
 .thread__title { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
 .thread__amt { font-variant-numeric: tabular-nums; font-weight: 650; }
 .thread__src { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
+.thread__ref { font-family: var(--mono); font-size: 11.5px; }
 @media (max-width: 560px) {
   .thread__ev { grid-template-columns: 1fr; gap: 3px; }
   .thread__when { padding-top: 0; }

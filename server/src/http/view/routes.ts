@@ -21,7 +21,7 @@ import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
-import { describeApproval } from '../../services/approvalSummary.js';
+import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -41,7 +41,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, eyebrow, html, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
+import { amount, chip, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -1539,6 +1539,10 @@ function threadChip(e: ThreadEvent): Raw {
   }
 }
 
+/** Källsystemet med versal, som ett namn och inte som en nyckel. */
+const kanalKalla = (s: string): string =>
+  s === 'gmail' ? 'Gmail' : s === 'calendar' ? 'Kalender' : s === 'linear' ? 'Linear' : 'För hand';
+
 const kanalNamn = (c: string): string =>
   c === 'email' ? 'Mail' : c === 'call' ? 'Samtal' : c === 'meeting' ? 'Möte'
     : c === 'issue' ? 'Ärende' : 'Anteckning';
@@ -1626,10 +1630,10 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                 ${s.overdue_commitments > 0 ? chip(`${s.overdue_commitments} förfallet löfte`, 'neg', '!') : ''}
                 ${s.status === 'prospect' ? chip('Prospekt', 'info') : ''}
                 ${(s.revenue_share_permille ?? 0) >= 200 ? chip(`${pct(s.revenue_share_permille)} av omsättningen`, 'muted') : ''}
-                ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${amount(s.revenue_12m_ore, { unit: false })}</span>` : ''}
+                ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${kronor(s.revenue_12m_ore)}</span>` : ''}
               </div>
               <p class="today__why">${s.reasons.join(' · ')}${
-                s.person ? html` <span class="muted">Kontakt: ${s.person.name}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
+                s.person ? html` <span class="muted">— kontakt: ${s.person.name}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
               }</p>
               <div class="quick">
                 ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/log`, 'Hörde av mig', { primary: true, back })}
@@ -1932,14 +1936,34 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       <div class="relation">
         <aside class="relation__facts">
           <div class="factcard">
-            <div class="fact"><span class="k">Senaste kontakt</span><span class="v">${state?.last_contact_at ? dayOf(state.last_contact_at) : '—'}</span></div>
-            <div class="fact"><span class="k">Tyst i</span><span class="v">${state?.days_silent === null || state?.days_silent === undefined ? '—' : `${String(state.days_silent)} dagar`}</span></div>
-            <div class="fact"><span class="k">Omsättning 12 mån</span><span class="v">${amount(state?.revenue_12m_ore ?? 0, { unit: false })}</span></div>
+            ${/* Sex tal, och ALLA sex härledda ur bokföringen — ingen skriver in
+                 dem. Två av dem är hela skälet till att den här ytan finns:
+                 obetalt och ofakturerad tid är fakta här och gissningar i varje
+                 renodlat CRM. Attio måste fråga vad affären är värd; vi vet.
+                 Därför får de plats framför "antal personer", som ändå står i
+                 kortet nedanför. */ ''}
+            <div class="fact"><span class="k">Senaste kontakt</span><span class="v">${
+              state?.last_contact_at
+                ? html`${dayOf(state.last_contact_at)}${
+                    state.days_silent === null ? '' : html` <span class="fact__sub">${String(state.days_silent)} d sedan</span>`
+                  }`
+                : '—'
+            }</span></div>
+            <div class="fact"><span class="k">Omsättning 12 mån</span><span class="v">${kronor(state?.revenue_12m_ore ?? 0)}</span></div>
             <div class="fact"><span class="k">Andel</span><span class="v">${pct(state?.revenue_share_permille ?? null)}</span></div>
+            <div class="fact"><span class="k">Obetalt</span><span class="v">${
+              (state?.open_receivable_ore ?? 0) > 0
+                ? html`<a href="/app/c/${companyId}/receivables">${kronor(state!.open_receivable_ore)}</a>`
+                : kronor(0)
+            }</span></div>
+            <div class="fact"><span class="k">Ofakturerad tid</span><span class="v">${
+              (state?.unbilled_time_ore ?? 0) > 0
+                ? html`<a href="/app/c/${companyId}/projects">${kronor(state!.unbilled_time_ore)}</a>`
+                : kronor(0)
+            }</span></div>
             <div class="fact"><span class="k">Öppna löften</span><span class="v">${String(oppna)}${
               (state?.overdue_commitments ?? 0) > 0 ? html` ${chip(`${state!.overdue_commitments} förfallna`, 'neg', '!')}` : ''
             }</span></div>
-            <div class="fact"><span class="k">Personer</span><span class="v">${String(o.people.length)}</span></div>
           </div>
 
           ${/* F4: uppgifterna om bolaget — med sitt ursprung. Här, och inte i
@@ -2067,6 +2091,28 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
             <button class="btn btn--primary btn--sm" type="submit">Logga kontakt</button>
           </form>
 
+          ${/* "Lova något". Man kunde markera löften klara, skjuta upp och
+               avskriva — men inte skapa ett. Samma felklass som hela
+               ombyggnaden handlade om: ett handgrepp utan knapp, så det enda
+               sättet att registrera ett löfte som sades i ett samtal var att be
+               AI:t om det. */ ''}
+          <details class="loftesform">
+            <summary>Lova något</summary>
+            <form method="post" action="/app/c/${companyId}/relations/${o.id}/commit">
+              <input type="hidden" name="back" value="${back}">
+              <label>Vad<input type="text" name="body" maxlength="2000" required placeholder="Skicka tidplan för fas 2."></label>
+              <div class="loftesform__rad">
+                <label>Vem lovar<select name="direction">
+                  <option value="we_owe">Vi lovade</option>
+                  <option value="they_owe">De lovade</option>
+                </select></label>
+                <label>Senast<input type="date" name="due_date"></label>
+              </div>
+              <button class="btn btn--primary btn--sm" type="submit">Spara löftet</button>
+              <p class="hint">Löften fångas normalt ur mail och möten av sig själva. Det här är för det som sades i ett samtal.</p>
+            </form>
+          </details>
+
           <div class="threadtabs">
             ${(['allt', 'kontakt', 'pengar', 'loften'] as const).map((f) => html`<a
               class="threadtab ${f === filter ? 'is-active' : ''}"
@@ -2085,12 +2131,17 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     <div class="thread__title">${threadChip(e)}${e.title}${
                       e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
                     }</div>
+                    ${/* Källan, utskriven. Vi länkar INTE till mailet: vi kan
+                         inte veta vilken adress just den här läsaren har hos
+                         Gmail, och en länk som kanske leder rätt är sämre än en
+                         nyckel som säkert går att söka på. Nyckeln sätts därför
+                         i maskinstil — den är en identifierare, inte prosa. */ ''}
                     ${
                       e.who || e.source_system
                         ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${
                             e.who && e.source_system ? ' · ' : ''
-                          }${e.source_system ? html`${e.source_system}` : ''}${
-                            e.source_ref ? html` · ${e.source_ref}` : ''
+                          }${e.source_system ? html`${kanalKalla(e.source_system)}` : ''}${
+                            e.source_ref ? html` · <span class="thread__ref">${e.source_ref}</span>` : ''
                           }</div>`
                         : ''
                     }
@@ -2238,6 +2289,30 @@ viewRouter.post('/c/:companyId/relations/:id/mute', page(async (req, res) => {
   const muted = String((req.body as { muted?: unknown }).muted) !== 'false';
   await runViewAction(req, res, companyId, 'set_crm_relation_nudge',
     { organization_id: id, muted }, backToCrm(req, companyId, 'relations'));
+}));
+
+// Ett löfte som sades i ett samtal. Går genom samma action som synken använder,
+// så raden är omöjlig att skilja från en synkad i tråden — vilket är meningen:
+// ett löfte är ett löfte oavsett var det sades.
+viewRouter.post('/c/:companyId/relations/:id/commit', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const b = req.body as Record<string, unknown>;
+  const text = (k: string): string | undefined => {
+    const v = b[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  };
+  await runViewAction(req, res, companyId, 'record_crm_commitment', {
+    organization_id: id,
+    direction: text('direction') === 'they_owe' ? 'they_owe' : 'we_owe',
+    body: text('body') ?? '',
+    ...(text('due_date') ? { due_date: text('due_date') } : {}),
+    // Löftet sades nu. Ett påhittat datum bakåt i tiden vore en förfalskning av
+    // när det gavs — och tråden bygger på att occurred_at är sann.
+    occurred_at: new Date().toISOString(),
+    source_system: 'manual',
+  }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 // F5: kadensen. Tomt fält = återgå till bolagets standard, vilket är något
@@ -3553,18 +3628,28 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   // K4: annotera varje förslag med sitt (färskt beräknade) beroende så att
   // ordningen syns i kön — "godkänn Bokför faktura X först" — i stället för
   // ett rött fel först vid godkännandeklicket.
-  const pending = await Promise.all(pendingRaw.map(async (a) => ({
-    ...a,
-    dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
-    // Identifierande rad så att den som godkänner ser VILKEN faktura/lön/
-    // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
-    summary: await describeApproval(client, companyId, a.input),
-  })));
+  // Sekventiellt, inte Promise.all: alla anrop här delar EN anslutning, och pg
+  // kan inte köra dem parallellt — den köar dem och varnar (borttaget i pg@9).
+  // Samma regel som i crmRelations och crm.ts.
+  const pending = [];
+  for (const a of pendingRaw) {
+    pending.push({
+      ...a,
+      dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
+      // Identifierande rad så att den som godkänner ser VILKEN faktura/lön/
+      // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
+      summary: await describeApproval(client, companyId, a.input),
+      // Designunderlagets fyra krav för ett tiosekundersbeslut: vad som ändras,
+      // varför, varifrån — och två knappar.
+      forklaring: await explainApproval(client, companyId, a.action, a.input, `/app/c/${companyId}`),
+    });
+  }
   // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
   const decidedRaw = await listRecentDecisions(client, companyId, 5);
-  const decided = await Promise.all(decidedRaw.map(async (d) => ({
-    ...d, summary: await describeApproval(client, companyId, d.input),
-  })));
+  const decided = [];
+  for (const d of decidedRaw) {
+    decided.push({ ...d, summary: await describeApproval(client, companyId, d.input) });
+  }
   const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
   const fmtVal = (v: unknown): string => {
     if (v === null || v === undefined) return '—';
@@ -3588,13 +3673,34 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                 <span class="code" style="margin-left:auto">${a.action}</span>
               </div>
               ${a.summary ? html`<div class="ai-card__subject"><strong>${a.summary}</strong></div>` : ''}
-              <div class="ai-card__why">Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.</div>
+              ${/* Före → efter. Det enda som gör ett godkännande till ett
+                   beslut i stället för ett medgivande: man ser vad som faktiskt
+                   händer, inte bara vad åtgärden heter. */ ''}
+              ${a.forklaring.change
+                ? html`<div class="andring">
+                    <span class="andring__f">${a.forklaring.change.from}</span>
+                    <span class="andring__p" aria-hidden="true">→</span>
+                    <span class="andring__t">${a.forklaring.change.to}</span>
+                  </div>`
+                : ''}
+              <div class="ai-card__why">${
+                a.forklaring.why ?? html`Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.`
+              }</div>
+              ${a.forklaring.why
+                ? html`<div class="ai-card__why muted">Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'}.</div>`
+                : ''}
               ${a.dependency && !a.dependency.satisfied
                 ? html`<div class="ai-card__why" style="color:#b45309">⚠ ${a.dependency.message}</div>`
                 : ''}
-              <div class="ai-fields">
-                ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
-              </div>
+              ${/* Fältlistan är kvar, men hopfälld: den är underlaget man vill
+                   se när något ser fel ut, inte det man läser varje gång. Utan
+                   beskrivning fälls den ut direkt — då är den allt som finns. */ ''}
+              <details class="ai-raw"${a.forklaring.change ? '' : html` open`}>
+                <summary>Visa fälten som skickas</summary>
+                <div class="ai-fields">
+                  ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
+                </div>
+              </details>
               <div class="ai-actions">
                 <form method="post" action="/app/c/${companyId}/approvals/${a.id}/approve" style="margin:0">
                   <button class="btn btn--primary btn--sm" type="submit">✓ Godkänn &amp; utför</button>
@@ -3602,6 +3708,9 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                 <form method="post" action="/app/c/${companyId}/approvals/${a.id}/reject" style="margin:0">
                   <button class="btn btn--ghost btn--sm" type="submit">Avvisa</button>
                 </form>
+                ${a.forklaring.source
+                  ? html`<a class="btn btn--ghost btn--sm" href="${a.forklaring.source.href}">${a.forklaring.source.label} →</a>`
+                  : ''}
                 <span class="hint">Du bestämmer — varje beslut loggas i revisionsloggen.</span>
               </div>
             </article>`;

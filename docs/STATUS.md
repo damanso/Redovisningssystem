@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 672 tester i 80 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 701 tester i 83 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -130,6 +130,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-14 (designjämförelse: "ser det verkligen ut som designen?"):**
+  Davids fråga var befogad. Sviten bevisade att koden FUNGERAR — aldrig att den
+  ser ut som underlaget. Två olika saker. Jag startade appen, seedade data som
+  motsvarar designens exempel och fotograferade skärmarna (1280 px och 390 px).
+  Sju avvikelser, alla åtgärdade, ett test per punkt i
+  `server/test/crm-design-parity.test.ts`:
+
+  1. **Två av sex nyckeltal var fel — och just de två var poängen.** Designen:
+     Obetalt och Ofakturerad tid. Byggt: "Tyst i" och "Personer" (det senare en
+     dubblering av kortet under). De två saknade är de tal inget renodlat CRM
+     kan visa: Attio måste fråga vad affären är värd, vi vet. Nu härledda ur
+     reskontran respektive tidrapporterna, med länk vidare.
+  2. **Granskningsraden följde inte §5.** Designen krävde fyra saker för ett
+     tiosekundersbeslut: före → efter, varför, varifrån, två knappar. Byggt var
+     en rå fältlista. Nu `explainApproval` för alla känsliga åtgärder; fältlistan
+     kvar men hopfälld.
+  3. **"Lova något" saknades helt** — man kunde stänga löften men inte skapa
+     dem. Samma felklass som hela ombyggnaden handlade om.
+  4. **Skälet var maskinformulerat.** "1 förfallet åtagande" → "vi lovade:
+     Skicka tidplan för fas 2. — förföll 2026-08-10". Skälet ska gå att läsa som
+     en öppningsreplik.
+  5. Belopp på kort i hela kronor (`kronor()`), inte ören.
+  6. Telefon: ⋯ blev en fullbred stapel — container query träffade för brett.
+  7. Org.nr normaliseras till NNNNNN-NNNN som i kundregistret; källsystemet
+     skrivs som namn ("Gmail") och nyckeln i maskinstil.
+
+  Dessutom: godkännandesidan körde parallella frågor på EN anslutning
+  (pg-varning) — nu sekventiellt, samma regel som i crmRelations.
+
+  **Medvetet AVSTEG från designen:** §5 visade AI-förslag på enskilda FÄLT i
+  granskningskön ("Eva Larsson → Eva Larsson, Ekonomichef"). Så byggdes det
+  inte. CRM-skrivningar är `write` och körs direkt; skyddet är i stället F4:s
+  ursprungsmärkning plus regeln att människan vinner. Skälet: varje synkat mail
+  med en titel hade blivit ett köobjekt, och en kö med 40 fältförslag är exakt
+  den anklagelse dagsytans kap finns för att undvika. Vill vi ha designens
+  bokstavliga beteende är det en ändring av sensitivity — med den kostnaden.
+
+  `npx vitest run` → **82 filer, 691 tester gröna**, `npm run build` ren.
 
 - **2026-08-17 (LOC-322, gravstenen efter en sammanslagning):** Sista biten av
   överlämningen "CRM saknar sätt att slå ihop eller döpa om en organisation".

@@ -29,6 +29,16 @@ export interface RelationRow {
   muted: boolean;
   /** Kadensen (F5): egen tystnadsgräns i dagar. NULL = bolagets standard. */
   cadence_days: number | null;
+  /**
+   * Obetalt och ofakturerad tid — de två tal inget renodlat CRM kan visa.
+   *
+   * Attio måste fråga vad affären är värd, Odoo kallar sitt fält "Expected
+   * Revenue". Vi behöver inte gissa: fakturan är ställd och tiden är loggad.
+   * Just därför hör de hemma bland relationens nyckeltal och inte bara i
+   * reskontran — det är här man bestämmer om man ska höra av sig.
+   */
+  open_receivable_ore: number;
+  unbilled_time_ore: number;
 }
 
 /**
@@ -52,7 +62,9 @@ export async function relationState(
   // tomma fältet raderade den kadens som fanns.
   opts: { as_of?: string; organization_id?: string } = {},
 ): Promise<RelationRow[]> {
-  const r = await client.query<RelationRow & { revenue_12m_ore: string }>(
+  const r = await client.query<RelationRow & {
+    revenue_12m_ore: string; open_receivable_ore: string; unbilled_time_ore: string;
+  }>(
     `WITH asof AS (SELECT COALESCE($2::date, current_date) AS d),
      contact AS (
        SELECT o.id AS organization_id, max(i.occurred_at) AS last_contact_at
@@ -80,7 +92,29 @@ export async function relationState(
          AND i.invoice_date <= (SELECT d FROM asof)
        GROUP BY i.customer_id
      ),
-     total AS (SELECT COALESCE(sum(net_ore), 0) AS all_ore FROM revenue)
+     total AS (SELECT COALESCE(sum(net_ore), 0) AS all_ore FROM revenue),
+     -- Obetalt: bokförda, ej makulerade fakturor med kvarvarande skuld. Samma
+     -- uttryck som kundreskontran (reports.ts) — en andra formel för samma sak
+     -- är en andra sanning, och de skulle glida isär.
+     receivable AS (
+       SELECT i.customer_id,
+              sum(i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS open_ore
+       FROM invoices i
+       WHERE i.company_id = $1 AND i.voucher_id IS NOT NULL AND i.status <> 'cancelled'
+         AND (i.total_ore - i.housework_reduction_ore) > i.paid_amount_ore
+       GROUP BY i.customer_id
+     ),
+     -- Ofakturerad tid: loggade, debiterbara minuter som ännu inte fakturerats,
+     -- värderade till postens egen taxa när den finns, annars projektets.
+     -- Saknas båda är värdet noll och inte en gissning.
+     unbilled AS (
+       SELECT p.customer_id,
+              sum(round(te.minutes * COALESCE(te.hourly_rate_ore, p.hourly_rate_ore, 0) / 60.0))::bigint AS ore
+       FROM time_entries te
+       JOIN projects p ON p.id = te.project_id AND p.company_id = te.company_id
+       WHERE te.company_id = $1 AND te.billable AND NOT te.invoiced AND p.customer_id IS NOT NULL
+       GROUP BY p.customer_id
+     )
      SELECT o.id AS organization_id, o.name, o.status, o.customer_id,
             o.snoozed_until::text, o.muted, o.cadence_days,
             ct.last_contact_at,
@@ -89,6 +123,8 @@ export async function relationState(
             COALESCE(cm.open_count, 0)::int AS open_commitments,
             COALESCE(cm.overdue_count, 0)::int AS overdue_commitments,
             COALESCE(rv.net_ore, 0) AS revenue_12m_ore,
+            COALESCE(rc.open_ore, 0) AS open_receivable_ore,
+            COALESCE(ub.ore, 0) AS unbilled_time_ore,
             CASE WHEN (SELECT all_ore FROM total) > 0
                  THEN round(COALESCE(rv.net_ore, 0) * 1000.0 / (SELECT all_ore FROM total))::int
                  ELSE NULL END AS revenue_share_permille
@@ -96,6 +132,8 @@ export async function relationState(
      LEFT JOIN contact ct ON ct.organization_id = o.id
      LEFT JOIN commitments cm ON cm.organization_id = o.id
      LEFT JOIN revenue rv ON rv.customer_id = o.customer_id
+     LEFT JOIN receivable rc ON rc.customer_id = o.customer_id
+     LEFT JOIN unbilled ub ON ub.customer_id = o.customer_id
      -- Andelen mäts fortfarande mot HELA bolagets omsättning även när bara en
      -- rad efterfrågas: "23 % av omsättningen" betyder ingenting annars.
      WHERE o.company_id = $1
@@ -104,7 +142,12 @@ export async function relationState(
      ORDER BY COALESCE(rv.net_ore, 0) DESC, ct.last_contact_at ASC NULLS FIRST, o.name`,
     [companyId, opts.as_of ?? null, opts.organization_id ?? null],
   );
-  return r.rows.map((x) => ({ ...x, revenue_12m_ore: Number(x.revenue_12m_ore) }));
+  return r.rows.map((x) => ({
+    ...x,
+    revenue_12m_ore: Number(x.revenue_12m_ore),
+    open_receivable_ore: Number(x.open_receivable_ore),
+    unbilled_time_ore: Number(x.unbilled_time_ore),
+  }));
 }
 
 /**
@@ -206,6 +249,21 @@ export async function contactSuggestions(
   );
   const byOrg = new Map(contacts.rows.map((c) => [c.organization_id, c]));
 
+  // Det FÖRFALLNA löftets egen text. Skälet ska gå att läsa som en
+  // öppningsreplik — "vi lovade: skicka tidplan för fas 2, förföll 10 aug" —
+  // inte som en räknare. "1 förfallet åtagande" säger vad systemet vet; det
+  // säger ingenting om vad man ska skriva i mailet, och det är det raden är till
+  // för. Äldsta förfallodatum först: det är det som svider mest.
+  const overdue = await client.query<{ organization_id: string; body: string; due_date: string }>(
+    `SELECT DISTINCT ON (c.organization_id) c.organization_id, c.body, c.due_date::text
+     FROM crm.commitments c
+     WHERE c.company_id = $1 AND c.status = 'open' AND c.organization_id IS NOT NULL
+       AND c.due_date IS NOT NULL AND c.due_date < $2::date
+     ORDER BY c.organization_id, c.due_date`,
+    [companyId, asOf],
+  );
+  const overdueByOrg = new Map(overdue.rows.map((o) => [o.organization_id, o]));
+
   const suggestions: ContactSuggestion[] = [];
   for (const r of rows) {
     // Dämpningen respekteras HÄR, inte i relationState: listan ska fortfarande
@@ -223,7 +281,11 @@ export async function contactSuggestions(
     const grans = r.cadence_days ?? days;
 
     if (r.overdue_commitments > 0) {
-      reasons.push(`${r.overdue_commitments} förfallet åtagande${r.overdue_commitments > 1 ? 'n' : ''} — vi har lovat något som passerat sitt datum`);
+      const o = overdueByOrg.get(r.organization_id);
+      const fler = r.overdue_commitments > 1 ? ` (och ${r.overdue_commitments - 1} till)` : '';
+      reasons.push(o
+        ? `vi lovade: ${o.body.replace(/\s+$/, '')} — förföll ${o.due_date}${fler}`
+        : `${r.overdue_commitments} förfallet åtagande — vi har lovat något som passerat sitt datum`);
       priority += 100 * r.overdue_commitments;
     }
     if (r.days_silent === null) {
