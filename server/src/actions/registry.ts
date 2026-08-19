@@ -1367,16 +1367,38 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'confirm_crm_value',
     title: 'Bekräfta en uppgift (gissning blir beslut)',
     sensitivity: 'write',
-    inputSchema: z.union([
-      z.object({
-        organization_id: UuidSchema,
-        field: z.enum(['name', 'org_number', 'website', 'customer_id', 'status', 'notes']),
-      }).strict(),
-      z.object({
-        person_id: UuidSchema,
-        field: z.enum(['name', 'email', 'phone', 'role_title', 'organization_id']),
-      }).strict(),
-    ]),
+    // MCP-spec kräver type:"object" på toppnivån i tools/list — därför ETT objekt
+    // med superRefine i stället för z.union (som ger anyOf utan type).
+    inputSchema: z
+      .object({
+        organization_id: UuidSchema.optional(),
+        person_id: UuidSchema.optional(),
+        field: z.enum([
+          'name', 'org_number', 'website', 'customer_id', 'status', 'notes',
+          'email', 'phone', 'role_title', 'organization_id',
+        ]),
+      })
+      .strict()
+      .superRefine((v, ctx) => {
+        const orgFields = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes'];
+        const personFields = ['name', 'email', 'phone', 'role_title', 'organization_id'];
+        if (!!v.organization_id === !!v.person_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'ange exakt en av organization_id och person_id',
+            path: ['organization_id'],
+          });
+          return;
+        }
+        const allowed = v.organization_id ? orgFields : personFields;
+        if (!allowed.includes(v.field)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `field '${v.field}' är inte giltigt för ${v.organization_id ? 'organisation' : 'person'}`,
+            path: ['field'],
+          });
+        }
+      }),
     handler: (ctx, i: { organization_id?: string; person_id?: string; field: string }) =>
       confirmCrmValue(ctx.client, ctx.companyId, ctx.userId, ctx.actor,
         i.organization_id ? { organization_id: i.organization_id } : { person_id: i.person_id! }, i.field),
