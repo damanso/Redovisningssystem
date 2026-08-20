@@ -140,6 +140,87 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-08-20 (`fix/likviditet-kallor`: utflödessidan stod på noll — svaret bär
+  nu sin egen källredovisning):** Davids order (flaggad 13/8) var "utflödessidan
+  står på noll i samtliga fem hinkar". SQL:en i `liquidityForecast` var korrekt,
+  men hela utflödessidan hämtades ur `supplier_invoices` — och den tabellen är
+  tom i Locollabs. Kända skulder ur bokföringen syntes aldrig, och **nollan gick
+  inte att skilja från "det finns inget att betala"**. Det är samma felklass som
+  lärdom 7 (den tysta nollan): raden fanns, inget fel returnerades.
+
+  1. **`sources` i svaret är hela poängen.** Varje känd in-/utflödeskälla listas
+     med `id`/`side`/`status`/`amount_ore`/`due_date`/`note` — även när den är
+     tom. Status sätts UTESLUTANDE av kod ur frågeresultat (linsprincipen från
+     `brief_underlag.py`), aldrig av en modell: `MODELLERAD`, `TOM`,
+     `KAND_EJ_MODELLERAD`, `KAND_EJ_DATERAD`, `AVVIKELSE`. Frågan "räknar ni
+     med det här?" ska aldrig behöva ställas till koden.
+  2. **Statutära skulder bucketas nu — varje period mot SIN EGEN förfallodag.**
+     Momsnetto (26xx) och AGI (2710/2730 + obetalda lönebesked) läggs i hinkarna.
+     AGI:n delas per löneperiod (`payslips.period` + `payroll_tax_payments`, unik
+     per period), så en period vars förfallodag passerat hamnar i **"Förfallet /
+     nu"** — inte mot nästa gemensamma förfallodag. Endast positiva netton — ett
+     negativt momsnetto är en fordran och läggs INTE som inflöde (Skatteverket
+     bestämmer tidpunkten). Momsen kan INTE delas per period: 26xx är löpande
+     konton och repot bokför ingen avräkning per momsperiod (inget 2650), så
+     "vilken period är oredovisad" är inte mätbart — skälet står i koden.
+  3. **Dubbelräkningsregeln står i koden, inte bara i ett test.**
+     `CLAIMED_BY_TAX_LIABILITY` + `unclaimedCreditBalance()` kastar direkt om en
+     ny källa läser ett konto som redan ingår i ett bucketat taxLiability-belopp.
+     Ett belopp som räknas två gånger ger en prognos som är fel åt fel håll, och
+     den sortens fel upptäcks först när någon lutar ett beslut mot talet.
+  4. **Odaterat läggs aldrig i "Senare".** 2920/289x redovisas som
+     `KAND_EJ_DATERAD` med belopp. "Senare" betyder daterad > 90 dagar; ett
+     odaterat belopp där vore falsk precision — värre än inget belopp.
+     Uppskattad bolagsskatt och 2510:s debetsaldo är `KAND_EJ_MODELLERAD` (att
+     bucketa den redan inbetalda preliminärskatten vore dubbelräkning).
+  5. **Den del av skatteskulden som inte ligger i någon hink.** Skiljer sig
+     `taxLiability.total_ore` från komponentsumman med > 1 000 kr syns det som
+     källan `skatteskuld_jamforelse` med status `AVVIKELSE` och BÅDA talen i
+     noten. Noten säger vad differensen MÄTER (skulden minus det som faktiskt
+     modellerats) — inte att talen skulle vara felräknade: ett känt men odaterat
+     belopp ger fullt utslag fast båda talen stämmer. Att tyst välja ett av
+     talen är fel.
+  6. **Vyn:** egen tabell "Källredovisning" under prognosen på `/cashflow`, där
+     varje rad med status ≠ MODELLERAD är märkt i SJÄLVA raden ("EJ MODELLERAD",
+     "ODATERAD", "AVVIKELSE", "TOM — INGEN DATA") — inte i en tooltip.
+
+  `liquidity_forecast` behåller namn, `sensitivity: 'read'` och inputschema
+  `{ as_of? }`; inget nytt verktyg, ingen migration, inget nytt beroende.
+
+  **Davids faktiska tal per 2026-08-20**, mätta genom att prognosen kördes mot en
+  KOPIA av produktionsdatan (`pg_dump` ur prod-containern → egen databas i
+  testcontainern på 5433; prod är enbart läst, aldrig skriven):
+
+  | Hink | Väntade utbetalningar |
+  |---|---|
+  | Förfallet / nu | **124 032,20 kr** (AGI, perioderna 2026-03/04/05/07) |
+  | Inom 30 dagar | 0 kr (in: 43 202,50 kr, en öppen kundfaktura) |
+  | 61–90 dagar | 26 007,45 kr (moms, förfaller 2026-11-12) |
+
+  Utflödet gick alltså från **0 kr till 150 039,65 kr** modellerat. Utöver det
+  redovisas **82 416,53 kr** kända men odaterade (2920: 58 750,00 + 289x:
+  23 666,53), **64 307,42 kr** uppskattad bolagsskatt och 2510:s debetsaldo
+  −155 145,00 kr — alla utanför hinkarna, med skäl. `taxLiability.total_ore` =
+  21 434 707 ören = moms 2 600 745 + AGI 12 403 220 + bolagsskatt 6 430 742,
+  exakt kravspecens oberoende angivna 214 347,07 kr, ingen `AVVIKELSE`.
+
+  ⚠️ **Rättelse (samma dag, granskningens fynd 2).** Den första versionen av den
+  här loggen påstod "0 → 26 007 kr" och "188 340,07 kr bolagsskatt". Talen kom ur
+  en REKONSTRUKTION i testdatabasen som antog AGI = 0 och som validerade sig själv
+  cirkulärt: bolagsskatteunderlaget (3041) hade satts så att 20,6 %-beräkningen
+  träffade residualen mot specens totalsumma — en residual som i verkligheten är
+  AGI + bolagsskatt. Att totalen stämde bevisade därför ingenting. Produktionen
+  har fyra obetalda löneperioder och ett resultat före skatt på 312 171,94 kr, inte
+  914 272,18 kr. **Lärdom: ett tal som stämmer mot ett antaget underlag är inte
+  verifierat — mät mot en kopia av verkligheten, inte mot din egen modell.**
+
+  `npm run build` ren, `npm test` = **731 tester i 86 sviter, alla gröna**.
+  Inget befintligt testfall ändrat. Sviter: `server/test/liquiditySources.test.ts`
+  (9 fall; verifierad genom körning mot koden FÖRE ändringen) och
+  `server/test/liquidityGuard.test.ts` (dubbelräkningsvakten prövad direkt).
+  Grenen är INTE mergad och INTE pushad. Full rapport:
+  `/tmp/bygg-likviditet-rapport.md`, fixrundan i samma fil.
+
 - **2026-08-20 (`design/entiteter-1`: entitetslänkar — namn är vägar, inte
   strängar):** Davids order var att namn ska leda vidare och att sidor med
   kopplad information ska sluta vara isolerade händelser. Fyra entitetstyper

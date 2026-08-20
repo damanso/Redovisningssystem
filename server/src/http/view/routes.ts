@@ -25,7 +25,7 @@ import { describeApproval, explainApproval } from '../../services/approvalSummar
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
-import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue } from '../../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue, type LiquiditySourceStatus } from '../../services/reports.js';
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects } from '../../services/projects.js';
@@ -2861,7 +2861,7 @@ viewRouter.get('/c/:companyId/cashflow', pageFor('cashflow', 'Kassaflöde', asyn
   const liq = await liquidityForecast(client, companyId);
   const maxAbs = Math.max(1, ...cf.months.map((m) => Math.max(m.inflow_ore, m.outflow_ore)));
   return html`<div class="page-head"><div>${eyebrow('Kassaflöde')}<h1>Kassaflöde & likviditet</h1>
-      <p class="lede">Kassarörelser på likvida konton (19xx) per månad och en enkel likviditetsprognos utifrån öppna kund- och leverantörsfakturors förfallodag. Prognosen är en indikation, inte en utfästelse.</p></div></div>
+      <p class="lede">Kassarörelser på likvida konton (19xx) per månad och en enkel likviditetsprognos utifrån öppna kundfakturors, leverantörsfakturors och de statutära skuldernas (moms, arbetsgivardeklaration) förfallodagar. Prognosen är en indikation, inte en utfästelse. Källredovisningen under prognosen visar VARJE känd källa — även de som är tomma eller medvetet inte ligger i någon period.</p></div></div>
     <div class="kpi-grid">
       ${kpiCell('Kassa nu', amount(liq.cash_ore))}
       ${kpiCell('Ingående (12 mån sedan)', amount(cf.opening_ore))}
@@ -2888,8 +2888,48 @@ viewRouter.get('/c/:companyId/cashflow', pageFor('cashflow', 'Kassaflöde', asyn
         <td class="num">${b.net_ore ? amount(b.net_ore, { unit: false }) : ''}</td>
         <td class="num"><strong>${amount(b.projected_ore, { unit: false })}</strong></td></tr>`)}
     </tbody></table></div>
-    ${liq.buckets.some((b) => b.projected_ore < 0) ? html`<p class="lede">${chip('Prognosen visar negativ kassa i någon period — se över in-/utbetalningar', 'neg', '!')}</p>` : ''}`;
+    ${liq.buckets.some((b) => b.projected_ore < 0) ? html`<p class="lede">${chip('Prognosen visar negativ kassa i någon period — se över in-/utbetalningar', 'neg', '!')}</p>` : ''}
+    <h2 style="margin-top:20px">Källredovisning</h2>
+    <p class="lede">Varje känd in- och utflödeskälla och om den ingår i prognosen ovan. En nolla i en period betyder inte alltid "inget att betala" — här står skälet. Rader som inte är modellerade är märkta i raden.</p>
+    <div class="table-wrap"><table><thead><tr><th>Källa</th><th>Sida</th><th class="num">Belopp</th><th>Förfaller</th><th>Status</th><th>Skäl</th></tr></thead><tbody>
+      ${liq.sources.map((s) => html`<tr>
+        <td>${sourceLabel(s.id)}<br><span class="code" style="font-size:.85em;opacity:.7">${s.id}</span></td>
+        <td>${s.side === 'in' ? 'In' : 'Ut'}</td>
+        <td class="num">${s.amount_ore === null ? '' : amount(s.amount_ore, { unit: false })}</td>
+        <td class="code">${s.due_date ?? '—'}</td>
+        <td>${sourceStatusChip(s.status)}</td>
+        <td>${s.note}</td></tr>`)}
+    </tbody></table></div>`;
 }));
+
+// Källredovisningens etiketter och statusmärken (KRAV-1/KRAV-11): märkningen står
+// i SJÄLVA raden — inte i en tooltip, inte bakom en länk — så att en obevakad
+// eller odaterad källa aldrig kan läsas som en nolla att lita på.
+const LIQUIDITY_SOURCE_LABELS: Record<string, string> = {
+  kundfakturor: 'Kundfakturor (öppna)',
+  leverantorsfakturor: 'Leverantörsfakturor (öppna)',
+  moms: 'Moms att betala',
+  agi: 'Arbetsgivardeklaration (skatt + avgifter)',
+  bolagsskatt: 'Bolagsskatt (uppskattad)',
+  semesterloner_2920: 'Upplupna semesterlöner (2920)',
+  ovriga_kortfristiga_2890: 'Övriga kortfristiga skulder (289x)',
+  skattekonto_2510: 'Skattekonto (2510)',
+  skatteskuld_jamforelse: 'Skatteskuld — del som inte ligger i någon period',
+};
+// Object.hasOwn, aldrig `in` (lärdom 9 i STATUS.md).
+const sourceLabel = (id: string): string => (Object.hasOwn(LIQUIDITY_SOURCE_LABELS, id) ? LIQUIDITY_SOURCE_LABELS[id]! : id);
+
+const LIQUIDITY_STATUS_CHIPS: Record<LiquiditySourceStatus, { text: string; kind: 'ok' | 'warn' | 'neg' | 'muted'; icon: string }> = {
+  MODELLERAD: { text: 'INGÅR I PROGNOSEN', kind: 'ok', icon: '✓' },
+  TOM: { text: 'TOM — INGEN DATA', kind: 'muted', icon: '○' },
+  KAND_EJ_MODELLERAD: { text: 'EJ MODELLERAD', kind: 'warn', icon: '!' },
+  KAND_EJ_DATERAD: { text: 'ODATERAD', kind: 'warn', icon: '?' },
+  AVVIKELSE: { text: 'AVVIKELSE', kind: 'neg', icon: '!' },
+};
+function sourceStatusChip(status: LiquiditySourceStatus): Raw {
+  const c = Object.hasOwn(LIQUIDITY_STATUS_CHIPS, status) ? LIQUIDITY_STATUS_CHIPS[status] : undefined;
+  return c ? chip(c.text, c.kind, c.icon) : chip(String(status), 'warn', '!');
+}
 
 // CSV-export av rapporter (revisor/Excel). Läser rapporten inom tenant-gränsen
 // och skickar en nedladdning. BOM (﻿) så svensk Excel läser åäö rätt.

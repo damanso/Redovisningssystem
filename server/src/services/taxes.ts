@@ -34,6 +34,42 @@ function creditBalance(rows: { account_number: number; debit_ore: number; credit
     .reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0);
 }
 
+/** En löneperiod vars AGI ännu inte fått en bokförd skattekontobetalning. */
+export interface UnpaidPayrollPeriod { period: string; tax_ore: Ore; employer_contribution_ore: Ore }
+
+/**
+ * Bokförda lönebesked vars period ännu INTE har en bokförd skattekontobetalning
+ * (`payroll_tax_payments`, unik per period), grupperade per löneperiod och
+ * stigande i tid.
+ *
+ * Uppdelningen per period är mätbar och inte gissad: varje lönebesked bär sin
+ * `period` ('YYYY-MM') och betalningen är en egen rad per period. Det är därför
+ * likviditetsprognosen kan placera en obetald period mot SIN egen förfallodag —
+ * en period vars förfallodag passerat är förfallen, inte kommande.
+ */
+export async function unpaidPayrollPeriods(
+  client: PoolClient, companyId: string, asOf: string,
+): Promise<UnpaidPayrollPeriod[]> {
+  const res = await client.query<{ period: string; tax: string; employer: string }>(
+    `SELECT p.period, SUM(p.tax_ore)::text AS tax, SUM(p.employer_contribution_ore)::text AS employer
+     FROM payslips p
+     WHERE p.company_id = $1 AND p.status = 'booked'
+       AND (p.payment_date IS NULL OR p.payment_date <= $2)
+       AND NOT EXISTS (
+         SELECT 1 FROM payroll_tax_payments t
+         WHERE t.company_id = p.company_id AND t.period = p.period AND t.payment_date <= $2
+       )
+     GROUP BY p.period
+     ORDER BY p.period`,
+    [companyId, asOf],
+  );
+  return res.rows.map((r) => ({
+    period: r.period,
+    tax_ore: Number(r.tax),
+    employer_contribution_ore: Number(r.employer),
+  }));
+}
+
 export async function taxLiability(
   client: PoolClient, companyId: string, asOf: string, fiscalYear: { from: string; to: string },
 ): Promise<TaxLiability> {
@@ -42,22 +78,13 @@ export async function taxLiability(
 
   // Löneskulden (AGI): kontosaldona 2710/2730 (t.ex. SIE-import eller manuella
   // verifikat) PLUS bokförda lönebesked vars period ännu inte fått en bokförd
-  // skattekontobetalning. Lönebokföringen sker enligt kontantmetoden (K2):
-  // vid utbetalning bokförs bara nettot (7010/1930) — skatten och avgiften blir
-  // en skuld som syns här tills book_payroll_tax bokför betalningen.
-  const unpaidPayroll = await client.query<{ tax: string | null; employer: string | null }>(
-    `SELECT SUM(p.tax_ore)::text AS tax, SUM(p.employer_contribution_ore)::text AS employer
-     FROM payslips p
-     WHERE p.company_id = $1 AND p.status = 'booked'
-       AND (p.payment_date IS NULL OR p.payment_date <= $2)
-       AND NOT EXISTS (
-         SELECT 1 FROM payroll_tax_payments t
-         WHERE t.company_id = p.company_id AND t.period = p.period AND t.payment_date <= $2
-       )`,
-    [companyId, asOf],
-  );
-  const employeeTax = creditBalance(balance, 2710, 2719) + Number(unpaidPayroll.rows[0]?.tax ?? 0);
-  const employerContribution = creditBalance(balance, 2730, 2739) + Number(unpaidPayroll.rows[0]?.employer ?? 0);
+  // skattekontobetalning — hämtade PER LÖNEPERIOD av `unpaidPayrollPeriods`, så
+  // att likviditetsprognosen kan placera varje period mot sin egen förfallodag
+  // ur exakt samma frågeresultat som summan här bygger på.
+  const unpaid = await unpaidPayrollPeriods(client, companyId, asOf);
+  const employeeTax = creditBalance(balance, 2710, 2719) + unpaid.reduce((s, p) => s + p.tax_ore, 0);
+  const employerContribution = creditBalance(balance, 2730, 2739)
+    + unpaid.reduce((s, p) => s + p.employer_contribution_ore, 0);
 
   // Resultat före skatt för räkenskapsåret (intäkter − kostnader, exkl. skatt 89xx).
   const periodRows = await accountSums(client, companyId, { from: fiscalYear.from, to: fiscalYear.to });
@@ -130,6 +157,19 @@ function addMonths(year: number, month1to12: number, add: number): { year: numbe
 }
 
 /**
+ * Förfallodag för arbetsgivardeklarationen för en löneperiod 'YYYY-MM': den 12:e
+ * (17:e i januari/augusti) i månaden EFTER lönemånaden. Gäller även bakåt i
+ * tiden — `taxDeadlines` listar bara kommande deadlines, medan en obetald period
+ * bakåt behöver sin passerade förfallodag för att kunna redovisas som förfallen.
+ * Samma vägledande regel som `taxDeadlines`, en enda gång i koden.
+ */
+export function agiDueDateForPeriod(period: string): string {
+  const [y, m] = period.split('-').map(Number) as [number, number];
+  const due = addMonths(y, m, 1);
+  return dueDate(due.year, due.month);
+}
+
+/**
  * Vägledande kommande deadlines från `asOf` och ~6 månader framåt: moms (enligt
  * period), AGI (månadsvis) och inkomstdeklaration (årsvis, ~7 mån efter bokslut).
  */
@@ -143,11 +183,11 @@ export function taxDeadlines(asOf: string, vatPeriod: VatPeriod, fiscalYearEnd: 
   // den 12:e (17:e jan/aug) i månad M+1.
   for (let i = 0; i <= 7; i += 1) {
     const wage = addMonths(ay, am, i - 1);
-    const due = addMonths(wage.year, wage.month, 1);
-    const d = dueDate(due.year, due.month);
+    const periodLabel = `${wage.year}-${String(wage.month).padStart(2, '0')}`;
+    const d = agiDueDateForPeriod(periodLabel);
     if (withinHorizon(d)) out.push({
       type: 'agi', label: 'Arbetsgivardeklaration (skatt + avgifter)',
-      period_label: `${wage.year}-${String(wage.month).padStart(2, '0')}`, due_date: d,
+      period_label: periodLabel, due_date: d,
       note: 'Personalens källskatt och arbetsgivaravgifter för lönemånaden.',
     });
   }
