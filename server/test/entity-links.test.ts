@@ -306,6 +306,74 @@ describe('KRAV/acceptans 4: länkrevision — noll trasiga länkar', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Rättelse (granskningsfynd 1): "Öppna poster" härleds inte ur de 100 senaste
+// ---------------------------------------------------------------------------
+//
+// Fakturahistoriken på partsidan är kapad till de senaste 100. Så länge
+// reskontran plockades ur just de raderna försvann en obetald faktura som var
+// äldre än så — och sektionen skrev då ut "Inget utestående", vilket är det
+// farligaste svaret en reskontra kan ge. Öppna poster hämtas nu med en egen
+// fråga, utan LIMIT och med samma villkor som accountsReceivableAging.
+
+describe('rättelse: öppna poster hämtas oberoende av de 100 senaste fakturorna', () => {
+  it('en obetald faktura äldre än de 100 senaste syns fortfarande i kundreskontran — och räknaren säger "senaste 100"', async () => {
+    const kund = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Mångfaktura AB' });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    const kundId: string = kund.body.customer.id;
+
+    // Den gamla posten: bokförd och obetald, daterad före allt annat.
+    const gammal = await api.post(`${co()}/invoices`).set(auth()).send({
+      customer_id: kundId, invoice_date: '2026-01-02', due_date: '2026-02-01',
+      lines: [{ description: 'Förskott', quantity: 1, unit_price_ore: 500000, vat_rate: 25 }],
+    });
+    expect(gammal.status, JSON.stringify(gammal.body)).toBe(201);
+    const gammalId: string = gammal.body.invoice.id;
+    const bokford = await api.post(`${co()}/invoices/${gammalId}/book`).set(auth()).send({ fiscal_year_id: fiscalYearId });
+    expect(bokford.status, JSON.stringify(bokford.body)).toBe(200);
+
+    // 101 senare fakturor → den gamla ligger utanför både kapet OCH den extra
+    // rad som bara finns för att upptäcka att kapet slagit till.
+    for (let i = 0; i < 101; i++) {
+      const senare = await api.post(`${co()}/invoices`).set(auth()).send({
+        customer_id: kundId, invoice_date: '2026-06-01', due_date: '2026-07-01',
+        lines: [{ description: `Löpande ${i}`, quantity: 1, unit_price_ore: 10000, vat_rate: 25 }],
+      });
+      expect(senare.status, JSON.stringify(senare.body)).toBe(201);
+    }
+
+    const html = await sida(`/app/c/${companyId}/customers/${kundId}`);
+
+    // Den gamla fakturan finns INTE i den kapade historiken (102 fakturor, den
+    // är äldst) — så varje länk till den kan bara komma från Öppna poster.
+    expect(html).toContain(`href="/app/c/${companyId}/invoices/${gammalId}"`);
+    expect(html).not.toContain('Inget utestående');
+
+    // Räknaren ljuger inte om att vara en total.
+    expect(html).toContain('<h2>Fakturor</h2><span class="muted" style="font-size:12.5px">senaste 100</span>');
+  });
+
+  it('utan kap står det verkliga antalet, inte "senaste 100"', async () => {
+    const html = await sida(`/app/c/${companyId}/customers/${customerId}`);
+    expect(html).toContain('<h2>Fakturor</h2><span class="muted" style="font-size:12.5px">1 st</span>');
+    expect(html).not.toContain('senaste 100');
+  });
+
+  it('villkoret är åldersanalysens: ett obokat utkast är ingen öppen post', async () => {
+    const kund = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Bara Utkast AB' });
+    const kundId: string = kund.body.customer.id;
+    const utkast = await api.post(`${co()}/invoices`).set(auth()).send({
+      customer_id: kundId, invoice_date: '2026-05-04', due_date: '2026-06-03',
+      lines: [{ description: 'Ej bokfört', quantity: 1, unit_price_ore: 250000, vat_rate: 25 }],
+    });
+    expect(utkast.status, JSON.stringify(utkast.body)).toBe(201);
+
+    const html = await sida(`/app/c/${companyId}/customers/${kundId}`);
+    expect(html).toContain('<h2>Fakturor</h2><span class="muted" style="font-size:12.5px">1 st</span>');
+    expect(html).toContain('Inget utestående');
+  });
+});
+
 describe('acceptans 5: tenantisolering gäller även bakåtreferenserna', () => {
   it('en främmande användare når varken parten eller dess bakåtreferenser', async () => {
     const other = await registerUser('entlank-b');

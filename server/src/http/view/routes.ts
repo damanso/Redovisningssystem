@@ -3018,44 +3018,83 @@ function registerPage(active: string, title: string, lede: string, load: (c: Poo
  */
 interface PartyInvoiceRow {
   id: string; label: string; invoice_date: string; due_date: string | null;
-  status: string; total_ore: number; outstanding_ore: number; voucher_id: string | null;
+  status: string; total_ore: number; voucher_id: string | null;
 }
+interface PartyOpenRow {
+  id: string; label: string; due_date: string | null;
+  outstanding_ore: number; voucher_id: string | null;
+}
+
+/** Fakturahistoriken är kapad — reskontran är det ALDRIG. Se partyBackrefs. */
+const BACKREF_INVOICE_LIMIT = 100;
 
 async function partyBackrefs(
   client: PoolClient, companyId: string, partyType: PartyType, partyId: string,
 ): Promise<Raw> {
   const isCustomer = partyType === 'customer';
 
-  // Fakturorna hämtas EN gång; öppna poster är en delmängd av dem. Samma regel
-  // som åldersanalysen använder (bokförd, ej annullerad, kvar att betala) — vid
-  // ROT/RUT är kundens skuld total − skattereduktion, resten är fordran på
-  // Skatteverket.
+  // Fakturahistoriken kapas till de senaste 100 — en lista är en lista. Hämtar
+  // en rad extra, för det är skillnaden mellan "kunden har 100 fakturor" och
+  // "vi visar de 100 senaste", och bara det senare får skrivas ut som sådant.
   const inv = isCustomer
     ? await client.query<PartyInvoiceRow>(
         `SELECT i.id,
                 COALESCE(i.effective_invoice_number, i.invoice_number)::text AS label,
                 i.invoice_date::text, i.due_date::text, i.status, i.total_ore,
-                (i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS outstanding_ore,
                 i.voucher_id
          FROM invoices i
          WHERE i.company_id = $1 AND i.customer_id = $2
          ORDER BY i.invoice_date DESC, i.invoice_number DESC
-         LIMIT 100`,
-        [companyId, partyId],
+         LIMIT $3`,
+        [companyId, partyId, BACKREF_INVOICE_LIMIT + 1],
       )
     : await client.query<PartyInvoiceRow>(
         `SELECT si.id, si.number::text AS label,
                 si.invoice_date::text, si.due_date::text, si.status, si.total_ore,
-                (si.total_ore - si.paid_amount_ore) AS outstanding_ore,
                 si.voucher_id
          FROM supplier_invoices si
          WHERE si.company_id = $1 AND si.supplier_id = $2
          ORDER BY si.invoice_date DESC, si.number DESC
-         LIMIT 100`,
+         LIMIT $3`,
+        [companyId, partyId, BACKREF_INVOICE_LIMIT + 1],
+      );
+  const kapad = inv.rows.length > BACKREF_INVOICE_LIMIT;
+  const invoices = inv.rows.slice(0, BACKREF_INVOICE_LIMIT)
+    .map((r) => ({ ...r, total_ore: Number(r.total_ore) }));
+
+  // Öppna poster får INTE härledas ur listan ovan. En obetald faktura som är
+  // äldre än de 100 senaste hade då försvunnit tyst ur reskontran, och tomheten
+  // hade lästs som "inget utestående" — det farligaste svaret en reskontra kan
+  // ge. Egen fråga, utan LIMIT (öppna poster är naturligt få), med EXAKT samma
+  // villkor och beloppsformel som accountsReceivableAging/accountsPayableAging:
+  // bokförd, ej annullerad, kvar att betala. Vid ROT/RUT är kundens skuld
+  // total − skattereduktion — resten är fordran på Skatteverket, inte på kunden.
+  const op = isCustomer
+    ? await client.query<PartyOpenRow>(
+        `SELECT i.id,
+                COALESCE(i.effective_invoice_number, i.invoice_number)::text AS label,
+                i.due_date::text,
+                (i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS outstanding_ore,
+                i.voucher_id
+         FROM invoices i
+         WHERE i.company_id = $1 AND i.customer_id = $2
+           AND i.voucher_id IS NOT NULL AND i.status <> 'cancelled'
+           AND (i.total_ore - i.housework_reduction_ore) > i.paid_amount_ore
+         ORDER BY i.invoice_date DESC, i.invoice_number DESC`,
+        [companyId, partyId],
+      )
+    : await client.query<PartyOpenRow>(
+        `SELECT si.id, si.number::text AS label, si.due_date::text,
+                (si.total_ore - si.paid_amount_ore) AS outstanding_ore,
+                si.voucher_id
+         FROM supplier_invoices si
+         WHERE si.company_id = $1 AND si.supplier_id = $2
+           AND si.voucher_id IS NOT NULL AND si.status <> 'cancelled'
+           AND si.total_ore > si.paid_amount_ore
+         ORDER BY si.invoice_date DESC, si.number DESC`,
         [companyId, partyId],
       );
-  const invoices = inv.rows.map((r) => ({ ...r, total_ore: Number(r.total_ore), outstanding_ore: Number(r.outstanding_ore) }));
-  const open = invoices.filter((r) => r.voucher_id && r.status !== 'cancelled' && r.outstanding_ore > 0);
+  const open = op.rows.map((r) => ({ ...r, outstanding_ore: Number(r.outstanding_ore) }));
 
   // Åtaganden bor i relationen, och relationen kopplas till KUNDREGISTRET
   // (crm.organizations.customer_id). En leverantör har ingen sådan koppling —
@@ -3088,10 +3127,11 @@ async function partyBackrefs(
     html`<div class="panel" style="margin-top:14px">
       <div class="panel__head"><h2>${title}</h2>${meta}</div>
       <div class="panel__body">${body}</div></div>`;
-  const antal = (n: number): Raw => html`<span class="muted" style="font-size:12.5px">${String(n)} st</span>`;
+  const meta = (text: string): Raw => html`<span class="muted" style="font-size:12.5px">${text}</span>`;
+  const antal = (n: number): Raw => meta(`${String(n)} st`);
   // Kundfakturan har en egen sida; leverantörsfakturan har det inte — då går
   // numret till verifikatet i huvudboken när den är bokförd.
-  const invRef = (r: PartyInvoiceRow): Raw =>
+  const invRef = (r: { id: string; label: string; voucher_id: string | null }): Raw =>
     isCustomer
       ? html`<a href="/app/c/${companyId}/invoices/${r.id}">${r.label}</a>`
       : r.voucher_id
@@ -3101,7 +3141,9 @@ async function partyBackrefs(
   return html`
     ${panel(
       isCustomer ? 'Fakturor' : 'Leverantörsfakturor',
-      antal(invoices.length),
+      // "100 st" läses som en total. Står det inte hela sanningen ska det stå
+      // vad det faktiskt är — och bara då.
+      kapad ? meta(`senaste ${String(BACKREF_INVOICE_LIMIT)}`) : antal(invoices.length),
       invoices.length === 0
         ? tomt(isCustomer
             ? 'Inga fakturor till den här kunden ännu.'
