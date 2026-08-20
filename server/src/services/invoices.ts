@@ -245,7 +245,7 @@ export async function listInvoices(
     `SELECT i.id, i.invoice_number, i.external_invoice_number, i.effective_invoice_number,
             i.invoice_date::text, i.due_date::text, i.status,
             i.total_ore, i.voucher_id, i.reverse_charge, i.housework_type, i.housework_reduction_ore,
-            c.name AS customer_name
+            i.customer_id, c.name AS customer_name
      FROM invoices i JOIN customers c ON c.id = i.customer_id
      WHERE i.company_id = $1 AND ($2::text IS NULL OR i.status = $2)
      ORDER BY i.invoice_number DESC`,

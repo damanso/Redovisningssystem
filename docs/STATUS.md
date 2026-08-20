@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 701 tester i 83 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 716 tester i 84 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -128,8 +128,51 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   `su pguser -c '/usr/lib/postgresql/16/bin/pg_ctl -D /home/pguser/pgdata -o "-p 5433 -k /tmp" -l /tmp/pg5433.log start'`.
 - Användaren är helt oteknisk: alla instruktioner till honom ska vara
   steg-för-steg på svenska (kopierbara kommandon, förklara varje begrepp).
+- **Kör ALDRIG `docker compose up -d` i repo-roten.** Den ospårade
+  `docker-compose.vps.yml` startar containern `redovisning-postgres` (port 5434)
+  i SAMMA compose-projekt (`redovisning`) som `docker-compose.yml`. Ett blankt
+  `docker compose up -d` stoppar och ersätter den alltså. Behöver du en
+  testdatabas på 5433: starta en FRISTÅENDE container utanför compose-projektet,
+  `docker run -d --name redovisning-vitest-pg -p 127.0.0.1:5433:5432
+  -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16`.
+- Beroendena kan saknas i en färsk sandbox (`tsc: not found`). Kör `npm install`
+  i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-20 (`design/entiteter-1`: entitetslänkar — namn är vägar, inte
+  strängar):** Davids order var att namn ska leda vidare och att sidor med
+  kopplad information ska sluta vara isolerade händelser. Fyra entitetstyper
+  gjordes helt navigerbara — kund, leverantör, relation, projekt — hellre än
+  alla halvvägs. Endast vylagret + fyra tillagda id-kolumner i befintliga
+  SELECT:ar. Inga nya rutter (60 GET-rutter före och efter), inga migrationer.
+
+  1. **`entityLink()` i `html.ts` är enda sättet att skriva ut ett entitetsnamn.**
+     Sökvägssegmentet bor på ett ställe. Saknas id renderas ren TEXT — en länk
+     som ser klickbar ut och inte är det är värre än ingen länk. Det gör
+     undantagen (person utan organisation, fri motpartstext) explicita i koden.
+  2. **25 ställen bytta.** Bl.a. fakturalistans kundnamn, som gick till
+     FAKTURAN — samma mål som numret och "Öppna"-knappen på samma rad. Tre
+     länkar till samma ställe, och kunden gick inte att nå därifrån.
+  3. **Bakåtreferenser på partsidan** (`partyBackrefs`): fakturor, öppna
+     reskontraposter, åtaganden och (för kund) projekt — placerade FÖRE taggar
+     och kontakter, för den som öppnar ett kundkort frågar "vad har vi gjort och
+     vad är utestående". Tomma sektioner döljs aldrig; de säger sitt skäl.
+     Leverantörens åtagandesektion skriver ut varför den aldrig kan innehålla
+     något (relationer kopplas till kundregistret, inte till leverantörer).
+  4. **Underlag är länkar:** fakturans verifikat-id → `ledger#v-{id}`, och
+     huvudbokens verifikatkort bär ankaret. `:target { scroll-margin-top }` så
+     att fragmentet inte landar under det klistrade sidhuvudet (WCAG 2.4.11) —
+     samma fix som `/opt/arenden` redan gör.
+  5. **Länkrevision i test** (`server/test/entity-links.test.ts`): läser
+     vyrouterns egen stack, renderar 34 sidor, kräver att VARJE
+     `href^="/app/c/"` matchar en registrerad GET-rutt. Verifierad genom att en
+     medvetet trasig länk injicerades och fick testet att falla. Noll trasiga
+     länkar. Det är det enda som håller över tid.
+
+  `npm run build` ren, `npm test` = **716 tester i 84 sviter, alla gröna**.
+  Ett befintligt test uppdaterat (fakturarubrikens kundnamn är nu en länk).
+  Grenen är INTE mergad och INTE pushad. Full rapport: `/tmp/bygg-ent-rapport.md`.
 
 - **2026-08-14 (designjämförelse: "ser det verkligen ut som designen?"):**
   Davids fråga var befogad. Sviten bevisade att koden FUNGERAR — aldrig att den

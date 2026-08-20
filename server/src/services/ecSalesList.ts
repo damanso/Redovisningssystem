@@ -14,6 +14,7 @@ const EU_GOODS_MIN = 3105, EU_GOODS_MAX = 3106;   // försäljning varor till an
 const EU_SERVICES_MIN = 3308, EU_SERVICES_MAX = 3308; // försäljning tjänster till annat EU-land
 
 export interface EcSalesRow {
+  customer_id: string;         // så att köparens namn kan bli en väg till kundsidan
   customer_name: string;
   vat_number: string | null;   // köparens momsregistreringsnummer (landskod + nummer)
   goods_ore: Ore;
@@ -64,8 +65,8 @@ export async function ecSalesList(client: PoolClient, companyId: string, from: s
 
   // Summera per kund: varor (3105–3106) och tjänster (3308) ur fakturarader på
   // fakturor med fakturadatum i perioden, exkl. makulerade.
-  const rows = await client.query<{ customer_name: string; vat_number: string | null; goods: string; services: string }>(
-    `SELECT c.name AS customer_name, c.vat_number,
+  const rows = await client.query<{ customer_id: string; customer_name: string; vat_number: string | null; goods: string; services: string }>(
+    `SELECT c.id AS customer_id, c.name AS customer_name, c.vat_number,
             COALESCE(sum(l.line_net_ore) FILTER (WHERE l.revenue_account BETWEEN $3 AND $4), 0) AS goods,
             COALESCE(sum(l.line_net_ore) FILTER (WHERE l.revenue_account BETWEEN $5 AND $6), 0) AS services
      FROM invoice_lines l
@@ -82,6 +83,7 @@ export async function ecSalesList(client: PoolClient, companyId: string, from: s
   );
 
   const list: EcSalesRow[] = rows.rows.map((r) => ({
+    customer_id: r.customer_id,
     customer_name: r.customer_name,
     vat_number: normalizeVat(r.vat_number), // ogiltigt/blankt momsnummer → null (flaggas)
     goods_ore: Number(r.goods),

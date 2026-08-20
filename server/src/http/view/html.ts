@@ -84,6 +84,47 @@ export function eyebrow(text: string): Raw {
   return raw(`<span class="eyebrow">${esc(text)}</span>`);
 }
 
+/**
+ * De fyra entitetstyper som har en egen sida i vyn. Segmentet är sökvägen
+ * under `/app/c/{companyId}/` — den bor HÄR och ingen annanstans, så att en
+ * omdöpt rutt inte kan lämna kvar trasiga länkar utspridda i routes.ts.
+ */
+export type EntityKind = 'customer' | 'supplier' | 'relation' | 'project';
+const ENTITY_SEGMENT: Record<EntityKind, string> = {
+  customer: 'customers',
+  supplier: 'suppliers',
+  relation: 'relations',
+  project: 'projects',
+};
+
+/**
+ * Ett entitetsnamn som en väg vidare — det ENDA tillåtna sättet att skriva ut
+ * ett kund-, leverantörs-, relations- eller projektnamn i vyn.
+ *
+ * Poängen är inte bekvämlighet utan att döda namn inte ska kunna uppstå igen:
+ * skriver man namnet för hand blir det en sträng, och sidan blir en isolerad
+ * händelse. Går det bara genom den här funktionen är namnet alltid en dörr.
+ *
+ * Saknas id:t finns ingen sida att gå till (fri motpartstext, person utan
+ * organisation) — då renderas ren text. En länk som ser klickbar ut och inte
+ * är det är värre än ingen länk alls.
+ */
+export function entityLink(
+  companyId: string,
+  kind: EntityKind,
+  id: string | null | undefined,
+  name: unknown,
+  opts: { class?: string } = {},
+): Raw {
+  const text = String(name ?? '').trim() || '—';
+  if (!id) return opts.class ? raw(`<span class="${esc(opts.class)}">${esc(text)}</span>`) : raw(esc(text));
+  const cls = opts.class ? `${opts.class} entity` : 'entity';
+  const href = `/app/c/${encodeURIComponent(companyId)}/${ENTITY_SEGMENT[kind]}/${encodeURIComponent(id)}`;
+  // href FÖRE class: sökvägen är det som granskas (av människa och av
+  // länkrevisionen i testet), och då ska den stå först i taggen.
+  return raw(`<a href="${esc(href)}" class="${esc(cls)}">${esc(text)}</a>`);
+}
+
 // Statustexter → pill-typ + svensk etikett + glyf. Håller affärsstatus läsbar
 // för en icke-ekonom.
 const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = {
@@ -282,6 +323,11 @@ const STYLE = `
   --ai-line: oklch(0.86 0.070 78);
   --focus: oklch(0.58 0.13 232);
   --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
+  /* Minsta träffyta för en FRISTÅENDE länkyta (kort, rad). Samma värde som
+     --p-traff i /opt/arenden — vi har två ytor i samma hus och en tumme är
+     lika bred i båda. Inline-länkar i löptext och tabellceller är undantagna
+     (WCAG 2.5.8 undantar länkar i text). */
+  --traff: 2.75rem;
   --shadow-1: 0 1px 2px oklch(0.4 0.03 255 / 0.05), 0 2px 6px oklch(0.4 0.03 255 / 0.05);
   --shadow-2: 0 2px 6px oklch(0.4 0.03 255 / 0.06), 0 12px 28px oklch(0.4 0.03 255 / 0.08);
   --maxw: 1080px;
@@ -351,6 +397,19 @@ body {
 a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 2px; }
 :focus-visible { outline: 2.5px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+/* Entitetsnamn (kund, leverantör, relation, projekt). I en TABELL är namnet
+   det man siktar på — aningen tyngre än celltexten omkring, så att blicken
+   hittar kolumnen utan att raden skriker. Ingen permanent understrykning: när
+   varje namn i en lista är en länk blir strecken brus; understrykningen kommer
+   vid hover som för alla andra länkar i huset. Regeln står medvetet i td och
+   inte på a.entity rakt av — utanför tabellen har namnet redan sin vikt från
+   den komponent det bor i (kortrubrik, sökträff), och den ska inte skrivas
+   över av en generell länkregel. */
+td a.entity { font-weight: 550; }
+/* Ett fragment (#v-…) landar annars UNDER det klistrade sidhuvudet — man
+   hoppar rätt och ser fel rad (WCAG 2.4.11). Sidhuvudet är appbar + navrad,
+   ungefär två träffytor högt. */
+:target { scroll-margin-top: calc(var(--traff) * 2); }
 .num, .amount, .code, td.num, th.num { font-variant-numeric: tabular-nums lining-nums; }
 .code { font-family: var(--mono); font-size: 0.92em; letter-spacing: -0.01em; color: var(--ink-2); }
 .amount { font-variant-numeric: tabular-nums lining-nums; white-space: nowrap; }
@@ -582,6 +641,9 @@ tbody td.code { color: var(--ink-2); }
 
 /* Verifikat / huvudbok */
 .voucher { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-1); margin: 12px 0; overflow: hidden; }
+/* Kom man hit från en fakturas verifikatlänk är frågan "vilken av dem är
+   min?". Kortet svarar utan rörelse — bara accentens ram och husets lyft. */
+.voucher:target { border-color: var(--accent); box-shadow: var(--shadow-2); }
 .voucher__head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 13px 16px; }
 .voucher__id { font-family: var(--mono); font-size: 12.5px; color: var(--accent-ink); font-weight: 600; }
 .voucher__date { color: var(--ink-3); font-size: 12.5px; }
@@ -809,6 +871,14 @@ a.today__who:hover { color: var(--accent-ink); }
 .sok__rad:first-child { border-top: 0; }
 .sok__t { font-size: 14px; font-weight: 600; }
 .sok__u { font-size: 12.5px; color: var(--ink-3); overflow-wrap: anywhere; }
+
+/* FRISTÅENDE länkytor — kortets rubrik i dagsytan, träffraden i sökningen.
+   De är inte inline i en mening utan ensamma mål man siktar på, och då gäller
+   tumregeln (--traff). Bara på grov pekare: en mus behöver inte 44 px, och att
+   ge den det skulle bara blåsa upp korten på skrivbordet. */
+@media (pointer: coarse) {
+  .today__who, .sok__t { display: inline-flex; align-items: center; min-height: var(--traff); }
+}
 
 /* Rättningsformuläret: hopfällt tills man behöver det. details/summary, ingen JS. */
 .rattaform > summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; padding: 2px 0; }

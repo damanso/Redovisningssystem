@@ -41,7 +41,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type Raw } from './html.js';
+import { amount, chip, entityLink, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -736,7 +736,9 @@ viewRouter.get(
           ? html`<div class="empty"><div class="big">Inga verifikat ännu</div>Bokförda fakturor och kvitton dyker upp här.</div>`
           : vouchers.map((v) => {
               const total = v.lines.reduce((s, l) => s + Number(l.debit_ore || 0), 0);
-              return html`<article class="voucher">
+              // Ankaret gör verifikatet adresserbart: en faktura kan peka på
+              // SITT verifikat i stället för att lämna av en i listan.
+              return html`<article class="voucher" id="v-${v.id}">
                 <div class="voucher__head">
                   <span class="voucher__id">${v.series}${v.number}</span>
                   <span class="voucher__date">${v.voucher_date}</span>
@@ -1133,7 +1135,7 @@ function ecSalesBody(companyId: string, d: EcSalesList): Raw {
     ${d.missing_vat.length ? html`<p class="lede" style="margin-top:10px">${chip(`${d.missing_vat.length} kund(er) saknar giltigt momsnummer: ${d.missing_vat.join(', ')}`, 'warn', '!')} <span class="muted">Fyll i momsregistreringsnummer på kunden innan filen genereras.</span></p>` : ''}
     ${!d.reconciles ? html`<p class="lede" style="margin-top:10px">${chip('Stämmer inte mot huvudboken', 'neg', '!')} <span class="muted">Huvudbokens EU-försäljning (ruta 35/39): varor ${money(d.ledger_goods_ore)} kr, tjänster ${money(d.ledger_services_ore)} kr. Differensen beror sannolikt på återförda verifikat som inte kan knytas till en kund — makulera fakturan i stället, annars stämmer inte sammanställningen mot momsdeklarationen.</span></p>` : ''}
     <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Köpare</th><th>Momsnummer</th><th class="num">Varor</th><th class="num">Tjänster</th></tr></thead><tbody>
-      ${d.rows.length === 0 ? html`<tr><td colspan="4" class="muted">Ingen EU-försäljning i perioden.</td></tr>` : d.rows.map((r) => html`<tr><td>${r.customer_name}</td><td class="code">${r.vat_number ?? chip('saknas', 'warn', '!')}</td>
+      ${d.rows.length === 0 ? html`<tr><td colspan="4" class="muted">Ingen EU-försäljning i perioden.</td></tr>` : d.rows.map((r) => html`<tr><td>${entityLink(companyId, 'customer', r.customer_id, r.customer_name)}</td><td class="code">${r.vat_number ?? chip('saknas', 'warn', '!')}</td>
         <td class="num">${amount(r.goods_ore, { unit: false })}</td><td class="num">${amount(r.services_ore, { unit: false })}</td></tr>`)}
     </tbody></table></div>
     <h2 style="margin-top:20px">Generera fil (SKV574008)</h2>
@@ -1321,7 +1323,7 @@ viewRouter.get('/c/:companyId/receivables', pageFor('receivables', 'Kundreskontr
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Kund</th><th class="num">Ej förfallet</th><th class="num">1–30 d</th><th class="num">31–60 d</th><th class="num">61–90 d</th><th class="num">&gt;90 d</th><th class="num">Totalt</th></tr></thead>
             <tbody>
-              ${aging.rows.map((r) => html`<tr><td>${r.customer_name}</td>${bucket(r)}</tr>`)}
+              ${aging.rows.map((r) => html`<tr><td>${entityLink(companyId, 'customer', r.customer_id, r.customer_name)}</td>${bucket(r)}</tr>`)}
               <tr class="subtot"><td>Summa</td>${bucket(t)}</tr>
             </tbody></table></div>
             ${t.d90_plus_ore > 0 ? html`<p class="lede">${chip(`${money(t.d90_plus_ore)} kr är mer än 90 dagar förfallet`, 'neg', '!')}</p>` : ''}`
@@ -1348,7 +1350,7 @@ viewRouter.get('/c/:companyId/payables', pageFor('payables', 'Leverantörsreskon
         ? html`<div class="empty"><div class="big">Inga obetalda leverantörsskulder 🎉</div>Alla bokförda leverantörsfakturor är betalda.</div>`
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Leverantör</th><th class="num">Ej förfallet</th><th class="num">1–30 d</th><th class="num">31–60 d</th><th class="num">61–90 d</th><th class="num">&gt;90 d</th><th class="num">Totalt</th></tr></thead>
-            <tbody>${aging.rows.map((r) => html`<tr><td>${r.supplier_name}</td>${bucket(r)}</tr>`)}
+            <tbody>${aging.rows.map((r) => html`<tr><td>${entityLink(companyId, 'supplier', r.supplier_id, r.supplier_name)}</td>${bucket(r)}</tr>`)}
               <tr class="subtot"><td>Summa</td>${bucket(t)}</tr></tbody></table></div>`
     }
     <h2>Leverantörsfakturor</h2>
@@ -1356,7 +1358,9 @@ viewRouter.get('/c/:companyId/payables', pageFor('payables', 'Leverantörsreskon
       invoices.length === 0
         ? html`<p class="muted">Inga leverantörsfakturor ännu.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Leverantör</th><th>Datum</th><th>Förfaller</th><th class="num">Totalt</th><th class="num">Betalt</th><th>Status</th></tr></thead><tbody>
-            ${invoices.map((r) => html`<tr><td class="code">${r.number as number}</td><td>${r.supplier_name as string}</td><td>${r.invoice_date as string}</td><td>${r.due_date as string}</td>
+            ${invoices.map((r) => html`<tr><td class="code">${
+              r.voucher_id ? html`<a href="/app/c/${companyId}/ledger#v-${r.voucher_id as string}">${r.number as number}</a>` : html`${r.number as number}`
+            }</td><td>${entityLink(companyId, 'supplier', r.supplier_id as string, r.supplier_name)}</td><td>${r.invoice_date as string}</td><td>${r.due_date as string}</td>
               <td class="num">${amount(r.total_ore as number)}</td><td class="num">${amount(r.paid_amount_ore as number)}</td><td>${statusChip(String(r.status))}</td></tr>`)}
             </tbody></table></div>`
     }`;
@@ -1374,7 +1378,7 @@ viewRouter.get('/c/:companyId/recurring', pageFor('recurring', 'Abonnemang', asy
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Mall</th><th>Kund</th><th>Intervall</th><th>Nästa faktura</th><th>Slutar</th><th class="num">Skapade</th><th>Status</th></tr></thead>
             <tbody>${rows.map((r) => html`<tr>
-              <td>${r.title as string}</td><td>${r.customer_name as string}</td>
+              <td>${r.title as string}</td><td>${entityLink(companyId, 'customer', r.customer_id as string, r.customer_name)}</td>
               <td>${INTERVAL_SV[String(r.interval)] ?? String(r.interval)}</td>
               <td class="code">${(r.next_run_date as string) ?? ''}</td>
               <td class="code">${(r.end_date as string) ?? '—'}</td>
@@ -1399,8 +1403,8 @@ viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (c
             <thead><tr><th>Nr</th><th>Projekt</th><th>Kund</th><th class="num">Total tid</th><th class="num">Fakturerbar</th><th>Status</th></tr></thead>
             <tbody>${rows.map((r) => html`<tr>
               <td class="code">${r.number as number}</td>
-              <td><a href="/app/c/${companyId}/projects/${r.id as string}">${r.name as string}</a></td>
-              <td>${(r.customer_name as string) ?? '—'}</td>
+              <td>${entityLink(companyId, 'project', r.id as string, r.name)}</td>
+              <td>${entityLink(companyId, 'customer', r.customer_id as string | null, r.customer_name)}</td>
               <td class="num">${hhmm(r.total_minutes as number)}</td>
               <td class="num">${hhmm(r.billable_minutes as number)}</td>
               <td>${r.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</td></tr>`)}
@@ -1415,7 +1419,8 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const p = await getProject(client, companyId, projectId) as {
-      id: string; number: number; name: string; status: string; customer_name: string | null;
+      id: string; number: number; name: string; status: string;
+      customer_id: string | null; customer_name: string | null;
       hourly_rate_ore: number | null; budget_ore: number | null; notes: string | null;
       entries: Array<{
         work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean;
@@ -1428,7 +1433,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
-        <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${p.customer_name} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
+        <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</div></div>
       <div class="kpi-grid">
         ${kpiCell('Total tid', html`${hhmm(p.summary.total_minutes)}`)}
@@ -1626,7 +1631,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
         ? html`<h2 style="margin-top:6px">Att höra av sig till</h2>
             <div class="today">${t.relations.map((s) => html`<article class="today__card">
               <div class="today__head">
-                <a class="today__who" href="/app/c/${companyId}/relations/${s.organization_id}">${s.organization}</a>
+                ${entityLink(companyId, 'relation', s.organization_id, s.organization, { class: 'today__who' })}
                 ${s.overdue_commitments > 0 ? chip(`${s.overdue_commitments} förfallet löfte`, 'neg', '!') : ''}
                 ${s.status === 'prospect' ? chip('Prospekt', 'info') : ''}
                 ${(s.revenue_share_permille ?? 0) >= 200 ? chip(`${pct(s.revenue_share_permille)} av omsättningen`, 'muted') : ''}
@@ -1655,9 +1660,13 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
               <div class="today__head">
                 ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
                 ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
+                ${/* Har löftet en organisation går namnet dit. Saknas den finns
+                      ingen sida att gå till — personer nås via sin relation, och
+                      den här personen har ingen. Då står namnet som text hellre
+                      än som en länk till ingenstans. */ ''}
                 ${c.organization_id
-                  ? html`<a class="today__who" href="/app/c/${companyId}/relations/${c.organization_id as string}">${(c.organization_name as string) ?? ''}</a>`
-                  : html`<span class="today__who">${(c.person_name as string) ?? '—'}</span>`}
+                  ? entityLink(companyId, 'relation', c.organization_id as string, c.organization_name, { class: 'today__who' })
+                  : entityLink(companyId, 'relation', null, (c.person_name as string) ?? '—', { class: 'today__who' })}
               </div>
               <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${c.source_system as string}</span></p>
               <div class="quick">
@@ -1691,12 +1700,14 @@ viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, compan
   // En person öppnas i sin RELATION — det är där hennes historik finns. Saknar
   // hon organisation går länken till listan; ett sökresultat som inte går att
   // öppna är en återvändsgränd.
-  const href = (h: { kind: string; href_id: string; organization_id: string | null }): string =>
-    h.kind === 'organization' ? `/app/c/${companyId}/relations/${h.href_id}`
-      : h.kind === 'person'
-        ? (h.organization_id ? `/app/c/${companyId}/relations/${h.organization_id}` : `/app/c/${companyId}/relations`)
-      : h.kind === 'customer' ? `/app/c/${companyId}/customers/${h.href_id}`
-      : `/app/c/${companyId}/suppliers/${h.href_id}`;
+  const traff = (h: { kind: string; href_id: string; organization_id: string | null; title: string }): Raw =>
+    h.kind === 'organization' ? entityLink(companyId, 'relation', h.href_id, h.title, { class: 'sok__t' })
+      : h.kind === 'customer' ? entityLink(companyId, 'customer', h.href_id, h.title, { class: 'sok__t' })
+      : h.kind === 'supplier' ? entityLink(companyId, 'supplier', h.href_id, h.title, { class: 'sok__t' })
+      : h.organization_id ? entityLink(companyId, 'relation', h.organization_id, h.title, { class: 'sok__t' })
+      // Person utan organisation: ingen egen sida finns, men en träff som inte
+      // går att öppna är en återvändsgränd — registret är bättre än ingenting.
+      : html`<a class="sok__t" href="/app/c/${companyId}/relations">${h.title}</a>`;
   const märke = (kind: string): Raw =>
     kind === 'organization' ? chip('Relation', 'info') : kind === 'person' ? chip('Person', 'muted')
       : kind === 'customer' ? chip('Kund', 'ok') : chip('Leverantör', 'muted');
@@ -1716,7 +1727,7 @@ viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, compan
               Prova en del av namnet. En relation som aldrig fått en kontaktpunkt syns fortfarande under <a href="/app/c/${companyId}/relations">Relationer</a>.</div>`
           : html`<ol class="sok">${hits.map((h) => html`<li class="sok__rad">
               ${märke(h.kind)}
-              <a class="sok__t" href="${href(h)}">${h.title}</a>
+              ${traff(h)}
               ${h.subtitle ? html`<span class="sok__u">${h.subtitle}</span>` : ''}
             </li>`)}</ol>`
     }`;
@@ -1739,7 +1750,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
             <div class="panel__body">
               <div class="table-wrap"><table><thead><tr><th>Vem</th><th>Kontaktperson</th><th>Varför</th></tr></thead><tbody>
                 ${suggestions.suggestions.slice(0, 8).map((s) => html`<tr>
-                  <td><a href="/app/c/${companyId}/relations/${s.organization_id}">${s.organization}</a></td>
+                  <td>${entityLink(companyId, 'relation', s.organization_id, s.organization)}</td>
                   <td>${s.person ? html`${s.person.name}${s.person.email ? html` <span class="muted">${s.person.email}</span>` : ''}` : '—'}</td>
                   <td>${s.reasons.map((r, i) => html`${i > 0 ? ' · ' : ''}${r}`)}</td></tr>`)}
                 </tbody></table></div>
@@ -1756,7 +1767,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th><th></th></tr></thead>
             <tbody>${state.map((r) => html`<tr>
-              <td><a href="/app/c/${companyId}/relations/${r.organization_id}">${r.name}</a></td>
+              <td>${entityLink(companyId, 'relation', r.organization_id, r.name)}</td>
               <td>${orgStatusChip(r.status)}${
                 /* Utan koppling till kundregistret hämtas ingen omsättning, och
                    raden skulle visa 0 kr utan att säga varför. Gör det synligt. */
@@ -1917,9 +1928,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       {
         field: 'customer_id',
         label: 'Kund i registret',
-        value: o.customer_id
-          ? html`<a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a>`
-          : html`—`,
+        value: entityLink(companyId, 'customer', o.customer_id, o.customer_name ?? (o.customer_id ? 'Kundkortet' : '—')),
       },
     ];
 
@@ -1927,7 +1936,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     // skäl: en ruta till kostar ingenting att lägga till och allt att läsa.
     // Alla sex är HÄRLEDDA ur bokföringen — ingen skriver in dem.
     const b = html`<div class="page-head"><div>${eyebrow('Relation')}<h1>${o.name}</h1>
-        <p class="lede">${o.customer_id ? html`Kund i registret · <a href="/app/c/${companyId}/customers/${o.customer_id}">${o.customer_name ?? 'Kundkortet'}</a> · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
+        <p class="lede">${o.customer_id ? html`Kund i registret · ${entityLink(companyId, 'customer', o.customer_id, o.customer_name ?? 'Kundkortet')} · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
         <div class="actions">${orgStatusChip(o.status)}${
           o.customer_id ? '' : html` ${chip('Ej i kundregistret', 'warn', '!')}`
         }</div></div>
@@ -2183,7 +2192,16 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
               return html`<tr>
               <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
               <td>${c.body as string}</td>
-              <td>${(c.person_name as string) ?? (c.organization_name as string) ?? '—'}</td>
+              ${/* "Vem" var tidigare en död sträng — personens namn om det fanns,
+                    annars bolagets. Personen har ingen egen sida (hon nås via
+                    sin relation), så namnet står kvar som text, men BOLAGET blir
+                    en väg vidare i stället för att raden slutar här. */ ''}
+              <td>${c.person_name ? html`${c.person_name as string}` : ''}${
+                c.organization_id
+                  ? html`${c.person_name ? html` <span class="muted">·</span> ` : ''}${
+                      entityLink(companyId, 'relation', c.organization_id as string, c.organization_name)}`
+                  : c.person_name ? '' : '—'
+              }</td>
               <td class="code">${(c.due_date as string) ?? '—'}${
                 c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
               }${
@@ -2403,7 +2421,7 @@ viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (
     ${
       risk && top
         ? html`<div class="empty" style="text-align:left;padding:12px 14px;margin-top:14px">${chip('Koncentrationsrisk', 'neg', '!')}
-            <span class="muted"><strong>${top.name}</strong> står för ${pct(top.share_permille)} av omsättningen senaste 12 månaderna.
+            <span class="muted"><strong>${entityLink(companyId, 'customer', top.customer_id, top.name)}</strong> står för ${pct(top.share_permille)} av omsättningen senaste 12 månaderna.
             Tappas den kunden faller intäkten med lika mycket — det är den enskilt största risken i bolaget, och den ska synas här, inte i en bilaga.</span></div>`
         : ''
     }
@@ -2413,7 +2431,7 @@ viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (
         ? html`<p class="muted">Inga bokförda kundfakturor de senaste 12 månaderna.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Kund</th><th class="num">Omsättning</th><th class="num">Andel</th></tr></thead><tbody>
             ${s.concentration.customers.map((c) => html`<tr>
-              <td>${c.name}</td>
+              <td>${entityLink(companyId, 'customer', c.customer_id, c.name)}</td>
               <td class="num">${amount(c.net_ore, { unit: false })}</td>
               <td class="num">${pct(c.share_permille)}${c.share_permille >= 500 ? html` ${chip('Stor andel', 'neg', '!')}` : ''}</td></tr>`)}
             </tbody></table></div>`
@@ -2457,7 +2475,7 @@ viewRouter.get('/c/:companyId/analytics', pageFor('analytics', 'Analys', async (
       top.length === 0
         ? html`<p class="muted">Inga bokförda fakturor i perioden.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Kund</th><th class="num">Antal fakturor</th><th class="num">Nettoomsättning</th></tr></thead><tbody>
-            ${top.map((c) => html`<tr><td><a href="/app/c/${companyId}/customers/${c.customer_id}">${c.customer_name}</a></td>
+            ${top.map((c) => html`<tr><td>${entityLink(companyId, 'customer', c.customer_id, c.customer_name)}</td>
               <td class="num">${String(c.invoice_count)}</td><td class="num">${amount(c.net_ore, { unit: false })}</td></tr>`)}
           </tbody></table></div>`
     }
@@ -2962,12 +2980,14 @@ function registerCell(key: string, value: unknown): Raw {
   }
   return html`${(value as string) ?? ''}`;
 }
-function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][], detailPrefix?: string, createForm?: (companyId: string) => Raw) {
+function registerPage(active: string, title: string, lede: string, load: (c: PoolClient, id: string) => Promise<Record<string, unknown>[]>, cols: [string, string][], detailKind?: EntityKind, createForm?: (companyId: string) => Raw) {
   return pageFor(active, title, async (client, companyId, req) => {
     const rows = await load(client, companyId);
     const cell = (key: string, r: Record<string, unknown>): Raw =>
-      key === 'name' && detailPrefix && r.id
-        ? html`<a href="/app/c/${companyId}/${detailPrefix}/${r.id as string}">${registerCell(key, r[key])}</a>`
+      // Artikelregistret har ingen egen sida (detailKind saknas) — då är namnet
+      // text. Kund och leverantör har det, och går alltid genom entityLink.
+      key === 'name' && detailKind
+        ? entityLink(companyId, detailKind, r.id as string | null, r[key])
         : registerCell(key, r[key]);
     return html`<div class="page-head"><div>${eyebrow('Register')}<h1>${title}</h1>
         <p class="lede">${lede}</p></div></div>
@@ -2983,6 +3003,164 @@ function registerPage(active: string, title: string, lede: string, load: (c: Poo
   });
 }
 
+/**
+ * Bakåtreferenserna på en partsida (KRAV-3).
+ *
+ * Kundkortet visste tidigare vem kunden VAR men ingenting om vad vi gjort med
+ * henne: fakturorna låg i fakturalistan, det obetalda i reskontran, tiden i
+ * projekten och löftena i åtagandena — fyra sidor man måste veta om och söka
+ * sig till. Sidan var en isolerad händelse. Här hämtas de tillbaka dit frågan
+ * ställs, och varje rad är en väg vidare i stället för en uppgift att läsa.
+ *
+ * Alla frågor är parametriserade och filtrerar på company_id inom den öppna
+ * tenant-transaktionen (RLS) — en bakåtreferens kan aldrig visa en post ur ett
+ * annat bolag.
+ */
+interface PartyInvoiceRow {
+  id: string; label: string; invoice_date: string; due_date: string | null;
+  status: string; total_ore: number; outstanding_ore: number; voucher_id: string | null;
+}
+
+async function partyBackrefs(
+  client: PoolClient, companyId: string, partyType: PartyType, partyId: string,
+): Promise<Raw> {
+  const isCustomer = partyType === 'customer';
+
+  // Fakturorna hämtas EN gång; öppna poster är en delmängd av dem. Samma regel
+  // som åldersanalysen använder (bokförd, ej annullerad, kvar att betala) — vid
+  // ROT/RUT är kundens skuld total − skattereduktion, resten är fordran på
+  // Skatteverket.
+  const inv = isCustomer
+    ? await client.query<PartyInvoiceRow>(
+        `SELECT i.id,
+                COALESCE(i.effective_invoice_number, i.invoice_number)::text AS label,
+                i.invoice_date::text, i.due_date::text, i.status, i.total_ore,
+                (i.total_ore - i.housework_reduction_ore - i.paid_amount_ore) AS outstanding_ore,
+                i.voucher_id
+         FROM invoices i
+         WHERE i.company_id = $1 AND i.customer_id = $2
+         ORDER BY i.invoice_date DESC, i.invoice_number DESC
+         LIMIT 100`,
+        [companyId, partyId],
+      )
+    : await client.query<PartyInvoiceRow>(
+        `SELECT si.id, si.number::text AS label,
+                si.invoice_date::text, si.due_date::text, si.status, si.total_ore,
+                (si.total_ore - si.paid_amount_ore) AS outstanding_ore,
+                si.voucher_id
+         FROM supplier_invoices si
+         WHERE si.company_id = $1 AND si.supplier_id = $2
+         ORDER BY si.invoice_date DESC, si.number DESC
+         LIMIT 100`,
+        [companyId, partyId],
+      );
+  const invoices = inv.rows.map((r) => ({ ...r, total_ore: Number(r.total_ore), outstanding_ore: Number(r.outstanding_ore) }));
+  const open = invoices.filter((r) => r.voucher_id && r.status !== 'cancelled' && r.outstanding_ore > 0);
+
+  // Åtaganden bor i relationen, och relationen kopplas till KUNDREGISTRET
+  // (crm.organizations.customer_id). En leverantör har ingen sådan koppling —
+  // sektionen står kvar och säger det, i stället för att tyst utebli.
+  const comm = isCustomer
+    ? (await client.query<{ id: string; direction: string; body: string; due_date: string | null; organization_id: string; organization_name: string }>(
+        `SELECT c.id, c.direction, c.body, c.due_date::text, o.id AS organization_id, o.name AS organization_name
+         FROM crm.commitments c
+         JOIN crm.organizations o ON o.id = c.organization_id AND o.company_id = c.company_id
+         WHERE c.company_id = $1 AND o.customer_id = $2 AND c.status = 'open'
+         ORDER BY c.due_date NULLS LAST, c.occurred_at DESC`,
+        [companyId, partyId],
+      )).rows
+    : [];
+
+  const projects = isCustomer
+    ? (await client.query<{ id: string; number: number; name: string; status: string }>(
+        `SELECT id, number, name, status FROM projects
+         WHERE company_id = $1 AND customer_id = $2
+         ORDER BY status ASC, number DESC`,
+        [companyId, partyId],
+      )).rows
+    : [];
+
+  // Tomt är ett svar, inte ett fel: den kompakta .empty-rutan (samma som
+  // EU-momsen och ROT/RUT-noten använder) säger VARFÖR listan är tom.
+  const tomt = (text: string): Raw =>
+    html`<div class="empty" style="text-align:left;padding:12px 14px;margin:6px 8px">${text}</div>`;
+  const panel = (title: string, meta: Raw | string, body: Raw): Raw =>
+    html`<div class="panel" style="margin-top:14px">
+      <div class="panel__head"><h2>${title}</h2>${meta}</div>
+      <div class="panel__body">${body}</div></div>`;
+  const antal = (n: number): Raw => html`<span class="muted" style="font-size:12.5px">${String(n)} st</span>`;
+  // Kundfakturan har en egen sida; leverantörsfakturan har det inte — då går
+  // numret till verifikatet i huvudboken när den är bokförd.
+  const invRef = (r: PartyInvoiceRow): Raw =>
+    isCustomer
+      ? html`<a href="/app/c/${companyId}/invoices/${r.id}">${r.label}</a>`
+      : r.voucher_id
+        ? html`<a href="/app/c/${companyId}/ledger#v-${r.voucher_id}">${r.label}</a>`
+        : html`${r.label}`;
+
+  return html`
+    ${panel(
+      isCustomer ? 'Fakturor' : 'Leverantörsfakturor',
+      antal(invoices.length),
+      invoices.length === 0
+        ? tomt(isCustomer
+            ? 'Inga fakturor till den här kunden ännu.'
+            : 'Inga leverantörsfakturor från den här leverantören ännu.')
+        : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+            <thead><tr><th>Nr</th><th>Datum</th><th class="num">Totalt</th><th>Status</th></tr></thead><tbody>
+            ${invoices.map((r) => html`<tr>
+              <td class="code">${invRef(r)}</td>
+              <td class="code">${r.invoice_date}</td>
+              <td class="num">${amount(r.total_ore)}</td>
+              <td>${statusChip(r.status)}</td></tr>`)}
+            </tbody></table></div>`,
+    )}
+    ${panel(
+      isCustomer ? 'Öppna poster (kundreskontra)' : 'Öppna poster (leverantörsreskontra)',
+      html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/${isCustomer ? 'receivables' : 'payables'}">Hela reskontran →</a>`,
+      open.length === 0
+        ? tomt('Inget utestående — alla bokförda fakturor är betalda.')
+        : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+            <thead><tr><th>Nr</th><th>Förfaller</th><th class="num">Kvar att betala</th></tr></thead><tbody>
+            ${open.map((r) => html`<tr>
+              <td class="code">${invRef(r)}</td>
+              <td class="code">${r.due_date ?? '—'}</td>
+              <td class="num">${amount(r.outstanding_ore)}</td></tr>`)}
+            </tbody></table></div>`,
+    )}
+    ${panel(
+      'Åtaganden',
+      antal(comm.length),
+      comm.length === 0
+        ? tomt(isCustomer
+            ? 'Inga öppna löften. Löften fångas ur mail, möten och ärenden via relationen.'
+            : 'Löften hör till relationsregistret, och en relation kopplas till kundregistret — inte till leverantörsregistret. Därför kan det aldrig stå något här.')
+        : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+            <thead><tr><th>Riktning</th><th>Vad</th><th>Senast</th><th>Relation</th></tr></thead><tbody>
+            ${comm.map((c) => html`<tr>
+              <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
+              <td>${c.body}</td>
+              <td class="code">${c.due_date ?? '—'}</td>
+              <td>${entityLink(companyId, 'relation', c.organization_id, c.organization_name)}</td></tr>`)}
+            </tbody></table></div>`,
+    )}
+    ${isCustomer
+      ? panel(
+          'Projekt',
+          antal(projects.length),
+          projects.length === 0
+            ? tomt('Inga projekt för den här kunden ännu.')
+            : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+                <thead><tr><th>Nr</th><th>Projekt</th><th>Status</th></tr></thead><tbody>
+                ${projects.map((p) => html`<tr>
+                  <td class="code">${String(p.number)}</td>
+                  <td>${entityLink(companyId, 'project', p.id, p.name)}</td>
+                  <td>${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</td></tr>`)}
+                </tbody></table></div>`,
+        )
+      : ''}`;
+}
+
 // Detaljvy för en part (kund/leverantör) med taggar, kontaktpersoner och anteckningar.
 function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolClient, id: string, partyId: string) => Promise<Record<string, unknown>>) {
   return page(async (req, res) => {
@@ -2996,10 +3174,15 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
       // Personerna som kommit in via API-kontraktet bor i relationen, inte i
       // kundregistret. De ska synas HÄR, där man naturligt letar efter dem.
       const rel = partyType === 'customer' ? await customerRelationSummary(client, companyId, partyId) : null;
+      const backrefs = await partyBackrefs(client, companyId, partyType, partyId);
       const backLabel = partyType === 'customer' ? 'Kunder' : 'Leverantörer';
+      // Affären först, kartoteket sedan. Den som öppnar ett kundkort frågar i
+      // regel "vad har vi gjort, och vad är utestående" — taggar och
+      // kontaktuppgifter är svaret på en annan, ovanligare fråga.
       const b = html`<div class="page-head"><div>${eyebrow(backLabel)}<h1>${party.name as string}</h1>
           <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div></div>
-        <div class="panel"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
+        ${backrefs}
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
           ${crm.tags.length ? crm.tags.map((t) => html`${chip(t, 'info')} `) : html`<span class="muted">Inga taggar.</span>`}</div></div>
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Kontaktpersoner</h2><span class="muted" style="font-size:12.5px">${String(crm.contacts.length + (rel?.people.length ?? 0))} st</span></div>
           <div class="panel__body" style="padding:6px 4px">${
@@ -3083,7 +3266,7 @@ function createPartyForm(kind: 'customers' | 'suppliers'): (companyId: string) =
 
 viewRouter.get('/c/:companyId/customers', registerPage('customers', 'Kunder', 'Personer och företag du fakturerar. Klicka på namnet för kontakter, anteckningar och taggar.',
   (c, id) => listCustomers(c, id, { includeInactive: true }),
-  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customers', createPartyForm('customers')));
+  [['customer_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['email', 'E-post'], ['is_active', 'Status']], 'customer', createPartyForm('customers')));
 
 // En POST-handler för båda parttyperna — enda skillnaden är actionnamn + det
 // valfria extrafältet (kund: email, leverantör: bankgiro).
@@ -3105,7 +3288,7 @@ viewRouter.post('/c/:companyId/customers/create', createPartyRoute('customers'))
 
 viewRouter.get('/c/:companyId/suppliers', registerPage('suppliers', 'Leverantörer', 'Företag du köper av och betalar.',
   (c, id) => listSuppliers(c, id, { includeInactive: true }),
-  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'suppliers', createPartyForm('suppliers')));
+  [['supplier_number', 'Nr'], ['name', 'Namn'], ['org_number', 'Org.nr'], ['bankgiro', 'Bankgiro'], ['is_active', 'Status']], 'supplier', createPartyForm('suppliers')));
 
 viewRouter.post('/c/:companyId/suppliers/create', createPartyRoute('suppliers'));
 
@@ -3146,7 +3329,11 @@ viewRouter.get('/c/:companyId/invoices', pageFor('invoices', 'Fakturor', async (
         ? html`<div class="empty"><div class="big">Inga fakturor ännu</div>Skapa din första faktura nedan.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Kund</th><th>Status</th><th class="num">Totalt</th><th></th></tr></thead><tbody>
             ${rows.map((r) => html`<tr><td class="code"><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.effective_invoice_number ?? r.invoice_number}</a></td><td>${r.invoice_date}</td>
-              <td><a href="/app/c/${companyId}/invoices/${r.id as string}">${r.customer_name}</a>${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
+              ${/* Kundnamnet gick tidigare till FAKTURAN — samma mål som numret
+                    bredvid och knappen till höger. Tre länkar till ett och samma
+                    ställe, och kunden gick inte att nå. Namnet går dit namnet
+                    hör hemma; fakturan nås via numret och "Öppna". */ ''}
+              <td>${entityLink(companyId, 'customer', r.customer_id as string, r.customer_name)}${r.reverse_charge ? html` ${chip('Omvänd moms', 'info')}` : ''}${r.housework_type ? html` ${chip(String(r.housework_type).toUpperCase(), 'ok')}` : ''}</td>
               <td>${statusChip(String(r.status))}</td><td class="num">${amount(r.total_ore as number)}</td>
               <td><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/invoices/${r.id as string}">Öppna</a> ${rowActions(r as Record<string, unknown>)}</td></tr>`)}
             </tbody></table></div>`
@@ -3256,7 +3443,7 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
   const today = new Date().toISOString().slice(0, 10);
   const isDraft = !inv.voucher_id && inv.status === 'draft';
   const lines = inv.lines as { line_no: number; description: string | null; quantity: string; unit: string | null; unit_price_ore: number; vat_rate: number; line_net_ore: number }[];
-  return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.effective_invoice_number ?? inv.invoice_number)} — ${inv.customer_name as string}</h1>
+  return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.effective_invoice_number ?? inv.invoice_number)} — ${entityLink(companyId, 'customer', inv.customer_id as string, inv.customer_name)}</h1>
       <p class="lede"><a href="/app/c/${companyId}/invoices">← Alla fakturor</a></p></div></div>
     ${felNotis(req)}
     ${req.query.pdfny === '1' ? html`<p class="lede" style="margin-top:10px">${chip('PDF:en är omgenererad med senaste mallen — ladda ner den på nytt nedan', 'ok', '✓')}</p>` : ''}
@@ -3274,7 +3461,9 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
       ${inv.delivery_period ? html`<tr><td>Leveranstidpunkt</td><td>${inv.delivery_period as string}</td></tr>` : ''}
       ${inv.reverse_charge ? html`<tr><td>Moms</td><td>${chip('Omvänd skattskyldighet', 'info')}</td></tr>` : ''}
       ${inv.housework_type ? html`<tr><td>Husavdrag</td><td>${chip(String(inv.housework_type).toUpperCase(), 'ok')} ${amount(inv.housework_reduction_ore as number)}</td></tr>` : ''}
-      ${inv.voucher_id ? html`<tr><td>Verifikat</td><td class="code">${inv.voucher_id as string}</td></tr>` : ''}
+      ${/* Verifikatets id var ren text: bokföringen fanns, men vägen dit gick
+            genom huvudboken och ögat. Fragmentet tar en till RÄTT verifikat. */ ''}
+      ${inv.voucher_id ? html`<tr><td>Verifikat</td><td class="code"><a href="/app/c/${companyId}/ledger#v-${inv.voucher_id as string}">${inv.voucher_id as string}</a></td></tr>` : ''}
     </tbody></table></div>
     <h2 style="margin-top:18px">Rader</h2>
     <div class="table-wrap"><table><thead><tr><th>Beskrivning</th><th class="num">Antal</th><th class="num">À-pris</th><th class="num">Moms</th><th class="num">Netto</th></tr></thead><tbody>
