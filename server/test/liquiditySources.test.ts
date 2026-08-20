@@ -31,6 +31,10 @@ let reskontraCo: string;
 let bokforingCo: string;
 /** C: samma skuld som B, men helårsmoms — förfallodagen ligger utanför horisonten. */
 let arsmomsCo: string;
+/** D: bolag med bokförda lönebesked vars AGI-perioder delvis är FÖRFALLNA. */
+let forfallenAgiCo: string;
+/** AGI per löneperiod i D (skatt + arbetsgivaravgift), ur lönebeskeden själva. */
+const agiPerPeriod: Record<string, number> = {};
 
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = (id: string) => `/api/companies/${id}`;
@@ -117,6 +121,26 @@ beforeAll(async () => {
       { account_number: 1510, credit_ore: 141600 },
     ],
   });
+
+  // --- D: bolaget med förfallna AGI-perioder --------------------------------
+  // Tre bokförda lönebesked utan skattekontobetalning. Per as_of 2026-09-01 har
+  // två av periodernas förfallodagar PASSERAT (2026-03 → 2026-04-12 och 2026-07
+  // → 2026-08-17), medan 2026-08 → 2026-09-12 är kommande. Det är samma form som
+  // produktionen: fyra obetalda perioder, allt redan förfallet.
+  forfallenAgiCo = await createCompany(user.token, 'Förfallen AGI AB');
+  const fyD = await createFiscalYear(forfallenAgiCo, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+  expect(fyD.id).toBeTruthy();
+  const emp = await api.post(`${co(forfallenAgiCo)}/actions/create_employee`).set(auth()).send({
+    name: 'Lönetagare', monthly_salary_ore: 5_650_000, tax_rate: 23,
+  });
+  expect(emp.status, JSON.stringify(emp.body)).toBe(200);
+  for (const period of ['2026-03', '2026-07', '2026-08']) {
+    const ps = await api.post(`${co(forfallenAgiCo)}/actions/create_payslip`).set(auth())
+      .send({ employee_id: emp.body.result.id, period });
+    expect(ps.status, JSON.stringify(ps.body)).toBe(200);
+    await approveAction(forfallenAgiCo, 'book_payslip', { payslip_id: ps.body.result.id });
+    agiPerPeriod[period] = ps.body.result.tax_ore + ps.body.result.employer_contribution_ore;
+  }
 });
 
 describe('likviditetsprognosens källredovisning', () => {
@@ -219,6 +243,63 @@ describe('likviditetsprognosens källredovisning', () => {
     expect(tax.body.result.liability.total_ore).toBe(2600700);
     expect(avvikelse.note).toContain('2600700 öre');   // taxLiability.total_ore
     expect(avvikelse.note).toContain('= 0 öre');       // komponentsumman
+  });
+
+  // FYND 1 (granskningen 2026-08-20): en statutär period vars förfallodag har
+  // PASSERAT ska ligga i "Förfallet / nu" — inte mot nästa gemensamma förfallodag.
+  // Före rättelsen lades hela AGI:n mot nästa AGI-datum, vilket i produktionen
+  // visade 0 kr förfallet när 124 032,20 kr var försenat. En hink som heter
+  // "Förfallet / nu" och står på noll är ett besked, och det beskedet var falskt.
+  it('en förfallen AGI-period hamnar i "Förfallet / nu", inte i "Inom 30 dagar"', async () => {
+    const f = await forecast(forfallenAgiCo, '2026-09-01');
+    const forfallet = f.buckets.find((b) => b.label === 'Förfallet / nu')!;
+    const inom30 = f.buckets.find((b) => b.label === 'Inom 30 dagar')!;
+
+    // 2026-03 (förfallodag 2026-04-12) och 2026-07 (2026-08-17) är passerade.
+    const overdue = agiPerPeriod['2026-03']! + agiPerPeriod['2026-07']!;
+    expect(overdue).toBeGreaterThan(0);
+    expect(forfallet.outflow_ore).toBe(overdue);
+    // 2026-08 förfaller 2026-09-12 — kommande, alltså 11 dagar bort.
+    expect(inom30.outflow_ore).toBe(agiPerPeriod['2026-08']);
+    // Ingen annan hink får något av AGI:n.
+    expect(f.buckets.filter((b) => b.outflow_ore !== 0).map((b) => b.label))
+      .toEqual(['Förfallet / nu', 'Inom 30 dagar']);
+
+    const agi = source(f, 'agi');
+    expect(agi.status).toBe('MODELLERAD');
+    // Källan är EN post vars belopp är hela AGI:n — summan går att härleda ur noten.
+    expect(agi.amount_ore).toBe(overdue + agiPerPeriod['2026-08']!);
+    expect(agi.amount_ore).toBe(f.buckets.reduce((s, b) => s + b.outflow_ore, 0));
+    // due_date är den TIDIGASTE av periodernas förfallodagar, inte den kommande.
+    expect(agi.due_date).toBe('2026-04-12');
+    // Noten redovisar uppdelningen per period med belopp och förfallodag, och
+    // anger de perioder beloppet faktiskt avser — inte den kommande perioden.
+    expect(agi.note).toContain('period 2026-03');
+    expect(agi.note).toContain('2026-04-12');
+    expect(agi.note).toContain('period 2026-07');
+    expect(agi.note).toContain('2026-08-17');
+    expect(agi.note).toContain('period 2026-08');
+    expect(agi.note).toContain('2026-09-12');
+    expect(agi.note).toContain('FÖRFALLET');
+
+    // Samma tal som skatteöversikten: uppdelningen får inte ändra summan.
+    const tax = await api.post(`${co(forfallenAgiCo)}/actions/tax_overview`).set(auth()).send({ as_of: '2026-09-01' });
+    expect(tax.status, JSON.stringify(tax.body)).toBe(200);
+    expect(agi.amount_ore).toBe(tax.body.result.liability.agi_total_ore);
+  });
+
+  // Motprovet: en period vars skattekontobetalning ÄR bokförd försvinner ur
+  // skulden — statusen kommer ur frågeresultatet, inte ur en modell (KRAV-3).
+  it('AGI-perioden som fått sin skattekontobetalning bokförd räknas inte längre som förfallen', async () => {
+    const before = await forecast(forfallenAgiCo, '2026-09-01');
+    await approveAction(forfallenAgiCo, 'book_payroll_tax', { period: '2026-03' });
+    const after = await forecast(forfallenAgiCo, '2026-09-01');
+
+    const forfallet = (f: Forecast) => f.buckets.find((b) => b.label === 'Förfallet / nu')!.outflow_ore;
+    expect(forfallet(before) - forfallet(after)).toBe(agiPerPeriod['2026-03']);
+    expect(source(after, 'agi').note).not.toContain('period 2026-03');
+    // 2026-07 är fortfarande förfallen.
+    expect(forfallet(after)).toBe(agiPerPeriod['2026-07']);
   });
 
   // KRAV-11

@@ -5,7 +5,9 @@ import { formatOre } from '../domain/money.js';
 // modulerna använder varandra först vid ANROP (hoistade funktionsdeklarationer),
 // aldrig under modulutvärderingen. Likviditetens statutära källor är samma tal
 // som skatteöversikten visar — de får inte räknas fram en andra gång här.
-import { CORPORATE_TAX_PERMILLE, taxOverview, type TaxDeadline } from './taxes.js';
+import {
+  CORPORATE_TAX_PERMILLE, agiDueDateForPeriod, taxOverview, unpaidPayrollPeriods, type TaxDeadline,
+} from './taxes.js';
 
 // Read-only rapporter över huvudboken. Allt i heltal ören. Kontotyp resolvas via
 // shadow-subquery (företagskonto skuggar standardkonto), samma mönster som
@@ -513,6 +515,14 @@ export interface LiquiditySource {
 
 export interface Liquidity { as_of: string; cash_ore: Ore; buckets: LiquidityBucket[]; sources: LiquiditySource[] }
 
+/**
+ * En del av ett statutärt belopp som har en egen period och en egen förfallodag.
+ * Statutära skulder är inte ett belopp med ett datum: AGI:n består av en post per
+ * obetald löneperiod, och perioderna kan ha passerat sina förfallodagar. Delarna
+ * bucketas var för sig — summan av dem är källans belopp i `sources`.
+ */
+interface StatutoryPart { period_label: string; amount: Ore; due_date: string | null; label: string }
+
 const LIQUIDITY_BUCKET_LABELS = ['Förfallet / nu', 'Inom 30 dagar', '31–60 dagar', '61–90 dagar', 'Senare'] as const;
 
 /**
@@ -529,8 +539,14 @@ const CLAIMED_BY_TAX_LIABILITY: ReadonlyArray<{ from: number; to: number; source
   { from: 2730, to: 2739, source: 'agi' },
 ];
 
-/** Kreditsaldo (kredit − debet) för ett kontointervall, med dubbelräkningsvakt. */
-function unclaimedCreditBalance(
+/**
+ * Kreditsaldo (kredit − debet) för ett kontointervall, med dubbelräkningsvakt.
+ *
+ * Exporterad enbart för att vakten ska kunna bevisas direkt i test: den är den
+ * mekanism som ska hindra det farligaste felet (samma krona i två källor), och
+ * en mekanism som bara skyddas indirekt av en summalikhet är oprövad.
+ */
+export function unclaimedCreditBalance(
   balance: AccountLine[], from: number, to: number, sourceId: string,
 ): { amount_ore: Ore; accounts: number[] } {
   const clash = CLAIMED_BY_TAX_LIABILITY.find((c) => from <= c.to && to >= c.from);
@@ -653,51 +669,130 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
   });
 
   // ---- Statutära källor: moms och AGI ur bokföringen ------------------------
-  // Samma tal som skatteöversikten visar, bucketade mot nästa vägledande
-  // förfallodag för bolagets momsperiod respektive den månatliga AGI:n.
+  // Samma tal som skatteöversikten visar, bucketade mot förfallodagen för DEN
+  // PERIOD beloppet avser — inte mot nästa gemensamma förfallodag. Skillnaden är
+  // inte akademisk: fyra obetalda lönebesked mot nästa AGI-datum lägger 124 tkr
+  // försenad skatt i "Inom 30 dagar" och lämnar "Förfallet / nu" på noll. En hink
+  // som heter "Förfallet / nu" och står på noll ÄR ett besked, och det beskedet
+  // vore falskt. En period vars förfallodag passerat hamnar därför i hink 0.
   const tax = await taxOverview(client, companyId, asOfDate);
   const balance = await accountSums(client, companyId, { to: asOfDate });
   const nextDeadline = (type: string): TaxDeadline | undefined =>
     tax.deadlines.find((d) => d.type === type && d.due_date >= asOfDate);
 
-  const statutory: Array<{ id: string; amount: Ore; deadline: TaxDeadline | undefined; what: string }> = [
+  // AGI: de obetalda lönebeskeden ÄR periodmärkta i bokföringen (`payslips.period`
+  // och `payroll_tax_payments`, unik per period), så varje period kan placeras mot
+  // sin egen förfallodag — mätt, inte gissat. Kontosaldona 2710/2730 (SIE-import,
+  // manuella verifikat) bär ingen period och kan bara läggas mot nästa kommande
+  // AGI-förfallodag; de tas ut som RESIDUAL mot `agi_total_ore` så att delarna
+  // alltid summerar till exakt skatteöversiktens tal.
+  const unpaidPeriods = await unpaidPayrollPeriods(client, companyId, asOfDate);
+  const agiParts: StatutoryPart[] = unpaidPeriods.map((p) => ({
+    period_label: p.period,
+    amount: p.tax_ore + p.employer_contribution_ore,
+    due_date: agiDueDateForPeriod(p.period),
+    label: 'Arbetsgivardeklaration (skatt + avgifter)',
+  }));
+  const agiAccountRest = tax.liability.agi_total_ore - agiParts.reduce((s, p) => s + p.amount, 0);
+  if (agiAccountRest !== 0) {
+    const next = nextDeadline('agi');
+    agiParts.push({
+      period_label: `kontosaldo 2710/2730${next ? `, redovisas ${next.period_label}` : ', ingen period'}`,
+      amount: agiAccountRest,
+      due_date: next?.due_date ?? null,
+      label: 'Arbetsgivardeklaration (skatt + avgifter)',
+    });
+  }
+  agiParts.sort((a, b) => (a.due_date ?? '9999-12-31').localeCompare(b.due_date ?? '9999-12-31'));
+
+  // MOMS: kan ett momsnetto avse en period vars förfallodag redan passerat?
+  // I SAK JA — men systemet kan inte MÄTA vilken del, och därför delas det inte
+  // upp. Skälet, så att nästa läsare slipper räkna ut det en gång till: momsnettot
+  // är saldot på 26xx, löpande konton utan periodmärkning. Till skillnad från
+  // AGI:n finns ingen bokförd avräkning per momsperiod (repot bokför ingen
+  // momsredovisning mot 2650 — `vat_report` är en ren läsrapport), så en period
+  // som redan är deklarerad och betald hos Skatteverket ser i bokföringen exakt
+  // likadan ut som en period som aldrig redovisats. Att dela saldot på
+  // verifikatsdatum vore därför en gissning, inte en mätning, och den skulle
+  // systematiskt överdriva det förfallna. Linsprincipen (KRAV-3) säger att status
+  // sätts ur frågeresultat, aldrig ur en modell: hela nettot läggs mot nästa
+  // momsförfallodag och noten säger rakt ut vad det innebär. Den dag en avräkning
+  // per period bokförs (2650) kan momsen behandlas precis som AGI:n ovan.
+  const vatDeadline = nextDeadline('vat');
+  const vatParts: StatutoryPart[] = tax.liability.vat_payable_ore > 0
+    ? [{
+        period_label: vatDeadline?.period_label ?? 'ingen period inom horisonten',
+        amount: tax.liability.vat_payable_ore,
+        due_date: vatDeadline?.due_date ?? null,
+        label: vatDeadline?.label ?? 'Momsdeklaration',
+      }]
+    : [];
+  const VAT_UNSETTLED_NOTE = ' Momsnettot är ett kontosaldo utan periodmärkning: innehåller det ännu ej redovisade äldre perioder ligger en del av beloppet i praktiken redan förfallet — bokföringen visar inte vilken del, så hela nettot ställs mot nästa förfallodag.';
+
+  const statutory: Array<{ id: string; total: Ore; parts: StatutoryPart[]; what: string; extra: string }> = [
     {
       id: 'moms',
-      amount: tax.liability.vat_payable_ore,
-      deadline: nextDeadline('vat'),
+      total: tax.liability.vat_payable_ore,
+      parts: vatParts,
       what: 'Momsnetto (utgående − ingående moms, konto 26xx)',
+      extra: VAT_UNSETTLED_NOTE,
     },
     {
       id: 'agi',
-      amount: tax.liability.agi_total_ore,
-      deadline: nextDeadline('agi'),
+      total: tax.liability.agi_total_ore,
+      parts: agiParts,
       what: 'Personalens källskatt + arbetsgivaravgifter (konto 2710/2730 samt bokförda lönebesked utan betald skattekontobetalning)',
+      extra: '',
     },
   ];
 
   let bucketedStatutoryOre = 0;
   for (const s of statutory) {
-    if (s.amount === 0) {
+    const dated = s.parts.filter((p) => p.due_date !== null);
+    const undatedOre = s.parts.filter((p) => p.due_date === null).reduce((sum, p) => sum + p.amount, 0);
+    if (s.total === 0) {
       sources.push({ id: s.id, side: 'out', status: 'TOM', amount_ore: 0, due_date: null, note: `${s.what}: inget saldo per as_of.` });
-    } else if (s.amount < 0) {
+    } else if (s.total < 0) {
       // Ett negativt netto är en FORDRAN. Den läggs medvetet inte som inflöde:
       // återbetalningens tidpunkt bestäms av Skatteverket, inte av oss.
       sources.push({
-        id: s.id, side: 'out', status: 'KAND_EJ_MODELLERAD', amount_ore: s.amount, due_date: null,
-        note: `${s.what}: negativt netto, alltså en fordran på ${formatOre(-s.amount, { currency: true })}. Läggs inte som inflöde i någon hink — utbetalningstidpunkten bestäms av Skatteverket.`,
+        id: s.id, side: 'out', status: 'KAND_EJ_MODELLERAD', amount_ore: s.total, due_date: null,
+        note: `${s.what}: negativt netto, alltså en fordran på ${formatOre(-s.total, { currency: true })}. Läggs inte som inflöde i någon hink — utbetalningstidpunkten bestäms av Skatteverket.`,
       });
-    } else if (!s.deadline) {
+    } else if (dated.length === 0) {
       sources.push({
-        id: s.id, side: 'out', status: 'KAND_EJ_DATERAD', amount_ore: s.amount, due_date: null,
-        note: `${s.what}: ${formatOre(s.amount, { currency: true })} att betala, men ingen förfallodag ligger inom prognosens horisont (taxDeadlines, momsperiod "${tax.vat_period}"). Läggs därför inte i någon hink — inte heller i "Senare".`,
+        id: s.id, side: 'out', status: 'KAND_EJ_DATERAD', amount_ore: s.total, due_date: null,
+        note: `${s.what}: ${formatOre(s.total, { currency: true })} att betala, men ingen förfallodag ligger inom prognosens horisont (taxDeadlines, momsperiod "${tax.vat_period}"). Läggs därför inte i någon hink — inte heller i "Senare".`,
       });
     } else {
-      const idx = liquidityBucketIndex(asOfDate, s.deadline.due_date);
-      outflows[idx] = (outflows[idx] ?? 0) + s.amount;
-      bucketedStatutoryOre += s.amount;
+      // Varje del mot SIN egen förfallodag. Noten redovisar uppdelningen med
+      // belopp och datum per period, så att källans belopp går att härleda ur den.
+      const placed = dated.map((p) => {
+        const idx = liquidityBucketIndex(asOfDate, p.due_date!);
+        outflows[idx] = (outflows[idx] ?? 0) + p.amount;
+        return { ...p, idx };
+      });
+      const bucketed = placed.reduce((sum, p) => sum + p.amount, 0);
+      bucketedStatutoryOre += bucketed;
+      const overdueOre = placed.filter((p) => p.idx === 0).reduce((sum, p) => sum + p.amount, 0);
+      const breakdown = placed
+        .map((p) => `period ${p.period_label}: ${formatOre(p.amount, { currency: true })} med förfallodag ${p.due_date} → hinken "${LIQUIDITY_BUCKET_LABELS[p.idx]}"`)
+        .join('; ');
+      const head = placed.length === 1
+        ? `${s.what}: ${formatOre(bucketed, { currency: true })} ligger i hinken "${LIQUIDITY_BUCKET_LABELS[placed[0]!.idx]}" mot förfallodagen ${placed[0]!.due_date} (${placed[0]!.label}, period ${placed[0]!.period_label}).`
+        : `${s.what}: ${formatOre(bucketed, { currency: true })} fördelat på ${placed.length} perioder, var och en mot SIN EGEN förfallodag. Uppdelning: ${breakdown}.`;
+      const overdue = overdueOre > 0
+        ? ` Varav ${formatOre(overdueOre, { currency: true })} redan är FÖRFALLET (hinken "Förfallet / nu") — förfallodagen har passerat per as_of.`
+        : '';
+      const rest = undatedOre !== 0
+        ? ` Utöver det ${formatOre(undatedOre, { currency: true })} utan förfallodag inom horisonten — det läggs inte i någon hink och ingår inte i beloppet ovan.`
+        : '';
       sources.push({
-        id: s.id, side: 'out', status: 'MODELLERAD', amount_ore: s.amount, due_date: s.deadline.due_date,
-        note: `${s.what}: ligger i hinken "${LIQUIDITY_BUCKET_LABELS[idx]}" mot förfallodagen ${s.deadline.due_date} (${s.deadline.label}, period ${s.deadline.period_label}). Vägledande datum — helg-/helgdagsförskjutning beräknas inte.`,
+        id: s.id, side: 'out', status: 'MODELLERAD', amount_ore: bucketed,
+        // Fältet bär den TIDIGASTE förfallodagen; hela beloppet förfaller inte
+        // nödvändigtvis samtidigt — noten redovisar varje periods datum.
+        due_date: placed.map((p) => p.due_date!).sort()[0]!,
+        note: `${head}${overdue}${rest}${s.extra}${placed.length > 1 ? ' Fältet due_date är den tidigaste av dem.' : ''} Vägledande datum — helg-/helgdagsförskjutning beräknas inte.`,
       });
     }
   }
@@ -750,10 +845,15 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
         : `Konto 2510 (skattekonto) har ett kreditsaldo på ${formatOre(skattekonto.amount_ore, { currency: true })}. Bokförda skattekontotransaktioner mäter något annat än den upplupna skulden ovan (moms/AGI/bolagsskatt) och bucketas inte — annars räknas samma krona två gånger.`,
   });
 
-  // ---- Två tal om samma skuld ----------------------------------------------
-  // taxLiability.total_ore (upplupen beräknad skatt) och komponenterna vi
-  // faktiskt modellerar mäter samma skuld på två sätt. Går de isär ska det SYNAS
-  // — att tyst välja ett av talen är fel.
+  // ---- Avstämning: hur mycket av skatteskulden ligger utanför hinkarna? -----
+  // Avvikelsen mäter INTE att två tal skulle vara felräknade. Den mäter hur
+  // mycket av den upplupna skatteskulden (taxLiability.total_ore) som prognosen
+  // INTE har modellerat i någon hink. Ett känt men odaterat belopp — helårsmoms
+  // vars förfallodag ligger utanför horisonten, t.ex. — ger fullt utslag här
+  // trots att båda talen stämmer. Noten måste därför beskriva vad differensen
+  // är, inte påstå att talen går isär; annars blir den permanent AVVIKELSE med
+  // fel förklaring för varje helårsmomsbolag. Att tyst välja ett av talen vore
+  // ändå fel: skillnaden ska synas.
   const componentSumOre = bucketedStatutoryOre + tax.liability.estimated_corporate_tax_ore;
   const deviationOre = tax.liability.total_ore - componentSumOre;
   if (Math.abs(deviationOre) > TAX_COMPARISON_TOLERANCE_ORE) {
@@ -763,7 +863,7 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
       status: 'AVVIKELSE',
       amount_ore: deviationOre,
       due_date: null,
-      note: `Två tal om samma skuld går isär: taxLiability.total_ore = ${tax.liability.total_ore} öre (${formatOre(tax.liability.total_ore, { currency: true })}), medan de modellerade statutära källorna + uppskattad bolagsskatt = ${componentSumOre} öre (${formatOre(componentSumOre, { currency: true })}). Skillnad ${deviationOre} öre (${formatOre(deviationOre, { currency: true })}). Prognosen räknar vidare på bokföringens komponentbelopp — skillnaden ska stämmas av, inte döljas.`,
+      note: `Del av skatteskulden som INTE ligger i någon hink: den upplupna skatteskulden taxLiability.total_ore = ${tax.liability.total_ore} öre (${formatOre(tax.liability.total_ore, { currency: true })}), medan de källor prognosen faktiskt MODELLERAR (bucketad moms + AGI) + uppskattad bolagsskatt = ${componentSumOre} öre (${formatOre(componentSumOre, { currency: true })}). Skillnad ${deviationOre} öre (${formatOre(deviationOre, { currency: true })}). Det betyder inte med automatik att något är felräknat: ett belopp som är känt men odaterat (status KAND_EJ_DATERAD ovan) står kvar i skulden utan att ligga i en hink och ger fullt utslag här. Läs raderna ovan för att se vilken källa differensen sitter i. Prognosen räknar vidare på bokföringens komponentbelopp — skillnaden ska stämmas av, inte döljas.`,
     });
   }
 

@@ -2914,7 +2914,7 @@ const LIQUIDITY_SOURCE_LABELS: Record<string, string> = {
   semesterloner_2920: 'Upplupna semesterlöner (2920)',
   ovriga_kortfristiga_2890: 'Övriga kortfristiga skulder (289x)',
   skattekonto_2510: 'Skattekonto (2510)',
-  skatteskuld_jamforelse: 'Skatteskuld — två tal som går isär',
+  skatteskuld_jamforelse: 'Skatteskuld — del som inte ligger i någon period',
 };
 // Object.hasOwn, aldrig `in` (lärdom 9 i STATUS.md).
 const sourceLabel = (id: string): string => (Object.hasOwn(LIQUIDITY_SOURCE_LABELS, id) ? LIQUIDITY_SOURCE_LABELS[id]! : id);
