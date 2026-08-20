@@ -50,7 +50,10 @@ describe('fakturadetaljsidan', () => {
     draft = await newDraft();
     const page = await ua.get(`/app/c/${companyId}/invoices/${draft.id}`);
     expect(page.status).toBe(200);
-    expect(page.text).toContain(`Faktura ${draft.number} — Nordic Vision Retail AB`);
+    // Kundnamnet i rubriken är sedan entitetslänkarna en väg till kundsidan,
+    // inte en sträng — därför matchas numret och namnet var för sig.
+    expect(page.text).toContain(`Faktura ${draft.number} — <a href="/app/c/${companyId}/customers/`);
+    expect(page.text).toContain('>Nordic Vision Retail AB</a>');
     expect(page.text).toContain('Konsulttjänst');
     expect(page.text).toContain('Resa');
     expect(page.text).toContain('Projekt X');

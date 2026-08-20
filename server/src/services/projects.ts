@@ -81,7 +81,7 @@ export async function listProjects(
 ): Promise<Record<string, unknown>[]> {
   const res = await client.query(
     `SELECT p.id, p.number, p.name, p.status, p.hourly_rate_ore, p.budget_ore,
-            cu.name AS customer_name,
+            p.customer_id, cu.name AS customer_name,
             COALESCE(SUM(t.minutes), 0)::int AS total_minutes,
             COALESCE(SUM(t.minutes) FILTER (WHERE t.billable), 0)::int AS billable_minutes
      FROM projects p

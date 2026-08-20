@@ -96,7 +96,8 @@ export async function listRecurringInvoices(
 ): Promise<Record<string, unknown>[]> {
   const res = await client.query(
     `SELECT r.id, r.title, r.interval, r.next_run_date::text, r.end_date::text,
-            r.active, r.generated_count, r.last_generated_at::text, cu.name AS customer_name
+            r.active, r.generated_count, r.last_generated_at::text,
+            r.customer_id, cu.name AS customer_name
      FROM recurring_invoices r JOIN customers cu ON cu.id = r.customer_id
      WHERE r.company_id = $1 ORDER BY r.active DESC, r.next_run_date ASC`,
     [companyId],
