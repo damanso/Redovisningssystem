@@ -1,5 +1,11 @@
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
+import { formatOre } from '../domain/money.js';
+// taxes.ts importerar accountSums härifrån. Cykeln är ofarlig i ESM: båda
+// modulerna använder varandra först vid ANROP (hoistade funktionsdeklarationer),
+// aldrig under modulutvärderingen. Likviditetens statutära källor är samma tal
+// som skatteöversikten visar — de får inte räknas fram en andra gång här.
+import { CORPORATE_TAX_PERMILLE, taxOverview, type TaxDeadline } from './taxes.js';
 
 // Read-only rapporter över huvudboken. Allt i heltal ören. Kontotyp resolvas via
 // shadow-subquery (företagskonto skuggar standardkonto), samma mönster som
@@ -481,18 +487,101 @@ export async function cashFlow(client: PoolClient, companyId: string, asOf?: str
 }
 
 export interface LiquidityBucket { label: string; inflow_ore: Ore; outflow_ore: Ore; net_ore: Ore; projected_ore: Ore }
-export interface Liquidity { as_of: string; cash_ore: Ore; buckets: LiquidityBucket[] }
 
 /**
- * Enkel likviditetsprognos: nuvarande kassa (saldo på 19xx per `asOf`) plus
- * väntade inbetalningar (öppna kundfakturor) minus väntade utbetalningar (öppna
- * leverantörsfakturor), grupperade i förfalloperioder. Förfallet-/nu-hinken
- * inkluderar allt t.o.m. asOf. Projected = löpande kassa efter varje hink.
+ * Status per källa. Sätts UTESLUTANDE av kod ur frågeresultat — aldrig av en
+ * modell, aldrig ur fritext som tolkas i efterhand:
+ * - `MODELLERAD`         beloppet ligger i en hink ovan och påverkar prognosen.
+ * - `TOM`                källan finns men saknar rader/saldo per `as_of`.
+ * - `KAND_EJ_MODELLERAD` beloppet är känt men läggs medvetet inte i någon hink.
+ * - `KAND_EJ_DATERAD`    beloppet är känt men saknar förfallodag. Det läggs INTE
+ *                        i "Senare" — "Senare" betyder daterad > 90 dagar, och
+ *                        ett odaterat belopp där vore falsk precision.
+ * - `AVVIKELSE`          två tal om samma sak går isär och måste stämmas av.
+ */
+export type LiquiditySourceStatus = 'MODELLERAD' | 'TOM' | 'KAND_EJ_MODELLERAD' | 'KAND_EJ_DATERAD' | 'AVVIKELSE';
+
+/** En känd in- eller utflödeskälla och dess plats i (eller utanför) prognosen. */
+export interface LiquiditySource {
+  id: string;
+  side: 'in' | 'out';
+  status: LiquiditySourceStatus;
+  amount_ore: Ore | null;
+  due_date: string | null;
+  note: string;
+}
+
+export interface Liquidity { as_of: string; cash_ore: Ore; buckets: LiquidityBucket[]; sources: LiquiditySource[] }
+
+const LIQUIDITY_BUCKET_LABELS = ['Förfallet / nu', 'Inom 30 dagar', '31–60 dagar', '61–90 dagar', 'Senare'] as const;
+
+/**
+ * DUBBELRÄKNINGSREGELN, i kod och inte bara i ett test: de här kontointervallen
+ * ingår REDAN i de belopp `taxLiability` räknar fram och som bucketas som moms
+ * respektive AGI. Ett saldo i intervallet får därför aldrig samtidigt bli en
+ * egen källa ur voucher_lines — varje utflödeskrona hör till exakt EN källa i
+ * `sources`. Vakten nedan körs vid varje anrop: den som lägger till en källa som
+ * överlappar får ett fel direkt, inte en prognos som är fel åt fel håll.
+ */
+const CLAIMED_BY_TAX_LIABILITY: ReadonlyArray<{ from: number; to: number; source: string }> = [
+  { from: 2600, to: 2699, source: 'moms' },
+  { from: 2710, to: 2719, source: 'agi' },
+  { from: 2730, to: 2739, source: 'agi' },
+];
+
+/** Kreditsaldo (kredit − debet) för ett kontointervall, med dubbelräkningsvakt. */
+function unclaimedCreditBalance(
+  balance: AccountLine[], from: number, to: number, sourceId: string,
+): { amount_ore: Ore; accounts: number[] } {
+  const clash = CLAIMED_BY_TAX_LIABILITY.find((c) => from <= c.to && to >= c.from);
+  if (clash) {
+    throw new Error(
+      `liquidityForecast: konto ${from}–${to} (källan "${sourceId}") ingår redan i källan "${clash.source}" — dubbelräkning`,
+    );
+  }
+  const rows = balance.filter((b) => b.account_number >= from && b.account_number <= to);
+  return {
+    amount_ore: rows.reduce((s, b) => s + (b.credit_ore - b.debit_ore), 0),
+    accounts: rows.filter((b) => b.credit_ore !== b.debit_ore).map((b) => b.account_number),
+  };
+}
+
+/** Hinkindex för en förfallodag — samma gränser som SQL:ens BETWEEN-intervall. */
+function liquidityBucketIndex(asOf: string, dueDate: string): number {
+  const days = Math.round((Date.parse(`${dueDate}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86_400_000);
+  if (days <= 0) return 0;
+  if (days <= 30) return 1;
+  if (days <= 60) return 2;
+  if (days <= 90) return 3;
+  return 4;
+}
+
+// Tolerans för jämförelsen mellan taxLiability.total_ore och komponentbeloppen:
+// 1 000 kr. Under den nivån är skillnaden avrundning, över den är den ett fynd.
+const TAX_COMPARISON_TOLERANCE_ORE = 100_000;
+
+/**
+ * Likviditetsprognos: nuvarande kassa (saldo på 19xx per `asOf`) plus väntade
+ * inbetalningar (öppna kundfakturor, ROT/RUT-avdraget avräknat) minus väntade
+ * utbetalningar, grupperade i förfalloperioder. Förfallet-/nu-hinken inkluderar
+ * allt t.o.m. asOf. Projected = löpande kassa efter varje hink.
+ *
+ * UTFLÖDESSIDAN ÄR INTE BARA LEVERANTÖRSFAKTUROR. Den hämtades förut enbart ur
+ * `supplier_invoices`; i ett bolag som inte registrerar leverantörsfakturor stod
+ * hela utflödessidan på noll trots kända skulder i bokföringen. Nu bucketas även
+ * de statutära skulderna — momsnetto (26xx) och AGI (2710/2730 + obetalda
+ * lönebesked) — mot nästa förfallodag ur `taxDeadlines`.
+ *
+ * Svaret bär sin egen källredovisning i `sources`: VARJE känd källa listas med
+ * status, belopp och skäl, även när den är tom eller medvetet inte modellerad.
+ * En nolla i en hink ska aldrig kunna läsas som "inget att betala" när den i
+ * själva verket betyder "den här källan modelleras inte".
+ *
  * Detta är en indikation, inte en utfäst prognos.
  */
 export async function liquidityForecast(client: PoolClient, companyId: string, asOf?: string): Promise<Liquidity> {
   const result = await client.query<{
-    cash: string; as_of: string;
+    cash: string; as_of: string; ar_rows: string; ap_rows: string;
     in_now: string; in_30: string; in_60: string; in_90: string; in_later: string;
     out_now: string; out_30: string; out_60: string; out_90: string; out_later: string;
   }>(
@@ -514,6 +603,9 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
        WHERE s.company_id = $1 AND s.voucher_id IS NOT NULL AND s.status <> 'cancelled' AND s.total_ore > s.paid_amount_ore
      )
      SELECT (SELECT cash FROM cash) AS cash, (SELECT d FROM ref)::text AS as_of,
+       -- Antal rader, inte bara summan: en källa med noll RADER (obevakad) ska
+       -- gå att skilja från en källa vars rader summerar till noll.
+       (SELECT count(*) FROM ar) AS ar_rows, (SELECT count(*) FROM ap) AS ap_rows,
        COALESCE((SELECT sum(amt) FROM ar WHERE due_date <= (SELECT d FROM ref)), 0) AS in_now,
        COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) BETWEEN 1 AND 30), 0) AS in_30,
        COALESCE((SELECT sum(amt) FROM ar WHERE due_date - (SELECT d FROM ref) BETWEEN 31 AND 60), 0) AS in_60,
@@ -528,18 +620,160 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
   );
   const r = result.rows[0]!;
   const cash = Number(r.cash);
-  const defs: Array<[string, number, number]> = [
-    ['Förfallet / nu', Number(r.in_now), Number(r.out_now)],
-    ['Inom 30 dagar', Number(r.in_30), Number(r.out_30)],
-    ['31–60 dagar', Number(r.in_60), Number(r.out_60)],
-    ['61–90 dagar', Number(r.in_90), Number(r.out_90)],
-    ['Senare', Number(r.in_later), Number(r.out_later)],
+  const asOfDate = r.as_of;
+  // Inflödessidan är oförändrad (kundfakturor inkl. ROT/RUT-avdrag). Utflödena
+  // startar i leverantörsreskontran och fylls på med de statutära källorna nedan.
+  const inflows = [Number(r.in_now), Number(r.in_30), Number(r.in_60), Number(r.in_90), Number(r.in_later)];
+  const outflows = [Number(r.out_now), Number(r.out_30), Number(r.out_60), Number(r.out_90), Number(r.out_later)];
+
+  const sources: LiquiditySource[] = [];
+
+  // ---- Reskontrakällorna (redan modellerade i SQL:en ovan) ------------------
+  const arRows = Number(r.ar_rows);
+  const apRows = Number(r.ap_rows);
+  sources.push({
+    id: 'kundfakturor',
+    side: 'in',
+    status: arRows === 0 ? 'TOM' : 'MODELLERAD',
+    amount_ore: inflows.reduce((s, v) => s + v, 0),
+    due_date: null,
+    note: arRows === 0
+      ? 'Inga öppna kundfakturor per as_of.'
+      : `${arRows} öppna kundfakturor, fördelade på hinkarna efter förfallodag (ROT/RUT-avdraget är avräknat — den delen kommer från Skatteverket).`,
+  });
+  sources.push({
+    id: 'leverantorsfakturor',
+    side: 'out',
+    status: apRows === 0 ? 'TOM' : 'MODELLERAD',
+    amount_ore: outflows.reduce((s, v) => s + v, 0),
+    due_date: null,
+    note: apRows === 0
+      ? 'Inga öppna leverantörsfakturor är registrerade. Nollan betyder att underlag saknas — inte att det inte finns något att betala; kända skulder ur bokföringen redovisas som egna källor nedan.'
+      : `${apRows} öppna leverantörsfakturor, fördelade på hinkarna efter förfallodag.`,
+  });
+
+  // ---- Statutära källor: moms och AGI ur bokföringen ------------------------
+  // Samma tal som skatteöversikten visar, bucketade mot nästa vägledande
+  // förfallodag för bolagets momsperiod respektive den månatliga AGI:n.
+  const tax = await taxOverview(client, companyId, asOfDate);
+  const balance = await accountSums(client, companyId, { to: asOfDate });
+  const nextDeadline = (type: string): TaxDeadline | undefined =>
+    tax.deadlines.find((d) => d.type === type && d.due_date >= asOfDate);
+
+  const statutory: Array<{ id: string; amount: Ore; deadline: TaxDeadline | undefined; what: string }> = [
+    {
+      id: 'moms',
+      amount: tax.liability.vat_payable_ore,
+      deadline: nextDeadline('vat'),
+      what: 'Momsnetto (utgående − ingående moms, konto 26xx)',
+    },
+    {
+      id: 'agi',
+      amount: tax.liability.agi_total_ore,
+      deadline: nextDeadline('agi'),
+      what: 'Personalens källskatt + arbetsgivaravgifter (konto 2710/2730 samt bokförda lönebesked utan betald skattekontobetalning)',
+    },
   ];
+
+  let bucketedStatutoryOre = 0;
+  for (const s of statutory) {
+    if (s.amount === 0) {
+      sources.push({ id: s.id, side: 'out', status: 'TOM', amount_ore: 0, due_date: null, note: `${s.what}: inget saldo per as_of.` });
+    } else if (s.amount < 0) {
+      // Ett negativt netto är en FORDRAN. Den läggs medvetet inte som inflöde:
+      // återbetalningens tidpunkt bestäms av Skatteverket, inte av oss.
+      sources.push({
+        id: s.id, side: 'out', status: 'KAND_EJ_MODELLERAD', amount_ore: s.amount, due_date: null,
+        note: `${s.what}: negativt netto, alltså en fordran på ${formatOre(-s.amount, { currency: true })}. Läggs inte som inflöde i någon hink — utbetalningstidpunkten bestäms av Skatteverket.`,
+      });
+    } else if (!s.deadline) {
+      sources.push({
+        id: s.id, side: 'out', status: 'KAND_EJ_DATERAD', amount_ore: s.amount, due_date: null,
+        note: `${s.what}: ${formatOre(s.amount, { currency: true })} att betala, men ingen förfallodag ligger inom prognosens horisont (taxDeadlines, momsperiod "${tax.vat_period}"). Läggs därför inte i någon hink — inte heller i "Senare".`,
+      });
+    } else {
+      const idx = liquidityBucketIndex(asOfDate, s.deadline.due_date);
+      outflows[idx] = (outflows[idx] ?? 0) + s.amount;
+      bucketedStatutoryOre += s.amount;
+      sources.push({
+        id: s.id, side: 'out', status: 'MODELLERAD', amount_ore: s.amount, due_date: s.deadline.due_date,
+        note: `${s.what}: ligger i hinken "${LIQUIDITY_BUCKET_LABELS[idx]}" mot förfallodagen ${s.deadline.due_date} (${s.deadline.label}, period ${s.deadline.period_label}). Vägledande datum — helg-/helgdagsförskjutning beräknas inte.`,
+      });
+    }
+  }
+
+  // ---- Kända belopp som medvetet INTE bucketas -----------------------------
+  sources.push({
+    id: 'bolagsskatt',
+    side: 'out',
+    status: 'KAND_EJ_MODELLERAD',
+    amount_ore: tax.liability.estimated_corporate_tax_ore,
+    due_date: null,
+    note: `Uppskattad bolagsskatt (${String(CORPORATE_TAX_PERMILLE / 10).replace('.', ',')} % av resultat före skatt ${formatOre(tax.liability.result_before_tax_ore, { currency: true })}). En uppskattning utan fast förfallodag inom horisonten — den bucketas därför inte. Den slutliga skatten fastställs vid deklarationen.`,
+  });
+
+  const semester = unclaimedCreditBalance(balance, 2920, 2920, 'semesterloner_2920');
+  sources.push({
+    id: 'semesterloner_2920',
+    side: 'out',
+    status: semester.amount_ore === 0 ? 'TOM' : 'KAND_EJ_DATERAD',
+    amount_ore: semester.amount_ore,
+    due_date: null,
+    note: semester.amount_ore === 0
+      ? 'Konto 2920 (upplupna semesterlöner) har inget saldo per as_of.'
+      : `Upplupna semesterlöner (konto 2920): ${formatOre(semester.amount_ore, { currency: true })}. Skulden är känd men saknar förfallodag — den betalas när semestern tas ut eller vid slutlön. Läggs varken i en hink eller i "Senare".`,
+  });
+
+  const other = unclaimedCreditBalance(balance, 2890, 2899, 'ovriga_kortfristiga_2890');
+  sources.push({
+    id: 'ovriga_kortfristiga_2890',
+    side: 'out',
+    status: other.amount_ore === 0 ? 'TOM' : 'KAND_EJ_DATERAD',
+    amount_ore: other.amount_ore,
+    due_date: null,
+    note: other.amount_ore === 0
+      ? 'Konto 289x (övriga kortfristiga skulder, inkl. 2893) har inget saldo per as_of.'
+      : `Övriga kortfristiga skulder, konto ${other.accounts.join(' + ')}: ${formatOre(other.amount_ore, { currency: true })}. Kända belopp utan förfallodag — läggs varken i en hink eller i "Senare".`,
+  });
+
+  const skattekonto = unclaimedCreditBalance(balance, 2510, 2510, 'skattekonto_2510');
+  sources.push({
+    id: 'skattekonto_2510',
+    side: 'out',
+    status: skattekonto.amount_ore === 0 ? 'TOM' : 'KAND_EJ_MODELLERAD',
+    amount_ore: skattekonto.amount_ore,
+    due_date: null,
+    note: skattekonto.amount_ore === 0
+      ? 'Konto 2510 (skattekonto) har inget saldo per as_of.'
+      : skattekonto.amount_ore < 0
+        ? `Konto 2510 har ett DEBETsaldo på ${formatOre(-skattekonto.amount_ore, { currency: true })} — redan inbetald preliminärskatt, alltså en fordran på Skatteverket. Att bucketa den som utflöde vore dubbelräkning mot källan "bolagsskatt".`
+        : `Konto 2510 (skattekonto) har ett kreditsaldo på ${formatOre(skattekonto.amount_ore, { currency: true })}. Bokförda skattekontotransaktioner mäter något annat än den upplupna skulden ovan (moms/AGI/bolagsskatt) och bucketas inte — annars räknas samma krona två gånger.`,
+  });
+
+  // ---- Två tal om samma skuld ----------------------------------------------
+  // taxLiability.total_ore (upplupen beräknad skatt) och komponenterna vi
+  // faktiskt modellerar mäter samma skuld på två sätt. Går de isär ska det SYNAS
+  // — att tyst välja ett av talen är fel.
+  const componentSumOre = bucketedStatutoryOre + tax.liability.estimated_corporate_tax_ore;
+  const deviationOre = tax.liability.total_ore - componentSumOre;
+  if (Math.abs(deviationOre) > TAX_COMPARISON_TOLERANCE_ORE) {
+    sources.push({
+      id: 'skatteskuld_jamforelse',
+      side: 'out',
+      status: 'AVVIKELSE',
+      amount_ore: deviationOre,
+      due_date: null,
+      note: `Två tal om samma skuld går isär: taxLiability.total_ore = ${tax.liability.total_ore} öre (${formatOre(tax.liability.total_ore, { currency: true })}), medan de modellerade statutära källorna + uppskattad bolagsskatt = ${componentSumOre} öre (${formatOre(componentSumOre, { currency: true })}). Skillnad ${deviationOre} öre (${formatOre(deviationOre, { currency: true })}). Prognosen räknar vidare på bokföringens komponentbelopp — skillnaden ska stämmas av, inte döljas.`,
+    });
+  }
+
   let projected = cash;
-  const buckets: LiquidityBucket[] = defs.map(([label, inflow, outflow]) => {
+  const buckets: LiquidityBucket[] = LIQUIDITY_BUCKET_LABELS.map((label, i) => {
+    const inflow = inflows[i]!;
+    const outflow = outflows[i]!;
     const net = inflow - outflow;
     projected += net;
     return { label, inflow_ore: inflow, outflow_ore: outflow, net_ore: net, projected_ore: projected };
   });
-  return { as_of: r.as_of, cash_ore: cash, buckets };
+  return { as_of: asOfDate, cash_ore: cash, buckets, sources };
 }

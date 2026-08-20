@@ -140,6 +140,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-08-20 (`fix/likviditet-kallor`: utflödessidan stod på noll — svaret bär
+  nu sin egen källredovisning):** Davids order (flaggad 13/8) var "utflödessidan
+  står på noll i samtliga fem hinkar". SQL:en i `liquidityForecast` var korrekt,
+  men hela utflödessidan hämtades ur `supplier_invoices` — och den tabellen är
+  tom i Locollabs. Kända skulder ur bokföringen syntes aldrig, och **nollan gick
+  inte att skilja från "det finns inget att betala"**. Det är samma felklass som
+  lärdom 7 (den tysta nollan): raden fanns, inget fel returnerades.
+
+  1. **`sources` i svaret är hela poängen.** Varje känd in-/utflödeskälla listas
+     med `id`/`side`/`status`/`amount_ore`/`due_date`/`note` — även när den är
+     tom. Status sätts UTESLUTANDE av kod ur frågeresultat (linsprincipen från
+     `brief_underlag.py`), aldrig av en modell: `MODELLERAD`, `TOM`,
+     `KAND_EJ_MODELLERAD`, `KAND_EJ_DATERAD`, `AVVIKELSE`. Frågan "räknar ni
+     med det här?" ska aldrig behöva ställas till koden.
+  2. **Statutära skulder bucketas nu.** Momsnetto (26xx) och AGI (2710/2730 +
+     obetalda lönebesked) läggs mot nästa förfallodag ur `taxDeadlines` för
+     bolagets `vat_period`. Endast positiva netton — ett negativt momsnetto är en
+     fordran och läggs INTE som inflöde (Skatteverket bestämmer tidpunkten).
+  3. **Dubbelräkningsregeln står i koden, inte bara i ett test.**
+     `CLAIMED_BY_TAX_LIABILITY` + `unclaimedCreditBalance()` kastar direkt om en
+     ny källa läser ett konto som redan ingår i ett bucketat taxLiability-belopp.
+     Ett belopp som räknas två gånger ger en prognos som är fel åt fel håll, och
+     den sortens fel upptäcks först när någon lutar ett beslut mot talet.
+  4. **Odaterat läggs aldrig i "Senare".** 2920/289x redovisas som
+     `KAND_EJ_DATERAD` med belopp. "Senare" betyder daterad > 90 dagar; ett
+     odaterat belopp där vore falsk precision — värre än inget belopp.
+     Uppskattad bolagsskatt och 2510:s debetsaldo är `KAND_EJ_MODELLERAD` (att
+     bucketa den redan inbetalda preliminärskatten vore dubbelräkning).
+  5. **Två tal om samma skuld.** Går `taxLiability.total_ore` och
+     komponentsumman isär med > 1 000 kr syns det som källan
+     `skatteskuld_jamforelse` med status `AVVIKELSE` och BÅDA talen i noten. Att
+     tyst välja ett av talen är fel.
+  6. **Vyn:** egen tabell "Källredovisning" under prognosen på `/cashflow`, där
+     varje rad med status ≠ MODELLERAD är märkt i SJÄLVA raden ("EJ MODELLERAD",
+     "ODATERAD", "AVVIKELSE", "TOM — INGEN DATA") — inte i en tooltip.
+
+  `liquidity_forecast` behåller namn, `sensitivity: 'read'` och inputschema
+  `{ as_of? }`; inget nytt verktyg, ingen migration, inget nytt beroende.
+  Mätt på Davids saldon (rekonstruerade i TESTdatabasen, aldrig i prod):
+  utflödet gick från **0 kr till 26 007 kr** modellerat (moms, förfaller
+  2026-11-12), plus **82 417 kr kända men odaterade** (2920 + 289x) och
+  188 340,07 kr uppskattad bolagsskatt som redovisas men inte bucketas.
+  `npm run build` ren, `npm test` = **726 tester i 85 sviter, alla gröna**.
+  Inget befintligt testfall ändrat. Ny svit: `server/test/liquiditySources.test.ts`
+  (verifierad genom att den kördes mot koden FÖRE ändringen: 6 av 7 föll,
+  och den som passerade är just bakåtkompatibilitetstestet). Grenen är INTE
+  mergad och INTE pushad. Full rapport: `/tmp/bygg-likviditet-rapport.md`.
+
 - **2026-08-20 (`design/entiteter-1`: entitetslänkar — namn är vägar, inte
   strängar):** Davids order var att namn ska leda vidare och att sidor med
   kopplad information ska sluta vara isolerade händelser. Fyra entitetstyper
