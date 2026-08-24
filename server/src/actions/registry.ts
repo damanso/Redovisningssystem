@@ -16,7 +16,7 @@ import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
-import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers } from '../services/parties.js';
+import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers, updateCustomer, updateSupplier } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
 import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
@@ -918,6 +918,83 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createSupplier(ctx.client, ctx.companyId, ctx.userId, i as Record<string, unknown>),
+  }),
+  def({
+    name: 'update_customer',
+    title: 'Rätta uppgifter på en kund',
+    sensitivity: 'write',
+    // En kund har ingen betalningsmottagare hos oss — payment_terms är ett
+    // VILLKOR, inte ett konto. Därför är hela kunden rättningsbar direkt.
+    inputSchema: z
+      .object({
+        customer_id: UuidSchema,
+        name: safeText(200).optional(),
+        org_number: safeText(20).optional(),
+        vat_number: safeText(20).optional(),
+        email: safeText(254).optional(),
+        phone: safeText(50).optional(),
+        address: safeText(200).optional(),
+        postal_code: safeText(20).optional(),
+        city: safeText(100).optional(),
+        payment_terms: z.number().int().min(0).max(365).optional(),
+        is_active: z.boolean().optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => {
+      const { customer_id, ...falt } = i as Record<string, unknown> & { customer_id: string };
+      return updateCustomer(ctx.client, ctx.companyId, ctx.userId, customer_id, falt);
+    },
+  }),
+  def({
+    name: 'update_supplier',
+    title: 'Rätta uppgifter på en leverantör (ej betalningsmottagare)',
+    sensitivity: 'write',
+    // bankgiro och plusgiro saknas här MED FLIT. `.strict()` gör utelämnandet
+    // till en spärr och inte en konvention: skickas de hit avvisas anropet.
+    // De hör till update_supplier_payment_details, som kräver godkännande.
+    inputSchema: z
+      .object({
+        supplier_id: UuidSchema,
+        name: safeText(200).optional(),
+        org_number: safeText(20).optional(),
+        email: safeText(254).optional(),
+        phone: safeText(50).optional(),
+        is_active: z.boolean().optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => {
+      const { supplier_id, ...falt } = i as Record<string, unknown> & { supplier_id: string };
+      return updateSupplier(ctx.client, ctx.companyId, ctx.userId, supplier_id, falt);
+    },
+  }),
+  def({
+    name: 'update_supplier_payment_details',
+    title: 'Ändra betalningsmottagare (bankgiro/plusgiro) för en leverantör',
+    // SENSITIVE, och skälet är inte formellt: den som ändrar ett bankgiro
+    // flyttar vart pengarna går. Det är vektorn i leverantörsbedrägeri, och
+    // den upptäcks annars först när fakturan är betald till fel konto.
+    //
+    // Åtgärden har ett eget namn för att godkännandekön ska säga VAD som står
+    // på spel. "Ändra betalningsmottagare för X" går att bedöma på en rad;
+    // "update_supplier" gör det inte.
+    sensitivity: 'sensitive',
+    inputSchema: z
+      .object({
+        supplier_id: UuidSchema,
+        bankgiro: safeText(20).optional(),
+        plusgiro: safeText(20).optional(),
+      })
+      .strict()
+      // Ett tomt anrop hade gått igenom godkännandekön och ändrat ingenting -
+      // en godkänd åtgärd som inte gjorde något är värre än ett fel, för den
+      // lär läsaren att kön innehåller brus.
+      .refine((i) => i.bankgiro !== undefined || i.plusgiro !== undefined, {
+        message: 'ange bankgiro eller plusgiro — annars finns ingenting att ändra',
+      }),
+    handler: (ctx, i) => {
+      const { supplier_id, ...falt } = i as Record<string, unknown> & { supplier_id: string };
+      return updateSupplier(ctx.client, ctx.companyId, ctx.userId, supplier_id, falt);
+    },
   }),
   def({
     name: 'create_invoice',

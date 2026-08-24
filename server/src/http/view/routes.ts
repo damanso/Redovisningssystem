@@ -3068,6 +3068,18 @@ interface PartyOpenRow {
 /** Fakturahistoriken är kapad — reskontran är det ALDRIG. Se partyBackrefs. */
 const BACKREF_INVOICE_LIMIT = 100;
 
+/** En kvittorad pa ett leverantorskort. Kvittot har ingen egen sida; numret
+ *  gar till verifikatet nar det ar bokfort. */
+type PartyReceiptRow = {
+  id: string;
+  receipt_number: number;
+  receipt_date: string;
+  description: string;
+  total_ore: number;
+  status: string;
+  voucher_id: string | null;
+};
+
 async function partyBackrefs(
   client: PoolClient, companyId: string, partyType: PartyType, partyId: string,
 ): Promise<Raw> {
@@ -3159,6 +3171,35 @@ async function partyBackrefs(
       )).rows
     : [];
 
+  // Kvitton hör till LEVERANTÖREN. `receipts.supplier_id` har funnits sedan
+  // migration 0010 och är ifylld på varenda rad — men ingen vy har frågat
+  // efter den. För det här bolaget är kvittot inte ett undantag utan
+  // leverantörsdokumentet: molntjänster, telefoni, resor, representation.
+  //
+  // Utan panelen säger ett leverantörskort "Inga leverantörsfakturor … ännu"
+  // och inget mer, vilket i praktiken läses som "vi har inget med dem att
+  // göra". Det är inte tomt — det är fel.
+  //
+  // Samma kapningsdisciplin som fakturorna: en rad extra hämtas, så att
+  // "senaste N" bara skrivs ut när listan faktiskt är kapad.
+  const rec = isCustomer
+    ? { rows: [] as PartyReceiptRow[] }
+    : await client.query<PartyReceiptRow>(
+        `SELECT r.id, r.receipt_number, r.receipt_date::text, r.description,
+                r.total_ore, r.status, r.voucher_id
+         FROM receipts r
+         WHERE r.company_id = $1 AND r.supplier_id = $2
+         ORDER BY r.receipt_date DESC, r.receipt_number DESC
+         LIMIT $3`,
+        [companyId, partyId, BACKREF_INVOICE_LIMIT + 1],
+      );
+  const recKapad = rec.rows.length > BACKREF_INVOICE_LIMIT;
+  const receipts = rec.rows.slice(0, BACKREF_INVOICE_LIMIT)
+    .map((r) => ({ ...r, total_ore: Number(r.total_ore) }));
+  // Summan räknas på det som VISAS, och sägs ut som sådan när listan är kapad.
+  // Ett totalbelopp som tyst gäller ett urval är ett tal som ljuger.
+  const recSumma = receipts.reduce((s, r) => s + r.total_ore, 0);
+
   // Tomt är ett svar, inte ett fel: den kompakta .empty-rutan (samma som
   // EU-momsen och ROT/RUT-noten använder) säger VARFÖR listan är tom.
   const tomt = (text: string): Raw =>
@@ -3177,6 +3218,13 @@ async function partyBackrefs(
       : r.voucher_id
         ? html`<a href="/app/c/${companyId}/ledger#v-${r.voucher_id}">${r.label}</a>`
         : html`${r.label}`;
+  // Kvittot har ingen egen sida. Bokfört går numret till verifikatet, precis
+  // som leverantörsfakturan; obokfört står det som text. Att länsa en trasig
+  // länk vore sämre än ingen länk alls.
+  const recRef = (r: PartyReceiptRow): Raw =>
+    r.voucher_id
+      ? html`<a href="/app/c/${companyId}/ledger#v-${r.voucher_id}">#${String(r.receipt_number)}</a>`
+      : html`#${String(r.receipt_number)}`;
 
   return html`
     ${panel(
@@ -3210,6 +3258,30 @@ async function partyBackrefs(
               <td class="num">${amount(r.outstanding_ore)}</td></tr>`)}
             </tbody></table></div>`,
     )}
+    ${isCustomer
+      ? ''
+      : panel(
+          'Kvitton',
+          // Frågan man har på ett leverantörskort är inte "hur många kvitton"
+          // utan "vad kostar de här oss". Den besvaras här, där den ställs.
+          receipts.length === 0
+            ? antal(0)
+            : html`${meta(recKapad
+                ? `senaste ${String(BACKREF_INVOICE_LIMIT)} · ${money(recSumma)} kr av dessa`
+                : `${String(receipts.length)} st · ${money(recSumma)} kr totalt`)}
+              <a class="btn btn--ghost btn--sm" style="margin-left:10px" href="/app/c/${companyId}/receipts">Alla kvitton →</a>`,
+          receipts.length === 0
+            ? tomt('Inga kvitton från den här leverantören ännu. Kvitton bokförs som utlägg eller direktköp och kopplas till leverantören när de registreras.')
+            : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+                <thead><tr><th>Nr</th><th>Datum</th><th>Vad</th><th class="num">Totalt</th><th>Status</th></tr></thead><tbody>
+                ${receipts.map((r) => html`<tr>
+                  <td class="code">${recRef(r)}</td>
+                  <td class="code">${r.receipt_date}</td>
+                  <td>${r.description}</td>
+                  <td class="num">${amount(r.total_ore)}</td>
+                  <td>${statusChip(r.status)}</td></tr>`)}
+                </tbody></table></div>`,
+        )}
     ${panel(
       'Åtaganden',
       antal(comm.length),
@@ -3290,6 +3362,52 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
                   <a href="/app/c/${companyId}/relations/${rel.organization_id}">Öppna relationen →</a></p>`
               : ''
           }</div></div>
+        <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Rätta uppgifter</h2>
+            <span class="muted" style="font-size:12.5px">ändras direkt · loggas i revisionsspåret</span></div>
+          <div class="panel__body" style="padding:14px 16px">
+            <form method="post" action="/app/c/${companyId}/${active}/${partyId}/update" style="display:flex;flex-direction:column;gap:12px;max-width:620px">
+              <label class="field" style="margin:0"><span>Namn</span>
+                <input type="text" name="name" value="${(party.name as string) ?? ''}"></label>
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <label class="field" style="margin:0;flex:1;min-width:160px"><span>Org.nr</span>
+                  <input type="text" name="org_number" value="${(party.org_number as string) ?? ''}"></label>
+                <label class="field" style="margin:0;flex:1;min-width:160px"><span>E-post</span>
+                  <input type="text" name="email" value="${(party.email as string) ?? ''}"></label>
+                <label class="field" style="margin:0;flex:1;min-width:160px"><span>Telefon</span>
+                  <input type="text" name="phone" value="${(party.phone as string) ?? ''}"></label>
+              </div>
+              ${partyType === 'customer'
+                ? html`<div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <label class="field" style="margin:0;flex:2;min-width:200px"><span>Adress</span>
+                      <input type="text" name="address" value="${(party.address as string) ?? ''}"></label>
+                    <label class="field" style="margin:0;flex:1;min-width:110px"><span>Postnr</span>
+                      <input type="text" name="postal_code" value="${(party.postal_code as string) ?? ''}"></label>
+                    <label class="field" style="margin:0;flex:1;min-width:140px"><span>Ort</span>
+                      <input type="text" name="city" value="${(party.city as string) ?? ''}"></label>
+                  </div>`
+                : ''}
+              <p class="muted" style="margin:0;font-size:12.5px">Ett tomt fält lämnas oförändrat — det raderar ingenting.</p>
+              <div><button type="submit" class="btn">Spara</button></div>
+            </form>
+          </div></div>
+        ${partyType === 'supplier'
+          ? html`<div class="panel" style="margin-top:14px;border-color:var(--warn,#b8860b)">
+              <div class="panel__head"><h2>Betalningsmottagare</h2>
+                <span class="muted" style="font-size:12.5px">kräver godkännande</span></div>
+              <div class="panel__body" style="padding:14px 16px">
+                <p class="lede" style="margin-top:0">Bankgiro och plusgiro styr <strong>vart pengarna går</strong>. En ändrad
+                  betalningsmottagare är vektorn i leverantörsbedrägeri, och den upptäcks annars först när fakturan
+                  är betald till fel konto. Därför verkställs den inte direkt — den läggs i
+                  <a href="/app/c/${companyId}/approvals">Att göra</a> och kräver ditt godkännande i ett andra steg.</p>
+                <form method="post" action="/app/c/${companyId}/suppliers/${partyId}/payment" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0">
+                  <label class="field" style="margin:0;flex:1;min-width:170px"><span>Bankgiro</span>
+                    <input type="text" name="bankgiro" value="${(party.bankgiro as string) ?? ''}"></label>
+                  <label class="field" style="margin:0;flex:1;min-width:170px"><span>Plusgiro</span>
+                    <input type="text" name="plusgiro" value="${(party.plusgiro as string) ?? ''}"></label>
+                  <button type="submit" class="btn btn--ghost">Begär ändring</button>
+                </form>
+              </div></div>`
+          : ''}
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Anteckningar</h2></div>
           <div class="panel__body" style="padding:6px 4px">${
             crm.notes.length === 0 ? html`<p class="muted" style="padding:10px 12px">Inga anteckningar.</p>`
@@ -3367,6 +3485,58 @@ function createPartyRoute(kind: 'customers' | 'suppliers') {
 }
 
 viewRouter.post('/c/:companyId/customers/create', createPartyRoute('customers'));
+
+// Rattning av en part. Gar genom SAMMA action-lager som AI:t - samma
+// allowlista, samma revisionsspar, samma validering. Vyn ar en klient, inte en
+// genvag forbi reglerna.
+function updatePartyRoute(kind: 'customers' | 'suppliers') {
+  const action = kind === 'customers' ? 'update_customer' : 'update_supplier';
+  const nyckel = kind === 'customers' ? 'customer_id' : 'supplier_id';
+  // Falten som far rattas direkt. bankgiro/plusgiro star INTE har - de har en
+  // egen rutt och en egen action med sensitivity 'sensitive'.
+  const falt = kind === 'customers'
+    ? ['name', 'org_number', 'vat_number', 'email', 'phone', 'address', 'postal_code', 'city']
+    : ['name', 'org_number', 'email', 'phone'];
+  return page(async (req: Request, res: import('express').Response) => {
+    assertSameOrigin(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const partyId = parseApprovalId(req.params.partyId);
+    const b = req.body as Record<string, unknown>;
+    const input: Record<string, unknown> = { [nyckel]: partyId };
+    for (const f of falt) {
+      const v = b[f];
+      // Ett tomt falt betyder "lamna som det ar", inte "sudda". Att tolka
+      // tomhet som radering hade gjort varje rattning till en risk for de falt
+      // man inte rorde.
+      if (typeof v === 'string' && v.trim()) input[f] = v.trim();
+    }
+    if (typeof b.payment_terms === 'string' && b.payment_terms.trim()) {
+      const n = Number(b.payment_terms.trim());
+      if (Number.isInteger(n)) input.payment_terms = n;
+    }
+    await runViewAction(req, res, companyId, action, input,
+      `/app/c/${companyId}/${kind}/${partyId}`);
+  });
+}
+viewRouter.post('/c/:companyId/customers/:partyId/update', updatePartyRoute('customers'));
+viewRouter.post('/c/:companyId/suppliers/:partyId/update', updatePartyRoute('suppliers'));
+
+// Betalningsmottagare: egen rutt, egen action, sensitivity 'sensitive'.
+// Landar i godkannandekon precis som GDPR-anonymiseringen - manniska i loopen
+// innan pengarna kan bytas riktning.
+viewRouter.post('/c/:companyId/suppliers/:partyId/payment', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const partyId = parseApprovalId(req.params.partyId);
+  const b = req.body as Record<string, unknown>;
+  const input: Record<string, unknown> = { supplier_id: partyId };
+  for (const f of ['bankgiro', 'plusgiro']) {
+    const v = b[f];
+    if (typeof v === 'string' && v.trim()) input[f] = v.trim();
+  }
+  await runViewAction(req, res, companyId, 'update_supplier_payment_details', input,
+    `/app/c/${companyId}/approvals`);
+}));
 
 viewRouter.get('/c/:companyId/suppliers', registerPage('suppliers', 'Leverantörer', 'Företag du köper av och betalar.',
   (c, id) => listSuppliers(c, id, { includeInactive: true }),
