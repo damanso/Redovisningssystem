@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { luhnIsValid } from '../domain/luhn.js';
 
 // Fritext som ska in i Postgres text/jsonb: NUL-tecknet (U+0000) är förbjudet i
 // både text och jsonb och skulle annars ge ett omappat DatabaseError → 500.
@@ -40,6 +41,34 @@ export const UuidSchema = z.string().uuid();
 export const VatRateSchema = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
 export const OreSchema = z.number().int().nonnegative().safe();
 export const AccountNumberSchema = z.number().int().min(1000).max(9999);
+
+// Bankgironummer: 7 eller 8 siffror (skrivs NNN-NNNN respektive NNNN-NNNN)
+// där sista siffran är en mod-10-kontrollsiffra.
+//
+// Kontrollsiffran prövas med den BEFINTLIGA luhnIsValid i domain/luhn.ts —
+// samma algoritm som OCR-referenserna redan använder. Ingen andra kopia av
+// mod-10 skrivs här; två implementationer av samma checksumma är precis hur
+// de hinner divergera.
+//
+// Skälet att fältet valideras och inte bara längdbegränsas: ett bankgiro styr
+// VART PENGARNA GÅR. Ett felskrivet nummer upptäcks annars först när
+// betalningen studsar — eller, värre, när den inte gör det.
+export const BankgiroSchema = safeText(20).superRefine((v, ctx) => {
+  const siffror = v.replace(/[\s-]/g, '');
+  if (!/^\d{7,8}$/.test(siffror)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'bankgiro anges som 7 eller 8 siffror, t.ex. 5776-6446',
+    });
+    return;
+  }
+  if (!luhnIsValid(siffror)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'ogiltigt bankgiro — kontrollsiffran stämmer inte',
+    });
+  }
+});
 
 // Datum måste vara ett verkligt kalenderdatum — enbart regexen släpper igenom
 // t.ex. 2026-02-30, som annars blir ett Postgres-fel (22008) → 500.

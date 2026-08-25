@@ -1466,7 +1466,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
                 <td>${e.performed_by ?? '—'}</td>
                 <td class="num">${hhmm(e.minutes)}</td><td>${e.billable ? chip('Ja', 'ok') : chip('Nej', 'muted')}</td>
                 <td>${e.invoiced ? chip('Ja', 'info') : ''}</td></tr>`)}
-              </tbody></table></div>`
+              </tbody></table></div>${fakturalankSaknas()}`
       }`;
     return { name: company.name, body: b };
   });
@@ -3068,6 +3068,25 @@ interface PartyOpenRow {
 /** Fakturahistoriken är kapad — reskontran är det ALDRIG. Se partyBackrefs. */
 const BACKREF_INVOICE_LIMIT = 100;
 
+/** Tidposterna kapas som fakturorna. Summan i projektpanelen räknas i SQL över
+ *  alla poster, så kapningen döljer aldrig tid — bara rader. */
+const BACKREF_TIME_LIMIT = 100;
+
+/** Ett projekt på ett kundkort, med tiden som hänger på det. */
+interface PartyProjectRow {
+  id: string; number: number; name: string; status: string;
+  total_minutes: number; billable_minutes: number; uninvoiced_minutes: number;
+}
+
+/** En tidpost på ett kundkort. Projektet är vägen vidare; någon faktura att
+ *  peka på finns inte i data — se fakturalankSaknas. */
+interface PartyTimeRow {
+  id: string; work_date: string; minutes: number; description: string;
+  billable: boolean; invoiced: boolean;
+  project_id: string; project_number: number; project_name: string;
+  performed_by: string | null;
+}
+
 /**
  * Max ~15 ord synliga per rad — NN/g:s 28-procentsregel via djupanalysen §5.
  *
@@ -3089,6 +3108,28 @@ function kapaOrd(text: string, ord = 15): string {
   const delar = (text ?? '').trim().split(/\s+/);
   if (delar.length <= ord) return text ?? '';
   return delar.slice(0, ord).join(' ') + '…';
+}
+
+/**
+ * Kedjan slutar vid tidposten, och vyn ska SÄGA det i stället för att antyda
+ * något annat med en tom kolumn.
+ *
+ * Mätt 2026-08-25 mot databasen: invoices bär customer_id (NOT NULL) och har
+ * ingen project_id. invoice_lines har varken project_id eller time_entry_id.
+ * invoice_appendix_rows bär invoice_id men ingen hänvisning tillbaka till den
+ * tidpost raden kopierades ur. appendixFromTimeEntries sätter
+ * time_entries.invoiced = true utan att spara VILKEN faktura det blev.
+ *
+ * Alltså: kund → projekt → tidpost går att visa, tidpost → faktura gör det
+ * inte. Att härleda den ändå — på kund och datum, eller ur revisionsspåret —
+ * hade gett en länk som stämmer nästan alltid och tiger när den har fel.
+ */
+function fakturalankSaknas(): Raw {
+  return html`<p class="muted" style="padding:10px 12px;font-size:12.5px">
+    Fakturerad betyder att timmarna har tagits med på en fakturas tidsbilaga.
+    <strong>Vilken</strong> faktura står inte i databasen: en faktura bär kund, aldrig
+    projekt, och bilagans rader är kopior utan väg tillbaka till tidposten.
+    Kopplingen tidpost → faktura visas därför inte här — den skulle behöva gissas fram.</p>`;
 }
 
 /** En kvittorad pa ett leverantorskort. Kvittot har ingen egen sida; numret
@@ -3185,14 +3226,47 @@ async function partyBackrefs(
       )).rows
     : [];
 
+  // Tiden hänger på projektet och projektet på kunden — det är hela kedjan som
+  // FINNS i databasen. Summorna räknas i SQL över ALLA poster, aldrig över den
+  // kapade listan nedan: ett projekt med 400 timmar ska visa 400 även när
+  // tidpostlistan slutar vid 100 rader.
   const projects = isCustomer
-    ? (await client.query<{ id: string; number: number; name: string; status: string }>(
-        `SELECT id, number, name, status FROM projects
-         WHERE company_id = $1 AND customer_id = $2
-         ORDER BY status ASC, number DESC`,
+    ? (await client.query<PartyProjectRow>(
+        `SELECT p.id, p.number, p.name, p.status,
+                COALESCE(SUM(t.minutes), 0)::int AS total_minutes,
+                COALESCE(SUM(t.minutes) FILTER (WHERE t.billable), 0)::int AS billable_minutes,
+                COALESCE(SUM(t.minutes) FILTER (WHERE t.billable AND NOT t.invoiced), 0)::int AS uninvoiced_minutes
+         FROM projects p
+         LEFT JOIN time_entries t ON t.project_id = p.id AND t.company_id = p.company_id
+         WHERE p.company_id = $1 AND p.customer_id = $2
+         GROUP BY p.id, p.number, p.name, p.status
+         ORDER BY p.status ASC, p.number DESC`,
         [companyId, partyId],
       )).rows
     : [];
+  const projektMinuter = projects.reduce((s, p) => s + p.total_minutes, 0);
+
+  // Tidposterna själva, tvärs kundens alla projekt. Kopplingen är hård hela
+  // vägen — time_entries.project_id är NOT NULL och projects.customer_id bär
+  // kunden — så ingenting härleds på namn eller datum. Samma kapningsdisciplin
+  // som fakturorna: en rad extra hämtas, så att "senaste N" bara skrivs ut när
+  // listan faktiskt ÄR kapad.
+  const tid = isCustomer
+    ? await client.query<PartyTimeRow>(
+        `SELECT t.id, t.work_date::text, t.minutes, t.description, t.billable, t.invoiced,
+                p.id AS project_id, p.number AS project_number, p.name AS project_name,
+                a.name AS performed_by
+         FROM time_entries t
+         JOIN projects p ON p.id = t.project_id AND p.company_id = t.company_id
+         LEFT JOIN work_actors a ON a.id = t.performed_by_actor_id AND a.company_id = t.company_id
+         WHERE t.company_id = $1 AND p.customer_id = $2
+         ORDER BY t.work_date DESC, t.created_at DESC
+         LIMIT $3`,
+        [companyId, partyId, BACKREF_TIME_LIMIT + 1],
+      )
+    : { rows: [] as PartyTimeRow[] };
+  const tidKapad = tid.rows.length > BACKREF_TIME_LIMIT;
+  const tidposter = tid.rows.slice(0, BACKREF_TIME_LIMIT);
 
   // Kvitton hör till LEVERANTÖREN. `receipts.supplier_id` har funnits sedan
   // migration 0010 och är ifylld på varenda rad — men ingen vy har frågat
@@ -3324,16 +3398,46 @@ async function partyBackrefs(
     ${isCustomer
       ? panel(
           'Projekt',
-          antal(projects.length),
+          projects.length === 0
+            ? antal(0)
+            : html`${meta(`${String(projects.length)} st · ${hhmm(projektMinuter)} totalt`)}
+              <a class="btn btn--ghost btn--sm" style="margin-left:10px" href="/app/c/${companyId}/projects">Alla projekt →</a>`,
           projects.length === 0
             ? tomt('Inga projekt för den här kunden ännu.')
             : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
-                <thead><tr><th>Nr</th><th>Projekt</th><th>Status</th></tr></thead><tbody>
+                <thead><tr><th>Nr</th><th>Projekt</th><th>Status</th><th class="num">Tid</th><th class="num">Fakturerbar</th><th class="num">Ofakturerad</th></tr></thead><tbody>
                 ${projects.map((p) => html`<tr>
                   <td class="code">${String(p.number)}</td>
                   <td>${entityLink(companyId, 'project', p.id, p.name)}</td>
-                  <td>${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</td></tr>`)}
+                  <td>${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</td>
+                  <td class="num">${hhmm(p.total_minutes)}</td>
+                  <td class="num">${hhmm(p.billable_minutes)}</td>
+                  <td class="num">${hhmm(p.uninvoiced_minutes)}</td></tr>`)}
                 </tbody></table></div>`,
+        )
+      : ''}
+    ${isCustomer
+      ? panel(
+          'Tidposter',
+          tidposter.length === 0
+            ? antal(0)
+            : meta(tidKapad
+                ? `senaste ${String(BACKREF_TIME_LIMIT)} raderna · ${hhmm(projektMinuter)} totalt`
+                : `${String(tidposter.length)} st · ${hhmm(projektMinuter)} totalt`),
+          tidposter.length === 0
+            ? tomt(projects.length === 0
+                ? 'Inga tidposter. En tidpost hör alltid till ett projekt, och den här kunden har inga projekt ännu.'
+                : 'Inga tidposter på kundens projekt ännu.')
+            : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
+                <thead><tr><th>Datum</th><th>Projekt</th><th>Vad</th><th>Utförd av</th><th class="num">Tid</th><th>Fakturerad</th></tr></thead><tbody>
+                ${tidposter.map((t) => html`<tr>
+                  <td class="code">${t.work_date}</td>
+                  <td>${entityLink(companyId, 'project', t.project_id, t.project_name)}</td>
+                  <td>${kapaOrd(String(t.description ?? ''))}</td>
+                  <td>${t.performed_by ?? '—'}</td>
+                  <td class="num">${hhmm(t.minutes)}</td>
+                  <td>${t.invoiced ? chip('Ja', 'info') : t.billable ? chip('Nej', 'warn') : chip('Ej fakturerbar', 'muted')}</td></tr>`)}
+                </tbody></table></div>${fakturalankSaknas()}`,
         )
       : ''}`;
 }

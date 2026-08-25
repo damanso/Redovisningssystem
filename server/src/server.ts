@@ -16,10 +16,10 @@ try {
 }
 
 const app = createApp();
-const server = app.listen(config.PORT, () => {
+const server = app.listen(config.PORT, config.HOST, () => {
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : config.PORT;
-  console.log(`API lyssnar på port ${port} (${config.NODE_ENV})`);
+  console.log(`API lyssnar på ${config.HOST}:${port} (${config.NODE_ENV})`);
 });
 
 async function shutdown(signal: string): Promise<void> {

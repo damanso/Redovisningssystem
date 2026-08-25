@@ -3,7 +3,7 @@ import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { AccountNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import { AccountNumberSchema, BankgiroSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
   confirmCrmValue, getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact,
   purgeCrmData, recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
@@ -914,7 +914,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       .object({
         name: safeText(200),
         org_number: safeText(20).optional(),
-        bankgiro: safeText(20).optional(),
+        // R-3: bankgiro kontrollerades inte här, bara längdbegränsades, så
+        // ett nummer med fel kontrollsiffra kunde skrivas in redan vid
+        // skapandet och upptäcktes först när betalningen gick fel.
+        bankgiro: BankgiroSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => createSupplier(ctx.client, ctx.companyId, ctx.userId, i as Record<string, unknown>),

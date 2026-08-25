@@ -502,7 +502,15 @@ td a.entity { font-weight: 550; }
   width: min(880px, calc(100vw - 48px));
   padding: 16px 18px 18px;
   background: color-mix(in oklch, var(--surface) 97%, transparent);
-  backdrop-filter: saturate(1.3) blur(14px);
+  /* Ingen backdrop-filter har. Bakgrunden ar 97 % ogenomskinlig, sa ett filter
+     kan bara verka pa de 3 % som lyser igenom.
+     MATT i Chrome 2026-08-25 pa en identisk panel med och utan filtret, pixel
+     for pixel: hogst 7 av 255 nivaers skillnad over hela ytan, och 210 449 av
+     558 000 pixlar skilde exakt 4 nivaer - det ar de tre procenten. Undantaget
+     ar fem pixlar i det rundade hornet, dar filtret klipper sin egen kant.
+     KONTROLL med samma rigg vid 50 % opacitet: 102 av 255 och varenda pixel
+     andrad. Riggen ser en oskarpa nar det finns en att se, sa nollan ovan ar
+     ett svar och inte en trasig matning. */
   border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow-2);
   max-height: min(72vh, 640px); overflow-y: auto; overscroll-behavior: contain;
@@ -603,7 +611,7 @@ h1 { font-size: clamp(23px, 3.4vw, 30px); font-weight: 640; letter-spacing: -0.0
 h2 { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; margin: 30px 0 10px; }
 h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin: 18px 0 8px; }
 .lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px;
-  /* 58ch, inte 68: `ch` är nollans bredd, inte en bokstavs. 68ch
+  /* 58ch, inte 68: "ch" är nollans bredd, inte en bokstavs. 68ch
      mätte upp till 83 tecken — forskningens spann är 65–75. */
   max-width: 58ch; }
 

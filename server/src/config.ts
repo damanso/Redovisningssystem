@@ -13,6 +13,11 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().nonnegative().max(65535).default(3000),
+  // Bind-adress. Default 127.0.0.1 — utan den band Node till *:3001, alltså
+  // även tailnet-IP:t och varje annat gränssnitt. Utifrån nås tjänsten via
+  // tailscale serve (8444 -> 127.0.0.1:3001), aldrig genom att lyssna brett.
+  // Samma mönster som portarna 3000/3002 och som /opt/arenden.
+  HOST: z.string().min(1).default('127.0.0.1'),
   DATABASE_URL: z
     .string()
     .min(1, 'DATABASE_URL krävs (postgres://... för app-rollen, RLS tvingas)'),

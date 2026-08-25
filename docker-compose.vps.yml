@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: redovisning-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - redovisning_pgdata:/var/lib/postgresql/data
+volumes:
+  redovisning_pgdata:

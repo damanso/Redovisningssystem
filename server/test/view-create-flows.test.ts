@@ -44,7 +44,7 @@ describe('skapa kund och leverantör i vyn', () => {
 
   it('ny leverantör via formuläret syns i registret', async () => {
     const res = await agent.post(`/app/c/${companyId}/suppliers/create`).type('form')
-      .send({ name: 'Vylev AB', bankgiro: '111-2222' });
+      .send({ name: 'Vylev AB', bankgiro: '5555-6666' });
     expect([302, 303]).toContain(res.status);
     const list = await agent.get(`/app/c/${companyId}/suppliers`);
     expect(list.text).toContain('Vylev AB');
