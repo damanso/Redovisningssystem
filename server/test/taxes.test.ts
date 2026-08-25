@@ -2,7 +2,7 @@
 // uppskattad bolagsskatt ur bokföringen + vägledande deadlines.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { taxDeadlines, CORPORATE_TAX_PERMILLE } from '../src/services/taxes.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -64,13 +64,42 @@ describe('skatteöversikt end-to-end', () => {
     const L = res.body.result.liability;
     // Moms: utgående 25 000 − ingående 10 000 = 15 000.
     expect(L.vat_payable_ore).toBe(15000_00);
-    // AGI: personalskatt 30 % av 30 000 = 9 000; arbetsgivaravgift 31,42 % = 9 426.
+    // AGI ÄR kontosaldona 2710/2730, som lönebokföringen skapade:
+    // personalskatt 30 % av 30 000 = 9 000; arbetsgivaravgift 31,42 % = 9 426.
     expect(L.employee_tax_ore).toBe(9000_00);
     expect(L.employer_contribution_ore).toBe(9426_00);
     expect(L.agi_total_ore).toBe(18426_00);
     // Bolagsskatt: 20,6 % av positivt resultat före skatt.
     expect(L.estimated_corporate_tax_ore).toBe(Math.round(L.result_before_tax_ore * CORPORATE_TAX_PERMILLE / 1000));
     expect(res.body.result.deadlines.length).toBeGreaterThan(0);
+  });
+
+  // KRAV-3 (bruttometoden): samma skuld får räknas EN gång. Före omläggningen
+  // adderade taxLiability obetalda perioders skatt och avgift OVANPÅ
+  // 2710/2730-saldona. Det var riktigt när lönen bokfördes netto (skulden fanns
+  // inte i något konto) — med bruttometoden hade det dubblat varje bokförd lön.
+  it('AGI ÄR kontosaldot — den obetalda perioden läggs inte till en gång till', async () => {
+    const saldo = await withAdmin(async (admin) => (await admin.query<{ k2710: string; k2730: string }>(
+      `SELECT COALESCE(SUM(credit_ore - debit_ore) FILTER (WHERE account_number BETWEEN 2710 AND 2719), 0)::text AS k2710,
+              COALESCE(SUM(credit_ore - debit_ore) FILTER (WHERE account_number BETWEEN 2730 AND 2739), 0)::text AS k2730
+       FROM voucher_lines WHERE company_id = $1`,
+      [companyId],
+    )).rows[0]!);
+    expect(Number(saldo.k2710)).toBe(9000_00);   // seeden bokförde EN lön
+    expect(Number(saldo.k2730)).toBe(9426_00);
+
+    const res = await api.post(`${co()}/actions/tax_overview`).set(auth()).send({ as_of: '2025-12-31' });
+    const L = res.body.result.liability;
+    expect(L.employee_tax_ore).toBe(Number(saldo.k2710));
+    expect(L.employer_contribution_ore).toBe(Number(saldo.k2730));
+
+    // Perioden ÄR obetald (ingen skattekontobetalning bokförd) — och den syns
+    // som förfallen i prognosen. Den placeras alltså i tiden, men adderas inte.
+    const f = await api.post(`${co()}/actions/liquidity_forecast`).set(auth()).send({ as_of: '2025-12-31' });
+    expect(f.status, JSON.stringify(f.body)).toBe(200);
+    const agi = (f.body.result.sources as { id: string; amount_ore: number; note: string }[]).find((s) => s.id === 'agi')!;
+    expect(agi.note).toContain('period 2025-02');
+    expect(agi.amount_ore).toBe(18426_00);
   });
 
   it('momsperiod kan ändras och styr deadline-etiketten', async () => {

@@ -6,6 +6,13 @@
 // momsen och ingen annanstans") — en indirekt mätning som passerar även om vakten
 // aldrig löser ut. Testerna nedan anropar vakten själv: ett intervall som rör
 // taxLiability:s konton SKA kasta, ett som inte gör det SKA gå igenom.
+//
+// Med bruttometoden (2026-08-25) väger vakten TYNGRE, inte lättare: 2710/2730
+// är inte längre nästan alltid tomma konton som bara SIE-importen rörde — de
+// bär numera hela löneskulden mellan lönen och skattekontobetalningen. En källa
+// som läser dem vid sidan av "agi" skulle därför dubbelräkna varje bokförd lön.
+// Att 2510 fortfarande går igenom är avsiktligt: skattekontot är inte längre
+// lönebokföringens motkonto och gör inget anspråk på AGI:n.
 import { describe, expect, it } from 'vitest';
 import { unclaimedCreditBalance, type AccountLine } from '../src/services/reports.js';
 

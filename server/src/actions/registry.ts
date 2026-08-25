@@ -1284,8 +1284,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'book_payslip',
-    title: 'Bokför lönebesked (kontantmetod: 7010 D / 1930 K = netto)',
+    title: 'Bokför lönebesked (bruttometod: 7010 + 7510 D / 2710 + 1930 + 2730 K)',
     sensitivity: 'sensitive',
+    // Bruttometod: hela bruttolönen kostnadsförs och källskatt (2710) +
+    // arbetsgivaravgift (2730) skuldförs — skulderna betalas av först vid
+    // skattekontobetalningen (book_payroll_tax).
     // payment_date default: lönebeskedets utbetalningsdatum. fiscal_year_id
     // utelämnad härleds ur datumet (kräver olåst räkenskapsår).
     inputSchema: z.object({ payslip_id: UuidSchema, fiscal_year_id: UuidSchema.optional(), payment_date: IsoDateSchema.optional() }).strict(),
@@ -1294,17 +1297,22 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'book_payroll_tax',
-    title: 'Bokför skattekontobetalning för lön (2510 D / 1930 K = skatt + arbetsgivaravgift)',
+    title: 'Bokför skattekontobetalning för lön (2710 + 2730 D / 1930 K)',
     sensitivity: 'sensitive',
+    // Betalar AV löneskulden på 2710/2730 (bruttometoden) — 2510 används inte.
     // Beloppet föreslås ur periodens lönebesked (avrundat till hela kronor);
     // payment_date default: den 12:e månaden efter med bankdagsregeln.
+    // voucher_id: registrerar en REDAN bokförd betalning (t.ex. SIE-importerad)
+    // mot sitt befintliga verifikat — inget nytt verifikat skapas, beloppet och
+    // datumet härleds ur verifikatet självt om de inte anges.
     inputSchema: z.object({
       period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
       fiscal_year_id: UuidSchema.optional(),
       payment_date: IsoDateSchema.optional(),
       amount_ore: OreSchema.optional(),
+      voucher_id: UuidSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number }) =>
+    handler: (ctx, i: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number; voucher_id?: string }) =>
       bookPayrollTax(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   def({

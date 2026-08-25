@@ -1,8 +1,9 @@
 // Fas A14: lön & HR (utan AGI/KU-10). Anställda, lönebesked (brutto/skatt/netto/
-// arbetsgivaravgift) och bokföring till 7210/2710/1930/7510/2730.
+// arbetsgivaravgift) och bokföring enligt bruttometoden till
+// 7010/2710/1930/7510/2730.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { computePayroll, EMPLOYER_CONTRIBUTION_PERMILLE } from '../src/services/payroll.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -70,6 +71,18 @@ describe('lön & HR end-to-end', () => {
     expect(res.body.result.voucher_id).toBeTruthy();
     // Att postVoucher accepterade konteringen bevisar att debet=kredit
     // (brutto+avgift = skatt+netto+avgift) — annars hade den avvisats.
+    // Bruttometoden: 30 000 brutto, 9 000 skatt, 21 000 netto, 9 426 avgift.
+    const lines = await withAdmin(async (admin) => (await admin.query<{ account_number: number; debit_ore: string; credit_ore: string }>(
+      'SELECT account_number, debit_ore::text, credit_ore::text FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no',
+      [res.body.result.voucher_id],
+    )).rows);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 3000000, 0],
+      [2710, 0, 900000],
+      [1930, 0, 2100000],
+      [7510, 942600, 0],
+      [2730, 0, 942600],
+    ]);
 
     // Dubbelbokning spärras.
     const again = await api.post(`${co()}/actions/book_payslip`).set(auth()).send({ payslip_id: payslipId, fiscal_year_id: fiscalYearId, payment_date: '2025-06-25' });

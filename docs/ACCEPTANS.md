@@ -123,7 +123,8 @@ klarar själv. Acceptansen ur utvecklingsprompten, med testbevis:
 |---|---|---|---|
 | K1 | Preliminärskatt enligt tabell 30 kol 1 (SKVFS 2025:20), årsversionerad; kontrollvärden 50 000 → 10 650 · 56 500 → 12 943 · 60 000 → 14 643 · 70 000 → 19 643; platt sats som fallback; manuell jämkning; omräkning rör aldrig bokfört/jämkat; AGI bygger på faktisk skatt | ✅ | `payroll-tax` |
 | K1 Tillägg 1 | Migreringen använder HISTORISKA värden: 2026-03…06 → 13 360 / 43 140 (= SEB-kontoutdrag + huvudbokens 7010/1930-verifikat), juli+ → 12 943 / 43 557; idempotent; 12 995/43 505 förekommer inte längre; AGI per period speglar utkasten; bokfört rörs aldrig | ✅ | `payroll-historical` |
-| K2 | payment_date den 25:e med svensk bankdagsregel (juli 2026 → 2026-07-24); semesterersättning 12 % (justerbar); pension förberedd men avstängd; book_payslip kontantmetod 7010 D / 1930 K = verkligt netto; book_payroll_tax 2510 D / 1930 K (30 695 kr för juli, den 12:e månaden efter); ackumulerat per kalenderår ur systemet | ✅ | `payroll-payment` |
+| K2 | payment_date den 25:e med svensk bankdagsregel (juli 2026 → 2026-07-24); semesterersättning 12 % (justerbar); pension förberedd men avstängd; book_payslip **bruttometod** 7010 D 56 500 / 2710 K 12 943 / 1930 K 43 557 / 7510 D 17 752,30 / 2730 K 17 752,30; book_payroll_tax 2710 D + 2730 D / 1930 K (30 695 kr för juli, den 12:e månaden efter); ackumulerat per kalenderår ur systemet | ✅ | `payroll-payment` |
+| K2 rev. (2026-08-25) | Efter bokförd lön + skattebetalning för perioden visar råbalansen 7010 = brutto, 7510 = avgift, 2710 = 0 och 2510 ORÖRD; 2730 bär endast öresavrundningen (30 öre = 30 695,30 − 30 695,00), och betalas det exakta beloppet nollas även 2730; likviditetsprognosen visar 0 kr förfallen AGI. `book_payroll_tax` med `voucher_id` registrerar en redan bokförd betalning mot sitt befintliga verifikat utan att skapa ett nytt. AGI-skulden räknas EN gång — ur 2710/2730-saldot, aldrig ur saldot plus lönebeskeden | ✅ | `payroll-payment`, `taxes`, `liquiditySources` |
 | K3 | Lönespec-PDF enligt Locollabs mall genereras och lagras kopplad till lönebeskedet; attach_document/list_documents/get_document; vyn visar bilagor; manuell uppladdning kan kopplas | ✅ | `documents` |
 | K4 | list_fiscal_years/list_vouchers/get_voucher; fiscal_year_id härleds ur datum (olåst år krävs); beroendemedveten godkännandekö ("godkänn Bokför faktura X först") + composite book_invoice_and_register_payment — aldrig rött fel som första upptäckt | ✅ | `fiscal-year-derivation`, `approval-dependencies` |
 | K5 | npm run mcp:install återställer configen efter radering (idempotent, verifierar med testanrop); npm run mcp:token förnyar efter ägarinloggning (upp till 90 dagar); self_check rapporterar API-nåbarhet + tokenutgång | ✅ | `mcp-lifecycle`, `mcp` |
@@ -140,8 +141,9 @@ klarar själv. Acceptansen ur utvecklingsprompten, med testbevis:
 
 Körbart facit ur prompten, allt testat: lönebesked juli 2026 brutto 56 500 →
 skatt 12 943, netto 43 557, arbavg 17 752,30, payment_date 2026-07-24, PDF
-bilagd, AGI-fil visar 12 943; book_payslip → 7010 D / 1930 K 43 557 på
-2026-07-24 efter mänskligt godkännande; book_payroll_tax föreslår 2510 D /
+bilagd, AGI-fil visar 12 943; book_payslip → 7010 D 56 500 / 2710 K 12 943 /
+1930 K 43 557 / 7510 D + 2730 K 17 752,30 på 2026-07-24 efter mänskligt
+godkännande; book_payroll_tax föreslår 2710 D 12 943 + 2730 D 17 752 /
 1930 K 30 695 i augusti; en agent kan via enbart action-API:t lista
 räkenskapsår, köa en fakturabetalning, bilägga ett dokument och läsa
 ackumulerad lön; en betalning köad före sin bokning visar beroendet i kön;

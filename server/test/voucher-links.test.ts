@@ -100,7 +100,12 @@ describe('link_voucher — baklänkning utan ny bokföring', () => {
     expect(Number(res.body.result.invoice.paid_amount_ore)).toBe(500_000);
   });
 
-  it('lönebesked kan baklänkas och får utbetalningsdatum från verifikatet', async () => {
+  // Baklänkningen gäller HISTORISKA verifikat — de importerade lönerna bokfördes
+  // med nettometoden (7010 D / 1930 K med nettot). Att lönebokföringen numera
+  // använder bruttometoden ändrar inte det: befintliga verifikat skrivs aldrig
+  // om, och matchningen sker mot lönebeskedets NETTO, som är det som lämnade
+  // banken oavsett metod.
+  it('lönebesked kan baklänkas till ett historiskt nettoverifikat och får dess utbetalningsdatum', async () => {
     const emp = await api.post(`${co()}/actions/create_employee`).set(auth()).send({ name: 'David', monthly_salary_ore: 5_650_000, tax_rate: 23 });
     const slip = await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: emp.body.result.id, period: '2025-06', payment_date: '2025-06-25' });
     const voucherId = await postManualVoucher('2025-06-25', '[SIE A300] Lön juni', [

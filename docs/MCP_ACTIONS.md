@@ -147,13 +147,29 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 - `payment_date` sätts till den 25:e i perioden med svensk bankdagsregel
   (`server/src/domain/bankdays.ts`); semesterersättning via
   `include_vacation_pay` (12 %) eller `vacation_pay_ore`.
-- `book_payslip` (sensitive) bokför enligt **kontantmetoden**: 7010 D /
-  1930 K = verkligt netto på utbetalningsdatumet. `book_payroll_tax`
-  (sensitive) bokför skattekontobetalningen (2510 D / 1930 K = skatt +
-  arbetsgivaravgift, förslag avrundat till hela kronor, default den 12:e
-  månaden efter). `payroll_year_summary` (read) ger ackumulerat per
-  kalenderår. `generate_payslip_pdf` (write) skapar lönespecifikationen
-  enligt Locollabs mall och bilägger den på lönebeskedet.
+- `book_payslip` (sensitive) bokför enligt **bruttometoden** — hela
+  lönehändelsen i ETT verifikat på utbetalningsdatumet:
+  7010 D brutto · 2710 K källskatt · 1930 K netto · 7510 D avgift ·
+  2730 K avgift. Nollrader utelämnas (en jämkning till 0 kr skatt ger ingen
+  tom rad). `book_payroll_tax` (sensitive) BETALAR AV de skulderna:
+  2710 D periodens källskatt · 2730 D resten av beloppet · 1930 K, förslag
+  avrundat till hela kronor (skattekontot betalas i hela kronor —
+  öresavrundningen blir kvar som några ören på 2730), default den 12:e
+  månaden efter.
+  **2510 används inte längre av lönebokföringen.** Fram till 2026-08-25
+  debiterade `book_payslip` 7010 med NETTOT och `book_payroll_tax` lade
+  betalningen på 2510. Följden var att personalkostnaden var understated med
+  exakt skatt + avgift, att 7510 saknades helt i råbalansen, och att
+  likviditetsprognosen rapporterade betald AGI som förfallen. Se
+  `docs/DATAJOBB_LONEKORRIGERING.md` för rättelsen bakåt.
+  `book_payroll_tax` tar dessutom **`voucher_id`**: en betalning som redan är
+  bokförd (t.ex. SIE-importerad) registreras då mot sitt BEFINTLIGA verifikat
+  — inget nytt verifikat skapas, och datum + belopp härleds ur verifikatet
+  självt (bankkrediteringen på 1930) om de inte anges. Utan den raden i
+  `payroll_tax_payments` fortsätter perioden rapporteras som obetald.
+  `payroll_year_summary` (read) ger ackumulerat per kalenderår.
+  `generate_payslip_pdf` (write) skapar lönespecifikationen enligt Locollabs
+  mall och bilägger den på lönebeskedet.
 
 ### Dokument (K3)
 

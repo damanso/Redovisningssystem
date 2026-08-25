@@ -49,8 +49,12 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   _AGENT_TOKEN), speglar action-manifestet; agent-token kan aldrig godkänna.
 - **K-serien (2026-07-21, payroll utan workarounds):** tabell 30-skatt
   (årsversionerad + historiska H1-värden 13 360/43 140 per Tillägg 1),
-  payment_date med bankdagsregel, semesterersättning, kontantmetodsbokföring
-  7010/1930 + book_payroll_tax 2510/1930, lönespec-PDF + dokumentkoppling
+  payment_date med bankdagsregel, semesterersättning, lönebokföring
+  (**bruttometod sedan 2026-08-25**: 7010 D brutto / 2710 K skatt / 1930 K
+  netto / 7510 D + 2730 K avgift; book_payroll_tax 2710 D + 2730 D / 1930 K.
+  K-serien byggde detta som KONTANTMETOD — 7010/1930 med nettot och
+  betalningen på 2510 — vilket var fel och rättades, se sessionsloggen
+  2026-08-25), lönespec-PDF + dokumentkoppling
   (attach/list/get_document), list_fiscal_years/list_vouchers + härlett
   räkenskapsår, beroendemedveten godkännandekö + composite bokning-och-
   betalning, link_voucher-baklänkning + momsmetodvakt, draft-delete,
@@ -108,6 +112,18 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
     varje omstyrning redovisas (`redirected_organizations`). Till skillnad från
     GDPR-gravstenen FÅR den tas bort: en sammanslagning är ett omdöme.
 
+12. **Byter en bokföringspost konto byter också härledningarna som läser det.**
+    Lönebokföringen lades om från netto- till bruttometod (2026-08-25).
+    `taxLiability` adderade obetalda perioders skatt och avgift OVANPÅ
+    2710/2730-saldona — helt riktigt så länge lönen bokfördes netto, för då
+    fanns skulden inte i något konto alls. Med bruttometoden hade exakt samma
+    rad dubblat varje bokförd lön, och felet hade synts först som ett för högt
+    tal i en prognos någon lutade ett beslut mot. Kontobytet i två
+    bokföringsfunktioner var den lilla delen; den farliga delen låg i
+    `taxes.ts` och `reports.ts`, som varken nämns i felrapporten eller i
+    kontoplanen. **Regel: när en post byter konto, leta upp varje härledning
+    som läser det kontot och fråga vad den ANTOG om kontot.**
+
 ## INTE byggt (utanför scope / kvarstår)
 
 - Digital inlämning till Skatteverket/Bolagsverket, BankID, PSD2-bankkoppling —
@@ -118,7 +134,10 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Kvarstår i PRODUKTIONSDATAN (körs av David via actions efter merge):
   `recalculate_draft_payslips` (H1→13 360, juli→12 943),
   `suggest_voucher_links`+`link_voucher` (2025/H1-baklänkningen),
-  `delete_draft_invoice` för fakturaregister 13–18 (efter Davids OK).
+  `delete_draft_invoice` för fakturaregister 13–18 (efter Davids OK),
+  **rättelsen av lönebokföringen 2026-03–2026-08** — sex `post_voucher` +
+  tre `book_payroll_tax` med `voucher_id`, med härledning, avstämning och
+  ordning i `docs/DATAJOBB_LONEKORRIGERING.md` (LOC-355).
 
 ## Sandbox-fallgropar (för AI-sessioner i denna repo-miljö)
 
@@ -139,6 +158,70 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-25 (`cto/l-gg-om-l-nebokf-ringen-till-bruttometod-50`: lönen
+  bokförs brutto — och skulden slutar räknas två gånger):** Överlämning #15
+  (LOC-355) mätte det i råbalansen: 7010 = 259 674,00, exakt de sex utbetalda
+  NETTOLÖNERNA, och 7510 saknades helt. `book_payslip` debiterade 7010 med
+  nettot och `book_payroll_tax` lade skattekontobetalningen som debet på 2510,
+  så personalkostnaden var understated med **185 839,80 kr** — ett tal som går
+  rakt in i K2-årsredovisningen och INK2 — och likviditetsprognosen
+  rapporterade **124 032,20 kr** som FÖRFALLET trots ett bokfört
+  betalningsverifikat per period. Davids ja: "bygg, jag vill se korrekta
+  siffror direkt".
+
+  1. **`bookPayslip` bokför hela lönehändelsen i ETT verifikat:** 7010 D brutto
+     · 2710 K källskatt · 1930 K netto · 7510 D avgift · 2730 K avgift.
+     Balansen vilar på att netto = brutto − skatt, och den invarianten
+     kontrolleras nu explicit (`inconsistent_payslip`) i stället för att dyka
+     upp som ett obalanserat verifikat två lager ned. Nollrader släpps — en
+     jämkning till 0 kr skatt ska inte ge en rad utan belopp.
+  2. **`bookPayrollTax` BETALAR AV skulden** (2710 D + 2730 D / 1930 K) i
+     stället för att skapa en ny på 2510. Skattekontot betalas i hela kronor,
+     så avrundningen läggs på 2730-raden — aldrig på 2710, för källskatten är
+     ett exakt avdraget belopp och ska bort i sin helhet. Resten blir några
+     ören kvar som skuld; ett eget öresavrundningskonto (3740) är ett eget
+     vägval som inte är taget. **2510 rörs inte längre av lönebokföringen.**
+  3. **Det farligaste fyndet låg inte i felrapporten.** `taxLiability`
+     adderade obetalda perioders skatt och avgift OVANPÅ 2710/2730-saldona.
+     Det var riktigt under nettometoden — då fanns skulden inte i något konto
+     — men med bruttometoden hade samma rad dubblat varje bokförd lön. Nu ÄR
+     AGI:n saldot på 2710/2730, och `unpaidPayrollPeriods` används enbart för
+     att placera skulden i TIDEN. Se lärdom 12.
+  4. **Prognosen fördelar UR saldot, inte ovanpå det.** Perioderna får sin del
+     i förfallodagsordning, äldst först, och kan aldrig lägga mer i en hink än
+     vad kontona bär. Det som saldot inte räcker till bucketas INTE utan
+     redovisas i noten — en residual mot totalen hade lagt ett NEGATIVT belopp
+     i en framtida hink och tyst kvittat bort en verklig utbetalning. Den
+     situationen är inte hypotetisk: den är precis produktionens läge fram
+     till rättelsen (lön baklänkad till nettoverifikat), och den har ett eget
+     test.
+  5. **`book_payroll_tax` tar `voucher_id`** — en redan bokförd betalning
+     registreras mot sitt BEFINTLIGA verifikat, utan nytt verifikat, med datum
+     och belopp härledda ur verifikatets egen bankkreditering. Utan raden i
+     `payroll_tax_payments` fortsätter perioden rapporteras som obetald hur
+     rätt bokföringen än är. Behövs för SIE-verifikaten I20/I36/I72.
+  6. **Rättelsen bakåt är förberedd, inte utförd.** Sex korrigeringsverifikat
+     (ett per period, så att varje rad går att följa mot sin AGI-kvittens) +
+     tre backfyllningar, med härledning, avstämning och ordning i
+     `docs/DATAJOBB_LONEKORRIGERING.md`. Avstämningen går ihop på öret:
+     Σ(D 7010 + D 7510) = 185 839,80 ur lönebeskeden, Σ(K 2510) = 185 840,00
+     ur 2510-saldot, differensen 0,20 kr är öresavrundningen över sex
+     betalningar — och 7010 hamnar på 339 000,00 = **exakt 6 × 56 500**, vilket
+     är den hårdaste kontrollen underlaget kan ge sig själv. Sessionen har
+     INTE rört produktionsdatan och kan inte göra det; jobben körs av David via
+     Att göra. **Mappningen period ↔ SIE-verifikat (I20/I36/I72) är INTE
+     fastställd av sessionen** — produktionsdatan gick inte att läsa härifrån,
+     och den ska bekräftas ur verifikationstexterna innan backfyllningen köas.
+
+  Ingen migration, inget nytt beroende, inget nytt mönster; `postVoucher`,
+  godkännandeflödet, `agi.ts`, SIE-importen och lönespecens beräkning är
+  orörda, och befintliga verifikat skrivs aldrig om. Ändrat: `payroll.ts`,
+  `taxes.ts`, `reports.ts`, två registry-definitioner, sju testsviter, docs
+  (`MCP_ACTIONS`, `ACCEPTANS`, denna fil + run-boken).
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körskriptet
+  kör dem efteråt) — utfallet ska klistras in här innan LOC-355 stängs.
 
 - **2026-08-20 (`fix/likviditet-kallor`: utflödessidan stod på noll — svaret bär
   nu sin egen källredovisning):** Davids order (flaggad 13/8) var "utflödessidan

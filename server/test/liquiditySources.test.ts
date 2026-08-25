@@ -35,6 +35,8 @@ let arsmomsCo: string;
 let forfallenAgiCo: string;
 /** AGI per löneperiod i D (skatt + arbetsgivaravgift), ur lönebeskeden själva. */
 const agiPerPeriod: Record<string, number> = {};
+/** E: lönebesked baklänkat till ett NETTOverifikat — skulden finns inte i kontona. */
+let nettoLonCo: string;
 
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = (id: string) => `/api/companies/${id}`;
@@ -141,6 +143,35 @@ beforeAll(async () => {
     await approveAction(forfallenAgiCo, 'book_payslip', { payslip_id: ps.body.result.id });
     agiPerPeriod[period] = ps.body.result.tax_ore + ps.body.result.employer_contribution_ore;
   }
+
+  // --- E: lönen bokförd med NETTOMETODEN (produktionens läge före rättelsen) --
+  // Lönebeskedet är bokfört (baklänkat till ett historiskt 7010/1930-verifikat),
+  // så `unpaidPayrollPeriods` rapporterar perioden som obetald — men skulden
+  // finns inte i något konto, eftersom nettoverifikatet aldrig krediterade
+  // 2710/2730. Exakt den formen har Locollabs RÅ 2026 fram till
+  // korrigeringsverifikaten.
+  nettoLonCo = await createCompany(user.token, 'Nettolön AB');
+  const fyE = await createFiscalYear(nettoLonCo, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const empE = await api.post(`${co(nettoLonCo)}/actions/create_employee`).set(auth()).send({
+    name: 'Nettolönetagare', monthly_salary_ore: 5_650_000, tax_rate: 23,
+  });
+  expect(empE.status, JSON.stringify(empE.body)).toBe(200);
+  const psE = await api.post(`${co(nettoLonCo)}/actions/create_payslip`).set(auth())
+    .send({ employee_id: empE.body.result.id, period: '2026-03' });
+  expect(psE.status, JSON.stringify(psE.body)).toBe(200);
+  const nettoE = Number(psE.body.result.net_ore);
+  const vE = await approveAction(nettoLonCo, 'post_voucher', {
+    fiscal_year_id: fyE.id, voucher_date: '2026-03-25', description: '[SIE I12] Lön mars (nettometod)',
+    lines: [
+      { account_number: 7010, debit_ore: nettoE },
+      { account_number: 1930, credit_ore: nettoE },
+    ],
+  });
+  const linkE = await api.post(`${co(nettoLonCo)}/actions/link_voucher`).set(auth()).send({
+    entity_type: 'payslip', entity_id: psE.body.result.id, voucher_id: vE.body.result.id,
+  });
+  expect(linkE.status, JSON.stringify(linkE.body)).toBe(200);
+  expect(linkE.body.result.payslip.status).toBe('booked');
 });
 
 describe('likviditetsprognosens källredovisning', () => {
@@ -300,6 +331,29 @@ describe('likviditetsprognosens källredovisning', () => {
     expect(source(after, 'agi').note).not.toContain('period 2026-03');
     // 2026-07 är fortfarande förfallen.
     expect(forfallet(after)).toBe(agiPerPeriod['2026-07']);
+  });
+
+  // BRUTTOMETODEN (2026-08-25): skulden ÄR saldot på 2710/2730, och perioderna
+  // säger bara var i tiden den ligger. Är saldot mindre än vad de obetalda
+  // lönebeskeden anger får skillnaden ALDRIG bucketas — varken som en skuld som
+  // kontona inte bär, eller (som en residual mot totalen skulle ge) som ett
+  // NEGATIVT belopp i en framtida hink, vilket tyst hade kvittat bort en verklig
+  // framtida utbetalning. Den redovisas i noten i stället.
+  it('en lön bokförd med nettometoden ger ingen AGI-skuld i hinkarna — och ingen negativ post', async () => {
+    const f = await forecast(nettoLonCo, '2026-09-01');
+    const agi = source(f, 'agi');
+    expect(agi.status).toBe('TOM');
+    expect(agi.amount_ore).toBe(0);
+    // Tystnaden är bruten: noten säger vilken period som saknar täckning och vad
+    // man gör åt det. En nolla utan skäl vore samma tysta noll som lärdom 7.
+    expect(agi.note).toContain('2026-03');
+    expect(agi.note).toContain('payroll_tax_payments');
+
+    // Ingen hink rörd — och framför allt ingen med negativt utflöde.
+    expect(f.buckets.every((b) => b.outflow_ore === 0)).toBe(true);
+    for (const s of f.sources) {
+      if (s.status === 'MODELLERAD') expect(s.amount_ore).toBeGreaterThanOrEqual(0);
+    }
   });
 
   // KRAV-11

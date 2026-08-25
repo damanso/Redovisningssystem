@@ -585,8 +585,8 @@ const TAX_COMPARISON_TOLERANCE_ORE = 100_000;
  * UTFLÖDESSIDAN ÄR INTE BARA LEVERANTÖRSFAKTUROR. Den hämtades förut enbart ur
  * `supplier_invoices`; i ett bolag som inte registrerar leverantörsfakturor stod
  * hela utflödessidan på noll trots kända skulder i bokföringen. Nu bucketas även
- * de statutära skulderna — momsnetto (26xx) och AGI (2710/2730 + obetalda
- * lönebesked) — mot nästa förfallodag ur `taxDeadlines`.
+ * de statutära skulderna — momsnetto (26xx) och AGI (saldot på 2710/2730,
+ * placerat per obetald löneperiod) — mot sina förfallodagar ur `taxDeadlines`.
  *
  * Svaret bär sin egen källredovisning i `sources`: VARJE känd källa listas med
  * status, belopp och skäl, även när den är tom eller medvetet inte modellerad.
@@ -680,30 +680,49 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
   const nextDeadline = (type: string): TaxDeadline | undefined =>
     tax.deadlines.find((d) => d.type === type && d.due_date >= asOfDate);
 
-  // AGI: de obetalda lönebeskeden ÄR periodmärkta i bokföringen (`payslips.period`
-  // och `payroll_tax_payments`, unik per period), så varje period kan placeras mot
-  // sin egen förfallodag — mätt, inte gissat. Kontosaldona 2710/2730 (SIE-import,
-  // manuella verifikat) bär ingen period och kan bara läggas mot nästa kommande
-  // AGI-förfallodag; de tas ut som RESIDUAL mot `agi_total_ore` så att delarna
-  // alltid summerar till exakt skatteöversiktens tal.
+  // AGI: SKULDEN är saldot på 2710/2730 (`agi_total_ore`) — de obetalda
+  // lönebeskeden säger bara VAR I TIDEN den ligger. Under bruttometoden skuldför
+  // lönen 2710/2730 och skattekontobetalningen betalar av dem, så att lägga
+  // periodernas belopp OVANPÅ saldot vore att räkna varje lön två gånger
+  // (`taxLiability` gjorde det före 2026-08-25).
+  //
+  // Fördelningen sker därför UR saldot, i förfallodagsordning (äldst först): en
+  // period kan aldrig lägga mer i en hink än vad kontona faktiskt bär. Det som
+  // blir över saknar period (SIE-import, manuella verifikat) och läggs mot nästa
+  // kommande AGI-förfallodag. Det som saldot INTE räcker till redovisas i noten i
+  // stället för att bucketas — en period som lönebeskedet säger är obetald men
+  // som kontona inte bär betyder att lönen bokförts utanför bruttometoden eller
+  // att en betalning saknar sin `payroll_tax_payments`-rad. Att då lägga ett
+  // NEGATIVT belopp i en framtida hink hade tyst kvittat bort en verklig skuld.
   const unpaidPeriods = await unpaidPayrollPeriods(client, companyId, asOfDate);
-  const agiParts: StatutoryPart[] = unpaidPeriods.map((p) => ({
-    period_label: p.period,
-    amount: p.tax_ore + p.employer_contribution_ore,
-    due_date: agiDueDateForPeriod(p.period),
-    label: 'Arbetsgivardeklaration (skatt + avgifter)',
-  }));
-  const agiAccountRest = tax.liability.agi_total_ore - agiParts.reduce((s, p) => s + p.amount, 0);
-  if (agiAccountRest !== 0) {
+  const agiParts: StatutoryPart[] = [];
+  const agiUnfunded: string[] = [];
+  let agiRemaining = Math.max(0, tax.liability.agi_total_ore);
+  for (const p of unpaidPeriods) {
+    const want = p.tax_ore + p.employer_contribution_ore;
+    const take = Math.min(want, agiRemaining);
+    agiRemaining -= take;
+    if (take > 0) {
+      agiParts.push({
+        period_label: p.period,
+        amount: take,
+        due_date: agiDueDateForPeriod(p.period),
+        label: 'Arbetsgivardeklaration (skatt + avgifter)',
+      });
+    }
+    if (take < want) agiUnfunded.push(`${p.period}: ${formatOre(want - take, { currency: true })}`);
+  }
+  if (agiRemaining > 0) {
     const next = nextDeadline('agi');
     agiParts.push({
-      period_label: `kontosaldo 2710/2730${next ? `, redovisas ${next.period_label}` : ', ingen period'}`,
-      amount: agiAccountRest,
+      period_label: `kontosaldo 2710/2730 utan löneperiod${next ? `, redovisas ${next.period_label}` : ', ingen period'}`,
+      amount: agiRemaining,
       due_date: next?.due_date ?? null,
       label: 'Arbetsgivardeklaration (skatt + avgifter)',
     });
   }
   agiParts.sort((a, b) => (a.due_date ?? '9999-12-31').localeCompare(b.due_date ?? '9999-12-31'));
+  const AGI_UNFUNDED_NOTE = agiUnfunded.length === 0 ? '' : ` OBS: lönebeskeden för ${agiUnfunded.join('; ')} saknar bokförd skattekontobetalning, men saldot på 2710/2730 räcker inte till dem. Skillnaden bucketas INTE (den skulden syns inte i kontona). Vanligaste orsaken: lönen är bokförd utanför bruttometoden, eller så saknar en redan gjord betalning sin rad i payroll_tax_payments — registrera den med book_payroll_tax mot dess befintliga verifikat.`;
 
   // MOMS: kan ett momsnetto avse en period vars förfallodag redan passerat?
   // I SAK JA — men systemet kan inte MÄTA vilken del, och därför delas det inte
@@ -729,20 +748,25 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
     : [];
   const VAT_UNSETTLED_NOTE = ' Momsnettot är ett kontosaldo utan periodmärkning: innehåller det ännu ej redovisade äldre perioder ligger en del av beloppet i praktiken redan förfallet — bokföringen visar inte vilken del, så hela nettot ställs mot nästa förfallodag.';
 
-  const statutory: Array<{ id: string; total: Ore; parts: StatutoryPart[]; what: string; extra: string }> = [
+  // `extra` gäller bara den bucketade texten. `warning` är ett fynd om KÄLLAN
+  // och måste följa med i ALLA statuslägen — den behövs som mest när saldot är
+  // noll men lönebeskeden säger att något är obetalt.
+  const statutory: Array<{ id: string; total: Ore; parts: StatutoryPart[]; what: string; extra: string; warning: string }> = [
     {
       id: 'moms',
       total: tax.liability.vat_payable_ore,
       parts: vatParts,
       what: 'Momsnetto (utgående − ingående moms, konto 26xx)',
       extra: VAT_UNSETTLED_NOTE,
+      warning: '',
     },
     {
       id: 'agi',
       total: tax.liability.agi_total_ore,
       parts: agiParts,
-      what: 'Personalens källskatt + arbetsgivaravgifter (konto 2710/2730 samt bokförda lönebesked utan betald skattekontobetalning)',
+      what: 'Personalens källskatt + arbetsgivaravgifter (saldot på konto 2710/2730, placerat per löneperiod)',
       extra: '',
+      warning: AGI_UNFUNDED_NOTE,
     },
   ];
 
@@ -751,18 +775,18 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
     const dated = s.parts.filter((p) => p.due_date !== null);
     const undatedOre = s.parts.filter((p) => p.due_date === null).reduce((sum, p) => sum + p.amount, 0);
     if (s.total === 0) {
-      sources.push({ id: s.id, side: 'out', status: 'TOM', amount_ore: 0, due_date: null, note: `${s.what}: inget saldo per as_of.` });
+      sources.push({ id: s.id, side: 'out', status: 'TOM', amount_ore: 0, due_date: null, note: `${s.what}: inget saldo per as_of.${s.warning}` });
     } else if (s.total < 0) {
       // Ett negativt netto är en FORDRAN. Den läggs medvetet inte som inflöde:
       // återbetalningens tidpunkt bestäms av Skatteverket, inte av oss.
       sources.push({
         id: s.id, side: 'out', status: 'KAND_EJ_MODELLERAD', amount_ore: s.total, due_date: null,
-        note: `${s.what}: negativt netto, alltså en fordran på ${formatOre(-s.total, { currency: true })}. Läggs inte som inflöde i någon hink — utbetalningstidpunkten bestäms av Skatteverket.`,
+        note: `${s.what}: negativt netto, alltså en fordran på ${formatOre(-s.total, { currency: true })}. Läggs inte som inflöde i någon hink — utbetalningstidpunkten bestäms av Skatteverket.${s.warning}`,
       });
     } else if (dated.length === 0) {
       sources.push({
         id: s.id, side: 'out', status: 'KAND_EJ_DATERAD', amount_ore: s.total, due_date: null,
-        note: `${s.what}: ${formatOre(s.total, { currency: true })} att betala, men ingen förfallodag ligger inom prognosens horisont (taxDeadlines, momsperiod "${tax.vat_period}"). Läggs därför inte i någon hink — inte heller i "Senare".`,
+        note: `${s.what}: ${formatOre(s.total, { currency: true })} att betala, men ingen förfallodag ligger inom prognosens horisont (taxDeadlines, momsperiod "${tax.vat_period}"). Läggs därför inte i någon hink — inte heller i "Senare".${s.warning}`,
       });
     } else {
       // Varje del mot SIN egen förfallodag. Noten redovisar uppdelningen med
@@ -792,7 +816,7 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
         // Fältet bär den TIDIGASTE förfallodagen; hela beloppet förfaller inte
         // nödvändigtvis samtidigt — noten redovisar varje periods datum.
         due_date: placed.map((p) => p.due_date!).sort()[0]!,
-        note: `${head}${overdue}${rest}${s.extra}${placed.length > 1 ? ' Fältet due_date är den tidigaste av dem.' : ''} Vägledande datum — helg-/helgdagsförskjutning beräknas inte.`,
+        note: `${head}${overdue}${rest}${s.extra}${s.warning}${placed.length > 1 ? ' Fältet due_date är den tidigaste av dem.' : ''} Vägledande datum — helg-/helgdagsförskjutning beräknas inte.`,
       });
     }
   }

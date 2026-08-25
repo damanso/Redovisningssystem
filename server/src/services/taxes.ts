@@ -21,8 +21,8 @@ export const CORPORATE_TAX_PERMILLE = 206;
 export interface TaxLiability {
   as_of: string;
   vat_payable_ore: Ore;          // utgående − ingående moms (positivt = att betala)
-  employee_tax_ore: Ore;         // personalens källskatt (2710-saldo + obetalda lönebesked)
-  employer_contribution_ore: Ore;// arbetsgivaravgifter (2730-saldo + obetalda lönebesked)
+  employee_tax_ore: Ore;         // personalens källskatt = 2710-saldot
+  employer_contribution_ore: Ore;// arbetsgivaravgifter = 2730-saldot
   agi_total_ore: Ore;            // skatt + avgift att deklarera/betala (AGI)
   estimated_corporate_tax_ore: Ore; // uppskattad bolagsskatt på årets resultat
   result_before_tax_ore: Ore;
@@ -42,10 +42,13 @@ export interface UnpaidPayrollPeriod { period: string; tax_ore: Ore; employer_co
  * (`payroll_tax_payments`, unik per period), grupperade per löneperiod och
  * stigande i tid.
  *
- * Uppdelningen per period är mätbar och inte gissad: varje lönebesked bär sin
- * `period` ('YYYY-MM') och betalningen är en egen rad per period. Det är därför
- * likviditetsprognosen kan placera en obetald period mot SIN egen förfallodag —
- * en period vars förfallodag passerat är förfallen, inte kommande.
+ * Det här är en PLACERINGSKÄLLA, inte ett belopp att lägga till skulden. Under
+ * bruttometoden ÄR skulden saldot på 2710/2730 — lönen skuldför den och
+ * skattekontobetalningen betalar av den. Perioderna säger bara VAR I TIDEN
+ * saldot ligger: varje lönebesked bär sin `period` ('YYYY-MM') och betalningen
+ * är en egen rad per period, så en period vars förfallodag passerat kan
+ * redovisas som förfallen i stället för kommande. Att som förr addera de här
+ * beloppen ovanpå kontosaldona skulle dubbelräkna varje bokförd lön.
  */
 export async function unpaidPayrollPeriods(
   client: PoolClient, companyId: string, asOf: string,
@@ -76,15 +79,20 @@ export async function taxLiability(
   const balance = await accountSums(client, companyId, { to: asOf });
   const vatPayable = creditBalance(balance, 2600, 2699);         // utg. − ing. moms
 
-  // Löneskulden (AGI): kontosaldona 2710/2730 (t.ex. SIE-import eller manuella
-  // verifikat) PLUS bokförda lönebesked vars period ännu inte fått en bokförd
-  // skattekontobetalning — hämtade PER LÖNEPERIOD av `unpaidPayrollPeriods`, så
-  // att likviditetsprognosen kan placera varje period mot sin egen förfallodag
-  // ur exakt samma frågeresultat som summan här bygger på.
-  const unpaid = await unpaidPayrollPeriods(client, companyId, asOf);
-  const employeeTax = creditBalance(balance, 2710, 2719) + unpaid.reduce((s, p) => s + p.tax_ore, 0);
-  const employerContribution = creditBalance(balance, 2730, 2739)
-    + unpaid.reduce((s, p) => s + p.employer_contribution_ore, 0);
+  // Löneskulden (AGI) ÄR kontosaldona 2710/2730 — inget annat, och inget utöver.
+  // Under bruttometoden (2026-08-25) krediterar `bookPayslip` källskatten på 2710
+  // och arbetsgivaravgiften på 2730 vid utbetalningen, och `bookPayrollTax`
+  // debiterar samma konton vid skattekontobetalningen. Skulden uppstår och dör
+  // alltså i bokföringen.
+  //
+  // Här stod tidigare `+ obetalda lönebeskeds skatt och avgift`. Det var riktigt
+  // så länge lönen bokfördes med nettometoden (7010/1930), för då fanns skulden
+  // inte i något konto. Med bruttometoden vore samma addition en DUBBELRÄKNING:
+  // varje bokförd lön hade räknats både ur sitt kontosaldo och ur sin
+  // lönebeskedsrad. `unpaidPayrollPeriods` finns kvar, men bara som placering i
+  // tiden (se likviditetsprognosen) — aldrig som ett belopp ovanpå saldot.
+  const employeeTax = creditBalance(balance, 2710, 2719);
+  const employerContribution = creditBalance(balance, 2730, 2739);
 
   // Resultat före skatt för räkenskapsåret (intäkter − kostnader, exkl. skatt 89xx).
   const periodRows = await accountSums(client, companyId, { from: fiscalYear.from, to: fiscalYear.to });

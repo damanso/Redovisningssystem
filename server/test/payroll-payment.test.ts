@@ -1,7 +1,9 @@
 // K2: utbetalningsdatum med svensk bankdagsregel, valbar semesterersättning
-// (12 %), bokföring enligt kontantmetoden (7010 D / 1930 K = verkligt netto vid
-// utbetalningen) och skattekontobetalningen som egen händelse
-// (2510 D / 1930 K = skatt + arbetsgivaravgift, ~12:e månaden efter).
+// (12 %) och lönebokföring enligt BRUTTOMETODEN (2026-08-25, överlämning #15):
+// hela bruttolönen kostnadsförs på 7010, källskatten skuldförs på 2710,
+// arbetsgivaravgiften kostnadsförs på 7510 mot skulden på 2730, och
+// skattekontobetalningen månaden efter BETALAR AV skulderna (2710/2730 D /
+// 1930 K) i stället för att lägga sig som en debet på 2510.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { bankDayOnOrBefore, defaultPaymentDate, isBankDay } from '../src/domain/bankdays.js';
@@ -26,6 +28,18 @@ async function voucherLines(voucherId: string): Promise<{ account_number: number
       [voucherId],
     );
     return r.rows;
+  });
+}
+
+/** Råbalansen per konto (kredit − debet, positivt = kreditsaldo) för ett bolag. */
+async function accountBalance(cId: string, accountNumber: number): Promise<number> {
+  return withAdmin(async (admin) => {
+    const r = await admin.query<{ saldo: string }>(
+      `SELECT COALESCE(SUM(credit_ore - debit_ore), 0)::text AS saldo
+       FROM voucher_lines WHERE company_id = $1 AND account_number = $2`,
+      [cId, accountNumber],
+    );
+    return Number(r.rows[0]!.saldo);
   });
 }
 
@@ -110,35 +124,125 @@ describe('lönebesked med utbetalningsdatum och semesterersättning', () => {
     expect(row.pension_salary_tax_ore).toBe('0');
   });
 
-  it('book_payslip (kontantmetod): 7010 D / 1930 K = verkligt netto på payment_date', async () => {
+  it('book_payslip (bruttometod): hela lönehändelsen i ETT verifikat på payment_date', async () => {
     const res = await approveAction('book_payslip', { payslip_id: julyPayslipId });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.result.status).toBe('booked');
     expect(res.body.result.payment_date).toBe('2026-07-24');
     const lines = await voucherLines(res.body.result.voucher_id);
-    expect(lines).toHaveLength(2);
+    // Brutto 56 500 = skatt 12 943 + netto 43 557; avgift 17 752,30 kostnadsförs
+    // och skuldförs samtidigt. NETTOT rör banken — bruttot rör resultatet.
     expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
-      [7010, 4_355_700, 0],
+      [7010, 5_650_000, 0],
+      [2710, 0, 1_294_300],
       [1930, 0, 4_355_700],
+      [7510, 1_775_230, 0],
+      [2730, 0, 1_775_230],
     ]);
+    const debet = lines.reduce((s, l) => s + Number(l.debit_ore), 0);
+    const kredit = lines.reduce((s, l) => s + Number(l.credit_ore), 0);
+    expect(debet).toBe(kredit); // balanserar i ören, inte "ungefär"
     const v = await withAdmin(async (admin) => (await admin.query('SELECT voucher_date::text FROM vouchers WHERE id = $1', [res.body.result.voucher_id])).rows[0]);
     expect(v.voucher_date).toBe('2026-07-24');
   });
 
-  it('book_payroll_tax: 2510 D / 1930 K = 30 695 kr den 12:e månaden efter', async () => {
+  it('book_payroll_tax: 2710 D + 2730 D / 1930 K = 30 695 kr den 12:e månaden efter', async () => {
     const res = await approveAction('book_payroll_tax', { period: '2026-07' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    // 12 943 + 17 752,30 = 30 695,30 → hela kronor 30 695.
+    // 12 943 + 17 752,30 = 30 695,30 → hela kronor 30 695 (skattekontot betalas
+    // i hela kronor). Avrundningen läggs på 2730-raden, inte på 2710: källskatten
+    // är ett exakt avdraget belopp och ska bort i sin helhet.
     expect(res.body.result.tax_ore).toBe(1_294_300);
     expect(res.body.result.employer_contribution_ore).toBe(1_775_230);
     expect(res.body.result.suggested_amount_ore).toBe(3_069_500);
     expect(res.body.result.amount_ore).toBe(3_069_500);
     expect(res.body.result.payment_date).toBe('2026-08-12'); // onsdag — bankdag
+    expect(res.body.result.registered_existing_voucher).toBe(false);
     const lines = await voucherLines(res.body.result.voucher_id);
     expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
-      [2510, 3_069_500, 0],
+      [2710, 1_294_300, 0],
+      [2730, 1_775_200, 0],
       [1930, 0, 3_069_500],
     ]);
+  });
+
+  // ACCEPTANS (kravspecen): efter bokförd lön + skattebetalning för perioden ska
+  // råbalansen visa hela personalkostnaden och en avräknad skuld — det är hela
+  // skälet till att metoden lades om. 2510 ska stå ORÖRD: skattekontot är inte
+  // längre lönebokföringens motkonto.
+  it('råbalansen efter lön + betalning: 7010 = brutto, 7510 = avgift, 2710 = 0, 2510 orörd', async () => {
+    expect(await accountBalance(companyId, 7010)).toBe(-5_650_000);  // debetsaldo = bruttolön
+    expect(await accountBalance(companyId, 7510)).toBe(-1_775_230);  // debetsaldo = arbetsgivaravgift
+    expect(await accountBalance(companyId, 2710)).toBe(0);           // källskatten helt avräknad
+    expect(await accountBalance(companyId, 2510)).toBe(0);           // aldrig vidrörd
+    // 2730 bär den enda resten: 30 695,30 − 30 695,00 = 30 öre öresavrundning.
+    expect(await accountBalance(companyId, 2730)).toBe(30);
+  });
+
+  it('likviditetsprognosen visar 0 kr förfallen AGI när perioden är betald', async () => {
+    const res = await api.post(`${co()}/actions/liquidity_forecast`).set(auth()).send({ as_of: '2026-08-31' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const buckets = res.body.result.buckets as { label: string; outflow_ore: number }[];
+    expect(buckets.find((b) => b.label === 'Förfallet / nu')!.outflow_ore).toBe(0);
+    // Kvar i skulden: bara öresavrundningen, och den är inte förfallen.
+    const agi = (res.body.result.sources as { id: string; amount_ore: number }[]).find((s) => s.id === 'agi')!;
+    expect(agi.amount_ore).toBe(30);
+  });
+
+  it('betalas det exakta beloppet blir 2730 noll — restposten ÄR avrundningen', async () => {
+    // September: brutto 63 280 (semesterersättning), skatt 16 343, avgift 19 882,58.
+    const list = await api.post(`${co()}/actions/list_payslips`).set(auth()).send({ period: '2026-09' });
+    const slip = list.body.result[0];
+    const exact = Number(slip.tax_ore) + Number(slip.employer_contribution_ore);
+    const before2730 = await accountBalance(companyId, 2730);
+    await approveAction('book_payslip', { payslip_id: slip.id });
+    const pay = await approveAction('book_payroll_tax', { period: '2026-09', amount_ore: exact });
+    expect(pay.status, JSON.stringify(pay.body)).toBe(200);
+    expect(pay.body.result.amount_ore).toBe(exact);
+    expect(await accountBalance(companyId, 2710)).toBe(0);
+    expect(await accountBalance(companyId, 2730)).toBe(before2730); // oförändrad: ingen ny rest
+  });
+
+  // KRAV-5: en betalning som redan ÄR bokförd (t.ex. SIE-importerad) ska kunna
+  // registreras mot sitt befintliga verifikat. Utan raden i payroll_tax_payments
+  // fortsätter perioden att rapporteras som obetald, trots betalt verifikat.
+  it('book_payroll_tax med voucher_id registrerar en redan bokförd betalning utan nytt verifikat', async () => {
+    const list = await api.post(`${co()}/actions/list_payslips`).set(auth()).send({ period: '2026-10' });
+    const slip = list.body.result[0];
+    await approveAction('book_payslip', { payslip_id: slip.id });
+    const belopp = Math.round((Number(slip.tax_ore) + Number(slip.employer_contribution_ore)) / 100) * 100;
+
+    // Betalningen som "redan finns" — bokförd för hand, som SIE-importen gör.
+    const manual = await approveAction('post_voucher', {
+      fiscal_year_id: fiscalYearId, voucher_date: '2026-11-12', description: '[SIE I72] Skattekontobetalning',
+      lines: [
+        { account_number: 2710, debit_ore: Number(slip.tax_ore) },
+        { account_number: 2730, debit_ore: belopp - Number(slip.tax_ore) },
+        { account_number: 1930, credit_ore: belopp },
+      ],
+    });
+    expect(manual.status, JSON.stringify(manual.body)).toBe(200);
+    const befintligtVerifikat = manual.body.result.id as string;
+    const antalFore = await withAdmin(async (admin) => Number((await admin.query(
+      'SELECT count(*)::text AS n FROM vouchers WHERE company_id = $1', [companyId])).rows[0].n));
+
+    const res = await approveAction('book_payroll_tax', { period: '2026-10', voucher_id: befintligtVerifikat });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.registered_existing_voucher).toBe(true);
+    expect(res.body.result.voucher_id).toBe(befintligtVerifikat);
+    // Datum och belopp härleds ur verifikatet självt, inte ur ett antagande.
+    expect(res.body.result.payment_date).toBe('2026-11-12');
+    expect(res.body.result.amount_ore).toBe(belopp);
+
+    const antalEfter = await withAdmin(async (admin) => Number((await admin.query(
+      'SELECT count(*)::text AS n FROM vouchers WHERE company_id = $1', [companyId])).rows[0].n));
+    expect(antalEfter).toBe(antalFore); // INGET nytt verifikat
+
+    // Och perioden räknas inte längre som obetald.
+    const dup = await api.post(`${co()}/actions/book_payroll_tax`).set(auth()).send({ period: '2026-10' });
+    expect(dup.status).toBe(202);
+    const konflikt = await api.post(`${co()}/approvals/${dup.body.approval.id}/approve`).set(auth()).send({});
+    expect(konflikt.status).toBe(409);
   });
 
   it('skattebetalningen för samma period kan inte bokföras två gånger', async () => {

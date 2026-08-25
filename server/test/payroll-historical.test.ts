@@ -1,7 +1,9 @@
 // Tillägg 1 till K1 (2026-07-21): migreringen av obokade lönebesked-utkast
 // använder HISTORISKA värden för perioder som faktiskt betalades med ett äldre
 // års tabellvärde. Mars–juni 2026: skatt 13 360 / netto 43 140 på 56 500 —
-// samma belopp som SEB-kontoutdraget och huvudbokens 7010/1930-verifikat.
+// samma belopp som SEB-kontoutdraget och huvudbokens verifikat. NB: de
+// historiska verifikaten bokfördes med nettometoden (7010/1930); talet som
+// verifieras här är det AVDRAGNA beloppet, som är detsamma oavsett metod.
 // Juli+ får tabell 30 för 2026 (12 943/43 557). Schablonens 12 995/43 505 får
 // inte förekomma någonstans, och bokförda poster rörs aldrig.
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -117,7 +119,21 @@ describe('migreringen: H1 → historiska värden, juli+ → tabell 30', () => {
     expect(req.status).toBe(202);
     const ok = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
-    expect(ok.body.result.net_ore).toBe(4_314_000); // det historiska nettot bokförs
+    expect(ok.body.result.net_ore).toBe(4_314_000); // det historiska nettot betalas ut
+    // Bruttometoden: 7010 bär BRUTTOT (56 500), banken nettot, och det
+    // historiska skatteavdraget (13 360) skuldförs på 2710 — inte som förr,
+    // då 7010 debiterades med nettot och skatteavdraget aldrig syntes.
+    const lines = await withAdmin(async (admin) => (await admin.query<{ account_number: number; debit_ore: string; credit_ore: string }>(
+      'SELECT account_number, debit_ore::text, credit_ore::text FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no',
+      [ok.body.result.voucher_id],
+    )).rows);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 5_650_000, 0],
+      [2710, 0, 1_336_000],
+      [1930, 0, 4_314_000],
+      [7510, 1_775_230, 0],
+      [2730, 0, 1_775_230],
+    ]);
 
     const recalc = await api.post(`${co()}/actions/recalculate_draft_payslips`).set(auth()).send({});
     expect(recalc.body.result.map((c: { period: string }) => c.period)).not.toContain('2026-03');

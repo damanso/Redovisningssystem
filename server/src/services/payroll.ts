@@ -8,15 +8,27 @@ import { bankDayOnOrBefore, defaultPaymentDate } from '../domain/bankdays.js';
 import { historicalTaxOre, table30TaxOre } from '../domain/taxTable30.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { resolveFiscalYearForDate } from './accounting/fiscalYears.js';
-import { postVoucher } from './accounting/vouchers.js';
+import { postVoucher, type VoucherLineInput } from './accounting/vouchers.js';
 import { writeAudit } from './auditService.js';
 
-// Standardkonton (BAS) för lön enligt KONTANTMETODEN som bolaget använder:
-// nettolönen kostnadsförs vid utbetalningen, och skatt + arbetsgivaravgift
-// bokförs som egen händelse vid skattekontobetalningen månaden efter.
-const SALARY_EXPENSE_CASH = 7010;    // Löner (kontantmetod: nettolön vid utbetalning)
-const BANK_ACCOUNT = 1930;           // Företagskonto
-const TAX_ACCOUNT = 2510;            // Skatteskulder (skattekontobetalning)
+// Standardkonton (BAS) för lön enligt BRUTTOMETODEN (2026-08-25, överlämning
+// #15). Hela BRUTTOLÖNEN är personalkostnaden och kostnadsförs vid
+// utbetalningen; de delar som ska vidare till Skatteverket skuldförs i stället
+// för att försvinna: källskatten på 2710, arbetsgivaravgiften på 2730 med sin
+// kostnad på 7510. Skattekontobetalningen månaden efter BETALAR AV de skulderna
+// (2710/2730 debet), den skapar dem inte.
+//
+// Varför inte kontantmetoden som stod här förut: den debiterade 7010 med NETTOT
+// och lade betalningen på 2510. Resultatet var att personalkostnaden var
+// understated med exakt skatt + avgift (185 839,80 kr för 2026-03…08), att 7510
+// saknades helt i råbalansen, och att K2-årsredovisningen, INK2 och
+// likviditetsprognosen läste vidare på de talen. Kontantmetoden är en momsmetod
+// (`companies.vat_method`) — den har aldrig gällt lönebokföringen.
+const SALARY_EXPENSE = 7010;                   // Löner till tjänstemän (bruttolön)
+const EMPLOYER_CONTRIBUTION_EXPENSE = 7510;    // Lagstadgade sociala avgifter (kostnad)
+const BANK_ACCOUNT = 1930;                     // Företagskonto
+const EMPLOYEE_TAX_LIABILITY = 2710;           // Personalskatt (avdragen källskatt att betala)
+const EMPLOYER_CONTRIBUTION_LIABILITY = 2730;  // Lagstadgade sociala avgifter (skuld)
 
 // Arbetsgivaravgift i promille (31,42 % = 3142). En förenkling: full avgift;
 // nedsättningar (t.ex. för unga/regionalt) hanteras inte.
@@ -24,6 +36,14 @@ export const EMPLOYER_CONTRIBUTION_PERMILLE = 3142;
 
 // Semesterersättning enligt semesterlagens procentregel.
 export const VACATION_PAY_PERMILLE = 1200; // 12 %
+
+/**
+ * Släpper konteringsrader utan belopp. En jämkning till 0 kr skatt ska inte ge
+ * en rad där varken debet eller kredit är positiv — postVoucher avvisar den, och
+ * felet skulle vara obegripligt för den som bara godkände en lön.
+ */
+const nonZero = (lines: VoucherLineInput[]): VoucherLineInput[] =>
+  lines.filter((l) => (l.debit_ore ?? 0) > 0 || (l.credit_ore ?? 0) > 0);
 
 export interface CreateEmployeeInput {
   name: string; personnummer?: string; email?: string;
@@ -232,12 +252,22 @@ export async function listPayslips(
 }
 
 /**
- * Bokför ett lönebesked enligt KONTANTMETODEN som bolaget använder:
- *   vid utbetalningsdatumet   Debet 7010 / Kredit 1930 = verkligt netto.
- * Skatt + arbetsgivaravgift bokförs INTE här utan som egen händelse vid
- * skattekontobetalningen (~12:e månaden efter) via bookPayrollTax
- * (2510 D / 1930 K). Låser raden; dubbelbokning spärras via verifikatets
- * källkoppling (payslip + id).
+ * Bokför ett lönebesked enligt BRUTTOMETODEN — hela lönehändelsen i ETT
+ * verifikat på utbetalningsdatumet:
+ *
+ *   Debet  7010  bruttolön                (personalkostnaden)
+ *   Kredit 2710  avdragen källskatt       (skuld till Skatteverket)
+ *   Kredit 1930  nettolön                 (det som lämnar banken)
+ *   Debet  7510  arbetsgivaravgift        (personalkostnaden)
+ *   Kredit 2730  arbetsgivaravgift        (skuld till Skatteverket)
+ *
+ * Verifikatet balanserar per konstruktion: netto = brutto − skatt, så
+ * debet (brutto + avgift) = kredit (skatt + netto + avgift). Skulderna på
+ * 2710/2730 betalas av vid skattekontobetalningen (`bookPayrollTax`).
+ *
+ * Nollrader utelämnas (en jämkning till 0 kr skatt ska inte ge en rad utan
+ * belopp — postVoucher avvisar den). Låser raden; dubbelbokning spärras via
+ * verifikatets källkoppling (payslip + id).
  */
 export async function bookPayslip(
   client: PoolClient, companyId: string, userId: string, id: string, fiscalYearId?: string, paymentDate?: string,
@@ -251,36 +281,72 @@ export async function bookPayslip(
   if (p.voucher_id || p.status === 'booked') throw new ConflictError('already_booked', 'lönebeskedet är redan bokfört');
   if (p.status === 'cancelled') throw new ConflictError('cancelled', 'ett annullerat lönebesked kan inte bokföras');
 
+  const gross = Number(p.gross_ore);
+  const tax = Number(p.tax_ore);
   const net = Number(p.net_ore);
+  const employer = Number(p.employer_contribution_ore);
+  // Balansen vilar på att nettot ÄR brutto − skatt. Går de isär är lönebeskedet
+  // internt motsägelsefullt, och då ska felet sägas rakt ut här i stället för att
+  // dyka upp som ett obalanserat verifikat två lager ned.
+  if (gross - tax !== net) {
+    throw new BadRequestError('inconsistent_payslip', 'lönebeskedets netto stämmer inte med brutto − skatt');
+  }
   const date = paymentDate ?? p.payment_date ?? defaultPaymentDate(p.period);
   const fyId = fiscalYearId ?? (await resolveFiscalYearForDate(client, companyId, date)).id;
+  const lines: VoucherLineInput[] = [
+    { account_number: SALARY_EXPENSE, debit_ore: gross, description: 'Bruttolön' },
+    { account_number: EMPLOYEE_TAX_LIABILITY, credit_ore: tax, description: 'Avdragen preliminärskatt' },
+    { account_number: BANK_ACCOUNT, credit_ore: net, description: 'Nettolön' },
+    { account_number: EMPLOYER_CONTRIBUTION_EXPENSE, debit_ore: employer, description: 'Arbetsgivaravgift' },
+    { account_number: EMPLOYER_CONTRIBUTION_LIABILITY, credit_ore: employer, description: 'Arbetsgivaravgift att betala' },
+  ];
   const voucher = await postVoucher(client, companyId, userId, {
     fiscalYearId: fyId,
     voucherDate: date,
     description: `Lön ${p.period}`,
     sourceType: 'payslip',
     sourceId: id,
-    lines: [
-      { account_number: SALARY_EXPENSE_CASH, debit_ore: net, description: 'Nettolön (kontantmetod)' },
-      { account_number: BANK_ACCOUNT, credit_ore: net, description: 'Nettolön' },
-    ],
+    lines: nonZero(lines),
   });
   await client.query("UPDATE payslips SET status = 'booked', voucher_id = $1, payment_date = $4 WHERE id = $2 AND company_id = $3 AND voucher_id IS NULL", [voucher.id, id, companyId, date]);
-  await writeAudit(client, { companyId, userId, action: 'payslip.booked', entityType: 'payslip', entityId: id, details: { voucher_id: voucher.id, payment_date: date, net_ore: net } });
+  await writeAudit(client, {
+    companyId, userId, action: 'payslip.booked', entityType: 'payslip', entityId: id,
+    details: { voucher_id: voucher.id, payment_date: date, gross_ore: gross, tax_ore: tax, net_ore: net, employer_contribution_ore: employer },
+  });
   return getPayslip(client, companyId, id);
 }
 
 /**
- * Skattekontobetalningen för en löneperiod (kontantmetodens andra händelse):
- *   Debet 2510 / Kredit 1930 = avdragen skatt + arbetsgivaravgift.
+ * Skattekontobetalningen för en löneperiod — under bruttometoden är den en
+ * BETALNING AV EN SKULD, inte en ny kostnad:
+ *
+ *   Debet  2710  periodens avdragna källskatt
+ *   Debet  2730  resterande del av beloppet (avgiften inkl. öresavrundning)
+ *   Kredit 1930  det som lämnar banken
+ *
+ * 2510 (skattekonto) används INTE längre av lönebokföringen — det var
+ * kontantmetodens konstruktion och den lämnade 2710/2730 orörda för alltid.
+ *
  * Beloppet föreslås ur periodens lönebesked (ej makulerade) avrundat till hela
- * kronor (skattekontot betalas i hela kronor); amount_ore kan ange annat.
- * Utbetalningsdatum: angivet, annars den 12:e månaden efter perioden med
- * bankdagsregeln. UNIQUE (company_id, period) spärrar dubbelbokning.
+ * kronor, eftersom skattekontot betalas i hela kronor; `amount_ore` kan ange
+ * annat. Avrundningen läggs medvetet på 2730 och blir alltså en kvarvarande
+ * skuld på några ören per period — ett eget öresavrundningskonto (3740) är ett
+ * eget vägval och byggs inte här.
+ *
+ * `voucher_id` (KRAV-5): en betalning som REDAN är bokförd — t.ex. ett
+ * SIE-importerat verifikat — registreras mot sitt befintliga verifikat utan att
+ * ett nytt skapas. Utan den raden i `payroll_tax_payments` fortsätter perioden
+ * att rapporteras som obetald av `unpaidPayrollPeriods`, och prognosen visar en
+ * skuld som faktiskt är betald. Beloppet härleds då ur verifikatets egen
+ * bankkreditering (det som verkligen lämnade kontot), inte ur ett antagande.
+ *
+ * Utbetalningsdatum: angivet, annars verifikatets datum (vid registrering) eller
+ * den 12:e månaden efter perioden med bankdagsregeln. UNIQUE (company_id,
+ * period) spärrar dubbelbokning.
  */
 export async function bookPayrollTax(
   client: PoolClient, companyId: string, userId: string,
-  input: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number },
+  input: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number; voucher_id?: string },
 ): Promise<Record<string, unknown>> {
   if (!/^\d{4}-\d{2}$/.test(input.period)) throw new BadRequestError('bad_period', 'period ska vara YYYY-MM');
   const sums = await client.query<{ tax_ore: string | null; employer_ore: string | null; n: string }>(
@@ -293,45 +359,85 @@ export async function bookPayrollTax(
   const tax = Number(row.tax_ore ?? 0);
   const employer = Number(row.employer_ore ?? 0);
   const suggested = Math.round((tax + employer) / 100) * 100; // hela kronor
-  const amount = input.amount_ore ?? suggested;
-  if (amount <= 0) throw new BadRequestError('no_amount', 'inget belopp att bokföra för perioden');
 
-  const [y, m] = input.period.split('-').map(Number) as [number, number];
-  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
-  const date = input.payment_date ?? bankDayOnOrBefore(`${nextMonth}-12`);
-  const fyId = input.fiscal_year_id ?? (await resolveFiscalYearForDate(client, companyId, date)).id;
+  let date: string;
+  let amount: number;
+  let voucherId: string;
+  const existingVoucherId = input.voucher_id;
 
-  const voucher = await postVoucher(client, companyId, userId, {
-    fiscalYearId: fyId,
-    voucherDate: date,
-    description: `Skatt och arbetsgivaravgift lön ${input.period}`,
-    sourceType: 'payroll_tax',
-    sourceId: input.period,
-    lines: [
-      { account_number: TAX_ACCOUNT, debit_ore: amount, description: `Prel.skatt + arbetsgivaravgift ${input.period}` },
-      { account_number: BANK_ACCOUNT, credit_ore: amount, description: 'Skattekontobetalning' },
-    ],
-  });
+  if (existingVoucherId !== undefined) {
+    // Registrering mot befintligt verifikat: ingen ny bokföring, ingen ändring
+    // av verifikatet (bokförda verifikat är oföränderliga). Endast kvittot i
+    // payroll_tax_payments saknades.
+    const existing = await client.query<{ voucher_date: string; bank_credit: string | null }>(
+      `SELECT v.voucher_date::text,
+              (SELECT SUM(l.credit_ore)::text FROM voucher_lines l
+                WHERE l.voucher_id = v.id AND l.company_id = v.company_id AND l.account_number = $3) AS bank_credit
+       FROM vouchers v WHERE v.id = $1 AND v.company_id = $2`,
+      [existingVoucherId, companyId, BANK_ACCOUNT],
+    );
+    const v = existing.rows[0];
+    if (!v) throw new NotFoundError('voucher');
+    date = input.payment_date ?? v.voucher_date;
+    amount = input.amount_ore ?? Number(v.bank_credit ?? 0);
+    if (amount <= 0) {
+      throw new BadRequestError(
+        'no_amount',
+        'verifikatet krediterar inget bankkonto (1930) — ange amount_ore för den betalning som ska registreras',
+      );
+    }
+    voucherId = existingVoucherId;
+  } else {
+    amount = input.amount_ore ?? suggested;
+    if (amount <= 0) throw new BadRequestError('no_amount', 'inget belopp att bokföra för perioden');
+    // Betalningen kan aldrig vara mindre än den källskatt som ska bort från
+    // 2710 — då vore 2730-raden negativ och verifikatet en gissning.
+    if (amount < tax) {
+      throw new BadRequestError('amount_below_tax', 'beloppet är lägre än periodens avdragna källskatt');
+    }
+    const [y, m] = input.period.split('-').map(Number) as [number, number];
+    const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+    date = input.payment_date ?? bankDayOnOrBefore(`${nextMonth}-12`);
+    const fyId = input.fiscal_year_id ?? (await resolveFiscalYearForDate(client, companyId, date)).id;
+    const voucher = await postVoucher(client, companyId, userId, {
+      fiscalYearId: fyId,
+      voucherDate: date,
+      description: `Skatt och arbetsgivaravgift lön ${input.period}`,
+      sourceType: 'payroll_tax',
+      sourceId: input.period,
+      lines: nonZero([
+        { account_number: EMPLOYEE_TAX_LIABILITY, debit_ore: tax, description: `Avdragen preliminärskatt ${input.period}` },
+        { account_number: EMPLOYER_CONTRIBUTION_LIABILITY, debit_ore: amount - tax, description: `Arbetsgivaravgift ${input.period} (inkl. öresavrundning)` },
+        { account_number: BANK_ACCOUNT, credit_ore: amount, description: 'Skattekontobetalning' },
+      ]),
+    });
+    voucherId = voucher.id;
+  }
+
   let paymentId: string;
   try {
     const r = await client.query<{ id: string }>(
       `INSERT INTO payroll_tax_payments (company_id, period, payment_date, tax_ore, employer_contribution_ore, amount_ore, voucher_id, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [companyId, input.period, date, tax, employer, amount, voucher.id, userId],
+      [companyId, input.period, date, tax, employer, amount, voucherId, userId],
     );
     paymentId = r.rows[0]!.id;
   } catch (err) {
     if ((err as { code?: string }).code === '23505') throw new ConflictError('already_booked', 'skattebetalningen för perioden är redan bokförd');
     throw err;
   }
+  const registeredExisting = existingVoucherId !== undefined;
   await writeAudit(client, {
-    companyId, userId, action: 'payroll_tax.booked', entityType: 'payroll_tax_payment', entityId: paymentId,
-    details: { period: input.period, payment_date: date, amount_ore: amount, tax_ore: tax, employer_contribution_ore: employer, voucher_id: voucher.id },
+    companyId, userId,
+    action: registeredExisting ? 'payroll_tax.registered' : 'payroll_tax.booked',
+    entityType: 'payroll_tax_payment', entityId: paymentId,
+    details: { period: input.period, payment_date: date, amount_ore: amount, tax_ore: tax, employer_contribution_ore: employer, voucher_id: voucherId, registered_existing_voucher: registeredExisting },
   });
   return {
     id: paymentId, period: input.period, payment_date: date,
     tax_ore: tax, employer_contribution_ore: employer,
-    suggested_amount_ore: suggested, amount_ore: amount, voucher_id: voucher.id,
+    suggested_amount_ore: suggested, amount_ore: amount, voucher_id: voucherId,
+    registered_existing_voucher: registeredExisting,
   };
 }
 
