@@ -602,7 +602,10 @@ main {
 h1 { font-size: clamp(23px, 3.4vw, 30px); font-weight: 640; letter-spacing: -0.02em; margin: 0 0 2px; text-wrap: balance; }
 h2 { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; margin: 30px 0 10px; }
 h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin: 18px 0 8px; }
-.lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px; max-width: 68ch; }
+.lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px;
+  /* 58ch, inte 68: `ch` är nollans bredd, inte en bokstavs. 68ch
+     mätte upp till 83 tecken — forskningens spann är 65–75. */
+  max-width: 58ch; }
 
 /* Kort och paneler */
 .panel {
