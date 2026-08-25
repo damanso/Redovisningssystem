@@ -1462,7 +1462,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
         p.entries.length === 0
           ? html`<p class="muted">Inga tidposter ännu.</p>`
           : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th>Utförd av</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th></tr></thead><tbody>
-              ${p.entries.map((e) => html`<tr><td class="code">${e.work_date}</td><td>${e.description}</td>
+              ${p.entries.map((e) => html`<tr><td class="code">${e.work_date}</td><td>${kapaOrd(String(e.description ?? ''))}</td>
                 <td>${e.performed_by ?? '—'}</td>
                 <td class="num">${hhmm(e.minutes)}</td><td>${e.billable ? chip('Ja', 'ok') : chip('Nej', 'muted')}</td>
                 <td>${e.invoiced ? chip('Ja', 'info') : ''}</td></tr>`)}
@@ -3068,6 +3068,29 @@ interface PartyOpenRow {
 /** Fakturahistoriken är kapad — reskontran är det ALDRIG. Se partyBackrefs. */
 const BACKREF_INVOICE_LIMIT = 100;
 
+/**
+ * Max ~15 ord synliga per rad — NN/g:s 28-procentsregel via djupanalysen §5.
+ *
+ * Mätt 2026-08-24: 4 av 63 kvittobeskrivningar ligger över, längst 150 tecken.
+ * `.table-wrap` wrappar inte utan scrollar (`overflow-x: auto`, tabellen
+ * `min-width: 480px`), så en lång beskrivning trycker BELOPPET och STATUS
+ * utanför skärmen på en telefon. Det man kom för hamnar bakom en sidledsscroll.
+ *
+ * Gäller SKANNINGSLISTOR — listor där raden finns för att man ska hitta rätt
+ * rad. Aldrig i ett dokument: verifikatrader, fakturarader och fakturabilagan
+ * behåller sin text oavkortad, för där ÄR texten uppgiften. Aldrig heller där
+ * texten är radens hela poäng (likviditetsprognosens "Skäl"-kolumn).
+ *
+ * Kapningen är SYNLIG (ellips) — tyst kapning är samma fel som överallt annars.
+ * Ingen tooltip: en telefon har ingen hover, så `title` hade dolt texten helt
+ * för halva användningen. Hela texten står på radens egen sida.
+ */
+function kapaOrd(text: string, ord = 15): string {
+  const delar = (text ?? '').trim().split(/\s+/);
+  if (delar.length <= ord) return text ?? '';
+  return delar.slice(0, ord).join(' ') + '…';
+}
+
 /** En kvittorad pa ett leverantorskort. Kvittot har ingen egen sida; numret
  *  gar till verifikatet nar det ar bokfort. */
 type PartyReceiptRow = {
@@ -3277,7 +3300,7 @@ async function partyBackrefs(
                 ${receipts.map((r) => html`<tr>
                   <td class="code">${recRef(r)}</td>
                   <td class="code">${r.receipt_date}</td>
-                  <td>${r.description}</td>
+                  <td>${kapaOrd(r.description)}</td>
                   <td class="num">${amount(r.total_ore)}</td>
                   <td>${statusChip(r.status)}</td></tr>`)}
                 </tbody></table></div>`,
@@ -3833,7 +3856,7 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
       rows.length === 0
         ? html`<div class="empty"><div class="big">Inga kvitton ännu</div>Registrera ditt första kvitto nedan.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th><th>Underlag</th><th></th></tr></thead><tbody>
-            ${rows.map((r) => html`<tr><td class="code">${r.receipt_number}</td><td>${r.receipt_date}</td><td>${r.description}</td>
+            ${rows.map((r) => html`<tr><td class="code">${r.receipt_number}</td><td>${r.receipt_date}</td><td>${kapaOrd(String(r.description ?? ''))}</td>
               <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td>
               <td>${r.file_id ? html`<a href="/app/c/${companyId}/documents/${r.file_id as string}/download">📎 Visa</a>` : html`<span class="muted">—</span>`}</td>
               <td>${bookBtn(r as Record<string, unknown>)}</td></tr>`)}
@@ -4476,7 +4499,7 @@ viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client
       txns.length === 0
         ? html`<p class="muted">Inga importerade transaktioner ännu.</p>`
         : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Text</th><th class="num">Belopp</th><th>Avstämd</th></tr></thead><tbody>
-            ${txns.map((t) => html`<tr><td class="code">${t.booking_date as string}</td><td>${t.text as string}</td>
+            ${txns.map((t) => html`<tr><td class="code">${t.booking_date as string}</td><td>${kapaOrd(t.text as string)}</td>
               <td class="num">${amount(t.amount_ore as number, { unit: false })}</td>
               <td>${
                 t.reconciled

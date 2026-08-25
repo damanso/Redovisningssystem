@@ -2,6 +2,7 @@
 // VÄGRAR starta (fail-fast) om JWT_SECRET saknas." Gamla koden startade glatt
 // och föll tillbaka på den publika hemligheten 'your-secret'.
 import { spawn } from 'node:child_process';
+import { loadavg } from 'node:os';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,10 +43,25 @@ function startServer(
     });
     let stdout = '';
     let stderr = '';
+    // 60 s, inte 20. Den 25 augusti 2026 föll det här provet i en full svit
+    // med tomma stdout OCH stderr — barnet hann inte skriva någonting alls.
+    // `uptime` samtidigt: load average 3.85, 42.51, 32.98. Samma prov ensamt,
+    // med last 3.85: 1,26 s. Provet mätte maskinens belastning, inte serverns
+    // hälsa. Timeouten är fortfarande ändlig: en oändlig hade bytt en flaka
+    // mot en hängning, vilket är sämre.
+    const VANTAN_MS = 60_000;
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error(`timeout. stdout: ${stdout}\nstderr: ${stderr}`));
-    }, 20_000);
+      const last = loadavg().map((n) => n.toFixed(2)).join(', ');
+      const skrev = stdout.length === 0 && stderr.length === 0
+        ? 'barnet skrev INGENTING alls — det hann troligen inte starta'
+        : 'barnet skrev något, men inte startraden';
+      reject(new Error(
+        `timeout efter ${VANTAN_MS / 1000} s. ${skrev}.\n` +
+        `load average vid timeout: ${last}\n` +
+        `stdout: ${stdout}\nstderr: ${stderr}`,
+      ));
+    }, VANTAN_MS);
 
     child.stdout.on('data', (d: Buffer) => {
       stdout += d.toString();

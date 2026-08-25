@@ -140,7 +140,38 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   rejected: { label: 'Avvisad', kind: 'neg', icon: '×' },
   executed: { label: 'Utförd', kind: 'ok', icon: '✓' },
   failed: { label: 'Misslyckad', kind: 'neg', icon: '!' },
+  // Nedan: värden som CHECK-villkoren i databasen tillåter men som saknade
+  // etikett. Upptäckt 2026-08-25 när kvittoraden visade "• registered" — rakt
+  // databasvärde i ett svenskt gränssnitt. Reserven i statusChip() är tyst, så
+  // en saknad översättning ser ut som en medveten etikett.
+  // test/statusetiketter.test.ts härleder kravet ur CHECK-villkoren.
+  registered: { label: 'Registrerat', kind: 'info', icon: '○' },   // receipts
+  active: { label: 'Aktiv', kind: 'ok', icon: '✓' },               // projects, fixed_assets
+  closed: { label: 'Avslutat', kind: 'muted', icon: '✓' },         // projects
+  disposed: { label: 'Avyttrad', kind: 'muted', icon: '×' },       // fixed_assets
+  open: { label: 'Öppet', kind: 'warn', icon: '◔' },               // commitments
+  done: { label: 'Klart', kind: 'ok', icon: '✓' },                 // commitments
+  dropped: { label: 'Avskrivet', kind: 'muted', icon: '×' },       // commitments
+  prospect: { label: 'Prospekt', kind: 'info', icon: '→' },        // organizations
+  customer: { label: 'Kund', kind: 'ok', icon: '✓' },              // organizations
+  partner: { label: 'Partner', kind: 'info', icon: '✓' },          // organizations
+  former: { label: 'Tidigare', kind: 'muted', icon: '○' },         // organizations
+  archived: { label: 'Arkiverad', kind: 'muted', icon: '×' },      // organizations
+  queued: { label: 'I kö', kind: 'muted', icon: '◔' },             // email_outbox
+  skipped_no_smtp: { label: 'Ej skickad', kind: 'muted', icon: '○' }, // email_outbox
 };
+/**
+ * Har det har statusvardet en svensk etikett?
+ *
+ * Reserven i statusChip() ar tyst: ett okant varde renderas som sig sjalvt, sa
+ * en saknad oversattning ser ut som en medveten etikett. Den har funktionen
+ * finns for att test/statusetiketter.test.ts ska kunna harleda kravet ur
+ * databasens CHECK-villkor i stallet for ur en handskriven lista.
+ */
+export function harStatusEtikett(status: string): boolean {
+  return Object.prototype.hasOwnProperty.call(STATUS, status);
+}
+
 export function statusChip(status: string): Raw {
   const s = STATUS[status] ?? { label: status, kind: 'muted' as ChipKind, icon: '•' };
   return chip(s.label, s.kind, s.icon);
@@ -571,7 +602,7 @@ main {
 h1 { font-size: clamp(23px, 3.4vw, 30px); font-weight: 640; letter-spacing: -0.02em; margin: 0 0 2px; text-wrap: balance; }
 h2 { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; margin: 30px 0 10px; }
 h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin: 18px 0 8px; }
-.lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px; }
+.lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px; max-width: 68ch; }
 
 /* Kort och paneler */
 .panel {
@@ -721,7 +752,7 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 .btn--primary:hover { background: var(--accent-ink); }
 .btn--ghost { background: transparent; border-color: var(--line-2); color: var(--ink-2); }
 .btn--sm { padding: 6px 11px; font-size: 13px; }
-.badge { display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 3px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; line-height: 17px; }
+.badge { display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 3px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; text-align: center; line-height: 17px; }
 .actions { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
 
 /* Radmeny (⋯) — HTML:s popover, alltså noll JavaScript. Baseline sedan 2025.
@@ -962,6 +993,41 @@ input[type='file']::file-selector-button {
 .chart-legend .k { display: inline-flex; align-items: center; gap: 6px; }
 .chart-legend .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 
+/* Breda tabeller staplas pa smal skarm i stallet for att scrolla i sidled.
+   Matt pa 390 px innan: /receipts dolde 434 px av 790 - Netto, Moms, Status
+   och Underlag lag utanfor skarmen. Researchens regel: "do not hide critical
+   functionality on mobile. Adapt the interface, don't amputate it."
+   Etiketterna kommer fran 'data-etikett', som satts av staplabaraTabeller()
+   pa den fardiga sidan. Rollerna satts i samma pass, eftersom 'display: block'
+   annars tar bort tabellsemantiken for skarmlasare. */
+@media (max-width: 640px) {
+  .table-wrap:has(table[data-staplas]) { overflow-x: visible; }
+  table[data-staplas] { min-width: 0; width: 100%; }
+  table[data-staplas] > thead {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  table[data-staplas] > tbody > tr {
+    display: block; padding: 10px 2px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  table[data-staplas] > tbody > tr:last-child { border-bottom: 0; }
+  table[data-staplas] > tbody > tr > td {
+    display: flex; gap: 14px; align-items: baseline; justify-content: space-between;
+    border: 0; padding: 3px 14px; text-align: left;
+  }
+  table[data-staplas] > tbody > tr > td[data-etikett]::before {
+    content: attr(data-etikett);
+    flex: 0 0 auto; color: var(--ink-3); font-size: 12px;
+    letter-spacing: 0.02em; padding-top: 1px;
+  }
+  table[data-staplas] > tbody > tr > td.num { justify-content: space-between; }
+  table[data-staplas] > tbody > tr > td > * { min-width: 0; }
+  /* Delsummerader och tomma-tillstand spanner over hela bredden och har
+     ingen egen kolumnrubrik - de ska inte fa en etikettrad. */
+  table[data-staplas] > tbody > tr > td:not([data-etikett]) { justify-content: flex-start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
@@ -1024,6 +1090,73 @@ export function totpChallengePage(error?: string): Raw {
 }
 
 /** Sidmall för en inloggad vy under ett bolag. */
+/**
+ * Ger varje cell i en bred tabell sin kolumnrubrik som `data-etikett`, så att
+ * tabellen kan STAPLAS på en smal skärm i stället för att scrolla i sidled.
+ *
+ * Mätt i webbläsare på 390 px innan ändringen:
+ *
+ *   /receipts          8 kol · 356 px synligt av 790 → 434 px dolt
+ *                      (Netto, Moms, Status, Underlag hamnade utanför)
+ *   projektsidan       6 kol · 356 av 601 → 245 px dolt
+ *   fakturalistan      6 kol · 356 av 560 → 204 px dolt
+ *   leverantörskortet  5 kol · 348 av 493 → 145 px dolt
+ *
+ * Det som doldes var beloppet och tillståndet — det man öppnar sidan för.
+ * `min-width: 480px` var inte ens den bindande gränsen; innehållet är brett
+ * av sig självt.
+ *
+ * Varför här och inte vid varje tabell: det finns ett hundratal tabeller i
+ * routes.ts. En regel som måste upprepas hundra gånger blir bruten på plats
+ * hundraett. Den här körs på den färdiga sidan, så en NY tabell får beteendet
+ * utan att någon behöver komma ihåg det.
+ *
+ * Semantiken bevaras: `display: block` i mediefrågan skulle annars ta bort
+ * tabellrollen för skärmläsare, så rollerna sätts ut explicit här.
+ */
+const STAPLA_MINSTA_KOLUMNER = 4;
+
+export function staplabaraTabeller(sida: string): string {
+  return sida.replace(/<table\b[^>]*>[\s\S]*?<\/table>/g, (tabell) => {
+    const thead = /<thead\b[^>]*>([\s\S]*?)<\/thead>/.exec(tabell);
+    if (!thead) return tabell;
+
+    const rubriker: string[] = [];
+    const th = /<th\b[^>]*>([\s\S]*?)<\/th>/g;
+    let m: RegExpExecArray | null;
+    while ((m = th.exec(thead[1]!)) !== null) {
+      rubriker.push(m[1]!.replace(/<[^>]*>/g, '').trim());
+    }
+    if (rubriker.length < STAPLA_MINSTA_KOLUMNER) return tabell;
+
+    const tbody = /<tbody\b[^>]*>([\s\S]*?)<\/tbody>/.exec(tabell);
+    if (!tbody) return tabell;
+
+    const nyttTbody = tbody[1]!.replace(/<tr\b[^>]*>[\s\S]*?<\/tr>/g, (rad) => {
+      let kol = 0;
+      const medRoll = rad.replace(/^<tr\b/, '<tr role="row"');
+      return medRoll.replace(/<td\b([^>]*)>/g, (_hel, attr: string) => {
+        const spann = /colspan="?(\d+)/.exec(attr);
+        if (spann) {
+          kol += Number(spann[1]);
+          return `<td${attr} role="cell">`;
+        }
+        const etikett = rubriker[kol] ?? '';
+        kol += 1;
+        return etikett
+          ? `<td${attr} role="cell" data-etikett="${etikett}">`
+          : `<td${attr} role="cell">`;
+      });
+    });
+
+    return tabell
+      .replace(/^<table\b/, '<table data-staplas role="table"')
+      .replace(/<thead\b/, '<thead role="rowgroup"')
+      .replace(/<th\b/g, '<th role="columnheader"')
+      .replace(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/, `<tbody role="rowgroup">${nyttTbody}</tbody>`);
+  });
+}
+
 export function layout(opts: {
   title: string;
   companyId?: string;
@@ -1092,7 +1225,7 @@ export function layout(opts: {
       </div>
       ${nav}
       </header>
-      <main>${opts.body}</main>
+      <main>${raw(staplabaraTabeller(opts.body.value))}</main>
     </body></html>`;
 }
 
