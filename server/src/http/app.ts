@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import helmet from 'helmet';
 import { config } from '../config.js';
@@ -7,6 +9,12 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.js';
 import { companiesRouter } from './routes/companies.js';
 import { viewRouter } from './view/routes.js';
+
+// Typsnittskatalogen ligger bredvid dist/, inte i den: tsc kopierar inte
+// binarfiler, och en katalog som forsvinner vid bygge hade gjort ytan
+// typsnittslos utan att nagot sa nagot.
+const TYPSNITTSKATALOG = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'typsnitt');
 
 export function createApp(): express.Express {
   const app = express();
@@ -49,6 +57,34 @@ export function createApp(): express.Express {
     } catch {
       res.status(503).json({ status: 'db_unavailable' });
     }
+  });
+
+  // Typsnitten serveras harifran, aldrig fran en extern vard. CSP:n har
+  // defaultSrc 'self' och ingen egen font-src, sa font-src arver 'self'.
+  // Vitlistan ar en UPPRAKNING, inte ett monster: en regex over filnamn hade
+  // varit ett skydd som gar att lura, och katalogen ar liten nog att rakna upp.
+  app.get('/typsnitt/:fil', (req, res) => {
+    const TILLATNA = new Set([
+      'public-sans-latin-400-normal.woff2',
+      'public-sans-latin-600-normal.woff2',
+      'public-sans-latin-700-normal.woff2',
+      'ibm-plex-mono-latin-400-normal.woff2',
+      'ibm-plex-mono-latin-600-normal.woff2',
+      'LICENSE-public-sans.txt',
+      'LICENSE-ibm-plex-mono.txt',
+    ]);
+    const fil = String(req.params.fil ?? '');
+    if (!TILLATNA.has(fil)) {
+      res.status(404).type('text/plain').send('Finns inte');
+      return;
+    }
+    res.type(fil.endsWith('.woff2') ? 'font/woff2' : 'text/plain');
+    // Filnamnen bar version i innehallet, inte i namnet, sa cachen halls
+    // kort nog att ett byte slar igenom samma dygn.
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(fil, { root: TYPSNITTSKATALOG }, (err) => {
+      if (err && !res.headersSent) res.status(404).type('text/plain').send('Finns inte');
+    });
   });
 
   app.use('/api/auth', authRouter);

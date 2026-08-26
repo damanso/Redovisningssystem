@@ -94,14 +94,22 @@ describe('ingen oskärpa bakom en yta som inte släpper igenom något', () => {
     expect(fynd, `oskärpa som inte kan synas: ${fynd.join(', ')}`).toEqual([]);
   });
 
-  it('ändringen var kirurgisk: filtren som sitter under gränsen står kvar', () => {
-    // Sidhuvudet ligger på 88 % och rör sig verkligen mot det som scrollar
-    // förbi. Det är en annan fråga än den här och rördes inte.
-    const kvar = regler(css).filter((r) => /backdrop-filter/.test(r.block));
-    expect(kvar.length).toBeGreaterThan(0);
-    for (const r of kvar) {
-      expect(r.opacitet === null || r.opacitet < OPAK_GRANS,
-        `${r.selektor} filtrerar bakom ${r.opacitet} % opacitet`).toBe(true);
+  // 2026-08-26, H-2: R-5 lämnade sidhuvudets två filter med flit — den
+  // ändringen var kirurgisk. H-2 tog bort dem också, men höjde SAMTIDIGT
+  // opaciteten 88 % -> 97 %. Fallet nedan skyddar det som kan gå sönder tyst:
+  // att ett filter försvinner UTAN att opaciteten höjs. Då blir sidhuvudet
+  // genomskinligt och texten bakom läser igenom skarpt — sämre än glaset var.
+  it('inga filter kvar, och sidhuvudet blev opakt i stället', () => {
+    const kvar = regler(css).filter((r) => /backdrop-filter\s*:[^;]*blur/.test(r.block));
+    expect(kvar.map((r) => r.selektor),
+      'backdrop-filter ska vara borta ur hela stilmallen').toEqual([]);
+
+    for (const selektor of ['.appbar', '.nav']) {
+      const r = regler(css).find((x) => x.selektor.trim() === selektor);
+      expect(r, `${selektor} saknas i stilmallen`).toBeTruthy();
+      expect(r!.opacitet, `${selektor} har ingen mätbar opacitet`).not.toBeNull();
+      expect(r!.opacitet!, `${selektor} ligger på ${r!.opacitet} % — filtret togs `
+        + 'bort utan att opaciteten höjdes').toBeGreaterThanOrEqual(OPAK_GRANS);
     }
   });
 

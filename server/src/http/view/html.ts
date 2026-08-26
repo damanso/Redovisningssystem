@@ -79,6 +79,22 @@ export function chip(label: string, kind: ChipKind = 'muted', icon?: string): Ra
 }
 type ChipKind = 'muted' | 'ok' | 'warn' | 'info' | 'ai' | 'neg';
 
+/**
+ * AI-märkningen. Regulatoriskt krav (AI-förordningen art. 50: innehåll som en
+ * maskin skapat ska vara märkt som sådant) — inte dekor. Den bodde tidigare i
+ * en 3px kantremsa på kortet; en remsa går inte att läsa högt, inte att söka
+ * efter, och den försvinner i svartvitt. Nu bär orden märkningen.
+ *
+ * Den bor HÄR och ingen annanstans, av samma skäl som ENTITY_SEGMENT: en vy
+ * som skrivs om kan då inte tappa märkningen på vägen.
+ */
+export function aiMarkning(): Raw {
+  return raw(
+    '<span class="ai-markning" title="Skapat av en AI-assistent — märkt enligt AI-förordningen artikel 50">' +
+      '<span class="ai-markning__i" aria-hidden="true">\u2726</span>AI-genererat förslag</span>',
+  );
+}
+
 /** En liten versal etikett (kolumnhuvud-känsla). */
 export function eyebrow(text: string): Raw {
   return raw(`<span class="eyebrow">${esc(text)}</span>`);
@@ -330,6 +346,33 @@ const MARK = raw(
 // remsans motiv. Byggt i OKLCH för perceptuellt jämna steg och säker kontrast.
 // Helt JS-fritt (CSP script-src 'none'); progressiv disclosure via <details>.
 const STYLE = `
+/* R-1/D-4 — Davids beslut #62. Sjalvvardade, OFL 1.1, inget externt anrop.
+   Rubriker: IBM Plex Mono (skrivmaskinsslakt, IBM Selectric).
+   Brodtext: Public Sans (US Web Design System, byggd for tat data).
+   Roboto valdes bort: den star namngiven i designsvepets antimonster 1.
+   Licenserna ligger pa /typsnitt/LICENSE-public-sans.txt och
+   /typsnitt/LICENSE-ibm-plex-mono.txt. */
+@font-face {
+  font-family: "Public Sans"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("/typsnitt/public-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans"; font-style: normal; font-weight: 600;
+  font-display: swap; src: url("/typsnitt/public-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans"; font-style: normal; font-weight: 700;
+  font-display: swap; src: url("/typsnitt/public-sans-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("/typsnitt/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600;
+  font-display: swap; src: url("/typsnitt/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+}
+
 :root {
   color-scheme: light dark;
   --paper: oklch(0.984 0.005 95);
@@ -362,8 +405,12 @@ const STYLE = `
   --shadow-1: 0 1px 2px oklch(0.4 0.03 255 / 0.05), 0 2px 6px oklch(0.4 0.03 255 / 0.05);
   --shadow-2: 0 2px 6px oklch(0.4 0.03 255 / 0.06), 0 12px 28px oklch(0.4 0.03 255 / 0.08);
   --maxw: 1080px;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", "Menlo", monospace;
+  /* Fallbacken ar kvar med flit: gar woff2-hamtningen fel ska ytan bli
+     ful, inte olaslig. Att lita pa att en fil alltid finns ar samma
+     sorts antagande som resten av kodbasen finns for att undvika. */
+  --sans: "Public Sans", sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+  --display: "IBM Plex Mono", monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -458,8 +505,8 @@ td a.entity { font-weight: 550; }
 .appbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 16px; padding: 13px clamp(16px, 4vw, 28px);
-  background: color-mix(in oklch, var(--surface) 88%, transparent);
-  backdrop-filter: saturate(1.2) blur(8px);
+  /* 97 %, inget filter. Se .nav nedan for hela skalet. */
+  background: color-mix(in oklch, var(--surface) 97%, transparent);
   border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 600; }
@@ -474,8 +521,15 @@ td a.entity { font-weight: 550; }
 .nav {
   display: flex; align-items: center; gap: 8px;
   padding: 7px clamp(10px, 4vw, 24px);
-  background: color-mix(in oklch, var(--surface) 88%, transparent);
-  backdrop-filter: saturate(1.2) blur(8px);
+  /* H-2, 2026-08-26: backdrop-filter borttaget, opaciteten 88 % -> 97 %.
+     Filtret fanns for att text som rullar bakom sidhuvudet inte skulle lasa
+     igenom skarpt. Vid 88 % ar det 12 % av bakgrunden som syns, och det var de
+     12 % filtret suddade. Vid 97 % ar de 3 % — en filterpass per bildruta som
+     inte betalar for sig, och designsvepets antimonster 8.
+     Detta ar en AVSIKTLIG designandring, inte en uppmatt nolla: sidhuvudet ar
+     mer opakt an forut. R-5:s panel matte <=7 av 255 med samma filter borttaget
+     vid oforandrad opacitet; har flyttades bada. */
+  background: color-mix(in oklch, var(--surface) 97%, transparent);
   border-bottom: 1px solid var(--line);
 }
 .navmenu { position: relative; flex: none; }
@@ -607,9 +661,13 @@ main {
 
 /* Sidhuvud */
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
-h1 { font-size: clamp(23px, 3.4vw, 30px); font-weight: 640; letter-spacing: -0.02em; margin: 0 0 2px; text-wrap: balance; }
-h2 { font-size: 17px; font-weight: 620; letter-spacing: -0.01em; margin: 30px 0 10px; }
-h3 { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin: 18px 0 8px; }
+/* Rubrikerna bar skrivmaskinsfamiljen. Negativ letter-spacing ar
+   borttagen: den satts for att strama upp en proportionell sans och
+   gor en monospace trang. Storlekarna ar nedjusterade nagot av samma
+   skal — en monospace tar mer bredd per tecken. */
+h1 { font-family: var(--display); font-size: clamp(21px, 3.0vw, 26px); font-weight: 600; letter-spacing: -0.01em; margin: 0 0 2px; text-wrap: balance; }
+h2 { font-family: var(--display); font-size: 16px; font-weight: 600; letter-spacing: 0; margin: 30px 0 10px; }
+h3 { font-family: var(--display); font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin: 18px 0 8px; }
 .lede { color: var(--ink-3); margin: 2px 0 4px; font-size: 14px;
   /* 58ch, inte 68: "ch" är nollans bredd, inte en bokstavs. 68ch
      mätte upp till 83 tecken — forskningens spann är 65–75. */
@@ -721,11 +779,22 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
   background:
     linear-gradient(180deg, color-mix(in oklch, var(--ai-weak) 70%, transparent), transparent 40%),
     var(--surface);
-  border: 1px solid var(--ai-line); border-left: 3px solid var(--ai);
+  border: 1px solid var(--ai-line);
   border-radius: var(--radius); box-shadow: var(--shadow-1); margin: 12px 0; overflow: hidden;
 }
 .ai-card__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 16px 4px; }
 .ai-card__title { font-weight: 600; }
+/* AI-markningen (AI-forordningen art. 50). Den satt tidigare i en 3px
+   kantremsa — dekor enligt designsvepets antimonster 7, och en farg gar
+   varken att lasa hogt, soka efter eller se i svartvitt. Nu bar orden
+   markningen; fargen bara upprepar den. */
+.ai-markning {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  background: var(--ai-weak); color: var(--ink); border: 1px solid var(--ai);
+  font-size: 12px; font-weight: 700; line-height: 1.5; white-space: nowrap;
+}
+.ai-markning__i { line-height: 1; }
 .ai-card__why { padding: 4px 16px 6px; color: var(--ink-2); font-size: 13px; }
 /* Identifierande rad: vilken faktura/lön/verifikat förslaget gäller. */
 .ai-card__subject { padding: 2px 16px 0; font-size: 14.5px; color: var(--ink); }

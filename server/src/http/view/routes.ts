@@ -41,7 +41,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { amount, chip, entityLink, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, entityLink, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -4236,7 +4236,7 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
             const entries = Object.entries(a.input).slice(0, 6);
             return html`<article class="ai-card">
               <div class="ai-card__head">
-                ${chip(fromAgent ? 'AI-förslag' : 'Förslag', fromAgent ? 'ai' : 'info', fromAgent ? '✦' : '•')}
+                ${fromAgent ? aiMarkning() : chip('Förslag', 'info', '•')}
                 <span class="ai-card__title">${def?.title ?? a.action}</span>
                 <span class="code" style="margin-left:auto">${a.action}</span>
               </div>
