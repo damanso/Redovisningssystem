@@ -32,6 +32,8 @@ import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
+import { markeraOlikaPersoner, rattaPersonnamn, slaIhopPersoner, stadbild,
+  type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
 import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
@@ -2404,6 +2406,310 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
     ...(text('website') ? { website: text('website') } : {}),
     ...(status && ['prospect', 'customer', 'partner', 'former', 'archived'].includes(status) ? { status } : {}),
   }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// ---------------------------------------------------------------------------
+// Städytan för personerna i relationen.
+//
+// Den finns för att en fråga nådde beställaren i en beslutskö — "vilka av
+// raderna i crm.people är samma person?" — om data han inte kunde se någonstans
+// i systemet, med en åtgärd han inte kunde utföra någonstans i systemet. Kunder
+// har en vy med skrivväg; personerna hade ingen vy alls. Svaret han kunde ge var
+// därför en gissning, formulerad i en kanal som inte kunde ta emot den.
+//
+// Därför står det HÄR och inte i en rapport. Tre krav styr utformningen:
+//
+//   1. Talen räknas fram ur tabellen vid varje sidladdning. Frågan beskrevs som
+//      "ungefär 35 namn"; ingen hade räknat. Ett upplevt tal på en städyta är
+//      värre än inget tal, för det ser ut att vara mätt.
+//   2. Följden står skriven INNAN knappen. Sammanslagningen tar bort en rad och
+//      går inte att ångra — antalet kontaktpunkter, antalet åtaganden och vilka
+//      fält som fylls i står på raden, uträknade ur samma regler som tjänsten
+//      kör. Ingen sammanslagning sker på ett klick vars följd inte stått där.
+//   3. Alla tre högarna visas, även den som ser hel ut. En lista som bara visar
+//      det systemet tycker är fel svarar inte på "hur mycket är kvar", och det
+//      är den frågan som avgör om man vågar sluta titta.
+// ---------------------------------------------------------------------------
+
+/** Svensk pluralis utan bibliotek — två former räcker för de tal som står här. */
+function st(n: number, ental: string, flertal: string): string {
+  return `${String(n)} ${n === 1 ? ental : flertal}`;
+}
+
+/** Fältnamnen som de heter för en människa, inte som de heter i tabellen. */
+const FALTNAMN: Record<string, string> = {
+  email: 'e-post', phone: 'telefon', role_title: 'roll',
+  external_ref: 'personkort', notes: 'anteckning', organization_id: 'organisation',
+};
+
+// Kvittot efter ett lyckat grepp. Samma plats och form som felnotisen, motsatt
+// innebörd — annars ser en genomförd sammanslagning ut som att ingenting hände,
+// vilket är särskilt illa när greppet inte går att ångra.
+const KLAR_STIL = 'background:var(--pos-weak);color:var(--pos);'
+  + 'border-color:color-mix(in oklch, var(--pos) 30%, transparent)';
+
+function klarNotis(req: Request): Raw | '' {
+  const ok = req.query.ok;
+  if (typeof ok !== 'string' || !ok) return '';
+  return html`<p class="notice" style="${KLAR_STIL}">${ok}</p>`;
+}
+
+/**
+ * Vad knappen gör, i ord och siffror. Den här texten ÄR beslutsunderlaget —
+ * den ska kunna läsas högt och stämma efteråt.
+ */
+function utfallstext(u: Utfall): Raw {
+  if (u.merge_ids.length === 0) return html`<span class="muted">Ingen annan rad kan slås in här.</span>`;
+  const falt = u.filled_fields.length === 0
+    ? 'inga tomma fält fylls'
+    : `fyller ${u.filled_fields.map((f) => FALTNAMN[f] ?? f).join(', ')}`;
+  const flyttas = `${st(u.interactions, 'kontaktpunkt', 'kontaktpunkter')} och `
+    + `${st(u.commitments, 'åtagande', 'åtaganden')} flyttas hit · ${falt}`;
+  return html`<strong>${st(u.merge_ids.length, 'rad försvinner', 'rader försvinner')}</strong><br><span class="muted">${flyttas}</span>`;
+}
+
+viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer', async (client, companyId, req) => {
+  const bild = await stadbild(client, companyId);
+  const iGrupper = bild.grupper.reduce((s, g) => s + g.rader.length, 0);
+  const back = `/app/c/${companyId}/crm/personer`;
+  const orgCell = (p: StadPerson): Raw => (p.organization_id
+    ? entityLink(companyId, 'relation', p.organization_id, p.organization_name ?? 'Relationen')
+    : html`<span class="muted">ingen</span>`);
+  const epostCell = (p: StadPerson): Raw =>
+    (p.email ? html`${p.email}` : html`<span class="muted">saknas</span>`);
+  const namnform = (p: StadPerson): Raw => html`<form method="post" action="${back}/namn"
+      style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:0 0 8px">
+      <input type="hidden" name="person_id" value="${p.id}">
+      <input type="hidden" name="back" value="${back}">
+      <label class="field" style="margin:0;flex:1;min-width:240px"><span>${p.name}</span>
+        <input type="text" name="name" maxlength="150" required placeholder="Personens riktiga namn"></label>
+      <button class="btn btn--ghost btn--sm" type="submit">Spara namnet</button>
+    </form>`;
+
+  return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Personer</h1>
+      <p class="lede">Relationens personregister — raderna som mail, möten och ärenden fyller på av sig själva.
+        Här syns vad som är fel, och här rättas det. Inget svar behöver lämnas någon annanstans.</p></div></div>
+    ${felNotis(req)}${klarNotis(req)}
+    <div class="kpi-grid">
+      ${kpiCell('Rader totalt', html`${String(bild.totalt)}`)}
+      ${kpiCell('I delade namn', html`${String(iGrupper)}`)}
+      ${kpiCell('Namn som är e-post', html`${String(bild.epostnamn.length)}`)}
+      ${kpiCell('Ser hela ut', html`${String(bild.ovriga.length)}`)}
+    </div>
+    <p class="muted" style="font-size:12.5px;max-width:58ch">Talen räknas fram ur tabellen varje gång sidan laddas.
+      De följer inte med i en fråga och kan därför inte bli gamla.</p>
+
+    <h2 style="margin-top:22px">Delade namn</h2>
+    ${bild.grupper.length === 0
+      ? html`<div class="empty"><div class="big">Inga delade namn</div>
+          Ingen rad delar namn med en annan. Dyker en upp hamnar den här.</div>`
+      : bild.grupper.map((g) => html`<div class="panel" style="margin-top:14px">
+          <div class="panel__head"><h2>${g.visningsnamn}</h2>
+            <span class="muted" style="font-size:12.5px">${st(g.rader.length, 'rad', 'rader')} ·
+              ${st(g.interactions, 'kontaktpunkt', 'kontaktpunkter')} ·
+              ${st(g.commitments, 'åtagande', 'åtaganden')}</span></div>
+          <div class="panel__body">
+            ${g.inga_dubbletter
+              ? html`<p class="lede" style="margin:12px 14px 0">${chip('Inte en dubblett', 'warn', '!')}
+                  De här ${String(g.rader.length)} raderna bär samma namn men <strong>olika e-postadresser</strong> —
+                  alltså ${String(g.rader.length)} olika människor med fel namn, inte en dubblett. Sammanslagning
+                  är fel svar här och vägras av systemet. Rätta namnen i stället, nedan.</p>`
+              : html`<p class="lede" style="margin:12px 14px 0">Välj raden som ska <strong>överleva</strong>.
+                  De andra försvinner ur tabellen och deras historik flyttas hit.
+                  <strong>Det går inte att ångra.</strong> Vad som händer står på varje rad.</p>`}
+            <div class="table-wrap" style="border:0;box-shadow:none"><table>
+              <thead><tr><th>Rad</th><th>E-post</th><th>Organisation</th><th class="num">Kontaktpunkter</th>
+                <th class="num">Åtaganden</th><th>Skapad</th><th>Om du behåller denna</th></tr></thead>
+              <tbody>${g.rader.map((p, i) => html`<tr>
+                <td>${p.name}<br><span class="muted code">${p.id.slice(0, 8)}</span></td>
+                <td>${epostCell(p)}</td>
+                <td>${orgCell(p)}</td>
+                <td class="num">${String(p.interactions)}</td>
+                <td class="num">${String(p.commitments)}</td>
+                <td class="code">${p.created_at}</td>
+                <td>${utfallstext(g.utfall[i]!)}
+                  ${g.utfall[i]!.merge_ids.length > 0
+                    ? html`<form method="post" action="${back}/slaihop" style="margin-top:8px">
+                        <input type="hidden" name="back" value="${back}">
+                        <input type="hidden" name="keep_id" value="${p.id}">
+                        ${g.utfall[i]!.merge_ids.map((m) => html`<input type="hidden" name="merge_id" value="${m}">`)}
+                        <button class="btn btn--primary btn--sm" type="submit">Behåll denna</button></form>`
+                    : ''}
+                  ${g.utfall[i]!.hindrade.map((h) => html`<div class="muted" style="font-size:12px;margin-top:6px">
+                    Raden ${h.id.slice(0, 8)} ${h.skal}.</div>`)}</td></tr>`)}
+              </tbody></table></div>
+            <div style="padding:12px 14px 4px">
+              <h3 style="margin:0 0 8px;font-size:14px">Rätta namnet i stället</h3>
+              ${g.rader.map((p) => namnform(p))}
+              <p class="muted" style="font-size:12.5px;margin:4px 0 0">Ett rättat namn är en människas beslut och
+                skrivs inte över av nästa synk.</p>
+            </div>
+            <div style="padding:4px 14px 14px;border-top:1px solid var(--line);margin-top:10px">
+              <form method="post" action="${back}/olika"
+                  style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0">
+                <input type="hidden" name="back" value="${back}">
+                ${g.rader.map((p) => html`<input type="hidden" name="person_id" value="${p.id}">`)}
+                <button class="btn btn--ghost btn--sm" type="submit">Det här är olika personer</button>
+                <span class="muted" style="font-size:12.5px">Ingenting flyttas och ingenting raderas — gruppen
+                  slutar bara dyka upp här. Kommer en ny rad med samma namn syns den igen.</span>
+              </form>
+            </div>
+          </div></div>`)}
+
+    <h2 style="margin-top:26px">Namn som är e-postadresser</h2>
+    ${bild.epostnamn.length === 0
+      ? html`<div class="empty"><div class="big">Inga sådana rader</div>
+          Ingen rad har en e-postadress där namnet ska stå.</div>`
+      : html`<p class="lede" style="max-width:62ch">${st(bild.epostnamn.length, 'rad har', 'rader har')} fått en
+          e-postadress i namnfältet. Skriv personens riktiga namn.
+          <strong>Adressen försvinner inte</strong> — står e-postfältet tomt flyttas den dit i samma grepp.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Står som namn</th><th>E-post</th><th>Organisation</th><th class="num">Kontaktpunkter</th>
+            <th class="num">Åtaganden</th><th>Riktigt namn</th></tr></thead>
+          <tbody>${bild.epostnamn.map((p) => html`<tr>
+            <td class="code">${p.name}</td>
+            <td>${p.email ? html`${p.email}` : html`<span class="muted">tomt — adressen flyttas hit</span>`}</td>
+            <td>${orgCell(p)}</td>
+            <td class="num">${String(p.interactions)}</td>
+            <td class="num">${String(p.commitments)}</td>
+            <td><form method="post" action="${back}/namn" style="display:flex;gap:8px;align-items:center;margin:0">
+              <input type="hidden" name="person_id" value="${p.id}">
+              <input type="hidden" name="back" value="${back}">
+              <input type="text" name="name" maxlength="150" required aria-label="Riktigt namn"
+                placeholder="Förnamn Efternamn" style="min-width:170px">
+              <button class="btn btn--sm" type="submit">Spara</button></form></td></tr>`)}
+          </tbody></table></div>`}
+
+    <h2 style="margin-top:26px">Alla andra personer</h2>
+    <p class="lede" style="max-width:62ch">${st(bild.ovriga.length, 'rad', 'rader')} utan känt fel. De står här för
+      att helheten ska synas — annars går det inte att veta hur mycket som är kvar.</p>
+    ${bild.ovriga.length === 0
+      ? html`<div class="empty"><div class="big">Tomt</div>Alla rader ligger i en av högarna ovan.</div>`
+      : html`<div class="table-wrap"><table>
+          <thead><tr><th>Namn</th><th>E-post</th><th>Organisation</th><th>Roll</th>
+            <th class="num">Kontaktpunkter</th><th class="num">Åtaganden</th><th>Senaste kontakt</th></tr></thead>
+          <tbody>${bild.ovriga.map((p) => html`<tr>
+            <td>${p.name}</td>
+            <td>${epostCell(p)}</td>
+            <td>${orgCell(p)}</td>
+            <td>${p.role_title ?? ''}</td>
+            <td class="num">${String(p.interactions)}</td>
+            <td class="num">${String(p.commitments)}</td>
+            <td class="code">${p.last_contact_at ?? '—'}</td></tr>`)}
+          </tbody></table></div>`}`;
+}));
+
+// Formulär utan JavaScript skickar upprepade fält som en lista; ett ensamt
+// fält kommer som en sträng. Normalisera FÖRE valideringen, annars faller
+// gruppen med exakt en rad på fel ställe och med fel text.
+function idLista(v: unknown): string[] {
+  const raw = Array.isArray(v) ? v : [v];
+  return z.array(UuidSchema).min(1).max(60).parse(raw.filter((x) => typeof x === 'string'));
+}
+
+/**
+ * Kvitto eller notis, alltid tillbaka till städytan. 303 med flit: greppen är
+ * POST, och utan See Other lägger en omladdning greppet igen — på en åtgärd som
+ * inte går att ångra vore det den dyraste möjliga formen av dubbelklick.
+ */
+function stadTillbaka(
+  res: import('express').Response, tillbaka: string, nyckel: 'ok' | 'fel', text: string,
+): void {
+  res.redirect(303, `${tillbaka}${tillbaka.includes('?') ? '&' : '?'}${nyckel}=${encodeURIComponent(text)}`);
+}
+
+// Verksamhetsfelen översätts till det de BETYDER. email_conflict är inte ett
+// tekniskt fel — det är tjänsten som säger "de här är sannolikt inte samma
+// person", vilket är själva svaret på frågan städytan finns för. Visas det som
+// "bad_request" har ytan lärt användaren att ignorera sina egna spärrar.
+const STAD_FEL: Record<string, string> = {
+  email_conflict: 'De två har olika e-postadresser — det är sannolikt två personer. Ingenting slogs ihop.',
+};
+
+function stadFel(err: unknown): string | null {
+  if (!(err instanceof BadRequestError) && !(err instanceof ConflictError)) return null;
+  return STAD_FEL[err.code] ?? err.message;
+}
+
+// Sammanslagningen. Körs direkt i stället för att köas som organisationernas
+// gör, och det är ett avvägt val: hela poängen med sidan är att spärren
+// email_conflict ska landa HÄR, framför den som tryckte, med raderna kvar på
+// skärmen. Läggs greppet i kön kommer avslaget i stället upp på en annan sida,
+// vid en annan tidpunkt, utan raderna — vilket är precis den formen av svar utan
+// sammanhang som gjorde att den här ytan behövde byggas.
+//
+// Det som gör det försvarbart är att följden redan STÅR på raden man tryckte på:
+// antal rader, antal kontaktpunkter, antal åtaganden och vilka fält som fylls.
+// En andra titt som bara upprepar det man nyss läste är en klickskatt, inte ett
+// skydd. Spåret blir detsamma — mergePeople skriver crm.audit_log per rad.
+viewRouter.post('/c/:companyId/crm/personer/slaihop', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const tillbaka = backToCrm(req, companyId, 'crm/personer');
+  const b = req.body as { keep_id?: unknown; merge_id?: unknown };
+  const keepId = UuidSchema.parse(b.keep_id);
+  const mergeIds = idLista(b.merge_id);
+  try {
+    const r = await withTenantTransaction(userId, companyId, (client) =>
+      slaIhopPersoner(client, companyId, userId, keepId, mergeIds));
+    const falt = r.filled_fields.map((f) => FALTNAMN[f] ?? f);
+    stadTillbaka(res, tillbaka, 'ok',
+      `Klart: ${st(r.merged, 'rad', 'rader')} slogs ihop. `
+      + `${st(r.interactions, 'kontaktpunkt', 'kontaktpunkter')} och `
+      + `${st(r.commitments, 'åtagande', 'åtaganden')} flyttades. `
+      + (falt.length ? `Ifyllda fält: ${falt.join(', ')}.` : 'Inga tomma fält behövde fyllas.'));
+  } catch (err) {
+    const text = stadFel(err);
+    if (text === null) throw err;
+    stadTillbaka(res, tillbaka, 'fel', text);
+  }
+}));
+
+// "Det här är olika personer." Ingen godkännandekö: ingenting flyttas och
+// ingenting raderas, så det finns inget att ångra utom beslutet självt — och
+// det tas tillbaka med en DELETE. Samma resonemang som för namnaliaset (F5).
+viewRouter.post('/c/:companyId/crm/personer/olika', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const tillbaka = backToCrm(req, companyId, 'crm/personer');
+  const ids = idLista((req.body as { person_id?: unknown }).person_id);
+  try {
+    const r = await withTenantTransaction(userId, companyId, (client) =>
+      markeraOlikaPersoner(client, companyId, userId, ids));
+    stadTillbaka(res, tillbaka, 'ok',
+      `Noterat: ${st(r.people, 'rad är', 'rader är')} olika personer. Gruppen visas inte längre.`);
+  } catch (err) {
+    const text = stadFel(err);
+    if (text === null) throw err;
+    stadTillbaka(res, tillbaka, 'fel', text);
+  }
+}));
+
+// Namnrättningen. Går INTE via upsert_crm_person: den actionen slår upp raden på
+// e-post eller namn och kan därför inte peka ut EN bestämd rad — och i en grupp
+// där tolv rader delar namn är "en bestämd rad" hela poängen. Spåret blir
+// detsamma (crm.audit_log + fältursprung 'human'), det är uppslaget som skiljer.
+viewRouter.post('/c/:companyId/crm/personer/namn', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const tillbaka = backToCrm(req, companyId, 'crm/personer');
+  const b = req.body as { person_id?: unknown; name?: unknown };
+  const personId = UuidSchema.parse(b.person_id);
+  const namn = z.string().min(1).max(150).parse(typeof b.name === 'string' ? b.name.trim() : '');
+  try {
+    const r = await withTenantTransaction(userId, companyId, (client) =>
+      rattaPersonnamn(client, companyId, userId, personId, namn));
+    stadTillbaka(res, tillbaka, 'ok', r.moved_email
+      ? 'Namnet är rättat. E-postadressen flyttades till e-postfältet — ingenting gick förlorat.'
+      : 'Namnet är rättat. E-postfältet rördes inte.');
+  } catch (err) {
+    const text = stadFel(err);
+    if (text === null) throw err;
+    stadTillbaka(res, tillbaka, 'fel', text);
+  }
 }));
 
 viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (client, companyId) => {

@@ -250,6 +250,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
     hint: 'Register, relation och obetalt',
     items: [
       ['relations', 'Relationer'],
+      ['crm/personer', 'Personer'],
       ['commitments', 'Åtaganden'],
       ['customers', 'Kunder'],
       ['receivables', 'Kundreskontra'],

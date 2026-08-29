@@ -101,7 +101,14 @@ describe('1. de sex nyckeltalen är designens sex', () => {
   it('kortet visar dem — och inte längre "Personer" som dubblerar kortet under', async () => {
     const res = await ua.get(`/app/c/${companyId}/relations/${orgId}`);
     expect(res.status).toBe(200);
-    const rail = res.text.slice(res.text.indexOf('factcard'), res.text.indexOf('Uppgifter'));
+    // Fönstret börjar vid SJÄLVA kortet, inte vid första förekomsten av ordet:
+    // '.factcard {' står också i den inbyggda stilmallen högst upp, så det gamla
+    // uppslaget lade hela navigationen och sidhuvudet innanför "railen". Provet
+    // mätte då något annat än det påstår — vilket syns åt båda håll: en navpost
+    // som heter Personer fällde det, och en Personer-ruta i railen hade kunnat
+    // gömma sig bakom samma otydlighet. Slutet (första 'Uppgifter') är nästa korts
+    // rubrik och avgränsar railen redan som det är.
+    const rail = res.text.slice(res.text.indexOf('class="factcard"'), res.text.indexOf('Uppgifter'));
     for (const k of ['Senaste kontakt', 'Omsättning 12 mån', 'Andel', 'Obetalt', 'Ofakturerad tid', 'Öppna löften']) {
       expect(rail, `nyckeltalet "${k}" saknas`).toContain(k);
     }

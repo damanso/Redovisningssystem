@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 780 tester i 94 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 795 tester i 96 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -139,6 +139,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-29 (session: städytan för crm.people — `/c/:id/crm/personer`):**
+  Bakgrunden var Davids invändning, ordagrant: *"hur ska jag städa och svara på
+  k7 och k12, finns inte en kanal att svara på där denna fråga tolkas korrekt
+  eller där jag kan se vad som ska ändras."* Han hade fått frågan "vilka av
+  raderna i `crm.people` är samma person?" i en beslutskö — om data som INTE
+  gick att se någonstans i systemet, med en åtgärd som inte gick att utföra
+  någonstans i systemet. Kunder hade vy med skrivväg; personerna hade ingen vy.
+
+  Byggt: en sida med tre högar som tillsammans är hela tabellen (delade namn,
+  namn som är e-postadresser, resten) plus tre JS-fria POST-vägar —
+  sammanslagning, "det här är olika personer", namnrättning. Alla med
+  `assertSameOrigin`, 303 tillbaka, och spår i `crm.audit_log`.
+
+  **Det viktigaste fyndet är att frågan var fel ställd.** Frågan lät som
+  "~35 namn att gå igenom". Mätt i skarp databas 2026-08-29: 48 rader, fyra
+  namngrupper (19 rader) och sex e-postnamn. Och den största gruppen —
+  13 rader som heter "david mancilla" — är **inte** en dubblett: de bär
+  13 OLIKA e-postadresser, alltså 13 personer med fel namn. `mergePeople`
+  vägrar dem (`email_conflict`), och det är rätt av den. Sidan säger därför med
+  ord vilket av de två fallen varje grupp är, och erbjuder bara knappen där
+  den kan lyckas. Talen räknas fram vid varje sidladdning — aldrig ur frågan.
+
+  Följden står skriven FÖRE klicket (antal rader, kontaktpunkter, åtaganden,
+  vilka fält som fylls), eftersom sammanslagningen inte går att ångra. Ny
+  tabell: `crm.person_distinctions` (migration 0061), parvis och med DELETE men
+  utan UPDATE — samma resonemang som namnaliaset i 0059: ett omdöme, inte en
+  rättslig radering.
+
+  Ett befintligt prov justerat: `crm-design-parity` sneglade på första
+  förekomsten av strängen `factcard`, som står i den inbyggda stilmallen — så
+  "railen" råkade omfatta hela navigationen. Fönstret börjar nu vid
+  `class="factcard"`, vilket är vad provet hela tiden påstått sig mäta.
+
+  `npx tsc --noEmit` ren. `npm test` = **795 tester i 96 sviter, alla gröna**
+  (före: 784 i 95). Sidan öppnad mot den SKARPA databasen och avläst — före och
+  efter oförändrat (48 personer, 643 kontaktpunkter, 6 åtaganden, 15
+  organisationer, 0 distinktioner). **Inga sammanslagningar gjorda:** besluten
+  är Davids.
 
 - **2026-08-20 (`fix/likviditet-kallor`: utflödessidan stod på noll — svaret bär
   nu sin egen källredovisning):** Davids order (flaggad 13/8) var "utflödessidan
