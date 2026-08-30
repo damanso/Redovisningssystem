@@ -140,6 +140,52 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-08-30 (session: överlämning #73 stängd — NOLL ny kod):** Överlämning
+  #73 (cmo → sidoprojektet, 2026-08-30) bad om typsnittsbytet och en ny bärare
+  för AI-kortets märkning. **Det var redan levererat 2026-08-26 i `e047a05`**,
+  fyra dygn innan överlämningen skrevs. Sessionen byggde därför ingenting: den
+  gjorde avvikelsen spårbar så att ingen framtida session läser #73 som ett
+  öppet byggärende och gör om jobbet.
+
+  **Hänvisningskedjan** (samma kedja står i `docs/inkorg/073-…md`, som nu bär
+  `status: omhändertagen`):
+  1. **#62/#63** — David 2026-08-25 15:00. #62: *"Roboto och skrivmaskinsstil"*.
+     #63 (kantremsan): *"Byt bärare"*.
+  2. **Medveten avvikelse i `e047a05`**, motiverad i commit-meddelandet:
+     IBM Plex Mono + Public Sans i stället för Roboto — **Roboto står namngiven
+     i antimönster 1 i designsvepet**, så alternativet lades fram i stället för
+     att tyst byggas som beställt. Båda OFL 1.1, självvärdade woff2 under
+     `server/assets/typsnitt/` bakom en uppräknad vitlista (`font-src` ärvs från
+     `default-src 'self'` — inget externt anrop). 3px-remsan är borta ur
+     `.ai-card`; märkningen bärs av etiketten **"AI-genererat förslag"**
+     (`aiMarkning()` i `view/html.ts`, `title` → AI-förordningen art. 50),
+     kontrast 9:1. Överlämningens "ta fram 2–3 bäraralternativ" är därmed
+     passerad — bäraren är vald, byggd och i drift.
+  3. **Ratificerad i efterhand: beslut #88**, David 2026-08-30 10:48, ordagrant
+     **"ja, det gör jag"**. Beslutsloggen är källan och rörs inte av det här
+     bygget — låsningen är hänvisningskedjan här och i inkorgsfilen, inte en ny
+     loggrad.
+
+  **Ändrat: bara `docs/`** — `docs/inkorg/073-…md` (frontmatter + avslutssektion;
+  filen var otrackad, nu committad enligt samma konvention som `inkorg/001`) och
+  den här posten. **Inget under `server/` rört**, inga nya tester, inga nya
+  beroenden, inga typsnitts- eller etikettändringar.
+
+  **KVAR — kunde inte köras i den här sessionen.** Sandlådan nekade
+  kommandokörning (`npx vitest`, `npm test` och `overlamning.py` gav alla
+  *"This command requires approval"* i en icke-interaktiv session), så följande
+  tre steg är INTE gjorda och ingen grön körning påstås här — regel 2 i
+  `CLAUDE.md` gäller: ingen inklistrad utdata, inget påstående om testresultat.
+  1. `npx vitest run server/test/typsnitt.test.ts server/test/ai-markning.test.ts`
+     — bevisar att leveransen ligger kvar i `main` (sviterna finns där sedan
+     `e047a05`). Utdatan hör hemma i den här posten när den körts.
+  2. `overlamning.py --ta 73 --av sidoprojektet --plan "…"` — flyttar #73 till
+     *Senast omhändertagna* i `overlamningar.md`.
+  3. `update_issue_state('LOC-362', 'completed')` — LOC-362 står ännu i Backlog.
+
+  Derivaten (`beslutslogg.md`, `overlamningar.md`, `LOC-362.md`) ägs av sina
+  verktyg och har inte redigerats för hand.
+
 - **2026-08-29 (session: städytan för crm.people — `/c/:id/crm/personer`):**
   Bakgrunden var Davids invändning, ordagrant: *"hur ska jag städa och svara på
   k7 och k12, finns inte en kanal att svara på där denna fråga tolkas korrekt
