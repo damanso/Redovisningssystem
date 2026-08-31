@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 795 tester i 96 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 799 tester i 96 sviter, `npm run build` ren)
 
 - **Fas 0–4:** kärna (RLS/tenant, öre-heltal, gap-fria oföränderliga verifikat,
   periodlås, auditlogg append-only), API, action-lager+godkännandekö, webbvy.
@@ -139,6 +139,51 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-08-31 (session: städytan omgjord efter Davids dom):** Första utförandet
+  föll på sitt eget prov. Davids ord: *"ui ux är snyggt, men katastrofalt dåligt
+  exekverat, jag kan inte städa då det inte finns något för mig att städa här...
+  jag vet inte vad som ska kopplas om det är namnet som ska ändra på personen
+  med fel mailadress, eller om namnet ska ändras eller vad det är som förväntas
+  kopplas samman."* Sidan visade felen men sa inte per rad vad som var fel, vad
+  handgreppet gjorde eller vad som förväntades — och namnformulären låg i ett
+  eget block under tabellen, frånkopplade från raderna.
+
+  Omgjort: (1) **förslag ur adressen, förifyllt** — `namnforslag()` härleder
+  "alexandra.blomberg@…" → "Alexandra Blomberg" (punkt→mellanslag, versaler;
+  å/ä/ö går inte att härleda och det STÅR på raden), etikett "Förslag ur
+  adressen — bekräfta eller rätta"; alltid ett förslag i ett redigerbart fält,
+  aldrig en automatisk skrivning. (2) **Varje åtgärd bär sin innebörd i ord,
+  inuti formuläret**: "Namnet byts — adressen, kontaktpunkterna och historiken
+  behålls." / "Namnet byts och adressen flyttas till e-postfältet — ingenting
+  går förlorat." / "Raderna slås ihop till den du behåller … Det går inte att
+  ångra." (3) **Grupper med olika adresser** (ILT-formen) får diagnosen per
+  rad: "Adressen tillhör troligen X — namnet pekar på fel person. Bekräfta
+  eller rätta." (4) Ny regel `namnetAvviker()`: rätta-högen omfattar nu även
+  namn som motsäger sin adress — medvetet försiktig: en ensam adressdel
+  ("charlotte@", "steve@") flaggar aldrig, delmängd i ordning är samstämmig,
+  å/ä/ö viks. Alla formulär bor PÅ sina rader.
+
+  Provet är domen inverterad: strukturgranskaren `granska()` i
+  `crm-stadning.test.ts` kräver på den renderade sidan att varje namnfält är
+  förifyllt och varje åtgärd bär sin klartextrad — med NEGATIVA kontroller
+  (en sida där texten eller förifyllningen strukits måste falla). `npx tsc
+  --noEmit` ren; `npm test` = **799 tester i 96 sviter** (före omgörningen 795).
+
+  Läget i datat (mätt: auditloggen + crm.field_provenance): David körde själv
+  ytan 31/8 13:43–13:45 — 4 ihopslagningar (Geir ×2, Eva, Zeynep) och 5
+  namnrättningar av e-postnamn. De fem bär ursprung **human** och STÅR KVAR
+  genom synk efter synk. De 12 ILT-namnen rättades i stället via chatt/agent
+  (upsert_crm_person, ursprung 'ai') och **skrevs över av synken 13:50:27** —
+  de är tillbaka som "david mancilla". Det är beviset för hela
+  ursprungsmodellen: bara människans väg håller, och ytan ÄR människans väg.
+  Sidan visar nu de 12 med varsitt förifyllt förslag ("Adressen tillhör
+  troligen Alexandra Blomberg …") — bekräftade där får de ursprung human och
+  ligger fast. Kvar för Davids klick: de 12 bekräftelserna, därefter
+  Alexandra Blomberg ×2 (paret återuppstår när raden bekräftas; ena raden
+  saknar e-post och bär 1 åtagande — ytan visar båda hållens konsekvens) samt
+  admin@synologen.se (delad brevlåda). Inga skrivningar av agenten i skarp
+  data.
 
 - **2026-08-29 (session: städytan för crm.people — `/c/:id/crm/personer`):**
   Bakgrunden var Davids invändning, ordagrant: *"hur ska jag städa och svara på

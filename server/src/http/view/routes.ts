@@ -32,8 +32,8 @@ import { getProject, listProjects } from '../../services/projects.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
-import { markeraOlikaPersoner, rattaPersonnamn, slaIhopPersoner, stadbild,
-  type StadPerson, type Utfall } from '../../services/crmStadning.js';
+import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPersonnamn,
+  slaIhopPersoner, stadbild, type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
 import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
@@ -2414,21 +2414,31 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
 // Den finns för att en fråga nådde beställaren i en beslutskö — "vilka av
 // raderna i crm.people är samma person?" — om data han inte kunde se någonstans
 // i systemet, med en åtgärd han inte kunde utföra någonstans i systemet. Kunder
-// har en vy med skrivväg; personerna hade ingen vy alls. Svaret han kunde ge var
-// därför en gissning, formulerad i en kanal som inte kunde ta emot den.
+// har en vy med skrivväg; personerna hade ingen vy alls.
 //
-// Därför står det HÄR och inte i en rapport. Tre krav styr utformningen:
+// Första utförandet föll på sitt eget prov. Beställarens dom, ordagrant: "jag
+// vet inte vad som ska kopplas om det är namnet som ska ändra på personen med
+// fel mailadress, eller om namnet ska ändras eller vad det är som förväntas
+// kopplas samman." Sidan VISADE felen men sade inte per rad vad som var fel,
+// vad handgreppet gjorde eller vad som förväntades — och formulären låg i ett
+// eget block under tabellen, frånkopplade från raderna de gällde.
 //
-//   1. Talen räknas fram ur tabellen vid varje sidladdning. Frågan beskrevs som
-//      "ungefär 35 namn"; ingen hade räknat. Ett upplevt tal på en städyta är
-//      värre än inget tal, för det ser ut att vara mätt.
-//   2. Följden står skriven INNAN knappen. Sammanslagningen tar bort en rad och
-//      går inte att ångra — antalet kontaktpunkter, antalet åtaganden och vilka
-//      fält som fylls i står på raden, uträknade ur samma regler som tjänsten
-//      kör. Ingen sammanslagning sker på ett klick vars följd inte stått där.
-//   3. Alla tre högarna visas, även den som ser hel ut. En lista som bara visar
-//      det systemet tycker är fel svarar inte på "hur mycket är kvar", och det
-//      är den frågan som avgör om man vågar sluta titta.
+// Därför gäller fyra regler, och de tre sista är svaret på domen:
+//
+//   1. Talen räknas fram ur tabellen vid varje sidladdning — aldrig ur frågan.
+//   2. VARJE rad bär sin egen åtgärd, PÅ raden, med en klartextrad om exakt
+//      vad den gör: "Namnet byts — adressen, kontaktpunkterna och historiken
+//      behålls." respektive "Raderna slås ihop till den du behåller …".
+//      Ingen åtgärd utan sin innebörd bredvid, i ord.
+//   3. Där adressen redan stavar svaret STÅR svaret FÖRIFYLLT: namnfältet bär
+//      förslaget härlett ur adressens lokaldel ("alexandra.blomberg@…" →
+//      "Alexandra Blomberg"), märkt "Förslag ur adressen — bekräfta eller
+//      rätta". Härledningen är ett förslag i ett redigerbart fält som
+//      människan bekräftar — aldrig en automatisk skrivning.
+//   4. En grupp där raderna bär OLIKA adresser är inte en dubblett utan samma
+//      felaktiga namn på flera personer. Då sägs det per rad — "Adressen
+//      tillhör troligen X — namnet pekar på fel person" — i stället för att
+//      lämna användaren med en varningsflagga utan handling.
 // ---------------------------------------------------------------------------
 
 /** Svensk pluralis utan bibliotek — två former räcker för de tal som står här. */
@@ -2455,17 +2465,21 @@ function klarNotis(req: Request): Raw | '' {
 }
 
 /**
- * Vad knappen gör, i ord och siffror. Den här texten ÄR beslutsunderlaget —
- * den ska kunna läsas högt och stämma efteråt.
+ * Vad ihopslagningsknappen gör, i ord och siffror, FÖRE klicket. Texten är
+ * beslutsunderlaget — den ska kunna läsas högt och stämma efteråt. Därav den
+ * uttryckliga formen "tomma fält fylls från raden som försvinner: e-post":
+ * att den behållna raden ärver adressen ska stå, inte anas.
  */
 function utfallstext(u: Utfall): Raw {
   if (u.merge_ids.length === 0) return html`<span class="muted">Ingen annan rad kan slås in här.</span>`;
   const falt = u.filled_fields.length === 0
     ? 'inga tomma fält fylls'
-    : `fyller ${u.filled_fields.map((f) => FALTNAMN[f] ?? f).join(', ')}`;
+    : `tomma fält fylls från raden som försvinner: ${u.filled_fields.map((f) => FALTNAMN[f] ?? f).join(', ')}`;
   const flyttas = `${st(u.interactions, 'kontaktpunkt', 'kontaktpunkter')} och `
-    + `${st(u.commitments, 'åtagande', 'åtaganden')} flyttas hit · ${falt}`;
-  return html`<strong>${st(u.merge_ids.length, 'rad försvinner', 'rader försvinner')}</strong><br><span class="muted">${flyttas}</span>`;
+    + `${st(u.commitments, 'åtagande', 'åtaganden')} flyttas hit`;
+  return html`<strong>Raderna slås ihop till den du behåller.</strong>
+    ${st(u.merge_ids.length, 'rad försvinner', 'rader försvinner')} · ${flyttas} · ${falt}.
+    <strong>Det går inte att ångra.</strong>`;
 }
 
 viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer', async (client, companyId, req) => {
@@ -2477,23 +2491,57 @@ viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer',
     : html`<span class="muted">ingen</span>`);
   const epostCell = (p: StadPerson): Raw =>
     (p.email ? html`${p.email}` : html`<span class="muted">saknas</span>`);
-  const namnform = (p: StadPerson): Raw => html`<form method="post" action="${back}/namn"
-      style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:0 0 8px">
+
+  // Namnrättningen som den ser ut PÅ raden. Fältet är ALLTID förifyllt — med
+  // förslaget ur adressen när namnet är en adress eller motsäger den, annars
+  // med det nuvarande namnet — så att "vad förväntas av mig?" alltid har ett
+  // läsbart svar: bekräfta det som står, eller rätta det. Klartextraden om vad
+  // som händer ligger INUTI formuläret, så att kopplingen är markup, inte
+  // närhet.
+  const namnAtgard = (p: StadPerson, diagnos: Raw | ''): Raw => {
+    const kalla = p.email ?? (arEpostnamn(p.name) ? p.name : null);
+    const forslag = kalla ? namnforslag(kalla) : null;
+    const anvandForslag = forslag !== null && (arEpostnamn(p.name) || namnetAvviker(p.name, p.email));
+    const foljd = p.email === null && arEpostnamn(p.name)
+      ? 'Namnet byts och adressen flyttas till e-postfältet — ingenting går förlorat.'
+      : 'Namnet byts — adressen, kontaktpunkterna och historiken behålls.';
+    return html`${diagnos}<form method="post" action="${back}/namn"
+        style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:0">
       <input type="hidden" name="person_id" value="${p.id}">
       <input type="hidden" name="back" value="${back}">
-      <label class="field" style="margin:0;flex:1;min-width:240px"><span>${p.name}</span>
-        <input type="text" name="name" maxlength="150" required placeholder="Personens riktiga namn"></label>
-      <button class="btn btn--ghost btn--sm" type="submit">Spara namnet</button>
+      <label class="field" style="margin:0;flex:1;min-width:220px">
+        <span>${anvandForslag ? 'Förslag ur adressen — bekräfta eller rätta' : 'Rätta namnet'}</span>
+        <input type="text" name="name" maxlength="150" required value="${anvandForslag ? forslag : p.name}"></label>
+      <button class="btn ${anvandForslag ? 'btn--primary' : 'btn--ghost'} btn--sm" type="submit">Spara namnet</button>
+      <span class="muted" style="font-size:12px;flex-basis:100%">${foljd}</span>
+      ${anvandForslag
+        ? html`<span class="muted" style="font-size:12px;flex-basis:100%">Adresser kan inte stava å, ä eller ö —
+            rätta förslaget om namnet gör det.</span>`
+        : ''}
     </form>`;
+  };
+  // Diagnosen i en namngrupp: adressen pekar ut en annan människa än namnet.
+  const gruppdiagnos = (p: StadPerson): Raw | '' => {
+    const forslag = p.email ? namnforslag(p.email) : null;
+    return forslag !== null && (namnetAvviker(p.name, p.email) || arEpostnamn(p.name))
+      ? html`<p style="margin:0 0 8px;font-size:13px">Adressen tillhör troligen <strong>${forslag}</strong> —
+          namnet pekar på fel person. Bekräfta eller rätta.</p>`
+      : '';
+  };
+  // Diagnosen i rätta-högen: säg VAD som är fel innan formuläret säger vad
+  // som förväntas.
+  const rattadiagnos = (p: StadPerson): Raw => (arEpostnamn(p.name)
+    ? html`<p style="margin:0 0 8px;font-size:13px">En e-postadress står där namnet ska stå.</p>`
+    : html`<p style="margin:0 0 8px;font-size:13px">Adressen stavar ett annat namn än det som står.</p>`);
 
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Personer</h1>
       <p class="lede">Relationens personregister — raderna som mail, möten och ärenden fyller på av sig själva.
-        Här syns vad som är fel, och här rättas det. Inget svar behöver lämnas någon annanstans.</p></div></div>
+        Varje rad som behöver något säger vad som är fel, vad knappen gör och vad som förväntas av dig.</p></div></div>
     ${felNotis(req)}${klarNotis(req)}
     <div class="kpi-grid">
       ${kpiCell('Rader totalt', html`${String(bild.totalt)}`)}
       ${kpiCell('I delade namn', html`${String(iGrupper)}`)}
-      ${kpiCell('Namn som är e-post', html`${String(bild.epostnamn.length)}`)}
+      ${kpiCell('Namn att rätta', html`${String(bild.attRatta.length)}`)}
       ${kpiCell('Ser hela ut', html`${String(bild.ovriga.length)}`)}
     </div>
     <p class="muted" style="font-size:12.5px;max-width:58ch">Talen räknas fram ur tabellen varje gång sidan laddas.
@@ -2512,14 +2560,17 @@ viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer',
             ${g.inga_dubbletter
               ? html`<p class="lede" style="margin:12px 14px 0">${chip('Inte en dubblett', 'warn', '!')}
                   De här ${String(g.rader.length)} raderna bär samma namn men <strong>olika e-postadresser</strong> —
-                  alltså ${String(g.rader.length)} olika människor med fel namn, inte en dubblett. Sammanslagning
-                  är fel svar här och vägras av systemet. Rätta namnen i stället, nedan.</p>`
-              : html`<p class="lede" style="margin:12px 14px 0">Välj raden som ska <strong>överleva</strong>.
-                  De andra försvinner ur tabellen och deras historik flyttas hit.
-                  <strong>Det går inte att ångra.</strong> Vad som händer står på varje rad.</p>`}
+                  samma felaktiga namn på ${String(g.rader.length)} olika människor. Ingenting ska slås ihop, och
+                  systemet vägrar det också. Gör så här: namnet som adressen stavar står redan ifyllt på varje rad —
+                  <strong>bekräfta eller rätta, och spara</strong>. Det du sparar här är en människas
+                  beslut och skrivs inte över av nästa synk.</p>`
+              : html`<p class="lede" style="margin:12px 14px 0">Två rader, sannolikt samma person. Välj raden som
+                  ska <strong>överleva</strong> genom att trycka på dess knapp — vad som flyttas står vid knappen,
+                  och det går inte att ångra. Är det i själva verket två olika personer: säg det längst ned, så
+                  försvinner gruppen härifrån utan att något ändras.</p>`}
             <div class="table-wrap" style="border:0;box-shadow:none"><table>
               <thead><tr><th>Rad</th><th>E-post</th><th>Organisation</th><th class="num">Kontaktpunkter</th>
-                <th class="num">Åtaganden</th><th>Skapad</th><th>Om du behåller denna</th></tr></thead>
+                <th class="num">Åtaganden</th><th>Skapad</th><th>Det här kan du göra med raden</th></tr></thead>
               <tbody>${g.rader.map((p, i) => html`<tr>
                 <td>${p.name}<br><span class="muted code">${p.id.slice(0, 8)}</span></td>
                 <td>${epostCell(p)}</td>
@@ -2527,23 +2578,22 @@ viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer',
                 <td class="num">${String(p.interactions)}</td>
                 <td class="num">${String(p.commitments)}</td>
                 <td class="code">${p.created_at}</td>
-                <td>${utfallstext(g.utfall[i]!)}
-                  ${g.utfall[i]!.merge_ids.length > 0
-                    ? html`<form method="post" action="${back}/slaihop" style="margin-top:8px">
-                        <input type="hidden" name="back" value="${back}">
-                        <input type="hidden" name="keep_id" value="${p.id}">
-                        ${g.utfall[i]!.merge_ids.map((m) => html`<input type="hidden" name="merge_id" value="${m}">`)}
-                        <button class="btn btn--primary btn--sm" type="submit">Behåll denna</button></form>`
-                    : ''}
-                  ${g.utfall[i]!.hindrade.map((h) => html`<div class="muted" style="font-size:12px;margin-top:6px">
-                    Raden ${h.id.slice(0, 8)} ${h.skal}.</div>`)}</td></tr>`)}
+                <td style="min-width:300px">
+                  ${g.inga_dubbletter
+                    ? ''
+                    : html`<p style="margin:0 0 8px;font-size:13px">${utfallstext(g.utfall[i]!)}</p>
+                      ${g.utfall[i]!.merge_ids.length > 0
+                        ? html`<form method="post" action="${back}/slaihop" style="margin:0 0 10px">
+                            <input type="hidden" name="back" value="${back}">
+                            <input type="hidden" name="keep_id" value="${p.id}">
+                            ${g.utfall[i]!.merge_ids.map((m) => html`<input type="hidden" name="merge_id" value="${m}">`)}
+                            <button class="btn btn--primary btn--sm" type="submit">Behåll denna</button></form>`
+                        : ''}
+                      ${g.utfall[i]!.hindrade.map((h) => html`<div class="muted" style="font-size:12px;margin:0 0 8px">
+                        Raden ${h.id.slice(0, 8)} ${h.skal}.</div>`)}
+                      <div style="border-top:1px solid var(--line);padding-top:8px"></div>`}
+                  ${namnAtgard(p, gruppdiagnos(p))}</td></tr>`)}
               </tbody></table></div>
-            <div style="padding:12px 14px 4px">
-              <h3 style="margin:0 0 8px;font-size:14px">Rätta namnet i stället</h3>
-              ${g.rader.map((p) => namnform(p))}
-              <p class="muted" style="font-size:12.5px;margin:4px 0 0">Ett rättat namn är en människas beslut och
-                skrivs inte över av nästa synk.</p>
-            </div>
             <div style="padding:4px 14px 14px;border-top:1px solid var(--line);margin-top:10px">
               <form method="post" action="${back}/olika"
                   style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0">
@@ -2556,28 +2606,25 @@ viewRouter.get('/c/:companyId/crm/personer', pageFor('crm/personer', 'Personer',
             </div>
           </div></div>`)}
 
-    <h2 style="margin-top:26px">Namn som är e-postadresser</h2>
-    ${bild.epostnamn.length === 0
+    <h2 style="margin-top:26px">Namn som inte stämmer med adressen</h2>
+    ${bild.attRatta.length === 0
       ? html`<div class="empty"><div class="big">Inga sådana rader</div>
-          Ingen rad har en e-postadress där namnet ska stå.</div>`
-      : html`<p class="lede" style="max-width:62ch">${st(bild.epostnamn.length, 'rad har', 'rader har')} fått en
-          e-postadress i namnfältet. Skriv personens riktiga namn.
-          <strong>Adressen försvinner inte</strong> — står e-postfältet tomt flyttas den dit i samma grepp.</p>
+          Inget namn är en e-postadress, och inget motsäger sin adress.</div>`
+      : html`<p class="lede" style="max-width:66ch">${st(bild.attRatta.length, 'rad', 'rader')} där namnet är en
+          e-postadress eller stavar något annat än adressen gör. Namnet som adressen stavar står redan ifyllt —
+          <strong>bekräfta eller rätta, och spara</strong>. Adressen försvinner aldrig: står den där namnet ska stå
+          flyttas den till e-postfältet i samma grepp. Det du sparar här är en människas beslut och skrivs
+          inte över av nästa synk.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Står som namn</th><th>E-post</th><th>Organisation</th><th class="num">Kontaktpunkter</th>
-            <th class="num">Åtaganden</th><th>Riktigt namn</th></tr></thead>
-          <tbody>${bild.epostnamn.map((p) => html`<tr>
-            <td class="code">${p.name}</td>
+          <thead><tr><th>Står som namn i dag</th><th>E-post</th><th>Organisation</th><th class="num">Kontaktpunkter</th>
+            <th class="num">Åtaganden</th><th>Det här förväntas av dig</th></tr></thead>
+          <tbody>${bild.attRatta.map((p) => html`<tr>
+            <td class="${arEpostnamn(p.name) ? 'code' : ''}">${p.name}</td>
             <td>${p.email ? html`${p.email}` : html`<span class="muted">tomt — adressen flyttas hit</span>`}</td>
             <td>${orgCell(p)}</td>
             <td class="num">${String(p.interactions)}</td>
             <td class="num">${String(p.commitments)}</td>
-            <td><form method="post" action="${back}/namn" style="display:flex;gap:8px;align-items:center;margin:0">
-              <input type="hidden" name="person_id" value="${p.id}">
-              <input type="hidden" name="back" value="${back}">
-              <input type="text" name="name" maxlength="150" required aria-label="Riktigt namn"
-                placeholder="Förnamn Efternamn" style="min-width:170px">
-              <button class="btn btn--sm" type="submit">Spara</button></form></td></tr>`)}
+            <td style="min-width:300px">${namnAtgard(p, rattadiagnos(p))}</td></tr>`)}
           </tbody></table></div>`}
 
     <h2 style="margin-top:26px">Alla andra personer</h2>

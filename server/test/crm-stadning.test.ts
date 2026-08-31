@@ -2,30 +2,29 @@
 //
 // Bakgrunden är en fråga som nådde beställaren i en beslutskö: "vilka av raderna
 // i crm.people är samma person?" Han kunde inte svara, för det fanns ingen plats
-// där raderna gick att SE, och ingen plats där de gick att RÄTTA. Kunder hade en
-// vy med skrivväg; personerna hade ingen vy alls.
+// där raderna gick att SE, och ingen plats där de gick att RÄTTA.
 //
-// Proven är därför inte "renderas en sida" utan: kan frågan besvaras HÄR? Fyra
-// saker måste stämma, och tre av dem handlar om att inte ljuga:
+// Första utförandet av sidan föll på beställarens dom: "jag vet inte vad som ska
+// kopplas … eller vad det är som förväntas kopplas samman." Proven här är därför
+// domen inverterad: en användare som inte vet något om systemet ska ur VARJE rad
+// kunna läsa (1) vad som är fel, (2) vad åtgärden gör och (3) vad som förväntas
+// — utan att fråga någon. Konkret:
 //
-//   1. Talen ska vara MÄTTA, inte upplevda. Frågan beskrevs som ~35 namn; det
-//      verkliga talet var något annat. Provet räknar raderna och kräver att
-//      sidan visar samma tal — och att de tre högarna är en partition, så att
-//      "hur mycket är kvar" går att läsa av.
-//   2. Följden ska stå skriven FÖRE klicket. Sammanslagningen går inte att
-//      ångra; antalet som flyttas ska stå på raden innan knappen trycks.
-//   3. Ett delat namn är inte samma sak som en dubblett. Rader med OLIKA
-//      e-postadresser är sannolikt olika personer — det ska sägas med ord, inte
-//      som ett tekniskt fel efteråt.
-//   4. Ingen uppgift får försvinna av en rättning. Namnrättningen på en rad där
-//      namnet ÄR adressen måste behålla adressen.
+//   * Talen är MÄTTA, inte upplevda, och de tre högarna är en partition.
+//   * Följden av en ihopslagning står skriven FÖRE klicket, på raden.
+//   * Där adressen redan stavar svaret står svaret FÖRIFYLLT som ett förslag
+//     ("alexandra.blomberg@…" → "Alexandra Blomberg") som människan bekräftar.
+//   * Rader med olika adresser under samma namn pekas ut per rad — "Adressen
+//     tillhör troligen X" — inte bara med en flagga för hela gruppen.
+//   * Strukturprovet `granska` mäter REGELN på den renderade sidan (varje
+//     namnfält förifyllt, varje åtgärd med sin klartextrad) och har negativa
+//     kontroller: en sida där texten eller förifyllningen strukits måste falla.
 //
-// Testerna kör i ordning och delar bolag: de sista är destruktiva med flit —
-// sammanslagningen tar bort rader, och en yta som bevisas på ett tomt bolag
-// bevisar ingenting om den yta beställaren faktiskt öppnar.
+// Testerna kör i ordning och delar bolag: de sista är destruktiva med flit.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, app, createCompany, registerUser, type TestUser } from './helpers.js';
+import { arEpostnamn, namnetAvviker, namnforslag } from '../src/services/crmStadning.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -76,6 +75,41 @@ async function antalPersoner(): Promise<number> {
   return (r as unknown as unknown[]).length;
 }
 
+/**
+ * Strukturgranskaren: mäter REGELN på den renderade sidan, inte dagens rader.
+ *
+ *   1. Varje namnformulär (Spara namnet) bär klartextraden om vad som händer,
+ *      INUTI formulärelementet — kopplingen är markup, inte närhet.
+ *   2. Varje namnfält är förifyllt (förslag eller nuvarande namn) — ett tomt
+ *      obligatoriskt fält är frågan "vad förväntas av mig?" utan svar.
+ *   3. Varje cell med en ihopslagningsknapp säger vad ihopslagningen gör och
+ *      att den inte går att ångra.
+ *
+ * Returnerar fynden i klartext. Tom lista = sidan håller. De negativa
+ * kontrollerna i provet nedan bevisar att granskaren ser det den påstår.
+ */
+function granska(sidtext: string): string[] {
+  const fynd: string[] = [];
+  const former = sidtext.match(/<form[\s\S]*?<\/form>/g) ?? [];
+  const namnFormer = former.filter((f) => f.includes('Spara namnet'));
+  if (namnFormer.length === 0) fynd.push('inga namnformulär på sidan');
+  for (const f of namnFormer) {
+    if (!f.includes('Namnet byts')) fynd.push('namnformulär utan klartextrad om vad som händer');
+    const varde = /name="name"[^>]*?value="([^"]*)"/.exec(f);
+    if (!varde || varde[1]!.trim() === '') fynd.push('namnfält utan förifyllt värde');
+  }
+  for (const del of sidtext.split(/<td[ >]/).slice(1)) {
+    const slut = del.indexOf('</td>');
+    const cell = slut === -1 ? del : del.slice(0, slut);
+    if (!cell.includes('Behåll denna')) continue;
+    if (!cell.includes('Raderna slås ihop till den du behåller')) {
+      fynd.push('ihopslagningsknapp utan klartextrad om vad den gör');
+    }
+    if (!cell.includes('Det går inte att ångra')) fynd.push('ihopslagningsknapp utan oåterkallelighetsrad');
+  }
+  return fynd;
+}
+
 beforeAll(async () => {
   user = await registerUser('stadning');
   companyId = await createCompany(user.token, 'Locollabs AB');
@@ -93,20 +127,23 @@ beforeAll(async () => {
   await kontakt(p.eva2, 2);
   await loforde(p.eva2);
 
-  // INGEN dubblett: samma namn, två OLIKA adresser. Det är två människor med
-  // fel namn — formen som i verkligheten träffar tolv rader på en gång.
+  // INGEN dubblett: samma namn, två OLIKA adresser som stavar andra namn. Det
+  // är två människor med fel namn — formen som i verkligheten träffade tretton
+  // rader på en gång ("david mancilla" med tretton @ilteducation-adresser).
   p.kim1 = await person({ name: 'Kim Berg', email: 'kim.andersson@ilt.example', organization_id: ilt });
   p.kim2 = await person({ name: 'Kim Berg', email: 'kim.bergstrom@ilt.example', organization_id: ilt });
   await kontakt(p.kim1, 2);
   await kontakt(p.kim2, 1);
 
   // Namn som är en e-postadress. Den första har adressen även i e-postfältet
-  // (som alla sex i det verkliga underlaget), den andra har den BARA i namnet —
-  // det är den som prövar att ingenting får försvinna vid en rättning.
+  // (som fem av sex i det verkliga underlaget), den andra har den BARA i
+  // namnet — det är den som prövar att ingenting får försvinna vid rättning.
   p.niclas = await person({ name: 'niclas.wallin@iamai.example', email: 'niclas.wallin@iamai.example' });
   p.emma = await person({ name: 'emma.vasberg@ilt.example', organization_id: ilt });
 
   // En hel rad. Utan den kan sidan inte visa hur mycket som INTE är trasigt.
+  // Adressen har EN namndel med flit: "sven@" motsäger inte "Sven Tyst", och
+  // raden ska INTE flaggas — nio riktiga rader har exakt den formen.
   p.sven = await person({ name: 'Sven Tyst', email: 'sven@tyst.example', organization_id: ilt });
 
   ua = supertest.agent(app);
@@ -125,34 +162,73 @@ describe('städytan för personer', () => {
     // enda fråga som avgör om man vågar sluta titta: hur mycket är kvar?
     expect(res.text).toContain('Rader totalt');
     expect(res.text).toMatch(/Rader totalt<\/div><div class="v">7</);
-    // 4 i delade namn (Eva ×2, Kim ×2) + 2 e-postnamn + 1 hel = 7.
+    // 4 i delade namn (Eva ×2, Kim ×2) + 2 att rätta + 1 hel = 7.
     expect(res.text).toMatch(/I delade namn<\/div><div class="v">4</);
-    expect(res.text).toMatch(/Namn som är e-post<\/div><div class="v">2</);
+    expect(res.text).toMatch(/Namn att rätta<\/div><div class="v">2</);
     expect(res.text).toMatch(/Ser hela ut<\/div><div class="v">1</);
 
-    // Båda grupperna syns, och den hela raden också.
     expect(res.text).toContain('Eva Larsson');
     expect(res.text).toContain('Kim Berg');
     expect(res.text).toContain('Sven Tyst');
   });
 
-  it('skriver ut följden av sammanslagningen INNAN knappen, i siffror', async () => {
+  it('skriver ut följden av ihopslagningen INNAN knappen — även att adressen ärvs', async () => {
     const res = await ua.get(sida);
+    expect(res.text).toContain('Raderna slås ihop till den du behåller');
     expect(res.text).toContain('Det går inte att ångra');
-    // Eva-raden med e-post: slår man ihop hit flyttas den andras 2 kontaktpunkter
-    // och 1 åtagande. Talen ska STÅ där, inte visa sig efteråt.
+    // Eva-raden med e-post: den andras 2 kontaktpunkter och 1 åtagande flyttas.
     expect(res.text).toContain('2 kontaktpunkter och 1 åtagande flyttas hit');
+    // Eva-raden UTAN e-post: att den ärver adressen ska STÅ, inte anas.
+    expect(res.text).toContain('tomma fält fylls från raden som försvinner: e-post');
     // Och knappen bär de rader den faktiskt kommer att ta med sig.
     expect(res.text).toContain(`<input type="hidden" name="merge_id" value="${p.eva2}">`);
   });
 
-  it('säger att rader med olika e-post INTE är en dubblett, med ord', async () => {
+  it('rader med olika adresser pekas ut PER RAD med förslag — inte bara en flagga', async () => {
     const res = await ua.get(sida);
     expect(res.text).toContain('Inte en dubblett');
     expect(res.text).toContain('olika e-postadresser');
-    // Ingen knapp erbjuds i den gruppen — den kunde bara misslyckas.
+    // Diagnosen står på raden, med namnet adressen stavar, och fältet är
+    // förifyllt med samma förslag — bekräfta eller rätta, inget att gissa.
+    expect(res.text).toContain('Adressen tillhör troligen <strong>Kim Andersson</strong>');
+    expect(res.text).toContain('Adressen tillhör troligen <strong>Kim Bergstrom</strong>');
+    expect(res.text).toContain('value="Kim Andersson"');
+    expect(res.text).toContain('value="Kim Bergstrom"');
+    // Ingen ihopslagningsknapp i den gruppen — den kunde bara misslyckas.
     expect(res.text).toContain(`<input type="hidden" name="keep_id" value="${p.eva1}">`);
     expect(res.text).not.toContain(`<input type="hidden" name="keep_id" value="${p.kim1}">`);
+  });
+
+  it('förslaget ur adressen står förifyllt i rätta-högen, med märkning och effektrad', async () => {
+    const res = await ua.get(sida);
+    const fran = res.text.indexOf('Namn som inte stämmer med adressen');
+    const till = res.text.indexOf('Alla andra personer');
+    expect(fran).toBeGreaterThan(-1);
+    const avs = res.text.slice(fran, till);
+    expect(avs).toContain('Förslag ur adressen — bekräfta eller rätta');
+    // Härlett som adressen stavar: utan ä — och märkt att adresser inte kan stava å/ä/ö.
+    expect(avs).toContain('value="Emma Vasberg"');
+    expect(avs).toContain('value="Niclas Wallin"');
+    expect(avs).toContain('Adresser kan inte stava å, ä eller ö');
+    expect(avs).toContain('En e-postadress står där namnet ska stå.');
+    // Effektraden skiljer på fallen: tom e-post → adressen flyttas; ifylld → rörs inte.
+    expect(avs).toContain('Namnet byts och adressen flyttas till e-postfältet — ingenting går förlorat.');
+    // Dagens dyraste lärdom i skarp drift: rättningar via chatt/agent (ursprung
+    // 'ai') skrevs ÖVER av synken; ytans rättningar (ursprung 'human') stod
+    // kvar. Att det man sparar här håller ska därför STÅ på sidan.
+    expect(avs).toMatch(/skrivs\s+inte över av nästa synk/);
+    expect(avs).toContain('Namnet byts — adressen, kontaktpunkterna och historiken behålls.');
+  });
+
+  it('varje åtgärd bär sin innebörd och varje namnfält är förifyllt — med negativa kontroller', async () => {
+    const res = await ua.get(sida);
+    const fynd = granska(res.text);
+    expect(fynd, fynd.join(' | ')).toEqual([]);
+    // Negativ kontroll: en granskare som inte ser strykningarna nedan bevisar
+    // ingenting med sin tomma lista.
+    expect(granska(res.text.replaceAll('Namnet byts', 'x'))).not.toEqual([]);
+    expect(granska(res.text.replace(/(name="name"[^>]*?)value="[^"]*"/g, '$1value=""'))).not.toEqual([]);
+    expect(granska(res.text.replaceAll('Raderna slås ihop till den du behåller', 'x'))).not.toEqual([]);
   });
 
   it('är JS-fri', async () => {
@@ -194,9 +270,10 @@ describe('städytan för personer', () => {
     expect(niclas.name).toBe('Niclas Wallin');
     expect(niclas.email).toBe('niclas.wallin@iamai.example');
 
-    // Högarna räknas om: två rader har lämnat e-postnamnhögen.
+    // Högarna räknas om: två rader har lämnat rätta-högen. Rättade namn som
+    // stämmer med sina adresser (delmängdsregeln viker å/ä/ö) flaggas inte om.
     const sidan = await ua.get(sida);
-    expect(sidan.text).toMatch(/Namn som är e-post<\/div><div class="v">0</);
+    expect(sidan.text).toMatch(/Namn att rätta<\/div><div class="v">0</);
     expect(sidan.text).toMatch(/Ser hela ut<\/div><div class="v">3</);
   });
 
@@ -225,10 +302,12 @@ describe('städytan för personer', () => {
 
     const sidan = await ua.get(sida);
     expect(sidan.text).not.toContain('Inte en dubblett');
-    // Raderna finns kvar — de har bara flyttat hög.
+    // Raderna finns kvar — och eftersom deras adresser stavar andra namn
+    // hamnar de i rätta-högen med varsitt förslag, inte i "ser hela ut".
     expect(await antalPersoner()).toBe(fore);
     expect(sidan.text).toContain('Kim Berg');
     expect(sidan.text).toMatch(/I delade namn<\/div><div class="v">2</);
+    expect(sidan.text).toMatch(/Namn att rätta<\/div><div class="v">2</);
     // Eva-gruppen står kvar: beslutet gällde ett par, inte hela listan.
     expect(sidan.text).toContain('Det går inte att ångra');
   });
@@ -248,12 +327,10 @@ describe('städytan för personer', () => {
     expect(rader.some((r) => r.id === p.eva2)).toBe(false);
 
     const sidan = await ua.get(sida);
-    // Gruppen är borta ur listan, och Eva står nu i "alla andra" med 3 + 2 = 5
-    // kontaktpunkter och det flyttade åtagandet.
     expect(sidan.text).toMatch(/I delade namn<\/div><div class="v">0</);
     expect(sidan.text).toContain('Inga delade namn');
-    // Cellerna bar ratt-attribut fran vyns tabellskikt — provet laser vardet
-    // via etiketten i stallet for via markupens ordning.
+    // Cellerna bär rätt-attribut från vyns tabellskikt — provet läser värdet
+    // via etiketten i stället för via markupens ordning.
     expect(sidan.text).toMatch(
       /Eva Larsson[\s\S]{0,900}?data-etikett="Kontaktpunkter">5<\/td>[\s\S]{0,200}?data-etikett="Åtaganden">1<\/td>/);
   });
@@ -306,5 +383,32 @@ describe('förhandsräkningen är trogen den sekventiella sammanslagningen', () 
     expect(rader).toHaveLength(2);
     expect(rader.find((x) => x.id === r.utan)!.email).toBe('robin.ek@alfa.example');
     expect(rader.some((x) => x.id === r.med2)).toBe(true);
+  });
+});
+
+// Regeln för förslaget och avvikelsen, prövad direkt — sidproven ovan visar att
+// den sitter i renderingen, de här visar VAR gränsen går och varför.
+describe('namnförslaget ur adressen och avvikelseregeln', () => {
+  it('punkt/understreck/bindestreck blir mellanslag och delarna får stor bokstav', () => {
+    expect(namnforslag('alexandra.blomberg@ilteducation.com')).toBe('Alexandra Blomberg');
+    expect(namnforslag('adam.lorin@synologen.se')).toBe('Adam Lorin');
+    expect(namnforslag('admin@synologen.se')).toBe('Admin');
+    expect(namnforslag('kim_bergstrom-x@exempel.se')).toBe('Kim Bergstrom X');
+    expect(namnforslag('inte-en-adress')).toBeNull();
+  });
+
+  it('avvikelse kräver en adress med minst två namndelar; delmängd i ordning är samstämmig', () => {
+    // ILT-formen: adressen stavar en annan människa än namnet.
+    expect(namnetAvviker('david mancilla', 'alexandra.blomberg@ilteducation.com')).toBe(true);
+    // å/ä/ö viks: "emma.vasberg@" ÄR "Emma Väsberg" — ingen falsk flagga.
+    expect(namnetAvviker('Emma Väsberg', 'emma.vasberg@ilteducation.com')).toBe(false);
+    // En ensam förnamnsdel underbestämmer — nio riktiga rader har den formen
+    // med helt korrekta namn ("charlotte@" hos Charlotte Mattfolk, "steve@"
+    // hos Stephen Bryant). Att flagga dem lär användaren att larm inte betyder något.
+    expect(namnetAvviker('Charlotte Mattfolk', 'charlotte@iamai.se')).toBe(false);
+    expect(namnetAvviker('Stephen Bryant', 'steve@lolo.company')).toBe(false);
+    expect(namnetAvviker('Sven Tyst', null)).toBe(false);
+    expect(arEpostnamn('admin@synologen.se')).toBe(true);
+    expect(arEpostnamn('Adam Lorin')).toBe(false);
   });
 });

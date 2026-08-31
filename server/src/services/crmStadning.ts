@@ -44,6 +44,64 @@ import { mergePeople } from './crmMerge.js';
  */
 const NAMN_SOM_AR_EPOST = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Är namnet i själva verket en e-postadress? Exporterad — vyn ställer samma fråga. */
+export function arEpostnamn(namn: string): boolean {
+  return NAMN_SOM_AR_EPOST.test(namn.trim());
+}
+
+/**
+ * Härleder ett namnFÖRSLAG ur adressens lokaldel: "alexandra.blomberg@…" →
+ * "Alexandra Blomberg". Punkt, understreck och bindestreck blir mellanslag och
+ * varje del får stor bokstav. Mer än så går inte att veta: en adress kan inte
+ * stava å, ä eller ö ("vasberg" kan heta Väsberg), så förslaget lämnas som
+ * adressen stavar och ytan säger det. Resultatet är därför ALLTID ett förslag
+ * i ett redigerbart fält som en människa bekräftar — aldrig en automatisk
+ * skrivning. null när det inte finns någon lokaldel att läsa.
+ */
+export function namnforslag(adress: string): string | null {
+  const m = /^([^@\s]+)@/.exec(adress.trim());
+  if (!m) return null;
+  const delar = m[1]!.split('+')[0]!.split(/[._-]+/).filter((d) => d.length > 0);
+  if (delar.length === 0) return null;
+  return delar
+    .map((d) => d.charAt(0).toLocaleUpperCase('sv-SE') + d.slice(1).toLocaleLowerCase('sv-SE'))
+    .join(' ');
+}
+
+/** Namndelar vikta för jämförelse: gemener, utan diakriter, utan siffror —
+ *  "Väsberg" och "vasberg" är samma del, eftersom adressen inte kan stava å/ä/ö. */
+function vikta(text: string): string[] {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .split(/[^a-z]+/).filter((d) => d.length > 0);
+}
+
+/**
+ * Stavar adressen ett ANNAT namn än det som står? Det var så tolv rader med
+ * namnet "david mancilla" och tolv olika @ilteducation-adresser såg ut — och
+ * det är regeln som gör att den formen aldrig mer kan ligga stum på sidan.
+ *
+ * Medvetet försiktig åt ena hållet: en adress med bara EN namndel
+ * ("charlotte@", "info@", "steve@") motsäger ingenting — den underbestämmer,
+ * och nio riktiga rader i underlaget har precis den formen med helt korrekta
+ * namn. Att flagga dem hade lärt användaren att larmen inte betyder något.
+ * Delmängd i ordning räknas som samstämmig: "emma.vasberg@" ÄR "Emma Väsberg".
+ */
+export function namnetAvviker(namn: string, epost: string | null | undefined): boolean {
+  if (!epost) return false;
+  const forslag = namnforslag(epost);
+  if (!forslag) return false;
+  const adressDelar = vikta(forslag);
+  if (adressDelar.length < 2) return false;
+  const namnDelar = vikta(namn);
+  let fran = 0;
+  for (const del of adressDelar) {
+    const i = namnDelar.indexOf(del, fran);
+    if (i === -1) return true;
+    fran = i + 1;
+  }
+  return false;
+}
+
 /** Fälten mergePeople fyller på den kvarvarande raden, i den ordning den gör det. */
 const IFYLLBARA = ['email', 'phone', 'role_title', 'external_ref', 'notes', 'organization_id'] as const;
 
@@ -99,7 +157,10 @@ export interface Stadbild {
   /** Alla rader i crm.people för bolaget. Nämnaren i varje påstående på sidan. */
   totalt: number;
   grupper: Namngrupp[];
-  epostnamn: StadPerson[];
+  /** Namn att rätta: en e-postadress står som namn, ELLER adressen stavar ett
+   *  annat namn än det som står (namnetAvviker). Fältet hette först epostnamn,
+   *  men e-postnamnet är bara specialfallet där hela adressen står som namn. */
+  attRatta: StadPerson[];
   ovriga: StadPerson[];
 }
 
@@ -250,11 +311,12 @@ export async function stadbild(client: PoolClient, companyId: string): Promise<S
   grupper.sort((a, b) => b.rader.length - a.rader.length || a.norm.localeCompare(b.norm, 'sv'));
 
   const kvar = alla.filter((p) => !iGrupp.has(p.id));
+  const behoverRattas = (p: StadPerson): boolean => arEpostnamn(p.name) || namnetAvviker(p.name, p.email);
   return {
     totalt: alla.length,
     grupper,
-    epostnamn: kvar.filter((p) => NAMN_SOM_AR_EPOST.test(p.name.trim())),
-    ovriga: kvar.filter((p) => !NAMN_SOM_AR_EPOST.test(p.name.trim())),
+    attRatta: kvar.filter(behoverRattas),
+    ovriga: kvar.filter((p) => !behoverRattas(p)),
   };
 }
 
