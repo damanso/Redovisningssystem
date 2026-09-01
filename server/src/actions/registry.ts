@@ -275,6 +275,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       email: safeText(200).optional(), phone: safeText(50).optional(), vat_number: safeText(30).optional(),
       bankgiro: safeText(20).optional(), plusgiro: safeText(20).optional(), bank_account: safeText(50).optional(),
       iban: safeText(50).optional(), bic: safeText(20).optional(), website: safeText(200).optional(),
+      approved_for_f_tax: z.boolean().optional(),
     }).strict(),
     handler: (ctx, i) => updateCompanySettings(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
