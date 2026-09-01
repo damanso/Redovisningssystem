@@ -138,8 +138,10 @@ describe('K-5: tidpost -> ärende', () => {
     const projekt = await nyttProjekt('Tiduppdrag', 9020, kund);
     const tid = await withAdmin(async (c) => {
       const r = await c.query(
-        `INSERT INTO time_entries (company_id, project_id, work_date, minutes, description)
-         VALUES ($1, $2, current_date, 60, 'Arbete') RETURNING id`,
+        // status/billable_minutes saknar DEFAULT med flit (0062): en tidpost
+        // måste säga hur mycket av den som är debiterbar.
+        `INSERT INTO time_entries (company_id, project_id, work_date, minutes, billable_minutes, description, status)
+         VALUES ($1, $2, current_date, 60, 60, 'Arbete', 'godkand') RETURNING id`,
         [companyId, projekt],
       );
       return r.rows[0].id as string;

@@ -175,6 +175,14 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   archived: { label: 'Arkiverad', kind: 'muted', icon: '×' },      // organizations
   queued: { label: 'I kö', kind: 'muted', icon: '◔' },             // email_outbox
   skipped_no_smtp: { label: 'Ej skickad', kind: 'muted', icon: '○' }, // email_outbox
+  // Tidspostens livscykel (0062). 'forslag' är AI:ts gissning och bär därför
+  // samma märkning som andra AI-förslag; 'fakturerad' är ett LÅST tillstånd och
+  // säger det med hänglåset i stället för med ett kryss.
+  forslag: { label: 'Förslag', kind: 'ai', icon: '✦' },            // time_entries
+  godkand: { label: 'Godkänd', kind: 'ok', icon: '✓' },            // time_entries
+  justerad: { label: 'Justerad', kind: 'warn', icon: '±' },        // time_entries
+  ignorerad: { label: 'Ej debiterbar', kind: 'muted', icon: '×' }, // time_entries
+  fakturerad: { label: 'Fakturerad', kind: 'info', icon: '✓' },    // time_entries
 };
 /**
  * Har det har statusvardet en svensk etikett?

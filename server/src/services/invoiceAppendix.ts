@@ -135,8 +135,19 @@ export async function getInvoiceAppendix(
 
 /**
  * Fyller tidsbilagan ur systemets EGEN tidrapportering (time_entries) i stället
- * för handpåläggning: fakturerbar, ännu ofakturerad tid i perioden, per datum.
- * Posterna markeras som fakturerade så samma timmar inte kan faktureras igen.
+ * för handpåläggning: GODKÄND (eller justerad) tid som ingen faktura redan
+ * tagit, per datum. Posterna låses med fakturans id så samma timmar inte kan
+ * faktureras igen.
+ *
+ * Urvalet vilar på tre villkor, och vart och ett stänger ett verkligt fel:
+ *   status IN ('godkand','justerad') — ett AI-förslag ('forslag') och en
+ *     bortvald post ('ignorerad') får aldrig hamna på en kundfaktura.
+ *   invoice_id IS NULL — den enda garantin mot dubbelfakturering som inte är
+ *     beroende av att en boolean hålls uppdaterad (PRD §1 rad 1).
+ *   billable_minutes > 0 — bilageraden i 0047 har CHECK (minutes > 0), så en
+ *     post som godkänts med noll debiterbara minuter ska inte ens försöka.
+ * Bilagan visar DEBITERBARA minuter, inte registrerade: det är dem kunden ska
+ * betala för, och skillnaden är hela skälet till att fälten är två.
  */
 export async function appendixFromTimeEntries(
   client: PoolClient, companyId: string, userId: string,
@@ -144,16 +155,19 @@ export async function appendixFromTimeEntries(
 ): Promise<Record<string, unknown>> {
   await assertEditableDraft(client, companyId, input.invoiceId);
   const entries = await client.query<{ id: string; work_date: string; description: string; minutes: number }>(
-    `SELECT id, work_date::text, description, minutes
+    `SELECT id, work_date::text, description, billable_minutes AS minutes
      FROM time_entries
-     WHERE company_id = $1 AND billable = true AND invoiced = false
+     WHERE company_id = $1
+       AND status IN ('godkand', 'justerad')
+       AND invoice_id IS NULL
+       AND billable_minutes > 0
        AND work_date >= $2 AND work_date <= $3
        AND ($4::uuid IS NULL OR project_id = $4)
      ORDER BY work_date, created_at`,
     [companyId, input.from, input.to, input.projectId ?? null],
   );
   if (entries.rows.length === 0) {
-    throw new BadRequestError('no_time_entries', 'ingen fakturerbar, ofakturerad tid i perioden');
+    throw new BadRequestError('no_time_entries', 'ingen godkänd, ofakturerad tid med debiterbara minuter i perioden');
   }
 
   const result = await setInvoiceAppendix(client, companyId, userId, {
@@ -164,9 +178,14 @@ export async function appendixFromTimeEntries(
     rows: entries.rows.map((e) => ({ entry_date: e.work_date, description: e.description, minutes: e.minutes })),
   });
 
+  // Låsningen sker i SAMMA transaktion som bilagan skrivs. `invoiced` sätts vid
+  // sidan om statusen (KRAV-7:s synk) så de befintliga läsarna av booleanen
+  // fortsätter stämma; `billable` rörs inte — en fakturerad post är per
+  // definition fakturerbar.
   await client.query(
-    'UPDATE time_entries SET invoiced = true WHERE company_id = $1 AND id = ANY($2::uuid[])',
-    [companyId, entries.rows.map((e) => e.id)],
+    `UPDATE time_entries SET status = 'fakturerad', invoice_id = $3, invoiced = true
+     WHERE company_id = $1 AND id = ANY($2::uuid[])`,
+    [companyId, entries.rows.map((e) => e.id), input.invoiceId],
   );
   await writeAudit(client, {
     companyId, userId, action: 'invoice.appendix_from_time', entityType: 'invoice', entityId: input.invoiceId,

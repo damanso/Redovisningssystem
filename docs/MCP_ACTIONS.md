@@ -267,8 +267,45 @@ Tid lagras som **heltal minuter** (0,42 h = 25 min), utlägg som **heltal ören*
   är oföränderligt.
 - `get_invoice_appendix` (read).
 - `invoice_appendix_from_time_entries` (write) — fyller tidsbilagan ur systemets
-  **egen tidrapportering** (fakturerbar, ofakturerad tid i perioden) och
-  markerar posterna som fakturerade, så samma timmar inte kan faktureras igen.
+  **egen tidrapportering** och låser posterna mot fakturan, så samma timmar inte
+  kan faktureras igen. Urvalet är `status IN ('godkand','justerad')
+  AND invoice_id IS NULL AND billable_minutes > 0`, och bilagan visar
+  **debiterbara** minuter (se nästa avsnitt).
+
+### Tidspostens livscykel (PRD_TIDSRAPPORTERING §9 steg 1)
+
+En tidpost bär sitt tillstånd, inte två booleaner. `minutes` är **registrerade**
+minuter (vad som hände), `billable_minutes` är **debiterbara** minuter (vad som
+faktureras) — de är två fält därför att de är två saker.
+
+```
+  forslag  →  godkand  →  fakturerad  →  (låst)
+     │          │  ↕
+     │          │  justerad        (godkänd med annan tid än registrerad)
+     └──────────┴→ ignorerad       (räknas aldrig med, raderas aldrig)
+```
+
+- `log_time` (write) — nya valfria `billable_minutes` (utelämnad = `minutes`)
+  och `adjustment_reason`, som **krävs** när de två talen skiljer sig. Status
+  sätts av vem som skriver: en människa **godkänner** (`godkand`), AI:t
+  **föreslår** (`forslag`) — samma actor-begrepp som ursprungsmärkningen i CRM.
+  `billable: false` betyder fortfarande "räkna inte med den" och ger `ignorerad`.
+- `update_time_entry` (write) — ändrar `work_date`, `minutes`,
+  `billable_minutes`, `description`, `status` och `adjustment_reason` på en post
+  som **inte** är fakturerad; annars **409 `time_entry_locked`** (en fakturerad
+  timme rättas genom kreditering). Otillåtet statusbyte ger **409
+  `invalid_status_transition`** — `fakturerad` går varken att sätta eller lämna
+  härifrån, det gör bara fakturaflödet. `justerad` och `ignorerad` kräver
+  `adjustment_reason` (**400 `adjustment_reason_required`**).
+- `list_time_entries` (read) — filter `project_id`, `status`, `from`, `to`,
+  `performed_by_actor_id`; returnerar bl.a. `minutes`, `billable_minutes`,
+  `status`, `source`, `source_ref` och `invoice_id`.
+- `source` (`manuell` | `kalender` | `mail` | `harledd`) och `source_ref` finns
+  i modellen men skrivs ännu bara som `manuell`: kalender-/mail-ingesten är
+  story 7–8, och att reservera värdena nu kostar inget.
+- De gamla fälten `billable`/`invoiced` finns kvar och hålls i synk i samma
+  transaktion (`invoiced = status='fakturerad'`, `billable = status<>'ignorerad'`)
+  så att RLS-policyn i 0053 och de befintliga läsarna fortsätter stämma.
 
 ### K10 / 3:12 — nya modellen 2026+ och autofyll (Tillägg 2)
 

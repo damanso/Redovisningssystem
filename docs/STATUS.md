@@ -140,6 +140,82 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-01 (Tid, story 1/9: tidspostens livscykel — LOC-368, PRD §9 steg 1):**
+  Underlaget är `docs/PRD_TIDSRAPPORTERING.md` och överlämning #87. Julifelet
+  (PRD §1 rad 1–2) är två fel i samma tabell: fakturan skickades utan att gå via
+  tidrapporteringen, så 20 poster ligger kvar som `billable=true, invoiced=false`
+  och kan faktureras en gång till — och två av dem (admin, supportmatris) skulle
+  aldrig faktureras, men det fanns **ingen plats att säga det**. `billable` är
+  ett påstående om posten, inte ett beslut någon fattat: en boolean bär varken
+  orsak, godkännare eller tidpunkt.
+
+  **Migration 0062.** `time_entries` får `status`
+  (`forslag`/`godkand`/`justerad`/`ignorerad`/`fakturerad`), `billable_minutes`,
+  `source`/`source_ref`, `adjustment_reason`, `approved_by`/`approved_at` och
+  `invoice_id` med komposit-FK `(invoice_id, company_id)` (mönstret från 0047).
+  `minutes` byter varken namn eller betydelse — den är REGISTRERAD tid.
+  1. **Varken `status` eller `billable_minutes` har DEFAULT, med flit.** Ett
+     default hade gjort det möjligt att skriva en tidpost utan att säga hur
+     mycket av den som är debiterbar, och en post med noll debiterbara minuter
+     plockas aldrig av fakturaunderlaget. Det är exakt den tysta nolla PRD:n
+     handlar om. (Följd: den enda råa INSERT:en i sviten,
+     `arende-projektkoppling.test.ts`, anger nu båda fälten.)
+  2. **Backfillen har tre klasser i en bestämd ordning:** `invoiced` väger
+     tyngst, sedan `billable = false` → `ignorerad` med 0 debiterbara minuter,
+     resten `godkand` med `billable_minutes = minutes`. Ingen historisk post får
+     ett tillstånd som inte redan var sant om den.
+  3. **Datafixen har inga hårdkodade uuid:n.** Fakturan pekas ut av numret
+     KUNDEN fick (`effective_invoice_number` 27), projektet av fakturans egen
+     koppling eller — som 0060 — kundens projekt när kunden har exakt ett, och
+     perioden av posterna själva (tidigaste kalendermånad med godkänd,
+     ofakturerad tid före fakturadatumet). Arbete utfört EFTER fakturadatumet
+     rörs inte; det hör till nästa faktura.
+  4. **Loggen är inte ett kvitto, den är villkoret.** `time_entry_datafix_log`
+     (en rad per ändrad post, `UNIQUE (migration, time_entry_id)`) gör
+     datajobbet bevisbart idempotent, och grinden "har det här bolaget redan
+     loggrader?" är det som hindrar en omkörning från att hitta en NY tidigaste
+     månad och låsa augustitid mot julifakturan. audit_log dög inte: 0005 satte
+     FORCE RLS på den och den kräver en user_id — en migration ska inte behöva
+     låtsas vara en människa.
+
+  **Actions.** `log_time` tar `billable_minutes` (utelämnad = `minutes`) och
+  `adjustment_reason`, som KRÄVS när talen skiljer sig. Statusen sätts av vem som
+  skriver: en människa godkänner, AI:t föreslår — samma actor-begrepp som F4:s
+  ursprungsmärkning. `update_time_entry` (write) ändrar en post som inte är
+  fakturerad; annars 409 `time_entry_locked`. `list_time_entries` (read).
+  `godkand → ignorerad` finns med i övergångstabellen trots att kravtexten
+  skriver kedjan som godkand↔justerad↔ignorerad: PRD §1 rad 2 ÄR fallet "den här
+  godkända posten skulle aldrig faktureras", och en omväg via `justerad` hade
+  gjort spåret otydligare, inte säkrare.
+
+  **Fakturaunderlaget** väljer nu `status IN ('godkand','justerad') AND
+  invoice_id IS NULL AND billable_minutes > 0` (0047:s bilagerad har CHECK
+  `minutes > 0`), skriver DEBITERBARA minuter och låser posterna med fakturans
+  id i samma transaktion. Det är kopplingen, inte booleanen, som gör en
+  dubbelfakturering omöjlig i stället för osannolik.
+
+  **Gamla `billable`/`invoiced` behålls och synkas i samma sats som statusen**
+  (`invoiced = status='fakturerad'`, `billable = status<>'ignorerad'`). Skälet är
+  inte lathet: RLS-policyn i 0053 och sex läsande frågor (projects.ts,
+  steering.ts, crmDerivations.ts, vyn) bygger på dem, och att skriva om dem i
+  samma bygge som modellen ändras hade gjort ett fel omöjligt att lokalisera.
+
+  **Provet** (`server/test/tidpost-livscykel.test.ts`) kör den riktiga
+  migrationskedjan mot en egen databas som stannar på **0061**, seedar data i den
+  GAMLA formen och låter 0062 möta den — enda sättet att pröva en backfill är mot
+  den värld som faktiskt fanns före den. Datafixens idempotens prövas genom att
+  testet läser migrationsfilens eget stycke mellan markörerna `DATAFIX_START`/
+  `DATAFIX_SLUT` och kör det en andra gång: ingen rad får röra sig.
+
+  **Grind: typecheck och svit kördes INTE i den här sessionen** (körskriptet kör
+  dem efter) — utfallet ska klistras in här innan storyn stängs.
+
+  **Kvarstår, medvetet utanför:** `fakturalankSaknas()` i vyn
+  (`view/routes.ts:3480`) säger till David att "vilken faktura står inte i
+  databasen". Efter 0062 gör det det — `time_entries.invoice_id` bär den. Texten
+  ligger i webbvyn, som kravspecen uttryckligen lämnar utanför den här storyn;
+  den ska rättas när story 2 (atomär fakturering) tar vyn.
+
 - **2026-08-31 (session: städytan omgjord efter Davids dom):** Första utförandet
   föll på sitt eget prov. Davids ord: *"ui ux är snyggt, men katastrofalt dåligt
   exekverat, jag kan inte städa då det inte finns något för mig att städa här...

@@ -25,7 +25,10 @@ import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
-import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
+import {
+  createProject, createTimeEntry, getProject, listProjects, listTimeEntries, setProjectStatus,
+  updateTimeEntry,
+} from '../services/projects.js';
 import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
 import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
@@ -64,6 +67,12 @@ import { writeAudit } from '../services/auditService.js';
 const LinkableEntityTypeSchema = z.enum(['invoice', 'receipt', 'supplier_invoice', 'payslip']);
 
 const DocumentEntityTypeSchema = z.enum(['payslip', 'invoice', 'receipt', 'supplier_invoice', 'voucher']);
+
+// Tidspostens livscykel (PRD §3.1). 'fakturerad' finns med i schemat trots att
+// update_time_entry aldrig kan sätta det: reglerna för vad som får bli vad ska
+// bo på ETT ställe (ALLOWED_TRANSITIONS i projects.ts) och svara med ett
+// begripligt 409, inte delas upp mellan ett schema och en tjänst.
+const TimeEntryStatusSchema = z.enum(['forslag', 'godkand', 'justerad', 'ignorerad', 'fakturerad']);
 
 export interface ActionContext {
   client: PoolClient;
@@ -1119,9 +1128,50 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         performed_by_actor_id: UuidSchema.optional(),
         // Vad timmen kostar OSS. Utelämnat = aktörens standardtaxa, fryst nu.
         cost_rate_ore: OreSchema.optional(),
+        // DEBITERBARA minuter. Utelämnat = minutes. Skiljer de sig krävs en
+        // orsak — annars är avvikelsen omöjlig att granska i efterhand.
+        billable_minutes: z.number().int().min(0).max(1440).optional(),
+        adjustment_reason: safeText(300).optional(),
       })
       .strict(),
-    handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+    // ctx.actor avgör tillståndet: en människa GODKÄNNER direkt, AI:t FÖRESLÅR.
+    handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never, ctx.actor),
+  }),
+  def({
+    name: 'update_time_entry',
+    title: 'Ändra tidpost',
+    // write, inte sensitive: posten är ett underlag, ingen pengaflytt. Den enda
+    // ändring som flyttar pengar — att göra en post fakturerad — går inte att
+    // göra härifrån alls (se ALLOWED_TRANSITIONS).
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        time_entry_id: UuidSchema,
+        work_date: IsoDateSchema.optional(),
+        minutes: z.number().int().min(1).max(1440).optional(),
+        billable_minutes: z.number().int().min(0).max(1440).optional(),
+        description: safeText(300).optional(),
+        status: TimeEntryStatusSchema.optional(),
+        adjustment_reason: safeText(300).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_time_entries',
+    title: 'Lista tidposter',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema.optional(),
+        status: TimeEntryStatusSchema.optional(),
+        from: IsoDateSchema.optional(),
+        to: IsoDateSchema.optional(),
+        // Vem som UTFÖRDE arbetet (work_actors.id) — samma fält som log_time.
+        performed_by_actor_id: UuidSchema.optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => listTimeEntries(ctx.client, ctx.companyId, i as never),
   }),
   def({
     name: 'set_work_actor_user',
