@@ -25,7 +25,10 @@ import { vatReport } from '../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
-import { createProject, createTimeEntry, getProject, listProjects, setProjectStatus } from '../services/projects.js';
+import {
+  createProject, createTimeEntry, getProject, listProjects, listTimeEntries, setProjectStatus,
+  updateTimeEntry, TIME_ENTRY_STATUSES,
+} from '../services/projects.js';
 import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
 import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
@@ -1120,9 +1123,52 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         performed_by_actor_id: UuidSchema.optional(),
         // Vad timmen kostar OSS. Utelämnat = aktörens standardtaxa, fryst nu.
         cost_rate_ore: OreSchema.optional(),
+        // Vad kunden betalar. Utelämnat = de registrerade minuterna. Skiljer de
+        // sig KRÄVS ett skäl — skillnaden ska gå att läsa i efterhand.
+        billable_minutes: z.number().int().min(0).max(1440).optional(),
+        adjustment_reason: safeText(300).optional(),
       })
       .strict(),
-    handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+    // ctx.actor avgör statusen: en människas post är godkänd, AI:ts är ett
+    // förslag tills någon läst det. Se createTimeEntry.
+    handler: (ctx, i) => createTimeEntry(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  def({
+    name: 'update_time_entry',
+    title: 'Ändra eller omklassa tidpost',
+    // write, inte sensitive: posten är ett underlag, inte pengar. Det som
+    // flyttar pengar är faktureringen, och en fakturerad post är låst här.
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        time_entry_id: UuidSchema,
+        work_date: IsoDateSchema.optional(),
+        minutes: z.number().int().min(1).max(1440).optional(),
+        billable_minutes: z.number().int().min(0).max(1440).optional(),
+        description: safeText(300).optional(),
+        // 'fakturerad' tas emot av schemat men avvisas av tjänsten med ett
+        // begripligt 409: låset sätts av faktureringen, aldrig för hand.
+        status: z.enum(TIME_ENTRY_STATUSES).optional(),
+        adjustment_reason: safeText(300).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_time_entries',
+    title: 'Lista tidposter med status',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema.optional(),
+        status: z.enum(TIME_ENTRY_STATUSES).optional(),
+        from: IsoDateSchema.optional(),
+        to: IsoDateSchema.optional(),
+        // Aktören som UTFÖRDE arbetet (work_actors.id).
+        actor: UuidSchema.optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => listTimeEntries(ctx.client, ctx.companyId, i as never),
   }),
   def({
     name: 'set_work_actor_user',

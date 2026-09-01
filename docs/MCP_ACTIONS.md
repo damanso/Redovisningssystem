@@ -305,3 +305,48 @@ Tid lagras som **heltal minuter** (0,42 h = 25 min), utlägg som **heltal ören*
   `POST .../agent-tokens`) — de kan bara begära, aldrig godkänna.
 - MCP-verktyget `self_check` rapporterar API-nåbarhet, tokengiltighet och
   tokenutgång (+ varning vid start när < 14 dagar återstår).
+
+### Tidspostens livscykel (PRD_TIDSRAPPORTERING §9 steg 1)
+
+Registrerad tid och fakturerad tid är inte samma sak. `minutes` betyder
+fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
+`status` säger var i loopen posten står:
+
+| Status | Betydelse | Med på faktura? |
+|---|---|---|
+| `forslag` | AI:t har föreslagit posten | nej |
+| `godkand` | godkänd, debiterbar tid fastställd | ja |
+| `justerad` | godkänd med annan tid än registrerad (kräver skäl) | ja, justerad tid |
+| `ignorerad` | ska aldrig faktureras (kräver skäl); raderas aldrig | nej |
+| `fakturerad` | låst till en faktura (`invoice_id`) | redan fakturerad |
+
+- `log_time` (write) har fått `billable_minutes` (utelämnad = `minutes`) och
+  `adjustment_reason` — **skiljer de sig krävs skälet** (400
+  `adjustment_reason_required`). Statusen sätts av VEM som skriver: en
+  människas post blir `godkand` med godkännandespår (`approved_by`,
+  `approved_at`), AI:ts blir `forslag` och kan aldrig hamna på en faktura utan
+  att en människa först godkänt den. `billable: false` betyder `ignorerad`.
+- `update_time_entry` (write) — ändrar `work_date`, `minutes`,
+  `billable_minutes`, `description`, `status` och `adjustment_reason` på en post
+  som **inte** är fakturerad (annars 409 `time_entry_locked`; en fakturerad post
+  rättas med kreditering). Tillåtna byten: allt mellan `forslag`, `godkand`,
+  `justerad` och `ignorerad` utom tillbaka till `forslag` — aldrig till eller
+  från `fakturerad` (409 `invalid_status_transition`). `justerad`/`ignorerad`
+  kräver `adjustment_reason`.
+  **Debiterbar tid skrivs aldrig tyst:** ändras `minutes` utan att
+  `billable_minutes` skickas lämnas de debiterbara orörda, och skiljer de sig
+  därefter måste posten uttryckligen sättas till `justerad` med skäl (400
+  `adjustment_required`).
+- `list_time_entries` (read) — filter `project_id`, `status`, `from`, `to`,
+  `actor` (aktören som utförde arbetet); returnerar bl.a. `minutes`,
+  `billable_minutes`, `status`, `source`, `source_ref` och `invoice_id`.
+- `invoice_appendix_from_time_entries` väljer nu **godkänd/justerad tid utan
+  faktura** (`SELECT … FOR UPDATE`), skriver bilagan med de DEBITERBARA
+  minuterna och låser posterna till fakturan (`invoice_id` + `fakturerad`) i
+  samma transaktion. Ändras urvalet av någon annan under tiden rullas allt
+  tillbaka med 409 `time_entries_changed` — en halv fakturering, där bilagan
+  skrivits men posterna inte låsts, är precis julifelet.
+- `billable`/`invoiced` finns kvar som speglingar av statusen och skrivs i
+  samma transaktion (`invoiced` = statusen är fakturerad, `billable` = statusen
+  är inte ignorerad), så projektvyn, styrvyn, kundkortet och RLS-policyn i 0053
+  läser oförändrat.

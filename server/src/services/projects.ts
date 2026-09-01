@@ -2,10 +2,66 @@
 // en valfri timtaxa/budget. Tidposter loggas i minuter mot ett projekt. Belopp
 // beräknas i ören som round(minuter/60 * timtaxa), aldrig float i lagring.
 import type { PoolClient } from 'pg';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import type { Actor } from '../http/middleware/authenticate.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { resolveTimeEntryActor } from './workActors.js';
+
+// Tidspostens livscykel (PRD_TIDSRAPPORTERING §3.1). Registrerad tid och
+// fakturerad tid är inte samma sak: `minutes` är vad som hände,
+// `billable_minutes` är vad kunden betalar, och statusen säger var i loopen
+// posten står.
+export const TIME_ENTRY_STATUSES = ['forslag', 'godkand', 'justerad', 'ignorerad', 'fakturerad'] as const;
+export type TimeEntryStatus = (typeof TIME_ENTRY_STATUSES)[number];
+
+/**
+ * Godkänd tid — det som får hamna på en faktura. Att frågan ställs genom en
+ * funktion och inte som `status === 'godkand' || status === 'justerad'` på sex
+ * ställen är inte kosmetik: när ett värde redan smalnats av i en gren blir en
+ * inline-jämförelse ett typfel ("This comparison appears to be unintentional")
+ * som stoppar bygget, och regeln hade behövt skrivas om i varje kopia.
+ */
+export function arGodkannande(status: TimeEntryStatus): boolean {
+  return status === 'godkand' || status === 'justerad';
+}
+
+/** Låst: ligger på en skickad faktura. Ändras bara genom kreditering. */
+export function arFakturerad(status: TimeEntryStatus): boolean {
+  return status === 'fakturerad';
+}
+
+/** Räknas aldrig med — men raderas aldrig heller (PRD F7). */
+export function arIgnorerad(status: TimeEntryStatus): boolean {
+  return status === 'ignorerad';
+}
+
+/**
+ * De två gamla ja/nej-flaggorna som SPEGLINGAR av statusen. Sex läsare
+ * (projektvyn, styrvyn, kundkortet, relationshärledningarna, fakturabilagan och
+ * RLS-policyn i 0053) frågar fortfarande efter `billable`/`invoiced`; de skrivs
+ * därför i samma transaktion som statusen i stället för att ändras. En spegling
+ * som sätts på ett annat ställe än det den speglar hinner divergera.
+ */
+export function speglingar(status: TimeEntryStatus): { billable: boolean; invoiced: boolean } {
+  return { billable: !arIgnorerad(status), invoiced: arFakturerad(status) };
+}
+
+/**
+ * Tillåtna byten. Inget går TILL eller FRÅN 'fakturerad' (låset), och inget går
+ * tillbaka till 'forslag' — ett förslag är något systemet la fram en gång, inte
+ * ett tillstånd en människa kan välja. Att en godkänd post får bli 'ignorerad'
+ * är hela skälet till att den här actionen finns: juli 2026 hade två poster som
+ * inte skulle faktureras och ingen väg att säga det (PRD §1 rad 2).
+ */
+const TILLATNA_BYTEN: Readonly<Record<TimeEntryStatus, readonly TimeEntryStatus[]>> = {
+  forslag: ['godkand', 'justerad', 'ignorerad'],
+  godkand: ['justerad', 'ignorerad'],
+  justerad: ['godkand', 'ignorerad'],
+  ignorerad: ['godkand', 'justerad'],
+  fakturerad: [],
+};
 
 export interface CreateProjectInput {
   name: string;
@@ -27,6 +83,41 @@ export interface CreateTimeEntryInput {
   performed_by_actor_id?: string;
   /** Vad timmen kostar OSS. Utelämnad = aktörens standardtaxa vid registreringen. */
   cost_rate_ore?: number;
+  /** Vad kunden betalar. Utelämnad = de registrerade minuterna. */
+  billable_minutes?: number;
+  /** Varför debiterbar tid skiljer sig från registrerad. */
+  adjustment_reason?: string;
+}
+
+export interface UpdateTimeEntryInput {
+  time_entry_id: string;
+  work_date?: string;
+  minutes?: number;
+  billable_minutes?: number;
+  description?: string;
+  status?: TimeEntryStatus;
+  adjustment_reason?: string;
+}
+
+export interface ListTimeEntriesFilter {
+  project_id?: string;
+  status?: TimeEntryStatus;
+  from?: string;
+  to?: string;
+  /** Aktören som UTFÖRDE arbetet (work_actors.id). */
+  actor?: string;
+}
+
+function assertMinuter(minutes: number): void {
+  if (!Number.isInteger(minutes) || minutes <= 0 || minutes > 1440) {
+    throw new BadRequestError('invalid_minutes', 'minuter måste vara 1–1440');
+  }
+}
+
+function assertDebiterbaraMinuter(billableMinutes: number): void {
+  if (!Number.isInteger(billableMinutes) || billableMinutes < 0 || billableMinutes > 1440) {
+    throw new BadRequestError('invalid_billable_minutes', 'debiterbara minuter måste vara 0–1440');
+  }
 }
 
 /**
@@ -163,16 +254,44 @@ export async function getProject(
 }
 
 export async function createTimeEntry(
-  client: PoolClient, companyId: string, userId: string, input: CreateTimeEntryInput,
+  client: PoolClient, companyId: string, userId: string, skrivenAv: Actor, input: CreateTimeEntryInput,
 ): Promise<Record<string, unknown>> {
   const p = await client.query<{ status: string }>(
     'SELECT status FROM projects WHERE id = $1 AND company_id = $2', [input.project_id, companyId],
   );
   if (!p.rows[0]) throw new NotFoundError('project');
   if (p.rows[0].status === 'closed') throw new BadRequestError('project_closed', 'projektet är stängt');
-  if (!Number.isInteger(input.minutes) || input.minutes <= 0 || input.minutes > 1440) {
-    throw new BadRequestError('invalid_minutes', 'minuter måste vara 1–1440');
+  assertMinuter(input.minutes);
+
+  // Statusen vid registreringen är en fråga om vem som påstår något, inte om
+  // behörighet: en människa som skriver in sin tid har godkänt den i samma
+  // andetag, medan AI:ts rad är ett FÖRSLAG tills någon läst det. Ingenting som
+  // en agent skrivit får hamna på en faktura utan att ha passerat en människa.
+  //
+  // `billable: false` är den gamla vägens sätt att säga "ska aldrig faktureras",
+  // och det är precis vad 'ignorerad' betyder. Den avbildningen måste finnas,
+  // annars hade speglingen nedan tyst gjort om en ej debiterbar post till en
+  // debiterbar. Skäl krävs INTE här (till skillnad från update_time_entry): den
+  // som anropar med `billable: false` har sagt sitt redan vid registreringen och
+  // ett nytt krav hade gjort ett giltigt anrop ogiltigt.
+  const status: TimeEntryStatus = input.billable === false
+    ? 'ignorerad'
+    : skrivenAv === 'human' ? 'godkand' : 'forslag';
+
+  const debiterbara = arIgnorerad(status) ? 0 : input.billable_minutes ?? input.minutes;
+  assertDebiterbaraMinuter(debiterbara);
+  if (arIgnorerad(status) && input.billable_minutes !== undefined && input.billable_minutes !== 0) {
+    throw new BadRequestError(
+      'invalid_billable_minutes', 'en post som inte ska faktureras har noll debiterbara minuter',
+    );
   }
+  if (debiterbara !== input.minutes && !arIgnorerad(status) && !input.adjustment_reason) {
+    throw new BadRequestError(
+      'adjustment_reason_required',
+      'debiterbara minuter skiljer sig från registrerade — ange adjustment_reason',
+    );
+  }
+
   // Aktören härleds ur den inloggade användaren när den inte anges — ingen ska
   // behöva komma ihåg att fylla i vem som utförde arbetet. created_by (vem som
   // REGISTRERADE posten) sätts oförändrat vid sidan om.
@@ -181,21 +300,192 @@ export async function createTimeEntry(
   // rapporttillfället hade ändrat historiska marginaler — och det vi är skyldiga
   // en underkonsult för utfört arbete ändras inte för att taxan höjs i morgon.
   const costRate = input.cost_rate_ore ?? actor.cost_rate_ore ?? null;
+  const speglat = speglingar(status);
+  const godkand = arGodkannande(status);
 
   const row = await client.query<{ id: string }>(
     `INSERT INTO time_entries (company_id, project_id, work_date, minutes, description, hourly_rate_ore, billable,
-                               performed_by_actor_id, cost_rate_ore, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+                               performed_by_actor_id, cost_rate_ore, created_by,
+                               status, billable_minutes, adjustment_reason, approved_by, approved_at, invoiced)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
     [companyId, input.project_id, input.work_date, input.minutes, input.description,
-      input.hourly_rate_ore ?? null, input.billable ?? true, actor.id, costRate, userId],
+      input.hourly_rate_ore ?? null, speglat.billable, actor.id, costRate, userId,
+      status, debiterbara, input.adjustment_reason ?? null,
+      godkand ? userId : null, godkand ? new Date().toISOString() : null, speglat.invoiced],
   );
   const id = row.rows[0]!.id;
   await writeAudit(client, {
     companyId, userId, action: 'time_entry.created', entityType: 'time_entry', entityId: id,
-    details: { project_id: input.project_id, minutes: input.minutes, performed_by: actor.id },
+    details: {
+      project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara,
+      status, actor: skrivenAv, performed_by: actor.id,
+    },
   });
   return {
-    id, project_id: input.project_id, minutes: input.minutes,
+    id, project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara, status,
     performed_by_actor_id: actor.id, performed_by_name: actor.name, cost_rate_ore: costRate,
   };
+}
+
+/** Kolumnerna update_time_entry får röra. Aldrig ett kolumnnamn ur indata. */
+const TIME_ENTRY_UPDATE: Readonly<Record<string, string>> = {
+  work_date: 'work_date',
+  minutes: 'minutes',
+  billable_minutes: 'billable_minutes',
+  description: 'description',
+  status: 'status',
+  adjustment_reason: 'adjustment_reason',
+  approved_by: 'approved_by',
+  approved_at: 'approved_at',
+  // Speglingarna (se speglingar()) — skrivs i samma UPDATE som statusen.
+  billable: 'billable',
+  invoiced: 'invoiced',
+};
+
+interface TimeEntryRow {
+  id: string;
+  status: TimeEntryStatus;
+  minutes: number;
+  billable_minutes: number;
+  adjustment_reason: string | null;
+  approved_by: string | null;
+}
+
+/**
+ * Ändrar en tidpost som INTE är fakturerad: siffrorna, texten och statusen.
+ *
+ * Två regler bär hela funktionen:
+ *  1. En fakturerad post är låst (409 `time_entry_locked`). Det som skickats
+ *     till kund rättas med kreditering, inte genom att underlaget skrivs om.
+ *  2. Debiterbara minuter skrivs ALDRIG tyst. Ändras `minutes` utan att
+ *     `billable_minutes` skickas lämnas de debiterbara orörda — och skiljer de
+ *     sig därefter måste posten uttryckligen sättas till 'justerad' med skäl.
+ *     Alternativet (låta debiterbar tid följa med automatiskt) hade gjort en
+ *     rättelse av registrerad tid till en tyst ändring av vad kunden betalar.
+ */
+export async function updateTimeEntry(
+  client: PoolClient, companyId: string, userId: string, input: UpdateTimeEntryInput,
+): Promise<Record<string, unknown>> {
+  const res = await client.query<TimeEntryRow>(
+    `SELECT id, status, minutes, billable_minutes, adjustment_reason, approved_by
+       FROM time_entries WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.time_entry_id, companyId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('time_entry');
+  if (arFakturerad(rad.status)) {
+    throw new ConflictError(
+      'time_entry_locked',
+      'posten ligger på en faktura och är låst — en fakturerad tidpost rättas med kreditering',
+    );
+  }
+
+  const nyStatus = input.status ?? rad.status;
+  if (nyStatus !== rad.status && !TILLATNA_BYTEN[rad.status].includes(nyStatus)) {
+    throw new ConflictError(
+      'invalid_status_transition', `statusbytet ${rad.status} → ${nyStatus} är inte tillåtet`,
+    );
+  }
+
+  if (input.minutes !== undefined) assertMinuter(input.minutes);
+  const minuter = input.minutes ?? rad.minutes;
+  if (input.billable_minutes !== undefined) assertDebiterbaraMinuter(input.billable_minutes);
+  if (arIgnorerad(nyStatus) && input.billable_minutes !== undefined && input.billable_minutes !== 0) {
+    throw new BadRequestError(
+      'invalid_billable_minutes', 'en ignorerad post har noll debiterbara minuter',
+    );
+  }
+  // 'ignorerad' äger sina debiterbara minuter: en post som aldrig ska
+  // faktureras debiterar noll. Lämnar posten det läget utan att något annat
+  // sägs återgår den till utgångsläget "kunden betalar det som registrerats" —
+  // annars hade en avignorerad post stått kvar på noll och behövt en
+  // justering för att bli det den var. Det är alltså INTE ett tyst skrivande
+  // av debiterbar tid (KRAV-6): det som aldrig får ske av sig självt är att
+  // debiterbar tid FÖLJER MED en ändring av registrerad tid.
+  const debiterbara = arIgnorerad(nyStatus)
+    ? 0
+    : input.billable_minutes ?? (arIgnorerad(rad.status) ? minuter : rad.billable_minutes);
+  const skal = input.adjustment_reason ?? rad.adjustment_reason;
+
+  if ((nyStatus === 'justerad' || arIgnorerad(nyStatus)) && !skal) {
+    throw new BadRequestError(
+      'adjustment_reason_required',
+      "'justerad' och 'ignorerad' kräver adjustment_reason — skillnaden ska gå att läsa i efterhand",
+    );
+  }
+  if (!arIgnorerad(nyStatus) && debiterbara !== minuter && nyStatus !== 'justerad') {
+    throw new BadRequestError(
+      'adjustment_required',
+      "debiterbara minuter skiljer sig från registrerade — sätt status 'justerad' med adjustment_reason",
+    );
+  }
+
+  const speglat = speglingar(nyStatus);
+  // Godkännandespåret sätts när posten BLIR godkänd (eller justerad-godkänd).
+  // En redan godkänd post byter aldrig godkännare för att texten ändras.
+  const nyttGodkannande = arGodkannande(nyStatus) && (!arGodkannande(rad.status) || rad.approved_by === null);
+  const update = buildAllowlistedUpdate(TIME_ENTRY_UPDATE, {
+    work_date: input.work_date,
+    minutes: input.minutes,
+    description: input.description,
+    billable_minutes: debiterbara,
+    status: nyStatus,
+    adjustment_reason: skal,
+    billable: speglat.billable,
+    invoiced: speglat.invoiced,
+    ...(nyttGodkannande ? { approved_by: userId, approved_at: new Date().toISOString() } : {}),
+  });
+  if (!update) throw new BadRequestError('no_fields', 'inget att uppdatera');
+
+  const uppdaterad = await client.query(
+    `UPDATE time_entries SET ${update.setSql}
+      WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}
+        AND status <> 'fakturerad'
+      RETURNING id`,
+    [...update.values, input.time_entry_id, companyId],
+  );
+  // Andra försvarslinjen mot att låset kringgås: raden lästes med FOR UPDATE
+  // ovan, så det här kan bara inträffa om villkoret ändras — och då ska det
+  // synas som en konflikt, inte som en tyst nolluppdatering.
+  if (uppdaterad.rowCount !== 1) {
+    throw new ConflictError('time_entry_locked', 'posten hann låsas av en annan skrivning');
+  }
+
+  await writeAudit(client, {
+    companyId, userId, action: 'time_entry.updated', entityType: 'time_entry', entityId: input.time_entry_id,
+    details: {
+      fran_status: rad.status, till_status: nyStatus,
+      fran_minuter: rad.minutes, till_minuter: minuter,
+      fran_debiterbara: rad.billable_minutes, till_debiterbara: debiterbara,
+      ...(skal ? { skal } : {}),
+    },
+  });
+  const efter = await listTimeEntries(client, companyId, { time_entry_id: input.time_entry_id });
+  return efter[0] ?? { id: input.time_entry_id };
+}
+
+export async function listTimeEntries(
+  client: PoolClient, companyId: string, filter: ListTimeEntriesFilter & { time_entry_id?: string },
+): Promise<Record<string, unknown>[]> {
+  const res = await client.query(
+    `SELECT t.id, t.project_id, p.number AS project_number, p.name AS project_name,
+            t.work_date::text, t.description, t.minutes, t.billable_minutes, t.status,
+            t.source, t.source_ref, t.invoice_id, t.adjustment_reason,
+            t.approved_by, t.approved_at::text, t.hourly_rate_ore, t.cost_rate_ore,
+            t.performed_by_actor_id, a.name AS performed_by
+       FROM time_entries t
+       JOIN projects p ON p.id = t.project_id AND p.company_id = t.company_id
+       LEFT JOIN work_actors a ON a.id = t.performed_by_actor_id AND a.company_id = t.company_id
+      WHERE t.company_id = $1
+        AND ($2::uuid IS NULL OR t.project_id = $2)
+        AND ($3::text IS NULL OR t.status = $3)
+        AND ($4::date IS NULL OR t.work_date >= $4)
+        AND ($5::date IS NULL OR t.work_date <= $5)
+        AND ($6::uuid IS NULL OR t.performed_by_actor_id = $6)
+        AND ($7::uuid IS NULL OR t.id = $7)
+      ORDER BY t.work_date DESC, t.created_at DESC`,
+    [companyId, filter.project_id ?? null, filter.status ?? null,
+      filter.from ?? null, filter.to ?? null, filter.actor ?? null, filter.time_entry_id ?? null],
+  );
+  return res.rows;
 }

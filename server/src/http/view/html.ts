@@ -175,6 +175,13 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   archived: { label: 'Arkiverad', kind: 'muted', icon: '×' },      // organizations
   queued: { label: 'I kö', kind: 'muted', icon: '◔' },             // email_outbox
   skipped_no_smtp: { label: 'Ej skickad', kind: 'muted', icon: '○' }, // email_outbox
+  // Tidspostens livscykel (0062). Etiketterna säger vad statusen betyder för
+  // FAKTURAN, för det är den frågan man ställer när man tittar på en tidrad.
+  forslag: { label: 'AI-förslag', kind: 'ai', icon: '✦' },         // time_entries
+  godkand: { label: 'Godkänd', kind: 'ok', icon: '✓' },            // time_entries
+  justerad: { label: 'Justerad', kind: 'warn', icon: '±' },        // time_entries
+  ignorerad: { label: 'Faktureras ej', kind: 'muted', icon: '×' }, // time_entries
+  fakturerad: { label: 'Fakturerad', kind: 'ok', icon: '✓' },      // time_entries
 };
 /**
  * Har det har statusvardet en svensk etikett?

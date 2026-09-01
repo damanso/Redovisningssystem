@@ -140,6 +140,67 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-01 (tidsposten får livscykel — PRD_TIDSRAPPORTERING §9 steg 1):**
+  Bakgrunden är julifelet, mätt i PRD §1: fakturan skickades och betalades, men
+  **ingen av de 20 tidsposterna markerades som fakturerad** — de låg kvar som
+  `billable, invoiced = false`, alltså som ofakturerad tid redo att faktureras
+  en gång till. Två poster (egen administration, supportmatris) skulle aldrig
+  ha fakturerats, och det fanns ingen väg i systemet att säga det: `billable`
+  är ett ja/nej satt vid registreringen, utan skäl och utan spår.
+
+  Byggt, minsta möjliga: **migration 0062** ger `time_entries` `status`
+  (forslag/godkand/justerad/ignorerad/fakturerad), `billable_minutes`,
+  `source`/`source_ref`, `adjustment_reason`, `approved_by`/`approved_at` och
+  `invoice_id` med komposit-FK `(invoice_id, company_id)` som 0047. `minutes`
+  byter varken namn eller innebörd — den är REGISTRERAD tid — och
+  `billable`/`invoiced` behålls som **speglingar** av statusen, skrivna i samma
+  transaktion, så de sex befintliga läsarna (projektvyn, styrvyn, kundkortet,
+  crmDerivations, bilagan, RLS 0053) är helt orörda.
+
+  1. **`update_time_entry`** (write) — omklassning och rättelse på en post som
+     inte är fakturerad; en fakturerad post är låst (409 `time_entry_locked`).
+     **Debiterbar tid skrivs aldrig tyst:** ändras `minutes` utan att
+     `billable_minutes` skickas lämnas de debiterbara orörda, och skiljer de sig
+     därefter krävs status `justerad` med skäl. Alternativet — att låta
+     debiterbar tid följa med automatiskt — hade gjort en rättelse av det som
+     hände till en tyst ändring av vad kunden betalar.
+  2. **`list_time_entries`** (read) och `log_time` med `billable_minutes` +
+     `adjustment_reason`. Statusen vid registreringen avgörs av AKTÖREN: en
+     människas post är godkänd, AI:ts är ett `forslag` som aldrig kan hamna på
+     en faktura utan att en människa godkänt den.
+  3. **Bilagan** väljer nu godkänd/justerad tid utan faktura med
+     `SELECT … FOR UPDATE`, skriver DEBITERBARA minuter och låser posterna till
+     fakturan i samma transaktion. Antalet uppdaterade rader måste vara lika
+     med antalet valda, annars 409 `time_entries_changed` och rollback — en
+     halv fakturering (bilaga skriven, poster olåsta) ÄR julifelet.
+     Räkningen görs dessutom på ögonblicksbilden före låset, så att en förlorad
+     kapplöpning svarar 409 i stället för "ingen tid i perioden": en tyst nolla
+     som ser ut som ett tomt resultat är samma felklass som lärdom 7.
+  4. **Datafixen ligger i 0062 som ett datajobb, inte som en lista med id:n**
+     (Davids villkor): fakturan hittas på `effective_invoice_number = 27` inom
+     juli–augusti 2026, uppdraget på fakturans `project_id` (annars kundens
+     projekt), perioden på juli 2026 — och de två icke debiterbara på sina
+     beskrivningar. Varje ändrad rad får en EGEN rad i auditloggen
+     (`time_entry.migrated_0062`) med före- och eftervärden och `user_id = NULL`
+     (det var migrationen, inte en människa). Filen är idempotent rakt igenom.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs.
+  Nya sviter: `server/test/tidpost-livscykel.test.ts` (livscykel, varje tillåtet
+  och otillåtet statusbyte, låset, urvalet, och TVÅ SAMTIDIGA faktureringar av
+  samma period där exakt en lyckas) och
+  `server/test/tidpost-migration-0062.test.ts` (kedjan körs till 0061, data i
+  gammal form, sedan migrationsfilen från disk — backfillens tre klasser,
+  julifixens 20 + 2 poster, och en andra körning som varken ändrar ett värde
+  eller lägger en auditrad). Ett befintligt fixturanrop ändrat
+  (`arende-projektkoppling.test.ts` sätter status/billable_minutes i sin råa
+  INSERT — kolumnerna är NOT NULL).
+
+  **Kvarstår för David i produktionsdatan:** kör `npm run migrate` — datafixen
+  körs som en del av 0062 och rör exakt juliposterna. Nästa steg i PRD:n är
+  story 2 (atomär fakturaskapning ur tid) och story 3 (avtalsdel + takvarning);
+  ingen av dem är byggd här.
+
 - **2026-09-01/02 (session: fakturan som gick iväg utan betalningsuppgifter):**
   En logotyp dödade API:t, och jakten på varför avslöjade ett större fel.
 

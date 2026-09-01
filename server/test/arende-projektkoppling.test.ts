@@ -138,8 +138,11 @@ describe('K-5: tidpost -> ärende', () => {
     const projekt = await nyttProjekt('Tiduppdrag', 9020, kund);
     const tid = await withAdmin(async (c) => {
       const r = await c.query(
-        `INSERT INTO time_entries (company_id, project_id, work_date, minutes, description)
-         VALUES ($1, $2, current_date, 60, 'Arbete') RETURNING id`,
+        // status/billable_minutes är NOT NULL sedan 0062 (livscykeln) — en
+        // tidpost utan status finns inte, inte ens i en fixtur.
+        `INSERT INTO time_entries (company_id, project_id, work_date, minutes, description,
+                                   status, billable_minutes)
+         VALUES ($1, $2, current_date, 60, 'Arbete', 'godkand', 60) RETURNING id`,
         [companyId, projekt],
       );
       return r.rows[0].id as string;
