@@ -140,6 +140,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-01/02 (session: fakturan som gick iväg utan betalningsuppgifter):**
+  En logotyp dödade API:t, och jakten på varför avslöjade ett större fel.
+
+  **Kraschen.** En palett-PNG med transparens sattes som bolagslogotyp. pdfkit
+  avkodar PNG med png-js, som kastade `Z_DATA_ERROR: invalid distance too far
+  back` ur zlib — **asynkront, ur en callback**. `try/catch` runt `doc.image()`
+  fanns redan, med kommentaren att en trasig bild aldrig får stoppa fakturan,
+  men den fångade ingenting: felet blev ett ohanterat undantag som dödade hela
+  node-processen. Varje försök att generera en faktura gav 502 och systemd
+  startade om tjänsten — fyra gånger på en halvtimme. Akut löst genom att byta
+  till JPEG (pdfkit läser JPEG direkt, utan png-js). Permanent löst med
+  `assertRenderableImage()` i `companyLogo.ts`: kontrollen sker vid
+  **uppladdning**, där felet går att fånga synkront, inte vid rendering.
+  Lärdomen: ett `try/catch` skyddar bara mot synkrona fel — mot ett bibliotek
+  som kastar ur en callback måste indata avvisas innan det når biblioteket.
+
+  **Det större felet.** En faktura hann gå iväg till kund utan bankgiro och
+  utan momsregistreringsnummer. Första diagnosen — "mallen är ofullständig" —
+  var fel. `pdfService.ts` renderar kundadress, momsreg.nr, bankgiro, IBAN, BIC
+  och hela sidfoten, korrekt porterad ur faktura 0000024. Men varje fält skrivs
+  **villkorat på att värdet finns**, och registret var tomt: `companies` saknade
+  vat_number, bankgiro, iban, bic, email, phone och website och hade
+  `approved_for_f_tax = false`; **samtliga sex kunder** saknade adress,
+  postnummer, ort och org.nr. Mallen hoppade tyst över raderna. Det såg ut som
+  en trasig mall men var en tom databas — och det gällde varje faktura systemet
+  kunde producera, inte bara ILT:s. Locollabs och ILT är nu ifyllda; övriga fem
+  kunder kvarstår.
+
+  Lärdomen är att **ett villkorat fält är en tyst spärr**. En faktura utan
+  bankgiro ska inte kunna genereras — den ska vägra. Tills den vägran finns i
+  koden är `scripts/faktura-regress.mjs` provet: den genererar en riktig
+  faktura-PDF och kontrollerar med `pdftotext` att uppgifterna momslagen kräver
+  **faktiskt står i dokumentet**. Att generering inte kraschar är inte samma sak
+  som att handlingen är giltig; det var precis den skillnaden som gjorde att
+  fakturan gick iväg. (Två tidigare försök att läsa PDF:en genom att regexa råa
+  bytes gav falska svar — logotypens JPEG-data innehåller både parenteser och
+  sekvensen `BT`, så en egen parser hittar text som inte finns.)
+
+  **Vid deploy:** `/opt/redovisning` stod på en lokal gren
+  `cto/tidsposten-f-r-livscykelstatus-f-rslag-g-95` utan upstream, utan egna
+  commits och utan lokala ändringar — en etikett på den gamla main-spetsen.
+  Växlad till `main`; grenen är kvar orörd.
+
+  **Kvarstår:** fakturabilagan kräver `entry_date` (NOT NULL) och tillåter
+  `minutes` XOR `amount_ore`, så en tidsbilaga kan inte visa belopp per rad
+  eller utelämna datum. Båda kräver migration. Ingen teckenkodningsbugg finns —
+  titel och ingress lagras med korrekt svenska.
+
 - **2026-08-31 (session: städytan omgjord efter Davids dom):** Första utförandet
   föll på sitt eget prov. Davids ord: *"ui ux är snyggt, men katastrofalt dåligt
   exekverat, jag kan inte städa då det inte finns något för mig att städa här...
