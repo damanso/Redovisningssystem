@@ -111,6 +111,7 @@ describe('15-ordsregeln i skanningslistor', () => {
 
       for (const m of html.matchAll(/href="(\/app\/c\/[^"#?]*)"/g)) {
         const nasta = m[1];
+        if (!nasta) continue;
         if (!besokta.has(nasta) && !nasta.includes('/download')) ko.push(nasta);
       }
     }

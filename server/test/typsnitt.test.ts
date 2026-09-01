@@ -61,7 +61,7 @@ describe('typsnitten är självvärdade och används', () => {
       expect(stil).toContain(`font-family: "${familj}"`);
     }
     // Varje src pekar på egen värd. En enda extern URL vore ett anrop ut.
-    const kallor = [...stil.matchAll(/src:\s*url\("([^"]+)"\)/g)].map((m) => m[1]);
+    const kallor = [...stil.matchAll(/src:\s*url\("([^"]+)"\)/g)].map((m) => m[1] ?? '');
     expect(kallor.length).toBe(TYPSNITT.length);
     for (const k of kallor) {
       expect(k.startsWith('/typsnitt/')).toBe(true);
@@ -71,7 +71,7 @@ describe('typsnitten är självvärdade och används', () => {
     // inuti en inlinead data:-URI — ett namnrymdsnamn, inte en begäran.
     // Strängen var en proxy för "gör ett externt anrop"; det som mäts nu är
     // vad url() faktiskt pekar på.
-    const allaUrl = [...stil.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1]);
+    const allaUrl = [...stil.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1] ?? '');
     const utat = allaUrl.filter((u) => /^(https?:)?\/\//.test(u.trim()));
     expect(utat, `url() pekar ut ur huset: ${utat.join(', ')}`).toEqual([]);
   });
