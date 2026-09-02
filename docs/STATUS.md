@@ -308,10 +308,15 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   **Kollision med CTO-motorn.** Mitt bygge och motorns beslut #95 (tidspostens
   livscykel) landade samtidigt och tog båda numret 0062. Min migration
   omnumrerades till 0063; rebasen gick rent. Två saker att veta:
-  (1) `/opt/redovisning` är BÅDE driftkatalogen och motorns arbetskatalog — den
-  stod två gånger under sessionen på en `cto/...`-gren i stället för main, vilket
-  gjorde att `git pull` vid deploy misslyckades. Driften bör inte dela katalog
-  med en agent som växlar gren.
+  (1) `/opt/redovisning` var BÅDE driftkatalogen och motorns arbetskatalog — den
+  stod två gånger under sessionen på en `cto/...`-gren i stället för main. Värre
+  än den misslyckade `git pull`: vilken kod som kördes efter nästa omstart
+  avgjordes av vem som råkade checka ut något sist, och systemd startar om vid
+  krasch. **Åtgärdat samma kväll** — oföränderliga releaser under
+  `/opt/redovisning-app/releases` med symlänken `current` som systemd läser, och
+  `redovisning-deploy` som enda vägen att byta. Se `docs/DRIFT_VPS.md`. Prov:
+  arbetskopian checkades ut tre commits bakåt på en annan gren och tjänsten
+  startades om — den kom upp på exakt samma release.
   (2) Motorns datafix för juli skulle märka två poster som 'ignorerad' med
   motiveringen att de aldrig borde ha fakturerats. Den premissen kom ur en
   anteckning jag själv skrev och senare motbevisade: summan av juli
