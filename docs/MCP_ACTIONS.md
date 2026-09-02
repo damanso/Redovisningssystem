@@ -360,18 +360,18 @@ eller senare överhoppat. Nu är de tre stegen ETT.
 
 - `create_invoice_from_time` (write) — `customer_id`, `project_id`, `from`,
   `to`, `invoice_date`, valfria `due_date`, `reference`, `our_reference`,
-  `title`, `preamble`, `exclude_entry_ids` och `appendix_layout`. I EN
-  transaktion: urvalet (godkänd/justerad tid utan faktura i perioden, minus
-  `exclude_entry_ids`) väljs och låses `FOR UPDATE`, fakturan skapas med **en
-  rad per taxa** (postens `hourly_rate_ore`, annars uppdragets; antal =
+  `title`, `preamble`, `exclude_entry_ids`, `appendix_layout` och
+  `confirm_over_cap`. I EN transaktion: urvalet (godkänd/justerad tid utan
+  faktura i perioden, minus `exclude_entry_ids`) väljs och låses `FOR UPDATE`,
+  fakturan skapas med **en rad per avtalsdel och taxa** (beskrivning = delens
+  `code` + `name`, taxan i ordningen post → del → avtal → uppdrag; antal =
   debiterbara minuter/60 med två decimaler; moms 25 % och konto 3001 när inget
-  annat anges), tidsbilagan skrivs ur samma rader och posterna låses till
-  fakturan. Svar: `invoice`, `time_entries`, `billable_minutes`.
+  annat anges), bilagan skrivs ur samma rader och posterna låses till fakturan.
+  Svar: `invoice`, `time_entries`, `billable_minutes`, `appendix_layout`.
   Fel: 400 `no_time_entries` (inget att fakturera), 409 `time_entries_changed`
   (någon annan hann före), 400 `missing_hourly_rate` (**aldrig ett tyst
-  nollpris**), 400 `unsupported_appendix_layout` för `appendix_layout:
-  'per_avtalsdel'` — flaggan finns i schemat men kategoriseringen byggs i
-  story 3. Uppdraget sätts på fakturahuvudet (`invoices.project_id`).
+  nollpris**), 409 `cap_exceeded` (bekräftat avtalstak passerat — se story 3).
+  Uppdraget sätts på fakturahuvudet (`invoices.project_id`).
   De undantagna posterna rörs **inte alls** och ligger kvar som godkänd,
   ofakturerad tid.
 - `set_invoice_appendix` med `kind: 'time'` kräver nu `bypass_time_entries:
@@ -389,3 +389,77 @@ eller senare överhoppat. Nu är de tre stegen ETT.
   bolaget redan har en PDF med samma `effective_invoice_number`. Databasens
   unika nyckel (0046) är förstahandsgarantin; kontrollen är den andra, så att
   två dokument aldrig kan utge sig för att vara samma faktura.
+
+### Avtal och avtalsdelar (PRD_TIDSRAPPORTERING §3.2, story 3)
+
+ILT-avtalets Fas 2A har ett tak på 32 h / 35 200 kr. Taket passerades utan att
+någon sa något — inte för att ingen läste, utan för att systemet inte hade
+någonstans att SKRIVA det (PRD §1 rad 6). `projects` bär en timtaxa och en
+budget; ett uppdrag är inte ett avtal. Migration 0064 ger avtalet och dess
+faser egna tabeller (`contracts`, `contract_parts`) och tidsposten en koppling
+(`time_entries.contract_part_id`, nullbar).
+
+Tre regler bär hela funktionen:
+
+1. **Registrering spärras aldrig.** Tid som är arbetad ska alltid gå att skriva
+   ner; ett system som vägrar ta emot verkligheten får tillbaka den i ett
+   kalkylark. Taket VARNAR vid registreringen och SPÄRRAR först vid
+   faktureringen, där pengarna flyttar sig.
+2. **Ett oläst tak varnar aldrig.** `cap_confirmed` betyder att en människa läst
+   talet i avtalshandlingen. Ett obekräftat eller saknat tak redovisas som
+   `cap_status: 'vet_ej'` med förbrukningen bredvid och `share: null`.
+3. **Ett tilläggsavtal är en ny rad**, aldrig en överskrivning: samma `code` med
+   senare `valid_from`. Förbrukningen summeras över alla versioner, taket
+   hämtas ur den version som gäller i dag (framtida versioner gäller inte än).
+
+- `create_contract` (write) — `project_id` (krävs), `name`, valfria
+  `customer_id` (utelämnad = uppdragets kund), `signed_date`,
+  `payment_terms_days`, `hourly_rate_ore`, `source_file_id` (avtalshandlingen)
+  och `notes`.
+- `update_contract` (write) — `contract_id` + samma fält.
+- `upsert_contract_part` (write) — `contract_id`, `code` (t.ex. `2A`), `name`
+  (krävs bara när delen skapas), valfria `description`, `parent_part_id`,
+  `billable`, `hourly_rate_ore`, `cap_hours`, `cap_amount_ore`,
+  `cap_confirmed` (default **false**), `valid_from` (utelämnad = avtalets
+  `signed_date`; saknas det: 400 `valid_from_required`), `sort_order`,
+  `active`. Nyckeln är (avtal, kod, `valid_from`): samma `valid_from` ändrar
+  raden och sätter `manually_edited = true`, ett senare lägger en ny version
+  bredvid den gamla.
+- `list_contracts` (read) — filter `project_id`, `contract_id`. Varje avtal bär
+  `parts` med förbrukning per del.
+- `get_contract_usage` (read) — `contract_id`. Per del: `billable_minutes` och
+  `amount_ore` ur poster med status `godkand`/`justerad`/`fakturerad` (ett
+  `forslag` räknas inte — AI:ts gissning ska inte larma om ett avtalstak),
+  `own_billable_minutes` (utan barnens), `cap_hours`/`cap_amount_ore`,
+  `cap_status`, `share` och `versions`. **Föräldradelens förbrukning är summan
+  över barnens**; saknar föräldern eget tak härleds det ur barnens
+  (`cap_derived: true`) och är bekräftat bara om varje ingående tak är det.
+- `assign_contract_part` (write) — `time_entry_id`, `contract_part_id`. Sätter
+  **enbart** klassificeringen och är därför tillåten även på en `fakturerad`
+  post: den ändrar varken belopp, minuter eller låset till fakturan. Allt annat
+  på en fakturerad post är fortsatt låst (`update_time_entry` ger 409
+  `time_entry_locked`). Utan undantaget hade juliposterna aldrig gått att
+  hänföra till en avtalsdel.
+- `log_time`/`update_time_entry` tar `contract_part_id`. Har uppdraget aktiva
+  avtalsdelar **krävs** den (400 `contract_part_required`); hör delen till ett
+  annat uppdrag blir det 400 `contract_part_project_mismatch`. Taxan gäller i
+  ordningen **post → avtalsdel → avtal → uppdrag** (den gamla botten post →
+  uppdrag är oförändrad för tid utan avtalsdel).
+- **Takutfallet efter en sparad post:** är taket bekräftat och förbrukningen
+  ≥ 80 % bär svaret `warning { part, used_minutes, used_amount_ore, cap_hours,
+  cap_amount_ore, share, over_cap, message }`. Över 100 % säger meddelandet att
+  avtalet kräver skriftligt besked till kunden om ändrad omfattning, och
+  överskridandet skrivs i auditloggen (`contract_part.cap_exceeded`). Posten
+  sparas ALLTID. Föräldrakedjan räknas med: en post på Fas 2A förbrukar också
+  Fas 2:s tak.
+- **Spärren vid fakturering:** tar urvalet en del (eller dess förälder) över ett
+  BEKRÄFTAT tak svarar `create_invoice_from_time` 409 `cap_exceeded`. Med
+  `confirm_over_cap: true` skapas fakturan och forceringen skrivs i auditloggen
+  (`invoice.cap_override`, även i svarets `cap_override`). Ett obekräftat eller
+  saknat tak spärrar aldrig.
+- **Bilagan:** `appendix_layout: 'per_datum'` (default) ger tidsbilagan per
+  datum, formatet från faktura 0000027. `'per_avtalsdel'` ger kategoribilagan
+  ur 0063: kind `category`, en rad per avtalsdel med delens namn och summerade
+  minuter — **inga datum**, ur exakt samma låsta urval som fakturaraderna. Tid
+  utan avtalsdel hamnar under `Övrigt` när fakturan har klassad tid att stå
+  bredvid; är ingen post klassad står uppdragets namn kvar som förut.
