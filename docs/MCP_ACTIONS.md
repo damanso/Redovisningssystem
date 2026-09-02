@@ -339,7 +339,9 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
   `adjustment_required`).
 - `list_time_entries` (read) — filter `project_id`, `status`, `from`, `to`,
   `actor` (aktören som utförde arbetet); returnerar bl.a. `minutes`,
-  `billable_minutes`, `status`, `source`, `source_ref` och `invoice_id`.
+  `billable_minutes`, `status`, `source`, `source_ref`, `invoice_id`,
+  `duration_hhmm`/`billable_duration_hhmm` (samma tal i hh:mm) och `links[]`
+  (underlagslänkarna, se story 5 nedan).
 - `invoice_appendix_from_time_entries` väljer nu **godkänd/justerad tid utan
   faktura** (`SELECT … FOR UPDATE`), skriver bilagan med de DEBITERBARA
   minuterna och låser posterna till fakturan (`invoice_id` + `fakturerad`) i
@@ -512,3 +514,35 @@ livscykeln) är borttagen. **En definition, tre ingångar.**
   betalningskolumnerna, stillastående uppdrag och avtalsförbrukningen, med länk
   per rad till uppdraget och en rad "N förslag väntar" (godkännandeytan kommer
   i story 8).
+
+## Registrera, rätta och belägga tid i vyn (story 5)
+
+Rapporterna gjorde tiden synlig; det som saknades var att SKRIVA och RÄTTA den
+utan AI. Tidsfältet tar emot det man ändå skriver, och tolkningen sker på ETT
+ställe (`server/src/lib/duration.ts`) för både vyn och AI-vägen.
+
+- **Tidsparsern** (`parseDuration`, ren funktion): `1h` → 60, `1,5`/`1.5` → 90,
+  `90m` → 90, `45` → 45, `1h30` → 90, `1:30` → 90. Ett tal **utan enhet under
+  10 är timmar, från 10 och uppåt minuter** (Davids beslut 1/9) — `7` är alltså
+  7 h (`07:00`). Resultatet är alltid HELA minuter, 1–1440; allt annat ger 400
+  `invalid_duration` med exemplen i feltexten. Villkoret för regeln: svaret
+  visar den tolkade tiden i hh:mm och formuläret skriver ut regeln vid fältet.
+- `log_time` och `update_time_entry` tar valfritt **`duration`** (text) som
+  alternativ till `minutes`. Exakt ett av dem — båda (eller, för `log_time`,
+  inget) ger 400 `minutes_or_duration`. Svaret bär `duration_hhmm` och
+  `billable_duration_hhmm`.
+- `attach_time_entry_link` (write) — `time_entry_id`, `url`, valfri `label`.
+  **Underlag är LÄNKAR, aldrig filkopior** (rådslaget 1/9, ILT §6): adressen
+  säger var underlaget finns, den är inte underlaget. `url` måste börja med
+  `https://` (400 `invalid_link_url`, och samma villkor i schemat), och posten
+  får inte ligga på en faktura (409 `time_entry_locked`). Auditloggas i samma
+  transaktion (`time_entry.link_attached`).
+- `remove_time_entry_link` (write) — `link_id`. Samma lås och samma auditrad
+  (`time_entry.link_removed`). Migration **0065** ger tabellen
+  `time_entry_links` (RLS + GRANT som 0047, komposit-FK till `time_entries`).
+- **Vyn:** snabbformuläret ligger överst på `/tid` och på uppdragssidan
+  (uppdrag, avtalsdel, tid, beskrivning, datum — en rad, en knapp), och varje
+  tidpost har en egen sida `/app/c/:companyId/tid/:entryId` med rättelse
+  (datum, tid, debiterbar tid, beskrivning, avtalsdel, status, justeringsorsak),
+  underlagslänkarna och postens egen historik ur revisionsloggen. En fakturerad
+  post renderas **låst**, med 409-texten utskriven och utan formulär.

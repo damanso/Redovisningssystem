@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
+import { hhmm, parseDuration } from '../lib/duration.js';
 import { writeAudit } from './auditService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { resolveTimeEntryActor } from './workActors.js';
@@ -56,7 +57,7 @@ export function speglingar(status: TimeEntryStatus): { billable: boolean; invoic
  * är hela skälet till att den här actionen finns: juli 2026 hade två poster som
  * inte skulle faktureras och ingen väg att säga det (PRD §1 rad 2).
  */
-const TILLATNA_BYTEN: Readonly<Record<TimeEntryStatus, readonly TimeEntryStatus[]>> = {
+export const TILLATNA_BYTEN: Readonly<Record<TimeEntryStatus, readonly TimeEntryStatus[]>> = {
   forslag: ['godkand', 'justerad', 'ignorerad'],
   godkand: ['justerad', 'ignorerad'],
   justerad: ['godkand', 'ignorerad'],
@@ -75,7 +76,9 @@ export interface CreateProjectInput {
 export interface CreateTimeEntryInput {
   project_id: string;
   work_date: string;
-  minutes: number;
+  minutes?: number;
+  /** Tiden som text ("1,5", "45", "90m", "1h30") — alternativ till `minutes`. */
+  duration?: string;
   description: string;
   /** Pris mot kund (override av projektets taxa). */
   hourly_rate_ore?: number;
@@ -96,6 +99,8 @@ export interface UpdateTimeEntryInput {
   time_entry_id: string;
   work_date?: string;
   minutes?: number;
+  /** Tiden som text — alternativ till `minutes`, samma parser som vyn använder. */
+  duration?: string;
   billable_minutes?: number;
   description?: string;
   status?: TimeEntryStatus;
@@ -110,6 +115,28 @@ export interface ListTimeEntriesFilter {
   to?: string;
   /** Aktören som UTFÖRDE arbetet (work_actors.id). */
   actor?: string;
+}
+
+/**
+ * Minuterna ur indata: antingen talet eller texten, ALDRIG båda och aldrig
+ * ingendera där en tid krävs (400 `minutes_or_duration`). Att lägga tolkningen
+ * här — i tjänsten, inte i vyn — är hela poängen med KRAV-2: vyns formulär och
+ * AI-vägen går genom exakt samma parser, och en framtida tredje ingång kan inte
+ * råka få en fjärde tolkning av "1,5" (lärdom 5).
+ */
+function minuterUrIndata(
+  minutes: number | undefined, duration: string | undefined, kravs: boolean,
+): number | undefined {
+  if (minutes !== undefined && duration !== undefined) {
+    throw new BadRequestError(
+      'minutes_or_duration', 'ange antingen minutes (tal) eller duration (text) — inte båda',
+    );
+  }
+  if (duration !== undefined) return parseDuration(duration);
+  if (minutes === undefined && kravs) {
+    throw new BadRequestError('minutes_or_duration', 'ange tiden som minutes (tal) eller duration (text)');
+  }
+  return minutes;
 }
 
 function assertMinuter(minutes: number): void {
@@ -286,7 +313,8 @@ export async function createTimeEntry(
   );
   if (!p.rows[0]) throw new NotFoundError('project');
   if (p.rows[0].status === 'closed') throw new BadRequestError('project_closed', 'projektet är stängt');
-  assertMinuter(input.minutes);
+  const minuter = minuterUrIndata(input.minutes, input.duration, true)!;
+  assertMinuter(minuter);
 
   // Avtalsdelen (story 3): finns den på uppdraget KRÄVS klassificeringen redan
   // vid registreringen. Att låta posten ligga oklassad "tills vidare" är hur
@@ -309,14 +337,14 @@ export async function createTimeEntry(
     ? 'ignorerad'
     : skrivenAv === 'human' ? 'godkand' : 'forslag';
 
-  const debiterbara = arIgnorerad(status) ? 0 : input.billable_minutes ?? input.minutes;
+  const debiterbara = arIgnorerad(status) ? 0 : input.billable_minutes ?? minuter;
   assertDebiterbaraMinuter(debiterbara);
   if (arIgnorerad(status) && input.billable_minutes !== undefined && input.billable_minutes !== 0) {
     throw new BadRequestError(
       'invalid_billable_minutes', 'en post som inte ska faktureras har noll debiterbara minuter',
     );
   }
-  if (debiterbara !== input.minutes && !arIgnorerad(status) && !input.adjustment_reason) {
+  if (debiterbara !== minuter && !arIgnorerad(status) && !input.adjustment_reason) {
     throw new BadRequestError(
       'adjustment_reason_required',
       'debiterbara minuter skiljer sig från registrerade — ange adjustment_reason',
@@ -340,7 +368,7 @@ export async function createTimeEntry(
                                status, billable_minutes, adjustment_reason, approved_by, approved_at, invoiced,
                                contract_part_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
-    [companyId, input.project_id, input.work_date, input.minutes, input.description,
+    [companyId, input.project_id, input.work_date, minuter, input.description,
       input.hourly_rate_ore ?? null, speglat.billable, actor.id, costRate, userId,
       status, debiterbara, input.adjustment_reason ?? null,
       godkand ? userId : null, godkand ? new Date().toISOString() : null, speglat.invoiced, del],
@@ -349,7 +377,7 @@ export async function createTimeEntry(
   await writeAudit(client, {
     companyId, userId, action: 'time_entry.created', entityType: 'time_entry', entityId: id,
     details: {
-      project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara,
+      project_id: input.project_id, minutes: minuter, billable_minutes: debiterbara,
       status, actor: skrivenAv, performed_by: actor.id, contract_part_id: del,
     },
   });
@@ -359,7 +387,10 @@ export async function createTimeEntry(
   // tillbaka den i ett kalkylark.
   const warning = await takvarningEfterSparad(client, companyId, userId, del, id);
   return {
-    id, project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara, status,
+    id, project_id: input.project_id, minutes: minuter, billable_minutes: debiterbara, status,
+    // Den TOLKADE tiden tillbaka till den som skrev den (KRAV-2). Utan den är
+    // parserregeln "under tio = timmar" osynlig, och en osynlig regel är en fälla.
+    duration_hhmm: hhmm(minuter), billable_duration_hhmm: hhmm(debiterbara),
     performed_by_actor_id: actor.id, performed_by_name: actor.name, cost_rate_ore: costRate,
     contract_part_id: del,
     ...(warning ? { warning } : {}),
@@ -429,8 +460,9 @@ export async function updateTimeEntry(
     );
   }
 
-  if (input.minutes !== undefined) assertMinuter(input.minutes);
-  const minuter = input.minutes ?? rad.minutes;
+  const nyaMinuter = minuterUrIndata(input.minutes, input.duration, false);
+  if (nyaMinuter !== undefined) assertMinuter(nyaMinuter);
+  const minuter = nyaMinuter ?? rad.minutes;
   if (input.billable_minutes !== undefined) assertDebiterbaraMinuter(input.billable_minutes);
   if (arIgnorerad(nyStatus) && input.billable_minutes !== undefined && input.billable_minutes !== 0) {
     throw new BadRequestError(
@@ -476,7 +508,7 @@ export async function updateTimeEntry(
   const nyttGodkannande = arGodkannande(nyStatus) && (!arGodkannande(rad.status) || rad.approved_by === null);
   const update = buildAllowlistedUpdate(TIME_ENTRY_UPDATE, {
     work_date: input.work_date,
-    minutes: input.minutes,
+    minutes: nyaMinuter,
     description: input.description,
     billable_minutes: debiterbara,
     status: nyStatus,
@@ -541,5 +573,127 @@ export async function listTimeEntries(
     [companyId, filter.project_id ?? null, filter.status ?? null,
       filter.from ?? null, filter.to ?? null, filter.actor ?? null, filter.time_entry_id ?? null],
   );
-  return res.rows;
+  const lankar = await lankarForPoster(client, companyId, res.rows.map((r) => r.id as string));
+  return res.rows.map((r) => ({
+    ...r,
+    // Tiden i hh:mm bredvid minuterna. Minuterna är fortfarande talet man
+    // räknar med; hh:mm är talet man LÄSER — och det är formen som gör en
+    // feltolkad "1,5" synlig direkt (KRAV-2).
+    duration_hhmm: hhmm(r.minutes as number),
+    billable_duration_hhmm: hhmm(r.billable_minutes as number),
+    links: lankar.get(r.id as string) ?? [],
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Underlag som LÄNKAR (story 5, rådslagets beslut 1/9 — ILT §6).
+//
+// En tidpost utan underlag är ett påstående. Underlaget bor däremot redan där
+// arbetet gjordes: i anteckningen, i ärendet, i ritningen. Vi lagrar därför
+// adressen dit — aldrig en kopia, som hade blivit en andra sanning som åldras i
+// tysthet och som dessutom drar in kundens material i vår räkenskapsinformation.
+// ---------------------------------------------------------------------------
+
+export interface TimeEntryLink {
+  id: string;
+  url: string;
+  label: string | null;
+  created_at: string;
+}
+
+export interface AttachTimeEntryLinkInput {
+  time_entry_id: string;
+  url: string;
+  label?: string;
+}
+
+async function lankarForPoster(
+  client: PoolClient, companyId: string, entryIds: string[],
+): Promise<Map<string, TimeEntryLink[]>> {
+  const ut = new Map<string, TimeEntryLink[]>();
+  if (entryIds.length === 0) return ut;
+  const res = await client.query<TimeEntryLink & { time_entry_id: string }>(
+    `SELECT id, time_entry_id, url, label, created_at::text
+       FROM time_entry_links
+      WHERE company_id = $1 AND time_entry_id = ANY($2::uuid[])
+      ORDER BY created_at, id`,
+    [companyId, entryIds],
+  );
+  for (const rad of res.rows) {
+    const { time_entry_id: postId, ...lank } = rad;
+    ut.set(postId, [...(ut.get(postId) ?? []), lank]);
+  }
+  return ut;
+}
+
+/** Länkarna på EN post — vyn läser dem utan att gå omvägen via listan. */
+export async function listTimeEntryLinks(
+  client: PoolClient, companyId: string, timeEntryId: string,
+): Promise<TimeEntryLink[]> {
+  return (await lankarForPoster(client, companyId, [timeEntryId])).get(timeEntryId) ?? [];
+}
+
+/**
+ * Posten som en länk får hänga på: den måste finnas i bolaget, och den får inte
+ * ligga på en faktura. En fakturerad post är låst i sin helhet — underlaget till
+ * det som skickats till kund ska se likadant ut i efterhand som när det
+ * skickades. Samma 409 som update_time_entry, med flit: det är samma lås.
+ */
+async function olastPost(client: PoolClient, companyId: string, timeEntryId: string): Promise<void> {
+  const res = await client.query<{ status: TimeEntryStatus }>(
+    'SELECT status FROM time_entries WHERE id = $1 AND company_id = $2 FOR UPDATE',
+    [timeEntryId, companyId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('time_entry');
+  if (arFakturerad(rad.status)) {
+    throw new ConflictError(
+      'time_entry_locked',
+      'posten ligger på en faktura och är låst — underlagslänkarna på en fakturerad post ändras inte',
+    );
+  }
+}
+
+export async function attachTimeEntryLink(
+  client: PoolClient, companyId: string, userId: string, input: AttachTimeEntryLinkInput,
+): Promise<Record<string, unknown>> {
+  await olastPost(client, companyId, input.time_entry_id);
+  // https:// och inget annat. En http-länk hade gjort underlaget avlyssningsbart
+  // och en `javascript:`/`data:`-adress hade gjort listan i vyn till en
+  // angreppsyta — kontrollen står här OCH i schemat (0065).
+  if (!input.url.startsWith('https://')) {
+    throw new BadRequestError('invalid_link_url', 'länken måste börja med https://');
+  }
+  const row = await client.query<{ id: string }>(
+    `INSERT INTO time_entry_links (company_id, time_entry_id, url, label, created_by)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [companyId, input.time_entry_id, input.url, input.label ?? null, userId],
+  );
+  const id = row.rows[0]!.id;
+  await writeAudit(client, {
+    companyId, userId, action: 'time_entry.link_attached', entityType: 'time_entry',
+    entityId: input.time_entry_id, details: { link_id: id, url: input.url, label: input.label ?? null },
+  });
+  return { id, time_entry_id: input.time_entry_id, url: input.url, label: input.label ?? null };
+}
+
+export async function removeTimeEntryLink(
+  client: PoolClient, companyId: string, userId: string, input: { link_id: string },
+): Promise<Record<string, unknown>> {
+  const res = await client.query<{ time_entry_id: string; url: string }>(
+    'SELECT time_entry_id, url FROM time_entry_links WHERE id = $1 AND company_id = $2',
+    [input.link_id, companyId],
+  );
+  const lank = res.rows[0];
+  if (!lank) throw new NotFoundError('time_entry_link');
+  await olastPost(client, companyId, lank.time_entry_id);
+  const bort = await client.query(
+    'DELETE FROM time_entry_links WHERE id = $1 AND company_id = $2', [input.link_id, companyId],
+  );
+  if (bort.rowCount !== 1) throw new NotFoundError('time_entry_link');
+  await writeAudit(client, {
+    companyId, userId, action: 'time_entry.link_removed', entityType: 'time_entry',
+    entityId: lank.time_entry_id, details: { link_id: input.link_id, url: lank.url },
+  });
+  return { removed: true, time_entry_id: lank.time_entry_id };
 }

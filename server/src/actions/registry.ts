@@ -26,8 +26,8 @@ import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForec
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import {
-  createProject, createTimeEntry, getProject, listProjects, listTimeEntries, setProjectStatus,
-  updateTimeEntry, TIME_ENTRY_STATUSES,
+  attachTimeEntryLink, createProject, createTimeEntry, getProject, listProjects, listTimeEntries,
+  removeTimeEntryLink, setProjectStatus, updateTimeEntry, TIME_ENTRY_STATUSES,
 } from '../services/projects.js';
 import {
   assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
@@ -1171,7 +1171,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       .object({
         project_id: UuidSchema,
         work_date: IsoDateSchema,
-        minutes: z.number().int().min(1).max(1440),
+        // Tiden anges som TAL (minuter) eller som TEXT (duration). Exakt ett av
+        // dem — tjänsten avvisar båda och ingendera med 400 `minutes_or_duration`,
+        // och texten tolkas av samma parser som vyns formulär använder.
+        minutes: z.number().int().min(1).max(1440).optional(),
+        duration: safeText(20).optional(),
         description: safeText(300),
         // Pris mot kund. Utelämnat = projektets taxa.
         hourly_rate_ore: OreSchema.optional(),
@@ -1206,6 +1210,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         time_entry_id: UuidSchema,
         work_date: IsoDateSchema.optional(),
         minutes: z.number().int().min(1).max(1440).optional(),
+        /** Samma parser som vyn: '1,5', '45', '90m', '1h30'. Aldrig med minutes. */
+        duration: safeText(20).optional(),
         billable_minutes: z.number().int().min(0).max(1440).optional(),
         description: safeText(300).optional(),
         // 'fakturerad' tas emot av schemat men avvisas av tjänsten med ett
@@ -1232,6 +1238,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => listTimeEntries(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Underlag som länkar (story 5). Rådslagets beslut 1/9: aldrig filkopior —
+  // länken säger var underlaget finns, den är inte underlaget. Därför inga
+  // uppladdningar här och ingen beröring med files/multer.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'attach_time_entry_link',
+    title: 'Koppla underlag (länk) till tidpost',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        time_entry_id: UuidSchema,
+        // Längden ryms i schemats CHECK (0065). https:// prövas i tjänsten.
+        url: safeText(2000),
+        label: safeText(200).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => attachTimeEntryLink(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'remove_time_entry_link',
+    title: 'Ta bort underlagslänk från tidpost',
+    sensitivity: 'write',
+    inputSchema: z.object({ link_id: UuidSchema }).strict(),
+    handler: (ctx, i: { link_id: string }) =>
+      removeTimeEntryLink(ctx.client, ctx.companyId, ctx.userId, i),
   }),
   // -------------------------------------------------------------------------
   // Avtal och avtalsdelar (story 3). Avtalet är det kunden känner igen: faser

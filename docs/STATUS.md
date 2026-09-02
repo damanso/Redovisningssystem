@@ -145,6 +145,69 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (snabbformulär och redigeringssida för tid — PRD_TIDSRAPPORTERING
+  story 5):** Story 1–4 gav tidsposten en livscykel, fakturan atomicitet, avtalet
+  ett tak och rapporterna en yta. Kvar stod PRD §4 F1: **tid gick att SE i vyn
+  men inte att skriva eller rätta där.** En felskriven post krävde en action, och
+  underlag gick inte att koppla alls. En vy som visar men inte kan rätta är ingen
+  reserv — den är en rapport.
+
+  Byggt: `server/src/lib/duration.ts` (parsern + `hhmm`), **migration 0065**
+  (`time_entry_links`), `duration` på `log_time`/`update_time_entry`, actionsen
+  `attach_time_entry_link`/`remove_time_entry_link`, snabbformuläret överst på
+  `/tid` och på uppdragssidan, och tidpostens egen sida
+  `/app/c/:id/tid/:entryId`. Ingen ny CSS, inga nya beroenden; `files`/multer,
+  faktureringsflödet och statusövergångarna i `projects.ts` är orörda.
+
+  1. **En parser, aldrig två.** Texten går ORÖRD från formuläret till actionen
+     och tolkas i tjänstelagret — vyn tolkar aldrig tiden på egen hand (lärdom
+     5). `1h`→60, `1,5`/`1.5`→90, `90m`→90, `45`→45, `1h30`/`1:30`→90; ett tal
+     utan enhet **under tio är timmar, från tio minuter** (Davids regel 1/9), så
+     `7` är 07:00. Allt annat ger 400 `invalid_duration` med exemplen i texten.
+     Aritmetiken är heltal hela vägen: 0,1 · 60 är 6.000000000000001 i IEEE 754,
+     och en tidpost ska inte bli sex minuter och en biljondel.
+  2. **Regeln är aldrig osynlig** — villkoret för att den fick gälla. Hjälptexten
+     står vid fältet (kopplad med `aria-describedby`, inte bara placerad under),
+     och kvittot efter varje registrering visar den TOLKADE tiden i hh:mm. En
+     tolkning användaren inte kan förutsäga är en fälla, inte en genväg; den
+     upptäcks annars först på fakturan.
+  3. **Underlag är länkar, aldrig filkopior** (rådslaget 1/9, ILT §6). En kopia
+     blir en andra sanning som åldras i tysthet och drar in kundens material i
+     vår räkenskapsinformation. `https://` krävs i BÅDE tjänsten och schemat —
+     en regel som bara finns i koden gäller inte för raden som skrevs innan
+     koden fanns. DELETE-policyn i 0065 är 0047:s: underlaget till en fakturerad
+     post går inte att ändra ens förbi tjänstelagret.
+  4. **Den fakturerade posten renderas låst** med 409-texten utskriven och utan
+     formulär — samma lås som `update_time_entry` redan hade, men SYNLIGT. Och
+     statusväljaren erbjuder bara de byten `TILLATNA_BYTEN` släpper igenom
+     (tabellen exporteras nu i stället för att kopieras in i vyn): en select som
+     erbjuder ett otillåtet byte lovar något systemet kommer att neka.
+  5. **Historiken under formuläret** är samma läsning som `/audit`, filtrerad på
+     posten: vem, vad, när (F7). Frågan "vem ändrade det här?" ska besvaras där
+     den ställs, inte genom att man letar i 200 rader på en annan sida.
+     Uppslaget mot etiketterna använder `Object.hasOwn` (lärdom 9).
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/tid-snabbregistrering.test.ts` (parsertabellen med 16
+  giltiga och 13 ogiltiga fall inkl. `7` = 07:00, `duration` vs `minutes` som
+  400 `minutes_or_duration`, formuläret som skapar godkänd post med rätt
+  avtalsdel, kravet på avtalsdel, takvarningen som syns UTAN att spärra,
+  rättelsen inkl. "justerad kräver skäl", ogiltig text som inte sparar något,
+  historiken med namn och före→efter, länk till/från med tenant-gräns, och den
+  fakturerade postens låsta sida + 409).
+
+  **Ett befintligt testfall ändrat, utanför den här byggets avgränsning:**
+  `server/test/invoice-pdf-mall.test.ts` väntade sig `(20 dagar)` på
+  förfallodatum, men Davids commit `a3e51fe` på main ändrade `pdfService.ts`
+  till `(N dagar netto)` utan att uppdatera testet — sviten var alltså röd på
+  main innan den här grenen fanns. Testet är anpassat till den nya texten
+  (`(20 dagar netto)`, samt kommentarraden överst i filen). Ingen produktions-
+  kod i faktureringsflödet är rörd; ändringen är enbart testets förväntan som
+  följer efter mallbeslutet.
+
+  **Kvarstår för David:** kör `npm run migrate` (0065).
+
 - **2026-09-02 (rapporterna: ofakturerad godkänd tid — PRD_TIDSRAPPORTERING
   story 4):** Story 1 gav tidsposten en livscykel, story 2 gjorde fakturan
   atomär, story 3 gav avtalet ett tak. Kvar stod juli- och augustifelet i sin

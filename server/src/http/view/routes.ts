@@ -28,7 +28,9 @@ import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue, type LiquiditySourceStatus } from '../../services/reports.js';
 import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
-import { getProject, listProjects } from '../../services/projects.js';
+import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
+import { listContracts } from '../../services/contracts.js';
+import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -1426,7 +1428,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       customer_id: string | null; customer_name: string | null;
       hourly_rate_ore: number | null; budget_ore: number | null; notes: string | null;
       entries: Array<{
-        work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean;
+        id: string; work_date: string; minutes: number; description: string; billable: boolean; invoiced: boolean;
         hourly_rate_ore: number | null; performed_by: string | null;
       }>;
       summary: {
@@ -1435,9 +1437,14 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       };
       by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
+    const snabb = await snabbunderlag(client, companyId, projectId);
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</div></div>
+      ${tidsnotiser(req)}
+      ${p.status === 'active'
+        ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
+        : html`<p class="muted" style="margin:14px 0">Uppdraget är stängt — ny tid registreras inte här. Öppna det igen för att fortsätta rapportera.</p>`}
       <div class="kpi-grid">
         ${kpiCell('Total tid', html`${hhmm(p.summary.total_minutes)}`)}
         ${kpiCell('Fakturerbar tid', html`${hhmm(p.summary.billable_minutes)}`)}
@@ -1464,11 +1471,14 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       ${
         p.entries.length === 0
           ? html`<p class="muted">Inga tidposter ännu.</p>`
-          : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th>Utförd av</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th></tr></thead><tbody>
+          : html`<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th>Utförd av</th><th class="num">Tid</th><th>Fakturerbar</th><th>Fakturerad</th><th></th></tr></thead><tbody>
               ${p.entries.map((e) => html`<tr><td class="code">${e.work_date}</td><td>${kapaOrd(String(e.description ?? ''))}</td>
                 <td>${e.performed_by ?? '—'}</td>
                 <td class="num">${hhmm(e.minutes)}</td><td>${e.billable ? chip('Ja', 'ok') : chip('Nej', 'muted')}</td>
-                <td>${e.invoiced ? chip('Ja', 'info') : ''}</td></tr>`)}
+                <td>${e.invoiced ? chip('Ja', 'info') : ''}</td>
+                ${/* Vägen till rättelsen. Utan den syns felskrivningen men går
+                      inte att laga utan AI — och då är vyn ingen reserv. */ ''}
+                <td><a href="/app/c/${companyId}/tid/${e.id}">${e.invoiced ? 'Visa' : 'Ändra'}</a></td></tr>`)}
               </tbody></table></div>${fakturalankSaknas()}`
       }`;
     return { name: company.name, body: b };
@@ -1510,6 +1520,150 @@ const takstatusChip = (status: CapStatusLabel): Raw =>
     : status === 'under 80 %' ? chip('Under 80 %', 'ok', '✓')
     : chip('Vet ej', 'muted');
 
+// ---------------------------------------------------------------------------
+// Snabbregistrering och redigering av tid (story 5, PRD §4 F1 + §9.5).
+//
+// Rapporterna i story 4 gjorde tiden SYNLIG. Det som fortfarande saknades var
+// vägen att skriva och rätta den utan AI: en tidpost gick att registrera bara
+// via en action, och en felskriven post gick inte att laga någonstans i vyn.
+// En vy som visar men inte kan rätta är ingen reserv — det är en rapport.
+//
+// Tre beslut styr ytan:
+//
+//  1. **Formuläret ligger överst, före talen.** Registreringen är det man
+//     kommer hit för flera gånger om dagen; rapporten läser man en gång i
+//     veckan. Det som görs ofta ska stå först och vara en rad högt.
+//  2. **Regeln står utskriven vid fältet.** "1,5 = 1 h 30 min · 45 = 45 min"
+//     är villkoret för att parserregeln (< 10 = timmar) fick gälla: en tolkning
+//     som användaren inte kan förutsäga är en fälla, inte en genväg. Kvittot
+//     efter registreringen visar dessutom den TOLKADE tiden i hh:mm, så en
+//     feltolkning syns på sekunden i stället för på fakturan.
+//  3. **Ingen ny komponent.** Husets `.field`-rad, `.panel`, `.log` och
+//     `.chip` bär hela ytan. En egen "snabbregistreringsvidget" hade blivit ett
+//     andra formspråk i samma hus — och det är just igenkänningen som gör att
+//     handgreppet tar tio sekunder.
+// ---------------------------------------------------------------------------
+
+/** En valbar avtalsdel i formulären: den GÄLLANDE versionens id, som tjänsten kräver. */
+interface Delval { part_id: string; project_id: string; project_name: string; label: string }
+
+interface Snabbunderlag {
+  projekt: { id: string; number: number; name: string }[];
+  delar: Delval[];
+  /** Förvalt uppdrag (projektsidan) — null på /tid, där man väljer i listan. */
+  valtProjekt: string | null;
+  idag: string;
+}
+
+/**
+ * Det formuläret behöver veta. Avtalsdelarna hämtas ur `listContracts` och inte
+ * ur en egen fråga: det är samma lista, med samma "gällande version"-regel, som
+ * `log_time` validerar emot. En egen SELECT här hade kunnat erbjuda ett id som
+ * tjänsten sedan vägrar.
+ */
+async function snabbunderlag(
+  client: PoolClient, companyId: string, projectId: string | null,
+): Promise<Snabbunderlag> {
+  const projekt = (await listProjects(client, companyId, { status: 'active' })) as unknown as
+    { id: string; number: number; name: string }[];
+  const avtal = (await listContracts(client, companyId, projectId ? { project_id: projectId } : {})) as unknown as {
+    project_id: string; project_name: string;
+    parts: { part_id: string; code: string; name: string; active: boolean }[];
+  }[];
+  const delar = avtal.flatMap((a) => a.parts
+    .filter((d) => d.active)
+    .map((d) => ({
+      part_id: d.part_id, project_id: a.project_id, project_name: a.project_name,
+      label: `${d.code} · ${d.name}`,
+    })));
+  return { projekt, delar, valtProjekt: projectId, idag: new Date().toISOString().slice(0, 10) };
+}
+
+/**
+ * Tidsfältet med sin regel. Hjälptexten är kopplad med `aria-describedby` och
+ * inte bara placerad under fältet — en skärmläsare ska höra regeln när fältet
+ * får fokus, annars gäller den bara för den som ser.
+ */
+function tidsfalt(
+  id: string, namn: string, etikett: string, varde: string,
+  opts: { required?: boolean; bredd?: string; hjalpId?: string } = {},
+): Raw {
+  // Hjälptexten skrivs EN gång per formulär; båda tidsfälten pekar på den. En
+  // aria-describedby som pekar på ett id som inte finns är tyst för alla.
+  return html`<label class="field" style="margin:0;flex:0 1 ${opts.bredd ?? '132px'}"><span>${etikett}</span>
+    <input type="text" name="${namn}" id="${id}" value="${varde}" maxlength="20" placeholder="1,5"
+      autocomplete="off" aria-describedby="${opts.hjalpId ?? id}-hjalp"${opts.required ? html` required` : ''}></label>`;
+}
+
+const tidsregeln = (id: string): Raw =>
+  html`<p id="${id}-hjalp" class="muted" style="flex:1 1 100%;margin:0;font-size:12px">${TIDSHJALP}</p>`;
+
+/** Avtalsdelsväljaren. Grupperad per uppdrag när flera uppdrag kan väljas. */
+function avtalsdelsvaljare(u: Snabbunderlag, valt: string | null, kravs: boolean): Raw {
+  const option = (d: Delval): Raw =>
+    html`<option value="${d.part_id}"${valt === d.part_id ? html` selected` : ''}>${d.label}</option>`;
+  const grupper = [...new Set(u.delar.map((d) => d.project_id))];
+  // Uppdraget står i optgroup-etiketten när flera kan väljas: delen MÅSTE höra
+  // till uppdraget (annars 400 contract_part_project_mismatch), och det ska gå
+  // att se i listan i stället för att upptäckas efter klicket.
+  return html`<label class="field" style="margin:0;flex:1 1 190px"><span>Avtalsdel${
+      kravs ? '' : html` <span class="muted" style="font-weight:400">· ${u.valtProjekt === null ? 'ur samma uppdrag' : 'om avtalet har en'}</span>`
+    }</span>
+    <select name="contract_part_id"${kravs ? html` required` : ''}>
+      ${kravs ? html`<option value="">Välj avtalsdel …</option>` : html`<option value="">Ingen avtalsdel</option>`}
+      ${u.valtProjekt !== null || grupper.length <= 1
+        ? u.delar.map(option)
+        : grupper.map((pid) => html`<optgroup label="${u.delar.find((d) => d.project_id === pid)!.project_name}">
+            ${u.delar.filter((d) => d.project_id === pid).map(option)}</optgroup>`)}
+    </select></label>`;
+}
+
+/**
+ * Snabbformuläret: en rad, en knapp. Uppdraget är förvalt (och dolt) på
+ * projektsidan — där är frågan aldrig VILKET uppdrag.
+ */
+function snabbformular(companyId: string, back: string, u: Snabbunderlag): Raw {
+  if (u.projekt.length === 0 && u.valtProjekt === null) {
+    return html`<div class="empty" style="margin:16px 0"><div class="big">Inget aktivt uppdrag att skriva tid på</div>
+      <a href="/app/c/${companyId}/projects">Skapa ett uppdrag</a> först — tid hör alltid till ett uppdrag.</div>`;
+  }
+  // Avtalsdelen är obligatorisk exakt när uppdraget HAR aktiva delar. På /tid
+  // kan olika uppdrag ha olika svar, så kravet ställs där det vet: i tjänsten
+  // (400 contract_part_required). Att markera fältet required i webbläsaren när
+  // det bara ibland är sant hade hindrat en giltig registrering.
+  const delKravs = u.valtProjekt !== null && u.delar.length > 0;
+  return html`<h2 style="margin:18px 0 8px">Registrera tid</h2>
+    <form method="post" action="/app/c/${companyId}/tid/registrera"
+      style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin:0 0 6px">
+      <input type="hidden" name="back" value="${back}">
+      ${u.valtProjekt !== null
+        ? html`<input type="hidden" name="project_id" value="${u.valtProjekt}">`
+        : html`<label class="field" style="margin:0;flex:1 1 190px"><span>Uppdrag</span>
+            <select name="project_id" required>
+              ${u.projekt.map((p) => html`<option value="${p.id}">${p.number} · ${p.name}</option>`)}
+            </select></label>`}
+      ${u.delar.length > 0 ? avtalsdelsvaljare(u, null, delKravs) : ''}
+      ${tidsfalt('snabbtid', 'duration', 'Tid', '', { required: true })}
+      <label class="field" style="margin:0;flex:2 1 220px"><span>Beskrivning</span>
+        <input type="text" name="description" required maxlength="300" placeholder="T.ex. Genomgång av testfall"></label>
+      <label class="field" style="margin:0;flex:0 1 150px"><span>Datum</span>
+        <input type="date" name="work_date" required value="${u.idag}"></label>
+      <button class="btn btn--primary" type="submit" style="flex:0 0 auto">Registrera tid</button>
+      ${tidsregeln('snabbtid')}
+    </form>`;
+}
+
+/** Kvittot efter en registrering eller rättelse: tolkad tid, och takets besked. */
+function tidsnotiser(req: Request): Raw {
+  const varning = req.query.varning;
+  return html`${felNotis(req)}${klarNotis(req)}${
+    typeof varning === 'string' && varning
+      ? html`<p class="notice" style="background:var(--ai-weak);color:var(--ink);border-color:var(--ai-line)">
+          ${chip('Avtalstak', 'warn', '!')} ${varning}</p>`
+      : ''
+  }`;
+}
+
 /** Taket som text: avtalet kan skriva det i timmar, i kronor eller i båda. */
 function takText(capHours: number | null, capAmountOre: number | null): Raw {
   const delar: Raw[] = [];
@@ -1519,9 +1673,10 @@ function takText(capHours: number | null, capAmountOre: number | null): Raw {
   return html`${delar.map((d, i) => html`${i > 0 ? ' · ' : ''}${d}`)}`;
 }
 
-viewRouter.get('/c/:companyId/tid', pageFor('tid', 'Tid', async (client, companyId) => {
+viewRouter.get('/c/:companyId/tid', pageFor('tid', 'Tid', async (client, companyId, req) => {
   const rapport = await unbilledTimeReport(client, companyId, {});
   const avtal = await contractUsageReport(client, companyId);
+  const snabb = await snabbunderlag(client, companyId, null);
   const t = rapport.totals;
   const alder = t.oldest_work_date === null ? null : dagarMellan(t.oldest_work_date, rapport.to);
   // Betalningskolumnerna finns inte på uppdrags- och avtalsdelsnivå: de mäts
@@ -1531,6 +1686,8 @@ viewRouter.get('/c/:companyId/tid', pageFor('tid', 'Tid', async (client, company
   return html`<div class="page-head"><div>${eyebrow('Tid')}<h1>Ofakturerad tid</h1>
       <p class="lede">Godkänd och justerad tid som ännu inte ligger på någon faktura, per kund, uppdrag och avtalsdel — värderad med avtalets taxa (post → avtalsdel → avtal → uppdrag), t.o.m. <span class="code">${rapport.to}</span>.
       Kunder utan ofakturerad tid står inte här; deras obetalda fakturor finns i <a href="/app/c/${companyId}/receivables">kundreskontran</a>.</p></div></div>
+    ${tidsnotiser(req)}
+    ${snabbformular(companyId, `/app/c/${companyId}/tid`, snabb)}
     <div class="kpi-grid">
       ${kpiCell('Ofakturerat', amount(t.amount_ore))}
       ${kpiCell('Äldsta posten', alder === null
@@ -1652,6 +1809,323 @@ viewRouter.get('/c/:companyId/tid', pageFor('tid', 'Tid', async (client, company
             </tbody></table></div>`
     }
     <p class="muted" style="font-size:12.5px;margin-top:12px">Samma tal som <span class="code">unbilled_time_report</span>, <span class="code">idle_projects_report</span> och <span class="code">contract_usage_report</span> svarar — sidan och AI:n läser ur exakt samma funktioner, och styrvyns "ofakturerad tid" räknas numera likadant.</p>`;
+}));
+
+// ---------------------------------------------------------------------------
+// Tidpostens egen sida: rättelse, underlag och historik.
+// ---------------------------------------------------------------------------
+
+/** Auditloggens handlingar med människans ord. Samma läsning som /audit. */
+const TIDPOST_HANDELSE: Record<string, string> = {
+  'time_entry.created': 'Registrerad',
+  'time_entry.updated': 'Ändrad',
+  'time_entry.link_attached': 'Underlag kopplat',
+  'time_entry.link_removed': 'Underlag borttaget',
+  'time_entry.contract_part_assigned': 'Klassad på avtalsdel',
+  'time_entry.migrated_0062': 'Rättad av migrationen (0062)',
+};
+
+interface Tidhandelse {
+  occurred_at: string;
+  action: string;
+  user_name: string | null;
+  details: Record<string, unknown>;
+}
+
+/**
+ * Historiken (F7). Samma tabell och samma läsning som revisionsloggens sida,
+ * men filtrerad på posten — frågan "vem ändrade det här, och när?" ska besvaras
+ * DÄR den ställs, inte genom att man letar i 200 rader på en annan sida.
+ */
+async function tidposthistorik(
+  client: PoolClient, companyId: string, entryId: string,
+): Promise<Tidhandelse[]> {
+  const res = await client.query<Tidhandelse>(
+    `SELECT a.occurred_at::text, a.action, a.details, u.name AS user_name
+       FROM audit_log a
+       LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.company_id = $1 AND a.entity_type = 'time_entry' AND a.entity_id = $2
+      ORDER BY a.id DESC LIMIT 100`,
+    [companyId, entryId],
+  );
+  return res.rows;
+}
+
+/** Vad som faktiskt ändrades, ur auditradens details. Tomt när inget mätbart står där. */
+function handelseDetalj(h: Tidhandelse): Raw | '' {
+  const d = h.details;
+  const tal = (k: string): number | null => (typeof d[k] === 'number' ? d[k] as number : null);
+  const bitar: Raw[] = [];
+  const franStatus = typeof d.fran_status === 'string' ? d.fran_status : null;
+  const tillStatus = typeof d.till_status === 'string' ? d.till_status : null;
+  if (franStatus && tillStatus && franStatus !== tillStatus) {
+    bitar.push(html`${statusChip(franStatus)} → ${statusChip(tillStatus)}`);
+  }
+  const franMin = tal('fran_minuter');
+  const tillMin = tal('till_minuter');
+  if (franMin !== null && tillMin !== null && franMin !== tillMin) {
+    bitar.push(html`tid ${tidHhMm(franMin)} → ${tidHhMm(tillMin)}`);
+  }
+  const franDeb = tal('fran_debiterbara');
+  const tillDeb = tal('till_debiterbara');
+  if (franDeb !== null && tillDeb !== null && franDeb !== tillDeb) {
+    bitar.push(html`debiterbart ${tidHhMm(franDeb)} → ${tidHhMm(tillDeb)}`);
+  }
+  if (typeof d.url === 'string') bitar.push(html`${d.url}`);
+  if (typeof d.skal === 'string') bitar.push(html`skäl: ${d.skal}`);
+  if (bitar.length === 0) return '';
+  return html`<span class="muted">${bitar.map((b, i) => html`${i > 0 ? ' · ' : ''}${b}`)}</span>`;
+}
+
+/** Underlagslistan. Länken är klickbar; borttagningen finns bara när posten är olåst. */
+function underlagslista(companyId: string, entryId: string, lankar: TimeEntryLink[], last: boolean): Raw {
+  if (lankar.length === 0) {
+    return html`<p class="muted" style="margin:0">Inget underlag kopplat.
+      ${last ? '' : 'Klistra in adressen till anteckningen, ärendet eller dokumentet — vi sparar länken, aldrig en kopia.'}</p>`;
+  }
+  return html`<ul class="kvitton" style="margin:0">${lankar.map((l) => html`<li class="kvitto">
+    <span class="kvitto__vad">${/* rel: en extern adress ska inte bära med sig var vi kom ifrån */ ''}
+      <a href="${l.url}" target="_blank" rel="noopener noreferrer nofollow">${l.label ?? l.url}</a>
+      ${l.label ? html`<br><span class="muted" style="font-size:12px">${l.url}</span>` : ''}</span>
+    ${last ? '' : html`<form method="post" action="/app/c/${companyId}/tid/${entryId}/lank/ta-bort">
+      <input type="hidden" name="link_id" value="${l.id}">
+      <button class="btn btn--ghost btn--sm" type="submit">Ta bort</button></form>`}
+  </li>`)}</ul>`;
+}
+
+viewRouter.get('/c/:companyId/tid/:entryId', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const entryId = parseApprovalId(req.params.entryId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const rader = await listTimeEntries(client, companyId, { time_entry_id: entryId });
+    const post = rader[0] as undefined | {
+      id: string; project_id: string; project_number: number; project_name: string;
+      work_date: string; description: string; minutes: number; billable_minutes: number;
+      status: TimeEntryStatus; invoice_id: string | null; adjustment_reason: string | null;
+      contract_part_id: string | null; performed_by: string | null; approved_at: string | null;
+      duration_hhmm: string; billable_duration_hhmm: string; links: TimeEntryLink[];
+    };
+    if (!post) throw new NotFoundError('time_entry');
+    const last = post.status === 'fakturerad';
+    const underlag = await snabbunderlag(client, companyId, post.project_id);
+    const historik = await tidposthistorik(client, companyId, entryId);
+    const back = `/app/c/${companyId}/tid/${entryId}`;
+    // Bara de byten TILLATNA_BYTEN släpper igenom står i listan — hämtade ur
+    // tjänstens egen tabell, inte ur en kopia här. En select som erbjuder ett
+    // otillåtet byte lovar något systemet kommer att neka.
+    const statusval: TimeEntryStatus[] = [post.status, ...TILLATNA_BYTEN[post.status]];
+
+    const b = html`<div class="page-head"><div>${eyebrow('Tidpost')}<h1>${post.work_date}</h1>
+        <p class="lede">Uppdrag ${post.project_number} · ${entityLink(companyId, 'project', post.project_id, post.project_name)}
+          · ${post.performed_by ?? 'Okänd utförare'} · <a href="/app/c/${companyId}/tid">← Tid</a></p></div>
+        <div class="actions">${statusChip(post.status)}</div></div>
+      ${tidsnotiser(req)}
+      ${last
+        ? html`<p class="notice">${chip('Låst', 'neg', '!')} Posten ligger på
+            ${post.invoice_id
+              ? html`<a href="/app/c/${companyId}/invoices/${post.invoice_id}">en skickad faktura</a>`
+              : 'en faktura'}
+            och kan inte ändras (409 <span class="code">time_entry_locked</span>). En fakturerad tidpost rättas med
+            kreditering av fakturan — inte genom att underlaget skrivs om i efterhand.</p>`
+        : ''}
+
+      <div class="kpi-grid" style="margin-top:14px">
+        ${kpiCell('Registrerad tid', html`${tidHhMm(post.minutes)}`)}
+        ${kpiCell('Debiterbar tid', html`${tidHhMm(post.billable_minutes)}`)}
+        ${kpiCell('Underlag', html`${String(post.links.length)} st`)}
+      </div>
+
+      ${last
+        ? html`<div class="panel" style="margin-top:18px;max-width:720px">
+            <div class="panel__head"><h2>Så här står posten</h2></div>
+            <div class="panel__body" style="padding:16px">
+              <p style="margin:0 0 8px">${post.description}</p>
+              <p class="muted" style="margin:0">${post.adjustment_reason ? html`Justeringsorsak: ${post.adjustment_reason}` : 'Ingen justeringsorsak.'}</p>
+            </div></div>`
+        : html`<div class="panel" style="margin-top:18px;max-width:720px">
+            <div class="panel__head"><h2>Rätta tidposten</h2></div>
+            <div class="panel__body" style="padding:16px">
+              <form method="post" action="/app/c/${companyId}/tid/${entryId}/spara"
+                style="display:flex;flex-direction:column;gap:12px">
+                <input type="hidden" name="back" value="${back}">
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+                  <label class="field" style="margin:0;flex:0 1 150px"><span>Datum</span>
+                    <input type="date" name="work_date" required value="${post.work_date}"></label>
+                  ${tidsfalt('tid', 'duration', 'Registrerad tid', post.duration_hhmm, { required: true })}
+                  ${tidsfalt('debtid', 'billable_duration', 'Debiterbar tid', post.billable_duration_hhmm, { bredd: '150px', hjalpId: 'tid' })}
+                  ${tidsregeln('tid')}
+                </div>
+                <label class="field" style="margin:0"><span>Beskrivning</span>
+                  <input type="text" name="description" required maxlength="300" value="${post.description}"></label>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+                  ${/* Har uppdraget aktiva delar KRÄVER tjänsten en — då ska
+                        fältet inte erbjuda "ingen", för det valet finns inte. */ ''}
+                  ${underlag.delar.length > 0 ? avtalsdelsvaljare(underlag, post.contract_part_id, true) : ''}
+                  <label class="field" style="margin:0;flex:1 1 190px"><span>Status</span>
+                    <select name="status">
+                      ${statusval.map((s) => html`<option value="${s}"${s === post.status ? html` selected` : ''}>${TIDSTATUS_TEXT[s]}</option>`)}
+                    </select></label>
+                </div>
+                <label class="field" style="margin:0"><span>Justeringsorsak
+                    <span class="muted" style="font-weight:400">· krävs för justerad och faktureras ej</span></span>
+                  <input type="text" name="adjustment_reason" maxlength="300" value="${post.adjustment_reason ?? ''}"
+                    placeholder="T.ex. 30 min var intern administration"></label>
+                <p class="muted" style="margin:0;font-size:12px">Debiterbar tid följer aldrig med automatiskt när den registrerade ändras — skiljer de sig måste posten vara <em>justerad</em> med skäl. Det som hände och det kunden betalar är två olika tal.</p>
+                <button class="btn btn--primary" type="submit" style="align-self:flex-start">Spara ändringen</button>
+              </form>
+            </div></div>`}
+
+      <div class="panel" style="margin-top:14px;max-width:720px">
+        <div class="panel__head"><h2>Underlag</h2>
+          <span class="muted" style="font-size:12.5px">länkar, aldrig filkopior</span></div>
+        <div class="panel__body" style="padding:16px">
+          ${underlagslista(companyId, entryId, post.links, last)}
+          ${last
+            ? html`<p class="muted" style="margin:10px 0 0;font-size:12.5px">Underlaget till en fakturerad post ändras inte — det ska se likadant ut i efterhand som när fakturan skickades.</p>`
+            : html`<form method="post" action="/app/c/${companyId}/tid/${entryId}/lank"
+                style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px">
+                <input type="hidden" name="back" value="${back}">
+                <label class="field" style="margin:0;flex:2 1 260px"><span>Adress (https)</span>
+                  <input type="url" name="url" required maxlength="2000" placeholder="https://…"
+                    pattern="https://.*" title="Adressen måste börja med https://"></label>
+                <label class="field" style="margin:0;flex:1 1 180px"><span>Etikett (valfri)</span>
+                  <input type="text" name="label" maxlength="200" placeholder="T.ex. Mötesanteckning"></label>
+                <button class="btn" type="submit" style="flex:0 0 auto">Koppla underlag</button>
+              </form>`}
+        </div>
+      </div>
+
+      <h2 style="margin-top:22px">Historik</h2>
+      <p class="lede">Vem gjorde vad, och när. Raderna kommer ur den oföränderliga revisionsloggen — de kan inte ändras eller tas bort, inte heller av den som skrev dem.</p>
+      ${historik.length === 0
+        ? html`<div class="empty"><div class="big">Ingen historik</div>Posten har inte ändrats sedan den registrerades.</div>`
+        : html`<div class="log">${historik.map((h) => html`<div class="log-row">
+            <div class="log-when">${h.occurred_at.replace('T', ' ').slice(0, 19)}</div>
+            ${/* Object.hasOwn, aldrig `in` eller en rå indexering (lärdom 9). */ ''}
+            <div class="log-what"><span>${Object.hasOwn(TIDPOST_HANDELSE, h.action) ? TIDPOST_HANDELSE[h.action]! : h.action}</span>
+              <span class="muted">${h.user_name ?? 'Systemet'}</span>
+              ${handelseDetalj(h)}</div></div>`)}</div>`}`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: 'Tidpost', companyId, companyName: name, active: 'tid', body }).value);
+}));
+
+/** Statusens namn i en select — samma ord som chippen använder. */
+const TIDSTATUS_TEXT: Record<TimeEntryStatus, string> = {
+  forslag: 'AI-förslag (väntar på dig)',
+  godkand: 'Godkänd',
+  justerad: 'Justerad (annan tid än registrerad)',
+  ignorerad: 'Faktureras ej',
+  fakturerad: 'Fakturerad (låst)',
+};
+
+/**
+ * Kör en tidsaction och tar med sig SVARET tillbaka: den tolkade tiden i hh:mm
+ * (villkoret för parserregeln) och takets besked, som är en varning och aldrig
+ * en spärr. `runViewAction` räcker inte här — den kastar bort resultatet, och
+ * då hade "1,5" registrerats utan att någon fick veta hur det tolkades.
+ */
+async function korTidsAction(
+  req: Request, res: import('express').Response, companyId: string,
+  actionName: string, input: Record<string, unknown>, back: string, kvitto: (svar: Record<string, unknown>) => string,
+): Promise<void> {
+  const userId = getUserId(req);
+  const skiljetecken = back.includes('?') ? '&' : '?';
+  let result;
+  try {
+    result = await executeAction({ companyId, userId, actor: 'human', actionName, input });
+  } catch (err) {
+    if (err instanceof z.ZodError) { res.redirect(`${back}${skiljetecken}fel=${encodeURIComponent(FORM_FEL)}`); return; }
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${back}${skiljetecken}fel=${encodeURIComponent(err.message)}`); return;
+    }
+    throw err;
+  }
+  const svar = (result.status === 'ok' ? result.result : {}) as Record<string, unknown>;
+  const varning = svar.warning as { message?: string } | undefined;
+  res.redirect(`${back}${skiljetecken}ok=${encodeURIComponent(kvitto(svar))}`
+    + (varning?.message ? `&varning=${encodeURIComponent(varning.message)}` : ''));
+}
+
+/** Fritext ur ett formulär: trimmad, eller undefined när fältet lämnats tomt. */
+function fritext(body: unknown, nyckel: string): string | undefined {
+  const v = (body as Record<string, unknown>)[nyckel];
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
+viewRouter.post('/c/:companyId/tid/registrera', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const back = backToCrm(req, companyId, 'tid');
+  await korTidsAction(req, res, companyId, 'log_time', {
+    project_id: fritext(b, 'project_id'),
+    work_date: fritext(b, 'work_date'),
+    // Texten går orörd till actionen: tolkningen sker i tjänstelagret, med
+    // samma parser som AI-vägen. Vyn tolkar aldrig tiden på egen hand.
+    duration: fritext(b, 'duration'),
+    description: fritext(b, 'description'),
+    ...(fritext(b, 'contract_part_id') ? { contract_part_id: fritext(b, 'contract_part_id') } : {}),
+  }, back, (svar) => `Registrerat ${String(svar.duration_hhmm ?? '')} — ${svar.status === 'forslag' ? 'som förslag' : 'godkänd tid'}.`);
+}));
+
+viewRouter.post('/c/:companyId/tid/:entryId/spara', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const entryId = UuidSchema.parse(req.params.entryId);
+  const b = req.body as Record<string, unknown>;
+  const back = backToCrm(req, companyId, `tid/${entryId}`);
+  const status = fritext(b, 'status');
+  // Debiterbar tid skrivs i samma språk som den registrerade — två tidsfält där
+  // det ena tar "1,5" och det andra kräver "90" hade varit en fälla. Noll är den
+  // enda giltiga nollan (en post som inte ska faktureras) och parsern tar
+  // avsiktligt inte emot den, så den hanteras här och sägs ut.
+  const debiterbarText = fritext(b, 'billable_duration');
+  let billable: number | undefined;
+  try {
+    billable = debiterbarText === undefined || status === 'ignorerad'
+      ? undefined
+      : /^0+([:.,]0+)?$/.test(debiterbarText) ? 0 : parseDuration(debiterbarText);
+  } catch (err) {
+    if (err instanceof BadRequestError) {
+      res.redirect(`${back}?fel=${encodeURIComponent(`Debiterbar tid: ${err.message}`)}`);
+      return;
+    }
+    throw err;
+  }
+  await korTidsAction(req, res, companyId, 'update_time_entry', {
+    time_entry_id: entryId,
+    work_date: fritext(b, 'work_date'),
+    duration: fritext(b, 'duration'),
+    description: fritext(b, 'description'),
+    ...(billable === undefined ? {} : { billable_minutes: billable }),
+    ...(status ? { status } : {}),
+    ...(fritext(b, 'contract_part_id') ? { contract_part_id: fritext(b, 'contract_part_id') } : {}),
+    ...(fritext(b, 'adjustment_reason') ? { adjustment_reason: fritext(b, 'adjustment_reason') } : {}),
+  }, back, (svar) => `Sparat — ${String(svar.duration_hhmm ?? '')} registrerat, ${String(svar.billable_duration_hhmm ?? '')} debiterbart.`);
+}));
+
+viewRouter.post('/c/:companyId/tid/:entryId/lank', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const entryId = UuidSchema.parse(req.params.entryId);
+  const b = req.body as Record<string, unknown>;
+  await runViewAction(req, res, companyId, 'attach_time_entry_link', {
+    time_entry_id: entryId,
+    url: fritext(b, 'url'),
+    ...(fritext(b, 'label') ? { label: fritext(b, 'label') } : {}),
+  }, backToCrm(req, companyId, `tid/${entryId}`));
+}));
+
+viewRouter.post('/c/:companyId/tid/:entryId/lank/ta-bort', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const entryId = UuidSchema.parse(req.params.entryId);
+  const linkId = UuidSchema.parse((req.body as { link_id?: unknown }).link_id);
+  await runViewAction(req, res, companyId, 'remove_time_entry_link', { link_id: linkId },
+    backToCrm(req, companyId, `tid/${entryId}`));
 }));
 
 // ---------------------------------------------------------------------------
