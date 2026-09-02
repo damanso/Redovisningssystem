@@ -145,6 +145,87 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (läs in avtalet ur avtals-PDF:en — PRD_TIDSRAPPORTERING story 6):**
+  Story 3 gav avtalet och taket en plats att BO på, men vägen dit gick bara
+  genom `create_contract` + ett `upsert_contract_part` per fas. Avtalet självt
+  låg kvar i en DOCX och i Davids huvud — och **ett tak som aldrig skrivs in kan
+  aldrig varna.** Det är hela PRD §1 rad 6 i en mening.
+
+  Byggt: ny tjänstefil `services/contractExtraction.ts`, actionsen
+  `extract_contract_draft` och `create_contract_from_draft`, samt vysidan
+  `/app/c/:id/projects/:projectId/avtal` med menyvägen **Läs in avtal** på
+  uppdragssidan. **Ingen migration, inga nya beroenden, ingen ny CSS**;
+  `aiOcr.ts`, `contracts.ts`, `config.ts`, faktureringen och godkännandeflödet
+  är orörda.
+
+  1. **Två actions med Davids formulär emellan.** Den första LÄSER (lagrar filen
+     i dokumentarkivet, returnerar utkast + `file_id`) och skapar ingenting; den
+     andra SKRIVER. Inget extraherat värde kan nå faktureringen utan att ha
+     passerat formuläret — det är därför steget inte går att slå ihop till ett.
+  2. **Tvålagersskyddet är kopierat med flit, inte uppfunnet igen**
+     (`aiOcr.ts` rad 9–16): systemprompten säger att dokumentets text är DATA,
+     och svaret parsas genom ett strikt zod-schema som kastar okända fält — även
+     inne i `parts[]`. `requires_human_review` tvingas till true oavsett vad
+     modellen svarade. VisionClient injiceras, så provet kör aldrig en modell.
+  3. **DOCX avvisas, och svaret säger vad man gör i stället** ("spara avtalet
+     som PDF"). Ett zip-/docx-bibliotek vore ett nytt beroende, och stacklistan
+     i `docs/ARKITEKTUR.md` är sluten. Mediatypen prövas FÖRE nyckeln: en DOCX
+     är fel oavsett om AI:n är påslagen, och att svara "AI avstängd" på en
+     Word-fil hade skickat David på fel felsökning.
+  4. **409 `ai_disabled` här, 400 i `aiOcr.ts`.** Överlämningen och Davids ja 2/9
+     nämner uttryckligen 409. Skillnaden är inringad i den nya tjänsten;
+     `aiOcr.ts` är orörd (avgränsningen). Det står i både koden och
+     `MCP_ACTIONS.md` så att skillnaden aldrig ser ut som ett slarvfel.
+  5. **`manually_edited` sätts genom contracts.ts EGEN semantik.** Flaggan sätts
+     "vid ändring, inte vid skapande" (contracts.ts rad 590) — alltså skapas
+     delen ur utkastet, och avviker det inskickade värdet görs en ANDRA
+     `upsertContractPart` på samma (avtal, kod, `valid_from`). Ingen ny väg in
+     till kolumnen, och auditloggen visar det som faktiskt hände: utkastet
+     skapade raden, människan ändrade den. Ett formulär utan utkast (AI:n
+     avstängd) räknas som ändrat rakt igenom — det är just de raderna flaggan
+     finns för att skydda.
+  6. **Kundmatchningen är crm-ingestens regel** (LOC-318, lärdom 7): org.nr på
+     siffror, annars exakt namn, och **tvetydigt räknas som ingen träff**. Utan
+     träff lämnas `customer_id` tomt och vyn ber om ett val (`createContract`
+     ärver då uppdragets kund). En gissning hade lagt avtalet — och därmed
+     arbetet — på fel kunds faktura utan att något i svaret sagt det.
+  7. **Ytan:** utkastet ligger i husets `.ai-card` med `aiMarkning()`
+     (AI-förordningen art. 50), samma komponent som tidsförslagen — samma sorts
+     sak ska se likadan ut. Utan utkast är det EXAKT samma formulär i en vanlig
+     `.panel`; att märka ett handifyllt formulär som AI-genererat vore lika fel
+     som att inte märka ett som är det. Faserna är rader utan JavaScript: varje
+     rad börjar med en **select** "Ta med / Utelämna" (en okryssad kryssruta
+     skickas inte alls och raderna hade glidit ur fas med varandra) och tre
+     tomma rader ligger sist. `cap_confirmed` är EN kryssruta för hela
+     formuläret med regeln utskriven: ett tak ingen läst varnar aldrig.
+  8. **Ingenting kapas tyst.** Max 12 inlästa faser och 240 tecken beskrivning
+     per rad — gränserna finns för att vyns kropp är 16 kB (`urlencoded`), och
+     båda står utskrivna på sidan när de slår till. `suggested_hours` har ingen
+     kolumn att bo i (ingen migration) och visas därför som text på raden, med
+     beskedet att en uppskattning inte är ett tak.
+  9. **Ett fel kostar aldrig det ifyllda.** Formuläret renderas om med Davids
+     värden i stället för en redirect — och utkastet som följer med tillbaka i
+     det dolda fältet är jämförelsegrunden, inte en kopia av allt modellen sa.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/avtal-inlasning.test.ts` (injicerade fält strippade uppe
+  och inne i `parts[]`, DOCX → 400 `unsupported_media` före nyckelkontrollen,
+  PDF utan nyckel → 409 `ai_disabled`, hela kedjan fil → utkast → avtal med
+  `source_file_id` och hierarkin `2A` under `2`, `manually_edited` på exakt den
+  ändrade raden, org.nr-matchningen utan bindestreck, den obefintliga kunden som
+  inte gissas fram, `unknown_parent_code`/`signed_date_required` som lämnar
+  NOLL halvskapade avtal, samt vyn: länken på uppdragssidan, det tomma
+  formuläret med "AI-extraktion avstängd — fyll i manuellt", uppladdningen som
+  inte tappar formuläret, avtalet skapat ur det tomma formuläret med bekräftat
+  tak och utelämnad rad, felet som behåller de ifyllda fälten, och
+  tenant-gränsen).
+
+  **Kvarstår för David:** inget att migrera. Vill han ha AI-förifyllningen krävs
+  `ANTHROPIC_API_KEY` i miljön; utan den fungerar sidan som ett vanligt
+  formulär. Story 8 (kalender/mail) och story 9 (flera personer) är INTE byggda
+  här.
+
 - **2026-09-02 (förslagsintaget och förslagskön — PRD_TIDSRAPPORTERING story 7):**
   Story 1–5 gav tidposten en livscykel, fakturan atomicitet, avtalet ett tak,
   rapporterna en yta och vyn en skrivväg. Kvar stod mottagarsidan för det som

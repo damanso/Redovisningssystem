@@ -466,6 +466,53 @@ Tre regler bär hela funktionen:
   utan avtalsdel hamnar under `Övrigt` när fakturan har klassad tid att stå
   bredvid; är ingen post klassad står uppdragets namn kvar som förut.
 
+## Läs in avtalet ur avtalsfilen (story 6)
+
+Avtalet bodde i en DOCX och i Davids huvud. Story 3 gav taket en plats att bo
+på; det som saknades var vägen från handlingen dit — och ett tak som aldrig
+skrivs in kan aldrig varna. Två actions, med Davids formulär emellan: den
+första LÄSER och skapar ingenting, den andra skriver.
+
+- `extract_contract_draft` (write) — `filename`, `content_base64` (samma form
+  som `attach_document`: pdf/png/jpg, validerat mot ändelse **och** magic
+  bytes). Filen lagras i dokumentarkivet och svaret är
+  `{ draft, file_id, customer_id, customer_matched_on }`. **Inget avtal skapas.**
+  Utkastet bär `requires_human_review: true` och `model`, och parsas genom ett
+  strikt schema som kastar okända fält (`auto_approve`, `role`, `action`) —
+  även inne i `parts[]`. Belopp är heltal i ören.
+  - **DOCX ger 400 `unsupported_media`** med texten att avtalet ska sparas som
+    PDF. Ett zip-/docx-bibliotek vore ett nytt beroende (rådslaget 1/9).
+  - **Utan `ANTHROPIC_API_KEY`: 409 `ai_disabled`.** Mediatypen prövas FÖRE
+    nyckeln — en DOCX är fel oavsett. (`ai_ocr` svarar 400 för samma kod;
+    skillnaden är avsiktlig och rör bara den här vägen.)
+  - Kunden slås upp ur utkastets kundpart med **samma regel som crm-ingesten**:
+    org.nr på siffror, annars exakt namn. Tvetydigt räknas som ingen träff, och
+    `customer_matched_on` redovisar utfallet.
+- `create_contract_from_draft` (write) — `project_id`, `name`, valfria
+  `customer_id`, `source_file_id`, `signed_date`, `payment_terms_days`,
+  `hourly_rate_ore`, `notes`, `parts[]` (`code`, `name`, valfria `description`,
+  `parent_code`, `cap_hours`, `cap_amount_ore`, `cap_confirmed`) och `draft`
+  (utkastet ovan). Avtalet och SAMTLIGA avtalsdelar skapas i **en** transaktion
+  via `createContract`/`upsertContractPart`; faller en del skapas ingenting.
+  - `parent_code` slås upp mot koderna i samma anrop (föräldern skapas först);
+    en kod utan motsvarighet ger 400 `unknown_parent_code`. Samma kod två gånger
+    ger 400 `duplicate_part_code`.
+  - Finns faser krävs `signed_date` (400 `signed_date_required`) — delarnas
+    `valid_from` hämtas därifrån.
+  - **`manually_edited = true` sätts på exakt de delar där det inskickade värdet
+    avviker från utkastet** (namn, beskrivning, förälder, de två taken). En del
+    utan motsvarighet i utkastet — eller ett formulär utan utkast alls — räknas
+    som ändrad. Flaggan sätts genom contracts.ts egen semantik ("vid ändring,
+    inte vid skapande"), så auditloggen visar både `contract_part.created` och
+    `contract_part.updated`.
+  - `cap_confirmed` är fortsatt default **false**: ett tak AI:n läst men ingen
+    människa bekräftat varnar aldrig.
+- **Vyn:** "Läs in avtal" på uppdragssidan
+  (`/app/c/:id/projects/:projectId/avtal`) → uppladdning → förifyllt, fullt
+  redigerbart formulär → "Skapa avtal". Utan API-nyckel visas samma formulär
+  tomt med "AI-extraktion avstängd — fyll i manuellt", och det fungerar hela
+  vägen.
+
 ## Rapporterna: ofakturerad tid, stillhet och avtalsförbrukning (story 4)
 
 Juli- och augustifelet var inte en felräkning — det var att godkänd, ännu
