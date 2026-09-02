@@ -2,7 +2,7 @@
 // (0000024, juni 2026) — INTE gamla systemets layout. Testet låser mallens
 // kännetecken så layouten inte glider: Från/Fakturaadress-blocken, 7-siffrigt
 // fakturanummer, Vår/Er referens, Leveranstidpunkt, "Betalas till", IBAN och
-// BIC/Swift, "(N dagar)" på förfallodatum, timpris med enhetssuffix (SEK/h),
+// BIC/Swift, "(N dagar netto)" på förfallodatum, timpris med enhetssuffix (SEK/h),
 // momsrad per sats, sidfotens fyra kolumner samt logotypen (set_company_logo).
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -75,7 +75,7 @@ describe('fakturamallen (Locollabs riktiga mall)', () => {
     expect(text).toContain('Fakturanummer');
     expect(text).toContain(String(inv.number).padStart(7, '0')); // 7 siffror som mallen
     expect(text).toContain('Förfallodatum');
-    expect(text).toContain('(20 dagar)');
+    expect(text).toContain('(20 dagar netto)');
     expect(text).toContain('Leveranstidpunkt');
     expect(text).toContain('Juni 2026');
     expect(text).toContain('Betalas till');
