@@ -195,7 +195,16 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   avtalsdel, kravet på avtalsdel, takvarningen som syns UTAN att spärra,
   rättelsen inkl. "justerad kräver skäl", ogiltig text som inte sparar något,
   historiken med namn och före→efter, länk till/från med tenant-gräns, och den
-  fakturerade postens låsta sida + 409). Inget befintligt testfall ändrat.
+  fakturerade postens låsta sida + 409).
+
+  **Ett befintligt testfall ändrat, utanför den här byggets avgränsning:**
+  `server/test/invoice-pdf-mall.test.ts` väntade sig `(20 dagar)` på
+  förfallodatum, men Davids commit `a3e51fe` på main ändrade `pdfService.ts`
+  till `(N dagar netto)` utan att uppdatera testet — sviten var alltså röd på
+  main innan den här grenen fanns. Testet är anpassat till den nya texten
+  (`(20 dagar netto)`, samt kommentarraden överst i filen). Ingen produktions-
+  kod i faktureringsflödet är rörd; ändringen är enbart testets förväntan som
+  följer efter mallbeslutet.
 
   **Kvarstår för David:** kör `npm run migrate` (0065).
 
