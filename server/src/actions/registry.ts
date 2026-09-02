@@ -316,17 +316,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'set_invoice_appendix',
-    title: 'Sätt fakturans bilaga (tids- eller utläggsspecifikation, sida 2)',
+    title: 'Sätt fakturans bilaga (tids-, utläggs- eller kategorispecifikation, sida 2)',
     sensitivity: 'write',
     // Tid som heltal minuter, utlägg som heltal ören — aldrig flyttal.
+    // 'category' = kategoribilaga UTAN datum, med timmar och valfritt belopp
+    // per rad. entry_date är därför valfritt här; vilken sort som kräver
+    // respektive förbjuder datum avgörs i setInvoiceAppendix().
     inputSchema: z.object({
       invoice_id: UuidSchema,
-      kind: z.enum(['time', 'expense']),
+      kind: z.enum(['time', 'expense', 'category']),
       title: safeText(150).optional(),
       preamble: safeText(400).optional(),
       notes: safeText(800).optional(),
       rows: z.array(z.object({
-        entry_date: IsoDateSchema,
+        entry_date: IsoDateSchema.optional(),
         description: safeText(300),
         minutes: z.number().int().positive().max(100_000).optional(),
         amount_ore: z.number().int().nonnegative().safe().optional(),

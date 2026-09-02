@@ -45,7 +45,8 @@ export interface InvoicePdfLine {
   line_net_ore: Ore;
 }
 export interface InvoicePdfAppendixRow {
-  entry_date: string;
+  /** null för kategoribilagor — de har ingen datumkolumn. */
+  entry_date: string | null;
   description: string;
   /** Tidsbilaga: heltal minuter (0,42 h = 25 min). */
   minutes: number | null;
@@ -53,7 +54,7 @@ export interface InvoicePdfAppendixRow {
   amount_ore: number | null;
 }
 export interface InvoicePdfAppendix {
-  kind: 'time' | 'expense';
+  kind: 'time' | 'expense' | 'category';
   title: string | null;
   preamble: string | null;
   notes: string | null;
@@ -325,9 +326,17 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.fontSize(8.5).font('Helvetica').fillColor(BLACK)
         .text(`Tillhör faktura ${invNo} · ${company.name} · ${customer.name}`, left, 78);
 
-      const isTime = ap.kind === 'time';
-      doc.fontSize(20).font('Helvetica-Bold')
-        .text(ap.title ?? (isTime ? 'Bilaga – tidsspecifikation' : 'Bilaga – specifikation av utlägg'), left, 108);
+      // Kategoribilagan har ingen datumkolumn: den svarar på VAD arbetet gällde,
+      // inte vilken dag. Den kan dessutom visa både timmar och belopp per rad.
+      const isCategory = ap.kind === 'category';
+      const isTime = ap.kind === 'time' || isCategory;
+      const showAmount = !isTime || (isCategory && ap.rows.some((r) => r.amount_ore !== null));
+      doc.fontSize(20).font('Helvetica-Bold').text(
+        ap.title ?? (isCategory
+          ? 'Bilaga – specifikation'
+          : isTime ? 'Bilaga – tidsspecifikation' : 'Bilaga – specifikation av utlägg'),
+        left, 108,
+      );
 
       let ay = 150;
       if (ap.preamble) {
@@ -335,14 +344,21 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
         ay += doc.heightOfString(ap.preamble, { width: right - left }) + 18;
       }
 
-      // Tabellhuvud: Datum | Beskrivning | Timmar/SEK
-      const axDesc = 155;
+      // Tabellhuvud. Med datum: Datum | Beskrivning | Timmar/SEK.
+      // Kategoribilagan släpper datumkolumnen och låter texten börja i marginalen;
+      // med belopp får den två talkolumner (Tim och Belopp).
+      const axDesc = isCategory ? left : 155;
       const valueWidth = 90;
-      const descWidth = right - valueWidth - 10 - axDesc;
+      const amountLeft = right - valueWidth;
+      const timeRight = showAmount && isTime ? amountLeft - 12 : right;
+      const descWidth = (showAmount && isTime ? timeRight - valueWidth : right - valueWidth) - 10 - axDesc;
       doc.fontSize(9.5).font('Helvetica-Bold');
-      doc.text('Datum', left, ay);
-      doc.text('Beskrivning', axDesc, ay);
-      doc.text(isTime ? 'Timmar' : 'SEK', right - valueWidth, ay, { width: valueWidth, align: 'right' });
+      if (!isCategory) doc.text('Datum', left, ay);
+      doc.text(isCategory ? 'Kategori' : 'Beskrivning', axDesc, ay);
+      doc.text(isTime ? 'Timmar' : 'SEK', timeRight - valueWidth, ay, { width: valueWidth, align: 'right' });
+      if (showAmount && isTime) {
+        doc.text('Belopp, SEK', amountLeft, ay, { width: valueWidth, align: 'right' });
+      }
       ay += 13;
       doc.moveTo(left, ay).lineTo(right, ay).lineWidth(0.7).stroke();
       ay += 9;
@@ -358,12 +374,15 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
           ay += 26;
           doc.fontSize(9.5);
         }
-        doc.text(row.entry_date, left, ay);
+        if (row.entry_date) doc.text(row.entry_date, left, ay);
         doc.text(row.description, axDesc, ay, { width: descWidth });
         doc.text(
           isTime ? hours(row.minutes ?? 0) : formatOre(row.amount_ore ?? 0),
-          right - valueWidth, ay, { width: valueWidth, align: 'right' },
+          timeRight - valueWidth, ay, { width: valueWidth, align: 'right' },
         );
+        if (showAmount && isTime && row.amount_ore !== null) {
+          doc.text(formatOre(row.amount_ore), amountLeft, ay, { width: valueWidth, align: 'right' });
+        }
         ay += Math.max(14, h + 3);
       }
 
@@ -377,7 +396,17 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
         doc.text(value, right - valueWidth, ay, { width: valueWidth, align: 'right' });
         ay += 15;
       };
-      if (isTime) {
+      if (isCategory) {
+        // Kategoribilagans summa ligger i samma kolumner som raderna ovanför,
+        // annars hamnar totalen bredvid sin egen kolumn.
+        doc.font('Helvetica-Bold');
+        doc.text('Summa exkl. moms', left, ay);
+        doc.text(hours(ap.total_minutes), timeRight - valueWidth, ay, { width: valueWidth, align: 'right' });
+        if (showAmount) {
+          doc.text(formatOre(ap.total_amount_ore), amountLeft, ay, { width: valueWidth, align: 'right' });
+        }
+        ay += 15;
+      } else if (isTime) {
         sumRow('Summa fakturerbar tid', `${hours(ap.total_minutes)} h`, true);
       } else {
         // Vidarefakturerade utlägg summeras exkl./moms/inkl. — momssatsen tas

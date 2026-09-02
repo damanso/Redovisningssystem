@@ -4206,14 +4206,29 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
       <tr><td colspan="4">Moms</td><td class="num">${amount(inv.vat_ore as number, { unit: false })}</td></tr>
       <tr class="subtot"><td colspan="4"><strong>Att betala</strong></td><td class="num"><strong>${amount(inv.total_ore as number, { unit: false })}</strong></td></tr>
     </tbody></table></div>
-    ${appendix.kind ? html`<h2 style="margin-top:18px">Bilaga (sida 2 i PDF:en) — ${appendix.kind === 'time' ? 'tidsspecifikation' : 'utläggsspecifikation'}</h2>
-      <div class="table-wrap"><table><thead><tr><th>Datum</th><th>Beskrivning</th><th class="num">${appendix.kind === 'time' ? 'Timmar' : 'SEK'}</th></tr></thead><tbody>
-        ${(appendix.rows as { row_no: number; entry_date: string; description: string; minutes: number | null; amount_ore: number | null }[]).map((r) => html`<tr>
-          <td class="code">${r.entry_date}</td><td>${r.description}</td>
-          <td class="num">${r.minutes !== null ? timmar(r.minutes) : amount(r.amount_ore ?? 0, { unit: false })}</td></tr>`)}
-        <tr class="subtot"><td colspan="2"><strong>${appendix.kind === 'time' ? 'Summa fakturerbar tid' : 'Summa utlägg exkl. moms'}</strong></td>
-          <td class="num"><strong>${appendix.kind === 'time' ? `${timmar(appendix.total_minutes as number)} h` : amount(appendix.total_amount_ore as number, { unit: false })}</strong></td></tr>
-      </tbody></table></div>` : ''}
+    ${appendix.kind ? (() => {
+      // Kategoribilagan har ingen datumkolumn — den svarar på vad arbetet
+      // gällde, inte vilken dag. Vyn måste därför räkna kolumnerna själv,
+      // annars hamnar summaraden fel när datumkolumnen faller bort.
+      const kind = appendix.kind as 'time' | 'expense' | 'category';
+      const kategori = kind === 'category';
+      const tid = kind === 'time' || kategori;
+      const rader = appendix.rows as { row_no: number; entry_date: string | null; description: string; minutes: number | null; amount_ore: number | null }[];
+      const belopp = kategori && rader.some((r) => r.amount_ore !== null);
+      const sortnamn = kategori ? 'kategorispecifikation' : tid ? 'tidsspecifikation' : 'utläggsspecifikation';
+      const summanamn = kategori ? 'Summa exkl. moms' : tid ? 'Summa fakturerbar tid' : 'Summa utlägg exkl. moms';
+      const spann = kategori ? 1 : 2;
+      return html`<h2 style="margin-top:18px">Bilaga (sida 2 i PDF:en) — ${sortnamn}</h2>
+      <div class="table-wrap"><table><thead><tr>${kategori ? '' : html`<th>Datum</th>`}<th>${kategori ? 'Kategori' : 'Beskrivning'}</th><th class="num">${tid ? 'Timmar' : 'SEK'}</th>${belopp ? html`<th class="num">Belopp, SEK</th>` : ''}</tr></thead><tbody>
+        ${rader.map((r) => html`<tr>
+          ${kategori ? '' : html`<td class="code">${r.entry_date ?? ''}</td>`}<td>${r.description}</td>
+          <td class="num">${tid ? timmar(r.minutes ?? 0) : amount(r.amount_ore ?? 0, { unit: false })}</td>
+          ${belopp ? html`<td class="num">${r.amount_ore !== null ? amount(r.amount_ore, { unit: false }) : ''}</td>` : ''}</tr>`)}
+        <tr class="subtot"><td colspan="${spann}"><strong>${summanamn}</strong></td>
+          <td class="num"><strong>${tid ? `${timmar(appendix.total_minutes as number)} h` : amount(appendix.total_amount_ore as number, { unit: false })}</strong></td>
+          ${belopp ? html`<td class="num"><strong>${amount(appendix.total_amount_ore as number, { unit: false })}</strong></td>` : ''}</tr>
+      </tbody></table></div>`;
+    })() : ''}
     ${docs.length ? html`<h2 style="margin-top:18px">Bilagda dokument</h2>
       <div class="actions">${docs.map((d) => html`<a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/documents/${d.file_id}/download">📎 ${d.original_name}</a> `)}</div>` : ''}
     <h2 style="margin-top:18px">Åtgärder</h2>

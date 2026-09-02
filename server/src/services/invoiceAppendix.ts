@@ -11,14 +11,20 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 
-export type AppendixKind = 'time' | 'expense';
+export type AppendixKind = 'time' | 'expense' | 'category';
 
 export interface AppendixRowInput {
-  entry_date: string;
+  /**
+   * Obligatoriskt för 'time' och 'expense' — de ÄR specifikationer per datum.
+   * Utelämnas för 'category': en kategoribilaga svarar på vad arbetet gällde,
+   * inte vilken dag. Att fylla den med fakturadatumet på varje rad, som blev
+   * fallet innan varianten fanns, är att skriva ut en uppgift som inte finns.
+   */
+  entry_date?: string;
   description: string;
-  /** Endast för 'time'. */
+  /** Tid i hela minuter. Krävs för 'time' och 'category'. */
   minutes?: number;
-  /** Endast för 'expense'. */
+  /** Belopp i hela ören. Krävs för 'expense', valfritt för 'category'. */
   amount_ore?: number;
 }
 
@@ -53,10 +59,29 @@ export async function setInvoiceAppendix(
   await assertEditableDraft(client, companyId, input.invoiceId);
   if (input.rows.length === 0) throw new BadRequestError('no_rows', 'bilagan saknar rader');
 
+  const ärKategori = input.kind === 'category';
   for (const [i, r] of input.rows.entries()) {
     const hasMinutes = r.minutes !== undefined;
     const hasAmount = r.amount_ore !== undefined;
-    if (hasMinutes === hasAmount) {
+    const hasDate = r.entry_date !== undefined && r.entry_date !== null && r.entry_date !== '';
+
+    // Datum: krav för specifikationer per datum, förbjudet för kategoribilagan.
+    // Det andra ledet är avsiktligt — utan det skulle datumkolumnen dyka upp
+    // igen så fort någon råkar skicka med ett datum, och bilagan bytte form.
+    if (!ärKategori && !hasDate) {
+      throw new BadRequestError('invalid_row', `rad ${i + 1}: ${input.kind}-bilagan kräver entry_date`);
+    }
+    if (ärKategori && hasDate) {
+      throw new BadRequestError(
+        'invalid_row',
+        `rad ${i + 1}: kategoribilagan har inga datum — använd kind 'time' om raderna ska visas per datum`,
+      );
+    }
+
+    if (ärKategori) {
+      // Kategoriraden bär timmar, och får bära beloppet bredvid.
+      if (!hasMinutes) throw new BadRequestError('invalid_row', `rad ${i + 1}: kategoribilagan kräver minutes`);
+    } else if (hasMinutes === hasAmount) {
       throw new BadRequestError('invalid_row', `rad ${i + 1}: ange antingen minutes (tid) eller amount_ore (utlägg)`);
     }
     if (input.kind === 'time' && !hasMinutes) {
@@ -85,7 +110,7 @@ export async function setInvoiceAppendix(
     await client.query(
       `INSERT INTO invoice_appendix_rows (invoice_id, company_id, row_no, entry_date, description, minutes, amount_ore)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [input.invoiceId, companyId, i + 1, r.entry_date, r.description, r.minutes ?? null, r.amount_ore ?? null],
+      [input.invoiceId, companyId, i + 1, r.entry_date ?? null, r.description, r.minutes ?? null, r.amount_ore ?? null],
     );
   }
 
@@ -98,7 +123,8 @@ export async function setInvoiceAppendix(
 
 export interface AppendixRow {
   row_no: number;
-  entry_date: string;
+  /** null för kategoribilagor. */
+  entry_date: string | null;
   description: string;
   minutes: number | null;
   amount_ore: number | null;
