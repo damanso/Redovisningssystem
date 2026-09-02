@@ -56,9 +56,10 @@ import { attachDocument, getDocument, listDocuments, type DocumentEntityType } f
 import { setCompanyLogo, updateCompanySettings } from '../services/companyLogo.js';
 import { getInvoiceNumberSeries, setExternalInvoiceNumbers, setInvoiceNumberSeries } from '../services/invoiceNumbering.js';
 import {
-  appendixFromTimeEntries, getInvoiceAppendix, setInvoiceAppendix,
+  appendixFromTimeEntries, getInvoiceAppendix, setInvoiceAppendixManually,
   type AppendixKind, type AppendixRowInput,
 } from '../services/invoiceAppendix.js';
+import { APPENDIX_LAYOUTS, createInvoiceFromTime, type AppendixLayout } from '../services/invoiceFromTime.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
 import { linkVoucher, unlinkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
@@ -322,12 +323,18 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // 'category' = kategoribilaga UTAN datum, med timmar och valfritt belopp
     // per rad. entry_date är därför valfritt här; vilken sort som kräver
     // respektive förbjuder datum avgörs i setInvoiceAppendix().
+    // En HANDSKRIVEN tidsbilaga går förbi tidrapporteringen och låser ingen
+    // tidpost — samma timmar kan faktureras igen i morgon. Den vägen kräver
+    // därför ett uttalat undantag med skäl (409 use_create_invoice_from_time);
+    // normalvägen är create_invoice_from_time. 'expense'/'category' är orörda.
     inputSchema: z.object({
       invoice_id: UuidSchema,
       kind: z.enum(['time', 'expense', 'category']),
       title: safeText(150).optional(),
       preamble: safeText(400).optional(),
       notes: safeText(800).optional(),
+      bypass_time_entries: z.boolean().optional(),
+      reason: safeText(300).optional(),
       rows: z.array(z.object({
         entry_date: IsoDateSchema.optional(),
         description: safeText(300),
@@ -335,13 +342,15 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         amount_ore: z.number().int().nonnegative().safe().optional(),
       }).strict()).min(1).max(500),
     }).strict(),
-    handler: (ctx, i) => setInvoiceAppendix(ctx.client, ctx.companyId, ctx.userId, {
+    handler: (ctx, i) => setInvoiceAppendixManually(ctx.client, ctx.companyId, ctx.userId, {
       invoiceId: (i as { invoice_id: string }).invoice_id,
       kind: (i as { kind: AppendixKind }).kind,
       title: (i as { title?: string }).title,
       preamble: (i as { preamble?: string }).preamble,
       notes: (i as { notes?: string }).notes,
       rows: (i as { rows: AppendixRowInput[] }).rows,
+      bypassTimeEntries: (i as { bypass_time_entries?: boolean }).bypass_time_entries,
+      reason: (i as { reason?: string }).reason,
     }),
   }),
   def({
@@ -369,6 +378,43 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         invoiceId: i.invoice_id, projectId: i.project_id, from: i.from, to: i.to,
         title: i.title, preamble: i.preamble,
       }),
+  }),
+  def({
+    name: 'create_invoice_from_time',
+    title: 'Skapa faktura ur godkänd tid (rader, bilaga och låsning i en transaktion)',
+    sensitivity: 'write',
+    // Story 2: fakturan, tidsbilagan och låsningen av posterna sker i EN
+    // transaktion. Faller något steg blir det ingen faktura alls — en faktura
+    // med olåsta tidposter (julifelet) går inte längre att skapa.
+    inputSchema: z.object({
+      customer_id: UuidSchema,
+      project_id: UuidSchema,
+      from: IsoDateSchema,
+      to: IsoDateSchema,
+      invoice_date: IsoDateSchema,
+      due_date: IsoDateSchema.optional(),
+      reference: safeText(200).optional(),
+      our_reference: safeText(200).optional(),
+      // Poster människan tagit undan ur just den här faktureringen; de rörs
+      // inte alls och ligger kvar som godkänd, ofakturerad tid.
+      exclude_entry_ids: z.array(UuidSchema).max(500).optional(),
+      title: safeText(150).optional(),
+      preamble: safeText(400).optional(),
+      // Utelämnad = 'per_datum'. 'per_avtalsdel' tas emot av schemat men avvisas
+      // med 400 tills avtalsdelarna finns (story 3) — hellre ett tydligt nej än
+      // en bilaga som tyst har fel form.
+      appendix_layout: z.enum(APPENDIX_LAYOUTS).optional(),
+    }).strict(),
+    handler: (ctx, i: {
+      customer_id: string; project_id: string; from: string; to: string; invoice_date: string;
+      due_date?: string; reference?: string; our_reference?: string; exclude_entry_ids?: string[];
+      title?: string; preamble?: string; appendix_layout?: AppendixLayout;
+    }) => createInvoiceFromTime(ctx.client, ctx.companyId, ctx.userId, {
+      customerId: i.customer_id, projectId: i.project_id, from: i.from, to: i.to,
+      invoiceDate: i.invoice_date, dueDate: i.due_date, reference: i.reference,
+      ourReference: i.our_reference, excludeEntryIds: i.exclude_entry_ids,
+      title: i.title, preamble: i.preamble, appendixLayout: i.appendix_layout,
+    }),
   }),
   def({
     name: 'set_account_non_deductible',

@@ -140,6 +140,59 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (faktura ur godkänd tid, atomärt — PRD_TIDSRAPPORTERING story 2):**
+  Story 1 gav tidsposten en livscykel och ett lås. Kvar stod ändå julifelets
+  form: fakturan kunde skapas i ett steg och tiden stängas i ett annat, och ett
+  steg som går att hoppa över blir förr eller senare överhoppat.
+
+  **`create_invoice_from_time` (write) gör de tre stegen till ETT.** I en och
+  samma transaktion väljs och låses urvalet (`FOR UPDATE`), fakturan skapas ur
+  exakt de raderna, tidsbilagan skrivs ur samma rader och posterna låses till
+  fakturan. Faller något steg finns varken faktura, bilaga eller låst tid kvar
+  — det bevisas i provet genom att bilagesteget medvetet fälls mitt i kedjan,
+  alltså precis i det läge julifelet bestod av. Fakturaraderna är **en per
+  taxa** (postens `hourly_rate_ore`, annars uppdragets), antal = debiterbara
+  minuter/60 med två decimaler, moms 25 % och konto 3001. Saknas taxa på både
+  post och uppdrag blir det 400 `missing_hourly_rate` — **aldrig ett tyst
+  nollpris**, samma felklass som lärdom 7. `exclude_entry_ids` rör de undantagna
+  posterna inte alls; undantaget ligger i urvalspredikatet och ingen annanstans,
+  eftersom en bortfiltrering efter urvalet hade låst poster som aldrig hamnade
+  på fakturan.
+
+  Story 1-mönstret (räkning före lås → `FOR UPDATE` → radantal = urval) bor nu i
+  `valjOchLasTidposter`/`lasTidposterTillFaktura` i `invoiceAppendix.ts` och
+  används av båda vägarna. Två snarlika kopior av samma predikat hade gjort
+  skillnaden mellan dem till ett falskt 409.
+
+  Tre luckor stängda i samma andetag:
+  1. **`set_invoice_appendix` med `kind: 'time'`** kräver nu
+     `bypass_time_entries: true` + `reason` (409 `use_create_invoice_from_time`).
+     En handskriven tidsbilaga låser ingen tidpost — det ÄR julifelet, utfört
+     med handen. Skälet hamnar i auditloggen. `expense`/`category` orörda.
+  2. **`delete_draft_invoice` återöppnar tiden** (`justerad` när debiterbar tid
+     skiljer sig från registrerad, annars `godkand`; `invoice_id = NULL`,
+     `invoiced = false`) i samma transaktion som raderingen. Utan det vore
+     raderingen en fälla: timmarna låsta till en faktura som inte finns, omöjliga
+     att både fakturera och rätta.
+  3. **PDF:en vägrar** (409 `pdf_number_collision`) om en annan faktura i
+     bolaget redan har en PDF med samma `effective_invoice_number`. Den unika
+     nyckeln i 0046 är förstahandsgarantin och gör läget onåbart genom systemet;
+     provet river den tillfälligt för att pröva andra försvarslinjen mot det den
+     finns för — en kontroll som aldrig körts mot sitt eget fall är skriven, inte
+     prövad.
+
+  `appendix_layout` finns i schemat (Davids svar 1/9) men bara `per_datum` är
+  byggt: `per_avtalsdel` ger 400 tills avtalsdelarna finns (story 3). Inga
+  migrationer, inga nya beroenden. Ny svit:
+  `server/test/faktura-ur-tid.test.ts` (11 fall: atomicitet, exclude-listan, tom
+  period, andra anropet, olika taxa, taxa saknas, återöppning + omtag, bypassens
+  tre utfall, PDF-kollisionen). Två anrop i
+  `invoice-series-appendix.test.ts` skriver nu sin handskrivna tidsbilaga med
+  `bypass_time_entries` + skäl — samma prov, uttalad väg.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs.
+
 - **2026-09-01 (tidsposten får livscykel — PRD_TIDSRAPPORTERING §9 steg 1):**
   Bakgrunden är julifelet, mätt i PRD §1: fakturan skickades och betalades, men
   **ingen av de 20 tidsposterna markerades som fakturerad** — de låg kvar som

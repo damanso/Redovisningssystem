@@ -350,3 +350,42 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
   samma transaktion (`invoiced` = statusen är fakturerad, `billable` = statusen
   är inte ignorerad), så projektvyn, styrvyn, kundkortet och RLS-policyn i 0053
   läser oförändrat.
+
+### Faktura ur godkänd tid (PRD_TIDSRAPPORTERING §4 F6+F7, story 2)
+
+Julifelet var inte att bilagan saknades utan att fakturan kunde existera UTAN
+att tidposterna stängdes. Vägen dit gick i tre steg (skapa faktura → fyll bilaga
+→ hoppas att någon körde steg två), och ett steg som kan hoppas över blir förr
+eller senare överhoppat. Nu är de tre stegen ETT.
+
+- `create_invoice_from_time` (write) — `customer_id`, `project_id`, `from`,
+  `to`, `invoice_date`, valfria `due_date`, `reference`, `our_reference`,
+  `title`, `preamble`, `exclude_entry_ids` och `appendix_layout`. I EN
+  transaktion: urvalet (godkänd/justerad tid utan faktura i perioden, minus
+  `exclude_entry_ids`) väljs och låses `FOR UPDATE`, fakturan skapas med **en
+  rad per taxa** (postens `hourly_rate_ore`, annars uppdragets; antal =
+  debiterbara minuter/60 med två decimaler; moms 25 % och konto 3001 när inget
+  annat anges), tidsbilagan skrivs ur samma rader och posterna låses till
+  fakturan. Svar: `invoice`, `time_entries`, `billable_minutes`.
+  Fel: 400 `no_time_entries` (inget att fakturera), 409 `time_entries_changed`
+  (någon annan hann före), 400 `missing_hourly_rate` (**aldrig ett tyst
+  nollpris**), 400 `unsupported_appendix_layout` för `appendix_layout:
+  'per_avtalsdel'` — flaggan finns i schemat men kategoriseringen byggs i
+  story 3. Uppdraget sätts på fakturahuvudet (`invoices.project_id`).
+  De undantagna posterna rörs **inte alls** och ligger kvar som godkänd,
+  ofakturerad tid.
+- `set_invoice_appendix` med `kind: 'time'` kräver nu `bypass_time_entries:
+  true` **och** `reason` — annars 409 `use_create_invoice_from_time`. En
+  handskriven tidsbilaga låser ingen tidpost, så samma timmar kan faktureras
+  igen i morgon; skälet skrivs i auditloggen (`invoice.appendix_time_bypass`).
+  `kind: 'expense'` och `kind: 'category'` är oförändrade.
+- `delete_draft_invoice` **återöppnar** utkastets tidsposter i samma transaktion
+  som raderingen: `justerad` när debiterbar tid skiljer sig från registrerad,
+  annars `godkand`, med `invoice_id = NULL` och `invoiced = false`
+  (`reopened_time_entries` i svaret, auditlogg
+  `invoice.time_entries_reopened`). Utan det vore raderingen en fälla: timmarna
+  låsta till en faktura som inte finns.
+- Faktura-PDF:en vägrar med 409 `pdf_number_collision` om en annan faktura i
+  bolaget redan har en PDF med samma `effective_invoice_number`. Databasens
+  unika nyckel (0046) är förstahandsgarantin; kontrollen är den andra, så att
+  två dokument aldrig kan utge sig för att vara samma faktura.

@@ -149,6 +149,9 @@ describe('bilagan sida 2 — tidsspecifikation (facit: faktura 0000027)', () => 
     invoiceId = inv.id;
     const res = await api.post(`${co()}/actions/set_invoice_appendix`).set(auth()).send({
       invoice_id: invoiceId, kind: 'time',
+      // Handskriven tidsbilaga (facit ur faktura 0000027) — den vägen kräver
+      // sedan story 2 ett uttalat undantag från tidrapporteringen.
+      bypass_time_entries: true, reason: 'facit ur faktura 0000027, före tidrapporteringen',
       title: 'Bilaga – tidsspecifikation juli 2026',
       preamble: 'Konsultarvode enligt löpande räkning, 1 100 SEK/tim exkl. moms. Leveranstidpunkt juli 2026.',
       rows: [
@@ -188,6 +191,7 @@ describe('bilagan sida 2 — tidsspecifikation (facit: faktura 0000027)', () => 
 
     const res = await api.post(`${co()}/actions/set_invoice_appendix`).set(auth()).send({
       invoice_id: invoiceId, kind: 'time',
+      bypass_time_entries: true, reason: 'försök att ändra i efterhand',
       rows: [{ entry_date: '2026-07-01', description: 'Ändring i efterhand', minutes: 60 }],
     });
     expect(res.status).toBe(409);

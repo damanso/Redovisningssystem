@@ -37,6 +37,12 @@ export interface SetAppendixInput {
   rows: AppendixRowInput[];
 }
 
+export interface ManualAppendixInput extends SetAppendixInput {
+  /** Krävs för kind 'time': en handskriven tidsbilaga går förbi tidrapporteringen. */
+  bypassTimeEntries?: boolean;
+  reason?: string;
+}
+
 /** Fakturan måste vara ett obokat utkast för att underlaget ska få ändras. */
 async function assertEditableDraft(client: PoolClient, companyId: string, invoiceId: string): Promise<void> {
   const inv = await client.query<{ voucher_id: string | null; status: string }>(
@@ -170,12 +176,102 @@ export async function getInvoiceAppendix(
  * rad att sätta på bilagan (och bilageraden kräver minuter > 0). Sättet att
  * säga "den här ska aldrig faktureras" är statusen 'ignorerad', inte en
  * nollrad.
+ *
+ * $5 är de poster människan uttryckligen tagit UNDAN ur just den här
+ * faktureringen. Undantaget hör hemma i predikatet och ingenstans annars: en
+ * bortfiltrering efter urvalet hade låst poster som aldrig hamnade på fakturan.
  */
 const TIDPOSTURVAL = `company_id = $1
        AND status IN ('godkand', 'justerad') AND invoice_id IS NULL
        AND billable_minutes > 0
        AND work_date >= $2 AND work_date <= $3
-       AND ($4::uuid IS NULL OR project_id = $4)`;
+       AND ($4::uuid IS NULL OR project_id = $4)
+       AND ($5::uuid[] IS NULL OR NOT (id = ANY($5)))`;
+
+export interface TidpostUrval {
+  from: string;
+  to: string;
+  projectId?: string;
+  /** Poster som uttryckligen INTE ska faktureras den här gången. Rörs inte alls. */
+  excludeEntryIds?: string[];
+}
+
+export interface ValdTidpost {
+  id: string;
+  work_date: string;
+  description: string;
+  billable_minutes: number;
+  /** Postens egen taxa; null = uppdragets taxa gäller. */
+  hourly_rate_ore: number | null;
+}
+
+/**
+ * Väljer OCH låser tidposterna i perioden (story 1-mönstret, nu på ett ställe
+ * för både bilagan och fakturaskapandet):
+ *   1. räkning på ögonblicksbilden UTAN lås — den skiljer "det fanns aldrig
+ *      något att fakturera" (400) från "någon annan hann före" (409). Utan den
+ *      blir en förlorad kapplöpning en tom lista, alltså samma tysta noll som
+ *      lärdom 7 i STATUS.md handlar om: inget fel, inget resultat, ingen
+ *      förklaring.
+ *   2. `SELECT … FOR UPDATE` med EXAKT samma predikat.
+ *   3. lika många rader som räkningen, annars 409 och rollback.
+ */
+export async function valjOchLasTidposter(
+  client: PoolClient, companyId: string, urval: TidpostUrval,
+): Promise<ValdTidpost[]> {
+  const parametrar = [
+    companyId, urval.from, urval.to, urval.projectId ?? null,
+    urval.excludeEntryIds?.length ? urval.excludeEntryIds : null,
+  ];
+  const fore = await client.query<{ antal: string }>(
+    `SELECT count(*)::int AS antal FROM time_entries WHERE ${TIDPOSTURVAL}`, parametrar,
+  );
+  const antalFore = Number(fore.rows[0]?.antal ?? 0);
+  if (antalFore === 0) {
+    throw new BadRequestError('no_time_entries', 'ingen godkänd, ofakturerad tid i perioden');
+  }
+
+  const entries = await client.query<ValdTidpost>(
+    `SELECT id, work_date::text, description, billable_minutes, hourly_rate_ore
+     FROM time_entries
+     WHERE ${TIDPOSTURVAL}
+     ORDER BY work_date, created_at
+     FOR UPDATE`,
+    parametrar,
+  );
+  if (entries.rows.length !== antalFore) {
+    throw new ConflictError(
+      'time_entries_changed',
+      'tidposterna i perioden ändrades av en annan skrivning — försök igen',
+    );
+  }
+  return entries.rows;
+}
+
+/**
+ * Låser de valda posterna till fakturan. Villkoret upprepas i UPDATE:n med
+ * flit: låset (FOR UPDATE) skyddar mot samtidiga skrivningar, villkoret skyddar
+ * mot allt annat. Stämmer inte antalet rullas HELA transaktionen tillbaka — en
+ * halv fakturering, där bilagan skrivits men posterna inte låsts, är exakt
+ * julifelet igen.
+ */
+export async function lasTidposterTillFaktura(
+  client: PoolClient, companyId: string, invoiceId: string, entries: ValdTidpost[],
+): Promise<void> {
+  const last = await client.query(
+    `UPDATE time_entries
+        SET status = 'fakturerad', invoiced = true, billable = true, invoice_id = $3
+      WHERE company_id = $1 AND id = ANY($2::uuid[])
+        AND invoice_id IS NULL AND status IN ('godkand', 'justerad')`,
+    [companyId, entries.map((e) => e.id), invoiceId],
+  );
+  if (last.rowCount !== entries.length) {
+    throw new ConflictError(
+      'time_entries_changed',
+      'tidposterna i perioden ändrades av en annan skrivning — försök igen',
+    );
+  }
+}
 
 /**
  * Fyller tidsbilagan ur systemets EGEN tidrapportering (time_entries) i stället
@@ -190,71 +286,67 @@ export async function appendixFromTimeEntries(
   input: { invoiceId: string; projectId?: string; from: string; to: string; title?: string; preamble?: string },
 ): Promise<Record<string, unknown>> {
   await assertEditableDraft(client, companyId, input.invoiceId);
-  const parametrar = [companyId, input.from, input.to, input.projectId ?? null];
-  // Räkningen sker på transaktionens ögonblicksbild, UTAN lås. Den finns för att
-  // kunna skilja "det fanns aldrig något att fakturera" (400) från "någon annan
-  // hann fakturera samma period medan vi väntade på låset" (409). Utan den blir
-  // en kapplöpning en tom lista — alltså samma tysta noll som lärdom 7 i
-  // STATUS.md handlar om: inget fel, inget resultat, ingen förklaring.
-  const fore = await client.query<{ antal: string }>(
-    `SELECT count(*)::int AS antal FROM time_entries WHERE ${TIDPOSTURVAL}`, parametrar,
-  );
-  const antalFore = Number(fore.rows[0]?.antal ?? 0);
-  if (antalFore === 0) {
-    throw new BadRequestError('no_time_entries', 'ingen godkänd, ofakturerad tid i perioden');
-  }
-
-  const entries = await client.query<{
-    id: string; work_date: string; description: string; billable_minutes: number;
-  }>(
-    `SELECT id, work_date::text, description, billable_minutes
-     FROM time_entries
-     WHERE ${TIDPOSTURVAL}
-     ORDER BY work_date, created_at
-     FOR UPDATE`,
-    parametrar,
-  );
-  if (entries.rows.length !== antalFore) {
-    throw new ConflictError(
-      'time_entries_changed',
-      'tidposterna i perioden ändrades av en annan skrivning — försök igen',
-    );
-  }
+  const entries = await valjOchLasTidposter(client, companyId, {
+    from: input.from, to: input.to, projectId: input.projectId,
+  });
 
   const result = await setInvoiceAppendix(client, companyId, userId, {
     invoiceId: input.invoiceId,
     kind: 'time',
     title: input.title,
     preamble: input.preamble,
-    rows: entries.rows.map((e) => ({
+    rows: entries.map((e) => ({
       entry_date: e.work_date, description: e.description, minutes: e.billable_minutes,
     })),
   });
 
-  // Villkoret upprepas i UPDATE:n med flit: låset (FOR UPDATE) skyddar mot
-  // samtidiga skrivningar, villkoret skyddar mot allt annat. Stämmer inte
-  // antalet rullas HELA transaktionen tillbaka — en halv fakturering, där
-  // bilagan skrivits men posterna inte låsts, är exakt julifelet igen.
-  const last = await client.query(
-    `UPDATE time_entries
-        SET status = 'fakturerad', invoiced = true, billable = true, invoice_id = $3
-      WHERE company_id = $1 AND id = ANY($2::uuid[])
-        AND invoice_id IS NULL AND status IN ('godkand', 'justerad')`,
-    [companyId, entries.rows.map((e) => e.id), input.invoiceId],
-  );
-  if (last.rowCount !== entries.rows.length) {
-    throw new ConflictError(
-      'time_entries_changed',
-      'tidposterna i perioden ändrades av en annan skrivning — försök igen',
-    );
-  }
+  await lasTidposterTillFaktura(client, companyId, input.invoiceId, entries);
 
   await writeAudit(client, {
     companyId, userId, action: 'invoice.appendix_from_time', entityType: 'invoice', entityId: input.invoiceId,
     details: {
-      entries: entries.rows.length, from: input.from, to: input.to, project_id: input.projectId ?? null,
-      billable_minutes: entries.rows.reduce((s, e) => s + e.billable_minutes, 0),
+      entries: entries.length, from: input.from, to: input.to, project_id: input.projectId ?? null,
+      billable_minutes: entries.reduce((s, e) => s + e.billable_minutes, 0),
     },
   });
+  return result;
+}
+
+/**
+ * Vägen för en HANDSKRIVEN bilaga (`set_invoice_appendix`). En tidsbilaga
+ * skriven för hand går förbi tidrapporteringen: raderna hamnar på fakturan utan
+ * att en enda tidpost låses, och samma timmar kan faktureras igen i morgon. Det
+ * ÄR julifelet, bara utfört med handen i stället för av en bugg. Därför krävs
+ * ett uttalat undantag med skäl — och skälet hamnar i auditloggen, så att den
+ * som läser efteråt ser att det var ett beslut och inte en slentrian.
+ *
+ * 'expense' och 'category' rörs inte: ingen av dem har någon tidrapportering
+ * att gå förbi.
+ */
+export async function setInvoiceAppendixManually(
+  client: PoolClient, companyId: string, userId: string, input: ManualAppendixInput,
+): Promise<Record<string, unknown>> {
+  if (input.kind === 'time') {
+    if (input.bypassTimeEntries !== true) {
+      throw new ConflictError(
+        'use_create_invoice_from_time',
+        'en tidsbilaga skrivs ur godkänd tid (create_invoice_from_time) — sätt bypass_time_entries med skäl för att skriva den för hand',
+      );
+    }
+    if (!input.reason?.trim()) {
+      throw new BadRequestError(
+        'bypass_reason_required', 'att gå förbi tidrapporteringen kräver ett skäl (reason)',
+      );
+    }
+  }
+
+  const result = await setInvoiceAppendix(client, companyId, userId, input);
+
+  if (input.kind === 'time') {
+    await writeAudit(client, {
+      companyId, userId, action: 'invoice.appendix_time_bypass', entityType: 'invoice', entityId: input.invoiceId,
+      details: { rows: input.rows.length, reason: input.reason },
+    });
+  }
   return result;
 }

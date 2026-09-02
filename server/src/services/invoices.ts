@@ -377,6 +377,29 @@ export async function generateInvoicePdfFile(
       'SELECT name, address, postal_code, city, org_number, vat_number FROM customers WHERE id = $1 AND company_id = $2',
       [invoice.customer_id, companyId],
     );
+    // Numret på handlingen måste vara bolagets ENDA handling med det numret.
+    // Databasen garanterar redan att två fakturor inte kan visa samma
+    // effective_invoice_number (unik nyckel i 0046), men PDF:en är den handling
+    // kunden faktiskt får — och en andra arkiverad PDF med samma nummer vore
+    // två olika dokument som utger sig för att vara samma faktura. Kontrollen
+    // är därför en andra försvarslinje som vägrar i stället för att arkivera:
+    // den fångar ett läge där den unika nyckeln en dag inte gäller (kopierad
+    // data, återställd databas, ändrad kolumn) i stället för att lita på att
+    // den alltid gjort det.
+    const kollision = await client.query<{ id: string }>(
+      `SELECT id FROM invoices
+        WHERE company_id = $1 AND id <> $2 AND pdf_file_id IS NOT NULL
+          AND effective_invoice_number = $3
+        LIMIT 1`,
+      [companyId, id, invoice.effective_invoice_number],
+    );
+    if (kollision.rows[0]) {
+      throw new ConflictError(
+        'pdf_number_collision',
+        `en annan faktura i bolaget har redan en PDF med nummer ${String(invoice.effective_invoice_number)} — numret måste rättas innan handlingen kan skrivas ut`,
+      );
+    }
+
     // Logotypen läses från arkivet; en saknad/oläsbar fil får aldrig stoppa fakturan.
     let logo: Buffer | undefined;
     const logoStoredName = company.rows[0]?.logo_stored_name;

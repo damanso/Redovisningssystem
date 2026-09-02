@@ -41,6 +41,31 @@ async function deleteDraft(
     throw new ConflictError('not_deletable', `${spec.label} är bokfört eller inte längre ett utkast — rättelse sker via rättelseverifikat`);
   }
 
+  // Tiden som låstes till fakturan ÅTERÖPPNAS i samma transaktion. Utan det
+  // vore raderingen en fälla: fakturan försvinner, men timmarna ligger kvar som
+  // 'fakturerad' med en invoice_id som pekar på ingenting — de går varken att
+  // fakturera igen eller att rätta (en fakturerad post är låst). Statusen
+  // härleds ur raden själv: skiljer sig debiterbar tid från registrerad var
+  // posten justerad, annars godkänd. Speglingarna följer statusen (se
+  // services/projects.ts): billable är redan true, invoiced faller tillbaka.
+  let reopenedTimeEntries = 0;
+  if (kind === 'invoice') {
+    const ateroppnade = await client.query(
+      `UPDATE time_entries
+          SET status = CASE WHEN billable_minutes <> minutes THEN 'justerad' ELSE 'godkand' END,
+              invoice_id = NULL, invoiced = false
+        WHERE company_id = $1 AND invoice_id = $2`,
+      [companyId, id],
+    );
+    reopenedTimeEntries = ateroppnade.rowCount ?? 0;
+    if (reopenedTimeEntries > 0) {
+      await writeAudit(client, {
+        companyId, userId, action: 'invoice.time_entries_reopened', entityType: 'invoice', entityId: id,
+        details: { time_entries: reopenedTimeEntries },
+      });
+    }
+  }
+
   // Ta bort dokumentkopplingarna till posten (filerna behålls i arkivet).
   const unlinked = await client.query(
     'DELETE FROM documents WHERE company_id = $1 AND entity_type = $2 AND entity_id = $3',
@@ -72,13 +97,19 @@ async function deleteDraft(
   const { ...snapshot } = row;
   await writeAudit(client, {
     companyId, userId, action: `${kind}.draft_deleted`, entityType: kind, entityId: id,
-    details: { snapshot, unlinked_documents: unlinked.rowCount ?? 0, removed_file_id: removedFile?.id ?? null },
+    details: {
+      snapshot, unlinked_documents: unlinked.rowCount ?? 0, removed_file_id: removedFile?.id ?? null,
+      reopened_time_entries: reopenedTimeEntries,
+    },
   });
 
   // Diskblobben sist (efter lyckade DB-steg); idempotent städning.
   if (removedFile) await removeStoredFile(companyId, removedFile.stored_name);
 
-  return { deleted: true, [`${kind}_id`]: id, unlinked_documents: unlinked.rowCount ?? 0, removed_file_id: removedFile?.id ?? null };
+  return {
+    deleted: true, [`${kind}_id`]: id, unlinked_documents: unlinked.rowCount ?? 0,
+    removed_file_id: removedFile?.id ?? null, reopened_time_entries: reopenedTimeEntries,
+  };
 }
 
 export const deleteDraftInvoice = (client: PoolClient, companyId: string, userId: string, id: string) =>
