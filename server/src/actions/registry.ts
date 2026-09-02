@@ -33,6 +33,9 @@ import {
   assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
 } from '../services/contracts.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
+import {
+  approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
+} from '../services/timeProposals.js';
 import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
 import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
@@ -1265,6 +1268,86 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ link_id: UuidSchema }).strict(),
     handler: (ctx, i: { link_id: string }) =>
       removeTimeEntryLink(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  // -------------------------------------------------------------------------
+  // Tidsförslag (story 7). Mottagarsidan för det Hermes-skillen i story 8 ska
+  // skriva: ett batchintag som tål att köras om, och ett batchgodkännande som
+  // gör en dag klar på under 30 sekunder. Kontraktet står först och skillen
+  // rättar sig efter det — ett intag vars form uppfinns av avsändaren ändras
+  // varje gång avsändaren ändrar sig.
+  //
+  // Båda är `write`: ett förslag är ett utkast, inte pengar, och spärren mot
+  // att det blir pengar sitter i statusen (`forslag` kan aldrig faktureras) och
+  // i att godkännandet kräver en människa i vyn. Att lägga dem i
+  // godkännandekön hade betytt att varje natt-batch krävde ett klick för att
+  // ens få SYNAS i kön — en kö framför kön.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'propose_time_entries',
+    title: 'Ta emot AI-föreslagen tid (batch)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        events: z
+          .array(
+            z.object({
+              // Uppdraget som vårt id ELLER som en naturlig nyckel. Ingen träff
+              // på hinten betyder Osorterat, aldrig ett avvisande: arbetet ska
+              // inte försvinna för att systemet inte kände igen ett kundnamn.
+              project_id: UuidSchema.optional(),
+              project_hint: safeText(200).optional(),
+              contract_part_id: UuidSchema.optional(),
+              part_hint: safeText(200).optional(),
+              work_date: IsoDateSchema,
+              // 0 tillåtet (rådslaget 1/9): ett mailspår säger ATT något hände,
+              // inte hur länge. Nollan kan aldrig godkännas — se KRAV-6.
+              minutes: z.number().int().min(0).max(1440),
+              description: safeText(300),
+              source: z.enum(PROPOSAL_SOURCES),
+              // Formellt frivillig, i praktiken det som gör intaget körbart om.
+              source_ref: safeText(300).optional(),
+              uncertainty: z.enum(PROPOSAL_UNCERTAINTIES).optional(),
+              // EN mening om varför. ALDRIG ordagrann mailtext eller tredje
+              // parts namn — avsändarregeln står i docs/crm/API_KONTRAKT.md.
+              reasoning: safeText(500).optional(),
+            }).strict(),
+          )
+          .min(1)
+          .max(500),
+      })
+      .strict(),
+    handler: (ctx, i) =>
+      proposeTimeEntries(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events),
+  }),
+  def({
+    name: 'approve_time_entries',
+    title: 'Godkänn, justera eller ignorera tidsförslag (batch)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        ids: z.array(UuidSchema).min(1).max(500),
+        // Gäller alla id:n som inte har en egen post i `per_id`.
+        status: z.enum(APPROVAL_STATUSES).optional(),
+        adjustment_reason: safeText(300).optional(),
+        // Per id, för raderna som avviker från batchen. Bara `id` krävs.
+        per_id: z
+          .array(
+            z.object({
+              id: UuidSchema,
+              status: z.enum(APPROVAL_STATUSES).optional(),
+              billable_minutes: z.number().int().min(0).max(1440).optional(),
+              adjustment_reason: safeText(300).optional(),
+              contract_part_id: UuidSchema.optional(),
+              // Flyttar posten till rätt uppdrag FÖRE godkännandet. Det är den
+              // enda vägen ut ur Osorterat (409 unsorted_project annars).
+              project_id: UuidSchema.optional(),
+            }).strict(),
+          )
+          .max(500)
+          .optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => approveTimeEntries(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtal och avtalsdelar (story 3). Avtalet är det kunden känner igen: faser

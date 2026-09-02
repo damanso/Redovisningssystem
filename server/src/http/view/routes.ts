@@ -38,6 +38,7 @@ import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPer
   slaIhopPersoner, stadbild, type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
 import { contractUsageReport, unbilledTimeReport, type CapStatusLabel } from '../../services/timeReports.js';
+import { OSORTERAT } from '../../services/timeProposals.js';
 import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
@@ -1893,6 +1894,294 @@ function underlagslista(companyId: string, entryId: string, lankar: TimeEntryLin
   </li>`)}</ul>`;
 }
 
+// ---------------------------------------------------------------------------
+// Förslagskön: /tid/forslag (story 7, PRD §4 F4–F5).
+//
+// Vad sidan är till för: en dag ska klaras på under 30 sekunder. Allt annat på
+// ytan följer av det.
+//
+//  1. **Ingen ny komponent.** Ett tidsförslag är samma sorts sak som ett
+//     förslag i Att göra — en maskin påstår något, en människa avgör — så den
+//     bär husets `.ai-card` med `aiMarkning()` (AI-förordningen art. 50 är ett
+//     KRAV på maskinskapat innehåll, inte dekor), `.andring` för registrerat →
+//     debiterbart, `.ai-raw` för motiveringen och `.ai-actions` för knapparna.
+//     Igenkänningen är det som gör handgreppet snabbt; en egen "förslagsvidget"
+//     hade blivit ett andra formspråk i samma hus. Noll ny CSS.
+//  2. **En rad = ett formulär, fyra knappar.** Uppdrag, avtalsdel, debiterbar
+//     tid och orsak ligger i SAMMA formulär som knapparna, så att ett byte och
+//     ett godkännande blir ETT anrop (KRAV-7: `project_id` i samma anrop
+//     flyttar och godkänner). Knapparna är namngivna submit-knappar — ren
+//     HTML, ingen JavaScript, inget sidbyte däremellan.
+//  3. **Kön grindar aldrig fakturan** (rådslaget 1/9) och förfaller aldrig:
+//     äldre dagar ligger kvar längst ned, nyaste dagen överst. Ingen
+//     ålderströskel — ett förslag som försvinner av sig självt är arbete som
+//     försvinner av sig självt.
+//  4. **Det som INTE går att godkänna säger varför, på raden.** En post i
+//     Osorterat, en post utan avtalsdel på ett uppdrag som kräver en, en
+//     0-minuters mailmarkering: alla tre skulle mötas av ett fel efter
+//     klicket. I stället står villkoret före klicket och dagsknappen räknar
+//     bara de poster som verkligen går igenom — och SÄGER hur många den hoppar
+//     över. En knapp som lovar något systemet kommer att neka är en fälla.
+// ---------------------------------------------------------------------------
+
+interface Forslagsrad {
+  id: string; project_id: string; project_number: number; project_name: string;
+  work_date: string; description: string; minutes: number; billable_minutes: number;
+  contract_part_id: string | null; source: string; source_ref: string | null;
+  uncertainty: string | null; reasoning: string | null; overlaps_manual: boolean;
+  duration_hhmm: string; billable_duration_hhmm: string;
+}
+
+const FORSLAGSKALLA: Record<string, string> = {
+  kalender: 'Kalender', mail: 'Mail', harledd: 'Härledd', manuell: 'Manuell',
+};
+
+/**
+ * Osäkerheten som chip. `hog` osäkerhet är det som ska dra blicken — inte
+ * `lag`, som bara är ett förslag som fungerar. Ikonen bär samma besked som
+ * färgen, för den som inte ser färgen.
+ */
+function osakerhetChip(v: string | null): Raw | '' {
+  if (v === 'hog') return chip('Osäkert förslag', 'neg', '!');
+  if (v === 'medel') return chip('Viss osäkerhet', 'warn', '?');
+  if (v === 'lag') return chip('Säkert förslag', 'ok', '✓');
+  return '';
+}
+
+/** Dagen som människan säger den: "torsdag 3 september". */
+function dagrubrik(iso: string): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    weekday: 'long', day: 'numeric', month: 'long',
+  }).format(new Date(`${iso}T12:00:00Z`));
+}
+
+viewRouter.get('/c/:companyId/tid/forslag', pageFor('tid/forslag', 'Tidsförslag', async (client, companyId, req) => {
+  const rader = (await listTimeEntries(client, companyId, { status: 'forslag' })) as unknown as Forslagsrad[];
+  const snabb = await snabbunderlag(client, companyId, null);
+  const back = `/app/c/${companyId}/tid/forslag`;
+
+  // Dagarna i den ordning listTimeEntries gav dem: work_date DESC. Nyaste
+  // dagen överst, äldre ligger kvar under — de förfaller aldrig.
+  const dagar: { dag: string; rader: Forslagsrad[] }[] = [];
+  for (const r of rader) {
+    const sist = dagar[dagar.length - 1];
+    if (sist && sist.dag === r.work_date) sist.rader.push(r);
+    else dagar.push({ dag: r.work_date, rader: [r] });
+  }
+
+  const delarFor = (projectId: string) => snabb.delar.filter((d) => d.project_id === projectId);
+  const iOsorterat = (r: Forslagsrad) => r.project_name.toLowerCase() === OSORTERAT.toLowerCase();
+  /** Varför raden inte kan godkännas som den står — eller null när den kan. */
+  const hinder = (r: Forslagsrad): string | null => {
+    if (iOsorterat(r)) return 'Ligger i Osorterat — välj uppdrag i listan innan du godkänner.';
+    if (r.minutes <= 0) return 'Saknar tid — mailspår säger att något hände, inte hur länge.';
+    if (r.contract_part_id === null && delarFor(r.project_id).length > 0) {
+      return 'Uppdraget har avtalsdelar — välj den som arbetet hör till.';
+    }
+    return null;
+  };
+
+  const projektval = (r: Forslagsrad): Raw => {
+    const finns = snabb.projekt.some((p) => p.id === r.project_id);
+    return html`<label class="field" style="margin:0;flex:1 1 190px"><span>Uppdrag</span>
+      <select name="project_id">
+        ${finns ? '' : html`<option value="${r.project_id}" selected>${r.project_number} · ${r.project_name}</option>`}
+        ${snabb.projekt.map((p) => html`<option value="${p.id}"${p.id === r.project_id ? html` selected` : ''}>${p.number} · ${p.name}</option>`)}
+      </select></label>`;
+  };
+
+  const delval = (r: Forslagsrad): Raw => {
+    const delar = delarFor(r.project_id);
+    if (delar.length === 0) {
+      return html`<p class="muted" style="margin:0;flex:1 1 190px;font-size:12.5px;align-self:center">Uppdraget har inga avtalsdelar.</p>`;
+    }
+    return html`<label class="field" style="margin:0;flex:1 1 190px"><span>Avtalsdel</span>
+      <select name="contract_part_id">
+        <option value="">Välj avtalsdel …</option>
+        ${delar.map((d) => html`<option value="${d.part_id}"${d.part_id === r.contract_part_id ? html` selected` : ''}>${d.label}</option>`)}
+      </select></label>`;
+  };
+
+  return html`<div class="page-head"><div>${eyebrow('Tid')}<h1>Tidsförslag</h1>
+      <p class="lede">${
+        rader.length === 0
+          ? html`Kalendern och mailen föreslår tid här. Ingenting en maskin skrivit blir fakturerbar tid utan att du sagt ja.`
+          : html`<strong>${String(dagar.length)} ${dagar.length === 1 ? 'obehandlad dag' : 'obehandlade dagar'}</strong>
+              · ${String(rader.length)} ${rader.length === 1 ? 'förslag' : 'förslag'}. Nyaste dagen överst; äldre ligger kvar tills du tagit ställning — ett förslag förfaller aldrig.
+              Kön hindrar aldrig en faktura: det som inte är godkänt räknas helt enkelt inte med.`
+      }</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/tid">Ofakturerad tid →</a></div></div>
+    ${tidsnotiser(req)}
+    ${
+      dagar.length === 0
+        ? html`<div class="empty"><div class="big">Inga förslag väntar</div>Allt som föreslagits är avgjort. Nya förslag från kalendern och mailen dyker upp här, grupperade per dag.</div>`
+        : dagar.map(({ dag, rader: dagensRader }) => {
+            const klara = dagensRader.filter((r) => hinder(r) === null);
+            const stoppade = dagensRader.length - klara.length;
+            return html`
+              <h2 style="margin:24px 0 4px">${dagrubrik(dag)} <span class="code" style="font-size:13px;font-weight:400">${dag}</span>
+                <span class="muted" style="font-size:13.5px;font-weight:400">· ${String(dagensRader.length)} ${dagensRader.length === 1 ? 'förslag' : 'förslag'}</span></h2>
+              ${/* Hela dagen: aldrig förvald, alltid ett eget bekräftande klick.
+                   Följden står skriven FÖRE klicket, och antalet är de poster
+                   som verkligen går igenom — inte dagens rader. */ ''}
+              ${klara.length === 0
+                ? html`<p class="muted" style="margin:0 0 10px;font-size:13px">Ingen av dagens poster kan godkännas som den står — se raderna nedan.</p>`
+                : html`<details class="loftesform" style="margin:0 0 10px">
+                    <summary>Godkänn hela dagen (${String(klara.length)} ${klara.length === 1 ? 'post' : 'poster'}) …</summary>
+                    <form method="post" action="/app/c/${companyId}/tid/forslag/dag">
+                      <input type="hidden" name="back" value="${back}">
+                      <input type="hidden" name="ids" value="${klara.map((r) => r.id).join(',')}">
+                      <p class="hint" style="margin:0">Alla ${String(klara.length)} godkänns med den tid som står — de blir fakturerbar tid direkt.${
+                        stoppade > 0
+                          ? html` ${String(stoppade)} ${stoppade === 1 ? 'post' : 'poster'} lämnas kvar: ${stoppade === 1 ? 'den' : 'de'} behöver uppdrag, avtalsdel eller tid först.`
+                          : ''
+                      }</p>
+                      <button class="btn btn--primary btn--sm" type="submit">✓ Godkänn ${String(klara.length)} ${klara.length === 1 ? 'post' : 'poster'}</button>
+                    </form>
+                  </details>`}
+              ${dagensRader.map((r) => {
+                const spar = hinder(r);
+                const justerad = r.billable_minutes !== r.minutes;
+                return html`<article class="ai-card" aria-labelledby="f-${r.id}">
+                  <div class="ai-card__head">
+                    ${aiMarkning()}
+                    <span class="ai-card__title">Uppdrag ${r.project_number} · ${entityLink(companyId, 'project', r.project_id, r.project_name)}</span>
+                    ${osakerhetChip(r.uncertainty)}
+                    ${r.overlaps_manual ? chip('Redan registrerad?', 'neg', '!') : ''}
+                    <span class="code" style="margin-left:auto">${Object.hasOwn(FORSLAGSKALLA, r.source) ? FORSLAGSKALLA[r.source]! : r.source}</span>
+                  </div>
+                  <div class="ai-card__subject" id="f-${r.id}"><strong>${r.description}</strong></div>
+                  ${/* Registrerat → debiterbart, samma komponent som Att göra
+                       använder för före → efter. Skiljer de sig är det just det
+                       man behöver se innan man säger ja. */ ''}
+                  <div class="andring">
+                    <span class="${justerad ? 'andring__f' : 'andring__t'}">${tidHhMm(r.minutes)} registrerat</span>
+                    ${justerad
+                      ? html`<span class="andring__p" aria-hidden="true">→</span>
+                          <span class="andring__t">${tidHhMm(r.billable_minutes)} debiterbart</span>`
+                      : ''}
+                    ${r.overlaps_manual
+                      ? html`<span class="muted" style="font-size:12.5px">Det finns redan manuellt registrerad tid på uppdraget den här dagen — kontrollera att det inte är samma arbete.</span>`
+                      : ''}
+                  </div>
+                  ${spar ? html`<div class="ai-card__why" style="color:var(--neg)">${spar}</div>` : ''}
+                  ${r.reasoning || r.source_ref
+                    ? html`<details class="ai-raw">
+                        <summary>Varför föreslogs den här?</summary>
+                        <div class="ai-fields">
+                          ${r.reasoning ? html`<div class="ai-field"><span class="l">Motivering</span><span class="v">${r.reasoning}</span></div>` : ''}
+                          ${r.source_ref ? html`<div class="ai-field"><span class="l">Källa</span><span class="v code">${r.source_ref}</span></div>` : ''}
+                        </div>
+                      </details>`
+                    : ''}
+                  <form method="post" action="/app/c/${companyId}/tid/forslag/rad" style="margin:0">
+                    <input type="hidden" name="back" value="${back}">
+                    <input type="hidden" name="id" value="${r.id}">
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:6px 16px 10px">
+                      ${projektval(r)}
+                      ${delval(r)}
+                      ${tidsfalt(`deb-${r.id}`, 'billable_duration', 'Debiterbar tid', r.billable_duration_hhmm, { bredd: '150px', hjalpId: `deb-${r.id}` })}
+                      <label class="field" style="margin:0;flex:2 1 220px"><span>Orsak
+                          <span class="muted" style="font-weight:400">· krävs för justera och faktureras ej</span></span>
+                        <input type="text" name="adjustment_reason" maxlength="300"
+                          placeholder="T.ex. 30 min var intern administration"></label>
+                      ${tidsregeln(`deb-${r.id}`)}
+                    </div>
+                    <div class="ai-actions">
+                      ${spar === null
+                        ? html`<button class="btn btn--primary btn--sm" type="submit" name="atgard" value="godkann">✓ Godkänn</button>
+                            <button class="btn btn--sm" type="submit" name="atgard" value="justera">± Justera</button>`
+                        : r.minutes <= 0
+                          ? html`<a class="btn btn--sm" href="/app/c/${companyId}/tid/${r.id}">Sätt tid →</a>`
+                          : html`<button class="btn btn--primary btn--sm" type="submit" name="atgard" value="godkann">✓ Godkänn</button>
+                            <button class="btn btn--sm" type="submit" name="atgard" value="justera">± Justera</button>`}
+                      <button class="btn btn--ghost btn--sm" type="submit" name="atgard" value="ignorera">Faktureras ej</button>
+                      <button class="btn btn--ghost btn--sm" type="submit" name="atgard" value="del">Byt avtalsdel</button>
+                      <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/tid/${r.id}">Öppna posten →</a>
+                      <span class="hint">Du bestämmer — varje beslut loggas i revisionsloggen.</span>
+                    </div>
+                  </form>
+                </article>`;
+              })}`;
+          })
+    }`;
+}));
+
+/**
+ * Debiterbar tid ur ett tidsfält. Noll är den ENDA giltiga nollan (en post som
+ * inte ska faktureras) och parsern tar avsiktligt inte emot den, så den sägs ut
+ * här — på ett ställe, för både rättelsesidan och förslagskön.
+ */
+function debiterbaraUrText(text: string | undefined): number | undefined {
+  if (text === undefined) return undefined;
+  return /^0+([:.,]0+)?$/.test(text) ? 0 : parseDuration(text);
+}
+
+viewRouter.post('/c/:companyId/tid/forslag/rad', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const id = UuidSchema.parse(b.id);
+  const back = backToCrm(req, companyId, 'tid/forslag');
+  const atgard = fritext(b, 'atgard');
+  const del = fritext(b, 'contract_part_id');
+  const projekt = fritext(b, 'project_id');
+  const skal = fritext(b, 'adjustment_reason');
+
+  // "Byt avtalsdel" ändrar bara klassificeringen och lämnar posten som
+  // förslag — den går därför genom update_time_entry, inte genom
+  // godkännandet. Att låta den passera approve_time_entries hade betytt att
+  // ett byte i tysthet också blev ett ja.
+  if (atgard === 'del') {
+    await runViewAction(req, res, companyId, 'update_time_entry', {
+      time_entry_id: id, ...(del ? { contract_part_id: del } : {}),
+    }, back);
+    return;
+  }
+
+  let debiterbara: number | undefined;
+  try {
+    debiterbara = atgard === 'justera' ? debiterbaraUrText(fritext(b, 'billable_duration')) : undefined;
+  } catch (err) {
+    if (err instanceof BadRequestError) {
+      res.redirect(`${back}?fel=${encodeURIComponent(`Debiterbar tid: ${err.message}`)}`);
+      return;
+    }
+    throw err;
+  }
+
+  const status = atgard === 'ignorera' ? 'ignorerad' : atgard === 'justera' ? 'justerad' : 'godkand';
+  await korTidsAction(req, res, companyId, 'approve_time_entries', {
+    ids: [id],
+    per_id: [{
+      id, status,
+      ...(debiterbara === undefined ? {} : { billable_minutes: debiterbara }),
+      ...(skal ? { adjustment_reason: skal } : {}),
+      ...(del ? { contract_part_id: del } : {}),
+      ...(projekt ? { project_id: projekt } : {}),
+    }],
+  }, back, (svar) => (svar.ignorerad === 1
+    ? 'Posten faktureras inte — den ligger kvar som nedlagd tid.'
+    : svar.justerad === 1
+      ? 'Justerat och godkänt — den debiterbara tiden är den du skrev.'
+      : `Godkänt${svar.moved === 1 ? ' och flyttat till rätt uppdrag' : ''} — posten är nu fakturerbar tid.`));
+}));
+
+viewRouter.post('/c/:companyId/tid/forslag/dag', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const back = backToCrm(req, companyId, 'tid/forslag');
+  const ids = String(b.ids ?? '').split(',').filter(Boolean);
+  if (ids.length === 0) {
+    res.redirect(`${back}?fel=${encodeURIComponent('Ingen post att godkänna — dagen kan ha hanterats i ett annat fönster.')}`);
+    return;
+  }
+  await korTidsAction(req, res, companyId, 'approve_time_entries', {
+    ids: ids.map((v) => UuidSchema.parse(v)), status: 'godkand',
+  }, back, (svar) => `Godkände ${String(svar.godkand ?? 0)} poster — de är nu fakturerbar tid.`);
+}));
+
 viewRouter.get('/c/:companyId/tid/:entryId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -2079,15 +2368,11 @@ viewRouter.post('/c/:companyId/tid/:entryId/spara', page(async (req, res) => {
   const back = backToCrm(req, companyId, `tid/${entryId}`);
   const status = fritext(b, 'status');
   // Debiterbar tid skrivs i samma språk som den registrerade — två tidsfält där
-  // det ena tar "1,5" och det andra kräver "90" hade varit en fälla. Noll är den
-  // enda giltiga nollan (en post som inte ska faktureras) och parsern tar
-  // avsiktligt inte emot den, så den hanteras här och sägs ut.
-  const debiterbarText = fritext(b, 'billable_duration');
+  // det ena tar "1,5" och det andra kräver "90" hade varit en fälla. Tolkningen
+  // (inklusive nollan) bor i debiterbaraUrText, som förslagskön använder likaså.
   let billable: number | undefined;
   try {
-    billable = debiterbarText === undefined || status === 'ignorerad'
-      ? undefined
-      : /^0+([:.,]0+)?$/.test(debiterbarText) ? 0 : parseDuration(debiterbarText);
+    billable = status === 'ignorerad' ? undefined : debiterbaraUrText(fritext(b, 'billable_duration'));
   } catch (err) {
     if (err instanceof BadRequestError) {
       res.redirect(`${back}?fel=${encodeURIComponent(`Debiterbar tid: ${err.message}`)}`);

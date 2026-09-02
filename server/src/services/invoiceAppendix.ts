@@ -259,8 +259,13 @@ export async function lasTidposterTillFaktura(
   client: PoolClient, companyId: string, invoiceId: string, entries: ValdTidpost[],
 ): Promise<void> {
   const last = await client.query(
+    // `reasoning = NULL` i SAMMA sats som låset (KRAV-10, story 7): AI:ts
+    // motivering behövdes för att bedöma förslaget. När posten ligger på en
+    // skickad faktura är bedömningen gjord och underlaget är fakturan — då ska
+    // motiveringen inte ligga kvar i sju år. `source_ref` behålls som spår.
     `UPDATE time_entries
-        SET status = 'fakturerad', invoiced = true, billable = true, invoice_id = $3
+        SET status = 'fakturerad', invoiced = true, billable = true, invoice_id = $3,
+            reasoning = NULL
       WHERE company_id = $1 AND id = ANY($2::uuid[])
         AND invoice_id IS NULL AND status IN ('godkand', 'justerad')`,
     [companyId, entries.map((e) => e.id), invoiceId],

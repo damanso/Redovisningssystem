@@ -273,6 +273,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
       ['payroll', 'Lön'],
       ['projects', 'Projekt'],
       ['tid', 'Tid'],
+      ['tid/forslag', 'Tidsförslag'],
     ],
   },
   {

@@ -13,6 +13,7 @@ import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance,
   type ProvenanceSource, type ProvenanceWrite,
 } from './crmProvenance.js';
+import { gallraForslagsResonemang } from './timeProposals.js';
 
 export type SourceSystem = 'gmail' | 'calendar' | 'linear' | 'manual';
 export type OrganizationStatus = 'prospect' | 'customer' | 'partner' | 'former' | 'archived';
@@ -960,12 +961,20 @@ export async function setRetention(
  * att det ligger för sig.
  *
  * Auditraderna blir kvar (loggen är append-only) men bär bara id:n och antal.
+ *
+ * Sedan story 7 gallrar den dessutom AI-motiveringen på ignorerade tidsförslag
+ * äldre än 90 dagar (`gallraForslagsResonemang`). Det är ett annat schema och
+ * en annan domän, men samma mekanism och samma godkännandekrav — och en egen
+ * gallringsaction bredvid den här hade betytt två ställen att komma ihåg att
+ * köra. Perioden är fast (90 dagar) och styrs inte av `older_than_months`:
+ * relationsdatans period är ett verksamhetsbeslut, en AI-motivering är ett
+ * arbetsmaterial.
  */
 export async function purgeCrmData(
   client: PoolClient, companyId: string, userId: string, opts: { older_than_months?: number } = {},
 ): Promise<{
   interactions_deleted: number; commitments_deleted: number;
-  source_refs_cleared: number; older_than_months: number;
+  source_refs_cleared: number; time_entry_reasoning_cleared: number; older_than_months: number;
 }> {
   const policy = await getRetention(client, companyId);
   const months = opts.older_than_months ?? policy.retention_months;
@@ -1000,17 +1009,20 @@ export async function purgeCrmData(
                         WHERE c.company_id = fp.company_id AND c.source_ref = fp.source_ref)`,
     [companyId],
   );
+  const resonemang = await gallraForslagsResonemang(client, companyId);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.purged',
     details: {
       older_than_months: months, interactions: interactions.rowCount ?? 0,
       commitments: commitments.rowCount ?? 0, source_refs_cleared: refs.rowCount ?? 0,
+      time_entry_reasoning_cleared: resonemang,
     },
   });
   return {
     interactions_deleted: interactions.rowCount ?? 0,
     commitments_deleted: commitments.rowCount ?? 0,
     source_refs_cleared: refs.rowCount ?? 0,
+    time_entry_reasoning_cleared: resonemang,
     older_than_months: months,
   };
 }

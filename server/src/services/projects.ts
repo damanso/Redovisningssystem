@@ -557,6 +557,10 @@ export async function listTimeEntries(
     `SELECT t.id, t.project_id, p.number AS project_number, p.name AS project_name,
             t.work_date::text, t.description, t.minutes, t.billable_minutes, t.status,
             t.source, t.source_ref, t.invoice_id, t.adjustment_reason, t.contract_part_id,
+            -- Förslagets tre fält (0066). De står här och inte i en egen fråga
+            -- för kön: en andra läsning av samma tabell hade blivit ett andra
+            -- svar på "vad står på posten?".
+            t.uncertainty, t.reasoning, t.overlaps_manual,
             t.approved_by, t.approved_at::text, t.hourly_rate_ore, t.cost_rate_ore,
             t.performed_by_actor_id, a.name AS performed_by
        FROM time_entries t
