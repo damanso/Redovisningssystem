@@ -447,6 +447,17 @@ Tre regler bär hela funktionen:
   annat uppdrag blir det 400 `contract_part_project_mismatch`. Taxan gäller i
   ordningen **post → avtalsdel → avtal → uppdrag** (den gamla botten post →
   uppdrag är oförändrad för tid utan avtalsdel).
+  - **När kravet prövas i `update_time_entry`** (rättelse 7b): bara när
+    målstatus (`status` i anropet, annars postens nuvarande) är `godkand`
+    eller `justerad` — alltså när tiden blir debiterbar — och posten saknar
+    del både på raden och i indata. Övergång till `ignorerad`, och ändring av
+    `description`/`work_date`/`minutes`/länkar på en post i status `forslag`
+    eller `ignorerad`, kräver **aldrig** avtalsdel; att SÄTTA
+    `contract_part_id` är alltid tillåtet, och en medskickad del prövas alltid
+    mot uppdraget. `log_time` är oförändrad: vid registreringen krävs delen.
+    Utan lättnaden låste sig godkännandekön på det som aldrig ska bli pengar —
+    ett skräpförslag gick varken att ignorera eller texträtta utan att först
+    klassas mot ett tak det inte förbrukar.
 - **Takutfallet efter en sparad post:** är taket bekräftat och förbrukningen
   ≥ 80 % bär svaret `warning { part, used_minutes, used_amount_ore, cap_hours,
   cap_amount_ore, share, over_cap, message }`. Över 100 % säger meddelandet att
@@ -641,6 +652,11 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
     `TILLATNA_BYTEN`, kravet på skäl för `justerad`/`ignorerad`, kravet på
     avtalsdel (400 `contract_part_required`) och låset mot fakturerade poster
     (409 `time_entry_locked`). Inga egna kopior av reglerna.
+  - **Avtalsdelen krävs bara för `godkand`/`justerad`** (rättelse 7b): det är
+    där tiden blir debiterbar. `ignorerad` går alltid, även på ett förslag utan
+    del på ett uppdrag med aktiva delar — annars låser sig kön på det som
+    aldrig ska bli pengar. `contract_part_id` i samma anrop som godkännandet
+    räcker; inget mellansteg krävs.
   - **`godkand`/`justerad` kräver `minutes > 0`** (400 `minutes_required`): en
     0-minuters mailmarkering måste få tid satt på postens egen sida — eller
     ignoreras. Schemats CHECK bär samma regel: noll minuter tillåts bara för
@@ -666,4 +682,5 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   godkännande blir ett enda anrop utan sidbyte. *Godkänn hela dagen* finns per
   dag, är aldrig förvald, kräver sitt eget bekräftande klick och räknar bara de
   poster som verkligen går igenom — resten står kvar med sitt villkor utskrivet
-  på raden. Kön grindar aldrig fakturan.
+  på raden. Villkoret gäller **godkännandet**: *Faktureras ej* går igenom även
+  utan vald avtalsdel (orsak krävs som förut). Kön grindar aldrig fakturan.
