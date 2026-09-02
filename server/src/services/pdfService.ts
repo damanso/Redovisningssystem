@@ -186,7 +186,9 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     const meta: [string, string][] = [];
     if (invoice.ocr) meta.push(['OCR-nummer', invoice.ocr]);
     meta.push(['Fakturadatum', invoice.invoice_date]);
-    meta.push(['Förfallodatum', `${invoice.due_date}${dueDays > 0 ? ` (${dueDays} dagar)` : ''}`]);
+    // "netto" står i husmallen och är den vedertagna svenska formuleringen:
+    // hela beloppet på förfallodagen, ingen kassarabatt.
+    meta.push(['Förfallodatum', `${invoice.due_date}${dueDays > 0 ? ` (${dueDays} dagar netto)` : ''}`]);
     if (invoice.delivery_period) meta.push(['Leveranstidpunkt', invoice.delivery_period]);
     if (paymentTarget) meta.push(['Betalas till', paymentTarget]);
     meta.push(['Fakturanummer', String(invoice.invoice_number).padStart(7, '0')]);
