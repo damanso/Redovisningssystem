@@ -29,6 +29,9 @@ import {
   createProject, createTimeEntry, getProject, listProjects, listTimeEntries, setProjectStatus,
   updateTimeEntry, TIME_ENTRY_STATUSES,
 } from '../services/projects.js';
+import {
+  assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
+} from '../services/contracts.js';
 import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
 import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
@@ -400,20 +403,25 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       exclude_entry_ids: z.array(UuidSchema).max(500).optional(),
       title: safeText(150).optional(),
       preamble: safeText(400).optional(),
-      // Utelämnad = 'per_datum'. 'per_avtalsdel' tas emot av schemat men avvisas
-      // med 400 tills avtalsdelarna finns (story 3) — hellre ett tydligt nej än
-      // en bilaga som tyst har fel form.
+      // Utelämnad = 'per_datum' (formatet kunderna fått, faktura 0000027).
+      // 'per_avtalsdel' ger kategoribilagan ur 0063: en rad per avtalsdel,
+      // utan datum.
       appendix_layout: z.enum(APPENDIX_LAYOUTS).optional(),
+      // Uttalat ja till att fakturera förbi ett BEKRÄFTAT avtalstak. Utan det
+      // svarar faktureringen 409 cap_exceeded; med det skrivs forceringen i
+      // auditloggen. Ett obekräftat eller saknat tak spärrar aldrig.
+      confirm_over_cap: z.boolean().optional(),
     }).strict(),
     handler: (ctx, i: {
       customer_id: string; project_id: string; from: string; to: string; invoice_date: string;
       due_date?: string; reference?: string; our_reference?: string; exclude_entry_ids?: string[];
-      title?: string; preamble?: string; appendix_layout?: AppendixLayout;
+      title?: string; preamble?: string; appendix_layout?: AppendixLayout; confirm_over_cap?: boolean;
     }) => createInvoiceFromTime(ctx.client, ctx.companyId, ctx.userId, {
       customerId: i.customer_id, projectId: i.project_id, from: i.from, to: i.to,
       invoiceDate: i.invoice_date, dueDate: i.due_date, reference: i.reference,
       ourReference: i.our_reference, excludeEntryIds: i.exclude_entry_ids,
       title: i.title, preamble: i.preamble, appendixLayout: i.appendix_layout,
+      confirmOverCap: i.confirm_over_cap,
     }),
   }),
   def({
@@ -1176,6 +1184,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // sig KRÄVS ett skäl — skillnaden ska gå att läsa i efterhand.
         billable_minutes: z.number().int().min(0).max(1440).optional(),
         adjustment_reason: safeText(300).optional(),
+        // Avtalsdelen arbetet hör till (story 3). KRÄVS när uppdraget har
+        // aktiva avtalsdelar (400 contract_part_required) — annars förbrukar
+        // posten inget tak, och ett tak som inte förbrukas varnar aldrig.
+        contract_part_id: UuidSchema.optional(),
       })
       .strict(),
     // ctx.actor avgör statusen: en människas post är godkänd, AI:ts är ett
@@ -1199,6 +1211,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // begripligt 409: låset sätts av faktureringen, aldrig för hand.
         status: z.enum(TIME_ENTRY_STATUSES).optional(),
         adjustment_reason: safeText(300).optional(),
+        contract_part_id: UuidSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
@@ -1218,6 +1231,108 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => listTimeEntries(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Avtal och avtalsdelar (story 3). Avtalet är det kunden känner igen: faser
+  // med egna tak. Uppdraget (projects) är vårt eget arbetsbegrepp och kan inte
+  // bära "Fas 2A: 32 h / 35 200 kr" — det var därför taket kunde passeras utan
+  // att någon sa något (PRD §1 rad 6).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'create_contract',
+    title: 'Skapa avtal på ett uppdrag',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema,
+        // Utelämnad = uppdragets kund. Avtalet är kundens, och att skriva in
+        // den två gånger är att be om två olika svar.
+        customer_id: UuidSchema.optional(),
+        name: safeText(200),
+        signed_date: IsoDateSchema.optional(),
+        payment_terms_days: z.number().int().min(0).max(365).optional(),
+        hourly_rate_ore: OreSchema.optional(),
+        // Avtalshandlingen. Extraktionen ur den byggs senare (story 6).
+        source_file_id: UuidSchema.optional(),
+        notes: safeText(2000).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => createContract(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'update_contract',
+    title: 'Ändra avtal',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        name: safeText(200).optional(),
+        customer_id: UuidSchema.optional(),
+        signed_date: IsoDateSchema.optional(),
+        payment_terms_days: z.number().int().min(0).max(365).optional(),
+        hourly_rate_ore: OreSchema.optional(),
+        source_file_id: UuidSchema.optional(),
+        notes: safeText(2000).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => updateContract(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'upsert_contract_part',
+    title: 'Skapa eller ändra avtalsdel (fas med tak)',
+    sensitivity: 'write',
+    // Nyckeln är (avtal, kod, valid_from): samma valid_from ändrar den
+    // befintliga raden, ett SENARE valid_from lägger en ny version bredvid den
+    // gamla. Ett tilläggsavtal skriver aldrig över det tak som gällde före —
+    // taket i juli ska gå att läsa i oktober.
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        code: safeText(40),
+        // Krävs bara när delen skapas; en ändring behåller det som står.
+        name: safeText(200).optional(),
+        description: safeText(2000).optional(),
+        parent_part_id: UuidSchema.optional(),
+        billable: z.boolean().optional(),
+        hourly_rate_ore: OreSchema.optional(),
+        // Taket i TIMMAR (avtalet skriver "32 h") respektive i ÖREN.
+        cap_hours: z.number().nonnegative().max(999_999.99).optional(),
+        cap_amount_ore: OreSchema.optional(),
+        // Default false: ett tak som ingen läst i avtalshandlingen varnar
+        // aldrig och spärrar aldrig — det redovisas som 'vet ej'.
+        cap_confirmed: z.boolean().optional(),
+        valid_from: IsoDateSchema.optional(),
+        sort_order: z.number().int().min(0).max(10_000).optional(),
+        active: z.boolean().optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'list_contracts',
+    title: 'Lista avtal med delar och förbrukning',
+    sensitivity: 'read',
+    inputSchema: z.object({ project_id: UuidSchema.optional(), contract_id: UuidSchema.optional() }).strict(),
+    handler: (ctx, i) => listContracts(ctx.client, ctx.companyId, i as never),
+  }),
+  def({
+    name: 'get_contract_usage',
+    title: 'Förbrukning mot avtalets tak, per del',
+    sensitivity: 'read',
+    inputSchema: z.object({ contract_id: UuidSchema }).strict(),
+    handler: (ctx, i: { contract_id: string }) => getContractUsage(ctx.client, ctx.companyId, i.contract_id),
+  }),
+  def({
+    name: 'assign_contract_part',
+    title: 'Klassa tidpost på avtalsdel',
+    // write, och tillåten även på en FAKTURERAD post: klassificeringen ändrar
+    // varken belopp, minuter eller låset till fakturan. Allt annat på en
+    // fakturerad post är fortsatt låst (update_time_entry ger 409). Utan
+    // undantaget hade juliposterna aldrig gått att hänföra till en avtalsdel,
+    // och takbevakningen börjat räkna från noll mitt i ett avtal.
+    sensitivity: 'write',
+    inputSchema: z.object({ time_entry_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
+    handler: (ctx, i) => assignContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   def({
     name: 'set_work_actor_user',

@@ -171,7 +171,11 @@ describe('create_invoice_from_time: ett anrop, en transaktion', () => {
     expect(fore.some((f) => f.id === fakturaId)).toBe(true);
   });
 
-  it("'per_avtalsdel' avvisas tills avtalsdelarna finns (story 3)", async () => {
+  it("'per_avtalsdel' ger kategoribilagan utan datum (story 3)", async () => {
+    // Uppdraget har inga avtalsdelar: bilagan blir ändå en KATEGORIBILAGA utan
+    // datum — det är formen som väljs, inte klassificeringen. Tid utan
+    // avtalsdel står under uppdragets namn (se avtalsdelar.test.ts för hur
+    // 'Övrigt' skrivs ut när det finns delar att stå bredvid).
     const projektB = await nyttUppdrag('Fas 3 — avtalsdelar');
     await loggaTid(projektB, { work_date: '2026-11-05', minutes: 60 });
     const res = await act('create_invoice_from_time', {
@@ -179,8 +183,14 @@ describe('create_invoice_from_time: ett anrop, en transaktion', () => {
       from: '2026-11-01', to: '2026-11-30', invoice_date: '2026-11-30',
       appendix_layout: 'per_avtalsdel',
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(res.body.error).toBe('unsupported_appendix_layout');
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const bilaga = await act('get_invoice_appendix', {
+      invoice_id: (res.body.result.invoice as { id: string }).id,
+    });
+    expect(bilaga.body.result.kind).toBe('category');
+    const rader = bilaga.body.result.rows as Record<string, unknown>[];
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ entry_date: null, description: 'Fas 3 — avtalsdelar', minutes: 60 });
   });
 
   it('poster med olika taxa får varsin rad — aldrig ett snitt', async () => {

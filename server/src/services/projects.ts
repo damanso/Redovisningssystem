@@ -8,6 +8,7 @@ import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { resolveTimeEntryActor } from './workActors.js';
+import { avtalsdelForProjekt, harAktivaAvtalsdelar, takvarningEfterSparad } from './contracts.js';
 
 // Tidspostens livscykel (PRD_TIDSRAPPORTERING §3.1). Registrerad tid och
 // fakturerad tid är inte samma sak: `minutes` är vad som hände,
@@ -87,6 +88,8 @@ export interface CreateTimeEntryInput {
   billable_minutes?: number;
   /** Varför debiterbar tid skiljer sig från registrerad. */
   adjustment_reason?: string;
+  /** Avtalsdelen arbetet hör till. Krävs när uppdraget har aktiva avtalsdelar. */
+  contract_part_id?: string;
 }
 
 export interface UpdateTimeEntryInput {
@@ -97,6 +100,7 @@ export interface UpdateTimeEntryInput {
   description?: string;
   status?: TimeEntryStatus;
   adjustment_reason?: string;
+  contract_part_id?: string;
 }
 
 export interface ListTimeEntriesFilter {
@@ -253,6 +257,27 @@ export async function getProject(
   };
 }
 
+/**
+ * Avtalsdelen en tidpost ska bära (KRAV-7). Har uppdraget aktiva avtalsdelar är
+ * klassificeringen obligatorisk — PRD F1:s minimum är uppdrag OCH avtalsdel.
+ * Har det inga är fältet meningslöst och kravet finns inte: alla uppdrag som
+ * fanns före story 3 fortsätter fungera precis som förut.
+ */
+async function avtalsdelForTidpost(
+  client: PoolClient, companyId: string, projectId: string, contractPartId: string | undefined,
+): Promise<string | null> {
+  if (contractPartId) {
+    return (await avtalsdelForProjekt(client, companyId, projectId, contractPartId)).id;
+  }
+  if (await harAktivaAvtalsdelar(client, companyId, projectId)) {
+    throw new BadRequestError(
+      'contract_part_required',
+      'uppdraget har avtalsdelar — ange contract_part_id så att tiden räknas mot rätt tak',
+    );
+  }
+  return null;
+}
+
 export async function createTimeEntry(
   client: PoolClient, companyId: string, userId: string, skrivenAv: Actor, input: CreateTimeEntryInput,
 ): Promise<Record<string, unknown>> {
@@ -262,6 +287,12 @@ export async function createTimeEntry(
   if (!p.rows[0]) throw new NotFoundError('project');
   if (p.rows[0].status === 'closed') throw new BadRequestError('project_closed', 'projektet är stängt');
   assertMinuter(input.minutes);
+
+  // Avtalsdelen (story 3): finns den på uppdraget KRÄVS klassificeringen redan
+  // vid registreringen. Att låta posten ligga oklassad "tills vidare" är hur
+  // Fas 2A kunde passera sitt tak — en post utan del förbrukar inget tak, och
+  // ett tak som inte förbrukas varnar aldrig.
+  const del = await avtalsdelForTidpost(client, companyId, input.project_id, input.contract_part_id);
 
   // Statusen vid registreringen är en fråga om vem som påstår något, inte om
   // behörighet: en människa som skriver in sin tid har godkänt den i samma
@@ -306,24 +337,32 @@ export async function createTimeEntry(
   const row = await client.query<{ id: string }>(
     `INSERT INTO time_entries (company_id, project_id, work_date, minutes, description, hourly_rate_ore, billable,
                                performed_by_actor_id, cost_rate_ore, created_by,
-                               status, billable_minutes, adjustment_reason, approved_by, approved_at, invoiced)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+                               status, billable_minutes, adjustment_reason, approved_by, approved_at, invoiced,
+                               contract_part_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
     [companyId, input.project_id, input.work_date, input.minutes, input.description,
       input.hourly_rate_ore ?? null, speglat.billable, actor.id, costRate, userId,
       status, debiterbara, input.adjustment_reason ?? null,
-      godkand ? userId : null, godkand ? new Date().toISOString() : null, speglat.invoiced],
+      godkand ? userId : null, godkand ? new Date().toISOString() : null, speglat.invoiced, del],
   );
   const id = row.rows[0]!.id;
   await writeAudit(client, {
     companyId, userId, action: 'time_entry.created', entityType: 'time_entry', entityId: id,
     details: {
       project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara,
-      status, actor: skrivenAv, performed_by: actor.id,
+      status, actor: skrivenAv, performed_by: actor.id, contract_part_id: del,
     },
   });
+  // Takutfallet räknas EFTER att posten är skriven, och bara som ett besked:
+  // registreringen spärras aldrig (rådslaget 1/9). Tid som är arbetad ska
+  // alltid gå att skriva ner — ett system som vägrar ta emot verkligheten får
+  // tillbaka den i ett kalkylark.
+  const warning = await takvarningEfterSparad(client, companyId, userId, del, id);
   return {
     id, project_id: input.project_id, minutes: input.minutes, billable_minutes: debiterbara, status,
     performed_by_actor_id: actor.id, performed_by_name: actor.name, cost_rate_ore: costRate,
+    contract_part_id: del,
+    ...(warning ? { warning } : {}),
   };
 }
 
@@ -337,6 +376,7 @@ const TIME_ENTRY_UPDATE: Readonly<Record<string, string>> = {
   adjustment_reason: 'adjustment_reason',
   approved_by: 'approved_by',
   approved_at: 'approved_at',
+  contract_part_id: 'contract_part_id',
   // Speglingarna (se speglingar()) — skrivs i samma UPDATE som statusen.
   billable: 'billable',
   invoiced: 'invoiced',
@@ -344,11 +384,13 @@ const TIME_ENTRY_UPDATE: Readonly<Record<string, string>> = {
 
 interface TimeEntryRow {
   id: string;
+  project_id: string;
   status: TimeEntryStatus;
   minutes: number;
   billable_minutes: number;
   adjustment_reason: string | null;
   approved_by: string | null;
+  contract_part_id: string | null;
 }
 
 /**
@@ -367,7 +409,7 @@ export async function updateTimeEntry(
   client: PoolClient, companyId: string, userId: string, input: UpdateTimeEntryInput,
 ): Promise<Record<string, unknown>> {
   const res = await client.query<TimeEntryRow>(
-    `SELECT id, status, minutes, billable_minutes, adjustment_reason, approved_by
+    `SELECT id, project_id, status, minutes, billable_minutes, adjustment_reason, approved_by, contract_part_id
        FROM time_entries WHERE id = $1 AND company_id = $2 FOR UPDATE`,
     [input.time_entry_id, companyId],
   );
@@ -420,6 +462,14 @@ export async function updateTimeEntry(
     );
   }
 
+  // Avtalsdelen: den som skickas med prövas mot uppdraget, den som redan står
+  // på raden räcker. Saknas den helt och uppdraget har avtalsdelar är det samma
+  // krav som vid registreringen — annars vore vägen runt klassificeringen att
+  // skapa posten före avtalet och ändra den efteråt.
+  const del = input.contract_part_id
+    ? await avtalsdelForTidpost(client, companyId, rad.project_id, input.contract_part_id)
+    : rad.contract_part_id ?? await avtalsdelForTidpost(client, companyId, rad.project_id, undefined);
+
   const speglat = speglingar(nyStatus);
   // Godkännandespåret sätts när posten BLIR godkänd (eller justerad-godkänd).
   // En redan godkänd post byter aldrig godkännare för att texten ändras.
@@ -431,6 +481,7 @@ export async function updateTimeEntry(
     billable_minutes: debiterbara,
     status: nyStatus,
     adjustment_reason: skal,
+    contract_part_id: del ?? undefined,
     billable: speglat.billable,
     invoiced: speglat.invoiced,
     ...(nyttGodkannande ? { approved_by: userId, approved_at: new Date().toISOString() } : {}),
@@ -458,10 +509,13 @@ export async function updateTimeEntry(
       fran_minuter: rad.minutes, till_minuter: minuter,
       fran_debiterbara: rad.billable_minutes, till_debiterbara: debiterbara,
       ...(skal ? { skal } : {}),
+      ...(del !== rad.contract_part_id
+        ? { fran_contract_part_id: rad.contract_part_id, till_contract_part_id: del } : {}),
     },
   });
+  const warning = await takvarningEfterSparad(client, companyId, userId, del, input.time_entry_id);
   const efter = await listTimeEntries(client, companyId, { time_entry_id: input.time_entry_id });
-  return efter[0] ?? { id: input.time_entry_id };
+  return { ...(efter[0] ?? { id: input.time_entry_id }), ...(warning ? { warning } : {}) };
 }
 
 export async function listTimeEntries(
@@ -470,7 +524,7 @@ export async function listTimeEntries(
   const res = await client.query(
     `SELECT t.id, t.project_id, p.number AS project_number, p.name AS project_name,
             t.work_date::text, t.description, t.minutes, t.billable_minutes, t.status,
-            t.source, t.source_ref, t.invoice_id, t.adjustment_reason,
+            t.source, t.source_ref, t.invoice_id, t.adjustment_reason, t.contract_part_id,
             t.approved_by, t.approved_at::text, t.hourly_rate_ore, t.cost_rate_ore,
             t.performed_by_actor_id, a.name AS performed_by
        FROM time_entries t

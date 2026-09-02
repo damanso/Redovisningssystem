@@ -140,6 +140,82 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (avtal och avtalsdelar som egna tabeller — PRD_TIDSRAPPORTERING
+  story 3):** Story 1 gav tidsposten en livscykel, story 2 gjorde fakturan
+  atomär. Kvar stod PRD §1 rad 6: **ILT-avtalets Fas 2A har ett tak på 32 h /
+  35 200 kr, och taket passerades utan att någon sa något.** Ingen hade slarvat
+  — systemet hade ingenstans att SKRIVA taket. `projects` bär en timtaxa och en
+  budget (0017); ett uppdrag är inte ett avtal, och ett avtal har faser med
+  varsitt tak och tilläggsavtal som ändrar taket utan att radera det gamla.
+
+  **Migration 0064** ger `contracts` och `contract_parts` (RLS + GRANT som
+  0017, komposit-FK:er så att ett avtal aldrig kan hänga på ett projekt eller en
+  fil i ett annat bolag; `files` fick den nyckel 0011 gav kunder och
+  leverantörer) samt `time_entries.contract_part_id`, nullbar. **Ingen befintlig
+  post kopplas i migrationen** — klassificeringen är ett omdöme och fattas av en
+  människa via `assign_contract_part`, inte av en UPDATE som gissar på en
+  beskrivningstext.
+
+  Tre beslut ur rådslaget 1/9 sitter i schemat, inte bara i koden:
+  1. **Registrering spärras aldrig.** Tid som ÄR arbetad ska alltid gå att
+     skriva ner; ett system som vägrar ta emot verkligheten får tillbaka den i
+     ett kalkylark. Taket varnar vid registreringen (≥ 80 % → `warning` i
+     svaret, > 100 % → texten att avtalet kräver skriftligt besked till kunden
+     om ändrad omfattning + rad i auditloggen) och SPÄRRAR först i
+     faktureringen: 409 `cap_exceeded`, forcerbart med `confirm_over_cap: true`
+     som skrivs som ett eget beslut i loggen.
+  2. **Ett oläst tak varnar aldrig** (`cap_confirmed`, default false). En
+     varning på ett tal ingen bekräftat lär mottagaren att strunta i varningar,
+     och då är nästa varning också död. Obekräftat eller NULL redovisas som
+     `cap_status: 'vet_ej'` med förbrukningen bredvid och `share: null`.
+  3. **Ett tilläggsavtal är en ny rad**, aldrig en överskrivning: unik
+     (contract_id, code, valid_from). Förbrukningen summeras över ALLA
+     versioner av koden, taket hämtas ur den som gäller i dag. Utan det hade
+     ett tilläggsavtal nollställt historiken i tysthet.
+
+  Ny tjänstefil `services/contracts.ts` + sex actions (`create_contract`,
+  `update_contract`, `upsert_contract_part`, `list_contracts`,
+  `get_contract_usage`, `assign_contract_part`). `log_time`/`update_time_entry`
+  tar `contract_part_id` och KRÄVER den när uppdraget har aktiva avtalsdelar
+  (400 `contract_part_required`); taxan gäller i ordningen **post → del → avtal
+  → uppdrag**, med den gamla botten post → uppdrag orörd för tid utan del.
+  Föräldradelens förbrukning är summan över barnens, så Fas 2:s tak slår in även
+  när tiden ligger på 2A och 2B.
+
+  **`assign_contract_part` är tillåten på en FAKTURERAD post** — den sätter
+  enbart `contract_part_id` och ändrar varken belopp, minuter eller låset till
+  fakturan. Alternativet hade varit att de 25 juliposterna aldrig gick att
+  hänföra till en avtalsdel, och då börjar takbevakningen räkna från noll mitt i
+  ett avtal. Allt annat på en fakturerad post är fortsatt låst (TRANSITIONS i
+  projects.ts är orörd).
+
+  **`create_invoice_from_time`:** avvisandet av `per_avtalsdel` (rad 66) är
+  ersatt. Raderna grupperas per avtalsdel (beskrivning = delens `code` +
+  `name`, olika taxor inom en del ger som förut skilda rader),
+  `appendix_layout: 'per_avtalsdel'` ger kategoribilagan ur 0063 — kind
+  `category`, en rad per del, **inga datum** — ur exakt samma låsta urval som
+  fakturaraderna. Bilagemotorn i `invoiceAppendix.ts` är oförändrad. En faktura
+  där INGEN post är klassad står kvar med uppdragets namn på raden: 'Övrigt'
+  skrivs bara ut när det finns avtalsdelar att stå bredvid, annars hade en
+  oförändrad faktura plötsligt haft en enda rad som hette "Övrigt".
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/avtalsdelar.test.ts` (avtalsdel krävs när delar finns,
+  taxaordningen i fyra steg, 80 %-varningen, det obekräftade taket som aldrig
+  varnar, spärren utan/med `confirm_over_cap`, föräldratak över barn, historik
+  via `valid_from` inklusive en framtida version som inte gäller än, bilagan per
+  del utan datum, och `assign_contract_part` på en fakturerad post där allt
+  annat förblir låst). Ett befintligt fall ändrat: story 2:s prov på att
+  `per_avtalsdel` avvisades är nu provet på att den ger en kategoribilaga utan
+  datum. **Inget test visar att registrering spärras av ett tak** — det är
+  avsiktligt, och det är regeln.
+
+  **Kvarstår för David:** kör `npm run migrate` och lägg in ILT-avtalets
+  struktur (Fas 2A m.fl.) via `create_contract`/`upsert_contract_part`, med
+  `cap_confirmed: true` först för de tak han läst i avtalshandlingen. Därefter
+  kan juliposterna klassas med `assign_contract_part`.
+
 - **2026-09-02 (faktura ur godkänd tid, atomärt — PRD_TIDSRAPPORTERING story 2):**
   Story 1 gav tidsposten en livscykel och ett lås. Kvar stod ändå julifelets
   form: fakturan kunde skapas i ett steg och tiden stängas i ett annat, och ett
