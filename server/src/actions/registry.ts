@@ -32,6 +32,7 @@ import {
 import {
   assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
 } from '../services/contracts.js';
+import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import { listWorkActors, setWorkActorUser, upsertWorkActor } from '../services/workActors.js';
 import { assignProjectActor, listProjectAssignments, unassignProjectActor } from '../services/projectAssignments.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../services/analytics.js';
@@ -1333,6 +1334,43 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ time_entry_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
     handler: (ctx, i) => assignContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Rapporterna (story 4). Juli- och augustifelet var inte att någon räknade
+  // fel — det var att godkänd, ofakturerad tid inte syntes någonstans om ingen
+  // frågade. Tre lässvar, samma tjänstefunktioner som vysidan /tid, och EN
+  // definition av ofakturerad tid (styrytans äldre formel är borttagen).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'unbilled_time_report',
+    title: 'Ofakturerad godkänd tid per kund',
+    sensitivity: 'read',
+    inputSchema: z
+      .object({
+        customer_id: UuidSchema.optional(),
+        project_id: UuidSchema.optional(),
+        // Skärdatum, default idag. Styr också betalningsperioden: första dagen
+        // i datumets kalendermånad t.o.m. datumet.
+        to: IsoDateSchema.optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => unbilledTimeReport(ctx.client, ctx.companyId, i as never),
+  }),
+  def({
+    name: 'idle_projects_report',
+    title: 'Uppdrag som ligger still',
+    sensitivity: 'read',
+    inputSchema: z.object({ days: z.number().int().min(1).max(3650).optional() }).strict(),
+    handler: (ctx, i) => idleProjectsReport(ctx.client, ctx.companyId, i as never),
+  }),
+  def({
+    name: 'contract_usage_report',
+    title: 'Avtalsförbrukning mot tak (alla avtal)',
+    sensitivity: 'read',
+    // Utan indata: listContracts bär redan hela svaret, och ett filter som
+    // ingen bett om är ett sätt att missa den del som spruckit.
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => contractUsageReport(ctx.client, ctx.companyId),
   }),
   def({
     name: 'set_work_actor_user',

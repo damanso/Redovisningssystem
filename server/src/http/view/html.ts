@@ -272,6 +272,7 @@ const NAV_GROUPS: readonly NavGroup[] = [
     items: [
       ['payroll', 'Lön'],
       ['projects', 'Projekt'],
+      ['tid', 'Tid'],
     ],
   },
   {
