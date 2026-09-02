@@ -32,6 +32,9 @@ import {
 import {
   assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
 } from '../services/contracts.js';
+import {
+  ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
+} from '../services/contractExtraction.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1450,6 +1453,77 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ time_entry_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
     handler: (ctx, i) => assignContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det
+  // första LÄSER och skapar ingenting, det andra skriver — och mellan dem står
+  // Davids formulär. Inget extraherat värde kan nå faktureringen utan att ha
+  // passerat det.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'extract_contract_draft',
+    title: 'Läs in avtal (PDF/bild) och föreslå avtal med faser',
+    // write: filen lagras i dokumentarkivet. Men INGET avtal skapas — svaret är
+    // ett utkast som kräver mänsklig granskning (requires_human_review).
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        // Samma form som attach_document: filinnehåll som base64 (pdf/png/jpg),
+        // validerat mot ändelse OCH magic bytes i fileStorage. DOCX avvisas med
+        // unsupported_media — ett zip-/docx-bibliotek vore ett nytt beroende.
+        filename: safeText(200),
+        content_base64: z.string().min(1).max(15_000_000),
+      })
+      .strict(),
+    handler: (ctx, i: { filename: string; content_base64: string }) =>
+      extractContractDraftFromFile(ctx.client, ctx.companyId, ctx.userId, {
+        filename: i.filename, contentBase64: i.content_base64,
+      }),
+  }),
+  def({
+    name: 'create_contract_from_draft',
+    title: 'Skapa avtal ur utkast (avtal + alla avtalsdelar i en transaktion)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema,
+        // Utelämnad = kunden ur utkastets kundpart (org.nr, annars exakt namn),
+        // och utan träff ärvs uppdragets kund av createContract.
+        customer_id: UuidSchema.optional(),
+        // Avtalshandlingen från extract_contract_draft.
+        source_file_id: UuidSchema.optional(),
+        name: safeText(200),
+        signed_date: IsoDateSchema.optional(),
+        payment_terms_days: z.number().int().min(0).max(365).optional(),
+        hourly_rate_ore: ORE.optional(),
+        notes: safeText(2000).optional(),
+        parts: z
+          .array(
+            z.object({
+              code: safeText(40),
+              name: safeText(200),
+              description: safeText(2000).optional(),
+              // Fasens överordnade fas, angiven med KOD — utkastet känner inga
+              // uuid:n, och delarna skapas i samma anrop.
+              parent_code: safeText(40).optional(),
+              cap_hours: z.number().nonnegative().max(999_999.99).optional(),
+              cap_amount_ore: ORE.optional(),
+              cap_confirmed: z.boolean().optional(),
+            }).strict(),
+          )
+          .max(100)
+          .optional(),
+        // Utkastet som formuläret fylldes ur. Jämförelsen mot de inskickade
+        // värdena avgör var `manually_edited` sätts, och den görs i tjänsten.
+        // Schemat STRIPPAR okända fält i stället för att avvisa: det är samma
+        // maskinsvar som extraktionen redan rensat en gång.
+        draft: ContractDraftSchema.extend({
+          requires_human_review: z.literal(true).optional(),
+          model: z.string().max(200).optional(),
+        }).optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => createContractFromDraft(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Rapporterna (story 4). Juli- och augustifelet var inte att någon räknade

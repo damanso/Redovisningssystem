@@ -30,6 +30,7 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
+import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
@@ -1441,7 +1442,10 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     const snabb = await snabbunderlag(client, companyId, projectId);
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
-        <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}</div></div>
+        <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
+          ${/* Vägen in för avtalet självt: utan den bor taket kvar i en DOCX,
+                och ett tak som inte är inskrivet kan aldrig varna. */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/avtal">Läs in avtal</a></div></div>
       ${tidsnotiser(req)}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
@@ -1485,6 +1489,601 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// ---------------------------------------------------------------------------
+// Läs in avtal (story 6, PRD §1B/§4/§5/§7.1/§9.6)
+//
+// Avtalet bodde i en DOCX och i Davids huvud. Det som aldrig skrevs in kunde
+// heller aldrig varna — Fas 2A:s tak passerades utan att någon sa något. Ytan
+// här är vägen in, och tre beslut styr den:
+//
+//  1. **AI:n fyller i, människan bestämmer.** Utkastet ligger i husets
+//     `.ai-card` med `aiMarkning()` (AI-förordningen art. 50), precis som
+//     tidsförslagen — samma sorts sak ska se likadan ut. VARJE fält är ett
+//     vanligt redigerbart formulärfält; ingenting är låst, ingenting sparas
+//     förrän "Skapa avtal" trycks. Utan utkast är det samma formulär i en
+//     vanlig `.panel`: att märka ett handifyllt formulär som AI-genererat vore
+//     lika fel som att inte märka ett som är det.
+//  2. **Tomt formulär är inte ett fel-läge, det är reservläget.** Utan
+//     API-nyckel står texten "AI-extraktion avstängd — fyll i manuellt" där
+//     uppladdningen annars stått, och resten av sidan fungerar hela vägen.
+//     Samma sak när läsningen misslyckas: sidan tappar aldrig formuläret.
+//  3. **Faserna är rader utan JavaScript.** Varje rad börjar med "Ta med /
+//     Utelämna" (en select, inte en kryssruta: en okryssad ruta skickas inte
+//     och raderna skulle glida ur fas med varandra), och tre tomma rader
+//     ligger sist för de faser AI:n inte hittade. Ingen ny CSS: husets
+//     `.field`, `.ai-card`, `.ai-actions` och `.chip` bär hela ytan.
+// ---------------------------------------------------------------------------
+
+/** Tomma fasrader under de inlästa — "lägg till" utan en rad JavaScript. */
+const TOMMA_FASRADER = 3;
+/**
+ * Gränserna finns för att formuläret postas som ett vanligt urlencoded-anrop,
+ * och vyns kropp är begränsad till 16 kB (`viewRouter.use(urlencoded …)`). En
+ * inläsning som spränger gränsen hade gett ett obegripligt 413 mitt i flödet.
+ * Ingenting kapas TYST: både antalet faser och en kapad beskrivning står
+ * utskrivna på sidan.
+ */
+const MAX_FASRADER = 12;
+const MAX_BESKRIVNING = 240;
+
+interface Fasrad {
+  med: boolean;
+  code: string;
+  name: string;
+  parent_code: string;
+  cap_hours: string;
+  cap_amount: string;
+  description: string;
+  /** Beskrivningen ur filen var längre än fältet — sagt på raden, inte gömt. */
+  kapad: boolean;
+  /** Avtalets uppskattning. Har ingen kolumn att bo i — men den ska SYNAS. */
+  suggested_hours: number | null;
+}
+
+interface Avtalsformvarden {
+  name: string;
+  customer_id: string;
+  signed_date: string;
+  payment_terms_days: string;
+  hourly_rate: string;
+  notes: string;
+  cap_confirmed: boolean;
+  source_file_id: string;
+  rader: Fasrad[];
+  /** Jämförelsegrunden som postas tillbaka (dolt fält). Null = handifyllt. */
+  draft: ContractDraftFields | null;
+  /** Hela läsningen — bara till kortet "Vad lästes ur filen?", postas aldrig. */
+  utkast: ContractDraftFields | null;
+  matchad: Kundtraff;
+}
+
+function tomFasrad(): Fasrad {
+  return {
+    med: true, code: '', name: '', parent_code: '', cap_hours: '', cap_amount: '',
+    description: '', kapad: false, suggested_hours: null,
+  };
+}
+
+/** Timmar som fält: 32 → "32", 32.5 → "32,5". Svensk decimal, som resten av vyn. */
+function timfalt(v: number | null | undefined): string {
+  return v === null || v === undefined ? '' : String(v).replace('.', ',');
+}
+
+/** Ören → kronorfält, i heltalsaritmetik (aldrig ore/100 som flyttal). */
+function kronorfalt(ore: number | null | undefined): string {
+  if (ore === null || ore === undefined) return '';
+  return `${Math.trunc(ore / 100)},${String(Math.abs(ore % 100)).padStart(2, '0')}`;
+}
+
+/** "32" | "32,5" → timmar. undefined = tomt fält, null = obegripligt. */
+function timmarUrText(text: string): number | null | undefined {
+  const t = text.trim();
+  if (t === '') return undefined;
+  if (!/^\d{1,6}([.,]\d{1,2})?$/.test(t)) return null;
+  return Number(t.replace(',', '.'));
+}
+
+/** Ett upprepat formulärfält (name="x" på flera rader) som en indexerad lista. */
+function radvarden(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => (typeof x === 'string' ? x : ''));
+  return typeof v === 'string' ? [v] : [];
+}
+
+/**
+ * Utkastet tillbaka från det dolda fältet. Det parsas genom SAMMA schema som
+ * extraktionen använde — ett fält som browsern hittat på når aldrig tjänsten.
+ */
+function utkastUrFormular(v: unknown): ContractDraftFields | null {
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  try {
+    return ContractDraftSchema.parse(JSON.parse(v));
+  } catch {
+    return null;
+  }
+}
+
+function fasraderUrUtkast(draft: ContractDraftFields | null): Fasrad[] {
+  const inlasta = (draft?.parts ?? [])
+    .filter((d) => (d.code ?? '').trim() !== '' || (d.name ?? '').trim() !== '')
+    .slice(0, MAX_FASRADER)
+    .map((d) => {
+      const beskrivning = (d.description ?? '').trim();
+      return {
+        med: true,
+        code: (d.code ?? '').trim(),
+        name: (d.name ?? '').trim(),
+        parent_code: (d.parent_code ?? '').trim(),
+        cap_hours: timfalt(d.cap_hours),
+        cap_amount: kronorfalt(d.cap_amount_ore),
+        description: beskrivning.slice(0, MAX_BESKRIVNING),
+        kapad: beskrivning.length > MAX_BESKRIVNING,
+        suggested_hours: d.suggested_hours ?? null,
+      };
+    });
+  return [...inlasta, ...Array.from({ length: TOMMA_FASRADER }, tomFasrad)];
+}
+
+/**
+ * Jämförelsegrunden som följer med formuläret tillbaka — och INGENTING mer.
+ *
+ * Den byggs ur raderna som faktiskt renderas, inte ur det råa utkastet. Då kan
+ * en oförändrad rad aldrig råka räknas som ändrad (en kapad beskrivning eller
+ * ett omformaterat tal hade annars sett ut som en mänsklig rättelse), och det
+ * dolda fältet bär bara det `manually_edited` faktiskt vilar på: fasernas
+ * värden och avtalets kundpart (som kundmatchningen läser).
+ */
+function utkastForFormular(draft: ContractDraftFields, rader: Fasrad[]): ContractDraftFields {
+  return {
+    parties: draft.parties?.customer ? { customer: draft.parties.customer } : null,
+    parts: rader
+      .filter((r) => r.code !== '' || r.name !== '')
+      .map((r) => {
+        const timmar = timmarUrText(r.cap_hours);
+        const belopp = r.cap_amount === '' ? null : kronorTillOre(r.cap_amount);
+        return {
+          code: r.code,
+          name: r.name,
+          description: r.description === '' ? null : r.description,
+          parent_code: r.parent_code === '' ? null : r.parent_code,
+          cap_hours: typeof timmar === 'number' ? timmar : null,
+          cap_amount_ore: belopp,
+          suggested_hours: r.suggested_hours,
+        };
+      }),
+  };
+}
+
+function tommaAvtalsvarden(projektKundNamn: string | null): Avtalsformvarden {
+  return {
+    name: projektKundNamn ? `Avtal ${projektKundNamn}` : '',
+    customer_id: '', signed_date: '', payment_terms_days: '', hourly_rate: '', notes: '',
+    cap_confirmed: false, source_file_id: '',
+    rader: Array.from({ length: TOMMA_FASRADER + 1 }, tomFasrad),
+    draft: null, utkast: null, matchad: null,
+  };
+}
+
+const KUNDTRAFF_TEXT: Record<string, string> = {
+  org_number: 'Kunden föreslagen ur avtalets organisationsnummer — bekräfta att det är rätt.',
+  name: 'Kunden föreslagen ur avtalets namn — bekräfta att det är rätt.',
+};
+
+/** Ett fält i formuläret. Etiketten är SYNLIG, aldrig bara en aria-label. */
+function avtalsfalt(
+  etikett: string, namn: string, varde: string,
+  opts: { bredd?: string; typ?: string; required?: boolean; hjalp?: string; maxlength?: number; placeholder?: string } = {},
+): Raw {
+  return html`<label class="field" style="margin:0;flex:${opts.bredd ?? '1 1 190px'}">
+    <span>${etikett}${opts.hjalp ? html` <span class="muted" style="font-weight:400">· ${opts.hjalp}</span>` : ''}</span>
+    <input type="${opts.typ ?? 'text'}" name="${namn}" value="${varde}"
+      maxlength="${String(opts.maxlength ?? 200)}"${opts.placeholder ? html` placeholder="${opts.placeholder}"` : ''}${opts.required ? html` required` : ''}></label>`;
+}
+
+/**
+ * Själva formuläret. Samma markup med och utan utkast — det är hela poängen
+ * med reservläget: den som fyller i för hand ska möta exakt den yta AI:n
+ * annars fyllt i åt honom.
+ */
+function avtalsformular(
+  companyId: string, projectId: string, kunder: { id: string; name: string }[],
+  projektKundNamn: string | null, v: Avtalsformvarden,
+): Raw {
+  return html`<form method="post" action="/app/c/${companyId}/projects/${projectId}/avtal/skapa" style="margin:0">
+    ${v.draft ? html`<input type="hidden" name="draft" value="${JSON.stringify(v.draft)}">` : ''}
+    ${v.source_file_id ? html`<input type="hidden" name="source_file_id" value="${v.source_file_id}">` : ''}
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:12px 16px 4px">
+      ${avtalsfalt('Avtalets namn', 'name', v.name, { bredd: '2 1 240px', required: true })}
+      <label class="field" style="margin:0;flex:1 1 210px"><span>Kund</span>
+        <select name="customer_id">
+          ${/* Tom = ingen egen kund på avtalet; createContract ärver då
+               uppdragets. Alternativet — att gissa fram en kund — hade lagt
+               arbetet på fel kunds faktura utan att något sagt det (lärdom 7). */ ''}
+          <option value="">${projektKundNamn ? `Kunden från uppdraget (${projektKundNamn})` : 'Ingen kund vald'}</option>
+          ${kunder.map((k) => html`<option value="${k.id}"${k.id === v.customer_id ? html` selected` : ''}>${k.name}</option>`)}
+        </select></label>
+      ${avtalsfalt('Undertecknat', 'signed_date', v.signed_date, {
+        bredd: '0 1 168px', typ: 'date', required: true, hjalp: 'faserna räknas från detta datum',
+      })}
+      ${avtalsfalt('Betalningsvillkor', 'payment_terms_days', v.payment_terms_days, {
+        bredd: '0 1 150px', hjalp: 'dagar', maxlength: 3, placeholder: '20',
+      })}
+      ${avtalsfalt('Timpris', 'hourly_rate', v.hourly_rate, { bredd: '0 1 150px', hjalp: 'kr/h', maxlength: 20, placeholder: '1 100,00' })}
+      <label class="field" style="margin:0;flex:1 1 100%"><span>Anteckningar
+          <span class="muted" style="font-weight:400">· vad avtalet säger som inte ryms i fälten</span></span>
+        <textarea name="notes" rows="2" maxlength="2000">${v.notes}</textarea></label>
+    </div>
+    <h3 style="margin:14px 0 0;padding:0 16px;font-size:14px">Faser och tak</h3>
+    <p class="muted" style="margin:2px 0 0;padding:0 16px;font-size:12.5px">
+      En rad per fas i avtalet. Töm koden eller välj <em>Utelämna</em> för en rad du inte vill ha med;
+      de tomma raderna längst ned är till för faser som inte lästes in.
+      <em>Ingår i</em> är den överordnade fasens kod — så att Fas 2:s tak gäller över 2A och 2B.
+    </p>
+    ${v.rader.map((r, i) => html`
+      <fieldset style="border:0;margin:10px 0 0;padding:8px 0 2px;box-shadow:inset 0 1px 0 var(--line)">
+        <legend style="padding:0 0 0 16px;font-size:11px;letter-spacing:0.03em;text-transform:uppercase;color:var(--ink-3)">Rad ${String(i + 1)}</legend>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:2px 16px 8px">
+          <label class="field" style="margin:0;flex:0 1 128px"><span>Ta med</span>
+            <select name="part_med">
+              <option value="ja"${r.med ? html` selected` : ''}>Ta med</option>
+              <option value="nej"${r.med ? '' : html` selected`}>Utelämna</option>
+            </select></label>
+          ${avtalsfalt('Kod', 'part_code', r.code, { bredd: '0 1 96px', maxlength: 40, placeholder: '2A' })}
+          ${avtalsfalt('Fas', 'part_name', r.name, { bredd: '2 1 200px', placeholder: 'Fas 2A — integration' })}
+          ${avtalsfalt('Ingår i', 'part_parent', r.parent_code, { bredd: '0 1 104px', maxlength: 40, placeholder: '2' })}
+          ${avtalsfalt('Tak, timmar', 'part_cap_hours', r.cap_hours, { bredd: '0 1 118px', maxlength: 10, placeholder: '32' })}
+          ${avtalsfalt('Tak, kronor', 'part_cap_amount', r.cap_amount, { bredd: '0 1 132px', maxlength: 20, placeholder: '35 200,00' })}
+          ${avtalsfalt('Beskrivning', 'part_description', r.description, { bredd: '3 1 240px', maxlength: MAX_BESKRIVNING })}
+          ${r.suggested_hours !== null
+            ? html`<p class="muted" style="flex:1 1 100%;margin:0;font-size:12px">Avtalet uppskattar ${timfalt(r.suggested_hours)} h för fasen — en uppskattning, inte ett tak. Skriv in den som tak bara om avtalet skriver ut en gräns.</p>`
+            : ''}
+          ${r.kapad
+            ? html`<p class="muted" style="flex:1 1 100%;margin:0;font-size:12px">Beskrivningen i filen var längre än ${String(MAX_BESKRIVNING)} tecken och är kapad här — komplettera själv om något viktigt föll bort.</p>`
+            : ''}
+        </div>
+      </fieldset>`)}
+    <div style="padding:12px 16px 0">
+      <label style="display:flex;gap:9px;align-items:flex-start;font-size:13px;color:var(--ink-2)">
+        <input type="checkbox" name="cap_confirmed" value="ja"${v.cap_confirmed ? html` checked` : ''} style="width:auto;margin-top:2px">
+        <span><strong>Jag har läst taken i avtalshandlingen.</strong> Först då varnar de och spärrar faktureringen.
+          Ett obekräftat tak redovisas som <em>vet ej</em> med förbrukningen bredvid — en varning på ett tal ingen läst
+          lär mottagaren att strunta i varningar.</span></label>
+    </div>
+    <div class="${v.draft ? 'ai-actions' : 'actions'}" style="${v.draft ? '' : 'padding:14px 16px'}">
+      <button class="btn btn--primary" type="submit">Skapa avtal</button>
+      <span class="${v.draft ? 'hint' : 'muted'}" style="font-size:12px">Avtalet och alla faser skapas i ett svep — faller något skapas ingenting.</span>
+    </div>
+  </form>`;
+}
+
+function avtalsinlasningSida(
+  req: Request, companyId: string, projekt: { id: string; number: number; name: string; customer_name: string | null },
+  kunder: { id: string; name: string }[], v: Avtalsformvarden, opts: { aiAv?: boolean; fel?: string } = {},
+): Raw {
+  const formular = avtalsformular(companyId, projekt.id, kunder, projekt.customer_name, v);
+  const lasning = v.utkast;
+  const inlasta = (lasning?.parts ?? []).length;
+  const kundnamn = (v.utkast ?? v.draft)?.parties?.customer?.name ?? null;
+  return html`<div class="page-head"><div>${eyebrow('Avtal')}<h1>Läs in avtal</h1>
+      <p class="lede">Uppdrag ${String(projekt.number)} · ${entityLink(companyId, 'project', projekt.id, projekt.name)}.
+        Ladda upp avtalet som PDF (eller foto) så fylls formuläret i åt dig — allt går att rätta innan något sparas.
+        Det som står här blir avtalets taxa och fasernas tak, alltså det faktureringen mäter emot.</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projekt.id}">← Uppdraget</a></div></div>
+    ${opts.fel ? html`<p class="notice">${opts.fel}</p>` : felNotis(req)}
+    ${
+      opts.aiAv
+        ? html`<p class="notice" style="background:var(--surface-2);color:var(--ink-2);border-color:var(--line-2)">
+            <strong>AI-extraktion avstängd — fyll i manuellt.</strong>
+            Utan <span class="code">ANTHROPIC_API_KEY</span> läser systemet inga avtalsfiler, men formuläret nedan
+            fungerar hela vägen. Vill du ändå spara handlingen: ladda upp den under
+            <a href="/app/c/${companyId}/documents">Dokument</a>.</p>`
+        : html`<div class="panel" style="margin-top:14px;max-width:720px">
+            <div class="panel__head"><h2>Avtalsfilen</h2></div>
+            <div class="panel__body" style="padding:16px">
+              <form method="post" action="/app/c/${companyId}/projects/${projekt.id}/avtal/las-in"
+                enctype="multipart/form-data" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+                <label class="field" style="margin:0;flex:2 1 260px"><span>Avtal som PDF, PNG eller JPG</span>
+                  <input type="file" name="file" required accept=".pdf,application/pdf,image/png,image/jpeg"></label>
+                <button class="btn" type="submit" style="flex:0 0 auto">Läs in och förifyll</button>
+                <p class="muted" style="flex:1 1 100%;margin:0;font-size:12.5px">
+                  Filen sparas som avtalets handling och kopplas till avtalet du skapar.
+                  Word-filer läses inte — spara avtalet som PDF först.
+                  Inget avtal skapas av inläsningen: du får ett förslag att gå igenom.</p>
+              </form>
+            </div>
+          </div>`
+    }
+    ${
+      v.draft
+        ? html`<article class="ai-card" style="margin-top:16px">
+            <div class="ai-card__head">
+              ${aiMarkning()}
+              ${/* En riktig rubrik, inte ett span: annars hoppar sidan från h1
+                    till h3 och den som läser med skärmläsare tappar nivån. */ ''}
+              <h2 class="ai-card__title" style="font-size:15px;margin:0">Förifyllt ur avtalsfilen</h2>
+              ${lasning && lasning.confidence !== null && lasning.confidence !== undefined
+                ? chip(`Säkerhet ${String(Math.round(lasning.confidence * 100))} %`, lasning.confidence >= 0.8 ? 'ok' : 'warn', lasning.confidence >= 0.8 ? '✓' : '!')
+                : ''}
+              ${inlasta > MAX_FASRADER ? chip(`${String(inlasta)} faser lästa, ${String(MAX_FASRADER)} visas`, 'warn', '!') : ''}
+            </div>
+            <div class="ai-card__why">Ingenting är sparat än. Varje fält nedan går att ändra, och det du ändrar
+              märks som ditt — nästa inläsning skriver aldrig över en rad du rört.</div>
+            ${v.matchad !== null && Object.hasOwn(KUNDTRAFF_TEXT, v.matchad)
+              ? html`<div class="ai-card__why muted">${KUNDTRAFF_TEXT[v.matchad]}</div>`
+              : kundnamn
+                ? html`<div class="ai-card__why muted">Avtalets kund (${kundnamn}) matchade ingen i kundregistret — välj kund i listan, annars ärvs uppdragets.</div>`
+                : ''}
+            ${lasning
+              ? html`<details class="ai-raw"><summary>Vad lästes ur filen?</summary>
+                  <div class="ai-fields">
+                    <div class="ai-field"><span class="l">Leverantör</span><span class="v">${lasning.parties?.supplier?.name ?? '—'}</span></div>
+                    <div class="ai-field"><span class="l">Kund</span><span class="v">${lasning.parties?.customer?.name ?? '—'}</span></div>
+                    <div class="ai-field"><span class="l">Org.nr kund</span><span class="v code">${lasning.parties?.customer?.org_number ?? '—'}</span></div>
+                    <div class="ai-field"><span class="l">Undertecknat</span><span class="v code">${lasning.signed_date ?? '—'}</span></div>
+                    <div class="ai-field"><span class="l">Faser</span><span class="v">${String(inlasta)}</span></div>
+                    ${lasning.notes ? html`<div class="ai-field" style="flex:1 1 100%"><span class="l">Modellens anteckning</span><span class="v" style="font-weight:400">${lasning.notes}</span></div>` : ''}
+                  </div>
+                </details>`
+              : ''}
+            ${formular}
+          </article>`
+        : html`<div class="panel" style="margin-top:16px">
+            <div class="panel__head"><h2>Avtalet</h2></div>
+            <div class="panel__body" style="padding:4px 0 12px">${formular}</div>
+          </div>`
+    }`;
+}
+
+/** Uppdraget och kundregistret — det formuläret behöver, och inget mer. */
+async function avtalsunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<{
+  projekt: { id: string; number: number; name: string; customer_id: string | null; customer_name: string | null };
+  kunder: { id: string; name: string }[];
+}> {
+  const p = await getProject(client, companyId, projectId) as {
+    id: string; number: number; name: string; customer_id: string | null; customer_name: string | null;
+  };
+  const kunder = (await listCustomers(client, companyId)) as unknown as { id: string; name: string }[];
+  return { projekt: p, kunder: kunder.map((k) => ({ id: k.id, name: k.name })) };
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/avtal', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
+    return {
+      name: company.name,
+      body: avtalsinlasningSida(req, companyId, projekt, kunder, tommaAvtalsvarden(projekt.customer_name), {
+        aiAv: !config.ANTHROPIC_API_KEY,
+      }),
+    };
+  });
+  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// Multer-fel (för stor fil, trasig multipart) → vänlig notis (samma mönster som
+// kvitton och dokument).
+function avtalUpload(req: Request, res: import('express').Response, next: import('express').NextFunction): void {
+  singleFileUpload()(req, res, (err?: unknown) => {
+    if (err) {
+      let companyId = '';
+      try { companyId = parseCompanyId(req.params.companyId); } catch { res.status(404).end(); return; }
+      const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
+      res.redirect(`/app/c/${companyId}/projects/${projectId}/avtal?fel=${encodeURIComponent('Filen kunde inte tas emot — max 10 MB, PDF eller bild.')}`);
+      return;
+    }
+    next();
+  });
+}
+
+viewRouter.post('/c/:companyId/projects/:projectId/avtal/las-in', avtalUpload, page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+
+  const bas = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
+    return { name: company.name, projekt, kunder };
+  });
+  const tomt = tommaAvtalsvarden(bas.projekt.customer_name);
+  const sida = (v: Avtalsformvarden, opts: { aiAv?: boolean; fel?: string }): Raw =>
+    avtalsinlasningSida(req, companyId, bas.projekt, bas.kunder, v, opts);
+
+  const { name, body } = await (async () => {
+    if (!req.file) {
+      return { name: bas.name, body: sida(tomt, { aiAv: !config.ANTHROPIC_API_KEY, fel: 'Ingen fil bifogad.' }) };
+    }
+    try {
+      // Samma action som AI-vägen (actor human) — vyn bygger aldrig en egen väg.
+      const utfall = await executeAction({
+        companyId, userId, actor: 'human', actionName: 'extract_contract_draft',
+        input: { filename: req.file.originalname, content_base64: req.file.buffer.toString('base64') },
+      });
+      // Actionen har sensitivity write och hamnar aldrig i godkännandekö, men
+      // ActionResult är en union — samma smala narrowing som övriga vyer.
+      if (utfall.status !== 'ok') {
+        return { name: bas.name, body: sida(tomt, { aiAv: !config.ANTHROPIC_API_KEY }) };
+      }
+      const r = utfall.result as {
+        draft: ContractDraftFields & { model?: string }; file_id: string;
+        customer_id: string | null; customer_matched_on: Kundtraff;
+      };
+      const rader = fasraderUrUtkast(r.draft);
+      return {
+        name: bas.name,
+        body: sida({
+          ...tomt,
+          name: r.draft.parties?.customer?.name ? `Avtal ${r.draft.parties.customer.name}` : tomt.name,
+          customer_id: r.customer_id ?? '',
+          signed_date: r.draft.signed_date ?? '',
+          payment_terms_days: r.draft.payment_terms_days === null || r.draft.payment_terms_days === undefined
+            ? '' : String(r.draft.payment_terms_days),
+          hourly_rate: kronorfalt(r.draft.hourly_rate_ore),
+          notes: r.draft.notes ?? '',
+          source_file_id: r.file_id,
+          rader,
+          // Utkastet som följer med tillbaka är jämförelsegrunden, inte en
+          // kopia av allt modellen sa — resten står redan i synliga fält.
+          utkast: r.draft,
+          draft: utkastForFormular(r.draft, rader),
+          matchad: r.customer_matched_on,
+        }, {}),
+      };
+    } catch (err) {
+      // Graciös degradering: en avstängd nyckel, en DOCX eller ett svar som
+      // inte gick att tolka lämnar formuläret PÅ PLATS och tomt. Att skicka
+      // David till en felsida hade gjort AI:n till ett villkor för att lägga
+      // in ett avtal — och den är en genväg, inte en förutsättning.
+      if (err instanceof ConflictError && err.code === 'ai_disabled') {
+        return { name: bas.name, body: sida(tomt, { aiAv: true }) };
+      }
+      if (err instanceof BadRequestError || err instanceof ConflictError || err instanceof NotFoundError) {
+        return {
+          name: bas.name,
+          body: sida(tomt, {
+            aiAv: !config.ANTHROPIC_API_KEY,
+            fel: `Avtalet gick inte att läsa: ${err.message}. Fyll i formuläret nedan för hand.`,
+          }),
+        };
+      }
+      throw err;
+    }
+  })();
+  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+/** Formulärets rader → avtalsdelar. Tomma rader och "Utelämna" faller bort. */
+function fasraderUrFormular(b: Record<string, unknown>): { rader: Fasrad[]; fel: string | null } {
+  const med = radvarden(b.part_med);
+  const koder = radvarden(b.part_code);
+  const namn = radvarden(b.part_name);
+  const foralder = radvarden(b.part_parent);
+  const takTimmar = radvarden(b.part_cap_hours);
+  const takKronor = radvarden(b.part_cap_amount);
+  const beskrivning = radvarden(b.part_description);
+  const rader: Fasrad[] = koder.map((code, i) => ({
+    med: (med[i] ?? 'ja') === 'ja',
+    code: code.trim(),
+    name: (namn[i] ?? '').trim(),
+    parent_code: (foralder[i] ?? '').trim(),
+    cap_hours: (takTimmar[i] ?? '').trim(),
+    cap_amount: (takKronor[i] ?? '').trim(),
+    description: (beskrivning[i] ?? '').trim(),
+    kapad: false,
+    suggested_hours: null,
+  }));
+  const halva = rader.find((r) => r.med && ((r.code === '') !== (r.name === '')));
+  return {
+    rader,
+    fel: halva ? 'Varje fas behöver både en kod och ett namn — eller inget av dem (då hoppas raden över).' : null,
+  };
+}
+
+viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const b = req.body as Record<string, unknown>;
+
+  const draft = utkastUrFormular(b.draft);
+  const { rader, fel: radfel } = fasraderUrFormular(b);
+  const varden: Avtalsformvarden = {
+    name: (fritext(b, 'name') ?? ''),
+    customer_id: fritext(b, 'customer_id') ?? '',
+    signed_date: fritext(b, 'signed_date') ?? '',
+    payment_terms_days: fritext(b, 'payment_terms_days') ?? '',
+    hourly_rate: fritext(b, 'hourly_rate') ?? '',
+    notes: fritext(b, 'notes') ?? '',
+    cap_confirmed: b.cap_confirmed === 'ja',
+    source_file_id: fritext(b, 'source_file_id') ?? '',
+    rader: rader.length > 0 ? rader : [tomFasrad()],
+    draft,
+    utkast: null,
+    matchad: null,
+  };
+
+  // Rätta i formuläret, inte i minnet: ett fel efter tio ifyllda fält får
+  // aldrig kosta de tio fälten.
+  const visaIgen = async (fel: string): Promise<void> => {
+    const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+      const company = await loadCompany(client, companyId);
+      const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
+      return {
+        name: company.name,
+        body: avtalsinlasningSida(req, companyId, projekt, kunder, varden, { aiAv: !config.ANTHROPIC_API_KEY, fel }),
+      };
+    });
+    res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+  };
+
+  if (radfel) { await visaIgen(radfel); return; }
+
+  const parts: Record<string, unknown>[] = [];
+  for (const r of varden.rader) {
+    if (!r.med || r.code === '' || r.name === '') continue;
+    const timmar = timmarUrText(r.cap_hours);
+    if (timmar === null) {
+      await visaIgen(`Taket i timmar för ${r.code} ska skrivas som ett tal, t.ex. 32 eller 32,5.`);
+      return;
+    }
+    const belopp = r.cap_amount === '' ? undefined : kronorTillOre(r.cap_amount);
+    if (belopp === null) {
+      await visaIgen(`Taket i kronor för ${r.code} ska skrivas som ett belopp, t.ex. 35 200,00.`);
+      return;
+    }
+    parts.push({
+      code: r.code, name: r.name,
+      ...(r.description ? { description: r.description } : {}),
+      ...(r.parent_code ? { parent_code: r.parent_code } : {}),
+      ...(timmar === undefined ? {} : { cap_hours: timmar }),
+      ...(belopp === undefined ? {} : { cap_amount_ore: belopp }),
+      // Ett tak David inte bekräftat varnar aldrig — se kryssrutan i formuläret.
+      cap_confirmed: varden.cap_confirmed && (timmar !== undefined || belopp !== undefined),
+    });
+  }
+
+  const taxa = varden.hourly_rate === '' ? undefined : kronorTillOre(varden.hourly_rate);
+  if (taxa === null) { await visaIgen('Timpriset ska skrivas som ett belopp, t.ex. 1 100,00.'); return; }
+  const villkor = varden.payment_terms_days === '' ? undefined : Number(varden.payment_terms_days);
+  if (villkor !== undefined && !Number.isInteger(villkor)) {
+    await visaIgen('Betalningsvillkor anges som antal dagar, t.ex. 20.'); return;
+  }
+
+  try {
+    await executeAction({
+      companyId, userId, actor: 'human', actionName: 'create_contract_from_draft',
+      input: {
+        project_id: projectId,
+        ...(varden.customer_id ? { customer_id: varden.customer_id } : {}),
+        ...(varden.source_file_id ? { source_file_id: varden.source_file_id } : {}),
+        name: varden.name,
+        ...(varden.signed_date ? { signed_date: varden.signed_date } : {}),
+        ...(villkor === undefined ? {} : { payment_terms_days: villkor }),
+        ...(taxa === undefined ? {} : { hourly_rate_ore: taxa }),
+        ...(varden.notes ? { notes: varden.notes } : {}),
+        parts,
+        ...(draft ? { draft } : {}),
+      },
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) { await visaIgen(FORM_FEL); return; }
+    if (err instanceof BadRequestError || err instanceof ConflictError || err instanceof NotFoundError) {
+      await visaIgen(err.message); return;
+    }
+    throw err;
+  }
+  const kvitto = parts.length === 0
+    ? 'Avtalet är skapat.'
+    : `Avtalet är skapat med ${parts.length} ${parts.length === 1 ? 'fas' : 'faser'}.`;
+  res.redirect(`/app/c/${companyId}/projects/${projectId}?ok=${encodeURIComponent(kvitto)}`);
 }));
 
 // ---------------------------------------------------------------------------
