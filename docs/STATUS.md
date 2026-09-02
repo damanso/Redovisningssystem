@@ -145,6 +145,52 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (rättelse 7b: avtalsdelskravet prövas vid övergången till
+  debiterbar tid):** Driftfel, reproducerat 21:05 UTC. Ett förslag ur
+  `propose_time_entries` utan `contract_part_id` på ILT — ett uppdrag med
+  aktiva avtalsdelar — gick **varken att ignorera eller texträtta**: både
+  `approve_time_entries {status:'ignorerad'}` och `update_time_entry
+  {description}` svarade 400 `contract_part_required`. Kravet från story 3 låg
+  i `updateTimeEntry` generellt, medan PRD F5 och beslut #104 säger att det
+  gäller först när tiden blir DEBITERBAR. Följden: godkännandekön låste sig på
+  0-minuters mailmarkeringar — skräp man måste klassa mot ett tak det aldrig
+  kommer att förbruka, bara för att få bort det. En kö som inte går att tömma
+  slutar man titta i, och då är den ingen kö.
+
+  **Ändringen är ett villkor** (`projects.ts` rad 497–510): kravet prövas mot
+  MÅLSTATUS (`input.status ?? rad.status`) och bara när den är
+  `godkand`/`justerad`. En medskickad `contract_part_id` prövas som förut alltid
+  mot uppdraget. Inget annat är rört: `createTimeEntry` kräver delen vid
+  registreringen precis som förr, `TILLATNA_BYTEN`, takvarningen, batchens
+  allt-eller-inget och samtliga scheman är oförändrade. Ingen migration.
+
+  1. **Ett flöde, tre ingångar — därför EN rad.** MCP:s `update_time_entry`,
+     `approve_time_entries` och vyns knapp *Faktureras ej* går alla genom
+     `updateTimeEntry`, så rättelsen bor i tjänstelagret. Vykoden är orörd:
+     förslagskortets avtalsdelsväljare (`routes.ts` rad 2592) var aldrig
+     `required`, så KRAV-4 faller ut ur tjänstefixen.
+  2. **Lättnaden gör inte oklassad tid debiterbar.** Vägen runt
+     klassificeringen — skapa posten före avtalet, ändra den efteråt — stängs
+     av exakt samma villkor, för den vägen slutar alltid i ett godkännande.
+     Att en post som redan ÄR `godkand` utan del kräver klassificering även för
+     en ren textändring är alltså följdriktigt och avsiktligt: målstatus är då
+     `godkand`.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Fyra
+  nya prov: i `tidsforslag.test.ts` att ett oklassat förslag går att ignorera
+  och att få sin beskrivning rättad (reprofallet ur överlämning #99), plus
+  vyprovet att *Faktureras ej* går igenom utan vald del medan *Godkänn* svarar
+  med tjänstens befintliga text; i `avtalsdelar.test.ts` att en post utan del
+  går att lägga undan men **inte** att göra debiterbar igen (400
+  `contract_part_required`), och att delen i SAMMA anrop som godkännandet
+  räcker. Det befintliga provet "avtalsdel krävs när uppdraget har aktiva
+  delar" är oförändrat och ska fortsätta vara grönt.
+
+  **Kvarstår för David:** inget att migrera. Poster som redan fastnat i drift
+  rättas genom att ignorera eller klassa dem i kön — ingen retroaktiv körning
+  ingår i den här rättelsen.
+
 - **2026-09-02 (läs in avtalet ur avtals-PDF:en — PRD_TIDSRAPPORTERING story 6):**
   Story 3 gav avtalet och taket en plats att BO på, men vägen dit gick bara
   genom `create_contract` + ett `upsert_contract_part` per fas. Avtalet självt

@@ -387,6 +387,32 @@ describe('approve_time_entries', () => {
     expect(rad.contract_part_id).toBe(nvrFas2Del);
   });
 
+  // Rättelse 7b (överlämning #99): kravet på avtalsdel prövas när tiden blir
+  // DEBITERBAR, inte när posten rörs. Felet i drift var att kön låste sig på
+  // det som aldrig ska bli pengar — ett skräpförslag gick varken att ignorera
+  // eller texträtta utan att först klassas mot ett tak det inte förbrukar.
+  it('ett förslag utan avtalsdel går ALLTID att ignorera — kön får aldrig låsa sig', async () => {
+    const id = await ettForslag({ project_id: nvrFas2, source_ref: 'calendar:jj6', minutes: 0 });
+    expect((await post(id)).contract_part_id).toBeNull();
+
+    await ok('approve_time_entries', {
+      ids: [id], status: 'ignorerad', adjustment_reason: 'Ren mailmarkering, ingen debiterbar tid',
+    });
+    const rad = await post(id);
+    expect(rad.status).toBe('ignorerad');
+    expect(rad.contract_part_id).toBeNull();
+  });
+
+  it('beskrivningen på ett oklassat förslag går att rätta utan att posten klassas', async () => {
+    const id = await ettForslag({ project_id: nvrFas2, source_ref: 'calendar:jj7' });
+    const rattad = await ok('update_time_entry', {
+      time_entry_id: id, description: 'Avstämning inför Fas 2 — rättad text',
+    });
+    expect(rattad.status).toBe('forslag');
+    expect(rattad.contract_part_id).toBeNull();
+    expect((await post(id)).description).toContain('rättad text');
+  });
+
   it("statusen 'fakturerad' kan aldrig sättas för hand — låset är faktureringens", async () => {
     const id = await ettForslag({ project_id: nvrPilot, source_ref: 'calendar:jj5' });
     const res = await act('approve_time_entries', { ids: [id], status: 'fakturerad' });
@@ -672,6 +698,24 @@ describe('/tid/forslag — kön', () => {
     const rad = await post(id);
     expect(rad.status).toBe('justerad');
     expect(rad.billable_minutes).toBe(90);
+  });
+
+  it('"Faktureras ej" går igenom utan vald avtalsdel — "Godkänn" gör det inte', async () => {
+    const id = await ettForslag({ project_id: nvrFas2, source_ref: 'calendar:rr5' });
+    // Godkännandet kräver klassificeringen, och säger det med tjänstens text.
+    const godkann = await postaFormular(`/app/c/${companyId}/tid/forslag/rad`, {
+      id, atgard: 'godkann', project_id: nvrFas2, back: kon(),
+    });
+    expect(godkann.fel).toContain('uppdraget har avtalsdelar');
+    expect((await post(id)).status).toBe('forslag');
+
+    // Samma rad, samma tomma väljare: att säga "det här ska inte faktureras"
+    // förbrukar inget tak och kräver därför ingen del.
+    const ignorera = await postaFormular(`/app/c/${companyId}/tid/forslag/rad`, {
+      id, atgard: 'ignorera', project_id: nvrFas2, adjustment_reason: 'Feltolkad kalenderpost', back: kon(),
+    });
+    expect(ignorera.fel).toBeNull();
+    expect((await post(id)).status).toBe('ignorerad');
   });
 
   it('"Byt avtalsdel" klassar posten utan att godkänna den', async () => {

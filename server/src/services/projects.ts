@@ -494,13 +494,21 @@ export async function updateTimeEntry(
     );
   }
 
-  // Avtalsdelen: den som skickas med prövas mot uppdraget, den som redan står
-  // på raden räcker. Saknas den helt och uppdraget har avtalsdelar är det samma
-  // krav som vid registreringen — annars vore vägen runt klassificeringen att
-  // skapa posten före avtalet och ändra den efteråt.
+  // Avtalsdelen: den som skickas med prövas ALLTID mot uppdraget, och den som
+  // redan står på raden räcker. Att den måste FINNAS prövas däremot bara när
+  // tiden blir debiterbar — alltså när målstatus är 'godkand'/'justerad'.
+  //
+  // Vägen runt klassificeringen (skapa posten före avtalet och ändra den
+  // efteråt) stängs av exakt samma villkor, för den vägen slutar alltid i ett
+  // godkännande. Att kräva delen dessförinnan låste i stället kön: ett
+  // skräpförslag — en 0-minuters mailmarkering — gick varken att ignorera
+  // eller texträtta utan att först klassas mot ett tak det aldrig ska
+  // förbruka, och en kö som inte går att tömma slutar man titta i.
   const del = input.contract_part_id
     ? await avtalsdelForTidpost(client, companyId, rad.project_id, input.contract_part_id)
-    : rad.contract_part_id ?? await avtalsdelForTidpost(client, companyId, rad.project_id, undefined);
+    : rad.contract_part_id ?? (arGodkannande(nyStatus)
+      ? await avtalsdelForTidpost(client, companyId, rad.project_id, undefined)
+      : null);
 
   const speglat = speglingar(nyStatus);
   // Godkännandespåret sätts när posten BLIR godkänd (eller justerad-godkänd).

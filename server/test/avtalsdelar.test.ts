@@ -145,6 +145,49 @@ describe('avtalsdelen krävs när uppdraget har en', () => {
   });
 });
 
+// Rättelse 7b (överlämning #99): kravet prövas när tiden blir DEBITERBAR.
+// Posten nedan är den som uppstår i verkligheten — den registrerades innan
+// avtalet fanns i systemet och bär därför ingen del. Att klassa den är ett
+// omdöme; att lägga undan den ska aldrig kräva ett omdöme om ett tak den
+// aldrig kommer att förbruka.
+describe('kravet på avtalsdel prövas vid övergången till debiterbar tid', () => {
+  /** En post utan del på ett uppdrag som FÅR avtalsdelar först efteråt. */
+  async function postUtanDel(namn: string): Promise<{ post: string; delId: string }> {
+    const projekt = await nyttUppdrag(namn);
+    const p = await loggaTid(projekt, { work_date: '2026-03-05', minutes: 60, description: 'Innan avtalet fanns' });
+    expect(p.contract_part_id).toBeNull();
+    const avtal = await nyttAvtal(projekt, `${namn} — avtal`);
+    const skapat = await ok('upsert_contract_part', { contract_id: avtal, code: '1', name: 'Fas 1' });
+    return { post: p.id as string, delId: del(skapat, '1').part_id };
+  }
+
+  it('att lägga undan posten kräver ingen del — att göra den debiterbar igen gör det', async () => {
+    const { post } = await postUtanDel('Undanlagd utan del');
+    const undanlagd = await ok('update_time_entry', {
+      time_entry_id: post, status: 'ignorerad', adjustment_reason: 'Eget arbete, inte kundens',
+    });
+    expect(undanlagd.status).toBe('ignorerad');
+    expect(undanlagd.contract_part_id).toBeNull();
+
+    // Tillbaka mot fakturan: här — och bara här — gäller klassificeringen.
+    const ater = await act('update_time_entry', { time_entry_id: post, status: 'godkand' });
+    expect(ater.status, JSON.stringify(ater.body)).toBe(400);
+    expect(ater.body.error).toBe('contract_part_required');
+    expect((await tidpost(post)).status).toBe('ignorerad');
+  });
+
+  it('delen i SAMMA anrop som godkännandet räcker — inget mellansteg krävs', async () => {
+    const { post, delId } = await postUtanDel('Godkänd med del i samma anrop');
+    const godkand = await ok('update_time_entry', {
+      time_entry_id: post, status: 'justerad', billable_minutes: 45,
+      adjustment_reason: '15 min var intern administration', contract_part_id: delId,
+    });
+    expect(godkand.status).toBe('justerad');
+    expect(godkand.contract_part_id).toBe(delId);
+    expect((await tidpost(post)).billable_minutes).toBe(45);
+  });
+});
+
 describe('taxan hämtas i ordningen post → del → avtal → uppdrag', () => {
   it('varje nivå vinner över nästa, och fakturaraderna grupperas per avtalsdel', async () => {
     const projekt = await nyttUppdrag('Taxaordningen', PROJEKTTAXA);
