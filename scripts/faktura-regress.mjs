@@ -24,7 +24,13 @@ const inv = (await c.query(
 const co = (await c.query('select * from companies where id = $1', [companyId])).rows[0];
 await c.end();
 
-const { generateInvoicePdfFile } = await import('/opt/redovisning/server/dist/services/invoices.js');
+// Läs den release som FAKTISKT körs, inte arbetskopian. /opt/redovisning är
+// CTO-motorns arbetskatalog och kan stå på vilken gren som helst; att prova
+// koden där hade svarat på fel fråga.
+const ROT = fs.existsSync('/opt/redovisning-app/current')
+  ? fs.realpathSync('/opt/redovisning-app/current')
+  : '/opt/redovisning';
+const { generateInvoicePdfFile } = await import(`${ROT}/server/dist/services/invoices.js`);
 const { buffer } = await generateInvoicePdfFile(companyId, userId, INVOICE_ID);
 
 // PDFKit skriver strömmen okomprimerad (compress: false) och kodar text i
