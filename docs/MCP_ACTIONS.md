@@ -546,3 +546,77 @@ ställe (`server/src/lib/duration.ts`) för både vyn och AI-vägen.
   (datum, tid, debiterbar tid, beskrivning, avtalsdel, status, justeringsorsak),
   underlagslänkarna och postens egen historik ur revisionsloggen. En fakturerad
   post renderas **låst**, med 409-texten utskriven och utan formulär.
+
+## Tidsförslag: batchintag, kö och batchgodkännande (story 7)
+
+Mottagarsidan för AI-föreslagen tid. Skriven FÖRE Hermes-skillen (story 8) med
+flit: ett intag vars form uppfinns av avsändaren ändras varje gång avsändaren
+ändrar sig. Skillen blir konfiguration mot ett färdigt kontrakt.
+Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står i
+`docs/crm/API_KONTRAKT.md`, avsnittet *Tidsförslag*.
+
+- `propose_time_entries` (write, agent- eller människotoken) — `events[]`, max
+  500. Per händelse: `project_id` **eller** `project_hint`, valfritt
+  `contract_part_id`/`part_hint`, `work_date`, `minutes` (**0–1440**, noll
+  tillåtet), `description`, `source` (`kalender`|`mail`|`harledd`),
+  `source_ref`, `uncertainty` (`lag`|`medel`|`hog`) och `reasoning` (max 500
+  tecken). Skapar `time_entries` med status **`forslag`**,
+  `billable_minutes = minutes` och speglingarna ur `speglingar()`. Svar:
+  `{received, created, duplicates, unresolved[], unsorted, overlaps_manual,
+  skipped[]}`. **Savepoint per händelse** som `ingest_crm_events` — en trasig
+  rad stoppar inte batchen, den hamnar i `skipped`.
+- **Idempotens (migration 0066):** unikt partiellt index på
+  `time_entries (company_id, source_ref) WHERE source_ref IS NOT NULL`. Ett
+  källid som redan finns hoppas över och räknas i `duplicates` — aldrig en
+  uppdatering, aldrig en andra rad. Samma batch två gånger ger idel
+  `duplicates` och noll nya rader; det är kvittot på att nattjobbet tål att
+  köras om.
+- **`project_hint` utan träff → uppdraget `Osorterat`** (skapas vid behov,
+  exakt en gång per bolag) och hinten redovisas i `unresolved`
+  (`"kund: Acme AB"`). Uppslaget är entydigt eller inget: uppdragets namn,
+  kundens namn, kundens e-postdomän eller relationsytans webbplats — träffar
+  ledtråden två aktiva uppdrag blir det `Osorterat`, för en gissning hade lagt
+  arbetet på fel kunds faktura. `part_hint` utan träff lämnar avtalsdelen tom
+  och redovisas som `"avtalsdel: Fas 2A"`. Ett förslag **får** sakna avtalsdel
+  även när uppdraget har delar — kravet ställs först vid godkännandet.
+- **Dubblettskydd mot människans rad:** finns redan en post med
+  `source = 'manuell'` på samma uppdrag och samma dag sätts `overlaps_manual`
+  på förslaget, och kön frågar *"redan registrerad?"*. Vi vägrar inte — det kan
+  vara två olika arbeten — men en tyst andra rad är hur samma timme faktureras
+  två gånger.
+- `approve_time_entries` (write) — `ids[]` (max 500), valfria `status`
+  (`godkand`|`justerad`|`ignorerad`, default `godkand`) och
+  `adjustment_reason` som gäller hela batchen, samt `per_id[]` med
+  `{id, status?, billable_minutes?, adjustment_reason?, contract_part_id?,
+  project_id?}` för raderna som avviker. Svar:
+  `{processed, godkand, justerad, ignorerad, moved}`.
+  - Statusbytet går genom **`updateTimeEntry`** och därmed genom
+    `TILLATNA_BYTEN`, kravet på skäl för `justerad`/`ignorerad`, kravet på
+    avtalsdel (400 `contract_part_required`) och låset mot fakturerade poster
+    (409 `time_entry_locked`). Inga egna kopior av reglerna.
+  - **`godkand`/`justerad` kräver `minutes > 0`** (400 `minutes_required`): en
+    0-minuters mailmarkering måste få tid satt på postens egen sida — eller
+    ignoreras. Schemats CHECK bär samma regel: noll minuter tillåts bara för
+    `forslag` och `ignorerad`.
+  - **Osorterat-spärren:** `godkand`/`justerad` på en post vars uppdrag är
+    `Osorterat` ger **409 `unsorted_project`**. `project_id` i samma anrop
+    flyttar posten till rätt uppdrag (avtalsdelen nollas, auditrad
+    `time_entry.moved_project`) och godkänner sedan. `ignorerad` går alltid.
+  - **Batchen är allt eller inget.** Faller en rad rullas hela anropet
+    tillbaka. Ett tyst överhopp hade lämnat kön till synes tömd med en post
+    kvar — samma familj som julifelet.
+- **Gallring av `reasoning` (KRAV-10):** motiveringen nollställs i SAMMA
+  transaktion som posten blir `fakturerad` (`lasTidposterTillFaktura`), och för
+  `ignorerad`-poster äldre än **90 dagar** via `purge_crm_data`, som nu också
+  svarar `time_entry_reasoning_cleared`. `source_ref` behålls som spår.
+- **Vysidan `/app/c/:companyId/tid/forslag`** (menyposten *Tidsförslag*):
+  förslagen grupperade per dag, nyaste dagen överst, äldre ligger kvar — ingen
+  ålderströskel, inget förfallodatum. Rubriken (och bara den) visar antalet
+  obehandlade dagar. Per rad: uppdrag och avtalsdel som `select`, registrerad
+  tid → debiterbar tid, beskrivning, `source_ref` + `reasoning` bakom en
+  `details`, osäkerhetsmarkering och knapparna **Godkänn · Justera · Faktureras
+  ej · Byt avtalsdel** i ETT formulär, så att ett uppdragsbyte och ett
+  godkännande blir ett enda anrop utan sidbyte. *Godkänn hela dagen* finns per
+  dag, är aldrig förvald, kräver sitt eget bekräftande klick och räknar bara de
+  poster som verkligen går igenom — resten står kvar med sitt villkor utskrivet
+  på raden. Kön grindar aldrig fakturan.

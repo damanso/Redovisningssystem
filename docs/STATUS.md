@@ -145,6 +145,82 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (förslagsintaget och förslagskön — PRD_TIDSRAPPORTERING story 7):**
+  Story 1–5 gav tidposten en livscykel, fakturan atomicitet, avtalet ett tak,
+  rapporterna en yta och vyn en skrivväg. Kvar stod mottagarsidan för det som
+  kommer UTIFRÅN: kalendern och mailen. Kontraktet är skrivet FÖRE
+  Hermes-skillen (story 8) med flit — ett intag vars form uppfinns av
+  avsändaren ändras varje gång avsändaren ändrar sig.
+
+  Byggt: **migration 0066** (unikt partiellt index på
+  `(company_id, source_ref)`, kolumnerna `uncertainty`/`reasoning`/
+  `overlaps_manual`, och 0017:s `minutes > 0` ersatt), ny tjänstefil
+  `services/timeProposals.ts`, actionsen `propose_time_entries` och
+  `approve_time_entries`, samt vysidan `/app/c/:id/tid/forslag` (menyposten
+  **Tidsförslag**). Ingen ny CSS, inga nya beroenden; `projects.ts`
+  (utom tre kolumner i `listTimeEntries`:s SELECT), `contracts.ts`,
+  `timeReports.ts` och faktureringsflödet (utom `reasoning = NULL`) är orörda.
+
+  1. **Idempotensen är hela intaget.** Kalendern läses om varje natt. En
+     dubblerad kontaktpunkt är brus; en **dubblerad tidpost är pengar** på
+     nästa faktura. Ett redan sett `source_ref` hoppas över och räknas som
+     `duplicates` — det UPPDATERAS aldrig, för ett förslag är ett påstående vid
+     en tidpunkt, inte ett fält synken äger. Uppslaget sker före skrivningen och
+     det unika indexet är andra försvarslinjen (två samtidiga batchar hinner
+     annars båda göra sitt uppslag); en 23505 räknas som den dubblett den är,
+     inte som ett fel avsändaren ska försöka laga.
+  2. **Ingen post tappas — men en oplacerad post kan inte bli pengar.** En hint
+     utan ENTYDIG träff landar på uppdraget `Osorterat` (skapas en gång per
+     bolag, via `createProject` så numret och auditraden blir husets) och
+     redovisas i `unresolved`. Tvetydigt räknas som ingen träff: en gissning
+     hade lagt arbetet på fel kunds faktura utan att något i svaret sagt det
+     (samma felklass som lärdom 7). Priset står i 409 `unsorted_project`:
+     `godkand`/`justerad` går inte förrän någon sagt vems arbetet var —
+     `project_id` i samma anrop flyttar och godkänner i ett svep.
+  3. **Nollan är en riktig uppgift.** Ett mailspår har ingen varaktighet.
+     `minutes = 0` tas emot, men CHECK-villkoret släpper bara igenom nollan för
+     `forslag` **och `ignorerad`** — de två statusar som ligger utanför
+     fakturan. Kravtexten skrev "endast forslag"; `ignorerad` måste rymmas där
+     också, annars stänger schemat den enda väg KRAV-6 pekar ut för en
+     mailmarkering som inte ska få tid ("få tid satt ELLER ignoreras").
+     `godkand`/`justerad` kräver `minutes > 0` (400 `minutes_required`).
+  4. **Godkännandet äger inga egna regler.** Statusbytet går genom
+     `updateTimeEntry` och därmed genom `TILLATNA_BYTEN`, kravet på skäl,
+     `contract_part_required` och låset mot fakturerade poster. Två
+     uppsättningar regler för samma övergång betyder att minst en är fel utan
+     att någon vet vilken. Batchen är allt eller inget: ett tyst överhopp hade
+     lämnat kön till synes tömd med en post kvar.
+  5. **Kön är husets `.ai-card`, inte en ny komponent.** Ett tidsförslag är
+     samma sorts sak som ett förslag i Att göra, så det bär samma kort, samma
+     `aiMarkning()` (AI-förordningen art. 50), samma `.andring` för
+     registrerat → debiterbart och samma `.ai-actions`. Noll ny CSS. En rad är
+     ETT formulär med fyra namngivna submit-knappar, så uppdragsbyte och
+     godkännande blir ett anrop utan sidbyte. Det som inte går att godkänna
+     säger varför PÅ raden, och "Godkänn hela dagen" räknar bara de poster som
+     verkligen går igenom — en knapp som lovar något systemet kommer att neka
+     är en fälla. Kön grindar aldrig fakturan och förfaller aldrig.
+  6. **Motiveringen gallras, spåret behålls.** `reasoning` nollställs i samma
+     sats som posten låses till fakturan, och efter 90 dagar för `ignorerad`
+     via `purge_crm_data` (som nu svarar `time_entry_reasoning_cleared`).
+     `source_ref` står kvar — samma hållning som `crm.field_provenance`.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/tidsforslag.test.ts` (samma batch två gånger = idel
+  duplicates, dubbletten inom EN batch, den trasiga raden som inte stoppar
+  batchen, entydig ledtråd på kundnamn och domän, tvetydig ledtråd → Osorterat,
+  engångsskapandet, förslag utan avtalsdel, part_hint med och utan träff,
+  `overlaps_manual`, batchgodkännande med justering, `ignorerad` kräver orsak,
+  `contract_part_required`, minutes 0 som tas emot men aldrig godkänns,
+  409 `unsorted_project` + flytt i samma anrop, hela batchen som rullas
+  tillbaka, ignorerad tid utanför beloppet men listbar, reasoning-gallringen
+  vid fakturering och efter 90 dagar, kösidans dagräknare och gruppering,
+  AI-märkningen, dagen som klaras med två klick, "Godkänn hela dagen",
+  Osorterat-raden i vyn, och tenant-gränsen mot bolag B).
+
+  **Kvarstår för David:** kör `npm run migrate` (0066). Story 8 (Hermes-skillen
+  som läser kalender och mail) och story 9 (flera personer) är INTE byggda här.
+
 - **2026-09-02 (snabbformulär och redigeringssida för tid — PRD_TIDSRAPPORTERING
   story 5):** Story 1–4 gav tidsposten en livscykel, fakturan atomicitet, avtalet
   ett tak och rapporterna en yta. Kvar stod PRD §4 F1: **tid gick att SE i vyn

@@ -200,6 +200,101 @@ Kadensen finns för att en gemensam tystnadsgräns passar ingen: en kund på
 månadsretainer och en kund vartannat år kan inte dela gräns. Klockan nollställs
 av **kontakt**, aldrig av inställningen.
 
+## Tidsförslag
+
+`POST /api/companies/<company_id>/actions/propose_time_entries`
+
+Samma riktning, samma auth och samma form som `ingest_crm_events`: avsändaren
+(kalender- och mailspåret hos Hermes) skickar en batch, det här repot tar emot.
+Skillnaden mot kontaktpunkterna är vad en dubblett kostar — en dubblerad
+kontaktpunkt är brus, en dubblerad **tidpost är pengar på nästa faktura**.
+
+```jsonc
+{
+  "events": [
+    {
+      "project_hint": "Nordic Vision Retail AB",   // kundnamn ELLER domän ("nvr.example")
+      "part_hint": "2A",                            // avtalsdelens kod eller namn
+      "work_date": "2026-09-02",
+      "minutes": 90,
+      "description": "Genomgång av testfall inför fas 2A.",
+      "source": "kalender",
+      "source_ref": "calendar:6f21ab90",
+      "uncertainty": "lag",
+      "reasoning": "Kalenderhändelse 90 min med kundens projektledare, rubriken nämner fas 2A."
+    },
+    {
+      "project_id": "…uuid…",
+      "work_date": "2026-09-02",
+      "minutes": 0,                                 // mailspår: ATT något hände, inte hur länge
+      "description": "Svar om leveransdatum.",
+      "source": "mail",
+      "source_ref": "gmail:18f2c9a1b7",
+      "uncertainty": "hog",
+      "reasoning": "Utgående mail i kundens tråd; ingen varaktighet går att härleda."
+    }
+  ]
+}
+```
+
+Max 500 händelser per anrop. Allt som kommer in får status **`forslag`** och
+kan aldrig hamna på en faktura utan att en människa godkänt det i vyn.
+
+### Reglerna
+
+**1. `source_ref` är idempotensnyckeln.** `(company_id, source_ref)` är unikt i
+databasen. Ett källid som redan finns hoppas över och räknas i `duplicates` —
+det **uppdateras aldrig**. Ett förslag är ett påstående vid en tidpunkt, inte
+ett fält synken äger; ändrar sig kalendern är det en ny händelse med ett nytt
+id. Samma batch två gånger ska ge idel `duplicates` och noll nya rader.
+
+**2. `minutes` får vara 0.** Ett mailspår säger att något hände, inte hur
+länge. Nollan kan aldrig godkännas — mottagaren måste sätta en tid eller
+markera posten som "faktureras ej". Skicka aldrig en gissad varaktighet för att
+slippa nollan: en påhittad kvart blir en påhittad faktura.
+
+**3. En ledtråd som inte träffar tappar aldrig posten.** `project_hint` utan
+entydig träff landar på bolagets uppdrag `Osorterat` och redovisas i
+`unresolved`. Där kan posten inte bli fakturerbar tid förrän en människa flyttat
+den (409 `unsorted_project`) — posten finns, men den kan inte bli pengar förrän
+någon sagt vems arbetet var. `part_hint` utan träff lämnar avtalsdelen tom.
+
+**4. En trasig händelse stoppar inte batchen.** Savepoint per händelse; det som
+inte gick igenom returneras i `skipped` med index och skäl.
+
+**5. `reasoning` är EN mening om varför — aldrig innehållet.** Max 500 tecken.
+**Aldrig ordagrann mailtext, aldrig ett citat, aldrig tredje parts namn utöver
+kundens organisation.** Skriv varför posten föreslogs och lämna `source_ref` som
+pekare till underlaget; den som vill läsa mailet läser mailet där det bor. Det
+här är samma regel som gäller `crm.audit_log.details` och av samma skäl:
+motiveringen gallras (se *Gallring*), och det som lagts in som fritext överlever
+annars sin egen gallring.
+
+### Svaret
+
+```jsonc
+{
+  "status": "ok",
+  "action": "propose_time_entries",
+  "result": {
+    "received": 2,
+    "created": 2,
+    "duplicates": 0,
+    "unresolved": [],
+    "unsorted": 0,
+    "overlaps_manual": 1,
+    "skipped": []
+  }
+}
+```
+
+`unresolved` listar ledtrådarna som inte gick att slå upp (`"kund: Acme AB"`,
+`"avtalsdel: Fas 2A"`) — av samma skäl som `unlinked_organizations`: raden
+skrevs, inget fel returnerades, men den ligger i `Osorterat`. Ett tomt fält är
+kvittot. `overlaps_manual` räknar de förslag där det redan fanns manuellt
+registrerad tid samma dag på samma uppdrag; kön frågar då "redan registrerad?"
+i stället för att lägga en tyst andra rad.
+
 ## Gallring
 
 `set_crm_retention` / `get_crm_retention` sätter och läser perioden i månader;
@@ -219,6 +314,13 @@ Gallringen tar kontaktpunkter och stängda löften, och rensar dessutom
 gallrats bort — en pekare till ett raderat mail får inte överleva sin egen
 gallring. Klassificeringen (`human`/`sync`/`ai`) beskriver värdet som står kvar
 och behålls.
+
+Samma körning nollställer **`reasoning` på ignorerade tidsförslag äldre än 90
+dagar** (`time_entry_reasoning_cleared` i svaret). Perioden är fast och styrs
+inte av `older_than_months`: relationsdatans period är ett verksamhetsbeslut, en
+AI-motivering är ett arbetsmaterial. Motiveringen nollställs dessutom i samma
+transaktion som posten blir **fakturerad** — då är bedömningen gjord och
+underlaget är fakturan. `source_ref` behålls som spår i båda fallen.
 
 ## Vad som räknas fram på den här sidan
 

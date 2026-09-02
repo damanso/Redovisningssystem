@@ -41,3 +41,24 @@ npm test            # vitest mot riktig Postgres (se test/env.ts för anslutning
 npm run build       # tsc — ska passera utan fel
 npm run migrate     # kör migrationskedjan (idempotent)
 ```
+
+
+---
+
+## Uppdragsytan — fjärde paketet (kravbild finns, bygg inte utan att läsa den)
+
+En projektmodul planeras i det här systemet. **Kravbilden är skriven och validerad. Läs den innan du rör något som heter uppdrag, baseline, leverabel eller bedömning.**
+
+| Vad | Var i brain-vaulten |
+|---|---|
+| PRD, 32 FR + 12 NFR | `02-Områden/hermes/uppdragsytan-1c-prd.md` |
+| Valideringsrapport, 13 pass | `02-Områden/hermes/uppdragsytan-1c-valideringsrapport.md` |
+| Product brief med beslutslogg | `02-Områden/hermes/uppdragsytan-1b-product-brief.md` |
+| Davids svar och åtgärder | `02-Områden/hermes/uppdragsytan-1c-svar.md` |
+| Skillen som genererar PRD:n | `03-Resurser/scripts/bmad_prd.py` |
+
+**Ramverket är BMAD Loop 1.** Steg 1A, 1B och 1C är klara. Nästa steg är 1D, UX-specifikationen. Skriv ingen kod förrän 1F har gett stories.
+
+**Två villkor spärrar bygget.** Kopplingsprovet K-8 står rött i provvakten, och tre krav vilar på ett fryst leveranskontrakt som ännu bara är utkast. Båda ska vara gröna först.
+
+**Beslutat och stängt, öppna det inte igen:** modulen är en modul här, ingen egen tjänst och ingen fjärde databas. Den äger baselinen, leverabelregistret och bedömningen. Pengar, ärenden och filer läses ur sina källsystem och dupliceras aldrig.
