@@ -12,6 +12,7 @@
 // högst upp, inte gömmas i en rapportbilaga.
 import type { PoolClient } from 'pg';
 import { monthlyRevenue } from './reports.js';
+import { unbilledTimeReport } from './timeReports.js';
 
 export interface SteeringOverview {
   as_of: string;
@@ -75,13 +76,13 @@ export async function steeringOverview(
        AND i.status NOT IN ('paid', 'cancelled')`,
     [companyId],
   );
-  // Ofakturerad fakturerbar tid, värderad till tidpostens eller projektets taxa.
-  const unbilled = await client.query<{ ore: string }>(
-    `SELECT COALESCE(sum(round(t.minutes * COALESCE(t.hourly_rate_ore, p.hourly_rate_ore, 0) / 60.0)), 0) AS ore
-     FROM time_entries t JOIN projects p ON p.id = t.project_id AND p.company_id = t.company_id
-     WHERE t.company_id = $1 AND t.billable AND NOT t.invoiced`,
-    [companyId],
-  );
+  // Ofakturerad tid — hämtad ur den ENDA definitionen (services/timeReports.ts),
+  // inte ur en egen SQL-formel. Den gamla formeln här räknade `billable AND NOT
+  // invoiced` utan avtalstaxa och utan tidspostens livscykel: ett AI-förslag
+  // ingen godkänt räknades som intjänade pengar, och en post på en avtalsdel med
+  // egen taxa värderades till uppdragets. Två formler för samma fråga ger två
+  // tal, och då är minst ett fel utan att någon vet vilket.
+  const unbilledReport = await unbilledTimeReport(client, companyId, { to: asOf });
   // Abonnemangens värde per månad: radsumman delad på intervallets längd.
   //
   // Raden kan prissättas på TVÅ sätt: ett uttryckligt pris, eller en artikel
@@ -103,7 +104,7 @@ export async function steeringOverview(
   );
 
   const receivablesOre = Number(receivables.rows[0]!.ore);
-  const unbilledOre = Number(unbilled.rows[0]!.ore);
+  const unbilledOre = unbilledReport.totals.amount_ore;
   const recurringMonthOre = Number(recurring.rows[0]!.ore);
   const known3 = receivablesOre + unbilledOre + recurringMonthOre * 3;
   const avgCost = cost12 > 0 ? round(cost12 / 12) : 0;

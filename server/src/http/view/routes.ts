@@ -35,6 +35,7 @@ import { searchCrm } from '../../services/crmMerge.js';
 import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPersonnamn,
   slaIhopPersoner, stadbild, type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
+import { contractUsageReport, unbilledTimeReport, type CapStatusLabel } from '../../services/timeReports.js';
 import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
@@ -1473,6 +1474,184 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     return { name: company.name, body: b };
   });
   res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// ---------------------------------------------------------------------------
+// Tid (PRD_TIDSRAPPORTERING story 4): ofakturerad godkänd tid, stillastående
+// uppdrag och avtalsförbrukning — samma tjänstefunktioner som de tre actionsen.
+//
+// Sidan finns därför att juli- och augustifelet inte gick att SE. Talen fanns i
+// databasen hela tiden; det som saknades var en yta där de står utan att någon
+// ställt frågan. Därför leder sidan med två tal och inte med fyra: hur mycket
+// ligger ofakturerat, och hur länge har det legat. Åldern är det som gör
+// beloppet till ett problem.
+//
+// Tabellen är EN tabell i tre nivåer (kund → uppdrag → avtalsdel) och inte tre
+// tabeller: sammanhanget mellan kunden, uppdraget och avtalsdelen ÄR svaret.
+// Betalningskolumnerna hänger på kundraden, och på nivåerna under står de som
+// tankstreck — samma märke som resten av huset använder för "inget värde här",
+// aldrig en nolla som ser ut som ett mätvärde.
+// ---------------------------------------------------------------------------
+
+/** Hela dagar mellan två ISO-datum. Rapporten räknar ålder mot sitt skärdatum. */
+const dagarMellan = (fran: string, till: string): number =>
+  Math.round((Date.parse(till) - Date.parse(fran)) / 86_400_000);
+
+/** Åldern på den äldsta ofakturerade posten. Färgen är hela poängen. */
+function alderChip(dagar: number): Raw {
+  if (dagar >= 60) return chip(`${dagar} dagar`, 'neg', '!');
+  if (dagar >= 30) return chip(`${dagar} dagar`, 'warn', '!');
+  return chip(`${dagar} dagar`, 'muted');
+}
+
+const takstatusChip = (status: CapStatusLabel): Raw =>
+  status === 'över tak' ? chip('Över tak', 'neg', '!')
+    : status === '80–100 %' ? chip('80–100 %', 'warn', '!')
+    : status === 'under 80 %' ? chip('Under 80 %', 'ok', '✓')
+    : chip('Vet ej', 'muted');
+
+/** Taket som text: avtalet kan skriva det i timmar, i kronor eller i båda. */
+function takText(capHours: number | null, capAmountOre: number | null): Raw {
+  const delar: Raw[] = [];
+  if (capHours !== null) delar.push(html`${String(capHours).replace('.', ',')} h`);
+  if (capAmountOre !== null) delar.push(html`${amount(capAmountOre, { unit: false })}`);
+  if (delar.length === 0) return amount(null);
+  return html`${delar.map((d, i) => html`${i > 0 ? ' · ' : ''}${d}`)}`;
+}
+
+viewRouter.get('/c/:companyId/tid', pageFor('tid', 'Tid', async (client, companyId) => {
+  const rapport = await unbilledTimeReport(client, companyId, {});
+  const avtal = await contractUsageReport(client, companyId);
+  const t = rapport.totals;
+  const alder = t.oldest_work_date === null ? null : dagarMellan(t.oldest_work_date, rapport.to);
+  // Betalningskolumnerna finns inte på uppdrags- och avtalsdelsnivå: de mäts
+  // per kund. Tankstrecket säger det; en nolla hade ljugit.
+  const utanVarde = html`<td class="num">${amount(null)}</td><td class="num">${amount(null)}</td>`;
+
+  return html`<div class="page-head"><div>${eyebrow('Tid')}<h1>Ofakturerad tid</h1>
+      <p class="lede">Godkänd och justerad tid som ännu inte ligger på någon faktura, per kund, uppdrag och avtalsdel — värderad med avtalets taxa (post → avtalsdel → avtal → uppdrag), t.o.m. <span class="code">${rapport.to}</span>.
+      Kunder utan ofakturerad tid står inte här; deras obetalda fakturor finns i <a href="/app/c/${companyId}/receivables">kundreskontran</a>.</p></div></div>
+    <div class="kpi-grid">
+      ${kpiCell('Ofakturerat', amount(t.amount_ore))}
+      ${kpiCell('Äldsta posten', alder === null
+        ? html`<span class="muted">—</span>`
+        : html`<span class="code">${t.oldest_work_date!}</span> ${alderChip(alder)}`)}
+      ${kpiCell('Fakturerat, obetalt', amount(t.invoiced_unpaid_ore))}
+      ${kpiCell(`Betalt sedan ${rapport.period_from}`, amount(t.paid_in_period_ore))}
+    </div>
+    ${
+      alder !== null && alder >= 30
+        ? html`<p class="lede" style="margin-top:12px">${chip('Ligger och väntar', 'neg', '!')}
+            <span class="muted">Den äldsta ofakturerade posten är från ${t.oldest_work_date!} — ${alder} dagar sedan. Utfört arbete som inte fakturerats är inte en försening, det är en intäkt som ännu inte finns.</span></p>`
+        : ''
+    }
+
+    <h2 style="margin-top:22px">Ofakturerad tid per kund</h2>
+    ${
+      rapport.customers.length === 0
+        ? html`<div class="empty"><div class="big">Ingen ofakturerad tid</div>All godkänd tid t.o.m. ${rapport.to} ligger på en faktura. Nya poster dyker upp här så fort de godkänts.</div>`
+        : html`<div class="table-wrap" tabindex="0" role="region" aria-label="Ofakturerad tid per kund"><table>
+            <thead><tr><th>Kund, uppdrag och avtalsdel</th><th class="num">Poster</th><th class="num">Registrerat</th>
+              <th class="num">Debiterbart</th><th class="num">Ofakturerat</th><th class="num">Fakturerat, obetalt</th>
+              <th class="num">Betalt i perioden</th><th>Äldsta</th></tr></thead>
+            <tbody>
+              ${rapport.customers.map((k) => html`
+                <tr>
+                  <td><strong>${entityLink(companyId, 'customer', k.customer_id, k.customer_name)}</strong></td>
+                  <td class="num">${k.entries}</td>
+                  <td class="num">${hhmm(k.minutes)}</td>
+                  <td class="num">${hhmm(k.billable_minutes)}</td>
+                  <td class="num"><strong>${amount(k.unbilled_ore, { unit: false })}</strong></td>
+                  <td class="num">${amount(k.invoiced_unpaid_ore, { unit: false })}${
+                    k.invoiced_unpaid_buckets.d90_plus_ore > 0
+                      ? html`<br>${chip('mer än 90 d förfallet', 'neg', '!')}`
+                      : ''
+                  }</td>
+                  <td class="num">${amount(k.paid_in_period_ore, { unit: false })}</td>
+                  <td class="code">${k.oldest_work_date ?? ''}</td>
+                </tr>
+                ${k.projects.map((p) => html`
+                  <tr>
+                    <td style="padding-left:34px">Uppdrag ${p.project_number} · ${entityLink(companyId, 'project', p.project_id, p.project_name)}</td>
+                    <td class="num">${p.entries}</td>
+                    <td class="num">${hhmm(p.minutes)}</td>
+                    <td class="num">${hhmm(p.billable_minutes)}</td>
+                    <td class="num">${amount(p.amount_ore, { unit: false })}</td>
+                    ${utanVarde}
+                    <td class="code">${p.oldest_work_date ?? ''}</td>
+                  </tr>
+                  ${p.parts.map((d) => html`
+                    <tr>
+                      <td style="padding-left:58px" class="muted">${d.code ? html`Avtalsdel ${d.code} · ${d.name ?? ''}` : 'Tid utan avtalsdel'}</td>
+                      <td class="num">${d.entries}</td>
+                      <td class="num">${hhmm(d.minutes)}</td>
+                      <td class="num">${hhmm(d.billable_minutes)}</td>
+                      <td class="num">${amount(d.amount_ore, { unit: false })}</td>
+                      ${utanVarde}
+                      <td class="code">${d.oldest_work_date ?? ''}</td>
+                    </tr>`)}
+                  ${p.proposal_entries > 0
+                    ? html`<tr><td colspan="8" style="padding-left:34px">${chip(`${p.proposal_entries} förslag väntar`, 'ai')}
+                        <a href="/app/c/${companyId}/projects/${p.project_id}">Granska i ${p.project_name}</a>
+                        <span class="muted">— ett förslag räknas som antal, aldrig i beloppet.</span></td></tr>`
+                    : ''}`)}`)}
+              <tr class="subtot">
+                <td>Summa</td>
+                <td class="num">${t.entries}</td>
+                <td class="num">${hhmm(t.minutes)}</td>
+                <td class="num">${hhmm(t.billable_minutes)}</td>
+                <td class="num">${amount(t.amount_ore, { unit: false })}</td>
+                <td class="num">${amount(t.invoiced_unpaid_ore, { unit: false })}</td>
+                <td class="num">${amount(t.paid_in_period_ore, { unit: false })}</td>
+                <td class="code">${t.oldest_work_date ?? ''}</td>
+              </tr>
+            </tbody></table></div>`
+    }
+
+    <h2 style="margin-top:22px">Uppdrag som ligger still</h2>
+    <p class="lede">Aktiva uppdrag utan en enda tidpost de senaste sju dagarna. Sidan säger ATT det ligger still — aldrig varför; det vet bara den som arbetar där.</p>
+    ${
+      rapport.idle.length === 0
+        ? html`<div class="empty"><div class="big">Ingenting ligger still</div>Varje aktivt uppdrag har fått tid rapporterad den senaste veckan.</div>`
+        : html`<div class="table-wrap" tabindex="0" role="region" aria-label="Uppdrag som ligger still"><table>
+            <thead><tr><th>Uppdrag</th><th>Kund</th><th>Senaste tidpost</th><th>Stilla</th></tr></thead>
+            <tbody>${rapport.idle.map((p) => html`<tr>
+              <td>${entityLink(companyId, 'project', p.project_id, p.project_name)} <span class="code">${p.project_number}</span></td>
+              <td>${entityLink(companyId, 'customer', p.customer_id, p.customer_name ?? '—')}</td>
+              <td class="code">${p.last_work_date ?? ''}</td>
+              <td>${p.last_work_date === null || p.days_idle === null
+                ? chip('Ingen tid rapporterad', 'neg', '!')
+                : alderChip(p.days_idle)}</td></tr>`)}
+            </tbody></table></div>`
+    }
+
+    <h2 style="margin-top:22px">Avtalsförbrukning mot tak</h2>
+    <p class="lede">Förbrukad tid per avtalsdel (godkänd, justerad och fakturerad) mot det tak som gäller i dag. Ett tak ingen bekräftat i avtalshandlingen redovisas som <em>vet ej</em> med förbrukningen bredvid — och varnar aldrig.</p>
+    ${
+      avtal.length === 0
+        ? html`<div class="empty"><div class="big">Inga avtal registrerade</div>Lägg upp avtalet och dess faser (<span class="code">create_contract</span>, <span class="code">upsert_contract_part</span>) så står taken och förbrukningen här.</div>`
+        : html`<div class="table-wrap" tabindex="0" role="region" aria-label="Avtalsförbrukning mot tak"><table>
+            <thead><tr><th>Avtal och avtalsdel</th><th class="num">Förbrukat</th><th class="num">Belopp</th>
+              <th class="num">Tak</th><th class="num">Andel</th><th>Status</th><th class="num">Ofakturerat i delen</th></tr></thead>
+            <tbody>${avtal.map((d, i) => html`
+              ${i === 0 || avtal[i - 1]!.contract_id !== d.contract_id
+                ? html`<tr><td colspan="7"><strong>${d.contract_name}</strong>
+                    <span class="muted">· ${entityLink(companyId, 'project', d.project_id, d.project_name)}${
+                      d.customer_id ? html` · ${entityLink(companyId, 'customer', d.customer_id, d.customer_name)}` : ''
+                    }</span></td></tr>`
+                : ''}
+              <tr>
+                <td style="padding-left:${d.parent_code === null ? '34' : '58'}px">${d.code} · ${d.name}</td>
+                <td class="num">${String(d.used_hours).replace('.', ',')} h</td>
+                <td class="num">${amount(d.amount_ore, { unit: false })}</td>
+                <td class="num">${takText(d.cap_hours, d.cap_amount_ore)}${d.cap_derived ? html` <span class="muted">(ur delarna)</span>` : ''}</td>
+                <td class="num">${d.share === null ? amount(null) : html`${Math.round(d.share * 100)} %`}</td>
+                <td>${takstatusChip(d.status)}</td>
+                <td class="num">${amount(d.unbilled_amount_ore, { unit: false })}</td>
+              </tr>`)}
+            </tbody></table></div>`
+    }
+    <p class="muted" style="font-size:12.5px;margin-top:12px">Samma tal som <span class="code">unbilled_time_report</span>, <span class="code">idle_projects_report</span> och <span class="code">contract_usage_report</span> svarar — sidan och AI:n läser ur exakt samma funktioner, och styrvyns "ofakturerad tid" räknas numera likadant.</p>`;
 }));
 
 // ---------------------------------------------------------------------------

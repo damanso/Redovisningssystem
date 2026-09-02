@@ -145,6 +145,72 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-02 (rapporterna: ofakturerad godkänd tid — PRD_TIDSRAPPORTERING
+  story 4):** Story 1 gav tidsposten en livscykel, story 2 gjorde fakturan
+  atomär, story 3 gav avtalet ett tak. Kvar stod juli- och augustifelet i sin
+  enklaste form: **godkänd tid som aldrig fakturerades syntes ingenstans om
+  ingen frågade.** Ett fel som bara går att upptäcka genom att ställa rätt
+  fråga upptäcks av kunden.
+
+  Ny tjänstefil `services/timeReports.ts` med `unbilledTimeReport`,
+  `idleProjectsReport` och `contractUsageReport`, tre read-actions
+  (`unbilled_time_report`, `idle_projects_report`, `contract_usage_report`) och
+  vysidan `/app/c/:id/tid` (menypost **Tid** under "Lön & projekt"). Ingen
+  migration, inga nya beroenden; `contracts.ts`, `reports.ts`, `projects.ts`,
+  `invoiceFromTime.ts` och `invoiceAppendix.ts` är orörda.
+
+  1. **EN definition av ofakturerad tid, tre ingångar.** Urvalet står i
+     `URVAL` och ingen annanstans, och beloppet går alltid genom
+     `gallandeTaxa` (post → avtalsdel → avtal → uppdrag) + `timeEntryAmountOre`
+     — samma tal som fakturan tar ut. **Styrytans äldre formel är borta:**
+     `steering.ts` rad 79–84 räknade `billable AND NOT invoiced` utan
+     avtalstaxa och utan livscykeln, så ett AI-förslag ingen godkänt räknades
+     som intjänade pengar och en post på en avtalsdel med egen taxa värderades
+     till uppdragets. `coverage.unbilled_time_ore` hämtas nu ur rapportens
+     totalsumma; fältnamn och svarform i `SteeringOverview` är oförändrade, men
+     talets innebörd är skärpt. Två formler för samma fråga ger två tal, och då
+     är minst ett fel utan att någon vet vilket.
+  2. **Nedlagd tid syns, men debiteras inte** (Davids svar på öppen fråga 4).
+     En `ignorerad` post räknas i REGISTRERADE minuter och aldrig i debiterbara
+     eller i beloppet. Ett `forslag` är en egen räknare (`proposal_entries`)
+     bredvid — aldrig minuter, aldrig pengar. Alternativet, att utelämna dem,
+     hade gjort rapporten till en lista över det som redan är i ordning.
+  3. **Betalningsdimensionen ur befintliga funktioner** (CFO:ns tre kolumner):
+     ofakturerat, fakturerat men obetalt (`accountsReceivableAging(to)` med
+     dess förfallo-buckets) och betalt i perioden = inbetalningsverifikaten
+     (`source_type='payment'`) från första dagen i `to`:s kalendermånad t.o.m.
+     `to`. Ingen ny aging-, ingen ny betalningsberäkning — perioden är
+     definierad i koden i stället för att en ny betalningsmodell byggs bredvid
+     den som finns.
+  4. **Stillhetsbevakningen** (CHRO:s punkt) rapporterar **ATT** ett aktivt
+     uppdrag saknar tidpost de senaste sju dagarna, aldrig varför. Ett
+     orsaksfält hade bara blivit en gissning med auktoritet.
+  5. **Vysidan leder med två tal, inte fyra:** hur mycket ligger ofakturerat,
+     och hur gammalt är det äldsta. Åldern är det som gör beloppet till ett
+     problem, och över 30 dagar säger sidan det med ord. Tabellen är EN tabell
+     i tre nivåer (kund → uppdrag → avtalsdel) därför att sammanhanget mellan
+     dem ÄR svaret; betalningskolumnerna hänger på kundraden och står som
+     tankstreck på nivåerna under — aldrig en nolla som ser ut som ett
+     mätvärde. Sidan säger uttryckligen att kunder utan ofakturerad tid inte
+     står där, och länkar till kundreskontran (lärdom 7: en tyst nolla är
+     värre än ett tomt svar). Ingen ny CSS, inga nya komponenter: husets
+     befintliga `page-head`/`kpi-grid`/`table-wrap`/`chip`/`empty`. De breda
+     tabellerna är fokuserbara scrollytor (`tabindex`/`role="region"`) så att
+     de går att nå med tangentbord.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/tid-rapporter.test.ts` (rapporten står på noll direkt
+  efter `create_invoice_from_time` = acceptans 10; ignorerad post i minuter men
+  aldrig i beloppet; förslaget som antal och inte som pengar; taxaordningen i
+  fyra steg och att rapportens summa = fakturans subtotal; betalningarnas tre
+  kolumner inklusive en inbetalning FÖRE perioden som inte får räknas;
+  idle-rapporten mot stilla, nyligen bemannat och stängt uppdrag;
+  fasförälderns andel och upprullade ofakturerade belopp; det obekräftade taket
+  som redovisas som "vet ej"; styrvyns tal = rapportens summa i ett eget bolag;
+  och vysidan med sina tre tabeller). Ett befintligt prov utökat:
+  länkrevisionen i `entity-links.test.ts` renderar nu även `/tid`.
+
 - **2026-09-02 (avtal och avtalsdelar som egna tabeller — PRD_TIDSRAPPORTERING
   story 3):** Story 1 gav tidsposten en livscykel, story 2 gjorde fakturan
   atomär. Kvar stod PRD §1 rad 6: **ILT-avtalets Fas 2A har ett tak på 32 h /

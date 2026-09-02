@@ -284,7 +284,7 @@ describe('KRAV/acceptans 4: länkrevision — noll trasiga länkar', () => {
       '', 'idag', 'invoices', `invoices/${invoiceId}`, 'receipts', 'documents',
       'customers', `customers/${customerId}`, 'suppliers', `suppliers/${supplierId}`,
       'relations', `relations/${organizationId}`, 'commitments',
-      'projects', `projects/${projectId}`, 'receivables', 'payables', 'recurring',
+      'projects', `projects/${projectId}`, 'tid', 'receivables', 'payables', 'recurring',
       'ledger', 'reports', 'analytics', 'steering', 'articles', 'assets',
       'vat', 'tax', 'ec-sales', 'cashflow', 'approvals', 'audit', 'payroll',
       'team', 'connect', 'annual', 'sok?q=nordkust',

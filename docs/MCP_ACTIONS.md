@@ -463,3 +463,52 @@ Tre regler bär hela funktionen:
   minuter — **inga datum**, ur exakt samma låsta urval som fakturaraderna. Tid
   utan avtalsdel hamnar under `Övrigt` när fakturan har klassad tid att stå
   bredvid; är ingen post klassad står uppdragets namn kvar som förut.
+
+## Rapporterna: ofakturerad tid, stillhet och avtalsförbrukning (story 4)
+
+Juli- och augustifelet var inte en felräkning — det var att godkänd, ännu
+ofakturerad tid inte syntes någonstans om ingen frågade. Tre lässvar och vysidan
+`/tid` läser ur SAMMA tjänstefunktioner (`services/timeReports.ts`), och
+styrvyns `coverage.unbilled_time_ore` räknas numera likadant: den äldre formeln
+i `steering.ts` (`billable AND NOT invoiced`, utan avtalstaxa och utan
+livscykeln) är borttagen. **En definition, tre ingångar.**
+
+- `unbilled_time_report` (read) — valfria `customer_id`, `project_id`, `to`
+  (default idag). Svarar per **kund → uppdrag → avtalsdel** med `entries`,
+  `minutes` (REGISTRERAD tid), `billable_minutes`, `amount_ore` och
+  `oldest_work_date`. Urvalet är fakturadragets: `status IN
+  ('godkand','justerad')`, `invoice_id IS NULL`, `work_date <= to`, och beloppet
+  går genom `gallandeTaxa` (post → avtalsdel → avtal → uppdrag) +
+  `timeEntryAmountOre` — samma tal som fakturan tar ut.
+  - En **`ignorerad`** post räknas i `minutes` men aldrig i `billable_minutes`
+    eller `amount_ore`: nedlagd tid ska synas, inte debiteras.
+  - Ett **`forslag`** räknas som `proposal_entries` per uppdrag och kund, och
+    ligger utanför både minuter och belopp — AI:ts gissning är inte intjänade
+    pengar.
+  - **Betalningsdimensionen per kund:** `unbilled_ore`, `invoiced_unpaid_ore`
+    (+ `invoiced_unpaid_buckets` ur `accountsReceivableAging(to)`, ingen ny
+    beräkning) och `paid_in_period_ore` = inbetalningsverifikaten
+    (`source_type='payment'`) med verifikatdatum från `period_from` (första
+    dagen i `to`:s kalendermånad) t.o.m. `to`.
+  - Kunder **utan** ofakturerad tid står inte i svaret; deras obetalda fakturor
+    finns i kundreskontran. Svaret bär också `idle[]` (nedan).
+- `idle_projects_report` (read) — valfritt `days` (heltal ≥ 1, default 7).
+  Uppdrag med status `active` utan en enda tidpost — i NÅGON status — de
+  senaste `days` dagarna: `project_id`, `project_number`, `project_name`,
+  `customer_id`/`customer_name`, `last_work_date` (null = ingen tid alls) och
+  `days_idle`. Rapporterar **ATT** det ligger still, aldrig varför.
+- `contract_usage_report` (read) — **utan indata**: `listContracts` bär redan
+  hela svaret, och ett filter ingen bett om är ett sätt att missa den del som
+  spruckit. En rad per avtalsdel med `billable_minutes`/`used_hours`,
+  `amount_ore` (godkänd + justerad + fakturerad, ur `getContractUsage`),
+  `cap_hours`/`cap_amount_ore`, `cap_derived`, `cap_status`, `share`,
+  `parent_code` och `unbilled_amount_ore`/`unbilled_billable_minutes` ur
+  urvalet ovan. `status` härleds ur `share`/`cap_status`: `'under 80 %'`,
+  `'80–100 %'`, `'över tak'` — eller **`'vet ej'`** när taket saknas eller är
+  obekräftat, för ett oläst tak varnar aldrig. Både förbrukningen och det
+  ofakturerade rullas upp i fasföräldern.
+- **Vysidan `/app/c/:companyId/tid`** (menyposten *Tid* under "Lön & projekt")
+  visar exakt samma tal, JS-fritt: ofakturerad tid per kund med
+  betalningskolumnerna, stillastående uppdrag och avtalsförbrukningen, med länk
+  per rad till uppdraget och en rad "N förslag väntar" (godkännandeytan kommer
+  i story 8).
