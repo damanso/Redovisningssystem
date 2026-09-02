@@ -244,10 +244,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   commits och utan lokala ändringar — en etikett på den gamla main-spetsen.
   Växlad till `main`; grenen är kvar orörd.
 
-  **Kvarstår:** fakturabilagan kräver `entry_date` (NOT NULL) och tillåter
-  `minutes` XOR `amount_ore`, så en tidsbilaga kan inte visa belopp per rad
-  eller utelämna datum. Båda kräver migration. Ingen teckenkodningsbugg finns —
-  titel och ingress lagras med korrekt svenska.
+  **Bilagan (löst i 0063).** Den krävde `entry_date` (NOT NULL) och tillät
+  `minutes` XOR `amount_ore`, så en tidsbilaga kunde varken utelämna datum eller
+  visa belopp per rad — därför fick ILT-bilagan fakturadatumet upprepat på varje
+  rad. Ny sort `'category'`: inga datum, timmar och valfritt belopp per rad.
+  Avsiktligt smal — 'time' och 'expense' är specifikationer PER DATUM och kräver
+  fortfarande datum. Ingen teckenkodningsbugg fanns; titel och ingress lagrades
+  hela tiden med korrekt svenska.
+
+  **Kollision med CTO-motorn.** Mitt bygge och motorns beslut #95 (tidspostens
+  livscykel) landade samtidigt och tog båda numret 0062. Min migration
+  omnumrerades till 0063; rebasen gick rent. Två saker att veta:
+  (1) `/opt/redovisning` är BÅDE driftkatalogen och motorns arbetskatalog — den
+  stod två gånger under sessionen på en `cto/...`-gren i stället för main, vilket
+  gjorde att `git pull` vid deploy misslyckades. Driften bör inte dela katalog
+  med en agent som växlar gren.
+  (2) Motorns datafix för juli skulle märka två poster som 'ignorerad' med
+  motiveringen att de aldrig borde ha fakturerats. Den premissen kom ur en
+  anteckning jag själv skrev och senare motbevisade: summan av juli
+  billable-poster är 1 885 min = 31,42 h = exakt faktura 0000027. De ÄR
+  fakturerade. Efter körningen är läget rätt (25 'fakturerad', 1 'ignorerad' —
+  den enda som verkligen var icke-debiterbar), men premissen står kvar i
+  migrationens kommentar.
 
 - **2026-08-31 (session: städytan omgjord efter Davids dom):** Första utförandet
   föll på sitt eget prov. Davids ord: *"ui ux är snyggt, men katastrofalt dåligt
