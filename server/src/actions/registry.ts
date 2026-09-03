@@ -1726,7 +1726,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'book_payslip',
-    title: 'Bokför lönebesked (kontantmetod: 7010 D / 1930 K = netto)',
+    title: 'Bokför lönebesked (bruttometod fr.o.m. 2026-09: 7010 D brutto + 7510 D avgift / 2710 K skatt + 2731 K avgift + 1930 K netto)',
     sensitivity: 'sensitive',
     // payment_date default: lönebeskedets utbetalningsdatum. fiscal_year_id
     // utelämnad härleds ur datumet (kräver olåst räkenskapsår).
@@ -1736,7 +1736,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'book_payroll_tax',
-    title: 'Bokför skattekontobetalning för lön (2510 D / 1930 K = skatt + arbetsgivaravgift)',
+    title: 'Bokför skattekontobetalning för lön (bruttometod fr.o.m. 2026-09: 2710 D skatt + 2731 D avgift / 1930 K betalt, öresdiff 3740)',
     sensitivity: 'sensitive',
     // Beloppet föreslås ur periodens lönebesked (avrundat till hela kronor);
     // payment_date default: den 12:e månaden efter med bankdagsregeln.

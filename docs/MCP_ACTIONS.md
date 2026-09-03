@@ -147,13 +147,36 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 - `payment_date` sätts till den 25:e i perioden med svensk bankdagsregel
   (`server/src/domain/bankdays.ts`); semesterersättning via
   `include_vacation_pay` (12 %) eller `vacation_pay_ore`.
-- `book_payslip` (sensitive) bokför enligt **kontantmetoden**: 7010 D /
-  1930 K = verkligt netto på utbetalningsdatumet. `book_payroll_tax`
-  (sensitive) bokför skattekontobetalningen (2510 D / 1930 K = skatt +
-  arbetsgivaravgift, förslag avrundat till hela kronor, default den 12:e
-  månaden efter). `payroll_year_summary` (read) ger ackumulerat per
-  kalenderår. `generate_payslip_pdf` (write) skapar lönespecifikationen
-  enligt Locollabs mall och bilägger den på lönebeskedet.
+- **Bokföringen har en brytpunkt: perioden `2026-09`** (LOC-355,
+  `GROSS_METHOD_FROM_PERIOD` i `server/src/services/payroll.ts`). Perioden
+  avgör metoden — utbetalningsdatumet gör det inte, och redan bokförda
+  verifikat räknas aldrig om (mars–augusti 2026 är rättade en gång för hand
+  via A53+A54).
+  - **Från och med 2026-09 — bruttometoden.** `book_payslip` (sensitive)
+    bokför HELA lönen i ett verifikat på utbetalningsdatumet:
+    **7010 D** brutto · **7510 D** arbetsgivaravgift · **2710 K** avdragen
+    skatt · **2731 K** arbetsgivaravgift · **1930 K** netto. Verifikatet
+    balanserar per konstruktion (netto = brutto − skatt) och löneskulden
+    ligger kvar i balansräkningen tills den betalas — det är hela poängen:
+    utan skuldraderna saknades skulden vid ett bokslut (K2-fel).
+    `book_payroll_tax` (sensitive) **tömmer exakt de kontona**: **2710 D** =
+    periodens summerade `tax_ore` · **2731 D** = summerade
+    `employer_contribution_ore` · **1930 K** = betalt belopp. Skattekontot
+    betalas i hela kronor medan skulderna står i ören, så mellanskillnaden
+    bokas mot **3740** (öres- och kronutjämning) — en öresrest hamnar aldrig
+    på ett skuldkonto. Efter de två stegen är saldot på 2710 och 2731 exakt 0.
+  - **Före 2026-09 — kontantmetoden, oförändrad.** `book_payslip`: 7010 D /
+    1930 K = verkligt netto på utbetalningsdatumet. `book_payroll_tax`:
+    2510 D / 1930 K = skatt + arbetsgivaravgift. 2510 används inte alls för
+    perioder från brytpunkten.
+  - Gemensamt för båda: beloppet på `book_payroll_tax` föreslås ur periodens
+    lönebesked avrundat till hela kronor (`amount_ore` kan ange annat), och
+    default för `payment_date` är den 12:e månaden efter med bankdagsregeln.
+    Kontot 2731 (Avräkning lagstadgade sociala avgifter) läggs till i
+    standardkontoplanen av migration `0067`.
+- `payroll_year_summary` (read) ger ackumulerat per kalenderår.
+  `generate_payslip_pdf` (write) skapar lönespecifikationen enligt Locollabs
+  mall och bilägger den på lönebeskedet.
 
 ### Dokument (K3)
 

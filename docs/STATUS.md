@@ -145,6 +145,66 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-03 (lönen bokförs med bruttometod från september — LOC-355):**
+  `book_payslip` bokförde bara **nettolönen** (7010 D / 1930 K) och
+  `book_payroll_tax` bara betalningen (2510 D / 1930 K). Följden: **löneskulden
+  fanns aldrig i balansräkningen.** Mellan utbetalningen och skattekonto-
+  betalningen ~18 dagar senare var bolaget skyldigt Skatteverket pengar som
+  inget konto visade — och över ett årsskifte blir det ett K2-fel, inte en
+  tidsfråga. Historiken mars–augusti är redan rättad för hand (A53+A54 mot
+  2440); det här bygget rör inga bokförda verifikat.
+
+  Byggt: **migration 0067** (standardkontot `2731 Avräkning lagstadgade sociala
+  avgifter` — 2710, 7510, 2510, 1930 och 3740 fanns redan i 0006), brytpunkten
+  `GROSS_METHOD_FROM_PERIOD = '2026-09'` i `services/payroll.ts`, båda
+  bokföringsfunktionerna och de två registry-titlarna. Ingen ny arkitektur,
+  inga nya beroenden, ingen vykod: `computePayroll`/`computePayslipTax`/tabell
+  30, `createPayslip` och godkännandeflödet är orörda.
+
+  1. **Brytpunkten är perioden, inte datumet.** `period >= '2026-09'` (ren
+     textjämförelse på YYYY-MM) avgör metoden. Ett utbetalningsdatum kan
+     flyttas av bankdagsregeln; perioden är den bokföringshändelsen hör till.
+     Äldre perioder bokförs EXAKT som förut — det är villkoret för att den här
+     ändringen ska gå att göra utan att röra historiken.
+  2. **Bruttometoden i ett verifikat:** 7010 D brutto · 7510 D avgift ·
+     2710 K skatt · 2731 K avgift · 1930 K netto. Det balanserar per
+     konstruktion (netto = brutto − skatt) — ingen ny beräkning behövs, all
+     data står redan på lönebeskedsraden.
+  3. **Betalningen tömmer exakt de konton bokningen satte** (2710 D + 2731 D /
+     1930 K). Det är hela poängen: två funktioner som skriver mot olika konton
+     lämnar en skuld som växer i tysthet. Efter de två stegen är saldot på
+     2710 och 2731 exakt 0 — och det är vad KRAV-5-provet mäter.
+  4. **Öresdifferensen mot 3740, aldrig kvar på ett skuldkonto.** Skattekontot
+     betalas i hela kronor medan skulderna står i ören; för september blir
+     resten 42 öre. Utan raden går verifikatet inte ihop, och lades resten kvar
+     på 2710/2731 skulle skulden aldrig nå noll — då vore avstämningen omöjlig
+     av samma skäl som felet uppstod. 3740 finns i 0006; inget nytt konto.
+  5. **Nollrader skrivs inte.** `postVoucher` kräver att exakt en av
+     debet/kredit är positiv per rad, så en jämkning till 0 kr skatt (eller en
+     öresdifferens på 0) skulle annars ge 400 i stället för ett verifikat.
+  6. **2731, inte 2730.** 2730 finns i 0006 som samlingskonto; 2731 är BAS
+     underkonto för just de lagstadgade avgifterna. Att blanda hade lagt två
+     metoders skuld på samma rad. Kontot är `liability`, så det hamnar av sig
+     självt på rätt sida i balansräkningen (rapporterna grupperar på
+     `account_type`, inte på kontonummerintervall).
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs.
+  Fyra sviter uppdaterade: `payroll-payment.test.ts` har det nya blocket
+  "brytpunkten 2026-09" (augusti 2026 bokförd oförändrat med kontantmetodens
+  två rader och orörda 2710/2731/7510; septemberverifikatets **fem rader
+  radexakt**; skattekontobetalningen 2710 D 16 343 + 2731 D 19 882,58 /
+  1930 K 36 226 + 3740 D 0,42 den 2026-10-12; och saldokontrollen 2710 = 0,
+  2731 = 0, 3740 = 42, 2510 = bara julibetalningen), och `payroll.test.ts`
+  (2025-06), `payroll-tax.test.ts` (2026-07) och `payroll-historical.test.ts`
+  (2026-03) hävdar nu sina kontantmetodsverifikat radexakt — bevis för att
+  perioder före brytpunkten är orörda. `payroll-historical` har ingen
+  logikändring.
+
+  **Kvarstår för David:** kör `npm run migrate` (0067) före septemberlönen.
+  Avstämningen av restsaldona på 2440/2510 efter körningen ~20/9 är ett
+  manuellt driftsteg — ingen kod ingår för den.
+
 - **2026-09-02 (rättelse 7b: avtalsdelskravet prövas vid övergången till
   debiterbar tid):** Driftfel, reproducerat 21:05 UTC. Ett förslag ur
   `propose_time_entries` utan `contract_part_id` på ILT — ett uppdrag med
