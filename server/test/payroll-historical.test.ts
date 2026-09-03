@@ -4,6 +4,8 @@
 // samma belopp som SEB-kontoutdraget och huvudbokens 7010/1930-verifikat.
 // Juli+ får tabell 30 för 2026 (12 943/43 557). Schablonens 12 995/43 505 får
 // inte förekomma någonstans, och bokförda poster rörs aldrig.
+// LOC-355: hela sviten ligger före brytpunkten 2026-09, så bruttometoden ändrar
+// ingenting här — skatteuppslaget och kontantmetodens kontering är oförändrade.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { historicalTaxOre } from '../src/domain/taxTable30.js';
@@ -118,6 +120,18 @@ describe('migreringen: H1 → historiska värden, juli+ → tabell 30', () => {
     const ok = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.body.result.net_ore).toBe(4_314_000); // det historiska nettot bokförs
+
+    // KRAV-1 (LOC-355): H1 ligger före brytpunkten 2026-09, så bruttometoden
+    // rör inte den här sviten — mars bokförs med kontantmetodens två rader,
+    // exakt som huvudboken och SEB-kontoutdraget visar.
+    const lines = await withAdmin(async (admin) => (await admin.query(
+      'SELECT account_number, debit_ore::text, credit_ore::text FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no',
+      [ok.body.result.voucher_id],
+    )).rows);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 4_314_000, 0],
+      [1930, 0, 4_314_000],
+    ]);
 
     const recalc = await api.post(`${co()}/actions/recalculate_draft_payslips`).set(auth()).send({});
     expect(recalc.body.result.map((c: { period: string }) => c.period)).not.toContain('2026-03');

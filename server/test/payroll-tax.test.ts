@@ -132,6 +132,17 @@ describe('lönebesked med tabellskatt (action-lagret)', () => {
     const ok = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
 
+    // KRAV-1 (LOC-355): juli 2026 ligger före brytpunkten 2026-09 — kontant-
+    // metodens två rader, oavsett att skatten kommer ur tabell 30.
+    const lines = await withAdmin(async (admin) => (await admin.query(
+      'SELECT account_number, debit_ore::text, credit_ore::text FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no',
+      [ok.body.result.voucher_id],
+    )).rows);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 4_355_700, 0],
+      [1930, 0, 4_355_700],
+    ]);
+
     const recalc = await api.post(`${co()}/actions/recalculate_draft_payslips`).set(auth()).send({});
     expect(recalc.status).toBe(200);
     expect(recalc.body.result).toHaveLength(0); // booked + manual → inget att räkna om

@@ -1,8 +1,9 @@
 // Fas A14: lön & HR (utan AGI/KU-10). Anställda, lönebesked (brutto/skatt/netto/
-// arbetsgivaravgift) och bokföring till 7210/2710/1930/7510/2730.
+// arbetsgivaravgift) och bokföringen av dem. Perioden här är 2025-06, alltså
+// FÖRE brytpunkten 2026-09 (LOC-355) — kontantmetoden gäller oförändrat.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { computePayroll, EMPLOYER_CONTRIBUTION_PERMILLE } from '../src/services/payroll.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -68,8 +69,16 @@ describe('lön & HR end-to-end', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.result.status).toBe('booked');
     expect(res.body.result.voucher_id).toBeTruthy();
-    // Att postVoucher accepterade konteringen bevisar att debet=kredit
-    // (brutto+avgift = skatt+netto+avgift) — annars hade den avvisats.
+    // KRAV-1 (LOC-355): 2025-06 ligger före brytpunkten 2026-09, alltså exakt
+    // samma två rader som före bruttometoden — inga skuldkonton.
+    const lines = await withAdmin(async (admin) => (await admin.query(
+      'SELECT account_number, debit_ore::text, credit_ore::text FROM voucher_lines WHERE voucher_id = $1 ORDER BY line_no',
+      [res.body.result.voucher_id],
+    )).rows);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 2_100_000, 0],
+      [1930, 0, 2_100_000],
+    ]);
 
     // Dubbelbokning spärras.
     const again = await api.post(`${co()}/actions/book_payslip`).set(auth()).send({ payslip_id: payslipId, fiscal_year_id: fiscalYearId, payment_date: '2025-06-25' });

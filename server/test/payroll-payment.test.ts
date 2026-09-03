@@ -1,7 +1,9 @@
 // K2: utbetalningsdatum med svensk bankdagsregel, valbar semesterersättning
-// (12 %), bokföring enligt kontantmetoden (7010 D / 1930 K = verkligt netto vid
-// utbetalningen) och skattekontobetalningen som egen händelse
-// (2510 D / 1930 K = skatt + arbetsgivaravgift, ~12:e månaden efter).
+// (12 %) och bokföringen av lönen — med brytpunkten i LOC-355:
+//   period <  2026-09: kontantmetoden (7010 D / 1930 K = verkligt netto vid
+//                      utbetalningen; 2510 D / 1930 K månaden efter),
+//   period >= 2026-09: bruttometoden (kostnad + skuldkonton i ETT verifikat,
+//                      och skattekontobetalningen tömmer exakt de kontona).
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { bankDayOnOrBefore, defaultPaymentDate, isBankDay } from '../src/domain/bankdays.js';
@@ -110,7 +112,7 @@ describe('lönebesked med utbetalningsdatum och semesterersättning', () => {
     expect(row.pension_salary_tax_ore).toBe('0');
   });
 
-  it('book_payslip (kontantmetod): 7010 D / 1930 K = verkligt netto på payment_date', async () => {
+  it('book_payslip före brytpunkten (kontantmetod): 7010 D / 1930 K = verkligt netto på payment_date', async () => {
     const res = await approveAction('book_payslip', { payslip_id: julyPayslipId });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.result.status).toBe('booked');
@@ -125,7 +127,7 @@ describe('lönebesked med utbetalningsdatum och semesterersättning', () => {
     expect(v.voucher_date).toBe('2026-07-24');
   });
 
-  it('book_payroll_tax: 2510 D / 1930 K = 30 695 kr den 12:e månaden efter', async () => {
+  it('book_payroll_tax före brytpunkten: 2510 D / 1930 K = 30 695 kr den 12:e månaden efter', async () => {
     const res = await approveAction('book_payroll_tax', { period: '2026-07' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // 12 943 + 17 752,30 = 30 695,30 → hela kronor 30 695.
@@ -157,5 +159,110 @@ describe('lönebesked med utbetalningsdatum och semesterersättning', () => {
     // Tabell 30: 56 500 → 12 943 · 63 280 → 16 343 · 61 500 → 15 443 kr.
     expect(res.body.result.tax_total_ore).toBe(1_294_300 + 1_634_300 + 1_544_300);
     expect(res.body.result.vacation_pay_total_ore).toBe(678_000 + 500_000);
+  });
+});
+
+// LOC-355: löneskulden ska finnas i balansräkningen. Brytpunkten är perioden
+// 2026-09 — augusti bokförs som förut, september och framåt med bruttometoden.
+describe('brytpunkten 2026-09: bruttometod med skuldkonton (LOC-355)', () => {
+  // September: 63 280 brutto (56 500 + 12 % semesterersättning), tabell 30 ger
+  // 16 343 i skatt → 46 937 netto, och 31,42 % avgift på bruttot = 19 882,58.
+  const SEP_GROSS = 6_328_000;
+  const SEP_TAX = 1_634_300;
+  const SEP_NET = 4_693_700;
+  const SEP_EMPLOYER = Math.round(SEP_GROSS * 3142 / 10000); // 1 988 258
+
+  async function saldo(accounts: number[]): Promise<Record<number, number>> {
+    return withAdmin(async (admin) => {
+      const r = await admin.query<{ account_number: number; saldo: string }>(
+        `SELECT account_number, (SUM(debit_ore) - SUM(credit_ore))::text AS saldo
+         FROM voucher_lines WHERE company_id = $1 AND account_number = ANY($2::int[])
+         GROUP BY account_number`,
+        [companyId, accounts],
+      );
+      // Ett konto utan rader har saldo 0 — annars blir en utebliven kontering
+      // undefined i stället för en nolla som går att hävda.
+      const out: Record<number, number> = {};
+      for (const a of accounts) out[a] = 0;
+      for (const row of r.rows) out[row.account_number] = Number(row.saldo);
+      return out;
+    });
+  }
+
+  it('KRAV-1: augusti 2026 (före brytpunkten) bokförs oförändrat med kontantmetoden', async () => {
+    const slip = await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: employeeId, period: '2026-08' });
+    expect(slip.status, JSON.stringify(slip.body)).toBe(200);
+    expect(slip.body.result.net_ore).toBe(4_355_700);
+
+    const res = await approveAction('book_payslip', { payslip_id: slip.body.result.id });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const lines = await voucherLines(res.body.result.voucher_id);
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, 4_355_700, 0],
+      [1930, 0, 4_355_700],
+    ]);
+    // Varken skuldkontot eller avgiftskostnaden får röras av en augustipost.
+    const s = await saldo([2710, 2731, 7510]);
+    expect(s[2710]).toBe(0);
+    expect(s[2731]).toBe(0);
+    expect(s[7510]).toBe(0);
+  });
+
+  it('KRAV-3: september bokförs med fem rader — kostnad, avgift och båda skulderna', async () => {
+    const list = await api.post(`${co()}/actions/list_payslips`).set(auth()).send({ period: '2026-09' });
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const slip = list.body.result[0];
+    expect(slip.gross_ore).toBe(SEP_GROSS);
+    expect(slip.employer_contribution_ore).toBe(SEP_EMPLOYER);
+
+    const res = await approveAction('book_payslip', { payslip_id: slip.id });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.status).toBe('booked');
+    expect(res.body.result.payment_date).toBe('2026-09-25');
+
+    const lines = await voucherLines(res.body.result.voucher_id);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, SEP_GROSS, 0],           // bruttolön, inte netto
+      [7510, SEP_EMPLOYER, 0],        // arbetsgivaravgiften som kostnad
+      [2710, 0, SEP_TAX],             // personalskatt att betala
+      [2731, 0, SEP_EMPLOYER],        // avräkning sociala avgifter
+      [1930, 0, SEP_NET],             // det som lämnade banken
+    ]);
+    // Verifikatet balanserar per konstruktion: netto = brutto − skatt.
+    expect(SEP_GROSS + SEP_EMPLOYER).toBe(SEP_TAX + SEP_EMPLOYER + SEP_NET);
+
+    // Skulden ligger nu i balansräkningen — det som saknades före LOC-355.
+    const s = await saldo([2710, 2731]);
+    expect(s[2710]).toBe(-SEP_TAX);
+    expect(s[2731]).toBe(-SEP_EMPLOYER);
+  });
+
+  it('KRAV-4: skattekontobetalningen debiterar 2710/2731 och lägger öresresten på 3740', async () => {
+    const res = await approveAction('book_payroll_tax', { period: '2026-09' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // 16 343 + 19 882,58 = 36 225,58 → hela kronor 36 226.
+    expect(res.body.result.tax_ore).toBe(SEP_TAX);
+    expect(res.body.result.employer_contribution_ore).toBe(SEP_EMPLOYER);
+    expect(res.body.result.suggested_amount_ore).toBe(3_622_600);
+    expect(res.body.result.amount_ore).toBe(3_622_600);
+    expect(res.body.result.payment_date).toBe('2026-10-12'); // måndag — bankdag
+
+    const lines = await voucherLines(res.body.result.voucher_id);
+    expect(lines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [2710, SEP_TAX, 0],
+      [2731, SEP_EMPLOYER, 0],
+      [1930, 0, 3_622_600],
+      [3740, 42, 0], // 36 226 kr betalt mot 36 225,58 kr i skuld
+    ]);
+  });
+
+  it('KRAV-5: efter båda stegen är saldot på 2710 och 2731 exakt 0 — resten ligger på 3740', async () => {
+    const s = await saldo([2710, 2731, 3740, 2510]);
+    expect(s[2710]).toBe(0);
+    expect(s[2731]).toBe(0);
+    expect(s[3740]).toBe(42);
+    // 2510 bär bara julibetalningen (kontantmetoden) — bruttometoden rör den inte.
+    expect(s[2510]).toBe(3_069_500);
   });
 });
