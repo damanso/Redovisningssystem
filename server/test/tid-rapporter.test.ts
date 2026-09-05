@@ -9,7 +9,7 @@
 // borta: ett tal, tre ingångar.
 import { beforeAll, describe, expect, it } from 'vitest';
 import supertest from 'supertest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
 import { steeringOverview } from '../src/services/steering.js';
@@ -370,6 +370,12 @@ describe('contract_usage_report: fasförälderns andel är barnens summa', () =>
     });
     expect(avtal.status, JSON.stringify(avtal.body)).toBe(200);
     const contractId = avtal.body.result.id as string;
+    // 0068: ett bekräftat tak kräver ett fryst kontrakt. Avtalet är
+    // undertecknat och fryses därför med samma sats som 0068:s backfill
+    // använder — någon action för det finns först i S1.2.
+    await withAdmin((c) => c.query(
+      "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [contractId],
+    ));
 
     const foralder = await act('upsert_contract_part', {
       contract_id: contractId, code: '2', name: 'Fas 2', cap_hours: 10, cap_confirmed: true,

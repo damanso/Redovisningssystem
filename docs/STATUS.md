@@ -145,6 +145,107 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-05 (uppdragsytan våg 1 — migration 0068, hela modulens datalager):**
+  Uppdragsytans S1.1 enligt 1E §3.1–3.4 och överlämning #109. **Migrationen
+  `server/migrations/0068_uppdragsytan.sql` + fyra testsviter + upsert-hjälparen
+  `server/src/services/uppdragSvep.ts`** (den enda services-ändringen, som #109:s
+  UTANFÖR uttryckligen tillåter: enda skrivvägen till `uppdrag_svepvarde`, byggd
+  för cacheprovet) plus sju statusetiketter (punkt 5). Inga actions, inga routes,
+  ingen vysida, ingen MCP-ändring, inga nya beroenden, inga ändringar i
+  befintliga migrationer eller `db/migrate.ts`.
+
+  Byggt: fjorton kolumner i tre befintliga tabeller (`contract_parts` +4,
+  `contracts` +8, `receipts` +2 med sammansatt FK mot `contract_parts
+  (id, company_id)`), sju modultabeller (`uppdrag_leverabel`,
+  `uppdrag_leverabel_handelse`, `uppdrag_bedomning`, `uppdrag_scopelinje`,
+  `uppdrag_scopesignal`, `uppdrag_referens`, `uppdrag_svepvarde`) med RLS-policy
+  `app_has_company_access` och GRANT per tabell, fyra triggerfunktioner, en
+  kantkontroll och EN backfill.
+
+  1. **Spärrarna sitter i Postgres, inte i tjänstelagret.** Tre skrivvägar (API,
+     MCP, vy) plus framtida kod delar tabellerna; en regel som bara finns i en
+     applikationskontroll gäller inte för raden nästa väg in skriver. Samma
+     filosofi som `cap_confirmed` (0064) och append-only-auditloggen (0003).
+  2. **Rättigheterna är formen på regeln.** `uppdrag_bedomning` och
+     `uppdrag_leverabel_handelse` har SELECT + INSERT och inget annat — en
+     bedömning eller en historik som går att skriva om i efterhand är ingen
+     bedömning och ingen historik. `uppdrag_svepvarde` är det ENDA som har
+     DELETE, och det är precis därför den är märkt CACHE: varje värde går att
+     räkna om ur källsystemen. Provet kontrollerar rättigheterna åt BÅDA hållen.
+  3. **Kantkontrollen före backfillen.** Ett osignerat avtal med bekräftade tak
+     går inte att härleda — backfillen skulle lämna ett utkast med en bekräftad
+     baseline hängande på sig, alltså exakt det läge `vagrar_baseline_i_utkast()`
+     finns för att omöjliggöra. Migrationen vägrar då köra, och eftersom
+     `db/migrate.ts` kör BEGIN/COMMIT per fil finns ingenting halvgjort kvar.
+  4. **`vagrar_skrivning_pa_avslutat()` i fyra räckvidder** (TG_TABLE_NAME
+     avgör vägen till `projects.status`): de sju modultabellerna och
+     `contract_parts` via `contract_id`, `receipts` och `time_entries` via
+     `contract_part_id`. På de två sista prövas vid UPDATE BÅDA kopplingarna —
+     den gamla och den nya — och skrivningen fälls om någon av dem når ett
+     avslutat uppdrag, så att en post varken kan föras IN i eller lyftas BORT
+     från ett avslutat uppdrag i tysthet. (Granskningen 2026-09-05 fällde en
+     första version som bara prövade den nya kopplingen när den fanns: en post
+     gick då att peka om från avslutat till öppet, och därmed lyfta bort.
+     Rättat i funktionen, pinnat med prov i `uppdragsytan-sparrar.test.ts`.)
+     `assignContractPart` läser aldrig `projects.status`; därför sitter spärren
+     här.
+  5. **Sju nya statusetiketter i `view/html.ts`.** Ingen vy visar dem ännu, men
+     `test/statusetiketter.test.ts` härleder kravet ur CHECK-villkoren i
+     schemat, och `uppdrag_leverabel.status`/`uppdrag_referens.status` är just
+     sådana villkor. Det är repots egen grind, inte en vyändring.
+
+  **VIKTIGT — 0068 STÄNGER två vägar som fungerade före den. De måste öppnas i
+  S1.2, och tills dess svarar båda `409 rule_violation` — utan triggerns text:
+  `errorHandler.ts` mappar triggrarnas P0001 till statuskoden men skickar bara
+  `{ error: rule_violation }`, meddelandet stannar i serverloggen, och
+  `uppdragsytan-sparrar.test.ts` asserterar status + kod, aldrig texten. Om
+  användaren ska se en förklaring eller en stum kod är ett S1.2-beslut):**
+  - **Ett bekräftat tak går inte att sätta på ett nyskapat avtal.**
+    `create_contract` skapar alltid ett *utkast* och det finns ingen action som
+    fryser ett kontrakt. Alltså faller `upsert_contract_part`
+    med `cap_confirmed: true`, `create_contract_from_draft` med bekräftat tak,
+    och vyns kryssruta "taket är läst" på `/app/c/:id/projects/:pid/avtal`.
+  - **Ett tilläggsavtal går inte att lägga in.** `kraver_orsak_vid_ny_version()`
+    kräver `change_reason` på en andra version av samma kod, och
+    `upsert_contract_part` har inget sådant fält i sitt schema.
+
+  Båda är pinnade som prov i `server/test/uppdragsytan-sparrar.test.ts`
+  ("vad 0068 stänger tills S1.2") så att de inte kan bli en tyst överraskning.
+  Fyra befintliga sviter är anpassade efter den nya ordningen — de fryser
+  avtalet med samma sats som backfillen innan taket bekräftas
+  (`avtalsdelar`, `tid-rapporter`, `tid-snabbregistrering`, `avtal-inlasning`);
+  varje ändring bär en `0068:`-kommentar som säger vad som flyttades och varför.
+
+  **Grind (KRAV-14), körd på branchens SLUTLÄGE (commit efter rättelse 2, med
+  fjärde sviten och hjälparen) 2026-09-05, inklistrad ordagrant:**
+  `npm run build` → ren (exit 0).
+  `npm test` → `Test Files  110 passed (110)` · `Tests  1081 passed (1081)` · `Duration  282.32s`.
+  (En tidigare inklistring sade 109/1077 — den var körd FÖRE fjärde sviten
+  lades till; granskningen fällde det, och utdatan ovan är från slutläget.)
+  Fyra nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
+  lämnar varken kolumner eller tabeller efter sig, backfillen fryser signerat
+  och lämnar osignerat, andra körningen ändrar inget, spärrarna gäller efteråt),
+  `uppdragsytan-sparrar.test.ts` (alla fyra triggrar, RAISE-fall och tillåtna
+  fall, inkl. att `upsertContractPart`-flödets in-place-uppdatering av en
+  obekräftad rad överlever, och att en post inte kan lyftas bort från ett
+  avslutat uppdrag genom omkoppling — granskningens fynd i försök 2),
+  `uppdragsytan-schema.test.ts` (de sju tabellernas form, RLS-policyer,
+  rättigheter åt båda hållen, de unika nycklarna, ingen `status_sedan`, och
+  tenantgränsen mot ett grannbolag) och `uppdragsytan-agandegrans-cache.test.ts`
+  (1E ADR-2 påstående 3: frys ett svepindata, skriv cachen via `upsertSvepvarden`,
+  töm, skriv om ur samma indata, jämför per nyckel utan `last_nar` — identiskt;
+  negativ kontroll: en insmugen rad som inte kan räknas om syns som skillnad;
+  nycklar som försvinner ur indata tas bort; grannbolag ser inget). Den fjärde
+  byggdes efter granskningens tredje försök, som fällde att överlämningens
+  punkt 7 saknades utan att loggen sa det.
+
+  **Förgrinden** `~/.hermes/forgrind/111.sh` körs av CTO-motorn på branchen före
+  merge (0068 mot en återläst kopia av dagens dump, kantkontrollen mot ILT:s
+  riktiga avtal); utfallet står i `~/.hermes/logg/forgrind-111.log`. Ingen
+  åtgärd, ingen vy och ingen import ingår här (S1.2). Frysningen av ett
+  nyskapat avtal (signed_date → fryst) öppnas i S1.2.
+
+
 - **2026-09-03 (lönen bokförs med bruttometod från september — LOC-355):**
   `book_payslip` bokförde bara **nettolönen** (7010 D / 1930 K) och
   `book_payroll_tax` bara betalningen (2510 D / 1930 K). Följden: **löneskulden

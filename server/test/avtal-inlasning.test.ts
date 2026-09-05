@@ -261,10 +261,17 @@ describe('create_contract_from_draft', () => {
       parts: [
         // Fas 2: Davids rättelse av namnet.
         { code: '2', name: 'Fas 2 — plattformen', description: 'Plattform' },
-        // Fas 2A: exakt som utkastet läste den, med taket bekräftat.
+        // Fas 2A: exakt som utkastet läste den.
+        //
+        // 0068: `cap_confirmed: true` går INTE längre att skicka här. Ett
+        // bekräftat tak kräver ett fryst kontrakt, och den här actionen skapar
+        // avtalet (som utkast) och delarna i EN transaktion — det finns inget
+        // läge däremellan att frysa i. Bekräftelsen sker därför i provet nedan
+        // ("ett bekräftat tak varnar"), efter frysningen. Se
+        // uppdragsytan-sparrar.test.ts: vägen öppnas igen i S1.2.
         {
           code: '2A', name: 'Fas 2A', description: 'Integration', parent_code: '2',
-          cap_hours: 32, cap_amount_ore: 3_520_000, cap_confirmed: true,
+          cap_hours: 32, cap_amount_ore: 3_520_000,
         },
       ],
       draft: utkast,
@@ -293,6 +300,21 @@ describe('create_contract_from_draft', () => {
   });
 
   it('ett bekräftat tak varnar; ett obekräftat redovisas som vet ej', async () => {
+    const inlast = (await avtalFor(projektId))[0]!;
+    // Ur inläsningen är taket LÄST men inte bekräftat: det är precis vad
+    // 'vet_ej' betyder.
+    expect(del(inlast, '2A').cap_status).toBe('vet_ej');
+
+    // Bekräftelsen kräver ett fryst kontrakt (0068). Avtalet är undertecknat,
+    // så det fryses med samma sats som 0068:s backfill använder — någon action
+    // för det finns först i S1.2.
+    await withAdmin((c) => c.query(
+      "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [inlast.id],
+    ));
+    await ok('upsert_contract_part', {
+      contract_id: inlast.id, code: '2A', cap_confirmed: true, valid_from: '2026-01-02',
+    });
+
     const a = (await avtalFor(projektId))[0]!;
     expect(del(a, '2A').cap_status).toBe('bekraftat');
     // Fas 2 fick inget eget tak — det härleds ur barnen och är därmed bekräftat
@@ -410,7 +432,10 @@ describe('vyn: Läs in avtal', () => {
       payment_terms_days: '20',
       hourly_rate: '1 100,00',
       notes: 'Inskrivet för hand.',
-      cap_confirmed: 'ja',
+      // 0068: kryssrutan "taket är läst" går inte att kryssa i samma steg som
+      // avtalet skapas — ett bekräftat tak kräver ett fryst kontrakt, och
+      // sidan skapar avtal + faser i EN transaktion. Bekräftelsen görs därför
+      // nedan, efter frysningen. S1.2 ger vyn vägen tillbaka.
       part_med: ['ja', 'ja', 'nej'],
       part_code: ['2', '2A', 'X'],
       part_name: ['Fas 2', 'Fas 2A', 'Utelämnad'],
@@ -429,11 +454,20 @@ describe('vyn: Läs in avtal', () => {
     expect(delar(a)).toHaveLength(2);
     expect(del(a, '2A').cap_hours).toBe(32);
     expect(del(a, '2A').cap_amount_ore).toBe(3_520_000);
-    // Kryssrutan är människans besked om att taket är läst.
-    expect(del(a, '2A').cap_status).toBe('bekraftat');
+    expect(del(a, '2A').cap_status).toBe('vet_ej');
     // Utan utkast är varje rad Davids egen — och skyddas därmed mot nästa inläsning.
     expect(redigerad(del(a, '2'))).toBe(true);
     expect(redigerad(del(a, '2A'))).toBe(true);
+
+    // Beskedet om att taket är läst går fortfarande att ge — men först efter
+    // frysningen (0068).
+    await withAdmin((c) => c.query(
+      "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [a.id],
+    ));
+    await ok('upsert_contract_part', {
+      contract_id: a.id, code: '2A', cap_confirmed: true, valid_from: '2026-01-02',
+    });
+    expect(del((await avtalFor(projekt))[0]!, '2A').cap_status).toBe('bekraftat');
   });
 
   it('ett fel i en rad kostar aldrig de ifyllda fälten', async () => {
