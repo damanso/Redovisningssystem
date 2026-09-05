@@ -146,11 +146,13 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
 - **2026-09-05 (uppdragsytan våg 1 — migration 0068, hela modulens datalager):**
-  Uppdragsytans S1.1 enligt 1E §3.1–3.4 och överlämning #109. **Endast
-  `server/migrations/0068_uppdragsytan.sql` + tester** (plus sju statusetiketter,
-  se punkt 5). Ingen tjänstekod, inga actions, inga routes, ingen vysida, ingen
-  MCP-ändring, inga nya beroenden, inga ändringar i befintliga migrationer eller
-  `db/migrate.ts`.
+  Uppdragsytans S1.1 enligt 1E §3.1–3.4 och överlämning #109. **Migrationen
+  `server/migrations/0068_uppdragsytan.sql` + fyra testsviter + upsert-hjälparen
+  `server/src/services/uppdragSvep.ts`** (den enda services-ändringen, som #109:s
+  UTANFÖR uttryckligen tillåter: enda skrivvägen till `uppdrag_svepvarde`, byggd
+  för cacheprovet) plus sju statusetiketter (punkt 5). Inga actions, inga routes,
+  ingen vysida, ingen MCP-ändring, inga nya beroenden, inga ändringar i
+  befintliga migrationer eller `db/migrate.ts`.
 
   Byggt: fjorton kolumner i tre befintliga tabeller (`contract_parts` +4,
   `contracts` +8, `receipts` +2 med sammansatt FK mot `contract_parts
@@ -214,24 +216,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   (`avtalsdelar`, `tid-rapporter`, `tid-snabbregistrering`, `avtal-inlasning`);
   varje ändring bär en `0068:`-kommentar som säger vad som flyttades och varför.
 
-  **Grind (KRAV-14), körd på branchen 2026-09-05 efter granskningens tredje
-  försök, inklistrad ordagrant:**
+  **Grind (KRAV-14), körd på branchens SLUTLÄGE (commit efter rättelse 2, med
+  fjärde sviten och hjälparen) 2026-09-05, inklistrad ordagrant:**
   `npm run build` → ren (exit 0).
-  `npm test` → `Test Files  109 passed (109)` · `Tests  1077 passed (1077)` · `Duration  280.27s (transform 2.45s, setup 2.09s, collect 108.51s, tests 147.75s, environment 16ms, prepare 5.43s)`.
-  Fyra nya sviter — den fjärde, `uppdragsytan-agandegrans-cache.test.ts`, byggdes
-  efter granskningens tredje försök, som fällde att överlämningens punkt 7
-  (cacheprovet med sin upsert-hjälpare `services/uppdragSvep.ts`) saknades utan
-  att loggen sa det; hjälparen är den enda skrivvägen till `uppdrag_svepvarde`
-  och svepet (S7.3) ska använda den: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
+  `npm test` → `Test Files  110 passed (110)` · `Tests  1081 passed (1081)` · `Duration  282.32s`.
+  (En tidigare inklistring sade 109/1077 — den var körd FÖRE fjärde sviten
+  lades till; granskningen fällde det, och utdatan ovan är från slutläget.)
+  Fyra nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
   lämnar varken kolumner eller tabeller efter sig, backfillen fryser signerat
   och lämnar osignerat, andra körningen ändrar inget, spärrarna gäller efteråt),
   `uppdragsytan-sparrar.test.ts` (alla fyra triggrar, RAISE-fall och tillåtna
   fall, inkl. att `upsertContractPart`-flödets in-place-uppdatering av en
   obekräftad rad överlever, och att en post inte kan lyftas bort från ett
-  avslutat uppdrag genom omkoppling — granskningens fynd i försök 2) och
+  avslutat uppdrag genom omkoppling — granskningens fynd i försök 2),
   `uppdragsytan-schema.test.ts` (de sju tabellernas form, RLS-policyer,
   rättigheter åt båda hållen, de unika nycklarna, ingen `status_sedan`, och
-  tenantgränsen mot ett grannbolag).
+  tenantgränsen mot ett grannbolag) och `uppdragsytan-agandegrans-cache.test.ts`
+  (1E ADR-2 påstående 3: frys ett svepindata, skriv cachen via `upsertSvepvarden`,
+  töm, skriv om ur samma indata, jämför per nyckel utan `last_nar` — identiskt;
+  negativ kontroll: en insmugen rad som inte kan räknas om syns som skillnad;
+  nycklar som försvinner ur indata tas bort; grannbolag ser inget). Den fjärde
+  byggdes efter granskningens tredje försök, som fällde att överlämningens
+  punkt 7 saknades utan att loggen sa det.
 
   **Förgrinden** `~/.hermes/forgrind/111.sh` körs av CTO-motorn på branchen före
   merge (0068 mot en återläst kopia av dagens dump, kantkontrollen mot ILT:s
