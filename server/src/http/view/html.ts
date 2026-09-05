@@ -182,6 +182,16 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   justerad: { label: 'Justerad', kind: 'warn', icon: '±' },        // time_entries
   ignorerad: { label: 'Faktureras ej', kind: 'muted', icon: '×' }, // time_entries
   fakturerad: { label: 'Fakturerad', kind: 'ok', icon: '✓' },      // time_entries
+  // Uppdragsytan (0068). Ingen vy visar dem ännu, men CHECK-villkoren finns i
+  // schemat — och test/statusetiketter.test.ts härleder kravet därifrån just
+  // för att etiketten aldrig ska saknas den dagen ytan byggs.
+  ej_paborjad: { label: 'Ej påbörjad', kind: 'muted', icon: '○' }, // uppdrag_leverabel
+  pagar: { label: 'Pågår', kind: 'info', icon: '◔' },              // uppdrag_leverabel
+  levererad: { label: 'Levererad', kind: 'info', icon: '→' },      // uppdrag_leverabel
+  avvisad: { label: 'Avvisad', kind: 'neg', icon: '×' },           // uppdrag_leverabel
+  levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
+  drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
+  trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
 };
 /**
  * Har det har statusvardet en svensk etikett?

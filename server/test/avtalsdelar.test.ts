@@ -69,7 +69,34 @@ async function nyttAvtal(projectId: string, namn: string, taxa?: number): Promis
     project_id: projectId, name: namn, signed_date: '2026-01-01',
     ...(taxa === undefined ? {} : { hourly_rate_ore: taxa }),
   });
+  await frysAvtal(a.id as string);
   return a.id as string;
+}
+
+/**
+ * 0068: ett BEKRÄFTAT tak kräver ett FRYST kontrakt (vagrar_baseline_i_utkast).
+ * `create_contract` skapar alltid ett utkast och det finns ännu ingen action som
+ * fryser — den kommer i S1.2. Proven nedan gäller ILT:s undertecknade avtal, och
+ * 0068:s backfill fryser just undertecknade avtal, så de fryses här med samma
+ * sats som backfillen använder. Se uppdragsytan-sparrar.test.ts för de två
+ * vägar 0068 stänger tills S1.2 öppnar dem igen.
+ */
+async function frysAvtal(contractId: string): Promise<void> {
+  await withAdmin((c) => c.query(
+    "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [contractId],
+  ));
+}
+
+/** Ett tilläggsavtal: en ny version av samma kod, med sitt skäl (0068). */
+async function nyVersion(
+  contractId: string, code: string, capHours: number, validFrom: string, skal: string,
+): Promise<void> {
+  await withAdmin((c) => c.query(
+    `INSERT INTO contract_parts (company_id, contract_id, code, name, cap_hours, cap_confirmed,
+                                 valid_from, change_reason)
+     VALUES ($1, $2, $3, $4, $5, true, $6, $7)`,
+    [companyId, contractId, code, `Fas ${code}`, capHours, validFrom, skal],
+  ));
 }
 
 async function loggaTid(
@@ -397,16 +424,15 @@ describe('tilläggsavtal: en ny rad med senare valid_from, historiken består', 
       contract_id: avtal, code: '3A', name: 'Fas 3A', cap_hours: 10, cap_confirmed: true,
       valid_from: '2020-01-01',
     });
-    await ok('upsert_contract_part', {
-      contract_id: avtal, code: '3A', name: 'Fas 3A', cap_hours: 40, cap_confirmed: true,
-      valid_from: '2021-06-01',
-    });
-    const medFramtid = await ok('upsert_contract_part', {
-      contract_id: avtal, code: '3A', name: 'Fas 3A', cap_hours: 5, cap_confirmed: true,
-      valid_from: '2099-01-01',
-    });
+    // 0068: en NY version av samma kod kräver change_reason
+    // (kraver_orsak_vid_ny_version). `upsert_contract_part` har inget sådant
+    // fält i sitt schema förrän S1.2, så tilläggsavtalen skrivs här med samma
+    // rad som tjänsten skriver, plus skälet. Läsningen nedan — vilket tak som
+    // GÄLLER — är oförändrad och är det den här provet handlar om.
+    await nyVersion(avtal, '3A', 40, '2021-06-01', 'Tilläggsavtal 1');
+    await nyVersion(avtal, '3A', 5, '2099-01-01', 'Tilläggsavtal 2, gäller från 2099');
 
-    const aktuell = del(medFramtid, '3A');
+    const aktuell = del(await ok('get_contract_usage', { contract_id: avtal }), '3A');
     expect(aktuell.versions).toHaveLength(3);
     expect(aktuell.versions.map((v) => v.valid_from)).toEqual(['2020-01-01', '2021-06-01', '2099-01-01']);
     expect(aktuell.versions.map((v) => v.cap_hours)).toEqual([10, 40, 5]);

@@ -12,7 +12,7 @@
 // länkarna med sin tenant-gräns, och takvarningen som syns utan att spärra.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { hhmm, parseDuration } from '../src/lib/duration.js';
 import { BadRequestError } from '../src/lib/errors.js';
 
@@ -89,6 +89,12 @@ beforeAll(async () => {
     project_id: avtalsProjektId, name: 'Plattformsavtal', signed_date: `${AR}-01-02`,
   });
   expect(avtal.status, JSON.stringify(avtal.body)).toBe(200);
+  // 0068: ett bekräftat tak kräver ett fryst kontrakt. Avtalet är undertecknat,
+  // och 0068:s backfill fryser undertecknade avtal — här görs samma sak med
+  // samma sats, eftersom det ännu inte finns någon action som fryser (S1.2).
+  await withAdmin((c) => c.query(
+    "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [avtal.body.result.id],
+  ));
   // Taket är BEKRÄFTAT och litet: en timme räcker för att passera 80 %-gränsen,
   // så varningen går att pröva utan att provet blir en tidsserie.
   const del = await act('upsert_contract_part', {
