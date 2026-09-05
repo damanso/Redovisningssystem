@@ -193,9 +193,11 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
      sådana villkor. Det är repots egen grind, inte en vyändring.
 
   **VIKTIGT — 0068 STÄNGER två vägar som fungerade före den. De måste öppnas i
-  S1.2, och tills dess svarar båda `409 rule_violation` med triggerns text —
-  `errorHandler.ts` mappar triggrarnas P0001 dit, och
-  `uppdragsytan-sparrar.test.ts` asserterar exakt det genom HTTP-stacken):**
+  S1.2, och tills dess svarar båda `409 rule_violation` — utan triggerns text:
+  `errorHandler.ts` mappar triggrarnas P0001 till statuskoden men skickar bara
+  `{ error: rule_violation }`, meddelandet stannar i serverloggen, och
+  `uppdragsytan-sparrar.test.ts` asserterar status + kod, aldrig texten. Om
+  användaren ska se en förklaring eller en stum kod är ett S1.2-beslut):**
   - **Ett bekräftat tak går inte att sätta på ett nyskapat avtal.**
     `create_contract` skapar alltid ett *utkast* och det finns ingen action som
     fryser ett kontrakt. Alltså faller `upsert_contract_part`
@@ -216,7 +218,11 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   försök, inklistrad ordagrant:**
   `npm run build` → ren (exit 0).
   `npm test` → `Test Files  109 passed (109)` · `Tests  1077 passed (1077)` · `Duration  280.27s (transform 2.45s, setup 2.09s, collect 108.51s, tests 147.75s, environment 16ms, prepare 5.43s)`.
-  Tre nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
+  Fyra nya sviter — den fjärde, `uppdragsytan-agandegrans-cache.test.ts`, byggdes
+  efter granskningens tredje försök, som fällde att överlämningens punkt 7
+  (cacheprovet med sin upsert-hjälpare `services/uppdragSvep.ts`) saknades utan
+  att loggen sa det; hjälparen är den enda skrivvägen till `uppdrag_svepvarde`
+  och svepet (S7.3) ska använda den: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
   lämnar varken kolumner eller tabeller efter sig, backfillen fryser signerat
   och lämnar osignerat, andra körningen ändrar inget, spärrarna gäller efteråt),
   `uppdragsytan-sparrar.test.ts` (alla fyra triggrar, RAISE-fall och tillåtna
