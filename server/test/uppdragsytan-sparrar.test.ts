@@ -278,6 +278,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
   let oppenDel2 = '';
   let kvittoStangt = '';
   let kvittoOppet = '';
+  let kvittoIStangt = '';
   let tidStangt = '';
   let tidOppet = '';
   let leverabelStangt = '';
@@ -317,6 +318,13 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
     kvittoStangt = await nyttKvitto('Kvitto mot avslutat uppdrag');
     kvittoOppet = await nyttKvitto('Kvitto mot pågående uppdrag');
+
+    // Ett kvitto som hinner kopplas till det uppdrag som sedan avslutas — det
+    // är det som ska sitta fast där efteråt.
+    kvittoIStangt = await nyttKvitto('Kvitto låst i avslutat uppdrag');
+    await withAdmin((c) => c.query(
+      'UPDATE receipts SET contract_part_id = $1 WHERE id = $2', [stangdDel, kvittoIStangt],
+    ));
 
     tidStangt = (await ok('log_time', {
       project_id: stangtProjekt, work_date: '2026-03-02', minutes: 60,
@@ -435,6 +443,36 @@ describe('vagrar_skrivning_pa_avslutat', () => {
       time_entry_id: tidOppet, contract_part_id: oppenDel2,
     });
     expect(pa.status, JSON.stringify(pa.body)).toBe(200);
+  });
+
+  // (iii)+(iv): vägen UT ur ett avslutat uppdrag är lika stängd som vägen in.
+  // Prövades bara den NYA kopplingen gick posten att pekas om till ett öppet
+  // uppdrag — och därmed lyftas bort från det avslutade i tysthet.
+  it('en post kan inte lyftas bort från ett avslutat uppdrag genom ompekning', async () => {
+    // receipts: från avslutad avtalsdel till öppen
+    await expect(withAdmin((c) => c.query(
+      'UPDATE receipts SET contract_part_id = $1 WHERE id = $2', [oppenDel, kvittoIStangt],
+    ))).rejects.toThrow(/uppdraget är avslutat/);
+    // ...och NULL-vägen, som annars gav samma sak i två steg
+    await expect(withAdmin((c) => c.query(
+      'UPDATE receipts SET contract_part_id = NULL WHERE id = $1', [kvittoIStangt],
+    ))).rejects.toThrow(/uppdraget är avslutat/);
+
+    // time_entries: samma två vägar
+    await expect(withAdmin((c) => c.query(
+      'UPDATE time_entries SET contract_part_id = $1 WHERE id = $2', [oppenDel, tidStangt],
+    ))).rejects.toThrow(/uppdraget är avslutat/);
+    await expect(withAdmin((c) => c.query(
+      'UPDATE time_entries SET contract_part_id = NULL WHERE id = $1', [tidStangt],
+    ))).rejects.toThrow(/uppdraget är avslutat/);
+
+    // Kopplingarna sitter kvar orörda.
+    expect(await withAdmin(async (c) => (await c.query(
+      'SELECT 1 FROM receipts WHERE id = $1 AND contract_part_id = $2', [kvittoIStangt, stangdDel],
+    )).rowCount)).toBe(1);
+    expect(await withAdmin(async (c) => (await c.query(
+      'SELECT 1 FROM time_entries WHERE id = $1 AND contract_part_id = $2', [tidStangt, stangdDel],
+    )).rowCount)).toBe(1);
   });
 
   it('en tidpost utan avtalsdel rörs aldrig av spärren', async () => {

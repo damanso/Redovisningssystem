@@ -345,39 +345,46 @@ $$;
 --   * de sju uppdrag_*-tabellerna och contract_parts bär contract_id direkt,
 --   * receipts och time_entries bär contract_part_id och når avtalet via
 --     avtalsdelen.
--- På receipts/time_entries prövas den NYA kopplingen; är den tom prövas den
--- gamla, så att en post inte heller kan lyftas BORT från ett avslutat uppdrag
--- i tysthet.
+-- På receipts/time_entries prövas vid UPDATE BÅDA kopplingarna — den gamla och
+-- den nya — och skrivningen fälls om någon av dem når ett avslutat uppdrag. Det
+-- är det som gör att en post varken kan föras IN i eller lyftas BORT från ett
+-- avslutat uppdrag i tysthet; prövades bara den nya kopplingen skulle en
+-- ompekning från avslutat till öppet släppa igenom.
 CREATE OR REPLACE FUNCTION vagrar_skrivning_pa_avslutat() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
-  rad      record;
-  del_id   uuid;
-  avtal_id uuid;
-  stangt   boolean;
+  rad       record;
+  avtal_ids uuid[];
+  stangt    boolean;
 BEGIN
   IF TG_OP = 'DELETE' THEN rad := OLD; ELSE rad := NEW; END IF;
 
   IF TG_TABLE_NAME IN ('receipts', 'time_entries') THEN
     IF TG_OP = 'UPDATE' THEN
-      del_id := COALESCE(NEW.contract_part_id, OLD.contract_part_id);
+      SELECT array_agg(cp.contract_id) INTO avtal_ids
+        FROM contract_parts cp
+       WHERE cp.id IN (NEW.contract_part_id, OLD.contract_part_id);
     ELSE
-      del_id := rad.contract_part_id;
+      SELECT array_agg(cp.contract_id) INTO avtal_ids
+        FROM contract_parts cp
+       WHERE cp.id = rad.contract_part_id;
     END IF;
-    SELECT cp.contract_id INTO avtal_id FROM contract_parts cp WHERE cp.id = del_id;
   ELSE
     -- contract_parts + de sju uppdrag_*-tabellerna
-    avtal_id := rad.contract_id;
+    avtal_ids := ARRAY[rad.contract_id];
   END IF;
 
-  IF avtal_id IS NULL THEN
+  IF avtal_ids IS NULL OR array_length(avtal_ids, 1) IS NULL THEN
     RETURN rad;
   END IF;
 
-  SELECT p.status = 'closed' INTO stangt
-    FROM contracts c
-    JOIN projects p ON p.id = c.project_id
-   WHERE c.id = avtal_id;
+  SELECT EXISTS (
+    SELECT 1
+      FROM contracts c
+      JOIN projects p ON p.id = c.project_id
+     WHERE c.id = ANY (avtal_ids)
+       AND p.status = 'closed'
+  ) INTO stangt;
 
   IF COALESCE(stangt, false) THEN
     RAISE EXCEPTION 'uppdraget är avslutat — % på % går inte att skriva', TG_OP, TG_TABLE_NAME;

@@ -178,10 +178,15 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   4. **`vagrar_skrivning_pa_avslutat()` i fyra räckvidder** (TG_TABLE_NAME
      avgör vägen till `projects.status`): de sju modultabellerna och
      `contract_parts` via `contract_id`, `receipts` och `time_entries` via
-     `contract_part_id`. På de två sista prövas den NYA kopplingen och, om den
-     är tom, den gamla — så att en post inte heller kan lyftas BORT från ett
-     avslutat uppdrag i tysthet. `assignContractPart` läser aldrig
-     `projects.status`; därför sitter spärren här.
+     `contract_part_id`. På de två sista prövas vid UPDATE BÅDA kopplingarna —
+     den gamla och den nya — och skrivningen fälls om någon av dem når ett
+     avslutat uppdrag, så att en post varken kan föras IN i eller lyftas BORT
+     från ett avslutat uppdrag i tysthet. (Granskningen 2026-09-05 fällde en
+     första version som bara prövade den nya kopplingen när den fanns: en post
+     gick då att peka om från avslutat till öppet, och därmed lyfta bort.
+     Rättat i funktionen, pinnat med prov i `uppdragsytan-sparrar.test.ts`.)
+     `assignContractPart` läser aldrig `projects.status`; därför sitter spärren
+     här.
   5. **Sju nya statusetiketter i `view/html.ts`.** Ingen vy visar dem ännu, men
      `test/statusetiketter.test.ts` härleder kravet ur CHECK-villkoren i
      schemat, och `uppdrag_leverabel.status`/`uppdrag_referens.status` är just
@@ -207,7 +212,9 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   varje ändring bär en `0068:`-kommentar som säger vad som flyttades och varför.
 
   **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
-  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Tre
+  körskriptet efteråt) — utfallet är alltså ÄNNU INTE bevisat här. KRAV-14
+  kräver inklistrad utdata från `npm test` och `npm run build`; den ska in i
+  den här sessionsloggen FÖRE merge, och inget får kallas grönt innan dess. Tre
   nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
   lämnar varken kolumner eller tabeller efter sig, backfillen fryser signerat
   och lämnar osignerat, andra körningen ändrar inget, spärrarna gäller efteråt),
@@ -217,7 +224,8 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   tabellernas form, RLS-policyer, rättigheter åt båda hållen, de unika
   nycklarna, ingen `status_sedan`, och tenantgränsen mot ett grannbolag).
 
-  **Kvarstår för David:** kör `npm run migrate` (0068) — och kör förgrinden
+  **Kvarstår för David:** klistra in `npm test`- och `npm run build`-utdatan
+  ovan (KRAV-14), kör `npm run migrate` (0068) — och kör förgrinden
   `~/.hermes/forgrind/111.sh` mot en återläst kopia av dagens dump FÖRE merge,
   så att kantkontrollen prövas mot ILT:s riktiga avtal innan backfillen rör
   dem. Ingen åtgärd, ingen vy och ingen import ingår här (S1.2).
