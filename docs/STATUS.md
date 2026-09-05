@@ -193,8 +193,9 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
      sådana villkor. Det är repots egen grind, inte en vyändring.
 
   **VIKTIGT — 0068 STÄNGER två vägar som fungerade före den. De måste öppnas i
-  S1.2, och tills dess svarar båda `500 internal_error` (triggerns text når
-  aldrig fram till användaren):**
+  S1.2, och tills dess svarar båda `409 rule_violation` med triggerns text —
+  `errorHandler.ts` mappar triggrarnas P0001 dit, och
+  `uppdragsytan-sparrar.test.ts` asserterar exakt det genom HTTP-stacken):**
   - **Ett bekräftat tak går inte att sätta på ett nyskapat avtal.**
     `create_contract` skapar alltid ett *utkast* och det finns ingen action som
     fryser ett kontrakt. Alltså faller `upsert_contract_part`
@@ -211,24 +212,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   (`avtalsdelar`, `tid-rapporter`, `tid-snabbregistrering`, `avtal-inlasning`);
   varje ändring bär en `0068:`-kommentar som säger vad som flyttades och varför.
 
-  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
-  körskriptet efteråt) — utfallet är alltså ÄNNU INTE bevisat här. KRAV-14
-  kräver inklistrad utdata från `npm test` och `npm run build`; den ska in i
-  den här sessionsloggen FÖRE merge, och inget får kallas grönt innan dess. Tre
-  nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
+  **Grind (KRAV-14), körd på branchen 2026-09-05 efter granskningens tredje
+  försök, inklistrad ordagrant:**
+  `npm run build` → ren (exit 0).
+  `npm test` → `Test Files  109 passed (109)` · `Tests  1077 passed (1077)` · `Duration  280.27s (transform 2.45s, setup 2.09s, collect 108.51s, tests 147.75s, environment 16ms, prepare 5.43s)`.
+  Tre nya sviter: `uppdragsytan-migration-0068.test.ts` (kantkontrollen fäller och
   lämnar varken kolumner eller tabeller efter sig, backfillen fryser signerat
   och lämnar osignerat, andra körningen ändrar inget, spärrarna gäller efteråt),
   `uppdragsytan-sparrar.test.ts` (alla fyra triggrar, RAISE-fall och tillåtna
   fall, inkl. att `upsertContractPart`-flödets in-place-uppdatering av en
-  obekräftad rad överlever) och `uppdragsytan-schema.test.ts` (de sju
-  tabellernas form, RLS-policyer, rättigheter åt båda hållen, de unika
-  nycklarna, ingen `status_sedan`, och tenantgränsen mot ett grannbolag).
+  obekräftad rad överlever, och att en post inte kan lyftas bort från ett
+  avslutat uppdrag genom omkoppling — granskningens fynd i försök 2) och
+  `uppdragsytan-schema.test.ts` (de sju tabellernas form, RLS-policyer,
+  rättigheter åt båda hållen, de unika nycklarna, ingen `status_sedan`, och
+  tenantgränsen mot ett grannbolag).
 
-  **Kvarstår för David:** klistra in `npm test`- och `npm run build`-utdatan
-  ovan (KRAV-14), kör `npm run migrate` (0068) — och kör förgrinden
-  `~/.hermes/forgrind/111.sh` mot en återläst kopia av dagens dump FÖRE merge,
-  så att kantkontrollen prövas mot ILT:s riktiga avtal innan backfillen rör
-  dem. Ingen åtgärd, ingen vy och ingen import ingår här (S1.2).
+  **Förgrinden** `~/.hermes/forgrind/111.sh` körs av CTO-motorn på branchen före
+  merge (0068 mot en återläst kopia av dagens dump, kantkontrollen mot ILT:s
+  riktiga avtal); utfallet står i `~/.hermes/logg/forgrind-111.log`. Ingen
+  åtgärd, ingen vy och ingen import ingår här (S1.2). Frysningen av ett
+  nyskapat avtal (signed_date → fryst) öppnas i S1.2.
+
 
 - **2026-09-03 (lönen bokförs med bruttometod från september — LOC-355):**
   `book_payslip` bokförde bara **nettolönen** (7010 D / 1930 K) och
