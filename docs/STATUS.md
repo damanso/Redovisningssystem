@@ -145,6 +145,80 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S1.2, våg 2 — uppdraget skapas, kontraktet
+  importeras):** 0068 gav kontraktet sitt tillstånd men ingen dörr in i det:
+  `create_contract` skapar alltid ett utkast, ingen åtgärd frös något, och
+  därför gick **ett bekräftat tak inte att sätta på ett nyskapat avtal — inte
+  ens ett undertecknat.** Baselinespärren var rätt och samtidigt omöjlig att
+  använda. Samtidigt fanns NVR-001:s frysta leveranskontrakt bara som text i
+  Drive: 430 h och 473 000 kr som ingen kolumn kände till.
+
+  Byggt: **migration `0069_signering_fryser.sql`** (EN triggerfunktion, ingen
+  ny tabell, ingen kolumn, ingen backfill), den rena parsern
+  `server/src/lib/leveranskontrakt.ts`, tjänsten
+  `server/src/services/uppdragImport.ts` och de två åtgärderna **`skapa_uppdrag`**
+  och **`importera_leveranskontrakt`** (båda `write`, engångs). Ingen vy, inga
+  nya beroenden, ingen ändrad känslighet, `assign_contract_part` orörd.
+
+  1. **Att signera ÄR att frysa.** Triggern härleder `kontrakt_tillstand` ur
+     `signed_date` i stället för att låta någon sätta det: två fält som kan
+     stå i strid med varandra kommer att göra det. Ingen egen frys-åtgärd
+     behövdes därmed — `update_contract` med datum räcker — och regeln gäller
+     för alla tre skrivvägarna eftersom den sitter i Postgres.
+  2. **`BEFORE INSERT OR UPDATE OF signed_date`, inte ett rent UPDATE.** En
+     UPDATE som bara rör `kontrakt_tillstand` ska fortsätta falla på
+     `vagrar_avfrysning` (0068) med dess RAISE. BEFORE-triggrar körs i
+     bokstavsordning, så en trigger på ALLA uppdateringar hade hunnit skriva
+     tillbaka 'fryst' innan `contracts_vagrar_avfrysning` läste raden — en
+     spärr som tyst rättar i stället för att säga nej är ingen spärr.
+     Invarianten består ändå: varje skrivning av `signed_date` passerar här.
+  3. **Parsern gissar aldrig.** Hittas inte ett fält blir det NULL och räknas
+     upp i svarets `saknade_falt`. Precisionen på ett datum läses ur formen
+     (`2026-09` = månad, med månadens sista dag som slut) — den antas inte.
+     Beloppet räknas i heltalsören hela vägen. Fixturen `server/test/fixtures/`
+     kopierar kontraktets struktur, och `L6` saknar sin läsväg MED FLIT så att
+     luckan följs hela vägen ner i kolumnen.
+  4. **Importen bekräftar aldrig ett tak.** `cap_confirmed` är Davids, och
+     kräver ett fryst kontrakt (0068). Ett tak som en maskin bekräftat åt en
+     människa är exakt det olästa tak som aldrig varnar.
+  5. **Idempotensen är en LÄSNING, inte en överskrivning.** En del som redan
+     står som importen vill ha den skrivs inte om: `upsertContractPart` sätter
+     `manually_edited` vid varje ändring, så en blind andra körning hade lagt
+     ett ändringsspår efter en körning som inte ändrade något. Registret bärs
+     av `UNIQUE (contract_id, kod)` (DO NOTHING — en människas `status` nollas
+     aldrig av en import) och scopelinjerna läses innan de skrivs, eftersom
+     `app` saknar DELETE på den tabellen.
+  6. **`skapa_uppdrag` utan `signed_date` svarar 400 `valid_from_required`.**
+     Rotdelens `valid_from` går inte att härleda ur ett avtal ingen skrivit
+     under, och ett gissat startdatum flyttar tyst ett tak i tiden
+     (contracts.ts rad 620). Fältet är alltså valfritt i schemat men krävs i
+     praktiken för att uppdraget ska kunna skapas — det står i MCP_ACTIONS.md.
+     **Öppen fråga till David:** ska åtgärden i stället ta ett eget
+     `valid_from` för det osignerade fallet?
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-import.test.ts`: parsern som ren funktion
+  (tabell av fall för timmar/ören/datum/läsväg, hela fixturen, och en text utan
+  fält som ger NULL rakt igenom), `skapa_uppdrag` (fryst avtal + rotdel; utan
+  datum 400 och NOLL halvskapade avtal), importen (rotens 430 h/47 300 000 ören
+  med `valid_from = signed_date`, strömmarnas period och precision, L1–L6 under
+  sin ström med ärvt intervall, STYRNING utan registerrad, exakt sex
+  registerrader, femton scopelinjer, godkännarna, `change_reason` på varje del,
+  inget bekräftat tak, `get_contract_usage` med 430 h som `vet_ej`, den andra
+  importen som inte ändrar en rad, och tenantgränsen), samt 0069 (fryst vid
+  födseln, utkast som fryses av `update_contract`, nollad `signed_date` som
+  fälls, bekräftat tak som går igenom på signerat men fälls på utkast).
+  **KRAV-8:** `uppdragsytan-sparrar.test.ts` speglar nya läget — `nyttAvtal`
+  sätter `signed_date` och föder alltså frysta avtal, så de prov som behöver ett
+  UTKAST använder nya hjälparen `nyttUtkastavtal`, och blocket "vad 0068
+  stänger" heter nu "vad 0068 stängde, och vad S1.2/S1.3 öppnade".
+
+  **Kvarstår för David:** kör `npm run migrate` (0069). Därefter: `skapa_uppdrag`
+  för NVR-001 och `importera_leveranskontrakt` med kontraktstexten (den skickas
+  in som indata — systemet läser aldrig Drive). Att bekräfta taken
+  (`cap_confirmed`) är hans eget steg via **Att göra**.
+
 - **2026-09-06 (uppdragsytan S0.1, våg 2 — sensitive på avtalsåtgärderna,
   människokrav på uppdragsavslutet):** FR-4 säger att en ändrad baseline ska
   passera en människa. `andra_baseline` (S1.3) var köad från dag ett — men
@@ -351,11 +425,12 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   `{ error: rule_violation }`, meddelandet stannar i serverloggen, och
   `uppdragsytan-sparrar.test.ts` asserterar status + kod, aldrig texten. Om
   användaren ska se en förklaring eller en stum kod är ett S1.2-beslut):**
-  - **Ett bekräftat tak går inte att sätta på ett nyskapat avtal.**
-    `create_contract` skapar alltid ett *utkast* och det finns ingen action som
-    fryser ett kontrakt. Alltså faller `upsert_contract_part`
-    med `cap_confirmed: true`, `create_contract_from_draft` med bekräftat tak,
-    och vyns kryssruta "taket är läst" på `/app/c/:id/projects/:pid/avtal`.
+  - ~~**Ett bekräftat tak går inte att sätta på ett nyskapat avtal.**~~
+    **ÖPPNAD 2026-09-06 (S1.2, migration 0069):** ett `signed_date` fryser
+    kontraktet (trigger), så `create_contract`/`skapa_uppdrag`/
+    `create_contract_from_draft` med undertecknandedatum ger ett FRYST avtal som
+    tar emot ett bekräftat tak direkt. Kvar som spärr: ett avtal som ingen
+    undertecknat är ett utkast, och där fälls det bekräftade taket som förut.
   - ~~**Ett tilläggsavtal går inte att lägga in.**~~ **ÖPPNAD 2026-09-06 (S1.3):**
     `upsert_contract_part` tar nu `change_reason` (+ `start_date`/`end_date`/
     `date_precision`), och den nya sensitive-åtgärden `andra_baseline` skriver
@@ -395,7 +470,8 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   merge (0068 mot en återläst kopia av dagens dump, kantkontrollen mot ILT:s
   riktiga avtal); utfallet står i `~/.hermes/logg/forgrind-111.log`. Ingen
   åtgärd, ingen vy och ingen import ingår här (S1.2). Frysningen av ett
-  nyskapat avtal (signed_date → fryst) öppnas i S1.2.
+  nyskapat avtal (signed_date → fryst) öppnades i S1.2, migration 0069 — se
+  sessionsloggens översta post.
 
 
 - **2026-09-03 (lönen bokförs med bruttometod från september — LOC-355):**

@@ -803,5 +803,71 @@ redirectar vyns generiska `runFormAction` till `/app/c/:id/approvals` vid
 **`assign_contract_part` är oförändrat `write`:** klassificeringen av en tidpost
 flyttar varken tak, belopp eller minuter, och tidvägen fungerar som förut.
 
-Kvar till senare vågor: frysning av ett nyskapat kontrakt (`kontrakt_tillstand`
-`utkast` → `fryst`) har fortfarande ingen åtgärd.
+### Uppdraget skapas, kontraktet importeras (S1.2, våg 2)
+
+**Frysningen fick ingen egen åtgärd — den blev en följd.** Migration **0069**
+lägger en trigger på `contracts`: står det ett `signed_date` på raden är
+`kontrakt_tillstand` **`fryst`**, vid INSERT som vid UPDATE. Att signera ÄR att
+frysa, så `create_contract`/`skapa_uppdrag` med datum föder avtalet fryst och
+`update_contract` med `signed_date` fryser ett utkast. Vägen tillbaka är
+stängd åt båda håll: `vagrar_avfrysning` (0068) vägrar `fryst` → `utkast`, och
+0069 vägrar att NOLLA `signed_date` på ett fryst kontrakt (409
+`rule_violation`, utan triggerns text som allt annat).
+
+Följden för det som stod pinnat ovan: **ett bekräftat tak går nu att sätta på
+ett nyskapat avtal — om avtalet är undertecknat.** Är det ett utkast fälls det
+som förut, och det är hela ADR-8: en baseline på ett arbetsmaterial är en
+anteckning.
+
+**`skapa_uppdrag` (write, engångs)** — "Skapa uppdrag: avtal på ett befintligt
+projekt, med rotdelen UPPDRAG". Indata `project_id`, `name`, `signed_date`
+(valfri). Delegerar till `createContract` och skapar ALLTID rotdelen
+`code = 'UPPDRAG'` (utan förälder) som allt annat hänger under, så att
+`get_contract_usage` alltid har en nod som bär hela uppdragets tak. Svarar
+`contract_id`, `kontrakt_tillstand` och avtalet.
+
+- **Utan `signed_date` finns inget att härleda rotdelens `valid_from` ur**, och
+  då svarar åtgärden **400 `valid_from_required`** i stället för att gissa ett
+  startdatum (`upsertContractPart`s egen regel). Hela anropet rullas tillbaka —
+  inget halvskapat avtal blir kvar.
+
+**`importera_leveranskontrakt` (write, engångs)** — "Importera det frysta
+leveranskontraktet som baseline". Indata `contract_id` + `kontraktstext`
+(markdown). **Åtgärden läser aldrig Drive eller en fil själv** (ADR-4/NFR-1):
+den som har texten skickar in den. Tolkningen sker i den rena parsern
+`server/src/lib/leveranskontrakt.ts` (ingen databas, ingen I/O), och skrivningen
+går genom `upsertContractPart` — ingen parallell väg in till avtalsdelarna.
+
+Ur texten skrivs, allt i samma transaktion:
+
+- rotdelen `UPPDRAG` med ramens `cap_hours`/`cap_amount_ore` och
+  `valid_from = signed_date`,
+- strömmarna (Bilaga 1:s faser) som förälderdelar under `UPPDRAG` med
+  `start_date`/`end_date` och `date_precision` läst ur datumets form
+  (`2026-09` = `manad`, `2026-09-03` = `dag`),
+- leverablerna under sin ström med sitt tak och **ärvt** intervall (NULL),
+- `STYRNING` som del under `UPPDRAG` — **utan** rad i leverabelregistret,
+- en rad per leverabel i `uppdrag_leverabel` (kod, klausul,
+  acceptanskriterium, uppföljningsmått, läsväg, status `ej_paborjad`),
+- `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul),
+- `contracts.godkannare` / `godkannare_eskalering`.
+
+- **Saknat fält blir NULL, aldrig en gissning.** Ett värde parsern inte hittar
+  skrivs inte, och redovisas i svarets `saknade_falt` — saknat ska synas som
+  saknat.
+- **Importen sätter ALDRIG `cap_confirmed`.** Det gör David (kryssrutan eller
+  `upsert_contract_part` via kön), och det kräver ett fryst kontrakt. Ett tak
+  som en maskin bekräftat åt en människa är just det olästa tak som aldrig
+  varnar.
+- **Idempotent.** Delarna matchas på `code`, registret bärs av
+  `UNIQUE (contract_id, kod)` och scopelinjerna läses innan de skrivs. En rad
+  som redan står som importen vill ha den skrivs INTE om — annars hade en andra
+  körning satt `manually_edited` och lagt ett ändringsspår i auditloggen efter
+  en körning som inte ändrade något. Svaret säger `oforandrad: true`.
+- **Varje skriven del bär `change_reason = 'import ur leveranskontraktet v1'`**,
+  och auditraden `uppdrag.leveranskontrakt_importerat` skrivs alltid: den är
+  spåret av att importen kördes, inte av en ändring.
+- Båda åtgärderna är `write` (1E Del 4, Davids svar 6/9) fastän
+  `upsert_contract_part` är `sensitive`: de FÖDER baselinen. Ett redan bekräftat
+  tak går inte att röra härifrån heller — 0068:s trigger fäller varje
+  in-place-ändring av en bekräftad rad.

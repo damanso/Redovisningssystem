@@ -35,6 +35,7 @@ import {
 import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
+import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1524,6 +1525,47 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ time_entry_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
     handler: (ctx, i) => assignContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S1.2: uppdraget skapas, kontraktet importeras. Två ENGÅNGS-
+  // åtgärder som FÖDER baselinen — de skapar den första versionen av varje kod
+  // och sätter ALDRIG `cap_confirmed`. Därför är de `write` (1E Del 4, Davids
+  // svar 6/9) medan `upsert_contract_part`/`andra_baseline` är `sensitive`:
+  // kön i S0.1 finns för att skydda ÄNDRINGEN av ett läst tak. Ett bekräftat
+  // tak går inte att röra härifrån heller — 0068:s trigger fäller varje
+  // in-place-ändring av en bekräftad rad med 409 `rule_violation`.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'skapa_uppdrag',
+    title: 'Skapa uppdrag: avtal på ett befintligt projekt, med rotdelen UPPDRAG',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        project_id: UuidSchema,
+        name: safeText(200),
+        // Med undertecknandedatum föds avtalet FRYST (0069: att signera är att
+        // frysa). Utan det är avtalet ett utkast — och då finns inget att
+        // härleda rotdelens `valid_from` ur, så åtgärden svarar 400
+        // `valid_from_required` i stället för att gissa ett startdatum.
+        signed_date: IsoDateSchema.optional(),
+      })
+      .strict(),
+    handler: (ctx, i) => skapaUppdrag(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'importera_leveranskontrakt',
+    title: 'Importera det frysta leveranskontraktet som baseline',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Kontraktstexten som markdown. Åtgärden läser ALDRIG Drive eller en
+        // fil själv (ADR-4/NFR-1) — den som har texten skickar in den, och
+        // tolkningen sker i den rena parsern `lib/leveranskontrakt.ts`.
+        kontraktstext: safeText(200_000),
+      })
+      .strict(),
+    handler: (ctx, i) => importeraLeveranskontrakt(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det
