@@ -908,3 +908,23 @@ valfri `kommentar` (≤ 2000 tecken). Svaret är den skrivna raden.
 (knappen **Bedömning** bredvid *Läs in avtal*). Formuläret sätter läget för en
 period och sidan visar historiken kronologiskt. Den skriver genom
 `executeAction` med actor `human`, precis som resten av vyns skrivvägar.
+
+### Leverabelregistret läses (S3.1, våg 3)
+
+- `las_leverabelregister` (read) — `contract_id`. Avtalets rader ur
+  `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `klausul`,
+  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag` och `status` (FR-9).
+  Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
+  **Radidentiteten är `(contract_id, kod)`** — aldrig `contract_part_id`:
+  avtalsdelen versioneras vid ett tilläggsavtal, leverabeln L6 är samma
+  leverabel före och efter. Ett avtal som inte finns eller tillhör ett annat
+  bolag ger **404 `not_found`**; ett befintligt avtal utan registerrader ger en
+  **tom lista** — avtalet kan vara skapat men inte importerat, och det är ett
+  svar, inte ett fel.
+- **`matt_lasvag` får vara NULL, och täckningen bärs av provet.** CHECK-villkoret
+  i 0068 tillåter NULL med flit: ett fält som kontraktstexten inte angav ska
+  skrivas som saknat, aldrig gissas fram. Alltså kan databasen aldrig säga "alla
+  mått har en läsväg". FR-19:s täckningskontroll läser i stället åtgärdens svar
+  (`server/test/uppdragsytan-register.test.ts`): fixturen NVR-001 saknar L6:s
+  läsväg och kontrollen ska fälla exakt L6, medan samma text med läsvägen ifylld
+  ger noll saknade. Åtgärden döljer aldrig en lucka och fyller den aldrig.

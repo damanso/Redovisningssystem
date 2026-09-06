@@ -37,6 +37,7 @@ import {
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
+import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1600,6 +1601,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // "satte en människa den?" och sätts av tjänsten till true; ett indatafält
     // hade återinfört exakt den lögn kolumnen finns för att utesluta.
     handler: (ctx, i) => sattBedomning(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S3.1: leverabelregistret läses. Importen (S1.2) fyllde
+  // `uppdrag_leverabel`, men ingen ingång kunde läsa den.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'las_leverabelregister',
+    title: 'Leverabelregistret för ett avtal, med klausul, acceptanskriterium och läsväg',
+    // `read` och ingen `kravManniska` (1E Del 4): registret är kontraktets egen
+    // text tillbakaläst, ingenting flyttas och ingenting beslutas.
+    sensitivity: 'read',
+    inputSchema: z.object({ contract_id: UuidSchema }).strict(),
+    handler: (ctx, i) => lasLeverabelregister(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det
