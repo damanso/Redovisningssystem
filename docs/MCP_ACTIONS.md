@@ -15,6 +15,11 @@ zod-schema och en känslighetsnivå:
 | `write` | skapar utkast/register, ej pengaflyttande (skapa kund/faktura/kvitto) | direkt |
 | `sensitive` | pengaflyttande eller periodlåsande (bokför faktura/kvitto/verifikat, rättelse, periodlås) | **kräver mänskligt godkännande** |
 
+En action kan dessutom ha det valfria fältet `kravManniska: true`, som betyder att
+bara en människa får köra den: ett agent-anrop avvisas i `executeAction` med
+`403 human_required` innan något skrivs (till skillnad från `sensitive`, som köar
+begäran för godkännande). Ingen action sätter fältet i dag.
+
 Alla actions kör mot kärnans tjänster med samma serverpåtvingade regler: tenant
 härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas.
 

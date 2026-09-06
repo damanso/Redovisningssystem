@@ -145,6 +145,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S2.1, våg 1 — `kravManniska` i åtgärdslagret):**
+  Ett sjätte, VALFRITT fält `kravManniska?: boolean` på `ActionDef`
+  (`actions/registry.ts`) och en spärr i `executeAction` (`actions/execute.ts`):
+  `kravManniska && actor !== 'human'` → `ForbiddenError('human_required',
+  'åtgärden kräver en människa')` FÖRE sensitivity-grenen och före all
+  transaktion — ingen godkännandepost, ingen domänskrivning, ingen auditrad
+  (lagret loggar inte avvisningar i dag, jfr `contractor_not_permitted`; Davids
+  svar 6/9 på analysfrågan: NEJ till auditrad). Spärren sitter i action-lagret,
+  inte i transportlagret, så den håller för alla tre ingångarna — vyn anropar
+  `executeAction` direkt och MCP går via REST-rutten `/actions/:action`, som
+  saknar `requireHuman`. Namnet är medvetet inte `requireHuman`: två mekanismer
+  på två lager ska inte heta samma sak. **Ingen migration, inga nya beroenden,
+  ingen ny behörighetskod, och ingen befintlig åtgärd sätter fältet**
+  (`set_project_status` får det i S0.1, våg 2). Ny svit
+  `server/test/manniskosparr.test.ts` via REST-rutten med agent-token: (negativ)
+  teståtgärd med fältet → 403 `human_required` med oförändrad auditlogg, tom
+  godkännandekö och ingen skriven rad; (positiv) samma åtgärd som människa →
+  200; (kontroll) åtgärd UTAN fältet opåverkad av actor, plus en rad som fäller
+  provet om kontrollfallet inte kört. Teståtgärderna finns bara i testet (mock
+  av `registry.getAction`) — registret har ingen injektionspunkt.
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs.
+
 - **2026-09-06 (uppdragsytan S1.3, våg 1 — orsakens skrivväg och
   `andra_baseline`):** 0068 stängde en väg som fungerade före den:
   `kraver_orsak_vid_ny_version()` kräver `change_reason` vid varje ny version
