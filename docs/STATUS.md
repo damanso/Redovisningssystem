@@ -145,6 +145,71 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S3.3, våg 5 — ålder i läget):** S3.1 gav
+  leverabelregistret sin läsväg och S3.2 gav statusbytet sin händelserad. Men
+  **registret svarade bara VILKEN status en leverabel står i, aldrig HUR LÄNGE.**
+  En leverabel som stått i `pagar` sedan i maj såg i svaret exakt likadan ut som
+  en som bytte läge i morse. FR-37 var alltså ett krav vars enda underlag —
+  historiken i `uppdrag_leverabel_handelse` — ingen läsare rörde.
+
+  Byggt: **fältet `dagar_i_laget` på `Leverabelrad`**, härlett i SELECT:en i
+  `services/uppdragRegister.ts`, plus ett provblock i den befintliga sviten och
+  två docs-rader. **Ingen migration, ingen schemaändring, ingen ändring i
+  `actions/registry.ts`, ingen vy, ingen skrivväg, inga nya beroenden** — den
+  redan registrerade read-åtgärden `las_leverabelregister` bär det nya fältet av
+  sig själv, eftersom svaret ÄR tjänstens.
+
+  1. **Härlett, aldrig lagrat — och det är hela poängen.** Överlämningens
+     alternativ var en `status_sedan`-kolumn. En sådan är ett andra ställe där
+     samma sanning står: den dag en skrivväg glömmer att uppdatera den driftar
+     den ifrån historiken utan att någon ser det, och läsaren får en säker siffra
+     som är fel. Ett härlett tal kan per definition inte drifta. `0068:131` sa
+     det redan: "status utan historik är en gissning". Schemaprovet i
+     `uppdragsytan-schema.test.ts:92` (ingen `status_sedan`-kolumn) står därför
+     kvar orört — det är nu också beviset för att åldern aldrig kan läsas ur en
+     lagrad kolumn.
+  2. **Fallbacken till `created_at` är inte ett kantfall.** Importen (S1.2)
+     skriver ALDRIG en händelse — bara `uppdragStatus.ts` gör det — så varje
+     nyimporterat register består uteslutande av leverabler utan historik. Utan
+     `COALESCE(max(h.created_at), l.created_at)` hade normalfallet gett NULL.
+     Och ett hårdkodat 0 där hade varit värre än NULL: det ser ut som "bytte läge
+     nyss", vilket är motsatsen till sanningen om en leverabel som legat
+     orörd sedan importen.
+  3. **`max()`, inte "den senaste raden vi råkar läsa".** Provet skriver därför
+     den NYASTE händelsen först och den äldre efteråt: hade svaret kommit ur
+     insättningsordningen eller ur en `ORDER BY … LIMIT 1` utan sortering hade
+     det passerat ett prov med raderna i kronologisk ordning.
+  4. **Subqueryn filtrerar på båda leden** (`h.leverabel_id = l.id AND
+     h.company_id = l.company_id`) — husets sammansatta `company_id`-filter i
+     varje join, samma nyckel som 0068:s främmande nyckel bär. RLS räcker; men
+     ett filter som bara matchar på id vore ett ställe där en avstängd RLS blir
+     en tyst läcka i stället för ett fel.
+  5. **Dagar, inte timmar.** Källan frågar hur länge något stått still, och det
+     svaret ändras inte av att klockan går. Fältet följer med oförändrat till den
+     frysta registerkopian (`uppdragReferens.ts:427`) och svepet — ingen
+     särbehandling, ingen filtrering.
+  6. **Registervyn byggdes inte.** CTO-underlaget nämnde en kolumn i en registervy
+     i `http/view/routes.ts` — men den vyn finns inte: den uteslöts uttryckligen i
+     S3.1 på Davids beslut (byggjournal beslut-121), och kommentaren i
+     `routes.ts:1467` bekräftar det. Överlämningens acceptans bärs av läsvägen,
+     så en ny vy hade varit mer än källan kräver (Davids analysregel 1).
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Nytt
+  block i `server/test/uppdragsytan-register.test.ts`: två händelser 10 resp. 3
+  dagar bakåt (den nyaste insatt först) → **3**; en leverabel utan händelser med
+  bakåtdaterad `created_at` → **7**; en nyimporterad rad utan händelser → **0**
+  (sant här, till skillnad från NULL-krockens vilseledande nolla); fältet på
+  varje rad som heltal ≥ 0; och grannleverablernas historik som inte smittar
+  (exakt en rad står på 3). Sviten skriver händelserna som ägarrollen — tabellen
+  är append-only för `app` — vilket är riggning av historik, inte en andra
+  skrivväg. Nyckellistan i S3.1:s befintliga prov utökades med fältet.
+
+  **Kvarstår för David:** inget att migrera och ingenting i vyn. Registret läses
+  som förut via `las_leverabelregister`, nu med åldern. Timmar eller finare
+  granularitet, en initialhändelse vid importen och en registervy är medvetet
+  uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S8.1, våg 4 — avslut med öppna leverabler):** 0068
   hade burit `contracts.avslutat_med_oppna` och `vagrar_skrivning_pa_avslutat()`
   sedan dag ett, men **ingen kodväg skrev kolumnen.** Följden: ett uppdrag som

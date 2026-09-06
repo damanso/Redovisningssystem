@@ -18,7 +18,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SIGNERAT = '2026-09-03';
 const OKANT_AVTAL = '00000000-0000-4000-8000-000000000000';
@@ -148,8 +148,8 @@ describe('leverabelregistret för det importerade kontraktet', () => {
     expect(rader.every((r) => r.contract_id === contractId)).toBe(true);
     for (const rad of rader) {
       expect(Object.keys(rad).sort()).toEqual([
-        'acceptanskriterium', 'contract_id', 'klausul', 'kod', 'matt_lasvag',
-        'status', 'uppfoljningsmatt',
+        'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
+        'matt_lasvag', 'status', 'uppfoljningsmatt',
       ]);
     }
   });
@@ -205,6 +205,90 @@ describe('KRAV-5, positiv kontroll: full täckning ger noll saknade', () => {
 // ---------------------------------------------------------------------------
 // KRAV-2: tomt register och okänt avtal
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// S3.3 (FR-37): åldern i läget — härledd ur historiken, aldrig ur en kolumn
+// ---------------------------------------------------------------------------
+
+/** Leverabelns id, för de två grepp som bara går via ägarrollen. */
+async function leverabelId(contractId: string, kod: string): Promise<string> {
+  return await withAdmin(async (c) => (await c.query<{ id: string }>(
+    'SELECT id FROM uppdrag_leverabel WHERE contract_id = $1 AND kod = $2',
+    [contractId, kod],
+  )).rows[0]!.id);
+}
+
+/**
+ * En händelse med EXPLICIT `created_at`. Tabellen är append-only för rollen
+ * `app` (0068:150), så provet skriver som ägaren — det är riggning av historik,
+ * inte en andra skrivväg: tjänsten läser samma rader som `uppdragStatus.ts`
+ * skriver.
+ */
+async function riggaHandelse(
+  companyId2: string, contractId: string, levId: string, till: string, dagarBakat: number,
+): Promise<void> {
+  await withAdmin((c) => c.query(
+    `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, created_at)
+     VALUES ($1, $2, $3, $4, now() - make_interval(days => $5::int))`,
+    [companyId2, contractId, levId, till, dagarBakat],
+  ));
+}
+
+describe('dagar_i_laget räknas ur senaste händelsen (FR-37)', () => {
+  let contractId = '';
+  let rader: Leverabelrad[] = [];
+
+  beforeAll(async () => {
+    contractId = await nyttAvtal('NVR-003 ålder i läget');
+    await ok('importera_leveranskontrakt', {
+      contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
+    });
+
+    // L1 får TVÅ händelser, den nyaste insatt FÖRST: svaret ska komma ur max()
+    // över historiken, inte ur den senast skrivna eller den först lästa raden.
+    const l1 = await leverabelId(contractId, 'L1');
+    await riggaHandelse(companyId, contractId, l1, 'levererad', 3);
+    await riggaHandelse(companyId, contractId, l1, 'pagar', 10);
+
+    // L2 rörs aldrig av någon händelse — importen skapade den och ingen har
+    // statusbytt den. Dess egen created_at backas för att fallbacken ska kunna
+    // ge något ANNAT än noll; ett prov mot en färsk rad hade inte skilt
+    // fallbacken från ett hårdkodat 0.
+    await withAdmin((c) => c.query(
+      "UPDATE uppdrag_leverabel SET created_at = now() - interval '7 days' WHERE contract_id = $1 AND kod = 'L2'",
+      [contractId],
+    ));
+
+    rader = await las(contractId);
+  });
+
+  const rad = (kod: string) => rader.find((r) => r.kod === kod)!;
+
+  it('KRAV-3: två händelser → åldern kommer ur den SENASTE (3), inte den första (10)', () => {
+    expect(rad('L1').dagar_i_laget).toBe(3);
+  });
+
+  it('KRAV-4: utan händelser räknas åldern från leverabelns egen created_at', () => {
+    expect(rad('L2').dagar_i_laget).toBe(7);
+    // Och en nyss importerad rad utan händelser står på 0 — noll är sant här,
+    // till skillnad från det vilseledande nollan en NULL-krock hade gett.
+    expect(rad('L3').dagar_i_laget).toBe(0);
+  });
+
+  it('fältet finns på VARJE rad i åtgärdens svar, som ett heltal ≥ 0', () => {
+    expect(rader).toHaveLength(6);
+    for (const r of rader) {
+      expect(Number.isInteger(r.dagar_i_laget), r.kod).toBe(true);
+      expect(r.dagar_i_laget, r.kod).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('åldern är härledd: grannleverablernas historik smittar aldrig', () => {
+    // L1:s två händelser hör till L1. Filtret är (leverabel_id, company_id), och
+    // en subquery utan leverabelledet hade gett alla sex rader samma tal.
+    expect(rader.filter((r) => r.dagar_i_laget === 3).map((r) => r.kod)).toEqual(['L1']);
+  });
+});
 
 describe('KRAV-2: tomt är inte fel, okänt är 404', () => {
   it('ett befintligt avtal utan registerrader ger en tom lista', async () => {

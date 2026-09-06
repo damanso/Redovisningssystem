@@ -922,7 +922,8 @@ period och sidan visar historiken kronologiskt. Den skriver genom
 
 - `las_leverabelregister` (read) — `contract_id`. Avtalets rader ur
   `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `klausul`,
-  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag` och `status` (FR-9).
+  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status` (FR-9) och
+  `dagar_i_laget` (FR-37).
   Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
   **Radidentiteten är `(contract_id, kod)`** — aldrig `contract_part_id`:
   avtalsdelen versioneras vid ett tilläggsavtal, leverabeln L6 är samma
@@ -937,6 +938,18 @@ period och sidan visar historiken kronologiskt. Den skriver genom
   (`server/test/uppdragsytan-register.test.ts`): fixturen NVR-001 saknar L6:s
   läsväg och kontrollen ska fälla exakt L6, medan samma text med läsvägen ifylld
   ger noll saknade. Åtgärden döljer aldrig en lucka och fyller den aldrig.
+- **`dagar_i_laget` är HÄRLETT, aldrig lagrat (S3.3, våg 5 — FR-37).** Hela dagar
+  (avrundat nedåt) sedan leverabelns senaste rad i append-only-tabellen
+  `uppdrag_leverabel_handelse` — alltså hur länge den stått still i sitt
+  nuvarande läge. Saknar leverabeln händelser (importen skapade den, ingen har
+  statusbytt den) räknas åldern i stället från `uppdrag_leverabel.created_at`;
+  fältet är därför alltid ett heltal ≥ 0 och aldrig NULL. Talet räknas fram i
+  SELECT:en, med subqueryn filtrerad på både `leverabel_id` och `company_id`.
+  **Ingen `status_sedan`-kolumn finns eller ska finnas** (`0068:131`: "status
+  utan historik är en gissning") — en lagrad kolumn hade varit ett andra ställe
+  där samma sanning står, och den driftar ifrån historiken första gången en
+  skrivväg glömmer den. Ett schemaprov vaktar att kolumnen inte smyger tillbaka.
+  Fältet följer med oförändrat till den frysta registerkopian och svepet.
 
 ### Scopesignalen (S5.1, våg 3)
 
