@@ -871,3 +871,40 @@ Ur texten skrivs, allt i samma transaktion:
   `upsert_contract_part` är `sensitive`: de FÖDER baselinen. Ett redan bekräftat
   tak går inte att röra härifrån heller — 0068:s trigger fäller varje
   in-place-ändring av en bekräftad rad.
+
+### Bedömningen (S4.1, våg 2)
+
+**`satt_bedomning` (write, `kravManniska: true`)** — "Sätt bedömningen för en
+period (på spår / risk / ur spår)". Ett handgrepp: åtgärden körs direkt, den
+köas inte.
+
+Indata: `contract_id`, `period_start`, `period_slut`, `lage`
+(`pa_spar` | `risk` | `ur_spar`, exakt CHECK-villkorets värden i 0068) och en
+valfri `kommentar` (≤ 2000 tecken). Svaret är den skrivna raden.
+
+- **Bara en människa (FR-15).** `kravManniska` avvisar ett agentanrop med
+  **403 `human_required`** i `executeAction` — före varje skrivning, utan
+  köpost och utan auditrad. `satt_av_manniska` är därför INTE ett indatafält:
+  tjänsten skriver `true`, och med spärren är det svaret per konstruktion. Ett
+  fält hade återinfört exakt den lögn kolumnen finns för att utesluta.
+- **`write`, inte `sensitive`.** Godkännandekön finns för beslut som ska LÄSAS
+  av en människa innan de gäller. Här ÄR människan den som beslutar — att köa
+  hennes bedömning för hennes eget godkännande vore ett handgrepp utan
+  innehåll (1E Del 4).
+- **Aldrig ändringsbar i efterhand (FR-17).** `uppdrag_bedomning` har SELECT +
+  INSERT för rollen `app` och ingenting annat (0068): det finns ingen
+  UPDATE-åtgärd att bygga och ingen DELETE. Rättar man sig sätter man en NY
+  bedömning för samma period — båda raderna står kvar, och vad man trodde i
+  september går att läsa i oktober. Ingen unik-spärr hindrar den andra raden;
+  det är meningen.
+- **`handelse_ref_ids` och `frysta_siffror` lämnas NULL.** De hör till svepets
+  stories (FR-16/FR-26/FR-32). En kolumn fylld med en gissning ser ut som ett
+  underlag.
+- **Ingen rytm-mekanik.** FR-14:s rytm har varken lagring eller läsare i v1
+  (1E Del 7) — den bärs av styrgruppsmötena i Davids kalender. Åtgärden spärrar
+  därför ingen dag, och vyn visar inget "nästa bedömningstillfälle".
+
+**Vyn:** `/app/c/:id/projects/:projectId/bedomning`, undersida till uppdraget
+(knappen **Bedömning** bredvid *Läs in avtal*). Formuläret sätter läget för en
+period och sidan visar historiken kronologiskt. Den skriver genom
+`executeAction` med actor `human`, precis som resten av vyns skrivvägar.

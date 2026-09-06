@@ -30,6 +30,7 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
+import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
@@ -1445,7 +1446,10 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
           ${/* Vägen in för avtalet självt: utan den bor taket kvar i en DOCX,
                 och ett tak som inte är inskrivet kan aldrig varna. */ ''}
-          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/avtal">Läs in avtal</a></div></div>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/avtal">Läs in avtal</a>
+          ${/* S4.1: bedömningen bor bredvid avtalet — man svarar på "håller
+                det?" mot det som står där, inte mot tidposterna nedan. */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/bedomning">Bedömning</a></div></div>
       ${tidsnotiser(req)}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
@@ -2084,6 +2088,200 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req
     ? 'Avtalet är skapat.'
     : `Avtalet är skapat med ${parts.length} ${parts.length === 1 ? 'fas' : 'faser'}.`;
   res.redirect(`/app/c/${companyId}/projects/${projectId}?ok=${encodeURIComponent(kvitto)}`);
+}));
+
+// ---------------------------------------------------------------------------
+// Bedömningen (Uppdragsytan S4.1, PRD FR-14/FR-15/FR-17)
+//
+// Uppdragets enda subjektiva tal, och därför den enda ytan i huset där hela
+// poängen är att en människa svarar. Tre beslut styr sidan:
+//
+//  1. **Tre synliga val, inget förvalt.** En dropdown hade haft ett värde redan
+//     innan David bestämt sig, och det värdet går inte att ta tillbaka efteråt.
+//     Radioknapparna står därför tomma tills han väljer, och varje läge bär sin
+//     innebörd bredvid sig — man ska inte behöva minnas vad "risk" betyder här.
+//  2. **Oåterkalleligheten står FÖRE knappen, inte efter.** Det som inte går
+//     att ändra ska man få veta innan man gör det.
+//  3. **Historiken är sidans andra halva, inte en undersida.** Bedömningen görs
+//     mot det man sa förra gången; ligger den bakom ytterligare ett klick
+//     sätter man i praktiken varje bedömning från noll.
+//
+// Ingen rytm-mekanik: 1E Del 7 lämnar FR-14:s rytm utan lagring och utan läsare
+// i v1 — den bärs av styrgruppsmötena i Davids kalender. Sidan spärrar alltså
+// ingen dag och visar inget "nästa tillfälle"; att kunna sätta bedömningen när
+// som helst är avsiktligt.
+// ---------------------------------------------------------------------------
+
+/** De tre lägena i skalans ordning, med husets färgspråk och sin innebörd. */
+const BEDOMNINGSLAGE: Record<Bedomningslage, { etikett: string; kind: 'ok' | 'warn' | 'neg'; ikon: string; innebord: string }> = {
+  pa_spar: {
+    etikett: 'På spår', kind: 'ok', ikon: '✓',
+    innebord: 'Det som lovats håller — omfattning, tid och pengar ligger som avtalet säger.',
+  },
+  risk: {
+    etikett: 'Risk', kind: 'warn', ikon: '!',
+    innebord: 'Det kan spricka. Fortfarande möjligt att hålla, men inte av sig självt.',
+  },
+  ur_spar: {
+    etikett: 'Ur spår', kind: 'neg', ikon: '!',
+    innebord: 'Baselinen håller inte längre. Det ska sägas till kunden, inte upptäckas av kunden.',
+  },
+};
+
+const bedomningsChip = (lage: string): Raw => {
+  const l = BEDOMNINGSLAGE[lage as Bedomningslage];
+  return l ? chip(l.etikett, l.kind, l.ikon) : chip(lage, 'muted');
+};
+
+interface Bedomningsunderlag {
+  projekt: { id: string; number: number; name: string };
+  avtal: { id: string; name: string }[];
+  historik: (Bedomningsrad & { avtalsnamn: string })[];
+}
+
+/** Uppdraget, dess avtal och alla bedömningar — det sidan behöver, inget mer. */
+async function bedomningsunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Bedomningsunderlag> {
+  const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const avtal = (await listContracts(client, companyId, { project_id: projectId }))
+    .map((a) => ({ id: a.id as string, name: a.name as string }));
+  const historik: (Bedomningsrad & { avtalsnamn: string })[] = [];
+  for (const a of avtal) {
+    for (const rad of await listaBedomningar(client, companyId, a.id)) {
+      historik.push({ ...rad, avtalsnamn: a.name });
+    }
+  }
+  // Kronologiskt över alla avtal: listan ska läsas som en berättelse om
+  // uppdraget, inte som en tabell per avtal.
+  historik.sort((a, b) => a.period_start.localeCompare(b.period_start)
+    || a.created_at.localeCompare(b.created_at));
+  return { projekt: p, avtal, historik };
+}
+
+function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
+  const nu = new Date();
+  const dag = (d: Date): string => d.toISOString().slice(0, 10);
+  // Innevarande månad som utgångsläge — perioden syns i fälten och går att
+  // ändra. Det är en formulärhjälp, inte en rytm: rytmen har ingen lagring.
+  const start = dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1)));
+  const slut = dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0)));
+  const flera = u.avtal.length > 1;
+  return html`<form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/bedomning" style="margin:0">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:12px 16px 4px">
+      ${flera
+        ? html`<label class="field" style="margin:0;flex:2 1 240px"><span>Avtal</span>
+            <select name="contract_id" required>
+              ${u.avtal.map((a) => html`<option value="${a.id}">${a.name}</option>`)}
+            </select></label>`
+        : html`<input type="hidden" name="contract_id" value="${u.avtal[0]!.id}">`}
+      <label class="field" style="margin:0;flex:0 1 168px"><span>Perioden från</span>
+        <input type="date" name="period_start" value="${start}" required></label>
+      <label class="field" style="margin:0;flex:0 1 168px"><span>till och med</span>
+        <input type="date" name="period_slut" value="${slut}" required></label>
+    </div>
+    <fieldset style="border:0;margin:0;padding:6px 16px 0">
+      <legend style="padding:0;font-size:12.5px;font-weight:550;color:var(--ink-2)">Läge</legend>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        ${BEDOMNINGSLAGEN.map((kod) => html`
+          ${/* Hela rutan är träffyta, inte bara den lilla ringen. */ ''}
+          <label style="flex:1 1 230px;display:flex;gap:10px;align-items:flex-start;padding:11px 13px;border:1px solid var(--line-2);border-radius:var(--radius-sm);background:var(--surface);cursor:pointer">
+            <input type="radio" name="lage" value="${kod}" required style="width:auto;margin:3px 0 0">
+            <span>${bedomningsChip(kod)}
+              <span class="muted" style="display:block;font-size:12.5px;margin-top:5px">${BEDOMNINGSLAGE[kod].innebord}</span></span>
+          </label>`)}
+      </div>
+    </fieldset>
+    <div style="padding:12px 16px 0">
+      <label class="field" style="margin:0"><span>Kommentar
+          <span class="muted" style="font-weight:400">· valfri — varför just det här läget</span></span>
+        <textarea name="kommentar" rows="2" maxlength="2000"
+          placeholder="T.ex. leverans L3 flyttad två veckor efter kundens omprioritering."></textarea></label>
+    </div>
+    <div class="actions" style="padding:14px 16px">
+      <button class="btn btn--primary" type="submit">Sätt bedömningen</button>
+      ${/* Före knappen, aldrig efter: det som inte går att ångra ska stå
+            framför handen som ska göra det. */ ''}
+      <span class="muted" style="font-size:12px">Bedömningen går inte att ändra eller ta bort efteråt — den står kvar som du skrev den.
+        Ändrar läget sig sätter du en ny, och båda syns i historiken.</span>
+    </div>
+  </form>`;
+}
+
+function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag): Raw {
+  const senaste = u.historik[u.historik.length - 1];
+  const flera = u.avtal.length > 1;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Bedömning</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Håller det som lovats? Svaret ges av en människa, en gång per period, och skrivs aldrig om i efterhand.</p></div>
+      <div class="actions">${senaste ? bedomningsChip(senaste.lage) : chip('Ingen bedömning', 'muted', '○')}
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${felNotis(req)}
+    ${
+      u.avtal.length === 0
+        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+            Bedömningen sätts mot avtalet — det är där det står vad som lovats.
+            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        : html`<div class="panel" style="margin-top:16px">
+            <div class="panel__head"><h2>Sätt bedömningen</h2></div>
+            <div class="panel__body" style="padding:4px 0 4px">${bedomningsformular(companyId, u)}</div>
+          </div>`
+    }
+    <h2 style="margin-top:18px">Historik</h2>
+    ${
+      u.historik.length === 0
+        ? html`<p class="muted">Ingen bedömning satt ännu — den första du sätter blir uppdragets utgångsläge.</p>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Period</th>${flera ? html`<th>Avtal</th>` : ''}<th>Läge</th><th>Kommentar</th><th>Satt</th></tr></thead>
+            <tbody>${u.historik.map((b) => html`<tr>
+              <td class="code">${b.period_start} – ${b.period_slut}</td>
+              ${flera ? html`<td>${b.avtalsnamn}</td>` : ''}
+              <td>${bedomningsChip(b.lage)}</td>
+              <td>${b.kommentar ?? '—'}</td>
+              ${/* Kolumnen talar bara när den har något att säga: varje rad här
+                    ÄR satt av en människa (åtgärden kräver det), så en evig
+                    ja-kolumn hade bara varit brus. En rad som säger något annat
+                    ska däremot inte gå att missa. */ ''}
+              <td class="code">${b.created_at.slice(0, 16)}
+                ${b.satt_av_manniska ? '' : html` ${chip('Ej satt av människa', 'warn', '!')}`}</td></tr>`)}
+            </tbody></table></div>
+          <p class="muted" style="margin-top:8px;font-size:12.5px">Äldst först. Raderna går bara att lägga till —
+            databasen ger varken ändra eller ta bort på den här tabellen.</p>`
+    }`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/bedomning', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    return { name: company.name, body: bedomningsSida(req, companyId, await bedomningsunderlag(client, companyId, projectId)) };
+  });
+  res.type('html').send(layout({ title: 'Bedömning', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const kommentar = falt(kropp.kommentar);
+  // Samma väg som AI:t skulle ha tagit om den fick — den gör den inte:
+  // `satt_bedomning` bär `kravManniska`, och här är actor 'human' (lärdom 5).
+  //
+  // Tillbaka till sidan UTAN kvittotext: den nya raden i historiken och läget i
+  // sidhuvudet är kvittot. Ett `?ok=` i adressen hade dessutom blivit kvar när
+  // `runViewAction` lägger på sitt `&fel=` vid ett avvisat anrop — en sida som
+  // säger både "klart" och "gick inte" är värre än ingen text alls.
+  await runViewAction(req, res, companyId, 'satt_bedomning', {
+    contract_id: falt(kropp.contract_id),
+    period_start: falt(kropp.period_start),
+    period_slut: falt(kropp.period_slut),
+    lage: falt(kropp.lage),
+    ...(kommentar ? { kommentar } : {}),
+  }, `/app/c/${companyId}/projects/${projectId}/bedomning`);
 }));
 
 // ---------------------------------------------------------------------------
