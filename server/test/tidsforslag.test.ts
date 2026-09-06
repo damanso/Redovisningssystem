@@ -156,7 +156,8 @@ beforeAll(async () => {
   const avtal = await ok('create_contract', {
     project_id: nvrFas2, name: 'Plattformsavtal', signed_date: `${AR}-01-02`,
   });
-  const del = await ok('upsert_contract_part', {
+  // S0.1: `upsert_contract_part` är sensitive — setupen går via kön, som vyn.
+  const del = await godkannAction('upsert_contract_part', {
     contract_id: avtal.id, code: '2A', name: 'Fas 2A', valid_from: `${AR}-01-02`,
   });
   nvrFas2Del = (del as unknown as { parts: { part_id: string; code: string }[] })

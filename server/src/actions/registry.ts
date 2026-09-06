@@ -1221,6 +1221,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'set_project_status',
     title: 'Öppna/stäng projekt',
     sensitivity: 'write',
+    // S0.1: ett uppdragsavslut stänger ALL skrivning mot uppdraget (0068:s
+    // `vagrar_skrivning_pa_avslutat()`), och det beslutet får en agent inte
+    // fatta — inte ens som ett förslag i kön. Därför `kravManniska` och inte
+    // `sensitive`: en människa gör det direkt, en agent avvisas helt.
+    kravManniska: true,
     inputSchema: z.object({ project_id: UuidSchema, status: z.enum(['active', 'closed']) }).strict(),
     handler: (ctx, i: { project_id: string; status: 'active' | 'closed' }) =>
       setProjectStatus(ctx.client, ctx.companyId, ctx.userId, i.project_id, i.status),
@@ -1438,7 +1443,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'update_contract',
     title: 'Ändra avtal',
-    sensitivity: 'write',
+    // S0.1: `sensitive` av samma skäl som `andra_baseline`. Avtalets timtaxa och
+    // betalningsvillkor är vad kunden har lovats — ändras de utan att någon läst
+    // ändringen är baselinespärren en dörr med gångjärn på utsidan.
+    sensitivity: 'sensitive',
     inputSchema: z
       .object({
         contract_id: UuidSchema,
@@ -1456,7 +1464,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'upsert_contract_part',
     title: 'Skapa eller ändra avtalsdel (fas med tak)',
-    sensitivity: 'write',
+    // S0.1: `sensitive`. `andra_baseline` var köad från dag ett, men taket gick
+    // att flytta HÄR utan att någon godkänt — och en spärr som har en väg runt
+    // sig är ingen spärr. Nu köas båda vägarna till baselinen.
+    sensitivity: 'sensitive',
     // Nyckeln är (avtal, kod, valid_from): samma valid_from ändrar den
     // befintliga raden, ett SENARE valid_from lägger en ny version bredvid den
     // gamla. Ett tilläggsavtal skriver aldrig över det tak som gällde före —

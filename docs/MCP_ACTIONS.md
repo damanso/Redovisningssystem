@@ -717,7 +717,8 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
 
 ## Uppdragsytan
 
-Modulens första åtgärd (S1.3, våg 1). Uppdragsytan är en **modul här** — ingen
+Modulens första åtgärd (S1.3, våg 1) och stängningen av bakvägarna till
+baselinen (S0.1, våg 2). Uppdragsytan är en **modul här** — ingen
 egen tjänst, ingen fjärde databas. Den äger baselinen, leverabelregistret och
 bedömningen; pengar, ärenden och filer läses ur sina källsystem och dupliceras
 aldrig. Datalagret kom med migration **0068** (S1.1); det här är skrivvägen in
@@ -731,9 +732,9 @@ David med rätt skäl i huvudet. Ett tilläggsavtal fanns det ingen väg in för
 och ett tak som inte går att skriva in kan aldrig varna. Det är samma mening
 som PRD §1 rad 6, ett varv senare.
 
-**Fyra nya fält på `upsert_contract_part`** (write, oförändrad känslighet),
-alla **valfria** så att varje befintligt anrop beter sig exakt som förut —
-utelämnat fält skrivs som NULL:
+**Fyra nya fält på `upsert_contract_part`** (S0.1 nedan höjde åtgärden till
+`sensitive`), alla **valfria** så att varje befintligt anrop beter sig exakt
+som förut — utelämnat fält skrivs som NULL:
 
 - `change_reason` (text, ≤ 2000) — varför just DEN HÄR versionen skrevs. Den
   FÖRSTA versionen av en kod behöver inget skäl: den ändrar ingenting.
@@ -773,6 +774,34 @@ backstoppet. De två fall det gäller:
   `parent_part_id`/`hourly_rate_ore` på en rad med `cap_confirmed = true` — en
   bekräftad baseline skrivs inte om, den versioneras.
 
+### Bakvägarna stängda (S0.1, våg 2)
+
+`andra_baseline` var köad från dag ett — men taket gick att flytta BREDVID den
+kön: `upsert_contract_part` och `update_contract` var `write` och kördes rakt
+igenom, oavsett vem som anropade. En spärr som har en väg runt sig är ingen
+spärr. Tre rader i registret, inget annat:
+
+- **`upsert_contract_part` → `sensitive`.** Både agentens och människans anrop
+  svarar nu 202 `pending_approval`; raden skrivs först vid godkännandet i **Att
+  göra**. Kön (`action_approvals`) och auditraden `action.approval_requested`
+  skrivs FÖRE godkännandet — det är spåret av att någon bad om ändringen, inte
+  ändringen. Faller skrivningen på en trigger (0068) kommer 409
+  `rule_violation` nu från **godkännandet**, transaktionen rullas tillbaka och
+  köposten står kvar som `pending`.
+- **`update_contract` → `sensitive`.** Samma skäl: avtalets timtaxa och
+  betalningsvillkor är vad kunden har lovats.
+- **`set_project_status` → `kravManniska: true`** (känsligheten är oförändrad
+  `write`). Ett avslut stänger ALL skrivning mot uppdraget, så det beslutet får
+  en agent inte ens föreslå: agentanrop ger **403 `human_required`** utan
+  köpost, utan auditrad och utan domänskrivning (S2.1-spärren i `executeAction`).
+
+**Vyn är orörd.** Den har inget redigeringsformulär för avtalsdelar — avtal
+skapas via `create_contract_from_draft`, som går direkt på tjänstelagret och
+alltså inte påverkas. Skulle ett formulär ändå träffa en känslig åtgärd
+redirectar vyns generiska `runFormAction` till `/app/c/:id/approvals` vid
+`pending_approval`, precis som för kvitto- och fakturabokföring.
+**`assign_contract_part` är oförändrat `write`:** klassificeringen av en tidpost
+flyttar varken tak, belopp eller minuter, och tidvägen fungerar som förut.
+
 Kvar till senare vågor: frysning av ett nyskapat kontrakt (`kontrakt_tillstand`
-`utkast` → `fryst`) har fortfarande ingen åtgärd, och känsligheten på
-`upsert_contract_part` är S0.1 (våg 2).
+`utkast` → `fryst`) har fortfarande ingen åtgärd.

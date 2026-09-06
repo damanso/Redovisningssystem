@@ -42,7 +42,7 @@ let ua: ReturnType<typeof supertest.agent>;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
 
-type Svar = { status: number; body: { result: Record<string, unknown>; error?: string } };
+type Svar = { status: number; body: { result: Record<string, unknown>; error?: string; approval?: { id: string } } };
 
 async function act(namn: string, kropp: Record<string, unknown> = {}): Promise<Svar> {
   const res = await api.post(`${co()}/actions/${namn}`).set(auth()).send(kropp);
@@ -53,6 +53,15 @@ async function ok(namn: string, kropp: Record<string, unknown> = {}): Promise<Re
   const res = await act(namn, kropp);
   expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(200);
   return res.body.result;
+}
+
+/** Känslig action (S0.1: `upsert_contract_part`): begär (202) och godkänn. */
+async function godkannAction(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const begaran = await act(namn, kropp);
+  expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+  expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+  return svar.body.result as Record<string, unknown>;
 }
 
 interface Del {
@@ -311,7 +320,7 @@ describe('create_contract_from_draft', () => {
     await withAdmin((c) => c.query(
       "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [inlast.id],
     ));
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: inlast.id, code: '2A', cap_confirmed: true, valid_from: '2026-01-02',
     });
 
@@ -464,7 +473,7 @@ describe('vyn: Läs in avtal', () => {
     await withAdmin((c) => c.query(
       "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [a.id],
     ));
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: a.id, code: '2A', cap_confirmed: true, valid_from: '2026-01-02',
     });
     expect(del((await avtalFor(projekt))[0]!, '2A').cap_status).toBe('bekraftat');

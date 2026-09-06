@@ -35,11 +35,22 @@ let avtalsdelId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
 
-type Svar = { status: number; body: { result: Record<string, unknown>; error?: string; message?: string } };
+type Svar = {
+  status: number;
+  body: { result: Record<string, unknown>; error?: string; message?: string; approval?: { id: string } };
+};
 
 async function act(namn: string, kropp: Record<string, unknown> = {}): Promise<Svar> {
   const res = await api.post(`${co()}/actions/${namn}`).set(auth()).send(kropp);
   return res as unknown as Svar;
+}
+
+/** Känslig action (S0.1: `upsert_contract_part`): begär (202) och godkänn. */
+async function godkannAction(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+  const begaran = await act(namn, kropp);
+  expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
+  const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+  return svar as unknown as Svar;
 }
 
 /** Postar ett vyformulär och ger tillbaka målets query — kvittot bor där. */
@@ -97,7 +108,7 @@ beforeAll(async () => {
   ));
   // Taket är BEKRÄFTAT och litet: en timme räcker för att passera 80 %-gränsen,
   // så varningen går att pröva utan att provet blir en tidsserie.
-  const del = await act('upsert_contract_part', {
+  const del = await godkannAction('upsert_contract_part', {
     contract_id: avtal.body.result.id, code: '2A', name: 'Fas 2A', cap_hours: 1, cap_confirmed: true,
     valid_from: `${AR}-01-02`,
   });

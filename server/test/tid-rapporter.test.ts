@@ -204,11 +204,11 @@ describe('taxaordningen i rapporten är fakturans: post → avtalsdel → avtal 
     expect(avtal.status, JSON.stringify(avtal.body)).toBe(200);
     const contractId = avtal.body.result.id as string;
 
-    const a = await act('upsert_contract_part', {
+    const a = await godkann('upsert_contract_part', {
       contract_id: contractId, code: '1', name: 'Fas 1', hourly_rate_ore: 140_000, valid_from: `${AR}-01-01`,
     });
     expect(a.status, JSON.stringify(a.body)).toBe(200);
-    const b = await act('upsert_contract_part', {
+    const b = await godkann('upsert_contract_part', {
       contract_id: contractId, code: '2', name: 'Fas 2', valid_from: `${AR}-01-01`,
     });
     expect(b.status, JSON.stringify(b.body)).toBe(200);
@@ -377,7 +377,7 @@ describe('contract_usage_report: fasförälderns andel är barnens summa', () =>
       "UPDATE contracts SET kontrakt_tillstand = 'fryst' WHERE id = $1", [contractId],
     ));
 
-    const foralder = await act('upsert_contract_part', {
+    const foralder = await godkann('upsert_contract_part', {
       contract_id: contractId, code: '2', name: 'Fas 2', cap_hours: 10, cap_confirmed: true,
       valid_from: `${AR}-01-01`,
     });
@@ -387,7 +387,7 @@ describe('contract_usage_report: fasförälderns andel är barnens summa', () =>
     fas2 = foralderId;
 
     for (const kod of ['2A', '2B']) {
-      const del = await act('upsert_contract_part', {
+      const del = await godkann('upsert_contract_part', {
         contract_id: contractId, code: kod, name: `Fas ${kod}`, parent_part_id: foralderId,
         cap_hours: 6, cap_confirmed: true, valid_from: `${AR}-01-01`,
       });
@@ -440,7 +440,7 @@ describe('contract_usage_report: fasförälderns andel är barnens summa', () =>
     const avtal = await act('create_contract', { project_id: uppdrag, name: 'Oläst', signed_date: `${AR}-01-01` });
     expect(avtal.status, JSON.stringify(avtal.body)).toBe(200);
     const contractId = avtal.body.result.id as string;
-    const del = await act('upsert_contract_part', {
+    const del = await godkann('upsert_contract_part', {
       contract_id: contractId, code: 'X', name: 'Oläst fas', cap_hours: 1, valid_from: `${AR}-01-01`,
     });
     expect(del.status, JSON.stringify(del.body)).toBe(200);
