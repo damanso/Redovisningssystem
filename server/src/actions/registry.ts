@@ -41,6 +41,7 @@ import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import {
   avgorSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
+import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1680,6 +1681,36 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => avgorSignal(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S7.2: Drive-kön för registrets frysta kopia. Registret ändras
+  // här, kopian köas här, och Hermes (S7.5) tömmer kön — repot ringer aldrig ut
+  // (ADR-4), precis som `ingest_crm_events` bara tar emot.
+  //
+  // INGEN `kravManniska` på någon av dem: kön ska kunna tömmas utan
+  // handpåläggning (FR-11), och en kö som kräver att David trycker på en knapp
+  // per fil är en kö som står full. Handgreppet som kräver en människa är att
+  // ÄNDRA registret — och det ligger i skrivvägen (S0.1/S1.2), före kön.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'hamta_drive_ko',
+    title: 'Hämta öppna kopior att skriva till Drive (köade och felade)',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => hamtaDriveKo(ctx.client, ctx.companyId),
+  }),
+  def({
+    name: 'rapportera_drive_kopia',
+    title: 'Rapportera utfallet av en köad registerkopia (skriven eller fel)',
+    // `write` och inte `sensitive`: rapporten flyttar ingenting i bokföringen och
+    // beslutar ingenting — den skriver ned vad som redan hänt i ett annat system.
+    // Att köa den för godkännande hade betytt att kön aldrig töms av sig själv.
+    sensitivity: 'write',
+    // Schemat bor i tjänsten (`uppdragReferens.ts`) — det är samma union som
+    // funktionen parsar, och två kopior av ett tillståndsbyte hinner divergera.
+    // `skriven` bär Drive-id:t, `fel` bär källsystemets egna ord.
+    inputSchema: DriveRapportSchema,
+    handler: (ctx, i) => rapporteraDriveKopia(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

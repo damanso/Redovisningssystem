@@ -984,3 +984,55 @@ så att ett mejl aldrig kan fästas på fel fras. Nyckelrymden
 (`rfc822#message-id` / `icalendar#uid`) fyller vyn själv; David anger sorten,
 id:t och vilket konto det lästes ur. Inget `?ok=`: kvittot är den nya raden.
 Tilläggsskapandet (`ledde_till_part_id` via `andra_baseline`) hör till S5.2.
+
+### Drive-kön för registrets frysta kopia (S7.2, våg 3)
+
+Leverabelregistret ska finnas som en fryst kopia i kundens spärrmapp i Drive.
+**Repot skriver den aldrig själv** (ADR-4: det här repot ringer aldrig ut, samma
+enkelriktade hållning som `ingest_crm_events`). Vägen är därför: registret ändras
+här, kopian **köas** här, och Hermes (S7.5) tömmer kön via två åtgärder — utan
+handpåläggning, och därför **utan `kravManniska` på någondera**. Handgreppet som
+kräver en människa är att ÄNDRA registret, och det ligger i skrivvägen före kön.
+
+Migration **0071** (additiv, idempotent) gör två saker: CHECK-villkoret på
+`uppdrag_referens.ko_status` utökas till `NULL | koad | skriven | fel`, och
+kolumnen **`ko_fel text`** läggs till (NULL = inget fel). Ingen ny tabell, ingen
+GRANT-ändring — **kön bor på referensen** (1E Del 3): en köad kopia ÄR en
+oskriven referens, och en egen kötabell hade betytt två rader om samma sak.
+
+**Köningen sitter i registrets skrivväg.** `importera_leveranskontrakt` anropar
+`koaRegisterkopia` i SAMMA transaktion som registerraderna (steg e). Uppdragets
+ENA kopiereferens är `sort = 'drive'`, `extern_nyckel = 'registerkopia'`,
+`extern_kalla = 'drive:sparrmapp'`; första gången finns ingen fil, så raden föds
+med det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
+får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
+från `skriven` och `fel` (omkö vid ny ändring) och nollställer då `ko_fel`.
+Rullas importen tillbaka finns ingen köpost kvar — och går den igenom kan kopian
+aldrig glömmas bort.
+
+- **`hamta_drive_ko` (read)** — inga fält. Bolagets öppna kö, äldst först: per
+  post `referens_id`, `contract_id`, `extern_id`, `ko_status`, `ko_fel` och
+  `innehall` (registerraderna, **härledda vid hämtningen** ur
+  `las_leverabelregister` — kopian är ett derivat och lagras aldrig i kön).
+  **`fel`-poster ingår med flit:** det är det som gör att kön töms automatiskt
+  när Drive svarar igen. Repot provar aldrig om av sig självt — ingen scheduler,
+  ingen backoff, ingen försöksräknare; nästa svep hämtar posten på nytt.
+- **`rapportera_drive_kopia` (write)** — `referens_id` + `utfall`, en
+  diskriminerad union på `lage`:
+  - `{ lage: 'skriven', drive_id }` → `ko_status = 'skriven'`, `extern_id` blir
+    Drive-id:t, `ko_fel` nollställs. Id:t prövas med **samma spärr som varje
+    annan referens**: aldrig en url, aldrig en sökväg (400 `validation_error`) —
+    en delningslänk hade slutat fungera nästa gång filen delades om.
+  - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med källsystemets egna ord i
+    `ko_fel`. Posten står kvar i hämtningen.
+  - **En rapport mot en rad utan öppen köpost fälls:** 409 `ingen_oppen_kopost`
+    (`ko_status` NULL eller redan `skriven`), 404 `not_found` för en okänd
+    referens. Det finns ingen tyst övergång — en rapport om något ingen bett om
+    är antingen ett svep på gammal data eller ett fel i anroparen.
+
+**Vyn:** uppdragets projektsida (`/app/c/:id/projects/:projectId`) visar den
+öppna köposten tills den är skriven — `koad` som *Kopia köad*, `fel` som *Kopian
+kunde inte skrivas* **med `ko_fel`-texten utskriven**. Är kopian skriven står
+ingenting: en evig "allt är skrivet"-rad hade varit brus, och brus lär läsaren
+att inte titta den dag det står något annat. Ett fel som bara finns i en kolumn
+är ett tyst fel (NFR-3).
