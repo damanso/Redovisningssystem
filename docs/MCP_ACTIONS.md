@@ -1087,6 +1087,11 @@ avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
   0068:s `vagrar_skrivning_pa_avslutat()` aldrig träffas (FR-8) — annars hade ett
   uppdrag som avslutades i går fällt hela körningen. De listas i `hoppade`, och
   varken deras referenser eller deras köposter kommer med i arbetslistan.
+  **Detsamma gäller `drive_kopior[]`:** kön delas bara ut för öppna uppdrag, men
+  ett uppdrag kan stängas mellan två svep, och rapporten är en UPDATE på
+  `uppdrag_referens` — samma trigger. En sådan rapport hoppas och redovisas i
+  `hoppade_kopior[]` (`referens_id` + uppdraget). Köposten står kvar orörd, men
+  delas aldrig ut igen så länge uppdraget är stängt.
 
 **Förslagen är CACHE, aldrig en åtgärd.** De rör varken `uppdrag_leverabel` eller
 `receipts`; S3.2 bekräftar statusbytet och S6.1 köar kostnadsbindningen.
@@ -1105,8 +1110,8 @@ avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
   egen ordning (`sort_order`), så förslaget är detsamma vid varje körning.
 
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
-`referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]` och
-`arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
+`referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
+`hoppade_kopior[]` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
 `status`, `senast_verifierad`) och `drive_ko` ur `hamta_drive_ko`. En **köad**
 kopia står bara i kön, aldrig bland referenserna: dess `extern_id` är ännu
 platshållaren, och en verifiering av den hade rapporterat "borta" om en fil som

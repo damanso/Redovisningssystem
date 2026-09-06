@@ -145,6 +145,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S7.3 — granskningsfynd åtgärdat: KRAV-3 höll inte i
+  Drive-vägen):** Granskaren underkände bygget nedan. KRAV-3:s löfte att 0068:s
+  `vagrar_skrivning_pa_avslutat()` aldrig träffas gällde bara uppdragsloopen —
+  `drive_kopior[]` gick rakt in i `rapporteraDriveKopia`, som gör en UPDATE på
+  `uppdrag_referens` utan att projektstatusen prövades. Kön delas visserligen
+  bara ut för öppna uppdrag, men uppdraget kan stängas MELLAN två svep: då kom
+  Hermes rapport tillbaka mot ett stängt uppdrag → trigger-exception → 500 och
+  rollback av HELA bolagets svep. Felet var dessutom fastnande: köposten stod
+  kvar som `koad`, samma rapport kom tillbaka i varje svep, och bolagets svep var
+  kilat tills någon handgrep. Precis det scenario KRAV-3 påstod var omöjligt.
+
+  Åtgärdat: rapporterna slås först upp mot `uppdrag_referens` (en SELECT) och
+  prövas mot SAMMA statusläsning som uppdragsloopen redan gjort (`per`-mappen).
+  En rapport vars uppdrag inte är `active` hoppas och **redovisas** i svarets nya
+  `hoppade_kopior[]` (`referens_id` + uppdraget) — ett tyst hopp hade sett ut som
+  en tömd kö. En referens som inte hittas går som förut vidare till tjänsten och
+  fälls där som 404. Nytt prov i KRAV-3-sviten: uppdrag med importerad kopia i
+  kön → stängs → rapport skickas in; svepet svarar `svep_kort`, rapporten står i
+  `hoppade_kopior`, det öppna uppdragets cache skrevs, och köposten står orörd
+  (`koad`, platshållar-id kvar) utan att delas ut igen. Rört: `uppdragSvep.ts`,
+  `uppdragsytan-svep.test.ts`, `MCP_ACTIONS.md`, den här raden.
+
 - **2026-09-06 (uppdragsytan S7.3, våg 3 — svepet; sista repobiten i våg 3):**
   S7.1 gav referenserna sin skrivväg, S7.2 gav kopian sin kö och 0068 gav cachen
   sin tabell — men **ingen körde något av det.** `uppdrag_svepvarde` skrevs bara

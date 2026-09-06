@@ -101,7 +101,9 @@ export async function lasSvepvarden(
 //   * **Stängda uppdrag hoppas, före varje skrivning.** 0068:s
 //     `vagrar_skrivning_pa_avslutat()` fäller varje rad mot ett avslutat uppdrag
 //     (FR-8). Ett svep som lät triggern smälla hade fällt hela körningen — för
-//     alla uppdrag — för att ETT uppdrag avslutats i går.
+//     alla uppdrag — för att ETT uppdrag avslutats i går. Det gäller BÅDA
+//     skrivvägarna: uppdragen i indatat och Drive-rapporterna, vars köposter
+//     delades ut medan uppdraget ännu var öppet.
 //   * **Förslagen är cache, inget annat.** `statusforslag:`/`kostnadsforslag:`
 //     skrivs i `uppdrag_svepvarde` och rör aldrig `uppdrag_leverabel` eller
 //     `receipts`. Ett förslag är inte ett beslut: S3.2 bekräftar statusbytet och
@@ -203,12 +205,21 @@ export interface Uppdragsutfall {
   okanda_leverabelkoder: string[];
 }
 
+/** Ett uppdrag svepet lät stå: det är inte längre öppet (FR-8). */
+export interface Hoppat {
+  contract_id: string;
+  project_id: string;
+  projektstatus: string;
+}
+
 export type Svepsvar =
   | { lage: 'svep_avstod' }
   | {
     lage: 'svep_kort';
     uppdrag: Uppdragsutfall[];
-    hoppade: Array<{ contract_id: string; project_id: string; projektstatus: string }>;
+    hoppade: Hoppat[];
+    /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
+    hoppade_kopior: Array<Hoppat & { referens_id: string }>;
     arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[] };
   };
 
@@ -490,12 +501,37 @@ export async function korUppdragssvep(
   // Förra arbetslistans Drive-kopior stängs FÖRE svepet, så att svaret nedan
   // lämnar tillbaka kön som den ser ut efteråt — och så att en kopia som fått
   // sitt riktiga Drive-id går att verifiera redan i nästa varv.
-  for (const rapport of data.drive_kopior ?? []) {
-    await rapporteraDriveKopia(client, companyId, rapport);
+  //
+  // Också här läses projektstatusen FÖRST. Kön delas bara ut för öppna uppdrag,
+  // men uppdraget kan ha stängts MELLAN två svep, och `rapporteraDriveKopia`
+  // gör en UPDATE på `uppdrag_referens` — samma tabell, samma 0068-trigger. En
+  // orapporterad rapport hade alltså fällt hela bolagets svep på ett uppdrag som
+  // avslutades i går, och gjort det om vid varje nytt svep så länge köposten
+  // stod kvar. Rapporten hoppas i stället och redovisas; köposten står orörd och
+  // kommer ändå aldrig med i arbetslistan (filtret på `oppna` nedan).
+  const rapporter = data.drive_kopior ?? [];
+  const hoppadeKopior: Array<Hoppat & { referens_id: string }> = [];
+  if (rapporter.length > 0) {
+    const rader = await client.query<{ id: string; contract_id: string }>(
+      'SELECT id, contract_id FROM uppdrag_referens WHERE company_id = $1 AND id = ANY($2::uuid[])',
+      [companyId, rapporter.map((r) => r.referens_id)],
+    );
+    const kontrakt = new Map(rader.rows.map((r) => [r.id, r.contract_id]));
+    for (const rapport of rapporter) {
+      const contractId = kontrakt.get(rapport.referens_id);
+      const rad = contractId === undefined ? undefined : per.get(contractId);
+      if (rad !== undefined && rad.projektstatus !== 'active') {
+        hoppadeKopior.push({ referens_id: rapport.referens_id, ...rad });
+        continue;
+      }
+      // En referens vi inte hittade går vidare till tjänsten och fälls där som
+      // 404 — samma svar som förut, och aldrig ett tyst hopp.
+      await rapporteraDriveKopia(client, companyId, rapport);
+    }
   }
 
   const uppdrag: Uppdragsutfall[] = [];
-  const hoppade: Array<{ contract_id: string; project_id: string; projektstatus: string }> = [];
+  const hoppade: Hoppat[] = [];
   for (const obs of data.uppdrag ?? []) {
     const rad = per.get(obs.contract_id);
     if (rad === undefined) throw new NotFoundError('contract');
@@ -524,6 +560,7 @@ export async function korUppdragssvep(
     lage: 'svep_kort',
     uppdrag,
     hoppade,
+    hoppade_kopior: hoppadeKopior,
     arbetslista: { referenser: attVerifiera.rows, drive_ko: ko },
   };
 }

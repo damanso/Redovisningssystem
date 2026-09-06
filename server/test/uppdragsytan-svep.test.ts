@@ -438,6 +438,49 @@ describe('KRAV-3: ett avslutat uppdrag rörs inte', () => {
     expect(svar.arbetslista.referenser.map((r) => r.referens_id)).not.toContain(refStangt);
     expect(svar.arbetslista.drive_ko.map((k) => k.contract_id)).not.toContain(stangtAvtal);
   });
+
+  it('en Drive-rapport mot ett uppdrag som stängts sedan kön delades ut fäller inte svepet', async () => {
+    // Kön delas bara ut för öppna uppdrag — men uppdraget kan stängas MELLAN två
+    // svep, och då kommer Hermes rapport tillbaka mot ett stängt uppdrag.
+    // `rapporteraDriveKopia` gör en UPDATE på `uppdrag_referens`, samma tabell
+    // som 0068:s trigger vaktar: en orapporterad rapport hade fällt HELA
+    // bolagets svep med ett rått databasfel, och gjort om det vid varje nytt
+    // svep så länge köposten stod kvar.
+    const sent = await nyttUppdrag('NVR-Stangt-Efter-Ko');
+    await ok('importera_leveranskontrakt', { contract_id: sent.contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    const post = (await svep({})).arbetslista.drive_ko.find((k) => k.contract_id === sent.contractId);
+    expect(post, 'registerkopian saknas i kön').toBeDefined();
+
+    await ok('set_project_status', { project_id: sent.projektId, status: 'closed' });
+
+    const svar = await svep({
+      drive_kopior: [{
+        referens_id: post!.referens_id,
+        utfall: { lage: 'skriven', drive_id: '1SkRiVeNeFtErAttUppdragetStangts1' },
+      }],
+      uppdrag: [{ contract_id: avtal, kalenderhandelser: [{ datum: '2026-10-02', minuter: 15 }] }],
+    });
+
+    // Rapporten hoppas och REDOVISAS — ett tyst hopp hade sett ut som en tömd kö.
+    expect(svar.hoppade_kopior).toEqual([{
+      referens_id: post!.referens_id,
+      contract_id: sent.contractId,
+      project_id: sent.projektId,
+      projektstatus: 'closed',
+    }]);
+    // Resten av bolagets svep gick igenom: en rollback hade lämnat cachen orörd.
+    expect(svar.uppdrag.map((u) => u.contract_id)).toEqual([avtal]);
+    expect(varde(await cache(), 'prognos')).toMatchObject({ handelser: 1, bokade_minuter: 15 });
+
+    // Köposten står orörd: platshållaren kvar, statusen kvar på koad.
+    const rad = await withAdmin(async (c) => (await c.query<{ extern_id: string; ko_status: string | null }>(
+      'SELECT extern_id, ko_status FROM uppdrag_referens WHERE id = $1', [post!.referens_id],
+    )).rows[0]!);
+    expect(rad.ko_status).toBe('koad');
+    expect(rad.extern_id).toBe(`registerkopia:${sent.contractId}`);
+    // ...och den delas inte ut igen: arbetslistan bär bara öppna uppdrags kö.
+    expect(svar.arbetslista.drive_ko.map((k) => k.contract_id)).not.toContain(sent.contractId);
+  });
 });
 
 // ---------------------------------------------------------------------------
