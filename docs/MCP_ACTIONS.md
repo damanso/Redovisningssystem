@@ -1266,3 +1266,41 @@ statuskolumnen med husets befintliga komponent och tokens (kind `warn`), plus en
 rad under tabellen som säger vad märkningen betyder — och bara när något faktiskt
 är märkt. Ingen ny yta, ingen ny CSS, inget JS: bindningskön ligger i **Att göra**
 som varje annat förslag.
+
+### Avslutet med öppna leverabler (S8.1, våg 4)
+
+- `avsluta_uppdrag` (**sensitive**, ingen `kravManniska`) — `project_id`.
+  Avslutar uppdraget: fryser listan över det som stod öppet i
+  `contracts.avslutat_med_oppna` och stänger sedan projektet
+  (`services/uppdragAvslut.ts`). **Förslaget får köas av vem som helst — bara en
+  människa godkänner** (1E Del 4). Okänt uppdrag ger **404 `not_found`** och ett
+  redan avslutat **409 `uppdrag_redan_avslutat`**: listan är fryst historik (1E
+  §3.1) och skrivs aldrig om. Ingen migration (0068 bär både kolumnen och
+  triggern), ingen ny felkodsfamilj.
+- **Listan räknas VID GODKÄNNANDET, aldrig när förslaget läggs.** Det faller ut
+  av huset självt: `approveAction` kör handlern i godkännandetransaktionen
+  (`execute.ts`), så en leverabel som hinner bli `godkand` däremellan står inte i
+  listan. Ingen egen mekanik, och ingen egen får byggas.
+- **Ordningen är lista → stängning, i EN transaktion.** Per avtal på uppdraget
+  sätts `avslutat_med_oppna` till leverabelkoderna med status `<> 'godkand'`
+  (parametriserat, `ORDER BY kod`), med auditraden `uppdrag.avslutat_med_oppna`
+  (listan i `details`) i samma transaktion. **Tom array när inget står öppet** —
+  NULL betyder därmed "aldrig avslutad via åtgärden". Först därefter stängs
+  projektet, och 0068:s `vagrar_skrivning_pa_avslutat()` hinner alltså aldrig se
+  ett stängt uppdrag före kolumnifyllnaden. Faller något rullas hela avslutet
+  tillbaka.
+- **Stängningen delegeras till tjänstefunktionen** `setProjectStatus(…,
+  'closed')` — aldrig till `executeAction('set_project_status')`. Samma regel som
+  `andra_baseline` följer mot `upsertContractPart`: `set_project_status` behåller
+  sin `kravManniska` orörd, och `project.set_status`-auditraden skrivs som
+  vanligt av tjänsten. Efter avslutet fäller triggern alla fyra räckvidderna
+  (modultabellerna, `contract_parts`, `receipts.contract_part_id`,
+  `time_entries.contract_part_id`) medan SELECT fortsätter gå igenom.
+
+**Vyn:** uppdragets förstasida (`/app/c/:id/projects/:projectId`) visar för ett
+STÄNGT uppdrag med satt `avslutat_med_oppna` en panel **Öppet vid avslutet**
+högst upp — husets `.panel` (inte `.ai-card`: ockran betyder "väntar på en
+människa", och här finns inget att svara på), med ett chip som bär färg, glyf och
+tal, och koderna i klartext per avtal när uppdraget har flera. Ingen ny CSS,
+ingen ny rutt, inget JS, ingen avslutsknapp: avslutet köas som varje annan
+känslig åtgärd och godkänns i **Att göra**.
