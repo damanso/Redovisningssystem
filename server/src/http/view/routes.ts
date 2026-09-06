@@ -33,6 +33,8 @@ import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
+import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
+import { lasSvepvarden } from '../../services/uppdragSvep.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
@@ -1452,6 +1454,148 @@ async function registerkopiaKo(
   return (await hamtaDriveKo(client, companyId)).filter((k) => avtal.has(k.contract_id));
 }
 
+// ---------------------------------------------------------------------------
+// Uppdragsytan S3.2, våg 4: statusförslaget bekräftas av en människa (FR-12,
+// FR-13, NFR-4).
+//
+// Svepet skriver `statusforslag:<kod>` i cachen när Drive rapporterat en ny
+// revision av leverabelns handling. Ett förslag är ingen åtgärd (1E Del 4) —
+// och till dess att någon svarar på det ligger uppdragets viktigaste fråga
+// obesvarad. Fyra beslut styr ytan:
+//
+//  1. **Förslaget bor på uppdragets förstasida, högst upp.** Registervyn finns
+//     inte ännu (den uteslöts i S3.1), och en obesvarad leverans som läses sist
+//     blir i praktiken ett ja. Samma mönster som S4.1/S5.1: husets knappband och
+//     uppdragssidan, ingen andra navigationsrad.
+//  2. **Husets `.ai-card` med `aiMarkning()`** — samma komponent som
+//     tidsförslagen, för det ÄR samma sorts sak: en maskins observation som
+//     väntar på en människa. Märkningen (AI-förordningen art. 50) bor i den
+//     delade hjälparen, så en omskriven vy kan inte tappa den. Ingen ny CSS.
+//  3. **Bekräfta och Retur är två likvärdiga knappar utan förval.** Till
+//     skillnad från tidsförslagets *Godkänn/Justera* — där godkänn är
+//     normalfallet — är det här två olika sanna svar på "tog kunden emot den?",
+//     och svaret kommer utifrån, inte ur kortet. Görs den ena tyngre svarar man
+//     med handen i stället för med omdömet (S5.1:s regel).
+//  4. **Oåterkalleligheten står FÖRE knappen**, och transmittalfälten står inte
+//     som fält: överlämningsdatum, revision och mottagare fylls av systemet.
+//     Ett redigerbart mottagarfält hade gjort FR-13:s spärr till en textruta.
+// ---------------------------------------------------------------------------
+
+const FORSLAGSPREFIX = 'statusforslag:';
+
+interface Statusforslagskort {
+  avtalId: string;
+  avtalsnamn: string;
+  kod: string;
+  klausul: string | null;
+  /** Drive-revisionen ur svepets förslag — aldrig samma tal som överlämningens. */
+  revision: string | null;
+  extern_id: string | null;
+}
+
+/** Ett jsonb-fält som text, eller null. Cachen är fri JSON och lovar ingen form. */
+function forslagsfalt(varde: unknown, nyckel: string): string | null {
+  if (typeof varde !== 'object' || varde === null || !Object.hasOwn(varde, nyckel)) return null;
+  const v = (varde as Record<string, unknown>)[nyckel];
+  return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
+}
+
+/**
+ * Uppdragets öppna statusförslag, lästa genom tjänstelagret (`lasSvepvarden` +
+ * `lasLeverabelregister`) — aldrig ur tabellerna, samma regel som köposterna.
+ *
+ * Bara leverabler som står i `pagar` kommer med: statusen är svaret på
+ * frågan, och ett förslag om något som redan är levererat eller avvisat är
+ * inget att svara på. Cachen rensar sig själv vid nästa svep.
+ */
+async function statusforslag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Statusforslagskort[]> {
+  const avtal = await listContracts(client, companyId, { project_id: projectId });
+  const kort: Statusforslagskort[] = [];
+  for (const a of avtal) {
+    const contractId = a.id as string;
+    const register = new Map<string, Leverabelrad>(
+      (await lasLeverabelregister(client, companyId, { contract_id: contractId }))
+        .map((r) => [r.kod, r] as const),
+    );
+    for (const v of await lasSvepvarden(client, companyId, contractId)) {
+      if (!v.nyckel.startsWith(FORSLAGSPREFIX)) continue;
+      const kod = v.nyckel.slice(FORSLAGSPREFIX.length);
+      const leverabel = register.get(kod);
+      if (leverabel === undefined || leverabel.status !== 'pagar') continue;
+      kort.push({
+        avtalId: contractId,
+        avtalsnamn: String(a.name ?? ''),
+        kod,
+        klausul: leverabel.klausul,
+        revision: forslagsfalt(v.varde, 'revision'),
+        extern_id: forslagsfalt(v.varde, 'extern_id'),
+      });
+    }
+  }
+  return kort;
+}
+
+function statusforslagskort(companyId: string, projectId: string, k: Statusforslagskort, flera: boolean): Raw {
+  const post = `/app/c/${companyId}/projects/${projectId}/statusforslag`;
+  const knapp = (utfall: 'bekraftad' | 'retur', etikett: string, beskrivning: string): Raw =>
+    html`<form method="post" action="${post}" style="margin:0">
+      <input type="hidden" name="contract_id" value="${k.avtalId}">
+      <input type="hidden" name="leverabel_kod" value="${k.kod}">
+      <input type="hidden" name="utfall" value="${utfall}">
+      <button class="btn btn--ghost btn--sm" type="submit"
+        aria-label="${beskrivning} ${k.kod}">${etikett}</button>
+    </form>`;
+  return html`<article class="ai-card" aria-labelledby="sf-${k.avtalId}-${k.kod}">
+    <div class="ai-card__head">
+      ${aiMarkning()}
+      <span class="ai-card__title" id="sf-${k.avtalId}-${k.kod}">Leverabel ${k.kod} kan vara levererad</span>
+      ${chip('Pågår', 'info', '◔')}
+      ${k.klausul ? html`<span class="code">${k.klausul}</span>` : ''}
+      ${flera ? html`<span class="muted" style="margin-left:auto;font-size:12.5px">${k.avtalsnamn}</span>` : ''}
+    </div>
+    ${/* Husets "varför föreslogs den här"-slot bär BÅDA meningarna, och den står
+          före både underlaget och knapparna: vad maskinen såg, och vad ditt svar
+          skriver. Läggs oåterkalleligheten sist i kortet kommer den efter
+          knapparna också för den som lyssnar på sidan. */ ''}
+    <div class="ai-card__why">Svepet såg en ny revision av leverabelns handling i kundens spärrmapp.
+      Om den faktiskt är levererad kan bara du avgöra. Bekräftelsen skrivs som en överlämning med
+      dagens datum, nästa revisionsnummer och avtalets godkännare som mottagare — och posten går
+      inte att ändra efteråt.</div>
+    ${/* Underlaget i klartext: vad svepet såg, och var. En bekräftelse som bara
+          visar en knapp är en bekräftelse av ingenting. */ ''}
+    <div class="ai-fields">
+      <div class="ai-field"><span class="l">Leverabel</span><span class="v code">${k.kod}</span></div>
+      <div class="ai-field"><span class="l">Drive-revision</span><span class="v">${k.revision ?? '—'}</span></div>
+      <div class="ai-field"><span class="l">Handling</span><span class="v code">${k.extern_id ?? '—'}</span></div>
+    </div>
+    ${/* Två likvärdiga knappar, ingen förvald: svaret kommer utifrån, inte ur
+          kortet (S5.1:s regel för Innanför/Utanför). */ ''}
+    <div class="ai-actions">
+      ${knapp('bekraftad', 'Bekräfta', 'Bekräfta att leverabel')}
+      ${knapp('retur', 'Retur', 'Registrera retur för leverabel')}
+    </div>
+  </article>`;
+}
+
+viewRouter.post('/c/:companyId/projects/:projectId/statusforslag', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  // Samma väg som AI:t hade tagit om den fick — den får inte: åtgärden bär
+  // `kravManniska`, och här är actor 'human' (lärdom 5). Tillbaka till
+  // uppdragssidan; `saknad mottagare` kommer tillbaka som ?fel= och visas av
+  // `tidsnotiser` → `felNotis`.
+  await runViewAction(req, res, companyId, 'bekrafta_statusbyte', {
+    contract_id: falt(kropp.contract_id),
+    leverabel_kod: falt(kropp.leverabel_kod),
+    utfall: falt(kropp.utfall),
+  }, `/app/c/${companyId}/projects/${projectId}`);
+}));
+
 viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1474,6 +1618,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     };
     const snabb = await snabbunderlag(client, companyId, projectId);
     const kopior = await registerkopiaKo(client, companyId, projectId);
+    const forslag = await statusforslag(client, companyId, projectId);
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
@@ -1494,6 +1639,18 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a></div></div>
       ${tidsnotiser(req)}
       ${kopior.map((k) => registerkopiaRad(k))}
+      ${/* S3.2: överst på sidan, före tidrapporteringen. Ett obesvarat
+            leveransförslag som läses sist blir i praktiken ett ja — och
+            ingenting visas alls när det inte finns något att svara på. */ ''}
+      ${forslag.length === 0
+        ? ''
+        : html`<h2 style="margin-top:18px">Väntar på ditt svar</h2>
+            ${(() => {
+              // Avtalsnamnet skrivs bara ut när uppdraget har flera avtal — annars
+              // upprepar varje kort en uppgift som redan står i sidhuvudet.
+              const flera = new Set(forslag.map((f) => f.avtalId)).size > 1;
+              return forslag.map((f) => statusforslagskort(companyId, projectId, f, flera));
+            })()}`}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
         : html`<p class="muted" style="margin:14px 0">Uppdraget är stängt — ny tid registreras inte här. Öppna det igen för att fortsätta rapportera.</p>`}
