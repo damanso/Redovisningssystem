@@ -145,6 +145,83 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S10.2, våg 3 — Planen: en JS-fri tidslinjevy):**
+  0068 gav avtalsdelarna `start_date`/`end_date`/`date_precision` och S1.2:s
+  import fyllde dem för NVR-001:s tre strömmar. Men **ingen yta läste dem.**
+  Perioderna låg som datum i kolumner: att tre leverabler landade i samma
+  vecka gick inte att SE förrän veckan var här, och FR-34 var ett krav utan
+  läsare.
+
+  Byggt: **en ny ren fil `server/src/lib/uppdragsplan.ts`** (`byggPlan` +
+  `grupperaEfterSlut` — inga I/O, ingen klocka, indata in och tal ut), vysidan
+  `/app/c/:id/projects/:projectId/planen` med knappen **Planen** i uppdragets
+  knappband, **två CSS-klasser i `html.ts`** (`.tidslinje`, `.stapel`) och ett
+  nytt prov. **Ingen migration, ingen ny åtgärd, ingen ändrad känslighet, ingen
+  tjänstemutation, ingen ny felkod, inga nya beroenden**; `MCP_ACTIONS.md`,
+  `designparitet.py` och designkontraktet är orörda (paritetsfönstret
+  S10.2→S10.7 är byggregel, dokumenterad i 1G), och befintliga vyer och rutter
+  är orörda utom knappen.
+
+  1. **Rutnätet räknas i HELA MÅNADER, serverside.** CSS får tre tal —
+     `--kolumner`, `--start`, `--span` — och inget datum. Räknades rutnätet i
+     dagar måste ett kvartal få ett dagdatum, och då hade grafiken visat en
+     exakthet som avtalet inte har. En stapel går från startdatumets månad till
+     slutdatumets, båda inklusive: ett kvartal blir exakt sina tre månader.
+     Precisionen följer med som `data-precision`, aldrig som geometri.
+  2. **Tabellen bär ensam sanningen.** Hela grafiken har `aria-hidden="true"`
+     (på varje rad, inte bara på behållaren) och innehåller inte ett värde som
+     inte står i tabellen under — därför också en tidslinjerad per tabellrad, i
+     samma ordning, även för de delar som saknar period. Går renderingen fel
+     står datumen kvar i klartext.
+  3. **Arvet är normalfallet, inte kantfallet.** Grävfyndet: `uppdragImport.ts`
+     ger leverabler NULL i sina datum med flit (steg c — strömmens period
+     gäller) och lämnar roten utan datum. En del ärver därför närmaste förälder
+     med period, ritas streckad (`.stapel[data-arvd]`, 1D:s grammatik — ingen
+     ny klass) och **tabellen skriver ut vilken del perioden kom ifrån**.
+     Streckningen ensam hade varit information som bara finns i det lager som
+     bär `aria-hidden`. Saknar hela kedjan datum ritas ingen stapel alls.
+  4. **Ett intervall är BÅDA ändarna.** En del med bara startdatum ärver, precis
+     som en helt datumlös — den andra änden hittas aldrig på. Det den faktiskt
+     vet står kvar i tabellen, som saknat där det saknas.
+  5. **Gällande version med SAMMA regel som takberäkningen** (`gallandeVersion`
+     i `services/contracts.ts`): senaste ikraftträdda per delkod, annars den
+     tidigaste. Planen och taket får aldrig visa var sin version av samma del.
+  6. **Ytan följer huset, inte 1E:s vyplan.** 1E ritade `.subnav` och en egen
+     stilmall; klassen finns inte i huset, och S4.1/S5.1 har redan lagt sina
+     ingångar i uppdragets knappband. Per Davids beslutsregel 2 vinner huset:
+     knapp i bandet, kanons tokens i `html.ts` (`--line`, `--accent`, `--mono`),
+     ingen egen stilmall. På smal skärm byts tidslinjen mot 1D §4.2:s
+     datumlista (försenat / denna vecka / senare) via en mediefråga — samma
+     serverrenderade sida, ingen andra rutt, inget skript, ingen rullning i
+     sidled.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-plan.test.ts` i två lager: **(a) rutnätet som
+  ren funktion** — blandade precisioner (dag/månad/kvartal/år) som alla ger
+  hela månader, spannets kanter (första stapeln på 1, sista slutar på sista
+  kolumnen), årsskiftet, ett slutdatum före startdatumet som ger en månad och
+  inte ett negativt spann, arvet (närmaste förälder, hopp över datumlös
+  mellandel, delens egna kolumner som står kvar tomma), saknad kedja → ingen
+  stapel, en ände → arv respektive ingen stapel, gällande version före och
+  efter ett tilläggsavtal, bara framtida versioner, inaktiv del vars aktiva
+  barn INTE försvinner med den, trädordningen, en cyklisk kedja som ger ett
+  svar i stället för en hängning, och datumlistans tre gränser (−1, 0, +6, +7)
+  plus den periodlösa delen som inte hamnar i någon grupp; **(b) vyn genom
+  stacken** på NVR-001:s riktiga fixtur — 200, knappen på uppdragssidan, ingen
+  `<script>`, elva tidslinjerader med `aria-hidden` och nio staplar,
+  stapelplaceringen (S1 1/2, S2 2/5, S3 6/2 över sju månader) verifierad mot
+  gridtesterna och inte mot ögat, sex ärvda staplar med arvet i klartext i
+  tabellen, tabellens koder och datum med saknat som saknat, CSS-kontraktet
+  (`repeat(var(--kolumner),1fr)`, `var(--start)/span var(--span)`, mediefrågan
+  som byter tidslinje mot datumlista), datumlistan på samma sida, uppdrag utan
+  avtal, samt tenantgränsen (grannbolagets uppdrag 404, okänt uppdrag 404).
+
+  **Kvarstår för David:** inget att migrera. Planen ligger under **Planen** på
+  uppdragssidan. Baseline-skuggstapel, dagens-linje, milstolpar och
+  beroendepilar är medvetet uteslutna — källan kräver dem inte, och 1D
+  förbjuder rullning i sidled.
+
 - **2026-09-06 (uppdragsytan S7.3 — granskningsfynd åtgärdat: KRAV-3 höll inte i
   Drive-vägen):** Granskaren underkände bygget nedan. KRAV-3:s löfte att 0068:s
   `vagrar_skrivning_pa_avslutat()` aldrig träffas gällde bara uppdragsloopen —
