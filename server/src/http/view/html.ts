@@ -1128,6 +1128,62 @@ input[type='file']::file-selector-button {
   table[data-staplas] > tbody > tr > td:not([data-etikett]) { justify-content: flex-start; }
 }
 
+/* Uppdragsytan S10.2: PLANEN — avtalsdelarnas perioder som ett månadsrutnät.
+ *
+ * Grafiken är dekoration och bär 'aria-hidden'; tabellen bredvid bär hela
+ * sanningen. Därför finns här bara två klasser, och ingen av dem säger något
+ * som inte redan står i tabellen.
+ *
+ *  * En '.tidslinje' är EN rad. Den yttre behållaren staplar dem. Att låta ett
+ *    enda rutnät bära alla staplar hade sett riktigt ut i koden men fel på
+ *    skärmen: grid-autoplaceringen lägger två staplar som inte överlappar på
+ *    samma rad, och då blir två avtalsdelar en enda linje.
+ *  * Kolumnlinjerna ritas av bakgrunden, inte av tomma element. En månad utan
+ *    stapel har ingen markup, och rutnätet syns ändå — annars läses en stapel
+ *    som en längd i stället för som en period.
+ *  * Ärvt intervall ritas streckat och otonat (1D:s grammatik). Skillnaden
+ *    mellan "det här står i avtalet" och "det här gäller för att förälderns
+ *    period gäller" är hela poängen med staplen; bärs den bara av färg är den
+ *    borta för var tolfte man som tittar. Streckningen är formen, 'data-arvd'
+ *    är märkningen, och tabellen säger det i klartext.
+ *
+ * Enda inline-stilen är de tre serverberäknade variablerna. */
+.tidslinje {
+  display: grid;
+  grid-template-columns: repeat(var(--kolumner), 1fr);
+  align-items: center;
+  min-height: 30px;
+  border-bottom: 1px solid var(--line);
+  background:
+    repeating-linear-gradient(to right,
+      var(--line) 0 1px, transparent 1px calc(100% / var(--kolumner)));
+}
+.tidslinje:last-child { border-bottom: 0; }
+.stapel {
+  grid-column: var(--start) / span var(--span);
+  min-width: 0; margin: 4px 1px;
+  padding: 4px 8px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent);
+  background: var(--accent-weak); color: var(--accent-ink);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stapel[data-arvd] {
+  border-style: dashed; background: transparent; color: var(--ink-3);
+  border-color: var(--line-2);
+}
+
+/* Tidslinjen kräver bredd. Under den bredden skulle den antingen krympa till
+   oläsliga staplar eller tvinga fram rullning i sidled — och en plan man måste
+   dra i sidled för att läsa är ingen plan. Den byts därför mot datumlistan,
+   som säger samma sak i ord. Samma sida, samma serverrendering, inget skript. */
+@media (max-width: 640px) {
+  .tidslinje { display: none; }
+}
+@media (min-width: 641px) {
+  [data-planlista] { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }

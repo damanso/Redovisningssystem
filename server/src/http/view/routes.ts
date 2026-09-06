@@ -33,6 +33,7 @@ import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
+import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
@@ -51,7 +52,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { aiMarkning, amount, chip, entityLink, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, entityLink, esc, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -1485,7 +1486,12 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
           ${/* S5.1: signalerna bor bredvid bedömningen — samma fråga sedd från
                 andra hållet. Bedömningen svarar "håller det?", signalerna
                 "börjar något krypa in som inte står i avtalet?". */ ''}
-          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a></div></div>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a>
+          ${/* S10.2: planen bor sist i bandet — den svarar på "när landar det?",
+                och den frågan ställs efter "vad står i avtalet?" och "håller
+                det?". Ingen egen meny: huset har ett knappband, och en andra
+                navigationsrad hade gjort uppdragssidan till två sidor. */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a></div></div>
       ${tidsnotiser(req)}
       ${kopior.map((k) => registerkopiaRad(k))}
       ${p.status === 'active'
@@ -2597,6 +2603,192 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
     ...(kropp.eskalera ? { eskalera: true } : {}),
     ...underlag,
   }, tillbaka);
+}));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.2, våg 3: PLANEN (PRD FR-34, NFR-2/NFR-8)
+//
+// Vad är avtalat, och när landar det? Svaret finns i `contract_parts` sedan
+// 0068, men bara som datum i kolumner — det gick inte att SE att tre leverabler
+// låg i samma vecka förrän veckan var här.
+//
+// Fem beslut styr sidan:
+//
+//  1. **Tabellen är primärkällan, grafiken är dekoration.** Hela tidslinjen bär
+//     `aria-hidden="true"` och innehåller inte ett enda värde som inte står i
+//     tabellen under. En stapel kan inte ljuga ensam: går renderingen fel står
+//     datumen kvar i klartext. Därför också en rad i tidslinjen per rad i
+//     tabellen, i samma ordning — även för de delar som inte har någon period.
+//  2. **Rutnätet räknas serverside och i hela månader** (`lib/uppdragsplan.ts`,
+//     ren funktion). CSS får tre tal: `--kolumner`, `--start`, `--span`. Ingen
+//     JavaScript, ingen mätning i webbläsaren, inget dagdatum uppfunnet åt ett
+//     kvartal.
+//  3. **Ärvt intervall syns som ärvt, i BÅDA lagren.** Staplen ritas streckad
+//     (`data-arvd`, 1D:s grammatik) och tabellen skriver ut vilken del perioden
+//     kom ifrån. Leverabler får aldrig egna datum av importen — arvet är
+//     normalfallet här, inte ett undantag, och en läsare som tror att L3:s
+//     period står i avtalet läser fel sak som ett åtagande.
+//  4. **Saknat visas som saknat.** Ingen nolla, inget gissat datum, ingen
+//     stapel som täcker hela rutnätet för att en period fattas.
+//  5. **På smal skärm byts tidslinjen mot en datumlista** (1D §4.2), grupperad
+//     mot dagens datum: försenat / denna vecka / senare. Samma serverrenderade
+//     sida — bytet är en mediefråga, inte en andra rutt. Ingen rullning i
+//     sidled: en plan man måste dra i sidled för att läsa är ingen plan.
+// ---------------------------------------------------------------------------
+
+/** Precisionen i klartext. Ett kvartal ska aldrig läsas som ett datum. */
+const PRECISIONSTEXT: Record<string, string> = {
+  ar: 'År', halvar: 'Halvår', kvartal: 'Kvartal', manad: 'Månad', dag: 'Dag',
+};
+
+interface Planunderlag {
+  projekt: { id: string; number: number; name: string };
+  avtal: { id: string; name: string }[];
+  plan: Plan;
+  idag: string;
+}
+
+/**
+ * Uppdragets avtalsdelar med sina perioder. ALLA versioner läses — den rena
+ * funktionen väljer den gällande, med samma regel som takberäkningen, så att
+ * planen och taket aldrig kan visa var sin version av samma del.
+ */
+async function planunderlag(
+  client: PoolClient, companyId: string, projectId: string, idag: string,
+): Promise<Planunderlag> {
+  const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const avtal = (await listContracts(client, companyId, { project_id: projectId }))
+    .map((a) => ({ id: a.id as string, name: a.name as string }));
+  const delar = avtal.length === 0 ? [] : (await client.query<Plandel>(
+    `SELECT cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name,
+            cp.valid_from::text, cp.start_date::text, cp.end_date::text,
+            cp.date_precision, cp.sort_order, cp.active
+       FROM contract_parts cp
+       JOIN contracts c ON c.id = cp.contract_id AND c.company_id = cp.company_id
+      WHERE cp.company_id = $1 AND c.project_id = $2
+      ORDER BY cp.sort_order, cp.code, cp.valid_from`,
+    [companyId, projectId],
+  )).rows;
+  return { projekt: p, avtal, plan: byggPlan(delar, idag), idag };
+}
+
+/** En rad i tidslinjen: rutnätet, och noll eller en stapel i det. */
+function tidslinjerad(plan: Plan, rad: Planrad): Raw {
+  // `aria-hidden` på VARJE rad, inte bara på behållaren: raden är grafiken, och
+  // en rad som råkar hamna utanför behållaren i en framtida omskrivning ska
+  // fortfarande vara stum. Skärmläsaren läser tabellen.
+  return html`<div class="tidslinje" aria-hidden="true" style="--kolumner:${plan.kolumner}">${
+    rad.stapel
+      ? html`<span class="stapel" style="--start:${rad.stapel.start};--span:${rad.stapel.span}"${
+          rad.stapel.arvd ? raw(' data-arvd') : ''
+        }${
+          rad.stapel.precision ? raw(` data-precision="${esc(rad.stapel.precision)}"`) : ''
+        }>${rad.code}</span>`
+      : ''
+  }</div>`;
+}
+
+/** Datumlistan som ersätter tidslinjen på smal skärm (1D §4.2). */
+function datumlista(u: Planunderlag): Raw {
+  const grupper = grupperaEfterSlut(u.plan.rader, u.idag);
+  const avsnitt: { rubrik: string; rader: Planrad[] }[] = [
+    { rubrik: 'Försenat', rader: grupper.forsenat },
+    { rubrik: 'Denna vecka', rader: grupper.denna_vecka },
+    { rubrik: 'Senare', rader: grupper.senare },
+  ];
+  const nagot = avsnitt.some((a) => a.rader.length > 0);
+  return html`<div data-planlista>
+    ${nagot
+      ? avsnitt.filter((a) => a.rader.length > 0).map((a) => html`<h3>${a.rubrik}</h3>
+          <ul style="margin:0 0 4px;padding-left:20px">
+            ${a.rader.map((r) => html`<li><span class="code">${r.code}</span> ${r.name}
+              — <span class="code">${r.stapel!.end_date}</span>
+              ${r.stapel!.arvd ? html` ${chip(`Ärvd från ${r.stapel!.kalla_kod}`, 'muted', '↳')}` : ''}</li>`)}
+          </ul>`)
+      : html`<p class="muted" style="margin:0">Ingen avtalsdel har någon period ännu — läs in leveranskontraktet
+          så får strömmarna sina datum.</p>`}
+  </div>`;
+}
+
+/** Start- eller slutdatumet som det STÅR i avtalet. Saknat sägs som saknat. */
+const plandatum = (varde: string | null): Raw =>
+  varde ? html`<span class="code">${varde}</span>` : html`<span class="muted">saknas</span>`;
+
+/**
+ * Precisionskolumnen bär också varifrån perioden kommer. Det är inte en sjätte
+ * kolumn i smyg utan samma svar på samma fråga: hur exakt är det här, och vems
+ * period är det? Utan den vore staplens streckning information som bara finns
+ * i grafiken — och grafiken bär `aria-hidden`.
+ */
+function precisionscell(rad: Planrad): Raw {
+  const egen = rad.date_precision ? PRECISIONSTEXT[rad.date_precision] ?? rad.date_precision : null;
+  if (rad.start_date && rad.end_date) return html`${egen ?? html`<span class="muted">saknas</span>`}`;
+  if (!rad.stapel) return html`<span class="muted">saknas</span>`;
+  const arvd = rad.stapel.precision ? PRECISIONSTEXT[rad.stapel.precision] ?? rad.stapel.precision : null;
+  return html`<span class="muted">ärver ${rad.stapel.kalla_kod}</span>
+    ${arvd ? html`· ${arvd}` : ''}`;
+}
+
+function plansida(companyId: string, u: Planunderlag): Raw {
+  const p = u.plan;
+  const spann = p.forsta_manad && p.sista_manad
+    ? (p.forsta_manad === p.sista_manad ? p.forsta_manad : `${p.forsta_manad} – ${p.sista_manad}`)
+    : null;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Planen</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Vad är avtalat, och när landar det? Perioderna står som de skrevs i avtalet — en del som saknar datum
+        får inget påhittat.</p></div>
+      <div class="actions">${spann ? chip(spann, 'info', '▤') : chip('Ingen period', 'muted', '○')}
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${
+      u.avtal.length === 0
+        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+            Planen ritas ur avtalets delar — utan avtal finns ingen period att visa.
+            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        : html`<div class="panel" style="margin-top:16px">
+            <div class="panel__head"><h2>Tidslinje</h2>${spann ? chip(`${String(p.kolumner)} mån`, 'muted') : ''}</div>
+            <div class="panel__body" style="padding:10px 16px 14px">
+              ${p.kolumner === 0
+                ? html`<p class="muted" style="margin:0">Ingen avtalsdel har både start och slut ännu, så det
+                    finns inget att rita. Datumen läses in med leveranskontraktet — de gissas aldrig fram här.</p>`
+                : html`${/* Grafiken. Varje rad speglar en rad i tabellen nedan, i
+                            samma ordning, och innehåller inget som inte står där. */ ''}
+                  ${p.rader.map((rad) => tidslinjerad(p, rad))}
+                  <p class="muted" style="margin:10px 0 0;font-size:12.5px">Rutnätet är hela månader
+                    (${spann}). Streckad stapel = perioden är ärvd från en överliggande del.
+                    Grafiken är en bild av tabellen nedan — den bär inga egna värden.</p>`}
+              ${datumlista(u)}
+            </div>
+          </div>`
+    }
+    <h2 style="margin-top:18px">Avtalsdelar</h2>
+    ${
+      p.rader.length === 0
+        ? html`<p class="muted">Avtalet har inga aktiva delar ännu.</p>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Kod</th><th>Del</th><th>Start</th><th>Slut</th><th>Precision</th></tr></thead>
+            <tbody>${p.rader.map((rad) => html`<tr>
+              <td class="code">${rad.code}</td>
+              <td>${rad.name}</td>
+              <td>${plandatum(rad.start_date)}</td>
+              <td>${plandatum(rad.end_date)}</td>
+              <td>${precisionscell(rad)}</td></tr>`)}
+            </tbody></table></div>
+          <p class="muted" style="margin-top:8px;font-size:12.5px">Gällande version per delkod, aktiva delar,
+            i avtalets egen ordning. Ett tomt datum är ett datum som inte står i avtalet.</p>`
+    }`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const idag = new Date().toISOString().slice(0, 10);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag)) };
+  });
+  res.type('html').send(layout({ title: 'Planen', companyId, companyName: name, active: 'projects', body }).value);
 }));
 
 // ---------------------------------------------------------------------------
