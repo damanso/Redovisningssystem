@@ -145,6 +145,91 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S3.2, våg 4 — statusbytet med transmittal):**
+  Svepet (S7.3) hade börjat lägga `statusforslag:<kod>` i cachen, och 0068 hade
+  gett `uppdrag_leverabel` sin status-CHECK med `avvisad` och
+  `uppdrag_leverabel_handelse` sina transmittalkolumner. Men **ingen kodväg alls
+  skrev `uppdrag_leverabel.status`.** Det var rätt så länge ingen behövde flytta
+  en leverabel — och fel i det ögonblick svepet började observera: ett förslag
+  som ingen kan besvara är en observation som ruttnar, och FR-12/FR-13 var två
+  krav utan skrivväg.
+
+  Byggt: **en ny tjänstefil `server/src/services/uppdragStatus.ts`**
+  (`bekraftaStatusbyte`), **en def-post i `actions/registry.ts`**
+  (`bekrafta_statusbyte`, `write` + `kravManniska: true`), **en vy-bit på
+  uppdragets förstasida** (kort + POST-rutt `…/statusforslag`) och **ett nytt
+  prov**. Ingen migration, ingen ny CSS-klass, ingen ny felkodsfamilj, inga nya
+  beroenden; `uppdragSvep.ts`:s skrivvägar, `execute.ts`, `errorHandler.ts`,
+  godkännandekön och känsligheten på alla befintliga åtgärder är orörda.
+
+  1. **En enda skrivväg, och målstatusen är härledd.** Indata bär `utfall`
+     (`bekraftad`/`retur`), aldrig ett fritt statusfält: ett sådant hade varit en
+     ANDRA skrivväg — vilken status som helst på vilken leverabel som helst, med
+     handgreppet bara som ett klick framför. En sökning i `server/src` ger nu
+     exakt en `UPDATE uppdrag_leverabel`, och den står i den här filen.
+  2. **Transmittalfälten fylls av systemet, aldrig av handen.** Mottagaren läses
+     ur `contracts.godkannare`; är den NULL eller bara blanktecken skrivs
+     **ingenting** (409 `saknad_mottagare`) — varken händelse eller status. Ett
+     tomt mottagarfält i en append-only historik hade sett ut som en överlämning
+     utan mottagare, en påhittad hade varit värre (FR-13). Inget redigerbart
+     mottagarfält på ytan: det hade gjort spärren till en textruta.
+  3. **Revisionen räknas ur historiken, aldrig ur Drive.** `1 + högsta revision`
+     bland leverabelns händelser; första överlämningen = 1. Förslagets
+     Drive-revision räknar filens versioner, inte våra överlämningar, och de två
+     talen har ingen anledning att följas åt — provet sätter dem därför medvetet
+     olika (Drive 12, överlämning 2). Returer bär NULL och räknas inte.
+  4. **Retur är en post, inte en tyst flytt bakåt.** Samma spår
+     (`bekraftat_av`/`bekraftat_nar`), status → `avvisad`, ingen revision och
+     ingen mottagare — mottagarspärren gäller bara överlämningen.
+  5. **`FOR UPDATE` på leverabelraden.** Utan låset kan två samtidiga
+     bekräftelser båda läsa `pagar`, båda skriva revision 1 och båda sätta
+     `levererad` — två överlämningar i en historik som inte går att rätta. Samma
+     grepp som `lockPendingApproval`, inget nytt mönster.
+  6. **Registerkopian köas i samma transaktion.** `koaRegisterkopia` har sitt
+     eget kodkontrakt ("anropas i SAMMA transaktion som registerändringen"), och
+     ett statusbyte ÄR en registerändring: statusen står i kopians innehåll via
+     `lasLeverabelregister`. Det kravet är huset, inte ett tillägg.
+  7. **Ytan följer S4.1/S5.1, inte en registervy.** Registervyn finns inte ännu
+     (utesluten i S3.1), så kortet ligger på uppdragets förstasida under
+     **Väntar på ditt svar** — före tidrapporteringen, eftersom en obesvarad
+     leverans som läses sist blir i praktiken ett ja. Husets `.ai-card` med
+     `aiMarkning()` (art. 50), underlaget i klartext (kod, Drive-revision,
+     handlingens id), och **Bekräfta/Retur som två likvärdiga `btn--ghost` utan
+     förval**: till skillnad från tidsförslagets *Godkänn/Justera* är det här två
+     olika sanna svar på "tog kunden emot den?", och svaret kommer utifrån — görs
+     den ena tyngre svarar man med handen i stället för med omdömet.
+     Oåterkalleligheten står före knappen. Finns inget öppet förslag står
+     ingenting alls (S7.2:s regel: brus lär läsaren att sluta titta).
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-statusbyte.test.ts` med de åtta fallen:
+  **(e)** agenten fälls med 403 `human_required` på båda utfallen, med oförändrad
+  auditlogg, noll händelser, orörd status och tom godkännandekö — plus ett
+  medskickat `status`-fält och ett tredje utfall som båda ger 400 av `.strict()`;
+  **(a)** bekräftelsen ger revision 1, mottagaren ur kontraktet, `bekraftat_av` =
+  den inloggade och en riktig tidsstämpel, status `levererad`, grannleverablerna
+  orörda, auditrad skriven och **registerkopian `koad`** (KRAV-5); **(b)** andra
+  överlämningen ger revision 2 fast förslaget bär Drive-revision 12, med den
+  första raden orörd, och räkningen är per leverabel (L3 får sin egen etta);
+  **(c)** kontrakt utan godkännare → 409 `saknad_mottagare` med status orörd och
+  noll händelser, detsamma för en godkännare som bara är blanktecken, medan
+  returen på samma kontrakt går igenom; **(d)** returen skriver `avvisad` med
+  spår men utan revision och mottagare, köar kopian, och räknas inte — nästa
+  bekräftelse får revision 1; **(f)** saknat förslag → 404 för både bekräftelse
+  och retur (returen är ingen bakdörr förbi underlaget); **(g)** grannbolagets
+  användare → 404 med händelserna oförändrade och RLS på tabellen; **(h)** UPDATE
+  och DELETE på `uppdrag_leverabel_handelse` som rollen `app` → `permission
+  denied` med raden orörd. Plus vyn: kortet med AI-märkning och underlag, en
+  besvarad leverabel som försvinner, POST som skriver genom action-lagret och
+  auditloggas, `saknad mottagare` som notis i stället för felsida, tomt läge utan
+  en rad markup, och 404 på grannbolagets uppdrag.
+
+  **Kvarstår för David:** inget att migrera. Statusförslagen besvaras på
+  uppdragssidan så fort svepet lagt ett. Bytena `ej_paborjad → pagar` och
+  `levererad → godkand`, registervyn (FR-39) och avvikelseloggen system- kontra
+  Drive-revision är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S10.2, våg 3 — Planen: en JS-fri tidslinjevy):**
   0068 gav avtalsdelarna `start_date`/`end_date`/`date_precision` och S1.2:s
   import fyllde dem för NVR-001:s tre strömmar. Men **ingen yta läste dem.**

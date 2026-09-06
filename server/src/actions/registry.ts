@@ -43,6 +43,7 @@ import {
 } from '../services/uppdragSignal.js';
 import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
+import { STATUSUTFALL, bekraftaStatusbyte } from '../services/uppdragStatus.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1732,6 +1733,38 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // strikta form som funktionen parsar, och två kopior hinner divergera.
     inputSchema: SvepIndataSchema,
     handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S3.2, våg 4: statusbytet med transmittal. Svepet FÖRESLÅR
+  // (cache), en människa BEKRÄFTAR — och den här åtgärden är den enda kodvägen
+  // till `uppdrag_leverabel.status` (FR-12/FR-13, NFR-4).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'bekrafta_statusbyte',
+    title: 'Bekräfta svepets statusförslag för en leverabel, eller registrera en retur',
+    // `write` + `kravManniska`, inte `sensitive` — samma skäl som
+    // `satt_bedomning` och `tand_scopesignal`: kön finns för beslut som ska
+    // LÄSAS av en människa innan de gäller, och här ÄR människan den som
+    // beslutar. Spärren är att ingen ANNAN kan flytta statusen: ett agentanrop
+    // fälls i executeAction med 403 `human_required`, före varje skrivning.
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Leverabelns kod ur registret (`uppdrag_leverabel_kod_uk`), aldrig ett
+        // radsurrogat: det är koden som står i kontraktstexten och i svepets
+        // förslagsnyckel.
+        leverabel_kod: safeText(50),
+        utfall: z.enum(STATUSUTFALL),
+      })
+      .strict(),
+    // Målstatusen härleds ur `utfall` inne i tjänsten. Ett fritt statusfält i
+    // indatat hade varit en ANDRA skrivväg — då kunde vilken status som helst
+    // sättas på vilken leverabel som helst, och handgreppet hade bara varit ett
+    // klick framför den. `bekraftat_av` härleds likaså ur den inloggade
+    // användaren, aldrig ur indatat.
+    handler: (ctx, i) => bekraftaStatusbyte(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

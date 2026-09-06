@@ -1117,3 +1117,44 @@ kopia står bara i kön, aldrig bland referenserna: dess `extern_id` är ännu
 platshållaren, och en verifiering av den hade rapporterat "borta" om en fil som
 aldrig skrivits. En okänd referens eller ett avtal i ett annat bolag ger **404
 `not_found`** och hela svepet rullas tillbaka — ingen halvskriven cache.
+
+### Statusbytet med transmittal (S3.2, våg 4)
+
+- `bekrafta_statusbyte` (write, **`kravManniska: true`**) — `contract_id`,
+  `leverabel_kod`, `utfall` (`bekraftad` | `retur`). **Den enda kodvägen till
+  `uppdrag_leverabel.status`** (FR-12/FR-13, NFR-4): svepet föreslår i cachen,
+  en människa svarar. Ett agentanrop ger **403 `human_required`** i
+  `executeAction`, före varje skrivning. Målstatusen härleds ur `utfall`
+  (`levererad` / `avvisad`) — indata bär **aldrig** ett fritt statusfält, det
+  vore en andra skrivväg. Förslaget måste finnas (`statusforslag:<kod>` i
+  `uppdrag_svepvarde`), annars **404 `not_found`**; leverabeln måste stå i
+  `pagar`, annars **409 `leverabel_ej_pagaende`**. Ingen migration, ingen ny
+  felkodsfamilj.
+- **Transmittalfälten fylls av systemet, aldrig av handen.** Mottagaren läses ur
+  `contracts.godkannare` — är den NULL eller tom skrivs **ingenting alls** (409
+  `saknad_mottagare`, texten "saknad mottagare …"): en gissad mottagare i en
+  append-only historik är en uppgift som ser ut som ett faktum (FR-13).
+  Överlämningsdatumet är `now()`, och `bekraftat_av` är den inloggade användaren
+  ur åtgärdskontexten — samma regel som `satt_av_manniska` och `tand_av`.
+- **Revisionen är systemets egen uppräkning:** `1 + högsta revision` bland
+  leverabelns rader i `uppdrag_leverabel_handelse` (första överlämningen = 1).
+  **Drive-revisionen i förslaget deltar aldrig i räkningen** — den räknar filens
+  versioner, inte våra överlämningar. Returer bär `revision`/`mottagare` NULL och
+  räknas därför inte som överlämningar.
+- **Retur är en post, inte en tyst flytt bakåt.** Samma spår (`bekraftat_av`,
+  `bekraftat_nar`), status → `avvisad`, och mottagarspärren gäller den inte.
+- **Registerkopian köas i samma transaktion** som statusbytet
+  (`koaRegisterkopia`, FR-11): statusen står i kopians innehåll
+  (`lasLeverabelregister`), så ett byte gör kundens frysta kopia inaktuell.
+  Historiken är append-only i rättigheterna, inte i koden — `app` har SELECT +
+  INSERT på `uppdrag_leverabel_handelse` och ingenting annat (0068).
+
+**Vyn:** kortet ligger på uppdragets förstasida
+(`/app/c/:id/projects/:projectId`) under **Väntar på ditt svar** — registervyn
+finns inte ännu (utesluten i S3.1), och en obesvarad leverans som läses sist blir
+i praktiken ett ja. Öppna `statusforslag:*` för leverabler i `pagar` visas i
+husets `.ai-card` med `aiMarkning()` (AI-förordningen art. 50) och sitt underlag
+i klartext: leverabelkod, Drive-revision och handlingens id. **Bekräfta** och
+**Retur** är två likvärdiga knappar utan förval — svaret kommer utifrån, inte ur
+kortet — och oåterkalleligheten står före knappen. Ingen ny CSS, inget JS. Finns
+inget öppet förslag står ingenting alls.
