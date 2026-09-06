@@ -38,6 +38,9 @@ import {
 import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
+import {
+  avgorSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
+} from '../services/uppdragSignal.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1614,6 +1617,69 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ contract_id: UuidSchema }).strict(),
     handler: (ctx, i) => lasLeverabelregister(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S5.1: scopesignalen. Kontraktets egna fraser lyssnade efter i
+  // verkligheten — och tre handgrepp på ytan (Tänd, Innanför, Utanför), exakt
+  // som 1E Del 4:s tabell anger. Båda åtgärderna är `write` + `kravManniska`:
+  // det finns ingen kodväg där en signal tänds eller avgörs utan människa.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'tand_scopesignal',
+    title: 'Tänd en scopesignal ur kontraktets fraser',
+    // `write` + `kravManniska`, inte `sensitive` — samma skäl som
+    // `satt_bedomning`: kön finns för beslut som ska LÄSAS av en människa innan
+    // de gäller, och här ÄR människan den som lyssnade och tände. Spärren är att
+    // ingen ANNAN kan tända: 403 `human_required` i executeAction, före varje
+    // skrivning (FR-6).
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Frasen som faktiskt sades. Vyn förifyller den ur `uppdrag_scopelinje`
+        // (sort 'fras'), men fältet är fri text: det som sägs i verkligheten
+        // följer sällan avtalets stavning på tecknet.
+        fras: safeText(500),
+        klausul: safeText(100).optional(),
+        // Utan motiv med flit (FR-7). Ett obligatoriskt motiv gör tröskeln till
+        // det som INTE eskaleras; stämpeln `eskalerad_nar` (0070) är spåret.
+        eskalera: z.boolean().optional(),
+        // Underlaget blir en REFERENS, aldrig en kopia: Message-ID eller
+        // event-uid ur källsystemet. Formprövningen (aldrig en url, aldrig en
+        // sökväg) sitter i `skapaReferens` (S7.1) och görs inte om här — två
+        // kopior av samma spärr hinner divergera.
+        underlag: z
+          .object({
+            sort: z.enum(UNDERLAGSSORTER),
+            extern_id: safeText(200),
+            extern_nyckel: safeText(200),
+            extern_kalla: safeText(200),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict(),
+    // `tand_av` är INTE ett fält: det härleds ur den inloggade användaren. Ett
+    // indatafält hade gjort spåret till ett påstående anroparen skriver om sig
+    // själv — samma lögnmöjlighet som `satt_av_manniska` finns för att utesluta.
+    handler: (ctx, i) => tandSignal(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'avgor_scopesignal',
+    title: 'Avgör en tänd scopesignal: innanför eller utanför uppdraget',
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        signal_id: UuidSchema,
+        // Exakt CHECK-villkorets två värden i 0068. Ett tredje fälls här (400
+        // `validation_error`), och av villkoret om det ändå nådde fram. NULL —
+        // tystnaden — går inte att skicka in: att avgöra är att svara.
+        avgjord: z.enum(SIGNALAVGORANDEN),
+      })
+      .strict(),
+    handler: (ctx, i) => avgorSignal(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det
