@@ -145,6 +145,81 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S7.1, våg 3 — skrivvägen till referenslagret):**
+  0068 gav `uppdrag_referens` sin tabell, sina tre lägen och sina rättigheter
+  (SELECT/INSERT/UPDATE för `app`, ingen DELETE) — men **ingen kod kunde skriva
+  en rad, och ingenting hindrade att raden blev en länk.** Kolumnerna
+  `extern_nyckel` och `extern_kalla` tillåter NULL för de rader som fanns före
+  tjänsten, så utan en spärr i skrivvägen hade en referens kunnat vara ett id
+  utan nyckelrymd — eller en `https://drive.google.com/…` som slutar fungera
+  den dag filen delas om. S7.2/S7.3 i våg 3 var blockerade av det.
+
+  Byggt: **en enda ny fil, `server/src/services/uppdragReferens.ts`** —
+  `skapaReferens`, `verifieraReferens`, `listaReferenser`, den rena
+  `tillhorSparrmapp` och formprövningen `urlEllerSokvag`. **Ingen migration,
+  ingen ny åtgärd i registret, ingen vy, ingen rutt, ingen ändring i `html.ts`
+  (statustokens finns på rad 192–194), inga nya beroenden.** Mönstret är
+  `uppdragSvep.ts`: `client: PoolClient` + `companyId`, körs inuti anroparens
+  `withTenantTransaction`, inga externa anrop (ADR-4) — svepet läser den andra
+  änden och lämnar resultatet hit.
+
+  1. **En referens ÄR id + nyckel + källa** (FR-24, Davids ja 6/9 14:42 på
+     analysfrågan). Alla tre krävs av det strikta zod-schemat. Ett id utan att
+     veta vilken nyckelrymd det tillhör och vilket konto det lästes ur är inte
+     en pekare, det är en sträng som råkar se ut som en. 0068:s NULL-tillåtelse
+     rörs inte — den är till för de befintliga raderna, inte för nya.
+  2. **Aldrig en url, aldrig en sökväg.** `://`, inledande `http` samt `/` och
+     `\` avvisas i `extern_id` och `extern_nyckel`, med ett fel som säger vad
+     man ska ange i stället. `extern_kalla` prövas INTE så: den namnger
+     nyckelrymden (`drive:locollabs`), den pekar inte ut något. Id:t trimmas
+     före prövningen — `" abc"` och `"abc"` är samma pekare, och utan
+     trimningen hade `uppdrag_referens_uk` släppt igenom dem som två rader.
+  3. **Drift är inte trasig.** En ände som ändrats kan fortfarande läsas; en
+     som försvunnit kan inte det. Slås de ihop blir varje omdöpt fil ett larm,
+     och då slutar man titta på larmen — och då syns inte den försvunna filen
+     heller. `titel_vid_lankning`/`hash_vid_lankning` skrivs ALDRIG om vid en
+     verifiering: gjorde de det skulle drift bara kunna upptäckas en gång.
+  4. **Utelämnat är inte tomt.** Anroparens läge skiljer `undefined` (fältet
+     lästes inte → jämförs inte) från `null` (fältet lästes och saknades →
+     avvikelse). Ett svep som bara läser hashen får inte råka nolla
+     titeljämförelsen. Saknas baslinjen (NULL vid länkningen) blir det aldrig
+     drift — en drift räknad mot ingenting är en gissning som ser ut som ett
+     fynd.
+  5. **Spärrmappen avgörs på ID-likhet i en förälderkedja anroparen levererar**
+     — aldrig prefix, aldrig sökväg, aldrig ett eget Drive-anrop. Två mappar
+     kan heta samma sak, och `0AKx…NVR` är ett prefix av `0AKx…NVR-gammalt`.
+     Kedjan valideras med samma spärr som id:t: en sökväg som smugit sig in där
+     hade annars bara gett ett tyst nej, och ett tyst nej på en
+     spärrmappskontroll är den farligaste sortens fel. Att en flyttad fil
+     bedöms om följer av att kedjan är indata — samma id, ny kedja, nytt svar.
+  6. **Ingen ny felkod utöver dubbletten.** `uppdrag_referens_uk` fångas som
+     409 `referens_finns_redan` (mönstret `already_posted`/`article_exists`),
+     zod ger 400 `validation_error` via befintliga `errorHandler.ts`, och ett
+     grannbolags avtal svarar 404 — inte ett databasfel ur den sammansatta
+     främmande nyckeln.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-referens.test.ts`: negativkontrollerna (sju
+  url- och sökvägsformer × `extern_id` och `extern_nyckel` MÅSTE fällas, plus
+  raden att noll sådana rader nått databasen), FR-24 (saknad `extern_nyckel`
+  respektive `extern_kalla` fälls, okänt fält fälls av `.strict()` så att
+  `status` aldrig kan sättas utifrån, raden föds `levande` och overifierad,
+  samma id under annan sort är en annan referens, dubbletten ger 409,
+  grannbolagets avtal ger 404 och får ingen rad), lägena (oförändrad →
+  `levande` med `senast_verifierad` satt, ändrad titel → `drift` med baslinjen
+  orörd, ändrad hash → `drift`, båda → båda avvikelserna, saknad ände →
+  `trasig`, återkomsten → `levande` igen, ett oläst fält som inte jämförs, en
+  titel som försvunnit ur källan, ingen baslinje → ingen drift, samt
+  tenantgränsen) och kedjekontrollen (tillhör/tillhör-inte, prefixfallet som
+  MÅSTE ge nej, den flyttade filen med samma id och ny kedja, och sökvägen i
+  kedjan som fälls).
+
+  **Kvarstår för David:** inget att migrera och ingenting att göra i vyn —
+  tjänsten har ännu ingen åtgärd och ingen yta. Den anropas först av S7.2/S7.3
+  (referenslistan och svepet). Backfill av `extern_nyckel`/`extern_kalla` för
+  befintliga rader ingår inte.
+
 - **2026-09-06 (uppdragsytan S4.1, våg 2 — bedömningen sätts av en människa):**
   0068 gav bedömningen en tabell med tre lägen och rättigheterna SELECT + INSERT,
   och S2.1 gav lagret `kravManniska`. Men **ingen kunde sätta en bedömning:** det
