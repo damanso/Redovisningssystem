@@ -42,6 +42,7 @@ import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
 import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
+import { bindaKostnad } from '../services/uppdragKostnad.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
 import { STATUSUTFALL, bekraftaStatusbyte } from '../services/uppdragStatus.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
@@ -1772,7 +1773,31 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Schemat bor i tjänsten (prejudikat: `DriveRapportSchema`) — det är samma
     // strikta form som funktionen parsar, och två kopior hinner divergera.
     inputSchema: SvepIndataSchema,
-    handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, i as never),
+    // `userId`/`actor` följer med: bindningssteget (S6.1) köar `binda_kostnad`
+    // inuti svepets egen transaktion, och kön ska visa vem som bad om
+    // bindningen — precis som varje annan köpost.
+    handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S6.1, våg 4: kostnaden binds till avtalsdelen (FR-33). Svepet
+  // köar den här åtgärden när det kunde peka ut en leverabel — vilket löv en
+  // kostnad hör till är ett omdöme. Kunde det inte, binder svepet självt till
+  // strömmen eller rotdelen, utan köpost (`services/uppdragKostnad.ts`).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'binda_kostnad',
+    title: 'Bind ett kvitto till en avtalsdel',
+    // `sensitive`, inte `write` + `kravManniska`: förslaget kommer utifrån
+    // (svepet), och då är kön det som gör att en människa LÄSER det innan det
+    // gäller. Samma skäl som `andra_baseline`. Skillnaden mot
+    // `assign_contract_part` (write) är vem som föreslår: där är människan redan
+    // den som klassar sin egen tidpost.
+    sensitivity: 'sensitive',
+    // `contract_part_id` är OBLIGATORISKT: kvitton har inget `project_id`, så
+    // delen är kvittots enda bindning till uppdraget. En kostnad binds aldrig
+    // "till uppdraget" i största allmänhet.
+    inputSchema: z.object({ receipt_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
+    handler: (ctx, i) => bindaKostnad(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.2, våg 4: statusbytet med transmittal. Svepet FÖRESLÅR

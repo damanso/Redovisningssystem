@@ -354,7 +354,7 @@ describe('KRAV-2: ett svep i taget per bolag', () => {
     const laset = new Promise<void>((r) => { forstaTogLaset = r; });
 
     const forsta = withTenantTransaction(user.userId, companyId, async (client: PoolClient) => {
-      const svar = await korUppdragssvep(client, companyId, { uppdrag: [{ contract_id: avtal }] });
+      const svar = await korUppdragssvep(client, companyId, user.userId, 'human', { uppdrag: [{ contract_id: avtal }] });
       forstaTogLaset();
       await grind;
       return svar;
@@ -362,7 +362,7 @@ describe('KRAV-2: ett svep i taget per bolag', () => {
     await laset;
 
     const andra = await withTenantTransaction(user.userId, companyId, (client: PoolClient) =>
-      korUppdragssvep(client, companyId, { uppdrag: [{ contract_id: avtal }] }));
+      korUppdragssvep(client, companyId, user.userId, 'human', { uppdrag: [{ contract_id: avtal }] }));
     expect(andra).toEqual({ lage: 'svep_avstod' });
 
     slappForsta();
@@ -381,14 +381,14 @@ describe('KRAV-2: ett svep i taget per bolag', () => {
     const laset = new Promise<void>((r) => { tog = r; });
 
     const vart = withTenantTransaction(user.userId, companyId, async (client: PoolClient) => {
-      const svar = await korUppdragssvep(client, companyId, {});
+      const svar = await korUppdragssvep(client, companyId, user.userId, 'human', {});
       tog();
       await grind;
       return svar;
     });
     await laset;
     const hosGrannen = await withTenantTransaction(granne.userId, grannbolag, (client: PoolClient) =>
-      korUppdragssvep(client, grannbolag, {}));
+      korUppdragssvep(client, grannbolag, granne.userId, 'human', {}));
     expect(hosGrannen.lage).toBe('svep_kort');
     slapp();
     expect((await vart).lage).toBe('svep_kort');
@@ -587,7 +587,11 @@ describe('KRAV-9: samma indata två gånger, och ägandegränsen', () => {
     expect(andra.uppdrag[0]!.borttagna).toBe(0);
   });
 
-  it('svepet skriver aldrig i uppdrag_leverabel eller receipts', async () => {
+  // S6.1 gav svepet ETT skrivfall mot `receipts`: ett kostnadsförslag UTAN löv
+  // binds automatiskt till strömmen/rotdelen (se uppdragsytan-bindning-svep).
+  // Här bär varje förslag sitt löv (L3), och då är kvittot fortfarande orört —
+  // lövet är ett omdöme, och det ligger i kön tills en människa svarat.
+  it('svepet skriver aldrig i uppdrag_leverabel, och inte i receipts när förslaget bär ett löv', async () => {
     const las = async () => withAdmin(async (c) => ({
       leverabler: (await c.query(
         'SELECT * FROM uppdrag_leverabel WHERE contract_id = $1 ORDER BY kod', [avtal],

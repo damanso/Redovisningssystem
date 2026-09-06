@@ -145,6 +145,55 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S6.1, våg 4 — kostnad bunden till leverabel):**
+  0068 gav `receipts` sitt `contract_part_id` och sin `oplanerad`, och S7.3 gav
+  svepet sitt `kostnadsforslag:<receipt_id>`. Men **förslaget tog slut i
+  cachen**: ingen kodväg satte kolumnen, så varje kostnad som hörde till
+  uppdraget krävde en handpåläggning som inte fanns — eller blev aldrig bunden.
+  FR-33 var alltså skriven men inte gången.
+
+  Byggt: **ny åtgärd `binda_kostnad` (`sensitive`)** i `actions/registry.ts`,
+  **ny tjänst `services/uppdragKostnad.ts`** (åtgärdens handler efter mönstret
+  `assignContractPart`, svepets bindningssteg och lövvakten), **bindningssteget
+  inkopplat i `korUppdragssvep`/`svepEttUppdrag`** och **en `oplanerad`-chip i
+  kvittolistan**. Ingen migration, inget nytt beroende, ingen scheduler, ingen
+  ny CSS-klass, ingen ny yta; `execute.ts`, `approvals.ts`, `obundnaKvitton`,
+  `bindningsmal` och förslagshärledningen är oförändrade utöver det nya anropet.
+  **Handgreppen är fortsatt fyra.**
+
+  1. **Två grenar, ett kriterium: är målet ett omdöme?** Bär förslaget en
+     `leverabel_kod` med en aktiv avtalsdel är målet ett LÖV — vilket löv en
+     kostnad hör till kan bara en människa svara på, så svepet köar
+     `binda_kostnad` genom `createApproval` (samma funktion som
+     `executeAction`:s sensitive-gren, i svepets egen transaktion — mönstret
+     från `avgorSignal`) och rör inte kvittot. Kan inget löv föreslås finns
+     ingen fråga att ställa: kostnaden binds till strömmen vars intervall täcker
+     datumet, annars rotdelen `UPPDRAG`, med `oplanerad = true` och auditraden
+     `bindning: automatisk`. En köpost också där hade varit det femte
+     återkommande handgreppet — en fråga vars enda svar är "ja, förstås".
+  2. **Idempotensen mäts på det som kan bli en dubblett.** Ingen ny köpost när en
+     *pending* `binda_kostnad` för samma `receipt_id` finns. Ett AVSLAGET
+     förslag får däremot föreslås igen (ett nej är inte ett permanent nej), och
+     ett utfört har satt kolumnen — då finns inget kostnadsförslag längre, för
+     svepet föreslår bara obundna kvitton.
+  3. **Automatbindningen är en bindning, aldrig en flytt.** `WHERE
+     contract_part_id IS NULL` står i UPDATE-satsen, och en vakt i skrivvägen
+     (inte bara i valet ovanför den) fäller varje automatmål som inte är
+     rotdelen eller en ström direkt under den. Flytten finns — men bara genom
+     kön: `binda_kostnad` flyttar gärna en automatbunden kostnad till rätt
+     leverabel, och rör aldrig `oplanerad` (märkningen säger något om baselinen,
+     och det blir inte osant för att någon flyttar kostnaden).
+  4. **Kvitton utan kostnadsförslag rörs inte alls.** Bolagets allmänna
+     kostnader hör inte till uppdraget; automatiken avgränsas till körningens
+     `kostnadsforslag:`-värden (Davids förtydligande 6/9, 20:02).
+  5. **Två nya provfiler:** `uppdragsytan-bindning.test.ts` (sensitive-flödet,
+     det obligatoriska `contract_part_id`, flytten, `oplanerad` orörd, okända
+     rader och tenantgränsen) och `uppdragsytan-svep-bindning.test.ts` (gren 1 +
+     idempotens, gren 2 per datum med rot som reserv, ingen köpost, auditraden,
+     bara-NULL-spärren, lövvakten och kvittot utan förslag). `korUppdragssvep`
+     tog samtidigt `userId`/`actor` som argument — köposten ska visa vem som bad
+     om bindningen — vilket ändrade fyra anrop i `uppdragsytan-svep.test.ts`.
+
 - **2026-09-06 (uppdragsytan S5.2, våg 4 — signalen som blir tillägg):** S5.1 gav
   scopesignalen sin skrivväg och S1.3 gav `andra_baseline` sin, men **kedjan
   mellan dem fanns inte**. `uppdrag_scopesignal.ledde_till_part_id` hade legat i

@@ -1130,8 +1130,10 @@ avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
   `hoppade_kopior[]` (`referens_id` + uppdraget). Köposten står kvar orörd, men
   delas aldrig ut igen så länge uppdraget är stängt.
 
-**Förslagen är CACHE, aldrig en åtgärd.** De rör varken `uppdrag_leverabel` eller
-`receipts`; S3.2 bekräftar statusbytet och S6.1 köar kostnadsbindningen.
+**Förslagen är CACHE, aldrig en åtgärd.** De rör aldrig `uppdrag_leverabel`;
+S3.2 bekräftar statusbytet och S6.1 köar kostnadsbindningen mot en leverabel.
+Undantaget är bindningssteget nedan: saknar kostnadsförslaget ett löv finns
+inget omdöme att fråga om, och då binder svepet kostnaden självt.
 
 - `statusforslag:<leverabel>` — skrivs när indatat rapporterar en **revision**
   för leverabelns handling. Repot avgör aldrig själv om en revision är "ny" (det
@@ -1145,6 +1147,10 @@ avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
   `UPPDRAG` — aldrig en leverabel, och aldrig en flytt: kvittots
   `contract_part_id` rörs inte. Täcker två strömmar samma datum vinner avtalets
   egen ordning (`sort_order`), så förslaget är detsamma vid varje körning.
+- **Bindningssteget (S6.1)** körs efter förslagshärledningen, i samma
+  transaktion, och verkar ENBART på körningens `kostnadsforslag:`-värden — se
+  avsnittet nedan. Utfallet står per uppdrag i svarets `bindningar`
+  (`koade`, `automatiska`, `redan_koade`).
 
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
 `referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
@@ -1195,3 +1201,53 @@ i klartext: leverabelkod, Drive-revision och handlingens id. **Bekräfta** och
 **Retur** är två likvärdiga knappar utan förval — svaret kommer utifrån, inte ur
 kortet — och oåterkalleligheten står före knappen. Ingen ny CSS, inget JS. Finns
 inget öppet förslag står ingenting alls.
+
+### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
+
+- `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`. Binder ett
+  kvitto till en avtalsdel och gör ingenting annat (mönstret
+  `assign_contract_part`, `services/uppdragKostnad.ts`). **`contract_part_id` är
+  obligatoriskt:** `receipts` har inget `project_id`, så delen är kvittots enda
+  bindning till uppdraget — en kostnad binds aldrig "till uppdraget" i
+  allmänhet. Okänt kvitto eller okänd del ger **404 `not_found`** vid
+  godkännandet, och hela godkännandet rullas då tillbaka (posten står kvar
+  obesvarad, omkörbar). Ett avslutat uppdrag stoppas av 0068:s
+  `receipts_vagrar_avslutat` (409 `rule_violation`), inte av en kopia av regeln
+  i koden.
+- **Känslig, inte `kravManniska`:** förslaget kommer utifrån (svepet), och kön är
+  det som gör att en människa LÄSER bindningen innan den gäller — samma skäl som
+  `andra_baseline`. Ingenting skrivs före godkännandet; åtgärden körs inuti
+  `approveAction`:s transaktion och auditloggar `receipt.contract_part_assigned`
+  med `fran_contract_part_id` → `till_contract_part_id`. **En flytt är tillåten**
+  — det är precis vad kön är till för: en automatbunden kostnad ska gå att flytta
+  till rätt leverabel. `oplanerad` rörs aldrig av åtgärden; märkningen säger
+  något om baselinen och blir inte osann för att någon flyttar kostnaden.
+
+**Svepets bindningssteg** (i `kor_uppdragssvep`, samma transaktion som svepet):
+
+- **Gren 1 — förslaget bär `leverabel_kod` med en aktiv avtalsdel.** Vilket löv
+  en kostnad hör till är ett omdöme: svepet köar `binda_kostnad` mot lövet genom
+  `createApproval` (samma funktion som `executeAction`:s sensitive-gren) och
+  skriver auditraden `action.approval_requested`. **Idempotent per kvitto:** finns
+  redan en *pending* `binda_kostnad` för samma `receipt_id` föds ingen ny post
+  (kvittot listas i `redan_koade`). Ett avslaget förslag får däremot föreslås
+  igen — ett nej är inte ett permanent nej.
+- **Gren 2 — inget löv kan föreslås** (koden saknas eller har ingen aktiv
+  version). Då finns inget att fråga om: svepet sätter `contract_part_id` till
+  strömmen vars intervall täcker kvittodatumet, annars rotdelen `UPPDRAG`, och
+  `oplanerad = true`. **Bara `WHERE contract_part_id IS NULL`** — en bindning,
+  aldrig en flytt. Ingen köpost (ett femte återkommande handgrepp hade uppstått),
+  och auditraden bär `bindning: automatisk`.
+- **Automatbindningen kan aldrig sätta ett löv.** En vakt i skrivvägen fäller
+  varje automatmål som inte är rotdelen eller en ström direkt under den — hellre
+  ett fällt svep än ett omdöme utan människa.
+- **Kvitton utan kostnadsförslag rörs aldrig.** Ett bokfört kvitto vars
+  leverantör inte står i någon leverabelhandlings titel är en allmän
+  bolagskostnad, inte uppdragets — automatiken avgränsas till körningens
+  `kostnadsforslag:`-värden.
+
+**Vyn:** kvittolistan (`/app/c/:id/receipts`) visar `oplanerad` som en `chip` i
+statuskolumnen med husets befintliga komponent och tokens (kind `warn`), plus en
+rad under tabellen som säger vad märkningen betyder — och bara när något faktiskt
+är märkt. Ingen ny yta, ingen ny CSS, inget JS: bindningskön ligger i **Att göra**
+som varje annat förslag.

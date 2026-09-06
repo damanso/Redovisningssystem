@@ -6791,10 +6791,18 @@ viewRouter.get('/c/:companyId/receipts', pageFor('receipts', 'Kvitton', async (c
         ? html`<div class="empty"><div class="big">Inga kvitton ännu</div>Registrera ditt första kvitto nedan.</div>`
         : html`<div class="table-wrap"><table><thead><tr><th>Nr</th><th>Datum</th><th>Beskrivning</th><th class="num">Netto</th><th class="num">Moms</th><th>Status</th><th>Underlag</th><th></th></tr></thead><tbody>
             ${rows.map((r) => html`<tr><td class="code">${r.receipt_number}</td><td>${r.receipt_date}</td><td>${kapaOrd(String(r.description ?? ''))}</td>
-              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td><td>${statusChip(String(r.status))}</td>
+              <td class="num">${amount(r.net_ore as number)}</td><td class="num">${amount(r.vat_ore as number)}</td>
+              <td>${statusChip(String(r.status))}${r.oplanerad ? html` ${chip('Oplanerad', 'warn', '!')}` : html``}</td>
               <td>${r.file_id ? html`<a href="/app/c/${companyId}/documents/${r.file_id as string}/download">📎 Visa</a>` : html`<span class="muted">—</span>`}</td>
               <td>${bookBtn(r as Record<string, unknown>)}</td></tr>`)}
-            </tbody></table></div>`
+            </tbody></table></div>
+          ${
+            rows.some((r) => Boolean(r.oplanerad))
+              // Märkningen bär sitt eget svar: en chip ingen kan tyda är ingen
+              // märkning. Raden syns bara när något faktiskt är märkt.
+              ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
+              : ''
+          }`
     }
     <div class="panel" style="margin-top:22px;max-width:720px">
       <div class="panel__head"><h2>Nytt kvitto</h2></div>

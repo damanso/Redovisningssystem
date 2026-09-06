@@ -20,8 +20,12 @@ export interface CreateReceiptInput {
   payment_account?: number;
 }
 
+// `contract_part_id`/`oplanerad` kom med 0068 (Uppdragsytan): kvittot kan höra
+// till ett uppdrags avtalsdel, och märkningen säger att kostnaden inte fanns i
+// baselinen. Läsvägarna bär dem så att vyn kan visa märkningen utan en egen SQL.
 const RECEIPT_COLUMNS = `id, receipt_number, receipt_date::text, description, net_ore, vat_ore,
-  total_ore, vat_rate, expense_account, payment_account, status, supplier_id, file_id, voucher_id`;
+  total_ore, vat_rate, expense_account, payment_account, status, supplier_id, file_id, voucher_id,
+  contract_part_id, oplanerad`;
 
 export async function createReceipt(
   client: PoolClient, companyId: string, userId: string, input: CreateReceiptInput,
