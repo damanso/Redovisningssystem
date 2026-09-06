@@ -145,6 +145,94 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S10.6, våg 5 — Kontraktet: en JS-fri läsyta per
+  uppdrag):** Avtalets livscykel låg i fyra tabeller och fyra frågor som ingen
+  kunde ställa på en gång: var är dokumentet, vad gäller nu, vilka tillägg har
+  gjorts och varför, och vad ingår? Var för sig fanns svaren — `contracts`,
+  `contract_parts` med sina versioner, `uppdrag_referens`, `uppdrag_scopelinje`.
+  **Tillsammans fanns de bara i den DOCX ingen läser förrän det är för sent.**
+  Två fynd styrde bygget: `listContracts` returnerade varken `kontrakt_tillstand`
+  eller versionernas `change_reason`, så ett utkast gick inte att skilja från en
+  baseline och ett tillägg inte från ett datum.
+
+  Byggt: **ny åtgärd `las_kontraktsyta` (`read`, ingen `kravManniska`)** i
+  `actions/registry.ts`, **ny tjänstefil `services/uppdragKontrakt.ts`**
+  (`lasKontraktsyta`), **två additiva rader i `services/contracts.ts`**
+  (`c.kontrakt_tillstand` i `AVTAL_KOLUMNER`, `change_reason` i `Takversion` +
+  versionsfrågan), **vyn `/app/c/:id/projects/:projectId/kontraktet`** med
+  knappen sist i uppdragssidans knappband, och en ny svit. **Ingen migration**
+  (kolumnerna finns i 0064/0068), inget nytt beroende, ingen ny felkod, ingen ny
+  CSS-klass, ingen skrivväg, ingen ändrad känslighet på någon befintlig åtgärd.
+
+  1. **Ytan är VÄGEN till dokumentet och REGISTRET över dess läge — aldrig en
+     kopia.** Svaret bär `source_file_id` och Drive-referensernas `extern_id`,
+     och ingenting mer om handlingen; `getDocument`:s `includeContent` anropas
+     aldrig härifrån och åtgärden har med flit ingen `include_content`-flagga.
+     Det är hela FR-38: en fjärde datamängd uppstår inte, för varje fält i
+     svaret står redan i en tabell som någon annan story äger.
+  2. **Kopietestet prövas åt BÅDA hållen.** En regel som säger "det här får inte
+     finnas" går inte att prova genom att räkna fält. Sökaren letar efter rader
+     som står i HANDLINGEN men inte i baselinen (partsraden, rapporteringstakten,
+     bilagerubriken, fältnamnen `content_base64`/`kontraktstext`) — och provet
+     visar först att sökaren FÄLLER ett svar där en kontraktsrad smugits in.
+     Utan den kontrollen vore den andra bara ett prov på att en sträng råkar
+     saknas. Scopelinjerna och leverabelkoderna SKA däremot stå på ytan: det är
+     skillnaden mellan ett register och en kopia.
+  3. **Ingen andra takberäkning och ingen andra gällande-regel.** Avtalet och
+     delarna kommer ur `listContracts`, alltså ur husets enda takberäkning; den
+     gällande versionen ÄR `Delforbrukning.part_id`. Två svar på "vilken version
+     gäller?" i samma hus är ett fel, inte en nyans — och Planen, takvarningen,
+     faktureringsspärren och den här ytan svarar nu bevisligen likadant.
+  4. **Ett tillägg är en version utöver den första, och det bär sitt skäl.** Den
+     tidigaste `valid_from` är avtalet som det skrevs och behöver inget skäl
+     (den ändrar ingenting); varje rad efter den är ett tillägg med det
+     `change_reason` 0068:s trigger kräver. Orsaken får den sista och bredaste
+     kolumnen — en tilläggslista utan den säger bara ATT något ändrades. En
+     version med framtida `valid_from` bär `gallande: false` i stället för att
+     tigas ihjäl: den är skriven men gäller inte än.
+  5. **Ett utkast renderas SOM utkast.** Rubriken byter från "Det som gäller nu"
+     till "Utkastets delar" och notisen säger rakt ut att ingenting där gäller.
+     Det som står obesvarat i utkastet står i HANDLINGEN — sidan pekar dit och
+     återger det aldrig (NFR-12, KRAV-5). Ett utkast som ser ut som en baseline
+     är värre än inget utkast alls.
+  6. **Pekaren är ett id, aldrig en länk till ett grannsystem.** Ingen
+     `drive.google.com`-url konstrueras: S7.1:s regel är att id:t överlever att
+     filen döps om och flyttas, och en url gjord av koden hade varit precis den
+     ruttnande länk regeln finns för att slippa. Den enda länken går till husets
+     EGET dokumentarkiv (`/documents/:fileId/download`), där handlingen faktiskt
+     ligger. Nyckelrymden står under titeln i tabellen — utan den går den frysta
+     registerkopian (`extern_nyckel = 'registerkopia'`, ett platshållar-id tills
+     svepet skrivit filen) inte att skilja från avtalshandlingen.
+  7. **Husets ruttmönster, inte 1E:s.** `/projects/:id/kontraktet` med knappen
+     sist i knappbandet efter *Planen* — ingen `.subnav` och ingen
+     `/uppdrag/:kod`-rutt (Davids analysregel 3; menyn ägs av S10.7). Ingen ny
+     CSS: `.panel`, `.chip`, `.empty`, `.code` och husets tabeller bär ytan.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-kontraktsyta.test.ts`: registret (`read`, ingen
+  `kravManniska`, och `.strict()` som fäller ett medskickat `include_content`);
+  **(a)** det frysta NVR-001 med tillstånd, pekare vars id varken är url eller
+  sökväg, strömmarna S1–S3 med obekräftade tak och scopelinjens 4/4/7 rader,
+  medan grannbolagets `contract_id` — och ett okänt — ger 404 genom hela stacken
+  och grannen ändå når sitt eget avtal på sin egen väg; **(b)** `andra_baseline`
+  som ger EN tilläggsrad med `change_reason`, taket 130 h och `gallande: true`,
+  med `gallande`-listan fortsatt EN rad per kod, plus vyn som skriver ut orsaken
+  och inte bara datumet; **(c)** kopietestet i tre led — sökaren fäller en
+  smugglad kontraktsrad och ett `content_base64`, åtgärdssvaret läcker inget
+  (och `dokument` har exakt två nycklar), vyns HTML läcker inget och bär ingen
+  `<script>` medan scopelinjens rader står kvar synliga; **(d)** utkastet med
+  "Utkastets delar", "Avtalet är inte signerat" och utan rubriken "Det som
+  gäller nu", det frysta avtalet med alla tre scopegrupperna och klausulen,
+  knappen på uppdragssidan, tomläget för ett uppdrag utan avtal, och 404 på
+  grannbolagets uppdrag i vyn.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Kontraktet
+  nås via knappen på uppdragssidan. Menyn/`.subnav` (S10.7), rendering av
+  utkastets frågetexter, leveranskartan och rytmen på ytan, Drive-verifiering
+  vid rendering och en `include_content`-flagga är medvetet uteslutna — källan
+  kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S6.2, våg 5 — tröskeln på tre nivåer):** 0068 hade
   burit `contracts.troskel_procent`, `troskel_golv_ore`, `troskel_golv_timmar`
   och `troskel_dagar` sedan dag ett, och S7.4 hade gett svepet både utfallet

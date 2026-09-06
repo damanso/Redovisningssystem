@@ -1346,3 +1346,48 @@ människa", och här finns inget att svara på), med ett chip som bär färg, gl
 tal, och koderna i klartext per avtal när uppdraget har flera. Ingen ny CSS,
 ingen ny rutt, inget JS, ingen avslutsknapp: avslutet köas som varje annan
 känslig åtgärd och godkänns i **Att göra**.
+
+### Kontraktsytan (S10.6, våg 5)
+
+- `las_kontraktsyta` (read, ingen `kravManniska`) — `contract_id`. Avtalets hela
+  livscykel ur EN definition (FR-23, FR-38): `contract` (namn, uppdrag, kund,
+  `kontrakt_tillstand`, `signed_date`), `dokument` (`source_file_id` +
+  Drive-pekarna ur `uppdrag_referens` med `sort = 'drive'`), `gallande` (den
+  version per delkod som GÄLLER, med `valid_from`, `change_reason`, taket och
+  `cap_status`), `tillagg` (varje version utöver den första, i tidsordning, med
+  `valid_from` och orsaken) och `scopelinje` (avtalets egna innanför/utanför/
+  fraser i `ordning`). Okänt eller främmande avtal ger **404 `not_found`** —
+  aldrig en tom yta, som hade sett ut som "avtalet är tomt".
+- **Ytan är vägen till dokumentet och registret över dess läge — aldrig en
+  kopia** (NFR-12). Svaret bär `source_file_id` och Drive-referensernas
+  `extern_id` och ingenting mer om handlingen; `includeContent` anropas aldrig
+  härifrån, och `las_kontraktsyta` har med flit **ingen `include_content`-flagga**.
+  Behöver anroparen själva handlingen finns `get_document` sedan K-serien, och
+  den vägen byggs inte om. Ett kopietest i
+  `server/test/uppdragsytan-kontraktsyta.test.ts` letar efter rader som står i
+  handlingen men inte i baselinen (partsraden, rapporteringstakten,
+  bilagerubriken, fältnamnen `content_base64`/`kontraktstext`) i både svaret och
+  vyns HTML — och prövas åt båda hållen: sökaren ska FÄLLA ett svar där en
+  kontraktsrad smugits in, annars mäter provet ingenting.
+- **Ingen fjärde datamängd, ingen omräkning.** Avtalet och delarna kommer ur
+  `listContracts`, alltså ur husets enda takberäkning: den gällande versionen är
+  `Delforbrukning.part_id` och ingen egen regel. `services/contracts.ts` utökades
+  bara additivt — `c.kontrakt_tillstand` i avtalsraden och `change_reason` i
+  `Takversion` — utan migration (båda kolumnerna finns i 0064/0068).
+- **Ett tillägg är en version utöver den första.** Delen är koden, raderna är
+  dess versioner: den tidigaste `valid_from` är avtalet som det skrevs, varje rad
+  efter den är ett tillägg och bär det `change_reason` som 0068:s trigger kräver.
+  `gallande: true` markerar den version som gäller i dag — en version med
+  framtida `valid_from` är skriven men gäller inte än, och tigs inte ihjäl.
+
+**Vyn:** `/app/c/:id/projects/:projectId/kontraktet`, undersida till uppdraget
+(knappen **Kontraktet** sist i knappbandet, efter *Planen* — husets ruttmönster,
+ingen `.subnav`: menyn ägs av S10.7). Fyra paneler per avtal, i läsarens
+frågeordning: **Vägen till dokumentet** (länk till husets dokumentarkiv för
+`source_file_id`, och Drive-pekarna som ID med nyckelrymd, källa och läge — id:t
+aldrig länken, S7.1), **Det som gäller nu**, **Tilläggen** med orsaken i den
+bredaste kolumnen, och **Vad som ingår**. Ett avtal i `kontrakt_tillstand =
+'utkast'` byter rubrik till **Utkastets delar** och säger rakt ut att ingenting
+där gäller; utkastets obesvarade frågor hänvisas till handlingen och återges
+aldrig. JS-fri serverrenderad HTML, inga externa anrop under rendering (NFR-6),
+ingen ny CSS och inga nya komponenter.

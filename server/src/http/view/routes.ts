@@ -34,6 +34,7 @@ import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomnings
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
+import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepvarden } from '../../services/uppdragSvep.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
@@ -1689,7 +1690,13 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
                 och den frågan ställs efter "vad står i avtalet?" och "håller
                 det?". Ingen egen meny: huset har ett knappband, och en andra
                 navigationsrad hade gjort uppdragssidan till två sidor. */ ''}
-          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a></div></div>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a>
+          ${/* S10.6: kontraktet sist i bandet. Planen svarar "när landar det?",
+                Kontraktet svarar "vad står det, var ligger det, och vad har
+                ändrats sedan dess?" — den frågan ställer man när ett av de
+                andra svaren förvånar. Fortfarande husets knappband: ingen egen
+                meny (S10.7 äger den frågan). */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/kontraktet">Kontraktet</a></div></div>
       ${tidsnotiser(req)}
       ${kopior.map((k) => registerkopiaRad(k))}
       ${/* S8.1: högst upp på ett avslutat uppdrag — det öppna är det enda som
@@ -3066,6 +3073,266 @@ viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res)
     return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag)) };
   });
   res.type('html').send(layout({ title: 'Planen', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.6, våg 5: KONTRAKTET (PRD FR-6/FR-38, NFR-6/NFR-12)
+//
+// Avtalets livscykel låg i fyra tabeller och fyra frågor som ingen kunde ställa
+// på en gång: var är dokumentet, vad gäller nu, vilka tillägg har gjorts och
+// varför, och vad ingår? Var för sig fanns svaren; tillsammans fanns de bara i
+// en DOCX som ingen läser förrän det är för sent.
+//
+// Fem beslut styr sidan:
+//
+//  1. **Sidan är en VÄG, inte en kopia.** Dokumentpanelen står först, för allt
+//     under den är ett register över handlingens läge — inte handlingen. Ingen
+//     kontraktstext återges någonstans, och pekaren är ett ID, aldrig en länk
+//     till ett grannsystem: ett id överlever att filen döps om och flyttas
+//     (S7.1). Den enda länk som finns går till husets EGET dokumentarkiv, där
+//     handlingen faktiskt ligger.
+//  2. **Ett utkast renderas som ett utkast.** Rubriken byter från "Det som
+//     gäller nu" till "Utkastets delar", och notisen säger rakt ut att
+//     ingenting här gäller. Det som står obesvarat i utkastet står i
+//     handlingen — sidan pekar dit och återger det aldrig (NFR-12). Ett utkast
+//     som ser ut som en baseline är värre än inget utkast alls.
+//  3. **Tilläggen bär sitt skäl, aldrig bara sitt datum.** 0068:s trigger
+//     kräver `change_reason` vid varje ny version — och en tilläggslista utan
+//     orsaken säger bara att något ändrades, aldrig varför. Orsaken får därför
+//     den sista och bredaste kolumnen: det är den man läser.
+//  4. **Ordningen är läsarens frågor, inte tabellernas.** Var → vad gäller →
+//     vad har ändrats → vad ingår. Scopelinjen står sist därför att den är det
+//     man går tillbaka till, inte det man börjar med.
+//  5. **Noll skript, noll utgående anrop.** Allt kommer ur redan lagrad data
+//     (NFR-6); Drive-referensernas läge är det svepet SÅG (S7.4), aldrig något
+//     sidan hämtar när den renderas. Ingen ny CSS: husets `.panel`, `.chip`,
+//     `.empty`, `.code` och tabeller bär hela ytan.
+// ---------------------------------------------------------------------------
+
+interface Kontraktsunderlag {
+  projekt: { id: string; number: number; name: string };
+  ytor: Kontraktsyta[];
+}
+
+/**
+ * Uppdragets avtal, var och ett läst genom SAMMA tjänstefunktion som
+ * `las_kontraktsyta` (FR-23). Vyn har alltså ingen egen fråga mot databasen och
+ * kan inte visa något åtgärden inte svarar — och tvärtom.
+ */
+async function kontraktsunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Kontraktsunderlag> {
+  const projekt = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const avtal = await listContracts(client, companyId, { project_id: projectId });
+  const ytor: Kontraktsyta[] = [];
+  for (const a of avtal) {
+    ytor.push(await lasKontraktsyta(client, companyId, { contract_id: a.id as string }));
+  }
+  return { projekt, ytor };
+}
+
+/**
+ * Utkast eller fryst. Ockran betyder "väntar på en människa" i huset, och ett
+ * utkast gör precis det: det väntar på en signatur. Färg OCH glyf OCH ord —
+ * skillnaden mellan arbetsmaterial och baseline får inte bara vara en nyans.
+ */
+const tillstandChip = (t: Kontraktsyta['contract']['kontrakt_tillstand']): Raw =>
+  t === 'fryst' ? chip('Fryst', 'ok', '✓') : chip('Utkast', 'warn', '◔');
+
+const takstatusChipYta = (status: 'bekraftat' | 'vet_ej'): Raw =>
+  status === 'bekraftat' ? chip('Bekräftat', 'ok', '✓') : chip('Vet ej', 'muted', '○');
+
+/** Vägen till handlingen: husets egen fil, och pekarna ut till Drive. */
+function dokumentpanel(companyId: string, y: Kontraktsyta): Raw {
+  const d = y.dokument;
+  const tomt = d.source_file_id === null && d.referenser.length === 0;
+  return html`<section class="panel" style="margin-top:16px" aria-labelledby="dok-${y.contract.id}">
+    <div class="panel__head"><h2 id="dok-${y.contract.id}">Vägen till dokumentet</h2>
+      ${tomt ? chip('Ingen pekare', 'warn', '!') : chip(String(d.referenser.length + (d.source_file_id ? 1 : 0)), 'muted')}</div>
+    <div class="panel__body">
+      ${tomt
+        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har varken en handling i dokumentarkivet eller en
+            pekare till en fil i Drive. Läs in avtalet under
+            <a href="/app/c/${companyId}/projects/${y.contract.project_id}/avtal">Läs in avtal</a> — handlingen hamnar
+            då i dokumentarkivet och avtalet får sin väg dit. Utan pekare är avtalet en fil någon minns var den ligger.</p>`
+        : html`
+          ${d.source_file_id
+            ? html`<p style="margin:10px 16px 4px"><a href="/app/c/${companyId}/documents/${d.source_file_id}/download">Hämta
+                avtalshandlingen</a> <span class="muted">— filen som avtalet lästes in ur, i dokumentarkivet.</span></p>`
+            : ''}
+          ${d.referenser.length === 0
+            ? ''
+            : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
+                <thead><tr><th>Handling</th><th>Id i Drive</th><th>Läst ur</th><th>Läge</th></tr></thead>
+                ${/* Nyckelrymden står under titeln, inte i en egen kolumn: en
+                      referens ÄR id + nyckel + källa (S7.1), och utan nyckeln
+                      går registerkopian inte att skilja från avtalshandlingen —
+                      två helt olika filer med samma sorts id. */ ''}
+                <tbody>${d.referenser.map((r) => html`<tr>
+                  <td>${r.titel_vid_lankning ?? html`<span class="muted">Ingen titel lästes</span>`}
+                    ${r.extern_nyckel ? html`<div class="muted" style="font-size:12.5px">${r.extern_nyckel}</div>` : ''}</td>
+                  <td class="code">${r.extern_id}</td>
+                  <td class="muted">${r.extern_kalla ?? '—'}</td>
+                  <td>${statusChip(r.status)}</td></tr>`)}
+                </tbody></table></div>`}
+          ${/* Regeln utskriven vid det den gäller: id, aldrig länk. Läsaren
+                kopierar id:t till Drives sökruta — och den vanan är hela
+                skälet till att pekaren håller när filen döps om. */ ''}
+          <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Id:t, aldrig länken — ett id överlever att filen
+            döps om, flyttas och delas om. Läget är det senaste svepet SÅG; sidan frågar aldrig Drive när den ritas.
+            En rad med nyckelrymden <span class="code">registerkopia</span> är den frysta registerkopian i spärrmappen —
+            den får sitt riktiga id först när svepet skrivit filen. Innehållet står kvar i handlingen: den här ytan är
+            vägen dit, aldrig en kopia av den.</p>`}
+    </div>
+  </section>`;
+}
+
+/** Det som gäller — eller, för ett osignerat avtal, det som bara föreslås. */
+function gallandepanel(y: Kontraktsyta): Raw {
+  const utkast = y.contract.kontrakt_tillstand === 'utkast';
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="gallande-${y.contract.id}">
+    <div class="panel__head"><h2 id="gallande-${y.contract.id}">${utkast ? 'Utkastets delar' : 'Det som gäller nu'}</h2>
+      ${utkast ? tillstandChip('utkast') : chip(`${String(y.gallande.length)} delar`, 'muted')}</div>
+    <div class="panel__body">
+      ${/* KRAV-5: ett utkast får aldrig läsas som en baseline. Frågorna som
+            står öppna i utkastet står i HANDLINGEN — sidan hänvisar dit och
+            återger dem aldrig (NFR-12). */ ''}
+      ${utkast
+        ? html`<p class="muted" style="margin:8px 16px 4px">Avtalet är inte signerat, så ingenting här gäller ännu —
+            det är utkastets innehåll. Det som står obesvarat i utkastet står i handlingen ovan, inte här; ett tak
+            blir bindande först när det är läst i den och bekräftat.</p>`
+        : ''}
+      ${y.gallande.length === 0
+        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga delar ännu. De läses in med
+            leveranskontraktets text — och hittas aldrig på här.</p>`
+        : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
+            <thead><tr><th>Kod</th><th>Del</th><th>${utkast ? 'Föreslagen från' : 'Gäller från'}</th>
+              <th>Tak</th><th>Taket läst</th></tr></thead>
+            <tbody>${y.gallande.map((g) => html`<tr>
+              <td class="code">${g.code}</td>
+              <td>${g.name}${g.active ? '' : html` ${chip('Avslutad', 'muted', '×')}`}
+                ${g.parent_code ? html`<span class="muted" style="font-size:12.5px"> · under ${g.parent_code}</span>` : ''}</td>
+              <td class="code">${g.valid_from ?? '—'}</td>
+              <td>${takText(g.cap_hours, g.cap_amount_ore)}${
+                g.cap_derived ? html` <span class="muted" style="font-size:12.5px">härlett</span>` : ''}</td>
+              <td>${takstatusChipYta(g.cap_status)}</td></tr>`)}
+            </tbody></table></div>
+          <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Den gällande versionen per delkod — samma
+            regel som takvarningen och faktureringsspärren läser. Ett tak som ingen bekräftat står som
+            <em>vet ej</em>: det varnar aldrig och spärrar aldrig.</p>`}
+    </div>
+  </section>`;
+}
+
+/** Tilläggen: varje version utöver den första, i tidsordning, med sitt skäl. */
+function tillaggspanel(y: Kontraktsyta): Raw {
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="tillagg-${y.contract.id}">
+    <div class="panel__head"><h2 id="tillagg-${y.contract.id}">Tilläggen</h2>
+      ${y.tillagg.length === 0 ? chip('Inga', 'muted', '○') : chip(String(y.tillagg.length), 'info', '±')}</div>
+    <div class="panel__body">
+      ${y.tillagg.length === 0
+        ? html`<p class="muted" style="margin:8px 16px 12px">Inga tillägg. Avtalet gäller i den version det skrevs, och
+            den första versionen av en kod behöver inget skäl — det finns ingenting den ändrar.</p>`
+        : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
+            <thead><tr><th>Kod</th><th>Gäller från</th><th>Tak</th><th>Orsak</th></tr></thead>
+            <tbody>${y.tillagg.map((t) => html`<tr>
+              <td class="code">${t.code} ${t.gallande ? chip('Gäller nu', 'ok', '✓') : ''}</td>
+              <td class="code">${t.valid_from}</td>
+              <td>${takText(t.cap_hours, t.cap_amount_ore)}</td>
+              ${/* Orsaken sist och bredast: det är den man läser. Ett tomt skäl
+                    skrivs som saknat — aldrig som ett tomt fält som ser ut som
+                    att ingen ändring gjordes. */ ''}
+              <td>${t.change_reason ?? html`<span class="muted">Orsak saknas</span>`}</td></tr>`)}
+            </tbody></table></div>
+          <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Delen är koden, raderna är dess versioner. Den
+            version som gällde i juli går att läsa i oktober — ett tillägg skriver aldrig över den gamla raden.</p>`}
+    </div>
+  </section>`;
+}
+
+/** En grupp scopelinjer: avtalets egna ord, med klausulen de står i. */
+function scopegrupp(rubrik: string, marke: Raw, rader: Scopelinjerad[], tomtext: string): Raw {
+  return html`<h3 style="margin:14px 16px 4px">${marke} ${rubrik}</h3>
+    ${rader.length === 0
+      ? html`<p class="muted" style="margin:2px 16px 10px;font-size:12.5px">${tomtext}</p>`
+      : html`<ul style="margin:4px 16px 12px;padding-left:20px">
+          ${rader.map((r) => html`<li style="margin-bottom:3px">${r.text}
+            ${r.klausul ? html` <span class="code">${r.klausul}</span>` : ''}</li>`)}
+        </ul>`}`;
+}
+
+/** Vad som ingår: innanför, utanför, och fraserna att lyssna efter. */
+function scopepanel(companyId: string, y: Kontraktsyta): Raw {
+  const av = (sort: Scopelinjerad['sort']): Scopelinjerad[] => y.scopelinje.filter((r) => r.sort === sort);
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="scope-${y.contract.id}">
+    <div class="panel__head"><h2 id="scope-${y.contract.id}">Vad som ingår</h2>
+      ${y.scopelinje.length === 0 ? chip('Ingen scopelinje', 'muted', '○') : chip(String(y.scopelinje.length), 'muted')}</div>
+    <div class="panel__body">
+      ${y.scopelinje.length === 0
+        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga scopelinjer ännu. De läses ur
+            leveranskontraktets text och skrivs aldrig här — en gräns som står i koden gäller för fel kund nästa gång.</p>`
+        : html`
+          ${/* Samma ord och samma märken som signalsidan använder för samma sak:
+                Innanför ✓, Utanför →. Två vokabulärer för en och samma linje
+                hade gjort gränsen till en tolkningsfråga. */ ''}
+          ${scopegrupp('Innanför uppdraget', chip('Ingår', 'ok', '✓'), av('innanfor'),
+            'Avtalet räknar inte upp något som uttryckligen ingår.')}
+          ${scopegrupp('Utanför uppdraget', chip('Ingår inte', 'info', '→'), av('utanfor'),
+            'Avtalet räknar inte upp något som uttryckligen ligger utanför.')}
+          ${scopegrupp('Fraser att lyssna efter', chip('Signal', 'muted', '○'), av('fras'),
+            'Kontraktet har inga signalfraser.')}
+          <p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Fraserna tänds och avgörs under
+            <a href="/app/c/${companyId}/projects/${y.contract.project_id}/signaler">Signaler</a> — av en människa,
+            aldrig av en maskin.</p>`}
+    </div>
+  </section>`;
+}
+
+/** Ett avtal: läget, vägen dit, det som gäller, tilläggen och scopelinjen. */
+function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean): Raw {
+  return html`${flera
+      ? html`<h2 style="margin:22px 0 0">${y.contract.name}
+          <span style="font-weight:400"> ${tillstandChip(y.contract.kontrakt_tillstand)}</span></h2>`
+      : ''}
+    ${dokumentpanel(companyId, y)}
+    ${gallandepanel(y)}
+    ${tillaggspanel(y)}
+    ${scopepanel(companyId, y)}`;
+}
+
+function kontraktssida(companyId: string, u: Kontraktsunderlag): Raw {
+  const flera = u.ytor.length > 1;
+  const en = u.ytor[0];
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Kontraktet</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Var ligger avtalet, vad gäller nu, vad har lagts till sedan dess — och vad ingår? Sidan pekar på handlingen;
+        den återger den aldrig.</p></div>
+      <div class="actions">${
+        en === undefined
+          ? chip('Inget avtal', 'muted', '○')
+          : (flera ? chip(`${String(u.ytor.length)} avtal`, 'info', '▤') : tillstandChip(en.contract.kontrakt_tillstand))}
+        ${en !== undefined && !flera && en.contract.signed_date
+          ? html`<span class="muted" style="font-size:12.5px">Signerat ${en.contract.signed_date}</span>`
+          : ''}
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${
+      en === undefined
+        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+            Kontraktsytan läser avtalets eget läge — utan avtal finns varken dokument, tak eller scopelinje att peka på.
+            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtal</a> först.</div>`
+        : u.ytor.map((y) => kontraktsavsnitt(companyId, y, flera))
+    }`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    return { name: company.name, body: kontraktssida(companyId, await kontraktsunderlag(client, companyId, projectId)) };
+  });
+  res.type('html').send(layout({ title: 'Kontraktet', companyId, companyName: name, active: 'projects', body }).value);
 }));
 
 // ---------------------------------------------------------------------------
