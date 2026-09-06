@@ -38,6 +38,7 @@ import {
 import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
+import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
@@ -1852,6 +1853,24 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // sker genom `setProjectStatus` inuti den här enda transaktionen.
     handler: (ctx, i: { project_id: string }) =>
       avslutaUppdrag(ctx.client, ctx.companyId, ctx.userId, i.project_id),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S10.6, våg 5: kontraktsytan läses (FR-38). Var ligger
+  // dokumentet, vad gäller nu, vilka tillägg har gjorts och varför, vad ingår?
+  // Delarna fanns i fyra tabeller; det som saknades var EN definition som
+  // svarar på hela frågan — samma svar till REST, MCP och vyn (FR-23).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'las_kontraktsyta',
+    title: 'Kontraktsytan för ett avtal: dokumentets väg, det som gäller, tilläggen och scopelinjen',
+    // `read` och ingen `kravManniska` (1E Del 4): ytan är avtalets eget läge
+    // tillbakaläst — ingenting flyttas, ingenting beslutas, inget handgrepp.
+    // Svaret bär REFERENSER till handlingen (`source_file_id`, Drive-id) och
+    // aldrig dess innehåll: den som vill ha handlingen tar `get_document`, och
+    // den vägen byggs inte om här (FR-38, NFR-12).
+    sensitivity: 'read',
+    inputSchema: z.object({ contract_id: UuidSchema }).strict(),
+    handler: (ctx, i) => lasKontraktsyta(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

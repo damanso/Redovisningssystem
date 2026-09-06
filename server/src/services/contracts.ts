@@ -50,6 +50,13 @@ export interface AvtalsdelRad {
   cap_amount_ore: number | null;
   cap_confirmed: boolean;
   valid_from: string;
+  /**
+   * Varför just DEN HÄR versionen skrevs (0068). NULL på den första versionen
+   * av en kod — den ändrar ingenting och behöver inget skäl. Läses av
+   * kontraktsytan (S10.6): ett tillägg utan sitt skäl är en ändring utan
+   * avsändare.
+   */
+  change_reason: string | null;
   manually_edited: boolean;
   sort_order: number;
   active: boolean;
@@ -61,7 +68,7 @@ export interface AvtalsdelRad {
 
 const DEL_KOLUMNER = `cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name, cp.description,
        cp.billable, cp.hourly_rate_ore, cp.cap_hours::text AS cap_hours, cp.cap_amount_ore,
-       cp.cap_confirmed, cp.valid_from::text, cp.manually_edited, cp.sort_order, cp.active,
+       cp.cap_confirmed, cp.valid_from::text, cp.change_reason, cp.manually_edited, cp.sort_order, cp.active,
        c.hourly_rate_ore AS contract_hourly_rate_ore, c.project_id`;
 
 async function hamtaDelar(
@@ -100,6 +107,8 @@ export interface Takversion {
   cap_hours: number | null;
   cap_amount_ore: number | null;
   cap_confirmed: boolean;
+  /** Skälet till just den här versionen (0068). NULL på den första. */
+  change_reason: string | null;
   manually_edited: boolean;
   active: boolean;
 }
@@ -231,7 +240,7 @@ function byggForbrukning(
       versions: versioner.map((v) => ({
         id: v.id, valid_from: v.valid_from, cap_hours: taltak(v.cap_hours),
         cap_amount_ore: v.cap_amount_ore, cap_confirmed: v.cap_confirmed,
-        manually_edited: v.manually_edited, active: v.active,
+        change_reason: v.change_reason, manually_edited: v.manually_edited, active: v.active,
       })),
     });
     if (foralderNyckel) barn.set(foralderNyckel, [...(barn.get(foralderNyckel) ?? []), nyckel]);
@@ -712,6 +721,9 @@ export async function upsertContractPart(
   return getContractUsage(client, companyId, input.contract_id);
 }
 
+/** Exakt CHECK-villkorets två värden i 0068. Fryst går aldrig tillbaka till utkast. */
+export type Kontrakttillstand = 'utkast' | 'fryst';
+
 interface ContractRad {
   id: string;
   project_id: string;
@@ -724,10 +736,16 @@ interface ContractRad {
   hourly_rate_ore: number | null;
   source_file_id: string | null;
   notes: string | null;
+  /**
+   * Utkast = arbetsmaterial, fryst = baseline (0068). Läses av kontraktsytan
+   * (S10.6): ett utkast får aldrig renderas som något som gäller.
+   */
+  kontrakt_tillstand: Kontrakttillstand;
 }
 
 const AVTAL_KOLUMNER = `c.id, c.project_id, p.name AS project_name, c.customer_id, cu.name AS customer_name,
-       c.name, c.signed_date::text, c.payment_terms_days, c.hourly_rate_ore, c.source_file_id, c.notes`;
+       c.name, c.signed_date::text, c.payment_terms_days, c.hourly_rate_ore, c.source_file_id, c.notes,
+       c.kontrakt_tillstand`;
 
 export async function listContracts(
   client: PoolClient, companyId: string, filter: { project_id?: string; contract_id?: string } = {},
