@@ -2577,10 +2577,43 @@ async function signalunderlag(
   return { projekt: p, avtal, fraser, signaler, underlag, epost: profil.email };
 }
 
+/**
+ * Tilläggsfälten (S5.2). De hör till UTANFÖR-formuläret, men står FÖRE knapparna
+ * i dokumentet: man överväger, fyller eventuellt i, och svarar sedan. Låg de
+ * efter knapparna skulle den som tabbar sig fram passera svaret innan hon vet
+ * att fälten finns. Kopplingen görs med `form=`-attributet — HTML:s eget sätt,
+ * alltså noll skript, precis som `popover` i radmenyn.
+ *
+ * Tomma fält = inget tillägg. Alla utanför-avgöranden blir inte tilläggsavtal,
+ * och ett förifyllt tak hade varit ett förslag ingen läst i avtalet.
+ */
+function tillaggsfalt(companyId: string, formId: string): Raw {
+  const f = (namn: string, etikett: string, bredd: string, extra: Raw): Raw =>
+    html`<label class="field" style="margin:0;flex:${bredd}"><span>${etikett}</span>
+      <input form="${formId}" name="${namn}" ${extra}></label>`;
+  return html`<details style="margin-top:8px">
+    <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0">Blev det ett tilläggsavtal?</summary>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+      ${f('tillagg_code', 'Kod', '0 1 108px', html`type="text" maxlength="40" placeholder="2B"`)}
+      ${f('tillagg_name', 'Namn', '2 1 230px', html`type="text" maxlength="200" placeholder="Fas 2B: extra workshop"`)}
+      ${f('tillagg_valid_from', 'Gäller från', '0 1 158px', html`type="date"`)}
+      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="2000" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
+      ${/* Taket är valfritt HÄR med flit: ett tak som ingen läst i avtals-
+            handlingen varnar aldrig och spärrar aldrig — det redovisas som
+            'vet ej'. Ett gissat tal hade sett ut som ett åtagande. */ ''}
+      ${f('tillagg_cap_hours', 'Tak, timmar', '0 1 118px', html`type="text" inputmode="decimal" maxlength="10" placeholder="32"`)}
+    </div>
+    <p class="muted" style="margin:7px 0 0;font-size:12.5px">Fälten hör till <strong>Utanför</strong>. Fyller du i dem
+      hamnar tillägget i <a href="/app/c/${companyId}/approvals">Att göra</a> — den nya avtalsversionen skrivs först när
+      du godkänt den där, och den gamla ligger kvar. Lämnar du dem tomma avgörs signalen bara.</p>
+  </details>`;
+}
+
 /** En öppen signal: vad som sades, vad det vilar på, och de två svaren. */
 function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { avtalsnamn: string }): Raw {
   const flera = u.avtal.length > 1;
   const ref = s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined;
+  const tillaggForm = `tillagg-${s.id}`;
   return html`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--line-2)">
     <div style="flex:1 1 320px;min-width:0">
       <div class="actions" style="gap:7px">${signalChip(s)}
@@ -2592,14 +2625,20 @@ function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { a
             spårbar för den som läser sidan — och spårbarheten är hela FR-26. */ ''}
       <p class="muted" style="margin:4px 0 0;font-size:12.5px">Tänd av ${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}
         ${ref ? html` · Underlag: <span class="code">${ref}</span>` : ' · utan underlag'}</p>
+      ${tillaggsfalt(companyId, tillaggForm)}
     </div>
-    ${/* Två likvärdiga knappar, ingen förvald: svaret ska komma ur omdömet. */ ''}
+    ${/* Två likvärdiga knappar, ingen förvald: svaret ska komma ur omdömet.
+          Utanför bär tilläggsfältens formulär — men förblir ETT svar, inte två
+          knappar med och utan tillägg: frågan är vad frasen betydde, inte vad
+          man vill skriva. */ ''}
     <div class="actions">
       ${(['innanfor', 'utanfor'] as const).map((varde) => html`
-        <form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/signaler" style="margin:0">
+        <form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/signaler" style="margin:0"
+          ${varde === 'utanfor' ? html`id="${tillaggForm}"` : ''}>
           <input type="hidden" name="handling" value="avgor">
           <input type="hidden" name="signal_id" value="${s.id}">
           <input type="hidden" name="avgjord" value="${varde}">
+          ${varde === 'utanfor' ? html`<input type="hidden" name="tillagg_contract_id" value="${s.contract_id}">` : ''}
           <button class="btn btn--ghost btn--sm" type="submit"
             aria-label="Avgör ”${s.fras}” som ${AVGORANDE[varde]!.etikett.toLowerCase()} uppdraget">${AVGORANDE[varde]!.etikett}</button>
         </form>`)}
@@ -2731,9 +2770,33 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
   // åtgärderna bär `kravManniska`, och här är actor 'human' (lärdom 5).
   // Tillbaka till sidan utan kvittotext: den nya raden ÄR kvittot.
   if (falt(kropp.handling) === 'avgor') {
+    // S5.2: tilläggsfälten hör till Utanför-knappens formulär. Är ALLA tomma
+    // avgörs signalen bara — det är normalfallet, och ett halvfyllt tillägg är
+    // ett fel som ska synas (zod svarar 400 och notisen står kvar på sidan)
+    // hellre än en tyst bortkastad ifyllnad.
+    const tak = falt(kropp.tillagg_cap_hours);
+    const namn = falt(kropp.tillagg_name);
+    const tillaggsfalten = [falt(kropp.tillagg_code), namn, falt(kropp.tillagg_valid_from),
+      falt(kropp.tillagg_change_reason), tak];
+    const timmar = timmarUrText(tak);
+    const tillagg: Record<string, unknown> = tillaggsfalten.some((v) => v !== '')
+      ? {
+          tillagg: {
+            // Avtalet kommer ur signalens egen rad, aldrig ur ett fält på
+            // sidan: tillägget hör till DET avtal frasen stod i.
+            contract_id: falt(kropp.tillagg_contract_id),
+            code: falt(kropp.tillagg_code),
+            valid_from: falt(kropp.tillagg_valid_from),
+            change_reason: falt(kropp.tillagg_change_reason),
+            ...(namn ? { name: namn } : {}),
+            ...(timmar === undefined ? {} : { cap_hours: timmar }),
+          },
+        }
+      : {};
     await runViewAction(req, res, companyId, 'avgor_scopesignal', {
       signal_id: falt(kropp.signal_id),
       avgjord: falt(kropp.avgjord),
+      ...tillagg,
     }, tillbaka);
     return;
   }

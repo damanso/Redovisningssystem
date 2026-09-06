@@ -762,6 +762,15 @@ triggrar, ingen egen SQL.
   Historiken består: den gamla raden ligger kvar, `get_contract_usage` visar
   den nya versionen från dess `valid_from` och summerar förbrukningen över
   alla versioner av koden.
+- **`signal_id` (valfritt, S5.2, våg 4)** — scopesignalen tillägget kom ur.
+  Bär posten den, sätts signalens `ledde_till_part_id` till den version
+  (`contract_id`, `code`, `valid_from`) pekar ut — i SAMMA transaktion som
+  godkännandet skriver raden, alltså aldrig före. Två kontroller före den
+  skrivningen: signalen ska finnas i bolaget (annars **404 `not_found`**, som
+  för ett grannbolags signal) och höra till samma avtal som tillägget (annars
+  **400 `signal_annat_avtal`**). Faller någon av dem rullas hela godkännandet
+  tillbaka — avtalsdelen skrivs då inte heller. Utelämnat fält = tillägget kom
+  inte ur en fras någon sa, och ingenting länkas.
 
 **Triggerfelen har ingen egen felkod.** Faller skrivningen på
 `kraver_orsak_vid_ny_version()` når P0001 klienten som **409 `rule_violation`**
@@ -975,6 +984,22 @@ uppdaterade rader hade sett ut som ett lyckat avgörande. Ingen spärr mot att
 avgöra om: det är en rättelse, och signalen är ett ärende med ett svar, inte en
 oföränderlig bedömning.
 
+- **`tillagg` (valfritt objekt, S5.2, våg 4)** — tillägget som följde av ett
+  "utanför". **Samma fält och samma krav som `andra_baseline`** (obligatoriska
+  `change_reason` ≥ 5 tecken och `valid_from`) — det ÄR den åtgärdens indata,
+  och köposten valideras om mot just det schemat vid godkännandet. Tillsammans
+  med `innanfor` ger det **400 `validation_error`**: låg frasen innanför
+  uppdraget finns det inget att lägga till avtalet. Valfritt med flit — alla
+  utanför-signaler blir inte tilläggsavtal, och ett förifyllt tak vore ett
+  förslag ingen läst i avtalshandlingen.
+- **Fältet skriver ingen avtalsdel.** Det skapar en `andra_baseline`-post i
+  **Att göra** (med `signal_id` ifyllt) plus auditraden
+  `action.approval_requested`, i samma transaktion som avgörandet — aldrig via
+  ett nytt `executeAction`-anrop. Svaret bär `tillagg_godkannande` med köpostens
+  id och status. Först vid godkännandet föds versionen och signalens
+  `ledde_till_part_id`; avslås posten står avgörandet kvar men avtalet är orört.
+  **Inget femte handgrepp:** människans godkännande i kön är det andra greppet.
+
 **Vyn:** `/app/c/:id/projects/:projectId/signaler`, undersida till uppdraget
 (knappen **Signaler** bredvid *Bedömning*). Öppna signaler ligger överst — en
 obesvarad scopefråga som läses sist blir i praktiken ett ja — och *Innanför* och
@@ -983,7 +1008,19 @@ med var sin **Tänd**-knapp och underlaget ett klick bort per fras (`<details>`)
 så att ett mejl aldrig kan fästas på fel fras. Nyckelrymden
 (`rfc822#message-id` / `icalendar#uid`) fyller vyn själv; David anger sorten,
 id:t och vilket konto det lästes ur. Inget `?ok=`: kvittot är den nya raden.
-Tilläggsskapandet (`ledde_till_part_id` via `andra_baseline`) hör till S5.2.
+
+**Tillägget på ytan (S5.2, våg 4):** under varje öppen signal ligger
+*Blev det ett tilläggsavtal?* (`<details>`) med fem fält — kod, namn, gäller
+från, orsak och ett **valfritt** tak i timmar. Fälten hör till **Utanför**-
+knappens formulär (kopplade med HTML:s eget `form`-attribut, alltså utan en rad
+skript) och står FÖRE knapparna i dokumentet, så att den som tabbar sig fram
+inte passerar svaret innan hon vet att fälten finns. Lämnas de tomma avgörs
+signalen bara — det är normalfallet. Fylls de delvis i svarar zod 400 och
+notisen står kvar på sidan; en tyst bortkastad ifyllnad hade varit värre.
+*Innanför* bär inte fälten alls, så en ifyllnad kan aldrig råka följa med fel
+svar. Texten under fälten säger var tillägget hamnar och länkar dit
+(**Att göra**): den nya avtalsversionen skrivs först när David godkänt den där,
+och den gamla ligger kvar.
 
 ### Drive-kön för registrets frysta kopia (S7.2, våg 3)
 

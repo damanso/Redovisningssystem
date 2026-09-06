@@ -21,8 +21,18 @@
 //   * **Tystnad är inte ett ja.** `avgjord` föds NULL och listan lägger de
 //     obesvarade först. En signal som ingen avgjort ska synas som obesvarad, och
 //     inte tyst räknas som "innanför" bara för att ingen sa emot.
+//
+// S5.2, våg 4 lade en femte: **ett "utanför" kan föda sitt tillägg i samma
+// anrop** — som en KÖPOST för `andra_baseline`, aldrig som en skrivning. Ingen
+// ny åtgärd och inget nytt handgrepp: människans godkännande i Att göra är det
+// andra greppet, och först där föds avtalsdelen och signalens
+// `ledde_till_part_id`.
 import type { PoolClient } from 'pg';
-import { NotFoundError } from '../lib/errors.js';
+import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import type { Actor } from '../http/middleware/authenticate.js';
+import { writeAudit } from './auditService.js';
+import { createApproval } from './approvals.js';
+import type { UpsertContractPartInput } from './contracts.js';
 import { skapaReferens, type Referenssort } from './uppdragReferens.js';
 
 /** Exakt CHECK-villkorets två värden i 0068 — tystnad (NULL) är det tredje läget. */
@@ -53,9 +63,24 @@ export interface TandSignalInput {
   underlag?: Signalunderlag;
 }
 
+/**
+ * Tillägget som ett "utanför" kan föda — EXAKT `andra_baseline`:s indata
+ * (S1.3), inte en egen fältuppsättning. Köposten valideras om mot just det
+ * schemat vid godkännandet (`approveAction`), så två listor hade bara varit två
+ * ställen där samma sak kan sluta stämma.
+ */
+export type Tillaggsindata = UpsertContractPartInput & { valid_from: string; change_reason: string };
+
 export interface AvgorSignalInput {
   signal_id: string;
   avgjord: Signalavgorande;
+  /**
+   * Valfritt, och bara tillsammans med `utanfor` (registret fäller resten).
+   * Alla utanför-signaler blir inte tillägg: ett förifyllt eller gissat tak
+   * hade varit ett fabricerat förslag, och ett obligatoriskt tillägg hade
+   * tvingat fram ett sådant vid varje avgörande.
+   */
+  tillagg?: Tillaggsindata;
 }
 
 export interface Signalrad {
@@ -69,6 +94,15 @@ export interface Signalrad {
   underlag_ref_id: string | null;
   eskalerad_nar: string | null;
   created_at: string;
+}
+
+export interface AvgorSignalSvar extends Signalrad {
+  /**
+   * Köposten, när avgörandet bar ett tillägg — utelämnad annars. Svaret säger
+   * alltså att något VÄNTAR, inte att något skrivits: ett avgörande som tyst
+   * lämnade en post i kön hade sett ut som ett avgörande utan följd.
+   */
+  tillagg_godkannande?: { id: string; action: string; status: string };
 }
 
 /** En signalfras ur kontraktet — det som fyller vyns tänd-knappar. */
@@ -169,7 +203,8 @@ export async function tandSignal(
 }
 
 /**
- * Avgör en tänd signal: innanför eller utanför uppdraget.
+ * Avgör en tänd signal: innanför eller utanför uppdraget — och köar, när
+ * avgörandet var "utanför", tillägget som följde av det (S5.2, FR-2/FR-4).
  *
  * Ingen spärr mot att avgöra om en redan avgjord signal — det är en rättelse,
  * och rättelser hör hemma i ett register som bevakas av en människa. Signalen är
@@ -179,10 +214,18 @@ export async function tandSignal(
  * En okänd signal — inklusive grannbolagets, som RLS ändå döljer — svarar
  * "finns inte". Ett tyst noll uppdaterade rader hade sett ut som ett lyckat
  * avgörande.
+ *
+ * **Köningen sker HÄR, i avgörandets egen transaktion, aldrig via ett nytt
+ * `executeAction`-anrop** (1E Del 4:s tabellrad: `avgor_scopesignal` "skapar
+ * tillägg via `andra_baseline` när 'utanför'"). Två anrop hade betytt två
+ * transaktioner: ett avgörande utan sitt tillägg om det andra föll. Och det är
+ * ingen genväg förbi kön — posten är en vanlig `andra_baseline`-post, som
+ * exekveras först när en människa godkänt den i Att göra. Människans
+ * godkännande i kön ÄR det andra handgreppet; något eget efteråt finns inte.
  */
 export async function avgorSignal(
-  client: PoolClient, companyId: string, input: AvgorSignalInput,
-): Promise<Signalrad> {
+  client: PoolClient, companyId: string, userId: string, actor: Actor, input: AvgorSignalInput,
+): Promise<AvgorSignalSvar> {
   const res = await client.query<Signalrad>(
     `UPDATE uppdrag_scopesignal SET avgjord = $3
       WHERE id = $1 AND company_id = $2
@@ -191,7 +234,86 @@ export async function avgorSignal(
   );
   const rad = res.rows[0];
   if (!rad) throw new NotFoundError('uppdrag_scopesignal');
-  return rad;
+  if (!input.tillagg) return rad;
+
+  // `signal_id` följer med in i köposten — det är den som gör spåret helt när
+  // godkännandet väl skriver avtalsdelen (`lankaTillaggetTillSignal`). Utan det
+  // hade tillägget varit en version utan sagt ursprung.
+  const koad = await createApproval(
+    client, companyId, userId, actor, 'andra_baseline',
+    { ...input.tillagg, signal_id: input.signal_id },
+  );
+  // Samma auditrad som `executeAction` skriver för varje köad känslig åtgärd —
+  // spåret av att någon BAD om ändringen, inte av ändringen. Ingen egen
+  // loggmekanism: köposten ska se likadan ut oavsett vilken ingång som skapade
+  // den.
+  await writeAudit(client, {
+    companyId,
+    userId,
+    action: 'action.approval_requested',
+    entityType: 'approval',
+    entityId: koad.id,
+    details: { action: 'andra_baseline', actor, signal_id: input.signal_id },
+  });
+  return { ...rad, tillagg_godkannande: { id: koad.id, action: koad.action, status: koad.status } };
+}
+
+/** Vad `andra_baseline`-handlern behöver för att kunna länka tillbaka. */
+export interface TillaggslankInput {
+  /** Utelämnad = tillägget kom inte ur en signal. Då görs ingenting alls. */
+  signal_id?: string;
+  contract_id: string;
+  code: string;
+  valid_from: string;
+}
+
+/**
+ * Fyller signalens `ledde_till_part_id` med den avtalsdelsversion tillägget just
+ * skrev. Anropas av `andra_baseline`-handlern EFTER `upsertContractPart`, alltså
+ * inuti `approveAction`:s transaktion — kömekaniken kör aldrig handlern före
+ * godkännandet, och därför kan länken inte finnas före den. Det är hela storyns
+ * "inget skrivs förrän godkännandet": den bärs av befintlig sensitive-mekanik,
+ * inte av en spärr här.
+ *
+ * Versionen hittas på (contract_id, code, valid_from) — samma nyckel som
+ * `upsertContractPart` själv skriver på. Ett radsurrogat ur tjänsten hade krävt
+ * att skrivvägen ändrades, och den är avgränsad bort med flit.
+ *
+ * Två kontroller FÖRE skrivningen: signalen ska finnas i bolaget (annars
+ * `NotFoundError`, jfr `kravAvtal` — ett grannbolags signal ska svara "finns
+ * inte", inte "något gick fel"), och den ska höra till SAMMA avtal som
+ * tillägget. En signal på avtal A får aldrig peka på en avtalsdel i avtal B:
+ * spåret från sagd fras till avtalad del hade då varit fel spår, vilket är värre
+ * än inget. Faller någon av dem rullas hela godkännandet tillbaka — avtalsdelen
+ * skrivs alltså inte heller.
+ */
+export async function lankaTillaggetTillSignal(
+  client: PoolClient, companyId: string, input: TillaggslankInput,
+): Promise<void> {
+  if (!input.signal_id) return;
+  const signal = await client.query<{ contract_id: string }>(
+    'SELECT contract_id FROM uppdrag_scopesignal WHERE id = $1 AND company_id = $2',
+    [input.signal_id, companyId],
+  );
+  const signalrad = signal.rows[0];
+  if (!signalrad) throw new NotFoundError('uppdrag_scopesignal');
+  if (signalrad.contract_id !== input.contract_id) {
+    throw new BadRequestError(
+      'signal_annat_avtal',
+      'signalen hör till ett annat avtal än tillägget',
+    );
+  }
+  const del = await client.query<{ id: string }>(
+    `SELECT id FROM contract_parts
+      WHERE company_id = $1 AND contract_id = $2 AND code = $3 AND valid_from = $4`,
+    [companyId, input.contract_id, input.code, input.valid_from],
+  );
+  const delrad = del.rows[0];
+  if (!delrad) throw new NotFoundError('contract_part');
+  await client.query(
+    'UPDATE uppdrag_scopesignal SET ledde_till_part_id = $3 WHERE id = $1 AND company_id = $2',
+    [input.signal_id, companyId, delrad.id],
+  );
 }
 
 /**

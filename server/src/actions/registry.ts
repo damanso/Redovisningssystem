@@ -39,7 +39,7 @@ import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImpo
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import {
-  avgorSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
+  avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
 import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
@@ -1504,9 +1504,25 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // audit, samma triggrar.
     sensitivity: 'sensitive',
     inputSchema: z
-      .object({ ...AvtalsdelFalt, change_reason: OrsakSchema, valid_from: IsoDateSchema })
+      .object({
+        ...AvtalsdelFalt,
+        change_reason: OrsakSchema,
+        valid_from: IsoDateSchema,
+        // S5.2: signalen tillägget kom ur, när det kom ur en. Valfritt — de
+        // flesta tilläggsavtal föds i en avtalstext, inte i en fras någon sa.
+        // Bär posten den, fylls signalens `ledde_till_part_id` vid
+        // godkännandet: spåret från sagd fras till avtalad del blir helt.
+        signal_id: UuidSchema.optional(),
+      })
       .strict(),
-    handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+    // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
+    // BÅDA i `approveAction`:s enda transaktion. Länkningen ligger i tjänsten
+    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
+    handler: async (ctx, i) => {
+      const utfall = await upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never);
+      await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
+      return utfall;
+    },
   }),
   def({
     name: 'list_contracts',
@@ -1680,9 +1696,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // `validation_error`), och av villkoret om det ändå nådde fram. NULL —
         // tystnaden — går inte att skicka in: att avgöra är att svara.
         avgjord: z.enum(SIGNALAVGORANDEN),
+        // S5.2, våg 4: tillägget som följde av ett "utanför" (FR-2/FR-4).
+        // SAMMA fält och samma krav som `andra_baseline` — det ÄR den åtgärdens
+        // indata, och köposten valideras om mot just det schemat vid
+        // godkännandet. Valfritt: alla utanför-signaler blir inte tillägg, och
+        // ett gissat tak vore ett fabricerat förslag.
+        tillagg: z
+          .object({ ...AvtalsdelFalt, change_reason: OrsakSchema, valid_from: IsoDateSchema })
+          .strict()
+          .optional(),
       })
-      .strict(),
-    handler: (ctx, i) => avgorSignal(ctx.client, ctx.companyId, i as never),
+      .strict()
+      // Ett tillägg till ett "innanför" är en självmotsägelse: låg det innanför
+      // uppdraget finns det inget att lägga till avtalet. Fälls här, före varje
+      // skrivning, i stället för att köa en post ingen kan förklara.
+      .superRefine((v, ctx) => {
+        if (v.tillagg && v.avgjord !== 'utanfor') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "ett tillägg kan bara följa av avgörandet 'utanfor'",
+            path: ['tillagg'],
+          });
+        }
+      }),
+    // Köningen sker inuti handlern, i avgörandets egen transaktion — aldrig via
+    // ett nytt `executeAction`-anrop (1E Del 4). `actor` följer med in i
+    // köposten så att kön visar vem som bad om ändringen, precis som annars.
+    handler: (ctx, i) => avgorSignal(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S7.2: Drive-kön för registrets frysta kopia. Registret ändras

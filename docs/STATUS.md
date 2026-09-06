@@ -145,6 +145,95 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S5.2, våg 4 — signalen som blir tillägg):** S5.1 gav
+  scopesignalen sin skrivväg och S1.3 gav `andra_baseline` sin, men **kedjan
+  mellan dem fanns inte**. `uppdrag_scopesignal.ledde_till_part_id` hade legat i
+  0068 sedan dag ett utan en enda kodväg som skrev den: ett "utanför" var ett
+  avgörande som tog slut i sin egen rad. Följden var att FR-2/FR-4 saknade det
+  led som gör dem läsbara — man kunde se att en fras avgjorts utanför uppdraget,
+  och man kunde se att en ny avtalsversion fanns, men aldrig att det var SAMMA
+  händelse.
+
+  Byggt: **två valfria fält i `actions/registry.ts`** (`tillagg` på
+  `avgor_scopesignal`, `signal_id` på `andra_baseline`), **två funktioner i
+  befintliga `services/uppdragSignal.ts`** (köningen inuti `avgorSignal`,
+  `lankaTillaggetTillSignal`) och **ett tilläggsformulär på signalsidan**. Ingen
+  migration, ingen ny åtgärd, ingen ny CSS-klass, ingen ny felkodsfamilj utöver
+  `signal_annat_avtal`, inga nya beroenden; `execute.ts`, `approvals.ts`,
+  `upsertContractPart`:s skrivväg, känsligheten på varenda åtgärd och alla andra
+  vyer är orörda. **Handgreppen är fyra och förblir fyra.**
+
+  1. **Tillägget köas INUTI avgörandet — Davids korrigering, inte CTO:ns
+     förslag.** 1E Del 4:s tabellrad säger att `avgor_scopesignal` "skapar
+     tillägg via `andra_baseline` när 'utanför'", och människans godkännande i
+     kön ÄR det andra handgreppet. En egen skapa-tillägg-åtgärd hade varit ett
+     femte grepp framför ett grepp som redan finns. Köposten skapas därför med
+     `createApproval` direkt i handlerns transaktion — aldrig via ett nytt
+     `executeAction`-anrop (två anrop = två transaktioner = ett avgörande utan
+     sitt tillägg den dag det andra faller).
+  2. **`tillagg` är `andra_baseline`:s indata, inte en egen fältuppsättning.**
+     Samma `AvtalsdelFalt` + samma krav (orsak ≥ 5 tecken, `valid_from`), och
+     köposten valideras om mot just det schemat vid godkännandet. Två listor
+     hade bara varit två ställen där samma sak kan sluta stämma.
+  3. **Valfritt, aldrig obligatoriskt, och aldrig med gissat tak.** Alla
+     utanför-signaler blir inte tilläggsavtal. Ett förifyllt tak vore ett
+     fabricerat förslag — och ett tak som ingen läst i avtalshandlingen varnar
+     ändå aldrig (`cap_confirmed` false = 'vet ej').
+  4. **`innanfor` + `tillagg` är 400, inte en tyst bortsortering.** Låg frasen
+     innanför uppdraget finns det inget att lägga till avtalet; en `superRefine`
+     på det strikta objektet fäller kombinationen före varje skrivning. Samma
+     grepp som `confirm_crm_value` redan använder.
+  5. **Länken skrivs uteslutande i `andra_baseline`-handlern**, som per
+     kömekaniken aldrig kör före `approveAction`. Det är hela acceptansen
+     "inget skrivs förrän godkännandet": den bärs av BEFINTLIG sensitive-mekanik,
+     och ingen ny spärrkod finns att kringgå. Två kontroller före UPDATE:n —
+     signalen ska finnas i bolaget (404, jfr `kravAvtal`) och höra till samma
+     avtal som tillägget (400 `signal_annat_avtal`) — och faller någon rullas
+     HELA godkännandet tillbaka, alltså skrivs inte avtalsdelen heller. En
+     signal på avtal A som pekar på en del i avtal B är ett fel spår, vilket är
+     värre än inget spår.
+  6. **Versionen hittas på (contract_id, code, valid_from)** — samma nyckel som
+     `upsertContractPart` själv skriver på. Ett radsurrogat ur tjänsten hade
+     krävt att skrivvägen ändrades, och den är avgränsad bort med flit.
+  7. **Ytan: fälten hör till Utanför, och står före knapparna.** Kopplingen görs
+     med HTML:s eget `form`-attribut (samma hållning som `popover` i radmenyn:
+     noll skript), så de två svaren förblir två likvärdiga knappar utan förval
+     och utan en tredje "Utanför + tillägg". Fälten ligger FÖRE knapparna i
+     dokumentet: läggs de efter passerar den som tabbar sig fram svaret innan
+     hon vet att de finns. *Innanför*-formuläret bär dem inte alls, så en
+     ifyllnad kan aldrig råka följa med fel svar. Tomma fält = bara ett
+     avgörande; halvfyllda = 400 och notisen står kvar på sidan, aldrig en tyst
+     bortkastad ifyllnad. Texten under fälten säger var tillägget hamnar och
+     länkar till **Att göra** — huset gör likadant vid varje annan köad åtgärd,
+     och S5.1:s regel "inget `?ok=`, kvittot är den nya raden" står kvar.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-tillagg.test.ts`: registret (ingen
+  `*tillagg*`-åtgärd finns, känsligheterna oförändrade); **(a)** avgörandet med
+  tillägg ger EN ny köpost med `signal_id`, auditraden
+  `action.approval_requested` på köpostens id, och **noll** nya
+  `contract_parts`-rader med `ledde_till_part_id` NULL — plus att ett anrop utan
+  `tillagg` inte köar något alls och ett halvfyllt fälls av zod utan att ens
+  avgöra signalen; **(b)** godkännandet skriver version 2, sätter länken till
+  den NYA raden och lämnar januariversionen läsbar med sitt tak (samt en ny kod
+  som blir en egen del, och `andra_baseline` utan `signal_id` som beter sig
+  exakt som före bygget); **(c)** avslaget lämnar varken rad eller länk, men
+  avgörandet står kvar — det var tillägget som avslogs; **(d)** signal mot ANNAT
+  avtal ger 400 `signal_annat_avtal` med avtalsdelen tillbakarullad, okänd
+  signal ger 404; **(e)** grannbolagets försök att låna vår signal ger 404 och
+  lämnar deras egen avtalsdel oskriven; **(f)** `innanfor` + `tillagg` ger 400
+  utan köpost och utan avgörande. Plus vyn: `form`-attributet och de fem fälten
+  på utanför-formuläret utan en rad `<script>`, POST som köar genom
+  action-lagret (timmarna parsade med husets komma-form, 8,5 → 8.5) utan att
+  skriva en avtalsdel, tomma fält som bara avgör, Innanför utan fälten, och ett
+  halvfyllt tillägg som blir en `?fel=`-notis i stället för en felsida.
+
+  **Kvarstår för David:** inget att migrera. Tillägget fylls i under **Signaler**
+  på uppdragssidan och godkänns i **Att göra**. Visning av `ledde_till_part_id`
+  på signalsidan, spärr mot omavgörande och ett förifyllt tak är medvetet
+  uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S3.2, våg 4 — statusbytet med transmittal):**
   Svepet (S7.3) hade börjat lägga `statusforslag:<kod>` i cachen, och 0068 hade
   gett `uppdrag_leverabel` sin status-CHECK med `avvisad` och
