@@ -283,8 +283,14 @@ function idagsdatum(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Förbrukningen för ett helt avtal, per del. */
-async function forbrukningForAvtal(
+/**
+ * Förbrukningen för ett helt avtal, per del.
+ *
+ * Exporterad för svepets prognos (S7.4): den registrerade tiden och det
+ * bekräftade taket ska komma ur SAMMA takberäkning som varningen och spärren
+ * använder. En andra beräkning hade blivit ett andra svar på samma fråga.
+ */
+export async function forbrukningForAvtal(
   client: PoolClient, companyId: string, filter: { contractId?: string; projectId?: string },
 ): Promise<Delforbrukning[]> {
   const rader = await hamtaDelar(client, companyId, filter);
