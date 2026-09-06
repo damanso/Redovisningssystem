@@ -145,6 +145,87 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S5.1, våg 3 — signalerna: kontraktets fraser får
+  en människa som lyssnar):** 0068 gav `uppdrag_scopesignal` sin tabell, och
+  S1.2:s import fyllde `uppdrag_scopelinje` med NVR-001:s sju signalfraser. Men
+  **ingen kod kunde tända en signal och ingen kunde avgöra en** — fraserna låg i
+  en tabell som ingen ingång läste, och scopelinjen mellan innanför och utanför
+  uppdraget bevakades därmed av ingenting. Dessutom saknade `eskalera: true`
+  (giltigt enligt 1E Del 7) helt lagring: eskaleringen hade blivit en knapp utan
+  spår.
+
+  Byggt: **additiv migration `0070_eskaleringsstampel.sql`** (EN kolumn,
+  `eskalerad_nar timestamptz`, ingen backfill), tjänsten
+  `server/src/services/uppdragSignal.ts`, **två def-poster** i
+  `actions/registry.ts` (`tand_scopesignal`, `avgor_scopesignal` — båda `write`
+  + `kravManniska: true`), vysidan
+  `/app/c/:id/projects/:projectId/signaler` med knappen **Signaler** i
+  uppdragets knappband, och ett nytt prov. Ingen ny felkod, inga nya beroenden,
+  ingen ny CSS-klass, ingen scheduler; `uppdragReferens.ts`,
+  `uppdragBedomning.ts`, `execute.ts`, `errorHandler.ts`, `html.ts` och
+  befintliga migrationer är orörda.
+
+  1. **Storyns Then är en NEGATIV mening**, och den kan bara bevisas negativt:
+     ingen kodväg tänder eller avgör utan människa. Båda åtgärderna bär
+     `kravManniska` (S2.1) och avvisar agenten med 403 `human_required` FÖRE
+     varje skrivning — ingen köpost, ingen auditrad, ingen rad, och heller
+     ingen referensrad (underlaget löses inuti tjänsten, som aldrig nås).
+     `write` + `kravManniska` och inte `sensitive`, av exakt samma skäl som
+     `satt_bedomning`: att köa människans eget beslut för hennes eget
+     godkännande vore ett handgrepp utan innehåll.
+  2. **`tand_av` härleds ur den inloggade användaren, aldrig ur indata.** Samma
+     regel som `satt_av_manniska`. Kolumnen är `text` och inte en främmande
+     nyckel till `users`: spåret ska gå att läsa i en rapport hos kunden långt
+     efter att ett konto avslutats.
+  3. **Underlaget är en referens, och samma mejl ger EN rad.** Ett Message-ID
+     eller event-uid går genom `skapaReferens` (S7.1) — där url- och
+     sökvägsspärren sitter, och den görs inte om här. Men ett längre mejl tänder
+     ofta två fraser, så tjänsten LÄSER `(sort, extern_id)` innan den skriver
+     (S1.2-mönstret); utan det hade den andra signalen fallit på
+     `uppdrag_referens_uk` mitt i ett flöde där ingenting är fel. Id:t trimmas
+     före uppslaget av samma skäl som `skapaReferens` trimmar det.
+  4. **Eskaleringen är en tidsstämpel utan motiv.** FR-7 säger *utan*
+     motivering, så det finns varken fält eller kolumn för ett — en tom
+     motivkolumn hade sett ut som ett underlag ingen fyllde i. Tidsstämpel och
+     inte boolean: NULL/NOT NULL bär samma ja/nej, men tidpunkten svarar också
+     på "hur länge har det legat hos Eva?".
+  5. **Ytan: öppna signaler överst, och två likvärdiga knappar.** En obesvarad
+     scopefråga som läses sist blir i praktiken ett ja, så de öppna ligger före
+     fraslistan. *Innanför* och *Utanför* är båda `btn--ghost`, ingen förvald —
+     görs den ena tyngre svarar man med handen i stället för med omdömet.
+     Underlaget ligger ett klick bort **per fras** (`<details>`) och inte i en
+     gemensam ruta ovanför sju knappar: en delad ruta hade tyst kunnat fästa
+     fel mejl på fel fras. Ingen `.subnav` (klassen finns inte i huset; S10.7
+     äger menyn) — sidan följer S4.1:s knapp-på-uppdragssidan-mönster.
+     Nyckelrymden (`rfc822#message-id`/`icalendar#uid`) fyller vyn själv; ett
+     tredje textfält hade bara varit ett sätt att stava fel på en konstant.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-signaler.test.ts` (mall `manniskosparr.test.ts`
+  / `uppdragsytan-bedomning.test.ts`): 0070:s kolumn (timestamptz, nullbar, och
+  0068:s elva kolumner kvar); **(a)** agenten kan varken tända eller avgöra —
+  403 med oförändrad auditlogg, tom kö, noll signalrader och noll referensrader,
+  medan samma anrop som människa ger 200, `tand_av` exakt profilnamnet och
+  okända fält (`tand_av`, `avgjord`, `eskalerad_nar`) 400 av `.strict()`;
+  **(b)** underlaget — Message-ID ger referensrad med id + nyckel + källa och
+  signalens `underlag_ref_id`, andra frasen på samma mejl återanvänder raden,
+  id:t trimmas, fyra url-/sökvägsformer fälls med 400 **och lämnar ingen tänd
+  signal efter sig**, och en signal utan underlag är fortfarande en signal;
+  avgörandets två värden plus ett tredje fällt av zod OCH av CHECK-villkoret,
+  och en okänd signal som 404; eskaleringen (stämpel med `eskalera: true`, NULL
+  utan, och inget motivfält att skicka in); **(c)** vyn — knappen på
+  uppdragssidan, sju fraser förifyllda ur `uppdrag_scopelinje`, ingen `.subnav`,
+  tomma lägen för avtal-utan-fraser och uppdrag-utan-avtal, POST som tänder med
+  underlag + eskalering och auditloggas, POST utan underlag, och POST som avgör
+  varvid signalen flyttar från Öppna till Avgjorda; samt tenantgränsen (404 på
+  båda åtgärderna, RLS på tabellen, 404 på vysidan).
+
+  **Kvarstår för David:** kör `npm run migrate` (0070). Därefter tänds och
+  avgörs signaler i vyn under **Signaler** på uppdragssidan. Tilläggsskapandet
+  (`ledde_till_part_id` via `andra_baseline`) är S5.2, våg 4;
+  rapportrenderingen och delningsloggen bevisas i S4.2/S7.5.
+
 - **2026-09-06 (uppdragsytan S3.1, våg 3 — leverabelregistret läses, och FR-19
   får sitt täckningsprov):** S1.2:s import fyller `uppdrag_leverabel` med
   klausul, acceptanskriterium, uppföljningsmått och läsväg (steg e), men

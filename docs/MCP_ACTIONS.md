@@ -928,3 +928,59 @@ period och sidan visar historiken kronologiskt. Den skriver genom
   (`server/test/uppdragsytan-register.test.ts`): fixturen NVR-001 saknar L6:s
   läsväg och kontrollen ska fälla exakt L6, medan samma text med läsvägen ifylld
   ger noll saknade. Åtgärden döljer aldrig en lucka och fyller den aldrig.
+
+### Scopesignalen (S5.1, våg 3)
+
+Kontraktet räknar upp sju **signalfraser** — "kan ni även…", "bara en snabb…" —
+och avsnitt 5.4 säger vad som händer när någon säger dem. Tabellen fanns sedan
+0068, men ingen kod kunde skriva en rad: linjen mellan innanför och utanför
+uppdraget bevakades av ingenting. Två åtgärder, tre handgrepp på ytan (**Tänd**,
+**Innanför**, **Utanför**) enligt 1E Del 4, och **båda `write` +
+`kravManniska: true`** — det finns ingen kodväg där en signal tänds eller avgörs
+utan människa (FR-6). Ett agentanrop ger **403 `human_required`** i
+`executeAction`, före varje skrivning: ingen köpost, ingen auditrad, ingen rad.
+
+Migration **0070** lägger den enda kolumn som saknades:
+`uppdrag_scopesignal.eskalerad_nar timestamptz` (NULL = ej eskalerad). Additiv,
+idempotent, ingen backfill.
+
+**`tand_scopesignal`** — "Tänd en scopesignal ur kontraktets fraser". Indata:
+
+- `contract_id`, `fras` (≤ 500 tecken) och valfri `klausul`. Vyn förifyller
+  frasen ur `uppdrag_scopelinje` (`sort = 'fras'`); fältet är ändå fri text,
+  eftersom det som sägs i verkligheten sällan följer avtalets stavning.
+- `eskalera` (valfri boolean) — stämplar `eskalerad_nar = now()`. **Utan motiv
+  med flit** (FR-7, 1E Del 7: `eskalera: true` med tomt motiv är giltigt). Det
+  finns inget motivfält att skicka in, och 0070 har ingen motivkolumn: ett
+  obligatoriskt motiv gör tröskeln till det som INTE eskaleras.
+- `underlag` (valfritt objekt) — `sort` (`mejl` | `kalender`), `extern_id`,
+  `extern_nyckel`, `extern_kalla`. Blir signalens `underlag_ref_id` via
+  `skapaReferens` (S7.1). **Underlaget är en pekare, aldrig en kopia:** ett
+  Message-ID eller ett event-uid, och en url eller sökväg fälls med **400
+  `validation_error`** av spärren i `uppdragReferens.ts` — varvid ingen signal
+  tänds heller. En befintlig referens med samma `(sort, extern_id)` på avtalet
+  **återanvänds** (läsning före skrivning): samma mejl tänder ofta två fraser,
+  och utan uppslaget hade den andra fallit på `uppdrag_referens_uk`.
+- **`tand_av` är INTE ett indatafält.** Det härleds ur den inloggade användaren
+  (profilnamn, annars e-post) — samma regel som `satt_av_manniska`: ett fält
+  anroparen fyller i om sig själv är ett påstående, inte ett spår.
+- `avgjord` föds **NULL**. Tystnad blir aldrig ett ja.
+
+**`avgor_scopesignal`** — "Avgör en tänd scopesignal: innanför eller utanför
+uppdraget". Indata `signal_id` + `avgjord` (`innanfor` | `utanfor`, exakt
+CHECK-villkorets värden i 0068). Ett tredje värde ger 400 `validation_error`
+(zod, före databasen) och fälls av villkoret om det ändå nådde fram. En okänd
+signal — inklusive grannbolagets — ger **404 `not_found`**; ett tyst noll
+uppdaterade rader hade sett ut som ett lyckat avgörande. Ingen spärr mot att
+avgöra om: det är en rättelse, och signalen är ett ärende med ett svar, inte en
+oföränderlig bedömning.
+
+**Vyn:** `/app/c/:id/projects/:projectId/signaler`, undersida till uppdraget
+(knappen **Signaler** bredvid *Bedömning*). Öppna signaler ligger överst — en
+obesvarad scopefråga som läses sist blir i praktiken ett ja — och *Innanför* och
+*Utanför* är två likvärdiga knappar utan förval. Fraserna listas ur kontraktet
+med var sin **Tänd**-knapp och underlaget ett klick bort per fras (`<details>`),
+så att ett mejl aldrig kan fästas på fel fras. Nyckelrymden
+(`rfc822#message-id` / `icalendar#uid`) fyller vyn själv; David anger sorten,
+id:t och vilket konto det lästes ur. Inget `?ok=`: kvittot är den nya raden.
+Tilläggsskapandet (`ledde_till_part_id` via `andra_baseline`) hör till S5.2.

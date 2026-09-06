@@ -31,6 +31,8 @@ import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
+import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
+import { listaReferenser } from '../../services/uppdragReferens.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
@@ -1449,7 +1451,11 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/avtal">Läs in avtal</a>
           ${/* S4.1: bedömningen bor bredvid avtalet — man svarar på "håller
                 det?" mot det som står där, inte mot tidposterna nedan. */ ''}
-          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/bedomning">Bedömning</a></div></div>
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/bedomning">Bedömning</a>
+          ${/* S5.1: signalerna bor bredvid bedömningen — samma fråga sedd från
+                andra hållet. Bedömningen svarar "håller det?", signalerna
+                "börjar något krypa in som inte står i avtalet?". */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a></div></div>
       ${tidsnotiser(req)}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
@@ -2282,6 +2288,284 @@ viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, 
     lage: falt(kropp.lage),
     ...(kommentar ? { kommentar } : {}),
   }, `/app/c/${companyId}/projects/${projectId}/bedomning`);
+}));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S5.1, våg 3: SIGNALERNA (PRD FR-6/FR-7/FR-26)
+//
+// Sidan finns för meningen "kan ni även…". Den sägs i förbifarten, den låter
+// som ingenting, och tre månader senare är den 40 timmar. Kontraktet räknar upp
+// sju sådana fraser; den här ytan är enda stället där de lyssnas efter.
+//
+// Fyra beslut styr sidan:
+//
+//  1. **Öppna signaler överst, före allt annat.** En tänd fras som ingen avgjort
+//     är ett ärende, inte historik. Ligger den under fraslistan blir den läst
+//     sist, och en obesvarad scopefråga som läses sist blir i praktiken ett ja.
+//  2. **Innanför och Utanför är två likvärdiga knappar.** Ingen av dem är
+//     primär och ingen är förvald. Görs den ena tyngre svarar man med handen i
+//     stället för med omdömet — och det är precis det svaret som ska vara ett
+//     omdöme.
+//  3. **Underlaget ligger ETT klick bort, per fras.** Vanligaste fallet är ett
+//     klick: hör frasen, tänd den. Den som har mejlet öppnar `<details>` på
+//     just den raden och klistrar in Message-ID:t. En gemensam underlagsruta
+//     ovanför sju knappar hade tyst kunnat fästa fel mejl på fel fras.
+//  4. **Fraserna kommer ur kontraktet, aldrig ur koden.** Står de i koden gäller
+//     de fel kund nästa gång. Har importen inte körts säger sidan det, i stället
+//     för att visa en lista som ser komplett ut.
+//
+// Ingen egen meny och ingen egen CSS: knappen **Signaler** står i uppdragets
+// knappband bredvid **Bedömning**, och sidan följer S4.1:s mönster rakt av.
+// ---------------------------------------------------------------------------
+
+/** Avgörandets två värden med husets färgspråk. Ingetdera är ett fel. */
+const AVGORANDE: Record<string, { etikett: string; kind: 'ok' | 'info'; ikon: string }> = {
+  innanfor: { etikett: 'Innanför', kind: 'ok', ikon: '✓' },
+  utanfor: { etikett: 'Utanför', kind: 'info', ikon: '→' },
+};
+
+/**
+ * Nyckelrymden följer av VAD underlaget är: ett Message-ID är ett Message-ID.
+ * Vyn frågar därför bara efter sorten och id:t, och fyller nyckeln själv —
+ * ett tredje textfält hade bara varit ett sätt att stava fel på en konstant.
+ * Källan (vilket konto det lästes ur) är däremot ett omdöme och står som fält.
+ */
+const NYCKELRYMD: Record<string, string> = {
+  mejl: 'rfc822#message-id',
+  kalender: 'icalendar#uid',
+};
+
+const signalChip = (rad: Signalrad): Raw => {
+  const a = rad.avgjord ? AVGORANDE[rad.avgjord] : undefined;
+  return a ? chip(a.etikett, a.kind, a.ikon) : chip('Öppen', 'warn', '◔');
+};
+
+interface Signalunderlagsvy {
+  projekt: { id: string; number: number; name: string };
+  avtal: { id: string; name: string }[];
+  fraser: (Scopefras & { avtalId: string; avtalsnamn: string })[];
+  signaler: (Signalrad & { avtalsnamn: string })[];
+  /** extern_id per referens-id — underlaget ska SYNAS, annars är det inte spårbart. */
+  underlag: Map<string, string>;
+  /** Förifylls i "Läst ur": kontot signalen lästes ur är oftast användarens eget. */
+  epost: string;
+}
+
+async function signalunderlag(
+  client: PoolClient, companyId: string, projectId: string, userId: string,
+): Promise<Signalunderlagsvy> {
+  const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const avtal = (await listContracts(client, companyId, { project_id: projectId }))
+    .map((a) => ({ id: a.id as string, name: a.name as string }));
+
+  const fraser: (Scopefras & { avtalId: string; avtalsnamn: string })[] = [];
+  const signaler: (Signalrad & { avtalsnamn: string })[] = [];
+  const underlag = new Map<string, string>();
+  for (const a of avtal) {
+    for (const f of await listaScopefraser(client, companyId, a.id)) {
+      fraser.push({ ...f, avtalId: a.id, avtalsnamn: a.name });
+    }
+    for (const s of await listaSignaler(client, companyId, a.id)) {
+      signaler.push({ ...s, avtalsnamn: a.name });
+    }
+    // Referenserna läses genom S7.1:s enda läsväg — vyn rör aldrig
+    // `uppdrag_referens` själv.
+    for (const r of await listaReferenser(client, companyId, a.id)) {
+      underlag.set(r.id, `${r.sort} ${r.extern_id}`);
+    }
+  }
+  // Öppna först över ALLA avtal, nyast överst — samma ordning som tjänsten ger
+  // per avtal, men listan här är sammanslagen och måste ordnas om.
+  signaler.sort((x, y) => Number(x.avgjord !== null) - Number(y.avgjord !== null)
+    || y.tand_nar.localeCompare(x.tand_nar));
+
+  const profil = await getProfile(client, userId);
+  return { projekt: p, avtal, fraser, signaler, underlag, epost: profil.email };
+}
+
+/** En öppen signal: vad som sades, vad det vilar på, och de två svaren. */
+function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { avtalsnamn: string }): Raw {
+  const flera = u.avtal.length > 1;
+  const ref = s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined;
+  return html`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--line-2)">
+    <div style="flex:1 1 320px;min-width:0">
+      <div class="actions" style="gap:7px">${signalChip(s)}
+        ${s.eskalerad_nar ? chip('Eskalerad', 'neg', '↑') : ''}
+        ${s.klausul ? html`<span class="code">${s.klausul}</span>` : ''}
+        ${flera ? html`<span class="muted" style="font-size:12.5px">${s.avtalsnamn}</span>` : ''}</div>
+      <p style="margin:7px 0 0;font-size:15px">”${s.fras}”</p>
+      ${/* Underlaget ska SYNAS. En referens som bara finns i en kolumn är inte
+            spårbar för den som läser sidan — och spårbarheten är hela FR-26. */ ''}
+      <p class="muted" style="margin:4px 0 0;font-size:12.5px">Tänd av ${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}
+        ${ref ? html` · Underlag: <span class="code">${ref}</span>` : ' · utan underlag'}</p>
+    </div>
+    ${/* Två likvärdiga knappar, ingen förvald: svaret ska komma ur omdömet. */ ''}
+    <div class="actions">
+      ${(['innanfor', 'utanfor'] as const).map((varde) => html`
+        <form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/signaler" style="margin:0">
+          <input type="hidden" name="handling" value="avgor">
+          <input type="hidden" name="signal_id" value="${s.id}">
+          <input type="hidden" name="avgjord" value="${varde}">
+          <button class="btn btn--ghost btn--sm" type="submit"
+            aria-label="Avgör ”${s.fras}” som ${AVGORANDE[varde]!.etikett.toLowerCase()} uppdraget">${AVGORANDE[varde]!.etikett}</button>
+        </form>`)}
+    </div>
+  </div>`;
+}
+
+/** En fras ur kontraktet med sin tänd-knapp, och underlaget ett klick bort. */
+function frasrad(companyId: string, u: Signalunderlagsvy, f: Scopefras & { avtalId: string; avtalsnamn: string }): Raw {
+  const flera = u.avtal.length > 1;
+  return html`<form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/signaler"
+      style="padding:11px 16px;border-top:1px solid var(--line-2);margin:0">
+    <input type="hidden" name="handling" value="tand">
+    <input type="hidden" name="contract_id" value="${f.avtalId}">
+    <input type="hidden" name="fras" value="${f.text}">
+    ${f.klausul ? html`<input type="hidden" name="klausul" value="${f.klausul}">` : ''}
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+      <span style="flex:1 1 260px;font-size:15px">”${f.text}”</span>
+      <span class="actions">
+        ${f.klausul ? html`<span class="code">${f.klausul}</span>` : ''}
+        ${flera ? html`<span class="muted" style="font-size:12.5px">${f.avtalsnamn}</span>` : ''}
+        <button class="btn btn--ghost btn--sm" type="submit" aria-label="Tänd signalen ”${f.text}”">Tänd</button>
+      </span>
+    </div>
+    ${/* Ett klick är normalfallet. Den som har mejlet framme öppnar den här
+          raden och fäster det — på just den här frasen, inte på sidan. */ ''}
+    <details style="margin-top:6px">
+      <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0">Underlag och eskalering</summary>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="field" style="margin:0;flex:0 1 160px"><span>Underlaget är</span>
+          <select name="underlag_sort">
+            <option value="mejl">Ett mejl</option>
+            <option value="kalender">En kalenderpost</option>
+          </select></label>
+        <label class="field" style="margin:0;flex:2 1 280px"><span>Message-ID eller event-uid</span>
+          <input type="text" name="underlag_id" maxlength="200" placeholder="CAF7v2h9k@mail.gmail.com"></label>
+        <label class="field" style="margin:0;flex:1 1 200px"><span>Läst ur</span>
+          <input type="text" name="underlag_kalla" maxlength="200" value="${u.epost}"></label>
+      </div>
+      <p class="muted" style="margin:6px 0 0;font-size:12.5px">Id:t, aldrig länken. Ett id överlever att mejlet flyttas
+        och att kalenderposten döps om — en länk gör det inte, och slutar fungera utan att någon märker det.
+        Lämnas fältet tomt tänds signalen utan underlag.</p>
+      <label style="display:flex;gap:9px;align-items:flex-start;margin-top:9px;font-size:13.5px">
+        <input type="checkbox" name="eskalera" value="ja" style="width:auto;margin-top:2px">
+        <span>Eskalera direkt — signalen stämplas som eskalerad när den tänds.
+          <span class="muted">Ingen motivering krävs; ett obligatoriskt motiv gör tröskeln till det som inte eskaleras.</span></span>
+      </label>
+    </details>
+  </form>`;
+}
+
+function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw {
+  const oppna = u.signaler.filter((s) => s.avgjord === null);
+  const avgjorda = u.signaler.filter((s) => s.avgjord !== null);
+  const flera = u.avtal.length > 1;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Signaler</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Fraserna står i kontraktet; en människa tänder dem och en människa avgör vad de betydde.
+        Ingen maskin gör något av det.</p></div>
+      <div class="actions">${oppna.length > 0
+        ? chip(`${String(oppna.length)} öppna`, 'warn', '◔')
+        : chip('Inga öppna', 'ok', '✓')}
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${felNotis(req)}
+    ${
+      u.avtal.length === 0
+        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+            Signalfraserna står i leveranskontraktet — utan avtal finns ingen scopelinje att bevaka.
+            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        : html`
+          ${/* Öppna först: en obesvarad scopefråga som läses sist blir ett ja. */ ''}
+          <div class="panel" style="margin-top:16px">
+            <div class="panel__head"><h2>Öppna signaler</h2>${oppna.length > 0 ? chip(String(oppna.length), 'warn') : ''}</div>
+            ${oppna.length === 0
+              ? html`<div class="panel__body"><p class="muted" style="margin:0">Inget obesvarat.
+                  En tänd fras står kvar här tills någon avgjort om den låg innanför eller utanför uppdraget —
+                  den försvinner aldrig av sig själv.</p></div>`
+              : html`<div>${oppna.map((s) => oppenSignal(companyId, u, s))}</div>`}
+          </div>
+
+          <div class="panel" style="margin-top:14px">
+            <div class="panel__head"><h2>Fraser ur kontraktet</h2>${u.fraser.length > 0 ? chip(String(u.fraser.length), 'muted') : ''}</div>
+            ${u.fraser.length === 0
+              ? html`<div class="panel__body"><p class="muted" style="margin:0">Kontraktet har inga signalfraser ännu.
+                  De läses in ur leveranskontraktets text (åtgärden <span class="code">importera_leveranskontrakt</span>) —
+                  och de hittas aldrig på här: en fras som står i koden gäller för fel kund nästa gång.</p></div>`
+              : html`<div>${u.fraser.map((f) => frasrad(companyId, u, f))}</div>`}
+          </div>`
+    }
+    <h2 style="margin-top:18px">Avgjorda</h2>
+    ${
+      avgjorda.length === 0
+        ? html`<p class="muted">Ingen signal är avgjord ännu.</p>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Underlag</th><th>Tänd</th></tr></thead>
+            <tbody>${avgjorda.map((s) => html`<tr>
+              <td>”${s.fras}”${s.eskalerad_nar ? html` ${chip('Eskalerad', 'neg', '↑')}` : ''}</td>
+              ${flera ? html`<td>${s.avtalsnamn}</td>` : ''}
+              <td class="code">${s.klausul ?? '—'}</td>
+              <td>${signalChip(s)}</td>
+              <td class="code">${(s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined) ?? '—'}</td>
+              <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`)}
+            </tbody></table></div>
+          <p class="muted" style="margin-top:8px;font-size:12.5px">Nyast först. Ett avgörande går att göra om —
+            det är en rättelse, och den syns här som det nya svaret.</p>`
+    }`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/signaler', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    return { name: company.name, body: signalsida(req, companyId, await signalunderlag(client, companyId, projectId, userId)) };
+  });
+  res.type('html').send(layout({ title: 'Signaler', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const tillbaka = `/app/c/${companyId}/projects/${projectId}/signaler`;
+
+  // Samma väg som AI:t skulle ha tagit om den fick — den får inte: båda
+  // åtgärderna bär `kravManniska`, och här är actor 'human' (lärdom 5).
+  // Tillbaka till sidan utan kvittotext: den nya raden ÄR kvittot.
+  if (falt(kropp.handling) === 'avgor') {
+    await runViewAction(req, res, companyId, 'avgor_scopesignal', {
+      signal_id: falt(kropp.signal_id),
+      avgjord: falt(kropp.avgjord),
+    }, tillbaka);
+    return;
+  }
+
+  // Underlaget skickas bara med när ett id faktiskt står i fältet. En tom ruta
+  // betyder "jag har inget underlag just nu" — inte en referens utan pekare.
+  const sort = falt(kropp.underlag_sort);
+  const externId = falt(kropp.underlag_id);
+  const underlag: Record<string, unknown> = externId && Object.hasOwn(NYCKELRYMD, sort)
+    ? {
+        underlag: {
+          sort,
+          extern_id: externId,
+          extern_nyckel: NYCKELRYMD[sort]!,
+          extern_kalla: falt(kropp.underlag_kalla),
+        },
+      }
+    : {};
+  const klausul = falt(kropp.klausul);
+  await runViewAction(req, res, companyId, 'tand_scopesignal', {
+    contract_id: falt(kropp.contract_id),
+    fras: falt(kropp.fras),
+    ...(klausul ? { klausul } : {}),
+    ...(kropp.eskalera ? { eskalera: true } : {}),
+    ...underlag,
+  }, tillbaka);
 }));
 
 // ---------------------------------------------------------------------------
