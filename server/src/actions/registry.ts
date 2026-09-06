@@ -36,6 +36,7 @@ import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
+import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1566,6 +1567,39 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => importeraLeveranskontrakt(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S4.1: bedömningen. Uppdragets enda subjektiva tal — och det
+  // enda som en maskin aldrig får sätta.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'satt_bedomning',
+    title: 'Sätt bedömningen för en period (på spår / risk / ur spår)',
+    // `write` + `kravManniska`, inte `sensitive`: kön finns för beslut som ska
+    // LÄSAS av en människa innan de gäller. Här är människan redan den som
+    // beslutar — att köa hennes egen bedömning för hennes eget godkännande vore
+    // ett handgrepp utan innehåll (1E Del 4: ett handgrepp). Spärren är i
+    // stället att ingen ANNAN kan sätta den: ett agentanrop avvisas i
+    // executeAction med 403 `human_required`, före varje skrivning (FR-15).
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        period_start: IsoDateSchema,
+        period_slut: IsoDateSchema,
+        // Exakt CHECK-villkorets tre värden i 0068. Ett fjärde läge fälls här
+        // (400 `validation_error`), och av villkoret om det ändå nådde fram.
+        lage: z.enum(BEDOMNINGSLAGEN),
+        // Valfri: en bedömning utan motivering är fortfarande en bedömning, och
+        // ett obligatoriskt fält hade lärt den som har bråttom att skriva ".".
+        kommentar: safeText(2000).optional(),
+      })
+      .strict(),
+    // `satt_av_manniska` är INTE ett fält i schemat. Kolumnen är svaret på
+    // "satte en människa den?" och sätts av tjänsten till true; ett indatafält
+    // hade återinfört exakt den lögn kolumnen finns för att utesluta.
+    handler: (ctx, i) => sattBedomning(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

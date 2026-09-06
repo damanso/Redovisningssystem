@@ -145,6 +145,70 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S4.1, våg 2 — bedömningen sätts av en människa):**
+  0068 gav bedömningen en tabell med tre lägen och rättigheterna SELECT + INSERT,
+  och S2.1 gav lagret `kravManniska`. Men **ingen kunde sätta en bedömning:** det
+  fanns ingen åtgärd och ingen yta. Uppdragets enda subjektiva tal — håller det
+  som lovats? — bodde alltså ingenstans, och FR-14/15/17 var tre krav utan
+  skrivväg.
+
+  Byggt: åtgärden **`satt_bedomning`** (`write` + `kravManniska: true`,
+  ett handgrepp) i `actions/registry.ts`, tjänsten
+  `server/src/services/uppdragBedomning.ts` (EN INSERT + en läsfunktion) och
+  vysidan `/app/c/:id/projects/:projectId/bedomning` med knappen **Bedömning**
+  på uppdragssidan. **Ingen migration, inga nya beroenden, ingen ny felkod,
+  ingen ändrad känslighet på någon annan åtgärd, ingen ny CSS.**
+
+  1. **`satt_av_manniska` hårdkodas till `true` — det är aldrig indata.**
+     Kolumnen är svaret på "satte en människa den?", och med `kravManniska` är
+     svaret per konstruktion ja. Ett indatafält hade återinfört exakt den
+     lögnmöjlighet kolumnen finns för att utesluta: en agent som intygar om sig
+     själv. Provet skickar in fältet ändå och får 400 av det strikta schemat.
+  2. **`write` + `kravManniska`, inte `sensitive`.** Kön finns för beslut som
+     ska LÄSAS av en människa innan de gäller. Här är människan redan den som
+     beslutar; att köa hennes bedömning för hennes eget godkännande vore ett
+     handgrepp utan innehåll (1E Del 4). Spärren är i stället att ingen ANNAN
+     kan sätta den — 403 `human_required`, före varje skrivning.
+  3. **Oföränderligheten är en rättighet, inte en konvention.** Tjänsten har
+     ingen UPDATE och ingen DELETE därför att rollen `app` inte har dem (0068).
+     Provet skriver därför UPDATE och DELETE rakt mot tabellen som `app` och
+     kräver `permission denied` — regeln ska gälla även för kod som inte går
+     genom tjänstelagret. Rättar man sig sätter man en NY bedömning; ingen
+     unik-spärr hindrar två om samma period, och den första står orörd (FR-17).
+  4. **CTO:ns analysfråga besvarad: ingen datumspärr, ingen rytm-visning.**
+     1E Del 7 lämnar FR-14:s rytm utan både lagring och läsare i v1 — den bärs
+     av styrgruppsmötena i Davids kalender. Med Davids regler (1) och (2) faller
+     därmed både spärren mot "fel dag" och rutan "nästa bedömningstillfälle"
+     bort. Att bedömningen kan sättas vilken dag som helst är avsiktligt.
+  5. **Ytan: tre synliga val, inget förvalt, och oåterkalleligheten före
+     knappen.** En dropdown har ett värde redan innan man bestämt sig, och det
+     värdet går inte att ta tillbaka efteråt — därför radioknappar i en
+     `fieldset` med `required` och varje läges innebörd utskriven bredvid
+     chippen (ok/warn/neg, husets färgspråk plus glyf, aldrig färg ensam).
+     Historiken står på SAMMA sida: bedömningen görs mot det man sa förra
+     gången, och ligger den bakom ett klick till sätts varje bedömning från
+     noll. Kvittot efter en skrivning är den nya raden och läget i sidhuvudet —
+     inget `?ok=`, som annars hade blivit kvar bredvid `runViewAction`:s `&fel=`
+     och gett en sida som säger både "klart" och "gick inte".
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-bedomning.test.ts`, de tre lagren ur risken
+  (mall `manniskosparr.test.ts`): (a) agent-token via REST → 403
+  `human_required` med oförändrad auditlogg, noll rader och tom godkännandekö,
+  samma anrop som människa → 200, och `satt_av_manniska` som indata → 400;
+  (b) UPDATE och DELETE som `app` → `permission denied` med raden orörd;
+  (c) vyns POST → raden med `satt_av_manniska = true`, NULL i
+  `handelse_ref_ids`/`frysta_siffror`, audit `action.executed:satt_bedomning`
+  och den nya raden synlig på sidan. Plus KRAV-5: alla tre lägena med och utan
+  kommentar, ett fjärde läge fällt av zod (400) OCH av CHECK-villkoret, en
+  andra bedömning för samma period bredvid en oförändrad första, och
+  tenantgränsen (404 på åtgärden, RLS på tabellen, 404 på vysidan).
+
+  **Kvarstår för David:** inget att migrera. Bedömningen sätts i vyn under
+  **Bedömning** på uppdragssidan. Svepets kolumner (`handelse_ref_ids`,
+  `frysta_siffror`) fylls först av senare stories.
+
 - **2026-09-06 (uppdragsytan S1.2, våg 2 — uppdraget skapas, kontraktet
   importeras):** 0068 gav kontraktet sitt tillstånd men ingen dörr in i det:
   `create_contract` skapar alltid ett utkast, ingen åtgärd frös något, och
