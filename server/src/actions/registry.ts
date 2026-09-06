@@ -136,6 +136,57 @@ const VoucherLine = z
   })
   .strict();
 
+// ---------------------------------------------------------------------------
+// Avtalsdelens fält — delade av `upsert_contract_part` och `andra_baseline`
+// ---------------------------------------------------------------------------
+// Samma rad, samma tjänstefunktion (`upsertContractPart`); skillnaden är bara
+// vad som KRÄVS. Två handskrivna kopior av samma fältuppsättning hade glidit
+// isär vid nästa kolumn, och då gäller regeln bara för den väg som råkade bli
+// uppdaterad.
+//
+// De fyra sista fälten kom med migration 0068. `change_reason` är det som
+// öppnar tilläggsavtalet igen: `kraver_orsak_vid_ny_version()` kräver ett skäl
+// så snart det redan finns en annan version av samma (contract_id, code), och
+// utan fältet i schemat gick ingen ny version att skapa alls.
+const DatePrecisionSchema = z.enum(['ar', 'halvar', 'kvartal', 'manad', 'dag']);
+
+const AvtalsdelFalt = {
+  contract_id: UuidSchema,
+  code: safeText(40),
+  // Krävs bara när delen skapas; en ändring behåller det som står.
+  name: safeText(200).optional(),
+  description: safeText(2000).optional(),
+  parent_part_id: UuidSchema.optional(),
+  billable: z.boolean().optional(),
+  hourly_rate_ore: OreSchema.optional(),
+  // Taket i TIMMAR (avtalet skriver "32 h") respektive i ÖREN.
+  cap_hours: z.number().nonnegative().max(999_999.99).optional(),
+  cap_amount_ore: OreSchema.optional(),
+  // Default false: ett tak som ingen läst i avtalshandlingen varnar
+  // aldrig och spärrar aldrig — det redovisas som 'vet ej'.
+  cap_confirmed: z.boolean().optional(),
+  valid_from: IsoDateSchema.optional(),
+  sort_order: z.number().int().min(0).max(10_000).optional(),
+  active: z.boolean().optional(),
+  // Varför just DEN HÄR versionen skrevs (0068).
+  change_reason: safeText(2000).optional(),
+  // Avtalets period för delen. `date_precision` bär hur exakt datumet stod i
+  // avtalet ("hösten 2026" är inte ett åtagande på dagen) — värdena är exakt
+  // CHECK-villkorets i 0068.
+  start_date: IsoDateSchema.optional(),
+  end_date: IsoDateSchema.optional(),
+  date_precision: DatePrecisionSchema.optional(),
+};
+
+/**
+ * Orsaken när den KRÄVS. Minst fem tecken efter trimning: triggern i 0068
+ * underkänner redan blanktext, och en ensam bokstav är inte heller ett skäl
+ * någon kan läsa i oktober.
+ */
+const OrsakSchema = safeText(2000).refine((v) => v.trim().length >= 5, {
+  message: 'ange varför baselinen ändras (minst fem tecken)',
+});
+
 // Registret. Varje action är en väldefinierad, schemavaliderad ingång mot
 // KÄRNANS tjänster — samma serverpåtvingade regler (RLS, tenant, oföränderlighet)
 // som via HTTP-API:t. En AI-agent kan bara det som står här.
@@ -1405,26 +1456,30 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // befintliga raden, ett SENARE valid_from lägger en ny version bredvid den
     // gamla. Ett tilläggsavtal skriver aldrig över det tak som gällde före —
     // taket i juli ska gå att läsa i oktober.
+    //
+    // `change_reason` är valfri HÄR: den första versionen av en kod ändrar
+    // ingenting och behöver inget skäl. Krävs den (en andra version av samma
+    // kod) och saknas den, fäller triggern i 0068 skrivningen och klienten får
+    // 409 `rule_violation` genom befintliga errorHandler — ingen egen fångst.
+    inputSchema: z.object(AvtalsdelFalt).strict(),
+    handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'andra_baseline',
+    title: 'Ny baselineversion av en avtalsdel, med orsak',
+    // Uppdragsytan, första modulåtgärden. `sensitive` av samma skäl som
+    // `book_invoice`: en ändrad baseline flyttar vad kunden har lovats, och
+    // det beslutet ska en människa fatta. Åtgärden körs alltså aldrig direkt —
+    // den köas i Att göra och exekveras först vid godkännandet.
+    //
+    // Skillnaden mot `upsert_contract_part` är enbart vad som KRÄVS: orsaken
+    // och startdatumet. En "ny version" utan eget `valid_from` vore en
+    // överskrivning av den befintliga raden, och en utan skäl vore en tyst
+    // sådan. Handlern går rakt på tjänstefunktionen — samma skrivväg, samma
+    // audit, samma triggrar.
+    sensitivity: 'sensitive',
     inputSchema: z
-      .object({
-        contract_id: UuidSchema,
-        code: safeText(40),
-        // Krävs bara när delen skapas; en ändring behåller det som står.
-        name: safeText(200).optional(),
-        description: safeText(2000).optional(),
-        parent_part_id: UuidSchema.optional(),
-        billable: z.boolean().optional(),
-        hourly_rate_ore: OreSchema.optional(),
-        // Taket i TIMMAR (avtalet skriver "32 h") respektive i ÖREN.
-        cap_hours: z.number().nonnegative().max(999_999.99).optional(),
-        cap_amount_ore: OreSchema.optional(),
-        // Default false: ett tak som ingen läst i avtalshandlingen varnar
-        // aldrig och spärrar aldrig — det redovisas som 'vet ej'.
-        cap_confirmed: z.boolean().optional(),
-        valid_from: IsoDateSchema.optional(),
-        sort_order: z.number().int().min(0).max(10_000).optional(),
-        active: z.boolean().optional(),
-      })
+      .object({ ...AvtalsdelFalt, change_reason: OrsakSchema, valid_from: IsoDateSchema })
       .strict(),
     handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),

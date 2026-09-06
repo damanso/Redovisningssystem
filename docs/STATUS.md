@@ -145,6 +145,75 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S1.3, våg 1 — orsakens skrivväg och
+  `andra_baseline`):** 0068 stängde en väg som fungerade före den:
+  `kraver_orsak_vid_ny_version()` kräver `change_reason` vid varje ny version
+  av samma (contract_id, code), men `upsert_contract_part` hade inget sådant
+  fält. **Följden var att ingen ny version gick att skapa alls — inte ens av
+  David, inte ens med rätt skäl i huvudet.** Ett tilläggsavtal fanns det ingen
+  väg in för, och ett tak som inte går att skriva in kan aldrig varna: samma
+  mening som PRD §1 rad 6, ett varv senare.
+
+  Byggt: fyra VALFRIA fält (`change_reason`, `start_date`, `end_date`,
+  `date_precision`) på `upsert_contract_part`-schemat, i
+  `UpsertContractPartInput`, i allowlisten `CONTRACT_PART_UPDATE` (elva → femton
+  nycklar) och i INSERT-satsen (fjorton → arton kolumner), samt den nya
+  åtgärden **`andra_baseline`** (`sensitive`). **Ingen migration, ingen ny
+  tabell, ingen vy, inga nya beroenden, ingen ändring i `errorHandler.ts`;**
+  `assign_contract_part`, `update_contract`, `get_contract_usage`,
+  `contractExtraction.ts` och känsligheten på befintliga åtgärder är orörda.
+  Rörda filer: `services/contracts.ts`, `actions/registry.ts`, en ny testfil,
+  `docs/MCP_ACTIONS.md`, `docs/STATUS.md`.
+
+  1. **Fälten är valfria, och det är villkoret för att de fick läggas till.**
+     Den FÖRSTA versionen av en kod ändrar ingenting och behöver inget skäl.
+     Hade `change_reason` varit obligatoriskt i den vanliga skrivvägen hade
+     Davids skarpa flöde — vyns avtalsformulär och `create_contract_from_draft`
+     — slutat fungera samma dag. Utelämnat fält skrivs som NULL; prov (f) och
+     inläsningsprovet pinnar att anrop utan de fyra fälten beter sig exakt som
+     före bygget.
+  2. **`andra_baseline` är känslig av samma skäl som `book_invoice`.** En
+     ändrad baseline flyttar vad kunden har lovats. Ett agentanrop svarar 202
+     `pending_approval` och skriver INGEN rad; posten hamnar i Att göra och
+     körs först när en människa godkänt exakt det lagrade indatat. Handlern
+     anropar `upsertContractPart` direkt — ingen egen SQL, inte `executeAction`
+     mot en annan action: två skrivvägar till samma tabell betyder två
+     uppsättningar regler, och då är minst en fel utan att någon vet vilken.
+  3. **Skillnaden mot `upsert_contract_part` är bara vad som KRÄVS**
+     (`change_reason` ≥ 5 tecken efter trimning, `valid_from`). En "ny version"
+     utan eget `valid_from` vore en överskrivning av den befintliga raden, och
+     en utan skäl vore en tyst sådan. Fältuppsättningen delas därför som EN
+     const (`AvtalsdelFalt`) i registret; två handskrivna kopior hade glidit
+     isär vid nästa kolumn.
+  4. **Ingen ny felkod, ingen textmatchning mot triggerns meddelande.** P0001
+     ur `kraver_orsak_vid_ny_version()` når klienten som **409
+     `rule_violation`** via befintliga `errorHandler.ts` (rad 95) — utan
+     triggerns text, aldrig som 500. Schemat (zod, 400 `validation_error`) är
+     primärkontrollen; triggern är backstoppet, precis som periodlåset.
+     Överlämningens 400-koder `change_reason_required`/`baseline_frozen` ströks
+     av David 6/9 11:45 med husregeln som skäl.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit: `server/test/uppdragsytan-baseline.test.ts` med de sex fallen
+  (a)–(f): (a) `andra_baseline` som agent → 202 `pending_approval`, noll nya
+  rader, en post i kön, och efter mänskligt godkännande version 2 med sitt
+  skäl och sin period, som `get_contract_usage` visar från dess `valid_from`
+  (plus att agenten inte kan godkänna sig själv, att en orsak under fem tecken
+  och ett saknat `valid_from` fälls av schemat); (b) `upsert_contract_part` med
+  skäl + nytt `valid_from` på en bekräftad del → version 2 bredvid den gamla;
+  (c) samma anrop utan skäl (och med blanktext) → 409 `rule_violation` genom
+  hela HTTP-stacken, utan triggerns text och utan halvskrivna rader; (d)
+  in-place-ändring av `cap_hours` på en bekräftad rad → 409 `rule_violation`
+  med taket orört; (e) `date_precision: 'vecka'` → 400 `validation_error`, och
+  de fem tillåtna värdena hela vägen ner i kolumnen; (f) anrop utan de fyra
+  fälten skapar och ändrar en obekräftad rad precis som förut, med kolumnerna
+  NULL — och `create_contract_from_draft` likaså.
+
+  **Kvarstår för David:** inget att migrera. Frysning av ett nyskapat kontrakt
+  (`utkast` → `fryst`) har fortfarande ingen åtgärd, och känsligheten på
+  `upsert_contract_part` är S0.1 (våg 2).
+
 - **2026-09-05 (uppdragsytan våg 1 — migration 0068, hela modulens datalager):**
   Uppdragsytans S1.1 enligt 1E §3.1–3.4 och överlämning #109. **Migrationen
   `server/migrations/0068_uppdragsytan.sql` + fyra testsviter + upsert-hjälparen
@@ -205,9 +274,10 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
     fryser ett kontrakt. Alltså faller `upsert_contract_part`
     med `cap_confirmed: true`, `create_contract_from_draft` med bekräftat tak,
     och vyns kryssruta "taket är läst" på `/app/c/:id/projects/:pid/avtal`.
-  - **Ett tilläggsavtal går inte att lägga in.** `kraver_orsak_vid_ny_version()`
-    kräver `change_reason` på en andra version av samma kod, och
-    `upsert_contract_part` har inget sådant fält i sitt schema.
+  - ~~**Ett tilläggsavtal går inte att lägga in.**~~ **ÖPPNAD 2026-09-06 (S1.3):**
+    `upsert_contract_part` tar nu `change_reason` (+ `start_date`/`end_date`/
+    `date_precision`), och den nya sensitive-åtgärden `andra_baseline` skriver
+    en ny baselineversion via godkännandekön. Se sessionsloggen nedan.
 
   Båda är pinnade som prov i `server/test/uppdragsytan-sparrar.test.ts`
   ("vad 0068 stänger tills S1.2") så att de inte kan bli en tyst överraskning.

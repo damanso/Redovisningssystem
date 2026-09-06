@@ -565,6 +565,16 @@ export interface UpsertContractPartInput {
   valid_from?: string;
   sort_order?: number;
   active?: boolean;
+  /**
+   * 0068: varför just DEN HÄR versionen skrevs. `kraver_orsak_vid_ny_version()`
+   * kräver den så snart det redan finns en annan version av samma
+   * (contract_id, code) — utan fältet gick ingen ny version att skapa alls.
+   */
+  change_reason?: string;
+  /** Avtalets period för delen, och hur exakt den stod skriven (0068). */
+  start_date?: string;
+  end_date?: string;
+  date_precision?: 'ar' | 'halvar' | 'kvartal' | 'manad' | 'dag';
 }
 
 /** Kolumnerna upsert_contract_part får röra på en befintlig version. */
@@ -577,6 +587,10 @@ const CONTRACT_PART_UPDATE: Readonly<Record<string, string>> = {
   cap_hours: 'cap_hours',
   cap_amount_ore: 'cap_amount_ore',
   cap_confirmed: 'cap_confirmed',
+  change_reason: 'change_reason',
+  start_date: 'start_date',
+  end_date: 'end_date',
+  date_precision: 'date_precision',
   sort_order: 'sort_order',
   active: 'active',
   manually_edited: 'manually_edited',
@@ -641,6 +655,10 @@ export async function upsertContractPart(
       cap_hours: input.cap_hours,
       cap_amount_ore: input.cap_amount_ore,
       cap_confirmed: input.cap_confirmed,
+      change_reason: input.change_reason,
+      start_date: input.start_date,
+      end_date: input.end_date,
+      date_precision: input.date_precision,
       sort_order: input.sort_order,
       active: input.active,
       manually_edited: true,
@@ -664,12 +682,17 @@ export async function upsertContractPart(
   const row = await client.query<{ id: string }>(
     `INSERT INTO contract_parts (company_id, contract_id, parent_part_id, code, name, description, billable,
                                  hourly_rate_ore, cap_hours, cap_amount_ore, cap_confirmed, valid_from,
-                                 sort_order, active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+                                 sort_order, active, change_reason, start_date, end_date, date_precision)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
     [companyId, input.contract_id, input.parent_part_id ?? null, input.code, input.name,
       input.description ?? null, input.billable ?? true, input.hourly_rate_ore ?? null,
       input.cap_hours ?? null, input.cap_amount_ore ?? null, input.cap_confirmed ?? false, validFrom,
-      input.sort_order ?? 0, input.active ?? true],
+      input.sort_order ?? 0, input.active ?? true,
+      // Utelämnat fält = NULL. Den FÖRSTA versionen av en kod behöver inget
+      // skäl — det finns ingenting den ändrar; triggern kräver det först när
+      // en annan version av samma (contract_id, code) redan finns.
+      input.change_reason ?? null, input.start_date ?? null, input.end_date ?? null,
+      input.date_precision ?? null],
   );
   await writeAudit(client, {
     companyId, userId, action: 'contract_part.created', entityType: 'contract_part', entityId: row.rows[0]!.id,
@@ -677,6 +700,7 @@ export async function upsertContractPart(
       contract_id: input.contract_id, code: input.code, valid_from: validFrom,
       cap_hours: input.cap_hours ?? null, cap_amount_ore: input.cap_amount_ore ?? null,
       cap_confirmed: input.cap_confirmed ?? false,
+      change_reason: input.change_reason ?? null,
     },
   });
   return getContractUsage(client, companyId, input.contract_id);
