@@ -145,6 +145,56 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S3.1, våg 3 — leverabelregistret läses, och FR-19
+  får sitt täckningsprov):** S1.2:s import fyller `uppdrag_leverabel` med
+  klausul, acceptanskriterium, uppföljningsmått och läsväg (steg e), men
+  **ingen ingång kunde läsa registret** — raderna fanns bara i tabellen. Och
+  eftersom CHECK-villkoret i 0068 tillåter `matt_lasvag IS NULL` med flit kunde
+  **ett mått utan läsväg passera tyst**: databasen kan aldrig säga "alla mått
+  har en läsväg".
+
+  Byggt: **en ny tjänstefil `server/src/services/uppdragRegister.ts`**
+  (`lasLeverabelregister` — en SELECT och en avtalskontroll), **en def-post i
+  `actions/registry.ts`** (`las_leverabelregister`, `read`, ingen
+  `kravManniska`, `.strict()` med enbart `contract_id`) och **ett nytt prov**.
+  Ingen migration, ingen vy, ingen rutt, inga nya beroenden, ingen ny felkod;
+  `uppdragImport.ts`, parsern, alla skrivvägar och schema 0068 är orörda.
+
+  1. **Radidentiteten är `(contract_id, kod)`** — samma nyckel som
+     `uppdrag_leverabel_kod_uk`, och samma kod som står i kontraktstexten.
+     Aldrig `contract_part_id`: avtalsdelen versioneras vid ett tilläggsavtal
+     (ny rad i `contract_parts`), men L6 är samma leverabel före och efter.
+  2. **Tomt är inte fel, okänt är 404.** Ett befintligt avtal utan
+     registerrader ger en tom lista — avtalet kan vara skapat men inte
+     importerat. Ett avtal som inte finns eller tillhör ett grannbolag ger
+     `NotFoundError('contract')` som `hamtaAvtal`: RLS ger ändå noll rader, men
+     en tom lista där hade varit ett svar som ser ut som "registret är tomt".
+  3. **Täckningen bärs av provet, inte av schemat.** Att skärpa kolumnen till
+     NOT NULL hade gjort saknat omöjligt att skriva — och saknat ska synas som
+     saknat (S1.2 punkt 3). Kravet ligger därför i FR-19-provet, som läser
+     **åtgärdens svar** och inte tabellen: det är den vägen modulen använder.
+  4. **Ingen registervy och inget flaggfält i svaret.** Davids svar 6/9: enbart
+     action-lagret tills registervyn får en egen story. Svaret bär raderna, och
+     täckningskontrollen är anroparens — en `saknar_lasvag`-lista i svaret
+     hade varit en andra sanning om samma sak.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-register.test.ts` (mönster
+  `uppdragsytan-import.test.ts`, riktig Postgres): åtgärden är `read` utan
+  `kravManniska` och schemat fäller okänt fält och saknat `contract_id` (400);
+  efter import av `LEVERANSKONTRAKT_NVR001` sex rader sorterade på kod utan
+  STYRNING, fixturens fyra kontraktsburna fält (FR-9), svarets nycklar utan
+  `contract_part_id`, **negativ kontroll: täckningen fäller EXAKT L6** med
+  `matt_lasvag` null men med klausul, kriterium och mått kvar, samt
+  grannbolagets 404; **positiv kontroll: samma text med L6:s läsväg ifylld**
+  (den enda skillnaden pinnas i ett eget prov, så en misslyckad ersättning inte
+  kan göra kontrollen tom) ger noll saknade; och tomt register → tom lista,
+  okänt avtal → 404.
+
+  **Kvarstår för David:** inget att migrera och ingenting i vyn — registret läses
+  via MCP/API:t tills registervyn får sin story.
+
 - **2026-09-06 (uppdragsytan S7.1, våg 3 — skrivvägen till referenslagret):**
   0068 gav `uppdrag_referens` sin tabell, sina tre lägen och sina rättigheter
   (SELECT/INSERT/UPDATE för `app`, ingen DELETE) — men **ingen kod kunde skriva
