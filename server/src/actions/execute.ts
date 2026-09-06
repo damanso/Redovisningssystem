@@ -49,6 +49,14 @@ export async function executeAction(params: {
   if (!action) throw new NotFoundError('action');
   const input = action.inputSchema.parse(params.input);
 
+  // Åtgärder märkta `kravManniska` avvisas för agenter FÖRE varje skrivning —
+  // ingen godkännandepost, ingen domänskrivning, ingen auditrad (lagret loggar
+  // inte avvisningar, jfr contractor_not_permitted ovan). Spärren sitter här och
+  // inte i transportlagret: alla tre ingångarna går genom executeAction.
+  if (action.kravManniska && params.actor !== 'human') {
+    throw new ForbiddenError('human_required', 'åtgärden kräver en människa');
+  }
+
   if (action.sensitivity === 'sensitive') {
     const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
       assertActionAllowed(role);

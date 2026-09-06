@@ -105,6 +105,11 @@ export interface ActionDef<I = unknown> {
   sensitivity: Sensitivity;
   inputSchema: z.ZodType<I>;
   handler: (ctx: ActionContext, input: I) => Promise<unknown>;
+  // Åtgärden får bara köras av en människa: ett agent-anrop avvisas i
+  // executeAction innan något skrivs (ingen godkännandepost heller). Skilt från
+  // `sensitive`, som köar för godkännande, och från transportlagrets
+  // requireHuman — två mekanismer på två lager ska inte heta samma sak.
+  kravManniska?: boolean;
 }
 
 function def<I>(d: ActionDef<I>): ActionDef<I> {
