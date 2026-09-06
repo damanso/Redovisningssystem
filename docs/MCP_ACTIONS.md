@@ -449,7 +449,9 @@ Tre regler bär hela funktionen:
   `signed_date`; saknas det: 400 `valid_from_required`), `sort_order`,
   `active`. Nyckeln är (avtal, kod, `valid_from`): samma `valid_from` ändrar
   raden och sätter `manually_edited = true`, ett senare lägger en ny version
-  bredvid den gamla.
+  bredvid den gamla. **Fyra fält till sedan migration 0068**
+  (`change_reason`, `start_date`, `end_date`, `date_precision`) — se
+  *Uppdragsytan* längst ned.
 - `list_contracts` (read) — filter `project_id`, `contract_id`. Varje avtal bär
   `parts` med förbrukning per del.
 - `get_contract_usage` (read) — `contract_id`. Per del: `billable_minutes` och
@@ -707,3 +709,65 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   poster som verkligen går igenom — resten står kvar med sitt villkor utskrivet
   på raden. Villkoret gäller **godkännandet**: *Faktureras ej* går igenom även
   utan vald avtalsdel (orsak krävs som förut). Kön grindar aldrig fakturan.
+
+## Uppdragsytan
+
+Modulens första åtgärd (S1.3, våg 1). Uppdragsytan är en **modul här** — ingen
+egen tjänst, ingen fjärde databas. Den äger baselinen, leverabelregistret och
+bedömningen; pengar, ärenden och filer läses ur sina källsystem och dupliceras
+aldrig. Datalagret kom med migration **0068** (S1.1); det här är skrivvägen in
+till baselinen.
+
+**Varför den finns.** 0068 gav `contract_parts` en trigger,
+`kraver_orsak_vid_ny_version()`, som kräver `change_reason` vid varje ny
+version av samma (`contract_id`, `code`). Men `upsert_contract_part` hade inget
+sådant fält — och därför kunde **ingen** skapa en ny version alls, inte ens
+David med rätt skäl i huvudet. Ett tilläggsavtal fanns det ingen väg in för,
+och ett tak som inte går att skriva in kan aldrig varna. Det är samma mening
+som PRD §1 rad 6, ett varv senare.
+
+**Fyra nya fält på `upsert_contract_part`** (write, oförändrad känslighet),
+alla **valfria** så att varje befintligt anrop beter sig exakt som förut —
+utelämnat fält skrivs som NULL:
+
+- `change_reason` (text, ≤ 2000) — varför just DEN HÄR versionen skrevs. Den
+  FÖRSTA versionen av en kod behöver inget skäl: den ändrar ingenting.
+- `start_date` / `end_date` (ISO-datum) — avtalets period för delen.
+- `date_precision` — `ar` | `halvar` | `kvartal` | `manad` | `dag`, exakt
+  CHECK-villkorets värden i 0068. Avtalstexten skriver "hösten 2026" lika ofta
+  som "2026-09-01"; precisionen finns för att en uppskattning aldrig ska läsas
+  som ett åtagande på dagen. Ett värde utanför de fem ger 400
+  `validation_error` (zod, före databasen).
+
+**`andra_baseline` (sensitive)** — "Ny baselineversion av en avtalsdel, med
+orsak. Köas för godkännande." Samma fält som `upsert_contract_part`, men
+`change_reason` (minst fem tecken efter trimning) och `valid_from` är
+**obligatoriska**. Åtgärden går genom samma tjänstefunktion
+(`upsertContractPart`) som den vanliga skrivvägen — samma audit, samma
+triggrar, ingen egen SQL.
+
+- **Känslig av samma skäl som `book_invoice`:** en ändrad baseline flyttar vad
+  kunden har lovats. Ett agentanrop svarar därför 202 `pending_approval` och
+  skriver INGEN rad; posten hamnar i **Att göra** och exekveras först när en
+  människa godkänt exakt det lagrade indatat. En agent kan aldrig godkänna sin
+  egen begäran (403 `human_approval_required`).
+- **Kraven är hela skillnaden.** En "ny version" utan eget `valid_from` vore en
+  överskrivning av den befintliga raden, och en utan skäl vore en tyst sådan.
+  Historiken består: den gamla raden ligger kvar, `get_contract_usage` visar
+  den nya versionen från dess `valid_from` och summerar förbrukningen över
+  alla versioner av koden.
+
+**Triggerfelen har ingen egen felkod.** Faller skrivningen på
+`kraver_orsak_vid_ny_version()` når P0001 klienten som **409 `rule_violation`**
+via befintliga `errorHandler` — utan triggerns text (meddelandet stannar i
+serverloggen) och aldrig som ett 500. Schemat är primärkontrollen, triggern
+backstoppet. De två fall det gäller:
+
+- ny version av en kod **utan** `change_reason` (även blanktext), och
+- **in-place**-ändring av `cap_hours`/`cap_amount_ore`/`valid_from`/perioden/
+  `parent_part_id`/`hourly_rate_ore` på en rad med `cap_confirmed = true` — en
+  bekräftad baseline skrivs inte om, den versioneras.
+
+Kvar till senare vågor: frysning av ett nyskapat kontrakt (`kontrakt_tillstand`
+`utkast` → `fryst`) har fortfarande ingen åtgärd, och känsligheten på
+`upsert_contract_part` är S0.1 (våg 2).
