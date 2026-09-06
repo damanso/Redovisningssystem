@@ -272,12 +272,11 @@ describe('create_contract_from_draft', () => {
         { code: '2', name: 'Fas 2 — plattformen', description: 'Plattform' },
         // Fas 2A: exakt som utkastet läste den.
         //
-        // 0068: `cap_confirmed: true` går INTE längre att skicka här. Ett
-        // bekräftat tak kräver ett fryst kontrakt, och den här actionen skapar
-        // avtalet (som utkast) och delarna i EN transaktion — det finns inget
-        // läge däremellan att frysa i. Bekräftelsen sker därför i provet nedan
-        // ("ett bekräftat tak varnar"), efter frysningen. Se
-        // uppdragsytan-sparrar.test.ts: vägen öppnas igen i S1.2.
+        // 0068: ett bekräftat tak kräver ett fryst kontrakt. (S1.2/0069 gör
+        // avtalet fryst redan vid skapandet när `signed_date` är satt, så
+        // `cap_confirmed: true` vore möjligt här numera — men provet bekräftar
+        // taket i steget nedan med flit: det är Davids eget beslut, inte
+        // inläsningens. Se uppdragsytan-import.test.ts.)
         {
           code: '2A', name: 'Fas 2A', description: 'Integration', parent_code: '2',
           cap_hours: 32, cap_amount_ore: 3_520_000,
@@ -441,10 +440,9 @@ describe('vyn: Läs in avtal', () => {
       payment_terms_days: '20',
       hourly_rate: '1 100,00',
       notes: 'Inskrivet för hand.',
-      // 0068: kryssrutan "taket är läst" går inte att kryssa i samma steg som
-      // avtalet skapas — ett bekräftat tak kräver ett fryst kontrakt, och
-      // sidan skapar avtal + faser i EN transaktion. Bekräftelsen görs därför
-      // nedan, efter frysningen. S1.2 ger vyn vägen tillbaka.
+      // 0068: ett bekräftat tak kräver ett fryst kontrakt. (S1.2/0069 fryser
+      // avtalet redan vid skapandet när `signed_date` är satt; provet ger
+      // beskedet "taket är läst" i steget nedan ändå, som ett eget beslut.)
       part_med: ['ja', 'ja', 'nej'],
       part_code: ['2', '2A', 'X'],
       part_name: ['Fas 2', 'Fas 2A', 'Utelämnad'],

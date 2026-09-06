@@ -7,9 +7,16 @@
 // actions (den väg David använder) och via en adminanslutning (vägen förbi allt
 // applikationslager).
 //
-// LÄS ÄVEN: de tre proven under "vad 0068 stänger" längst ned. De pinnar två
-// vägar som fungerade före 0068 och som är STÄNGDA tills S1.2 ger
-// `upsert_contract_part` ett `change_reason` och en väg att frysa ett kontrakt.
+// LÄS ÄVEN: proven under "vad 0068 stängde" längst ned. De pinnade två vägar
+// som fungerade före 0068. Båda är öppnade igen: S1.3 gav
+// `upsert_contract_part` sitt `change_reason`, och S1.2 (migration 0069) gjorde
+// signeringen till frysningen — ett undertecknat avtal föds fryst och tar
+// därför emot ett bekräftat tak direkt.
+//
+// 0069 ÄNDRAR FÖRUTSÄTTNINGEN FÖR DE HÄR PROVEN: `nyttAvtal` sätter
+// `signed_date`, alltså föds de avtalen FRYSTA. Prov som behöver ett utkast
+// skapar sitt avtal med `nyttUtkastavtal` (utan datum) — annars provar de inte
+// det de säger att de provar.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
@@ -64,15 +71,21 @@ async function nyttUppdrag(namn: string): Promise<string> {
   return (await ok('create_project', { name: namn, customer_id: customerId, hourly_rate_ore: 110_000 })).id as string;
 }
 
+/** Ett UNDERTECKNAT avtal. Efter 0069 föds det fryst — signeringen ÄR frysningen. */
 async function nyttAvtal(projectId: string, namn: string): Promise<string> {
   return (await ok('create_contract', {
     project_id: projectId, name: namn, signed_date: '2026-01-01',
   })).id as string;
 }
 
+/** Ett UTKAST: utan undertecknandedatum finns ingenting att frysa (0069). */
+async function nyttUtkastavtal(projectId: string, namn: string): Promise<string> {
+  return (await ok('create_contract', { project_id: projectId, name: namn })).id as string;
+}
+
 /**
- * Fryser kontraktet. Det finns ingen action för det i våg 1 (S0.1/S1.2), så
- * proven gör det med samma sats som backfillen i 0068 använder.
+ * Fryser kontraktet med samma sats som backfillen i 0068. Efter 0069 behövs den
+ * bara för avtal UTAN undertecknandedatum — ett signerat avtal är redan fryst.
  */
 async function frys(contractId: string): Promise<void> {
   await withAdmin((c) => c.query(
@@ -245,13 +258,13 @@ describe('en OBEKRÄFTAD rad får ändras fritt — upsert_contract_part överle
 
 describe('vagrar_baseline_i_utkast', () => {
   it('INSERT med bekräftat tak på ett utkast fälls', async () => {
-    const avtal = await nyttAvtal(await nyttUppdrag('Utkast med tak'), 'Utkastavtal');
+    const avtal = await nyttUtkastavtal(await nyttUppdrag('Utkast med tak'), 'Utkastavtal');
     await expect(laggDel(avtal, { code: 'X1', cap_hours: 10, cap_confirmed: true }))
       .rejects.toThrow(/bekräftat tak kräver fryst kontrakt/);
   });
 
   it('UPDATE till bekräftat tak på ett utkast fälls', async () => {
-    const avtal = await nyttAvtal(await nyttUppdrag('Utkast som bekräftas'), 'Utkastavtal 2');
+    const avtal = await nyttUtkastavtal(await nyttUppdrag('Utkast som bekräftas'), 'Utkastavtal 2');
     const delId = await laggDel(avtal, { code: 'X2', cap_hours: 10 });
     await expect(sqlPaDel(delId, 'cap_confirmed = true'))
       .rejects.toThrow(/bekräftat tak kräver fryst kontrakt/);
@@ -268,7 +281,9 @@ describe('vagrar_baseline_i_utkast', () => {
 
 describe('vagrar_avfrysning', () => {
   it('utkast → fryst går igenom, fryst → utkast fälls', async () => {
-    const avtal = await nyttAvtal(await nyttUppdrag('Frysning'), 'Avtal som fryses');
+    // Ett OSIGNERAT avtal: här är frysningen fortfarande ett eget steg, och
+    // 0069:s trigger (som bara rör `signed_date`) lägger sig aldrig i.
+    const avtal = await nyttUtkastavtal(await nyttUppdrag('Frysning'), 'Avtal som fryses');
     await expect(frys(avtal)).resolves.toBeUndefined();
     await expect(withAdmin((c) => c.query(
       "UPDATE contracts SET kontrakt_tillstand = 'utkast' WHERE id = $1", [avtal],
@@ -507,18 +522,21 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Vad 0068 STÄNGER — pinnat så att det aldrig blir en tyst överraskning
+// Vad 0068 STÄNGDE — och vad S1.2/S1.3 öppnade igen
 // ---------------------------------------------------------------------------
-// Båda vägarna fungerade före 0068 och kräver S1.2 för att öppnas igen:
-// `upsert_contract_part` saknar `change_reason` i sitt schema, och det finns
-// ingen action som fryser ett kontrakt. Tills dess svarar båda 409
-// rule_violation (errorHandler mappar triggerns P0001 dit) — regelbrottet syns,
-// men triggerns text når aldrig fram till användaren. S0.1 flyttade tidpunkten,
+// Båda vägarna fungerade före 0068. En ANDRA version av en kod kräver sedan
+// dess ett skäl (S1.3 gav `upsert_contract_part` fältet), och ett bekräftat tak
+// kräver ett fryst kontrakt — vilket 0069 gjorde till en följd av signeringen i
+// stället för till en egen åtgärd. Kvar som spärr står bara det som ÄR en
+// spärr: ett skäl som saknas, och ett utkast som ingen undertecknat.
+//
+// Regelbrottet syns som 409 `rule_violation` (errorHandler mappar triggerns
+// P0001 dit) — triggerns text når aldrig användaren. S0.1 flyttade tidpunkten,
 // inte utfallet: `upsert_contract_part` är känslig, så skrivningen (och därmed
 // triggerns 409) sker vid GODKÄNNANDET i kön, inte vid begäran.
 
-describe('vad 0068 stänger tills S1.2 (pinnat, inte glömt)', () => {
-  it('upsert_contract_part kan inte längre lägga en ANDRA version av en kod', async () => {
+describe('vad 0068 stängde, och vad S1.2/S1.3 öppnade (pinnat, inte glömt)', () => {
+  it('en ANDRA version av en kod UTAN skäl fälls fortfarande', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Tilläggsavtal via action'), 'Ramavtal');
     await okKoad('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 10, valid_from: '2026-01-01',
@@ -528,22 +546,32 @@ describe('vad 0068 stänger tills S1.2 (pinnat, inte glömt)', () => {
     });
     expect(andra.status).toBe(409);
     expect(andra.body.error).toBe('rule_violation');
+    // Med skäl går samma anrop igenom — S1.3:s väg in för tilläggsavtalet.
+    const medSkal = await koaOchGodkann('upsert_contract_part', {
+      contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 40, valid_from: '2026-06-01',
+      change_reason: 'Tilläggsavtal 1, undertecknat 2026-05-28',
+    });
+    expect(medSkal.status, JSON.stringify(medSkal.body)).toBe(200);
   });
 
-  it('upsert_contract_part kan inte längre bekräfta ett tak på ett nyskapat avtal', async () => {
+  it('ett bekräftat tak går igenom på ett nyskapat SIGNERAT avtal (0069)', async () => {
+    // Vägen 0068 stängde: avtalet skapas med `signed_date` och är därmed fryst
+    // redan när det föds — ingen handpåläggning, ingen egen frys-åtgärd.
     const avtal = await nyttAvtal(await nyttUppdrag('Bekräftat tak via action'), 'Ramavtal 2');
     const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: avtal, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
-    // Efter frysningen fungerar exakt samma anrop.
-    await frys(avtal);
-    const efter = await koaOchGodkann('upsert_contract_part', {
-      contract_id: avtal, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it('...men fortfarande INTE på ett avtal som ingen undertecknat', async () => {
+    const utkast = await nyttUtkastavtal(await nyttUppdrag('Bekräftat tak i utkast'), 'Utkastavtal 3');
+    const res = await koaOchGodkann('upsert_contract_part', {
+      contract_id: utkast, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });
-    expect(efter.status, JSON.stringify(efter.body)).toBe(200);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('rule_violation');
   });
 });
