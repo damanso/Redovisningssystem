@@ -42,6 +42,7 @@ import {
   avgorSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
 import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
+import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1711,6 +1712,26 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // `skriven` bär Drive-id:t, `fel` bär källsystemets egna ord.
     inputSchema: DriveRapportSchema,
     handler: (ctx, i) => rapporteraDriveKopia(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S7.3: svepet. Vyerna får aldrig ringa ett grannsystem under
+  // rendering (NFR-6), så någon måste ha läst källsystemen innan sidan öppnas.
+  // Det är den här åtgärden — en vanlig `write` utan `kravManniska` (1E Del 4):
+  // svepet härleder och cachar, det beslutar ingenting. Förslagen det skriver
+  // är cache som en människa bekräftar i S3.2/S6.1.
+  //
+  // Schemaläggningen och indatabygget bor hos Hermes (S7.5) — repot har ingen
+  // scheduler och ringer aldrig ut (ADR-4). Anropet går åt två håll: indatat är
+  // förra arbetslistans resultat, svaret är nästa arbetslista.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'kor_uppdragssvep',
+    title: 'Kör uppdragssvepet: verifiera referenser, kontrollera spärrmappen, räkna prognosen',
+    sensitivity: 'write',
+    // Schemat bor i tjänsten (prejudikat: `DriveRapportSchema`) — det är samma
+    // strikta form som funktionen parsar, och två kopior hinner divergera.
+    inputSchema: SvepIndataSchema,
+    handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

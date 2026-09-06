@@ -1036,3 +1036,79 @@ kunde inte skrivas* **med `ko_fel`-texten utskriven**. Är kopian skriven står
 ingenting: en evig "allt är skrivet"-rad hade varit brus, och brus lär läsaren
 att inte titta den dag det står något annat. Ett fel som bara finns i en kolumn
 är ett tyst fel (NFR-3).
+
+### Svepet (S7.3, våg 3)
+
+Vyerna får **aldrig** anropa ett grannsystem under rendering (NFR-6). Alltså
+måste någon ha läst källsystemen innan sidan öppnas och lagt resultatet där vyn
+når det på en SELECT. Det är svepet.
+
+**`kor_uppdragssvep` (write)** — "Kör uppdragssvepet: verifiera referenser,
+kontrollera spärrmappen, räkna prognosen". Ingen `kravManniska` (1E Del 4):
+svepet härleder och cachar, det beslutar ingenting. **Ingen migration, ingen vy,
+ingen scheduler** — schemaläggningen och indatabygget bor hos Hermes (S7.5).
+
+**Anropet går åt två håll.** Indatat är förra arbetslistans resultat, svaret är
+nästa arbetslista. Repot ringer aldrig ut (ADR-4), så svepet har ingen egen
+läsåtgärd mot Drive, kalendern eller mejlen — allt det inte kan räkna ut ur den
+egna databasen kommer in som validerad indata:
+
+- `uppdrag[]` — per uppdrag `contract_id`, `referenser[]`, `kalenderhandelser[]`
+  och valfri `sparrmapp_id` (Drive-id, aldrig en sökväg).
+  - `referenser[]`: `referens_id`, `lage` (samma union som S7.1:s verifiering),
+    valfri `leverabel_kod`, valfri `revision` och valfri `foralderkedja`
+    (Drive-id:n, filens egen förälder först).
+  - `kalenderhandelser[]`: `datum` + `minuter` som **heltal** — aldrig timmar som
+    flyttal, samma regel som tidposternas `billable_minutes`.
+  - **Ett uppdrag som inte står i listan rörs inte.** Cachen speglar det senaste
+    svepet av just det uppdraget; ett tomt anrop är giltigt och hämtar bara nästa
+    arbetslista.
+- `drive_kopior[]` — utfallet av förra arbetslistans Drive-kö, samma form som
+  `rapportera_drive_kopia` och genom **samma** tjänstefunktion. Utan den halvan
+  hade svaret lämnat tillbaka en kö som redan var tömd.
+
+**Ordningen är kravet:** (1) verifiera referenserna via S7.1, (2) kontrollera
+spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändelserna
+— och därefter förslagen. Svarets `nycklar` står i **härledningsordning** (inte
+sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
+`kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
+avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
+`prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`).
+
+- **Låset är transaktionsbundet:**
+  `pg_try_advisory_xact_lock(hashtextextended(company_id::text, 0))`. Är det
+  upptaget svarar åtgärden `{ "lage": "svep_avstod" }` och skriver ingenting —
+  aldrig en tyst tom retur. Ingen frisläppning behövs: xact-varianten släpper vid
+  commit **och** vid rollback, så ett kraschat svep kan inte lämna ett lås på en
+  poolad anslutning (till skillnad från migratorns sessionslås). Ingen ny felkod:
+  läget är ett resultat, och auditraden `action.executed:kor_uppdragssvep` skrivs
+  av `executeAction` som för varje annan åtgärd.
+- **Stängda uppdrag hoppas.** `projects.status` läses FÖRE varje skrivning, så
+  0068:s `vagrar_skrivning_pa_avslutat()` aldrig träffas (FR-8) — annars hade ett
+  uppdrag som avslutades i går fällt hela körningen. De listas i `hoppade`, och
+  varken deras referenser eller deras köposter kommer med i arbetslistan.
+
+**Förslagen är CACHE, aldrig en åtgärd.** De rör varken `uppdrag_leverabel` eller
+`receipts`; S3.2 bekräftar statusbytet och S6.1 köar kostnadsbindningen.
+
+- `statusforslag:<leverabel>` — skrivs när indatat rapporterar en **revision**
+  för leverabelns handling. Repot avgör aldrig själv om en revision är "ny" (det
+  ser inte Drive), och ett svep som gissade det ur sin egen cache hade slutat
+  vara omräkningsbart. Koden prövas mot leverabelregistret; en kod som inte finns
+  där ger inget förslag utan redovisas i `okanda_leverabelkoder`.
+- `kostnadsforslag:<receipt_id>` — skrivs när ett **bokfört** kvitto utan
+  avtalsdel har en leverantör vars namn står i en leverabelhandlings
+  `titel_vid_lankning`. **Bindningsmålet följer FR-33:** strömmen (avtalsdelen
+  direkt under rotdelen) vars intervall täcker kvittots datum, annars rotdelen
+  `UPPDRAG` — aldrig en leverabel, och aldrig en flytt: kvittots
+  `contract_part_id` rörs inte. Täcker två strömmar samma datum vinner avtalets
+  egen ordning (`sort_order`), så förslaget är detsamma vid varje körning.
+
+**Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
+`referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]` och
+`arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
+`status`, `senast_verifierad`) och `drive_ko` ur `hamta_drive_ko`. En **köad**
+kopia står bara i kön, aldrig bland referenserna: dess `extern_id` är ännu
+platshållaren, och en verifiering av den hade rapporterat "borta" om en fil som
+aldrig skrivits. En okänd referens eller ett avtal i ett annat bolag ger **404
+`not_found`** och hela svepet rullas tillbaka — ingen halvskriven cache.
