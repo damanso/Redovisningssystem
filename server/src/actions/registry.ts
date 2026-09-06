@@ -45,6 +45,7 @@ import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../servi
 import { bindaKostnad } from '../services/uppdragKostnad.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
 import { STATUSUTFALL, bekraftaStatusbyte } from '../services/uppdragStatus.js';
+import { avslutaUppdrag } from '../services/uppdragAvslut.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
   approveTimeEntries, proposeTimeEntries, APPROVAL_STATUSES, PROPOSAL_SOURCES, PROPOSAL_UNCERTAINTIES,
@@ -1830,6 +1831,27 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // klick framför den. `bekraftat_av` härleds likaså ur den inloggade
     // användaren, aldrig ur indatat.
     handler: (ctx, i) => bekraftaStatusbyte(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S8.1, våg 4: uppdraget avslutas — med det öppna utskrivet
+  // (FR-8). Avslutet stänger all skrivning mot uppdraget (0068:s trigger), så
+  // det som inte skrivs ner FÖRE stängningen går aldrig att skriva ner.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'avsluta_uppdrag',
+    title: 'Avsluta uppdraget och frys listan över det som stod öppet',
+    // `sensitive` utan `kravManniska` (1E Del 4): förslaget får köas av vem som
+    // helst, men bara en människa godkänner — och listan räknas då i
+    // GODKÄNNANDETRANSAKTIONEN (`approveAction`), inte när förslaget lades. En
+    // leverabel som hinner bli godkänd däremellan står alltså inte i listan.
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ project_id: UuidSchema }).strict(),
+    // Handlern anropar ENBART tjänstefunktionen — aldrig `executeAction(
+    // 'set_project_status')`. Samma regel som `andra_baseline`:
+    // `set_project_status` behåller sin `kravManniska` orörd, och stängningen
+    // sker genom `setProjectStatus` inuti den här enda transaktionen.
+    handler: (ctx, i: { project_id: string }) =>
+      avslutaUppdrag(ctx.client, ctx.companyId, ctx.userId, i.project_id),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

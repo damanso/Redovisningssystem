@@ -35,6 +35,7 @@ import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from 
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { lasSvepvarden } from '../../services/uppdragSvep.js';
+import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
@@ -1579,6 +1580,54 @@ function statusforslagskort(companyId: string, projectId: string, k: Statusforsl
   </article>`;
 }
 
+// ---------------------------------------------------------------------------
+// Uppdragsytan S8.1, våg 4: avslutet med öppna leverabler (FR-8).
+//
+// Åtgärden `avsluta_uppdrag` fryser `contracts.avslutat_med_oppna` och stänger
+// uppdraget. Därefter fäller 0068:s trigger varje skrivning — och det som stod
+// öppet finns bara kvar på ett ställe: i listan. Fyra beslut styr ytan:
+//
+//  1. **Panelen, inte `.ai-card`.** Ockran betyder "väntar på en människa", och
+//     här finns inget att svara på: uppdraget är stängt och listan fryst. Husets
+//     `.panel` är formen för något som STÅR, inte något som frågar. Ingen ny
+//     CSS, ingen ny klass, ingen egen rutt (den hade blivit en sida ingen
+//     öppnar — avslutet läses av den som redan står på uppdraget).
+//  2. **Den står högst upp**, före både förslag och tidposter: den enda frågan
+//     som är kvar på ett avslutat uppdrag är "vad blev inte klart?".
+//  3. **Chipet bär färg OCH glyf OCH text** (husets regel — färgen är aldrig
+//     ensam bärare), och talet står i klartext så att listans längd går att läsa
+//     utan att räkna raderna.
+//  4. **Koderna och ingenting annat.** Status och tidsstämplar hör till
+//     historiken, inte till listan: fler kolumner hade gjort en fryst rad till
+//     något som ser levande ut.
+// ---------------------------------------------------------------------------
+
+function avslutspanel(rader: Avslutatavtal[]): Raw {
+  const flera = rader.length > 1;
+  const antal = rader.reduce((n, r) => n + r.oppna.length, 0);
+  const etikett = antal === 1 ? '1 leverabel stod öppen' : `${String(antal)} leverabler stod öppna`;
+  return html`<section class="panel" style="margin-top:18px" aria-labelledby="avslut-oppet">
+    <div class="panel__head">
+      <h2 id="avslut-oppet">Öppet vid avslutet</h2>
+      ${antal === 0 ? chip('Inget stod öppet', 'ok', '✓') : chip(etikett, 'warn', '!')}
+    </div>
+    <div class="panel__body">
+      <p class="muted" style="margin:8px 16px;font-size:12.5px">
+        Listan frystes när uppdraget avslutades och skrivs aldrig om. Uppdraget tar inte emot
+        fler skrivningar — det som stod öppet står kvar här, läsbart.</p>
+      ${rader.map((r) => html`
+        ${flera ? html`<h3 style="margin:14px 16px 2px">${r.namn}</h3>` : ''}
+        ${/* Med bara ett avtal säger chipet redan att ingenting stod öppet —
+              raden hade upprepat det. Med flera avtal säger den vilket. */ ''}
+        ${r.oppna.length === 0
+          ? (flera ? html`<p class="muted" style="margin:6px 16px 14px;font-size:12.5px">Allt var godkänt.</p>` : '')
+          : html`<ul style="margin:6px 16px 14px;padding-left:20px">
+              ${r.oppna.map((kod) => html`<li><span class="code">${kod}</span></li>`)}
+            </ul>`}`)}
+    </div>
+  </section>`;
+}
+
 viewRouter.post('/c/:companyId/projects/:projectId/statusforslag', page(async (req, res) => {
   assertSameOrigin(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1619,6 +1668,10 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     const snabb = await snabbunderlag(client, companyId, projectId);
     const kopior = await registerkopiaKo(client, companyId, projectId);
     const forslag = await statusforslag(client, companyId, projectId);
+    // S8.1: bara ett STÄNGT uppdrag har ett avslut att redovisa. Kolumnen kan
+    // stå kvar från ett avslut som återöppnats på annat håll, och en panel om
+    // "avslutet" på ett pågående uppdrag hade beskrivit ett läge som inte gäller.
+    const avslut = p.status === 'closed' ? await lasAvslutslista(client, companyId, projectId) : [];
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
@@ -1639,6 +1692,10 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a></div></div>
       ${tidsnotiser(req)}
       ${kopior.map((k) => registerkopiaRad(k))}
+      ${/* S8.1: högst upp på ett avslutat uppdrag — det öppna är det enda som
+            är kvar att veta. Har uppdraget aldrig avslutats via åtgärden står
+            ingenting alls. */ ''}
+      ${avslut.length === 0 ? '' : avslutspanel(avslut)}
       ${/* S3.2: överst på sidan, före tidrapporteringen. Ett obesvarat
             leveransförslag som läses sist blir i praktiken ett ja — och
             ingenting visas alls när det inte finns något att svara på. */ ''}

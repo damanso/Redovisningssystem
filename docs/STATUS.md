@@ -145,6 +145,77 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S8.1, våg 4 — avslut med öppna leverabler):** 0068
+  hade burit `contracts.avslutat_med_oppna` och `vagrar_skrivning_pa_avslutat()`
+  sedan dag ett, men **ingen kodväg skrev kolumnen.** Följden: ett uppdrag som
+  stängdes med `set_project_status` låste all skrivning mot sig i samma sekund —
+  och det som stod ogodkänt just då gick därefter inte att skriva ner någonstans.
+  FR-8 var alltså en kolumn utan ifyllare, och ett avslut var i praktiken ett
+  tyst avslut.
+
+  Byggt: **ny åtgärd `avsluta_uppdrag` (`sensitive`, ingen `kravManniska`)** i
+  `actions/registry.ts`, **ny tjänstefil `services/uppdragAvslut.ts`**
+  (`avslutaUppdrag` + läsfunktionen `lasAvslutslista`), **en panel på uppdragets
+  förstasida** och ett nytt prov. Ingen migration (0068 bär både kolumnen och
+  triggern — Davids fällda 0069-alternativ), inget nytt beroende, ingen
+  scheduler, ingen ny CSS-klass, ingen ny rutt, ingen ändrad känslighet på någon
+  annan åtgärd; `bekraftaStatusbyte`, svepet, leverabelregistret och
+  `setProjectStatus` är orörda utöver anropet.
+
+  1. **Beräkningen vid godkännandet krävde ingen egen mekanik.** `approveAction`
+     kör åtgärdens handler i GODKÄNNANDETRANSAKTIONEN (`execute.ts:124`), så hela
+     `avslutaUppdrag` — lista och stängning — hamnar rätt av sig självt. En
+     leverabel som hinner bli `godkand` mellan förslag och godkännande står
+     därför inte i listan. Att bygga en egen "beräkna vid godkännandet"-väg hade
+     varit ett andra mönster för något huset redan gör.
+  2. **Ordningen lista-före-stängning är hela atomiciteten.** Kolumnen skrivs per
+     avtal FÖRE `setProjectStatus(…, 'closed')`, i samma transaktion: triggern
+     hinner aldrig se ett stängt uppdrag före ifyllnaden, och faller något rullas
+     hela avslutet tillbaka. Ett stängt uppdrag utan lista vore precis det tysta
+     avslut kravet finns för att hindra.
+  3. **Stängningen delegeras till tjänstefunktionen, aldrig till en andra
+     åtgärd.** `set_project_status` behåller sin `kravManniska` orörd (samma
+     regel som `andra_baseline` följer mot `upsertContractPart`), och dess egen
+     `project.set_status`-auditrad skrivs som vanligt vid sidan om listans.
+  4. **Tom array är inte NULL.** `{}` betyder "avslutad, och ingenting stod
+     öppet"; NULL betyder "aldrig avslutad via åtgärden". Ett fält som betyder
+     två saker är ett fält man inte kan lita på — och allt-godkänt-fallet ska
+     TILLÅTAS avslutas, inte behandlas som ett specialfall.
+  5. **Ett andra avslut fälls med 409 `uppdrag_redan_avslutat`**, med
+     projektraden läst `FOR UPDATE`: listan är fryst historik (1E §3.1), och en
+     omräkning mot dagens statusar hade skrivit över vad som faktiskt stod öppet
+     vid avslutet.
+  6. **Ytan: `.panel`, inte `.ai-card`.** Ockran betyder "väntar på en
+     människa"; här finns inget att svara på — uppdraget är stängt och listan
+     fryst. Panelen står högst upp på ett avslutat uppdrag (den enda frågan som
+     är kvar är "vad blev inte klart?"), chipet bär färg OCH glyf OCH tal, och
+     listan bär koderna och ingenting annat. Ingen avslutsknapp i vyn: avslutet
+     köas som varje annan känslig åtgärd och godkänns i **Att göra**.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-avslut.test.ts`: registret (okänt fält 400,
+  okänt uppdrag 404 utan att stänga något); **(a)** agenten FÅR köa men skriver
+  ingenting och kan inte godkänna, människans begäran lämnar `active` + NULL och
+  ingen listrad i loggen; **(b)** godkännandet ger `['L2','L4']` (den godkända
+  L1 utelämnad), status `closed`, listraden `uppdrag.avslutat_med_oppna` med
+  listan i `details` och tjänstens `project.set_status` bredvid; **(c)** en
+  leverabel som godkänns MELLAN förslag och godkännande står inte i listan;
+  **(d)** allt godkänt → tom array (inte NULL) och avslutet tillåts; **(e)** ett
+  andra avslut ger 409 med listan orörd och köposten kvar som `pending`; **(f)**
+  vyn med koderna, "2 leverabler stod öppna", det rena avslutets "Inget stod
+  öppet", ingen `<script>` och ingenting alls på ett pågående uppdrag. Plus
+  KRAV-6: efter ett avslut GENOM ÅTGÄRDEN fälls alla fyra räckvidder mot just
+  det uppdraget (modultabell-INSERT, ny `contract_parts`-rad,
+  `receipts.contract_part_id` och `time_entries`-ompekningen i båda riktningar),
+  medan SELECT mot samma tabeller — och uppdragssidan — fortsätter gå igenom.
+  Provet att triggern FINNS ligger kvar orört i `uppdragsytan-sparrar.test.ts`.
+
+  **Kvarstår för David:** inget att migrera. Avslutet köas via
+  `avsluta_uppdrag` och godkänns i **Att göra**; listan läses därefter på
+  uppdragssidan. Återöppning, tömning av listan, en avslutsknapp i vyn och
+  `koaRegisterkopia` vid avslutet är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S7.4, våg 4 — prognosen som vägrar gissa):** S7.3
   gav svepets steg 3 en cachenyckel `prognos` — men innehållet var en
   RÅSUMMERING av indatat (antal, minuter, första och sista datum). FR-5 frågar
