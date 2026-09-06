@@ -1122,9 +1122,9 @@ spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändel
 — och därefter förslagen. Svarets `nycklar` står i **härledningsordning** (inte
 sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
 `kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
-avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
+avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`),
 `prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`, `ram_timmar`,
-`ram_kronor`).
+`ram_kronor`) och `troskellarm` (`trosklar`, `larm`).
 
 **Prognosens två ramdatum (S7.4, FR-5).** `ram_timmar` och `ram_kronor` säger när
 uppdragets ram nås, härlett ur den registrerade tiden t.o.m. i dag (rotdelens
@@ -1139,6 +1139,35 @@ dag med minuter > 0). Är ramen redan nådd är datumet **i dag** — det är fa
 inte en gissning. Räcker bokningarna inte fram till ramen förlängs de med sin
 egen takt (resterande mängd ställd mot vad som bokats över spannet i dag→sista
 bokningen, avrundat uppåt till hela dagar).
+
+**Tröskellarmen (S6.2, FR-3).** `troskellarm` (källa `redovisning`) bär avtalets
+`trosklar` och listan `larm` — och **ingen färdigställandegrad i procent**
+(NFR-11). Ett belopps- eller timlarm tänder bara när avvikelsen mot ramen
+**överstiger BÅDA** villkoren: `troskel_procent` av nivåns EGEN ram **och**
+absolutgolvet (`troskel_golv_ore` respektive `troskel_golv_timmar`). Procenten
+ensam larmar om ingenting — 30 % av en post på 8 000 kr är 2 400 kr — och golvet
+ensamt tiger på ett litet uppdrag där 22 000 kr är halva ramen. En avvikelse som
+är noll eller negativ tänder aldrig, och ett **obekräftat eller saknat tak**
+larmar aldrig (samma regel som takvarningen: ett oläst tak varnar aldrig).
+
+- **Nivåerna är uppdraget (rotdelen) och posterna (lövdelarna)**, lästa ur
+  `forbrukningForAvtal` — modulen räknar aldrig om förbrukningen och har inga
+  egna belopps- eller timkolumner (FR-25). Strömmarna däremellan mäts inte:
+  deras ramandel finns inte förrän en baselineversion bär den.
+- **Prognosen prövas mot samma funktion och samma trösklar som utfallet:**
+  registrerat + bokat framåt (kalenderminuterna efter i dag, i ören genom
+  `gallandeTaxa`/`timeEntryAmountOre`) − ram, på uppdragets nivå. Utan taxa
+  finns ingen kronprognos, och utan bokad framtid ingen prognos alls — den vore
+  utfallet en gång till.
+- **Dagslarmet** är den tredje ramen och tänder när förseningen mot intervallets
+  slut **når** `troskel_dagar` — oberoende av beloppen och utan krav på ett tak.
+  Slutdatumet är delens eget, annars det **ärvda** enligt `byggPlan`:s regel, så
+  en leverabel som bara har strömmens period aldrig kan larma före periodens
+  slut (FR-3:s sista sats). Larmet bär `arvt_fran` när intervallet är ärvt.
+- **Trösklarna läses per uppdrag** ur `contracts.troskel_*` och står i cachen,
+  så att larmet går att läsa utan att slå upp avtalet. Ingen åtgärd skriver dem
+  i den här storyn; standardvärdena kommer ur 0068 (5,00 %, 22 000 kr, 20 h,
+  5 dagar).
 
 - **Låset är transaktionsbundet:**
   `pg_try_advisory_xact_lock(hashtextextended(company_id::text, 0))`. Är det

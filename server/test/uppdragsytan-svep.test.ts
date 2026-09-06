@@ -266,9 +266,10 @@ describe('KRAV-4: verifiering → spärrmapp → prognos, i den ordningen', () =
     expect(utfall.contract_id).toBe(avtal);
     expect(utfall.referenser_verifierade).toBe(2);
     // Ordningen ÄR kravet: referenserna först, spärrmappen på deras kedjor,
-    // prognosen sist.
+    // prognosen sist — och sedan S6.2:s tröskellarm, som mäter på samma
+    // takberäkning som prognosen just läst.
     expect(utfall.nycklar).toEqual([
-      'referenser:drive', 'referenser:kalender', 'sparrmapp', 'prognos',
+      'referenser:drive', 'referenser:kalender', 'sparrmapp', 'prognos', 'troskellarm',
     ]);
 
     const rader = await cache();
@@ -377,7 +378,7 @@ describe('KRAV-2: ett svep i taget per bolag', () => {
 
     // Det avstådda svepet skrev ingenting; det som fick låset skrev sin prognos.
     const efter = await cache();
-    expect(efter.map((r) => r.nyckel)).toEqual(['prognos']);
+    expect(efter.map((r) => r.nyckel)).toEqual(['prognos', 'troskellarm']);
     expect(efter).not.toEqual(fore);
   });
 
@@ -516,7 +517,9 @@ describe('KRAV-5/6: statusförslaget och kostnadsförslaget', () => {
   it('båda förslagsraderna uppstår ur riggat indata, i härledningsordning', async () => {
     const svar = await svep(forslagsindata());
     const utfall = svar.uppdrag[0]!;
-    expect(utfall.nycklar.slice(0, 4)).toEqual(['referenser:drive', 'sparrmapp', 'prognos', 'statusforslag:L3']);
+    expect(utfall.nycklar.slice(0, 5)).toEqual([
+      'referenser:drive', 'sparrmapp', 'prognos', 'troskellarm', 'statusforslag:L3',
+    ]);
     expect(utfall.nycklar.filter((n) => n.startsWith('kostnadsforslag:'))).toHaveLength(3);
     expect(utfall.okanda_leverabelkoder).toEqual([]);
 

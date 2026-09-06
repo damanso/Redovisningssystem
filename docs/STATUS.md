@@ -145,6 +145,100 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S6.2, våg 5 — tröskeln på tre nivåer):** 0068 hade
+  burit `contracts.troskel_procent`, `troskel_golv_ore`, `troskel_golv_timmar`
+  och `troskel_dagar` sedan dag ett, och S7.4 hade gett svepet både utfallet
+  (`forbrukningForAvtal`) och prognosunderlaget (`harledPrognosramar`). Men
+  **ingen kodväg läste en enda av de fyra kolumnerna.** FR-3 var alltså fyra
+  trösklar utan utvärderare: takvarningen (`takvarningEfterSparad`) tänder på
+  ren andel (`VARNINGSGRANS` 0,8) och vet ingenting om ett golv, så en småpost
+  kunde larma på ren procent och ett stort uppdrag tiga.
+
+  Byggt: **en ny ren fil `server/src/lib/troskel.ts`** (`harledTroskellarm` +
+  `bindandeTroskel`/`passerarTroskel`/`heltalstrosklar` — ingen databas, ingen
+  klocka, `idag` som argument), **inkopplingen i `services/uppdragSvep.ts`**
+  (nytt svepvärde `troskellarm`, källa `redovisning`, i samma
+  `upsertSvepvarden` som övriga värden), en ny svit och två docs-rader.
+  **Ingen migration** (kolumnerna finns i 0068), ingen ny åtgärd, ingen
+  scheduler, ingen vy, inga nya beroenden, inga egna belopps- eller
+  timkolumner; `takvarningEfterSparad`/`VARNINGSGRANS` och fakturaspärren
+  (`delarOverBekraftatTak`) i `contracts.ts` är **orörda**.
+
+  1. **Dubbelvillkoret är hela kravet, och det går sönder åt två håll.** Utan
+     golvet larmar 30 % av en post på 8 000 kr — 2 400 kr — och den dagen larmen
+     väcker någon för 2 400 kr har de slutat betyda något. Utan procenten tiger
+     ett litet uppdrag där 22 000 kr är halva ramen. Larmet tänder därför bara
+     när avvikelsen ÖVERSTIGER båda, och `>` är avsiktligt strikt: att passera
+     en tröskel är att gå förbi den, inte att stå på den. Dagslarmet är
+     motsatsen (`≥ troskel_dagar`) — femte dagens försening ÄR fem dagar.
+  2. **Modulen räknar aldrig om förbrukningen** (FR-25). Utfallet kommer ur
+     husets enda takberäkning och prognosen ur svepets egen, redan befintliga
+     härledning; filen JÄMFÖR, den mäter inte. Ett obekräftat tak larmar aldrig
+     — samma regel som varningen och spärren: ett oläst tak varnar aldrig.
+  3. **Heltal hela vägen, och omräkningen sker EN gång.** Procenten skalas ur
+     numeric(5,2) till hundradelar, timgolvet till minuter (mönstret
+     `Math.round(cap_hours * 60)`). Procentandelen GOLVAS när den redovisas:
+     för ett heltal är `a > floor(x)` exakt samma sak som `a > x`, så tröskeln
+     i larmet är det tal en läsare kan pröva jämförelsen mot för hand — utan ett
+     flyttal någonstans.
+  4. **Nivåerna är uppdraget och posterna, aldrig strömmen.** Rotdelen och
+     lövdelarna mäts; strömmarna däremellan är med flit utelämnade — deras
+     ramandel finns inte förrän en baselineversion bär den (FR-3), och ett larm
+     på en ram som ingen skrivit under är ett larm utan avsändare.
+  5. **Ärvt intervall lånas, det skrivs inte igen.** Dagslarmets slutdatum är
+     delens eget, annars det ärvda enligt `byggPlan` i `lib/uppdragsplan.ts` —
+     samma regel Planen ritar med. En andra kopia av arvsregeln hade gett en
+     leverabel ett larmdatum och en stapel som pekade på var sitt håll. Larmet
+     bär `arvt_fran`, för ett larm på ett datum som inte står på posten självt
+     är obegripligt utan den upplysningen.
+  6. **Ingen prognos utan bokad framtid.** Utan bokningar framåt vore
+     prognostalet utfallet en gång till, och ett andra identiskt larm är brus —
+     samma hållning som `harledPrognosramar`:s villkor `ingen bokad framtid`.
+     Utan taxa finns ingen kronprognos alls: hellre tyst än ett larm ur ett
+     hittat tal.
+  7. **Registervyn byggdes inte, och `uppdragSignal.ts` rördes inte.**
+     CTO-underlaget nämnde en larmkolumn i en registervy — den vyn finns inte
+     (utesluten i S3.1, byggjournal beslut-121/-131, kommentaren
+     `routes.ts:1467`), så inkopplingspunkten är svepets cache. Och
+     scopesignalerna (FR-6/FR-7) tänds av människor, inte av trösklar. CTO:ns
+     analysfråga om att lägga om `takvarningEfterSparad` till dubbelvillkoret
+     besvaras av Davids regel 1: nej — källan kräver det inte.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-troskel.test.ts` i två lager. **(a) Den rena
+  funktionen** med storyns sex provfall: 30 000 kr mot 473 000 kr tänder
+  (tröskeln 23 650 binder, golvet 22 000 passeras) medan 23 000 kr — över golvet,
+  under procenten — tiger, och exakt på tröskeln tänder inte; 2 400 kr mot en
+  post på 8 000 kr tänder INTE (golvet binder) men 22 001 kr gör det, och
+  strömmen som ligger 40 000 kr över sitt tak mäts inte alls; den
+  prognostiserade avvikelsen tänder på exakt samma tröskeltal som utfallet, utan
+  taxa bara på timsidan, utan bekräftat tak inte alls; 30 h mot 430 h tänder
+  medan 18 h och 21 h (över golvet, under procenten) inte gör det, plus
+  golvningens exakthet på 1 354/1 355 minuter; fem dagars försening mot en
+  daterad post tänder medan fyra dagar och slutdagen själv inte gör det, och
+  dagslarmet tänder utan tak och tystnar inte av ett; och en leverabel med
+  ENBART ärvt intervall tiger den 6/9, den 30/9 och den 4/10 men larmar den 5/10
+  med `arvt_fran: 'S1'` — medan ett eget intervall vinner över det ärvda. Plus
+  att samma förbrukning tänder eller tiger enbart beroende på trösklarna, och
+  att inget larmobjekt bär ett fält som liknar en färdigställandegrad (NFR-11).
+  **(b) Kopplingen genom stacken** på ett riktigt avtal: bekräftat tak 10 h/
+  11 000 kr, 15 h registrerade, en ström med period t.o.m. 31/1 och en
+  leverabel utan egna datum under den. Med 0068:s standardtrösklar tiger
+  beloppen (300 min och 5 500 kr under golven) och kvar står dagslarmet på det
+  ÄRVDA intervallet; efter en ändring av avtalets trösklar (golv 4 h/5 000 kr,
+  `troskel_dagar` 10 000) tänder samma förbrukning två beloppslarm och
+  dagslarmet tystnar — bevis för att talen är avtalets och inte kodens. En bokad
+  dag framåt ger dessutom två prognoslarm bredvid utfallets, och grannuppdragets
+  trösklar står kvar orörda. Trösklarna sätts i provet som ägarrollen (de har
+  med flit ingen skrivväg) — riggning av indata, inte en andra skrivväg.
+
+  **Kvarstår för David:** inget att migrera och ingenting i vyn. Larmen ligger i
+  svepets cache under `troskellarm` så fort svepet körts. En åtgärd för att
+  ändra trösklarna, larm på strömnivå, notifiering via `godkannare_eskalering`,
+  en larmkolumn i en registervy och en omläggning av `takvarningEfterSparad` är
+  medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S3.3, våg 5 — ålder i läget):** S3.1 gav
   leverabelregistret sin läsväg och S3.2 gav statusbytet sin händelserad. Men
   **registret svarade bara VILKEN status en leverabel står i, aldrig HUR LÄNGE.**
