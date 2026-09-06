@@ -145,6 +145,104 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S7.3 — granskningsfynd åtgärdat: KRAV-3 höll inte i
+  Drive-vägen):** Granskaren underkände bygget nedan. KRAV-3:s löfte att 0068:s
+  `vagrar_skrivning_pa_avslutat()` aldrig träffas gällde bara uppdragsloopen —
+  `drive_kopior[]` gick rakt in i `rapporteraDriveKopia`, som gör en UPDATE på
+  `uppdrag_referens` utan att projektstatusen prövades. Kön delas visserligen
+  bara ut för öppna uppdrag, men uppdraget kan stängas MELLAN två svep: då kom
+  Hermes rapport tillbaka mot ett stängt uppdrag → trigger-exception → 500 och
+  rollback av HELA bolagets svep. Felet var dessutom fastnande: köposten stod
+  kvar som `koad`, samma rapport kom tillbaka i varje svep, och bolagets svep var
+  kilat tills någon handgrep. Precis det scenario KRAV-3 påstod var omöjligt.
+
+  Åtgärdat: rapporterna slås först upp mot `uppdrag_referens` (en SELECT) och
+  prövas mot SAMMA statusläsning som uppdragsloopen redan gjort (`per`-mappen).
+  En rapport vars uppdrag inte är `active` hoppas och **redovisas** i svarets nya
+  `hoppade_kopior[]` (`referens_id` + uppdraget) — ett tyst hopp hade sett ut som
+  en tömd kö. En referens som inte hittas går som förut vidare till tjänsten och
+  fälls där som 404. Nytt prov i KRAV-3-sviten: uppdrag med importerad kopia i
+  kön → stängs → rapport skickas in; svepet svarar `svep_kort`, rapporten står i
+  `hoppade_kopior`, det öppna uppdragets cache skrevs, och köposten står orörd
+  (`koad`, platshållar-id kvar) utan att delas ut igen. Rört: `uppdragSvep.ts`,
+  `uppdragsytan-svep.test.ts`, `MCP_ACTIONS.md`, den här raden.
+
+- **2026-09-06 (uppdragsytan S7.3, våg 3 — svepet; sista repobiten i våg 3):**
+  S7.1 gav referenserna sin skrivväg, S7.2 gav kopian sin kö och 0068 gav cachen
+  sin tabell — men **ingen körde något av det.** `uppdrag_svepvarde` skrevs bara
+  av ett prov, referenserna verifierades aldrig, spärrmappen kontrollerades
+  aldrig och prognosen fanns inte. Följden: NFR-6:s krav att vyerna aldrig ringer
+  ett grannsystem var uppfyllt på det billiga sättet — genom att ingen hade läst
+  grannsystemen alls.
+
+  Byggt: **en enda ny funktion, `korUppdragssvep` i befintliga
+  `services/uppdragSvep.ts`** (med sitt strikta zod-schema), **en def-post i
+  `actions/registry.ts`** (`kor_uppdragssvep`, `write`, ingen `kravManniska`) och
+  **ett nytt prov**. Ingen migration, ingen vy, ingen rutt, ingen scheduler, inga
+  nya beroenden, ingen ny felkod, ingen ändrad känslighet; `uppdragReferens.ts`,
+  `uppdragRegister.ts`, `execute.ts`, `html.ts` och alla migrationer är orörda.
+
+  1. **Anropet går åt två håll — och det är hela ADR-4.** Indatat ÄR förra
+     arbetslistans resultat (vad Hermes SÅG i Drive, kalendern och mejlen), och
+     svaret är NÄSTA arbetslista (referenser att verifiera + Drive-kön ur
+     `hamtaDriveKo`). Svepet har därför ingen egen läsåtgärd mot ett grannsystem
+     och behöver ingen. Även de skrivna Drive-kopiorna tas emot här — genom S7.2:s
+     `rapporteraDriveKopia`, samma enda skrivväg, aldrig en andra — eftersom ett
+     svar som lämnar tillbaka en redan tömd kö sluter loopen fel.
+  2. **Låset är `pg_try_advisory_xact_lock`, inte sessionsvarianten.** Migratorns
+     prejudikat kör på en egen anslutning och släpper med `client.end()`; svepet
+     kör på en poolad, och där hade ett kraschat svep lämnat låset kvar för
+     nästa användare av samma anslutning. Upptaget ger ett uttryckligt
+     `svep_avstod` — auditrad får det ändå av `executeAction`, så ingen ny
+     loggmekanism och ingen ny felkod behövdes.
+  3. **`projects.status` läses FÖRE varje skrivning.** 0068:s
+     `vagrar_skrivning_pa_avslutat()` hade annars fällt HELA körningen — för alla
+     uppdrag — för att ett uppdrag avslutades i går. De hoppade redovisas, och
+     varken deras referenser eller deras köposter kommer med i arbetslistan.
+  4. **Ordningen står i svaret.** `nycklar` är härledningsordningen
+     (`referenser:*` → `sparrmapp` → `prognos` → förslagen), inte den sorterade
+     skrivordningen: ett ordningskrav som bara syns i koden går inte att pröva.
+     Varje värde bär `kalla` (en rad per källsystem, så källan är sann) och
+     `last_nar`.
+  5. **Förslagen är cache och rör ingen ägd tabell.** `statusforslag:<kod>` föds
+     ur indatans `revision` — repot avgör aldrig själv om en revision är "ny"
+     (det ser inte Drive), och ett svep som gissade det ur sin egen cache hade
+     slutat vara omräkningsbart. `kostnadsforslag:<receipt_id>` binder enligt
+     **FR-33**: strömmen vars intervall täcker datumet, annars rotdelen
+     `UPPDRAG`, bara när `contract_part_id` är NULL — aldrig en leverabel
+     (`bakvag.py` fäller ett svep som binder till ett löv) och aldrig en flytt.
+     Överlappar två strömmar vinner avtalets egen `sort_order`, så förslaget är
+     detsamma vid varje körning.
+  6. **Kopplingen leverabel↔handling kommer med indatat** (`leverabel_kod`).
+     Den finns inte i schemat — en referens hänger på AVTALET — och gissas därför
+     aldrig här; en kod utanför leverabelregistret ger inget förslag utan
+     redovisas som `okanda_leverabelkoder`. Matchningen kvitto↔leverabel går på
+     leverantörsnamnet i handlingens `titel_vid_lankning`, den enda tråd som
+     finns mellan en kostnad i redovisningen och ett dokument i Drive.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-svep.test.ts`: registret (`write`, ingen
+  `kravManniska`, okänt fält 400, tomt anrop giltigt, agenten kör); ordningen
+  (`nycklar` i härledningsordning, källa och lästidpunkt på varje rad, prognosen
+  ur kalendern, och **cachen som bär läget EFTER verifieringen** — en drift kan
+  inte ha varit känd före); låset (två samtidiga svep → ett `svep_avstod` som
+  inte skrev något, och ett grannbolag som INTE hindras); stängda uppdrag (ingen
+  cache, ingen verifiering, utanför arbetslistan); båda förslagsraderna ur
+  riggat indata med FR-33:s tre fall (ström som täcker, rotdel när ingen gör det,
+  och oktoberöverlappet som måste ge samma svar varje gång); samma indata två
+  gånger → identiska rader; **negativa kontroller** (`uppdrag_leverabel` och
+  `receipts` rad för rad oförändrade, `contract_part_id` fortfarande NULL, ingen
+  `fetch(`/`node:http` i källan OCH en spärrad `globalThis.fetch` under
+  körningen, obokat kvitto och omatchad leverantör utan förslag, okänd
+  leverabelkod utan förslag, referens under fel uppdrag → 404 utan halvskriven
+  cache); arbetslistan (id/källa/hash, köad kopia bara i kön, rapporterad kopia
+  som flyttar från kön till referenslistan) och tenantgränsen.
+
+  **Kvarstår för David:** inget att migrera och ingenting i vyn. Svepet körs
+  utifrån av Hermes (S7.5) — schemaläggning, indatabygge och Drive-köns tömmare
+  ligger där, inte här. `svepet.py`/`agandegrans.py` och drift väntar in S7.5.
+
 - **2026-09-06 (uppdragsytan S7.2, våg 3 — Drive-kön för registrets frysta
   kopia):** S1.2:s import fyller leverabelregistret och S3.1 läser det, men
   **kopian till kundens spärrmapp hade ingen kö.** `uppdrag_referens.ko_status`
