@@ -11,9 +11,14 @@
 // redovisningen ringer aldrig ut).
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
+import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
+import {
+  bindSvepetsForslag, tomtBindningsutfall,
+  type Bindningsdel, type Bindningsutfall, type Kostnadsforslag,
+} from './uppdragKostnad.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import {
   DriveRapportSchema, REFERENSSORTER, ReferenslageSchema, hamtaDriveKo, rapporteraDriveKopia,
@@ -105,9 +110,13 @@ export async function lasSvepvarden(
 //     skrivvägarna: uppdragen i indatat och Drive-rapporterna, vars köposter
 //     delades ut medan uppdraget ännu var öppet.
 //   * **Förslagen är cache, inget annat.** `statusforslag:`/`kostnadsforslag:`
-//     skrivs i `uppdrag_svepvarde` och rör aldrig `uppdrag_leverabel` eller
-//     `receipts`. Ett förslag är inte ett beslut: S3.2 bekräftar statusbytet och
-//     S6.1 köar kostnadsbindningen, båda med en människa i vägen.
+//     skrivs i `uppdrag_svepvarde` och rör aldrig `uppdrag_leverabel`. Ett
+//     förslag är inte ett beslut: S3.2 bekräftar statusbytet och S6.1 köar
+//     kostnadsbindningen mot en leverabel, båda med en människa i vägen.
+//     Undantaget är bindningssteget (S6.1, `uppdragKostnad.ts`): saknar
+//     förslaget ett löv finns inget omdöme att fråga om, och kostnaden binds
+//     till strömmen/rotdelen direkt — bara när `contract_part_id` är NULL,
+//     aldrig som en flytt, och aldrig till ett löv.
 
 /**
  * Vad anroparen SÅG om en referens. `lage` går rakt in i `verifieraReferens`
@@ -203,6 +212,8 @@ export interface Uppdragsutfall {
   borttagna: number;
   /** Koder i indatat som inte finns i leverabelregistret. Saknat syns som saknat. */
   okanda_leverabelkoder: string[];
+  /** Vad bindningssteget gjorde med körningens kostnadsförslag (S6.1). */
+  bindningar: Bindningsutfall;
 }
 
 /** Ett uppdrag svepet lät stå: det är inte längre öppet (FR-8). */
@@ -236,13 +247,8 @@ interface Kvittorad {
   leverantor: string;
 }
 
-interface Delrad {
-  part_id: string;
-  code: string;
-  parent_part_id: string | null;
-  start_date: string | null;
-  end_date: string | null;
-}
+/** Formen delas med bindningssteget (S6.1) — två kopior hinner divergera. */
+type Delrad = Bindningsdel;
 
 /** Gemensam normalisering för leverantörsjämförelsen. Aldrig för id:n. */
 function normalisera(v: string): string {
@@ -258,10 +264,14 @@ function normalisera(v: string): string {
  * `DISTINCT ON (code)` med `valid_from DESC` tar den SENASTE versionen av varje
  * kod: ett tilläggsavtal är en ny rad (0064), och ett förslag ska peka på det
  * som gäller nu.
+ *
+ * `alla` är samma läsning ofiltrerad — bindningssteget (S6.1) slår upp
+ * leverabelns lövdel där, och får då exakt samma versionsregel utan en andra
+ * fråga som kan hinna svara något annat.
  */
 async function bindningsmal(
   client: PoolClient, companyId: string, contractId: string,
-): Promise<{ rot: Delrad | null; strommar: Delrad[] }> {
+): Promise<{ rot: Delrad | null; strommar: Delrad[]; alla: Delrad[] }> {
   const res = await client.query<Delrad & { sort_order: number }>(
     `SELECT DISTINCT ON (code)
             id AS part_id, code, parent_part_id, start_date::text, end_date::text, sort_order
@@ -276,7 +286,7 @@ async function bindningsmal(
     // Ordningen är avtalets egen (sort_order), inte databasens — två strömmar
     // vars intervall överlappar ska ge samma förslag vid varje körning.
     .sort((a, b) => a.sort_order - b.sort_order || a.code.localeCompare(b.code, 'sv'));
-  return { rot, strommar };
+  return { rot, strommar, alla: res.rows };
 }
 
 /** Bokförda kvitton UTAN avtalsdel. Ett bundet kvitto flyttas aldrig av ett svep. */
@@ -298,7 +308,8 @@ async function obundnaKvitton(client: PoolClient, companyId: string): Promise<Kv
  * kunna stå halvskriven mellan två steg.
  */
 async function svepEttUppdrag(
-  client: PoolClient, companyId: string, rad: Uppdragsrad, obs: Uppdragsobservation,
+  client: PoolClient, companyId: string, userId: string, actor: Actor,
+  rad: Uppdragsrad, obs: Uppdragsobservation,
 ): Promise<Uppdragsutfall> {
   // (1) Referenserna. `verifieraReferens` äger jämförelsen mot baslinjen och
   // stämpeln `senast_verifierad` — svepet gör ingen egen bedömning av drift.
@@ -410,9 +421,15 @@ async function svepEttUppdrag(
   // till ett dokument i Drive. Namn under tre tecken jämförs inte: "AB" står i
   // varannan titel, och ett förslag som alltid träffar är brus.
   const medTitel = leverabelhandlingar(verifierade, koder);
+  // Körningens egna förslag, i härledningsordning — bindningssteget nedan verkar
+  // ENBART på dem. Ett kvitto utan kostnadsförslag är en allmän bolagskostnad
+  // och hör inte till uppdraget; det rörs aldrig.
+  const kostnadsforslag: Kostnadsforslag[] = [];
+  let bindningsdelar: { rot: Delrad; strommar: Delrad[]; alla: Delrad[] } | null = null;
   if (medTitel.length > 0) {
-    const { rot, strommar } = await bindningsmal(client, companyId, rad.contract_id);
+    const { rot, strommar, alla } = await bindningsmal(client, companyId, rad.contract_id);
     if (rot !== null) {
+      bindningsdelar = { rot, strommar, alla };
       for (const kvitto of await obundnaKvitton(client, companyId)) {
         const namn = normalisera(kvitto.leverantor);
         if (namn.length < 3) continue;
@@ -438,11 +455,25 @@ async function svepEttUppdrag(
             forslag_kod: mal.code,
           },
         });
+        kostnadsforslag.push({
+          receipt_id: kvitto.receipt_id,
+          datum: kvitto.receipt_date,
+          leverabel_kod: traff.obs.leverabel_kod,
+        });
       }
     }
   }
 
   const skrivning = await upsertSvepvarden(client, companyId, rad.contract_id, varden);
+
+  // (6) Bindningssteget (S6.1, FR-33). Efter förslagshärledningen, i SAMMA
+  // transaktion: köar det som är ett omdöme (ett löv) och binder det som inte är
+  // det (ström/rot). Faller något rullas hela svepet tillbaka — en köad bindning
+  // utan sin cache hade pekat på ett förslag som inte fanns.
+  const bindningar = bindningsdelar === null || kostnadsforslag.length === 0
+    ? tomtBindningsutfall()
+    : await bindSvepetsForslag(client, companyId, userId, actor, kostnadsforslag, bindningsdelar);
+
   return {
     contract_id: rad.contract_id,
     project_id: rad.project_id,
@@ -454,6 +485,7 @@ async function svepEttUppdrag(
     skrivna: skrivning.skrivna,
     borttagna: skrivning.borttagna,
     okanda_leverabelkoder: okanda,
+    bindningar,
   };
 }
 
@@ -470,11 +502,11 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * Ordningen är låst av KRAV-4 och av verkligheten: verifieringen bestämmer vad
  * referenserna ÄR, spärrmappen prövas på samma kedjor, och prognosen räknas sist
  * ur kalendern. Allt lagras i `uppdrag_svepvarde` med `kalla` och `last_nar`;
- * ingenting utanför cachen skrivs utom referensernas egna lägen (S7.1) och
- * Drive-köns utfall (S7.2), båda genom sina befintliga tjänster.
+ * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
+ * (S7.2) och bindningssteget (S6.1) — alla tre genom sina befintliga tjänster.
  */
 export async function korUppdragssvep(
-  client: PoolClient, companyId: string, indata: SvepIndata,
+  client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata,
 ): Promise<Svepsvar> {
   const data = SvepIndataSchema.parse(indata);
 
@@ -539,7 +571,7 @@ export async function korUppdragssvep(
       hoppade.push(rad);
       continue;
     }
-    uppdrag.push(await svepEttUppdrag(client, companyId, rad, obs));
+    uppdrag.push(await svepEttUppdrag(client, companyId, userId, actor, rad, obs));
   }
 
   // Nästa arbetslista. Köade kopior utelämnas: deras `extern_id` är ännu bara
