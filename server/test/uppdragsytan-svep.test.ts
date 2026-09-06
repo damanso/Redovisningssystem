@@ -278,9 +278,16 @@ describe('KRAV-4: verifiering → spärrmapp → prognos, i den ordningen', () =
     expect(rader.find((r) => r.nyckel === 'prognos')!.kalla).toBe('kalender');
     expect(rader.find((r) => r.nyckel === 'sparrmapp')!.kalla).toBe('drive');
 
-    // Prognosen räknas ur indatans kalenderhändelser — minuter som heltal.
+    // Prognosen räknas ur indatans kalenderhändelser — minuter som heltal —
+    // och bär sedan S7.4 också FR-5:s två ramdatum. NVR-001:s rotdel har tak
+    // (430 h / 473 000 kr) men importen bekräftar aldrig ett tak, så
+    // `cap_status` är 'vet_ej': ramarna svarar med sitt villkor i stället för
+    // med ett datum. Ett prognosdatum ur ett oläst tak hade varit exakt den
+    // gissning FR-5 förbjuder.
     expect(varde(rader, 'prognos')).toEqual({
       handelser: 2, bokade_minuter: 180, forsta: '2026-10-01', sista: '2026-10-08',
+      ram_timmar: { villkor: 'inget bekräftat tak' },
+      ram_kronor: { villkor: 'inget bekräftat tak' },
     });
     expect(varde(rader, 'sparrmapp')).toEqual({ ok: true, provade: 1, utanfor: [] });
   });
@@ -701,5 +708,111 @@ describe('tenantgränsen', () => {
       uppdrag: [{ contract_id: grannavtal.body.result.contract_id }],
     });
     expect(res.status, JSON.stringify(res.body)).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S7.4: prognosens ramdatum, hela vägen genom stacken
+// ---------------------------------------------------------------------------
+//
+// Härledningen själv är fryst i `uppdragsytan-prognos.test.ts` (ren funktion,
+// `idag` som argument). Det som prövas HÄR är kopplingen: att svepet hämtar den
+// registrerade tiden och det bekräftade taket ur husets enda takberäkning
+// (`forbrukningForAvtal`) och taxan ur husets enda taxeordning (`gallandeTaxa`
+// — avtalets, annars uppdragets). Ett fel i kopplingen syns aldrig i den rena
+// funktionen: den skulle räkna alldeles rätt på fel tal.
+//
+// Kalenderdatumen räknas från dagens datum i stället för att skrivas ut, för
+// bokad framtid ÄR framtid — hårdkodade 2026-datum hade gjort provet till en
+// tidsinställd bomb.
+describe('S7.4: prognosen läser rotramen, den registrerade tiden och taxan', () => {
+  const TAXA = 110_000;
+  let ramavtal = '';
+  let ramprojekt = '';
+
+  /** `YYYY-MM-DD` om n dagar. Ren kalenderräkning, inget av härledningen. */
+  function omDagar(n: number): string {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+
+  beforeAll(async () => {
+    // Uppdragets taxa och INGEN avtalstaxa: `gallandeTaxa` ska falla igenom
+    // till uppdraget. Det är just den ordningen som inte får skrivas om här.
+    ramprojekt = (await ok('create_project', { name: 'Ramuppdraget', hourly_rate_ore: TAXA })).id as string;
+    const svar = await ok('skapa_uppdrag', {
+      project_id: ramprojekt, name: 'Leveranskontrakt RAM-001', signed_date: '2026-09-03',
+    });
+    ramavtal = svar.contract_id as string;
+
+    // Taket BEKRÄFTAS — annars svarar båda ramarna med sitt villkor. 20 h och
+    // 33 000 kr, samma tal som den rena sviten fryser.
+    await okKoad('upsert_contract_part', {
+      contract_id: ramavtal,
+      code: 'UPPDRAG',
+      valid_from: '2026-09-03',
+      cap_hours: 20,
+      cap_amount_ore: 3_300_000,
+      cap_confirmed: true,
+    });
+
+    // 10 registrerade timmar på rotdelen. En människas post föds 'godkand' och
+    // förbrukar därmed taket: 600 minuter och 11 000 kr.
+    const rotdel = del(await delar(ramavtal), 'UPPDRAG');
+    await ok('log_time', {
+      project_id: ramprojekt,
+      work_date: '2026-09-04',
+      minutes: 600,
+      description: 'Förstudie',
+      contract_part_id: rotdel,
+    });
+  });
+
+  it('två datum: timramen nås före kronramen, ur registrerat plus bokat', async () => {
+    const svar = await svep({
+      uppdrag: [{
+        contract_id: ramavtal,
+        kalenderhandelser: [
+          { datum: omDagar(1), minuter: 480 },
+          { datum: omDagar(8), minuter: 480 },
+          { datum: omDagar(15), minuter: 480 },
+        ],
+      }],
+    });
+    expect(svar.uppdrag.map((u) => u.contract_id)).toEqual([ramavtal]);
+
+    // 600 minuter kvar av taket → den andra bokningen räcker.
+    // 22 000 kr kvar och 8 800 kr per bokad vecka → först den tredje.
+    expect(varde(await cache(ramavtal), 'prognos')).toEqual({
+      handelser: 3,
+      bokade_minuter: 1440,
+      forsta: omDagar(1),
+      sista: omDagar(15),
+      ram_timmar: { datum: omDagar(8) },
+      ram_kronor: { datum: omDagar(15) },
+    });
+  });
+
+  it('utan bokad framtid står villkoret där — aldrig ett tal utan underlag', async () => {
+    await svep({ uppdrag: [{ contract_id: ramavtal, kalenderhandelser: [] }] });
+    expect(varde(await cache(ramavtal), 'prognos')).toMatchObject({
+      handelser: 0,
+      ram_timmar: { villkor: 'ingen bokad framtid' },
+      ram_kronor: { villkor: 'ingen bokad framtid' },
+    });
+  });
+
+  it('samma indata två gånger ger exakt samma prognosrad (ADR-2)', async () => {
+    const indata: SvepIndata = {
+      uppdrag: [{
+        contract_id: ramavtal,
+        kalenderhandelser: [{ datum: omDagar(3), minuter: 300 }, { datum: omDagar(10), minuter: 300 }],
+      }],
+    };
+    await svep(indata);
+    const forsta = varde(await cache(ramavtal), 'prognos');
+    await svep(indata);
+    expect(varde(await cache(ramavtal), 'prognos')).toEqual(forsta);
   });
 });

@@ -1110,7 +1110,22 @@ spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändel
 sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
 `kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
 avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`) och
-`prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`).
+`prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`, `ram_timmar`,
+`ram_kronor`).
+
+**Prognosens två ramdatum (S7.4, FR-5).** `ram_timmar` och `ram_kronor` säger när
+uppdragets ram nås, härlett ur den registrerade tiden t.o.m. i dag (rotdelens
+nod i `forbrukningForAvtal` — ingen andra takberäkning) plus de bokade
+kalenderminuterna EFTER i dag, med taxan ur `gallandeTaxa` (avtalets, annars
+uppdragets). Varje fält är **antingen** `{ "datum": "YYYY-MM-DD" }` **eller**
+`{ "villkor": "..." }` — aldrig båda, och aldrig ett tal när underlaget saknas
+(FR-5: vägrar gissa). Villkoren prövas i ordningen **`inget bekräftat tak`**
+(rotens `cap_status` är `vet_ej`, eller ramens takfält är tomt) → **`ingen taxa`**
+(bara `ram_kronor`) → **`ingen bokad framtid`** (ingen kalenderhändelse efter i
+dag med minuter > 0). Är ramen redan nådd är datumet **i dag** — det är fakta,
+inte en gissning. Räcker bokningarna inte fram till ramen förlängs de med sin
+egen takt (resterande mängd ställd mot vad som bokats över spannet i dag→sista
+bokningen, avrundat uppåt till hela dagar).
 
 - **Låset är transaktionsbundet:**
   `pg_try_advisory_xact_lock(hashtextextended(company_id::text, 0))`. Är det

@@ -15,6 +15,8 @@ import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
+import { forbrukningForAvtal, gallandeTaxa, type Delforbrukning } from './contracts.js';
+import { timeEntryAmountOre } from './projects.js';
 import {
   bindSvepetsForslag, tomtBindningsutfall,
   type Bindningsdel, type Bindningsutfall, type Kostnadsforslag,
@@ -188,6 +190,9 @@ interface Uppdragsrad {
   contract_id: string;
   project_id: string;
   projektstatus: string;
+  /** Taxekällorna prognosen får använda (`gallandeTaxa` utan post-/delled). */
+  avtal_taxa: number | null;
+  projekt_taxa: number | null;
 }
 
 /** En referens att verifiera i nästa arbetslista (FR-10/FR-36). */
@@ -221,6 +226,15 @@ export interface Hoppat {
   contract_id: string;
   project_id: string;
   projektstatus: string;
+}
+
+/**
+ * Svarets form byggs uttryckligen ur raden. Ett spread av hela `Uppdragsrad`
+ * hade tagit med taxekolumnerna — avtalets prissättning hör inte hemma i ett
+ * meddelande om att ett uppdrag är stängt.
+ */
+function hoppat(rad: Uppdragsrad): Hoppat {
+  return { contract_id: rad.contract_id, project_id: rad.project_id, projektstatus: rad.projektstatus };
 }
 
 export type Svepsvar =
@@ -302,6 +316,155 @@ async function obundnaKvitton(client: PoolClient, companyId: string): Promise<Kv
   return res.rows;
 }
 
+// ---------------------------------------------------------------------------
+// Prognosen (S7.4, våg 4 — FR-5)
+// ---------------------------------------------------------------------------
+//
+// FR-5 vill veta NÄR uppdragets ram nås: ett datum för timramen och ett för
+// kronramen, härledda ur den registrerade tiden t.o.m. i dag plus den bokade
+// tiden framåt. Kravet bär också sin egen spärr — systemet ska hellre säga
+// varför frågan inte går att svara på än leverera ett tal som ser ut som ett
+// svar. Därför är varje ram ANTINGEN ett datum ELLER ett namngivet villkor,
+// aldrig båda och aldrig ett tal när underlaget saknas.
+//
+// Funktionen nedan är REN: `idag` är ett argument (samma hållning som
+// `byggForbrukning` i contracts.ts), taket och den registrerade tiden kommer ur
+// husets enda takberäkning (`forbrukningForAvtal`) och taxan ur husets enda
+// taxeordning (`gallandeTaxa`). Ingen databas, ingen klocka, inga anrop — samma
+// indata ger alltid samma utdata, vilket är hela ADR-2:s omräkningsbarhet.
+
+/** Villkorsnamnen. Konstanter, så att provet och koden inte kan stava olika. */
+export const INGET_BEKRAFTAT_TAK = 'inget bekräftat tak';
+export const INGEN_TAXA = 'ingen taxa';
+export const INGEN_BOKAD_FRAMTID = 'ingen bokad framtid';
+
+/**
+ * En ram: datumet då den nås, eller varför det inte går att säga. ETT av dem,
+ * aldrig båda — det är formen som gör "vägrar gissa" läsbar i cachen.
+ */
+export type Ramutfall = { datum: string } | { villkor: string };
+
+export interface Prognosindata {
+  /** Dagens datum. Argument och aldrig en klocka — annars vore funktionen oren. */
+  idag: string;
+  /** Registrerad, förbrukande tid t.o.m. i dag (rotdelens `billable_minutes`). */
+  registrerade_minuter: number;
+  /** Samma tid i ören (rotdelens `amount_ore`). */
+  registrerade_oren: number;
+  cap_hours: number | null;
+  cap_amount_ore: number | null;
+  cap_status: Delforbrukning['cap_status'];
+  /** Avtalets taxa, annars uppdragets (`gallandeTaxa`). null = ingen taxa. */
+  taxa_ore: number | null;
+  /** Bokad kalendertid. Bara det som ligger EFTER `idag` räknas som framtid. */
+  handelser: Array<{ datum: string; minuter: number }>;
+}
+
+export interface Prognosramar {
+  ram_timmar: Ramutfall;
+  ram_kronor: Ramutfall;
+}
+
+const DYGN_MS = 86_400_000;
+
+/** `YYYY-MM-DD` → dygn sedan epok. Samma grepp som `lib/uppdragsplan.ts`. */
+function dagnummer(datum: string): number {
+  return Date.UTC(
+    Number(datum.slice(0, 4)), Number(datum.slice(5, 7)) - 1, Number(datum.slice(8, 10)),
+  ) / DYGN_MS;
+}
+
+function datumEfter(datum: string, dagar: number): string {
+  return new Date((dagnummer(datum) + dagar) * DYGN_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Datumet då `kvar` är förbrukat, givet de framtida posternas värden i
+ * datumordning.
+ *
+ * Tre utfall, i den ordning verkligheten ger dem:
+ *
+ *   1. `kvar <= 0` — ramen är redan nådd. Datumet är `idag`, och det är FAKTA:
+ *      att svara med ett villkor här hade dolt det enda som är säkert känt.
+ *   2. Ackumuleringen når ramen inom bokningarna → den händelsedagen.
+ *   3. Bokningarna räcker inte → den bokade TAKTEN förlängs: resterande mängd
+ *      i förhållande till vad som bokats över spannet `idag`→sista bokningen.
+ *      Heltalsaritmetik hela vägen (ceil via heltalsdivision), aldrig ett
+ *      flyttal som mellanled för ören.
+ */
+function ramdatum(
+  kvar: number, idag: string, poster: Array<{ datum: string; varde: number }>,
+): Ramutfall {
+  if (kvar <= 0) return { datum: idag };
+  // Poster utan värde flyttar ingenting: ett 0-minuters möte är ingen bokad
+  // framtid, och för kronramen gäller detsamma om taxan gör posten värdelös.
+  const bidragande = poster.filter((p) => p.varde > 0);
+  if (bidragande.length === 0) return { villkor: INGEN_BOKAD_FRAMTID };
+
+  let summa = 0;
+  for (const post of bidragande) {
+    summa += post.varde;
+    if (summa >= kvar) return { datum: post.datum };
+  }
+
+  const sista = bidragande[bidragande.length - 1]!.datum;
+  // Spannet räknas från `idag` och inte från första bokningen: takten ska
+  // beskriva hur uppdraget faktiskt fylls, inte hur tätt de bokade dagarna
+  // ligger inbördes. Bokningarna ligger efter `idag`, så spannet är minst 1.
+  const spanndagar = Math.max(1, dagnummer(sista) - dagnummer(idag));
+  const resterande = kvar - summa;
+  const extra = Math.floor((resterande * spanndagar + summa - 1) / summa);
+  return { datum: datumEfter(sista, extra) };
+}
+
+/**
+ * FR-5:s två ramdatum. Villkoren prövas i kravets ordning — tak, taxa, bokad
+ * framtid — men efter det som är fakta: en ram som redan är nådd svarar `idag`,
+ * inte "ingen bokad framtid".
+ */
+export function harledPrognosramar(indata: Prognosindata): Prognosramar {
+  // KRAV-3: registrerad tid bär det förflutna t.o.m. i dag, kalendern bär
+  // framtiden. En bokning på `idag` eller tidigare räknas alltså inte igen.
+  const framtida = indata.handelser
+    .filter((h) => h.datum > indata.idag && h.minuter > 0)
+    .sort((a, b) => a.datum.localeCompare(b.datum));
+  const bekraftat = indata.cap_status === 'bekraftat';
+
+  // Taket i HELA MINUTER: `cap_hours` är numeric(8,2) i databasen, så det enda
+  // stället där ett decimaltal blir heltal är här — en gång, aldrig i
+  // ackumuleringen.
+  const ram_timmar: Ramutfall = !bekraftat || indata.cap_hours === null
+    ? { villkor: INGET_BEKRAFTAT_TAK }
+    : ramdatum(
+      Math.round(indata.cap_hours * 60) - indata.registrerade_minuter,
+      indata.idag,
+      framtida.map((h) => ({ datum: h.datum, varde: h.minuter })),
+    );
+
+  let ram_kronor: Ramutfall;
+  if (!bekraftat || indata.cap_amount_ore === null) {
+    ram_kronor = { villkor: INGET_BEKRAFTAT_TAK };
+  } else if (indata.taxa_ore === null) {
+    // Utan taxa går bokade minuter inte att räkna om till kronor. Ett datum
+    // härlett ur en gissad taxa hade varit ett tal utan underlag.
+    ram_kronor = { villkor: INGEN_TAXA };
+  } else {
+    const taxa = indata.taxa_ore;
+    ram_kronor = ramdatum(
+      indata.cap_amount_ore - indata.registrerade_oren,
+      indata.idag,
+      framtida.map((h) => ({ datum: h.datum, varde: timeEntryAmountOre(h.minuter, taxa) })),
+    );
+  }
+
+  return { ram_timmar, ram_kronor };
+}
+
+/** Dagens datum. Samma form som takberäkningens egen i `contracts.ts`. */
+function idagsdatum(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 /**
  * Ett uppdrags svep: verifiering → spärrmapp → prognos (KRAV-4:s ordning), och
  * därefter förslagen. Allt hamnar i EN `upsertSvepvarden` — cachen ska aldrig
@@ -362,11 +525,33 @@ async function svepEttUppdrag(
     });
   }
 
-  // (3) Prognosen ur kalenderhändelserna. Raden skrivs också när listan är tom:
-  // "ingen bokad tid framåt" är ett svar, och en saknad rad hade lästs som att
-  // svepet inte tittat.
+  // (3) Prognosen (FR-5). Raden skrivs också när listan är tom: "ingen bokad
+  // tid framåt" är ett svar, och en saknad rad hade lästs som att svepet inte
+  // tittat.
+  //
+  // Råsummeringen beskriver INDATAT och står kvar oförändrad; bredvid den
+  // ligger de två härledda ramdatumen. Underlaget till dem hämtas ur husets
+  // enda takberäkning: rotdelens nod i `forbrukningForAvtal` bär både den
+  // registrerade tiden (barnens tid är rullad upp i roten) och det tak som
+  // varningen och spärren använder. Saknas roten helt finns inget bekräftat tak
+  // — samma svar som ett oläst tak, och "ett oläst tak varnar aldrig".
   const kalender = obs.kalenderhandelser ?? [];
   const datum = kalender.map((h) => h.datum).sort();
+  const delar = await forbrukningForAvtal(client, companyId, { contractId: rad.contract_id });
+  const rot = delar.find((d) => d.code === ROTKOD && d.parent_code === null) ?? null;
+  const ramar = harledPrognosramar({
+    idag: idagsdatum(),
+    registrerade_minuter: rot?.billable_minutes ?? 0,
+    registrerade_oren: rot?.amount_ore ?? 0,
+    cap_hours: rot?.cap_hours ?? null,
+    cap_amount_ore: rot?.cap_amount_ore ?? null,
+    cap_status: rot?.cap_status ?? 'vet_ej',
+    // Taxeordningen är husets (`gallandeTaxa`): avtalets, annars uppdragets. Ett
+    // post- eller delled finns inte att fylla — en bokning i kalendern bär
+    // ingen avtalsdel, och att välja en åt den hade varit en gissning.
+    taxa_ore: gallandeTaxa(null, null, rad.avtal_taxa, rad.projekt_taxa),
+    handelser: kalender,
+  });
   varden.push({
     nyckel: 'prognos',
     kalla: 'kalender',
@@ -375,6 +560,8 @@ async function svepEttUppdrag(
       bokade_minuter: kalender.reduce((s, h) => s + h.minuter, 0),
       forsta: datum[0] ?? null,
       sista: datum.at(-1) ?? null,
+      ram_timmar: ramar.ram_timmar,
+      ram_kronor: ramar.ram_kronor,
     },
   });
 
@@ -501,7 +688,8 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  *
  * Ordningen är låst av KRAV-4 och av verkligheten: verifieringen bestämmer vad
  * referenserna ÄR, spärrmappen prövas på samma kedjor, och prognosen räknas sist
- * ur kalendern. Allt lagras i `uppdrag_svepvarde` med `kalla` och `last_nar`;
+ * ur kalendern och uppdragets rotram (S7.4). Allt lagras i `uppdrag_svepvarde`
+ * med `kalla` och `last_nar`;
  * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
  * (S7.2) och bindningssteget (S6.1) — alla tre genom sina befintliga tjänster.
  */
@@ -520,7 +708,8 @@ export async function korUppdragssvep(
   if (las.rows[0]?.tog !== true) return { lage: 'svep_avstod' };
 
   const alla = await client.query<Uppdragsrad>(
-    `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus
+    `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus,
+            c.hourly_rate_ore AS avtal_taxa, p.hourly_rate_ore AS projekt_taxa
        FROM contracts c
        JOIN projects p ON p.id = c.project_id AND p.company_id = c.company_id
       WHERE c.company_id = $1
@@ -553,7 +742,7 @@ export async function korUppdragssvep(
       const contractId = kontrakt.get(rapport.referens_id);
       const rad = contractId === undefined ? undefined : per.get(contractId);
       if (rad !== undefined && rad.projektstatus !== 'active') {
-        hoppadeKopior.push({ referens_id: rapport.referens_id, ...rad });
+        hoppadeKopior.push({ referens_id: rapport.referens_id, ...hoppat(rad) });
         continue;
       }
       // En referens vi inte hittade går vidare till tjänsten och fälls där som
@@ -568,7 +757,7 @@ export async function korUppdragssvep(
     const rad = per.get(obs.contract_id);
     if (rad === undefined) throw new NotFoundError('contract');
     if (rad.projektstatus !== 'active') {
-      hoppade.push(rad);
+      hoppade.push(hoppat(rad));
       continue;
     }
     uppdrag.push(await svepEttUppdrag(client, companyId, userId, actor, rad, obs));

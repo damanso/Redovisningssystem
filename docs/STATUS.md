@@ -145,6 +145,70 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S7.4, våg 4 — prognosen som vägrar gissa):** S7.3
+  gav svepets steg 3 en cachenyckel `prognos` — men innehållet var en
+  RÅSUMMERING av indatat (antal, minuter, första och sista datum). FR-5 frågar
+  något annat: NÄR nås uppdragets ram, i timmar och i kronor? Det talet fanns
+  ingenstans, och S10.4 hade alltså ingen kurva att rita.
+
+  Byggt: **en ny ren, exporterad funktion `harledPrognosramar` i befintliga
+  `services/uppdragSvep.ts`**, steg 3 omskrivet så att det läser underlaget,
+  **en `export`-rad på `forbrukningForAvtal` i `contracts.ts`**, en ny svit och
+  två docs-rader. Ingen migration, ingen ny åtgärd, ingen ny felkod, ingen vy,
+  ingen ändring av svepets indata-schema, låset, hoppen eller bindningslogiken,
+  inga nya beroenden.
+
+  1. **Ren funktion, `idag` som argument.** Samma hållning som `byggForbrukning`
+     i `contracts.ts`: ingen databas, ingen klocka, inga anrop. Samma indata ger
+     samma utdata, vilket ÄR ADR-2:s omräkningsbarhet — en prognos som läser
+     klockan inuti sig går inte att räkna om till samma rad i morgon.
+  2. **Ingen andra takberäkning och ingen andra taxeordning.** Registrerad tid
+     och tak kommer ur rotdelens nod i `forbrukningForAvtal` (`code === UPPDRAG`,
+     `parent_code === null` — barnens tid är redan upprullad där), taxan ur
+     `gallandeTaxa` utan post-/delled: en kalenderbokning bär ingen avtalsdel,
+     och att välja en åt den hade varit en gissning. Davids beslutsregel 3 —
+     husets mönster vinner över FRAGA:ns "projektets timtaxa".
+  3. **Ett fält är ETT datum eller ETT villkor, aldrig ett tal utan underlag.**
+     Villkoren prövas i ordning: `inget bekräftat tak` (oläst tak varnar aldrig
+     — samma regel som `cap_status`) → `ingen taxa` (bara kronramen) → `ingen
+     bokad framtid`. Men fakta går före villkor: är ramen redan nådd är datumet
+     **i dag**, även utan en enda bokning framåt. Att svara "ingen bokad
+     framtid" där hade dolt det enda som var säkert känt.
+  4. **Bara bokningar EFTER i dag räknas.** Registrerad tid t.o.m. i dag bär det
+     förflutna; utan gränsen hade en bokad och redan rapporterad dag räknats två
+     gånger. Råsummeringens fyra fält står kvar oförändrade — de beskriver
+     indatat, och ändringen mot befintliga prov skulle vara minsta möjliga.
+  5. **Taktförlängningen är heltalsaritmetik.** Räcker bokningarna inte fram
+     till ramen förlängs de med sin egen takt: `sista bokade datumet + ceil(
+     resterande × spanndagar ÷ bokat totalt framåt)`, ceil via heltalsdivision.
+     Aldrig ett flyttal som mellanled för ören. Det enda stället ett decimaltal
+     blir heltal är `cap_hours` (numeric(8,2)) → hela minuter, en gång.
+  6. **Svarets `hoppade`/`hoppade_kopior` byggs nu uttryckligen ur raden.**
+     Uppdragsraden bär två nya taxekolumner, och ett spread av hela raden hade
+     lagt avtalets prissättning i ett meddelande om att ett uppdrag är stängt.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-prognos.test.ts` fryser den rena funktionen:
+  känt indata → två olika kända datum (timramen 14/9, kronramen 21/9), exakt
+  träff på en bokad dag, indataordningen som inte spelar roll, taktförlängningen
+  (2 880 minuter över tre veckobokningar → 6/10) med avrundning UPPÅT (2 881 →
+  7/10) och kronramens egen takt (26/10), redan nådd och passerad ram → i dag
+  (även utan bokad framtid), bokningar t.o.m. i dag som inte flyttar något, samt
+  alla tre villkorsnamnen — inklusive taket som prövas före taxan, takfälten var
+  för sig (timdatum + kronvillkor och tvärtom) och en svepning över sex fall som
+  visar att inget fält bär både datum och villkor eller ett tal. I
+  `uppdragsytan-svep.test.ts` är prognosförväntningarna omskrivna till den nya
+  formen (NVR-001:s tak är importerat men obekräftat → båda ramarna svarar
+  `inget bekräftat tak`), och en ny beskrivning kör KOPPLINGEN genom hela
+  stacken: bekräftat tak 20 h/33 000 kr, 10 registrerade timmar på rotdelen,
+  taxan ur uppdraget, tre bokningar framåt → två olika datum, tom kalender →
+  villkoret, och samma indata två gånger → identisk rad.
+
+  **Kvarstår för David:** inget att migrera och ingenting i vyn. Renderingen av
+  kurvan (S10.4), prognos per avtalsdel, varning när datumet närmar sig och
+  lagrad prognoshistorik är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S6.1, våg 4 — kostnad bunden till leverabel):**
   0068 gav `receipts` sitt `contract_part_id` och sin `oplanerad`, och S7.3 gav
   svepet sitt `kostnadsforslag:<receipt_id>`. Men **förslaget tog slut i
