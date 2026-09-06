@@ -20,7 +20,7 @@ let customerId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
 
-type Svar = { status: number; body: { result: Record<string, unknown>; error?: string } };
+type Svar = { status: number; body: { result: Record<string, unknown>; error?: string; approval?: { id: string } } };
 
 async function act(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
   const res = await api.post(`${co()}/actions/${namn}`).set(auth()).send(kropp);
@@ -30,6 +30,26 @@ async function act(namn: string, kropp: Record<string, unknown>): Promise<Svar> 
 async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
   const res = await act(namn, kropp);
   expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(200);
+  return res.body.result;
+}
+
+/**
+ * Känslig action (S0.1 gjorde `upsert_contract_part` och `update_contract`
+ * känsliga): begär (202) och godkänn som människa. Svaret från GODKÄNNANDET
+ * returneras orört — det är där triggerns 409 numera dyker upp, eftersom
+ * skrivningen sker först vid godkännandet. Faller den rullas transaktionen
+ * tillbaka och köposten står kvar som `pending`.
+ */
+async function koaOchGodkann(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+  const begaran = await act(namn, kropp);
+  expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+  return svar as unknown as Svar;
+}
+
+async function okKoad(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const res = await koaOchGodkann(namn, kropp);
+  expect(res.status, `${namn} (godkännande): ${JSON.stringify(res.body)}`).toBe(200);
   return res.body.result;
 }
 
@@ -196,12 +216,12 @@ describe('en OBEKRÄFTAD rad får ändras fritt — upsert_contract_part överle
     // valid_from) → UPDATE på den befintliga raden.
     const projekt = await nyttUppdrag('Utkastarbete');
     const avtal = await nyttAvtal(projekt, 'Avtal under arbete');
-    const skapad = await ok('upsert_contract_part', {
+    const skapad = await okKoad('upsert_contract_part', {
       contract_id: avtal, code: 'U1', name: 'Fas U1', cap_hours: 10, valid_from: '2026-01-01',
     });
     const partId = del(skapad, 'U1').part_id;
 
-    const rattad = await ok('upsert_contract_part', {
+    const rattad = await okKoad('upsert_contract_part', {
       contract_id: avtal, code: 'U1', cap_hours: 12, hourly_rate_ore: 95_000,
       valid_from: '2026-01-01',
     });
@@ -258,7 +278,8 @@ describe('vagrar_avfrysning', () => {
   it('en annan ändring på ett fryst kontrakt rörs inte av spärren', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Fryst men redigerbart'), 'Avtal');
     await frys(avtal);
-    const res = await act('update_contract', { contract_id: avtal, notes: 'Rättad anteckning' });
+    // S0.1: `update_contract` är känslig — anteckningen skrivs vid godkännandet.
+    const res = await koaOchGodkann('update_contract', { contract_id: avtal, notes: 'Rättad anteckning' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 });
@@ -296,10 +317,10 @@ describe('vagrar_skrivning_pa_avslutat', () => {
     // avslutet, inte innan.
     stangtProjekt = await nyttUppdrag('Avslutat uppdrag');
     stangtAvtal = await nyttAvtal(stangtProjekt, 'Avtal på avslutat uppdrag');
-    await ok('upsert_contract_part', {
+    await okKoad('upsert_contract_part', {
       contract_id: stangtAvtal, code: 'S1', name: 'Fas S1', valid_from: '2026-01-01',
     });
-    const stangda = await ok('upsert_contract_part', {
+    const stangda = await okKoad('upsert_contract_part', {
       contract_id: stangtAvtal, code: 'S1b', name: 'Fas S1b', valid_from: '2026-01-01',
     });
     stangdDel = del(stangda, 'S1').part_id;
@@ -307,10 +328,10 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
     oppetProjekt = await nyttUppdrag('Pågående uppdrag');
     oppetAvtal = await nyttAvtal(oppetProjekt, 'Avtal på pågående uppdrag');
-    await ok('upsert_contract_part', {
+    await okKoad('upsert_contract_part', {
       contract_id: oppetAvtal, code: 'O1', name: 'Fas O1', valid_from: '2026-01-01',
     });
-    const oppna = await ok('upsert_contract_part', {
+    const oppna = await okKoad('upsert_contract_part', {
       contract_id: oppetAvtal, code: 'O1b', name: 'Fas O1b', valid_from: '2026-01-01',
     });
     oppenDel = del(oppna, 'O1').part_id;
@@ -405,7 +426,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
   // (ii) contract_parts
   it('contract_parts: en ny avtalsdel på ett avslutat uppdrag fälls', async () => {
-    const res = await act('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: stangtAvtal, code: 'S2', name: 'Fas S2', valid_from: '2026-02-01',
     });
     expect(res.status).toBe(409);
@@ -492,15 +513,17 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 // `upsert_contract_part` saknar `change_reason` i sitt schema, och det finns
 // ingen action som fryser ett kontrakt. Tills dess svarar båda 409
 // rule_violation (errorHandler mappar triggerns P0001 dit) — regelbrottet syns,
-// men triggerns text når aldrig fram till användaren.
+// men triggerns text når aldrig fram till användaren. S0.1 flyttade tidpunkten,
+// inte utfallet: `upsert_contract_part` är känslig, så skrivningen (och därmed
+// triggerns 409) sker vid GODKÄNNANDET i kön, inte vid begäran.
 
 describe('vad 0068 stänger tills S1.2 (pinnat, inte glömt)', () => {
   it('upsert_contract_part kan inte längre lägga en ANDRA version av en kod', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Tilläggsavtal via action'), 'Ramavtal');
-    await ok('upsert_contract_part', {
+    await okKoad('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 10, valid_from: '2026-01-01',
     });
-    const andra = await act('upsert_contract_part', {
+    const andra = await koaOchGodkann('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 40, valid_from: '2026-06-01',
     });
     expect(andra.status).toBe(409);
@@ -509,7 +532,7 @@ describe('vad 0068 stänger tills S1.2 (pinnat, inte glömt)', () => {
 
   it('upsert_contract_part kan inte längre bekräfta ett tak på ett nyskapat avtal', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Bekräftat tak via action'), 'Ramavtal 2');
-    const res = await act('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: avtal, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });
@@ -517,7 +540,7 @@ describe('vad 0068 stänger tills S1.2 (pinnat, inte glömt)', () => {
     expect(res.body.error).toBe('rule_violation');
     // Efter frysningen fungerar exakt samma anrop.
     await frys(avtal);
-    const efter = await act('upsert_contract_part', {
+    const efter = await koaOchGodkann('upsert_contract_part', {
       contract_id: avtal, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });

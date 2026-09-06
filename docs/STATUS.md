@@ -145,6 +145,65 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S0.1, våg 2 — sensitive på avtalsåtgärderna,
+  människokrav på uppdragsavslutet):** FR-4 säger att en ändrad baseline ska
+  passera en människa. `andra_baseline` (S1.3) var köad från dag ett — men
+  **taket gick att flytta bredvid den kön:** `upsert_contract_part` och
+  `update_contract` var `write` och kördes rakt igenom, och en agent kunde
+  stänga ett helt uppdrag med `set_project_status`. En spärr som har en väg
+  runt sig är ingen spärr, och FR-4 var därmed tom — för ILT:s och NVR:s
+  riktiga avtalstak, i dag.
+
+  **Kodytan är tre rader i `actions/registry.ts`:** `upsert_contract_part` och
+  `update_contract` `write` → `sensitive`, och `kravManniska: true` på
+  `set_project_status` (vars `sensitivity` förblir `write`). Ingen migration,
+  ingen vykod, ingen ny felkod, ingen ändring i `errorHandler.ts`, inga nya
+  beroenden. `assign_contract_part` är oförändrat `write`.
+
+  1. **Två mekanismer, två olika sorters beslut.** Ett tak är en ändring som
+     ska LÄSAS innan den gäller → godkännandekön (`sensitive`). Ett avslut
+     stänger all skrivning mot uppdraget (0068) och är inget en agent ens ska
+     kunna föreslå → `kravManniska` (403 `human_required`, ingen köpost, ingen
+     auditrad, ingenting skrivet).
+  2. **Kö + audit FÖRE godkännandet är rätt och fälls inte.** Raden
+     `action.approval_requested` är spåret av att någon bad om ändringen, inte
+     ändringen. Domänskrivningen sker först vid godkännandet.
+  3. **Triggerfelen flyttade tidpunkt, inte utfall.** 0068:s P0001 når klienten
+     som 409 `rule_violation` som förut — men nu från godkännandet, varvid
+     transaktionen rullas tillbaka och köposten står kvar som `pending`.
+  4. **Vyn behövde ingen rad.** Den har inget redigeringsformulär för
+     avtalsdelar (avtal skapas via `create_contract_from_draft`, som går direkt
+     på tjänstelagret), och `runFormAction` redirectar redan generiskt till
+     `/app/c/:id/approvals` vid `pending_approval`. KRAV-6 bevisas därför i
+     action-lagret — Davids svar 6/9 på beslutsfrågan.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/bakvag.test.ts` (vaktprovet, mall `manniskosparr.test.ts`):
+  tre registerkontroller (ingen `foresla_*`-åtgärd i registret; `andra_baseline`
+  sensitive; `upsert_contract_part`/`update_contract` sensitive), den negativa
+  regressionen (samma kontrollogik mot en registerKOPIA där
+  `upsert_contract_part` sänkts till `write` MÅSTE fälla — kopia i minnet i
+  stället för mallens modulmock, som hade gällt hela filen och slagit ut
+  beteendeproven), avgränsningsraden att `assign_contract_part` är kvar `write`,
+  samt beteendet: agentens `upsert_contract_part` → 202 med köpost i
+  `action_approvals` + auditrad `action.approval_requested` men INGEN
+  avtalsdelsrad; agentens `set_project_status` → 403 `human_required` med
+  oförändrad kö, oförändrad auditlogg och uppdraget kvar `active`; människans
+  samma avslut → 200; och människans `upsert_contract_part` → 202, raden skrivs
+  först vid godkännandet, `get_contract_usage` visar det nya taket.
+
+  **Sex befintliga sviter följer efter höjningen** (samma anrop, nu genom kön
+  via en `godkannAction`/`koaOchGodkann`-hjälpare i respektive fil):
+  `avtalsdelar`, `uppdragsytan-baseline`, `uppdragsytan-sparrar`,
+  `tid-rapporter`, `tidsforslag`, `tid-snabbregistrering` och
+  `avtal-inlasning`. Zod-felen (400) prövas fortfarande på BEGÄRAN — schemat
+  parsas före sensitivity-grenen i `executeAction`.
+
+  **Kvarstår för David:** inget att migrera. Efter merge går varje ändring av
+  ett avtalstak — hans egen med — via **Att göra**: två handgrepp i stället för
+  ett. Frysning av ett nyskapat kontrakt har fortfarande ingen åtgärd.
+
 - **2026-09-06 (uppdragsytan S2.1, våg 1 — `kravManniska` i åtgärdslagret):**
   Ett sjätte, VALFRITT fält `kravManniska?: boolean` på `ActionDef`
   (`actions/registry.ts`) och en spärr i `executeAction` (`actions/execute.ts`):

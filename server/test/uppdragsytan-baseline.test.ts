@@ -43,6 +43,27 @@ async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<
   return res.body.result as Record<string, unknown>;
 }
 
+/**
+ * Känslig action: begär (202) och godkänn som människa. S0.1 gjorde
+ * `upsert_contract_part` känslig, så skrivningen — och därmed triggerns 409 —
+ * sker vid GODKÄNNANDET. Svaret från godkännandet returneras orört; zod-felen
+ * (400) kommer däremot fortfarande på BEGÄRAN, före kön, och prövas med `act`.
+ */
+async function koaOchGodkann(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+  const begaran = await act(namn, kropp);
+  expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  const svar = await api
+    .post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
+    .set(auth()).send({});
+  return svar as unknown as Svar;
+}
+
+async function okKoad(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const res = await koaOchGodkann(namn, kropp);
+  expect(res.status, `${namn} (godkännande): ${JSON.stringify(res.body)}`).toBe(200);
+  return res.body.result as Record<string, unknown>;
+}
+
 interface Version {
   id: string;
   valid_from: string;
@@ -112,7 +133,7 @@ async function frys(contractId: string): Promise<void> {
 async function avtalMedBekraftatTak(namn: string): Promise<string> {
   const contractId = await nyttAvtal(namn);
   await frys(contractId);
-  await ok('upsert_contract_part', {
+  await okKoad('upsert_contract_part', {
     contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 32,
     cap_amount_ore: 3_520_000, cap_confirmed: true, valid_from: '2026-01-01',
   });
@@ -225,7 +246,8 @@ describe('(b) upsert_contract_part med change_reason skapar en ny version', () =
   it('tilläggsavtalet läggs bredvid den gamla raden, aldrig över den', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal B');
 
-    const res = await act('upsert_contract_part', {
+    // S0.1: vägen går genom kön även för en människa — men den skriver.
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 56,
       cap_confirmed: true, valid_from: '2026-06-01',
       change_reason: 'Tilläggsavtal: taket höjt från 32 h till 56 h',
@@ -252,7 +274,7 @@ describe('(c) ny version utan change_reason fälls av triggern', () => {
   it('svarar 409 rule_violation — aldrig 500, och utan triggerns text', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal C');
 
-    const res = await act('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 56,
       cap_confirmed: true, valid_from: '2026-06-01',
     });
@@ -267,7 +289,7 @@ describe('(c) ny version utan change_reason fälls av triggern', () => {
 
   it('blanktext räknas som ingen orsak — samma 409', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal C2');
-    const res = await act('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 56,
       valid_from: '2026-06-01', change_reason: '     ',
     });
@@ -285,7 +307,7 @@ describe('(d) in-place-ändring av ett bekräftat tak', () => {
   it('svarar 409 rule_violation och lämnar taket orört', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal D');
 
-    const res = await act('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01',
     });
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -317,7 +339,7 @@ describe('(e) date_precision utanför avtalets fem värden', () => {
   it('de fem tillåtna värdena går igenom och landar i kolumnen', async () => {
     const contractId = await nyttAvtal('Ramavtal E2');
     for (const [i, precision] of ['ar', 'halvar', 'kvartal', 'manad', 'dag'].entries()) {
-      const res = await act('upsert_contract_part', {
+      const res = await koaOchGodkann('upsert_contract_part', {
         contract_id: contractId, code: `E${i}`, name: `Fas E${i}`, valid_from: '2026-01-01',
         start_date: '2026-01-01', end_date: '2026-12-31', date_precision: precision,
       });
@@ -336,7 +358,7 @@ describe('(f) anrop utan de fyra fälten beter sig exakt som före bygget', () =
   it('skapar och ändrar en obekräftad rad, med de fyra kolumnerna NULL', async () => {
     const contractId = await nyttAvtal('Ramavtal F');
 
-    const skapad = await act('upsert_contract_part', {
+    const skapad = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '1', name: 'Fas 1', cap_hours: 10, valid_from: '2026-01-01',
     });
     expect(skapad.status, JSON.stringify(skapad.body)).toBe(200);
@@ -351,7 +373,7 @@ describe('(f) anrop utan de fyra fälten beter sig exakt som före bygget', () =
     expect(efterSkapande[0]!.manually_edited).toBe(false);
 
     // Samma valid_from = in-place-ändring, precis som förut.
-    const andrad = await act('upsert_contract_part', {
+    const andrad = await koaOchGodkann('upsert_contract_part', {
       contract_id: contractId, code: '1', cap_hours: 12, valid_from: '2026-01-01',
     });
     expect(andrad.status, JSON.stringify(andrad.body)).toBe(200);

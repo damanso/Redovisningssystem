@@ -20,7 +20,7 @@ let customerId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
 
-type Svar = { status: number; body: { result: Record<string, unknown>; error?: string } };
+type Svar = { status: number; body: { result: Record<string, unknown>; error?: string; approval?: { id: string } } };
 
 async function act(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
   const res = await api.post(`${co()}/actions/${namn}`).set(auth()).send(kropp);
@@ -31,6 +31,20 @@ async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<
   const res = await act(namn, kropp);
   expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(200);
   return res.body.result;
+}
+
+/**
+ * Känslig action: begär (202) och godkänn som människa — samma väg som vyns
+ * knappar. S0.1 gjorde `upsert_contract_part` känslig, så avtalsdelarna nedan
+ * skapas genom kön. Att kön verkligen används prövas i `bakvag.test.ts`; här är
+ * den vägen till utgångsläget, inte det som mäts.
+ */
+async function godkannAction(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const begaran = await act(namn, kropp);
+  expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+  expect(svar.status, `${namn} (godkännande): ${JSON.stringify(svar.body)}`).toBe(200);
+  return svar.body.result as Record<string, unknown>;
 }
 
 interface Del {
@@ -132,7 +146,7 @@ describe('avtalsdelen krävs när uppdraget har en', () => {
   it('utan del: 400 contract_part_required — med del: posten bär klassificeringen', async () => {
     const projekt = await nyttUppdrag('ILT — Commercial Cockpit');
     const avtal = await nyttAvtal(projekt, 'ILT ramavtal 2026');
-    const skapat = await ok('upsert_contract_part', {
+    const skapat = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2A', name: 'Fas 2A — Commercial Cockpit', sort_order: 10,
     });
     const delId = del(skapat, '2A').part_id;
@@ -160,7 +174,7 @@ describe('avtalsdelen krävs när uppdraget har en', () => {
   it('en avtalsdel från ett annat uppdrag avvisas — ett tak går inte att fylla utifrån', async () => {
     const projektA = await nyttUppdrag('Uppdrag A');
     const avtalA = await nyttAvtal(projektA, 'Avtal A');
-    const delA = del(await ok('upsert_contract_part', { contract_id: avtalA, code: 'A1', name: 'Del A1' }), 'A1');
+    const delA = del(await godkannAction('upsert_contract_part', { contract_id: avtalA, code: 'A1', name: 'Del A1' }), 'A1');
     const projektB = await nyttUppdrag('Uppdrag B');
 
     const res = await act('log_time', {
@@ -184,7 +198,7 @@ describe('kravet på avtalsdel prövas vid övergången till debiterbar tid', ()
     const p = await loggaTid(projekt, { work_date: '2026-03-05', minutes: 60, description: 'Innan avtalet fanns' });
     expect(p.contract_part_id).toBeNull();
     const avtal = await nyttAvtal(projekt, `${namn} — avtal`);
-    const skapat = await ok('upsert_contract_part', { contract_id: avtal, code: '1', name: 'Fas 1' });
+    const skapat = await godkannAction('upsert_contract_part', { contract_id: avtal, code: '1', name: 'Fas 1' });
     return { post: p.id as string, delId: del(skapat, '1').part_id };
   }
 
@@ -219,10 +233,10 @@ describe('taxan hämtas i ordningen post → del → avtal → uppdrag', () => {
   it('varje nivå vinner över nästa, och fakturaraderna grupperas per avtalsdel', async () => {
     const projekt = await nyttUppdrag('Taxaordningen', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Avtal med egen taxa', AVTALSTAXA);
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Del med egen taxa', hourly_rate_ore: DELTAXA, sort_order: 1,
     });
-    const medTaxa = await ok('upsert_contract_part', {
+    const medTaxa = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: 'T2', name: 'Del utan egen taxa', sort_order: 2,
     });
     const t1 = del(medTaxa, 'T1').part_id;
@@ -277,11 +291,11 @@ describe('taket varnar men spärrar aldrig registreringen', () => {
     projekt = await nyttUppdrag('ILT — Fas 2A med tak', PROJEKTTAXA);
     avtal = await nyttAvtal(projekt, 'ILT ramavtal, Fas 2');
     // ILT-avtalets verkliga tal: 32 h / 35 200 kr, avläst ur handlingen.
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2A', name: 'Commercial Cockpit',
       cap_hours: 32, cap_amount_ore: 3_520_000, cap_confirmed: true, sort_order: 1,
     });
-    const efter = await ok('upsert_contract_part', {
+    const efter = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2B', name: 'Supportmatris',
       cap_hours: 4, cap_confirmed: false, sort_order: 2,
     });
@@ -361,7 +375,7 @@ describe('taket varnar men spärrar aldrig registreringen', () => {
   it('ett obekräftat tak spärrar aldrig faktureringen', async () => {
     const eget = await nyttUppdrag('Obekräftat tak', PROJEKTTAXA);
     const egetAvtal = await nyttAvtal(eget, 'Avtal utan avläst tak');
-    const skapat = await ok('upsert_contract_part', {
+    const skapat = await godkannAction('upsert_contract_part', {
       contract_id: egetAvtal, code: 'X', name: 'Oläst tak', cap_hours: 1,
     });
     await loggaTid(eget, {
@@ -379,15 +393,15 @@ describe('föräldradelens tak räknas över barnen', () => {
   it('tid på 2A och 2B förbrukar Fas 2:s tak, och varningen kommer från föräldern', async () => {
     const projekt = await nyttUppdrag('Fas 2 med underdelar', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Avtal med faser');
-    const fas = await ok('upsert_contract_part', {
+    const fas = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2', name: 'Fas 2', cap_hours: 40, cap_confirmed: true, sort_order: 1,
     });
     const foralder = del(fas, '2').part_id;
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2A', name: 'Delfas A', parent_part_id: foralder,
       cap_hours: 32, cap_confirmed: true, sort_order: 2,
     });
-    const efter = await ok('upsert_contract_part', {
+    const efter = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2B', name: 'Delfas B', parent_part_id: foralder, sort_order: 3,
     });
     const a = del(efter, '2A').part_id;
@@ -420,7 +434,7 @@ describe('tilläggsavtal: en ny rad med senare valid_from, historiken består', 
   it('taket som gäller är den senaste ikraftträdda versionen — framtida rör inget', async () => {
     const projekt = await nyttUppdrag('Avtal med tillägg', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Ramavtal med tillägg');
-    await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '3A', name: 'Fas 3A', cap_hours: 10, cap_confirmed: true,
       valid_from: '2020-01-01',
     });
@@ -449,12 +463,12 @@ describe('tilläggsavtal: en ny rad med senare valid_from, historiken består', 
   it('samma valid_from ändrar raden och märker den som handpåläggning', async () => {
     const projekt = await nyttUppdrag('Handpåläggning', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Avtal som rättas');
-    const skapad = await ok('upsert_contract_part', {
+    const skapad = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '4A', name: 'Fas 4A', cap_hours: 10, valid_from: '2020-01-01',
     });
     expect(del(skapad, '4A').versions[0]!.manually_edited).toBe(false);
 
-    const rattad = await ok('upsert_contract_part', {
+    const rattad = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '4A', cap_hours: 12, cap_confirmed: true, valid_from: '2020-01-01',
     });
     const efter = del(rattad, '4A');
@@ -470,8 +484,8 @@ describe('bilagan per avtalsdel', () => {
   it("'per_avtalsdel' ger en kategoribilaga utan datum ur samma låsta urval", async () => {
     const projekt = await nyttUppdrag('Bilaga per del', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Avtal för bilagan');
-    await ok('upsert_contract_part', { contract_id: avtal, code: '5A', name: 'Modellbygge', sort_order: 1 });
-    const skapat = await ok('upsert_contract_part', {
+    await godkannAction('upsert_contract_part', { contract_id: avtal, code: '5A', name: 'Modellbygge', sort_order: 1 });
+    const skapat = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '5B', name: 'Rapportpaket', sort_order: 2,
     });
     const a = del(skapat, '5A').part_id;
@@ -510,7 +524,7 @@ describe('bilagan per avtalsdel', () => {
   it("'per_datum' är fortsatt default och ger tidsbilagan med datum", async () => {
     const projekt = await nyttUppdrag('Bilaga per datum', PROJEKTTAXA);
     const avtal = await nyttAvtal(projekt, 'Avtal med datumbilaga');
-    const skapat = await ok('upsert_contract_part', { contract_id: avtal, code: '6A', name: 'Löpande' });
+    const skapat = await godkannAction('upsert_contract_part', { contract_id: avtal, code: '6A', name: 'Löpande' });
     const delId = del(skapat, '6A').part_id;
     await loggaTid(projekt, { work_date: '2026-10-01', minutes: 120, description: 'Dag 1', contract_part_id: delId });
     await loggaTid(projekt, { work_date: '2026-10-02', minutes: 60, description: 'Dag 2', contract_part_id: delId });
@@ -543,7 +557,7 @@ describe('assign_contract_part klassar även en fakturerad post', () => {
 
     // Avtalet läggs in EFTERÅT — det är precis läget för juliposterna.
     const avtal = await nyttAvtal(projekt, 'ILT-avtalet, inlagt i efterhand');
-    const skapat = await ok('upsert_contract_part', {
+    const skapat = await godkannAction('upsert_contract_part', {
       contract_id: avtal, code: '2A', name: 'Commercial Cockpit', cap_hours: 32, cap_confirmed: true,
     });
     const delId = del(skapat, '2A').part_id;
