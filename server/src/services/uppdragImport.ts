@@ -29,6 +29,7 @@ import {
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
 import { createContract, getContractUsage, upsertContractPart } from './contracts.js';
+import { koaRegisterkopia } from './uppdragReferens.js';
 
 /** Skälet varje importerad version bär. `kraver_orsak_vid_ny_version()` (0068) läser det. */
 export const IMPORTORSAK = 'import ur leveranskontraktet v1';
@@ -345,6 +346,18 @@ export async function importeraLeveranskontrakt(
     );
     nyaLeverabelrader += res.rowCount ?? 0;
   }
+
+  // (e2) Registret har ändrats — alltså ska den frysta kopian skrivas om. Kön
+  // sätts i SAMMA transaktion som registerraderna: rullas importen tillbaka
+  // finns ingen köpost som pekar på ett register som aldrig skrevs, och går
+  // importen igenom kan kopian aldrig glömmas bort. Repot skriver inte kopian
+  // och ringer inte Drive (ADR-4) — Hermes tömmer kön (S7.5).
+  //
+  // Anropet är ovillkorligt, också när importen inte ändrade en rad. En kopia
+  // som skrivs om identiskt kostar ingenting hos Hermes; en registerändring som
+  // INTE köades är en tyst avvikelse mellan registret och kundens mapp, och den
+  // syns först när någon läser fel fil.
+  await koaRegisterkopia(client, companyId, input.contract_id);
 
   // (f) Scopelinjerna. Tabellen har ingen unik nyckel och `app` har ingen
   // DELETE-rätt på den (0068), så dubbletterna hindras genom att raden läses

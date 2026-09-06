@@ -145,6 +145,78 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S7.2, våg 3 — Drive-kön för registrets frysta
+  kopia):** S1.2:s import fyller leverabelregistret och S3.1 läser det, men
+  **kopian till kundens spärrmapp hade ingen kö.** `uppdrag_referens.ko_status`
+  fanns sedan 0068 med två lägen (`koad`/`skriven`) och ingen kod som satte
+  dem — så en registerändring lämnade inget spår av att kopian var inaktuell,
+  och S7.5 hade ingenting att tömma. Värre: fanns inget `fel`-läge var enda
+  utvägen vid ett misslyckat försök att lämna posten som `koad`, alltså ett fel
+  som ser ut som "väntar" — exakt det tysta fel NFR-3 förbjuder.
+
+  Byggt: **additiv migration `0071_registerkopiako.sql`** (utökat CHECK-villkor
+  + EN kolumn `ko_fel`, ingen GRANT-ändring, ingen backfill), tre funktioner i
+  befintliga `services/uppdragReferens.ts` (`koaRegisterkopia`, `hamtaDriveKo`,
+  `rapporteraDriveKopia`), **ett anrop i importens skrivväg** (steg e2 i
+  `uppdragImport.ts`), **två def-poster** i `actions/registry.ts`
+  (`hamta_drive_ko` read, `rapportera_drive_kopia` write) och en köpostrad på
+  uppdragets projektsida. Ingen ny tabell, ingen scheduler, inga externa anrop,
+  inga nya beroenden, ingen ny CSS-klass; `uppdragSignal.ts`,
+  `uppdragBedomning.ts`, `uppdragRegister.ts`, `execute.ts` och befintliga
+  migrationer är orörda.
+
+  1. **Kön bor på referensen** (1E Del 3/ADR-4). En köad kopia ÄR en oskriven
+     referens — samma rad som sedan bär Drive-id:t. En egen kötabell hade
+     betytt två rader om samma sak och därmed en fråga om vilken som gäller.
+  2. **Registerändringen går alltid igenom lokalt.** Köningen är en UPDATE i
+     SAMMA transaktion som registerraderna; repot ringer aldrig Drive, så
+     ingenting utanför huset kan hindra att registret skrivs. Anropet är
+     ovillkorligt även när importen inte ändrade en rad: en identisk omskrivning
+     kostar ingenting hos Hermes, medan en ändring som INTE köades är en tyst
+     avvikelse mellan registret och kundens mapp.
+  3. **Platshållar-id:t är radens identitet innan filen finns.** Kopian känns
+     igen på `(sort, extern_nyckel) = ('drive', 'registerkopia')`, aldrig på
+     `extern_id` — som föds som `registerkopia:<contract_id>` och byts mot
+     Drive-id:t vid `skriven`. Därför tappar en omkö efter `skriven` inte
+     pekaren: filen ska skrivas OM, inte skapas på nytt.
+  4. **`fel` är ett lagrat, synligt tillstånd — och ingår i hämtningen.**
+     Uteslöts det kunde kön aldrig "tömmas automatiskt när Drive svarar";
+     en fastnad post hade krävt ett handgrepp för att ens komma tillbaka i kön.
+     Ingen omprovning, backoff eller försöksräknare i repot (ingen scheduler);
+     åldern bevakas av provvakten vid S7.5. Ingen ny felkod utöver
+     `ingen_oppen_kopost` (409) för en rapport mot en rad utan öppen köpost.
+  5. **Ingen `kravManniska` på någon av åtgärderna.** Kön ska tömmas utan
+     handpåläggning (FR-11); en kö som kräver ett knapptryck per fil står full.
+     Handgreppet som kräver en människa är att ÄNDRA registret, och det ligger i
+     skrivvägen före kön (S0.1/S1.2). Rapportvägen fungerar därför med
+     actor `agent`.
+  6. **Ytan: raden syns bara när det finns något att veta.** Är kopian skriven
+     står ingenting — en evig "allt är skrivet"-rad är brus, och brus lär
+     läsaren att inte titta den dag det står något annat. `fel` visar
+     `ko_fel`-texten i klartext på uppdragets förstasida, med chip som bär färg
+     OCH glyf OCH text (färgen är aldrig ensam bärare). Ingen ny CSS, inget JS,
+     ingen animation: statusraden läses många gånger om dagen, och rörelse på
+     något så frekvent gör bara gränssnittet långsammare.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-drive-ko.test.ts`: 0071 (kolumnen, villkorets
+  fyra lägen, ett femte läge som fälls av databasen, migrationsfilen körd TVÅ
+  gånger); åtgärdernas känslighet och strikta scheman inklusive fyra url-/
+  sökvägsformer på `drive_id` som fälls **utan att röra köposten**; importen som
+  lämnar en köad kopia med platshållar-id (och en fälld import som inte lämnar
+  någon); hämtningen med registrets sex rader som innehåll och `fel` som står
+  kvar i kön; tillståndsmaskinen `koad→skriven`, `koad→fel`, `fel→skriven`, samt
+  **negativ kontroll** (andra rapport 409, referens utan kö 409, okänd referens
+  404); agenten som tömmer kön; omkö efter `skriven` (Drive-id:t behålls) och
+  efter `fel` (felet nollställs, fortfarande EN kopiereferens); vyn (köad syns,
+  skriven försvinner, fel visar texten); och tenantgränsen (tom kö, 404 på
+  rapporten, RLS, vår post orörd).
+
+  **Kvarstår för David:** kör `npm run migrate` (0071). Därefter köas kopian av
+  sig själv vid varje import, och köposten syns på uppdragssidan. Själva
+  skrivningen till Drive görs av Hermes (S7.5) — repot skriver aldrig ut.
+
 - **2026-09-06 (uppdragsytan S5.1, våg 3 — signalerna: kontraktets fraser får
   en människa som lyssnar):** 0068 gav `uppdrag_scopesignal` sin tabell, och
   S1.2:s import fyllde `uppdrag_scopelinje` med NVR-001:s sju signalfraser. Men

@@ -32,7 +32,7 @@ import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEnt
 import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
-import { listaReferenser } from '../../services/uppdragReferens.js';
+import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
@@ -1422,6 +1422,35 @@ viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (c
     }`;
 }));
 
+// Uppdragsytan S7.2: den frysta kopian till Drive.
+//
+// Kopian skrivs inte av det här systemet (ADR-4) utan av svepet, senare. Den
+// enda ärliga ytan för det är därför en ÖPPEN POST som står kvar tills den är
+// skriven — och ett fel som är läsbart där, i klartext. Två beslut:
+//
+//  1. **Raden syns bara när det finns något att veta.** Är kopian skriven står
+//     ingenting; en evig "allt är skrivet"-rad hade varit brus, och brus lär
+//     läsaren att inte titta den dagen det står något annat.
+//  2. **Felet står i sina egna ord, på uppdragets förstasida.** Ett fel som
+//     bara finns i en kolumn är ett tyst fel (NFR-3). Chippet bär färgen OCH en
+//     glyf OCH en text — färgen är aldrig ensam bärare — och feltexten står
+//     bredvid, inte bakom ett klick.
+const registerkopiaRad = (k: Kopost): Raw => html`<p class="muted" style="margin:10px 0 0;font-size:12.5px">
+  ${k.ko_status === 'fel'
+    ? html`${chip('Kopian kunde inte skrivas', 'neg', '!')} ${k.ko_fel ?? 'okänt fel'}
+        — posten ligger kvar i kön och provas om vid nästa svep.`
+    : html`${chip('Kopia köad', 'info', '◔')} Registret har ändrats. Den frysta kopian till kundens
+        Drive-mapp skrivs vid nästa svep — systemet skriver den aldrig själv.`}</p>`;
+
+/** Uppdragets öppna köposter, lästa genom S7.2:s tjänst — aldrig ur tabellen. */
+async function registerkopiaKo(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Kopost[]> {
+  const avtal = new Set((await listContracts(client, companyId, { project_id: projectId }))
+    .map((a) => a.id as string));
+  return (await hamtaDriveKo(client, companyId)).filter((k) => avtal.has(k.contract_id));
+}
+
 viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -1443,6 +1472,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
     const snabb = await snabbunderlag(client, companyId, projectId);
+    const kopior = await registerkopiaKo(client, companyId, projectId);
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
@@ -1457,6 +1487,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
                 "börjar något krypa in som inte står i avtalet?". */ ''}
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a></div></div>
       ${tidsnotiser(req)}
+      ${kopior.map((k) => registerkopiaRad(k))}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
         : html`<p class="muted" style="margin:14px 0">Uppdraget är stängt — ny tid registreras inte här. Öppna det igen för att fortsätta rapportera.</p>`}
