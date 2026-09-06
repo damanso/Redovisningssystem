@@ -14,6 +14,7 @@ import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
+import { harledTroskellarm, type Plandel, type Trosklar } from '../lib/troskel.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
 import { forbrukningForAvtal, gallandeTaxa, type Delforbrukning } from './contracts.js';
 import { timeEntryAmountOre } from './projects.js';
@@ -193,6 +194,15 @@ interface Uppdragsrad {
   /** Taxekällorna prognosen får använda (`gallandeTaxa` utan post-/delled). */
   avtal_taxa: number | null;
   projekt_taxa: number | null;
+  /**
+   * Avtalets egna trösklar (S6.2, FR-3). numeric kommer ur pg som sträng —
+   * samma hållning som takberäkningens `cap_hours::text`; bigint parsas redan
+   * till tal av pool-registreringen.
+   */
+  troskel_procent: string;
+  troskel_golv_ore: number;
+  troskel_golv_timmar: string;
+  troskel_dagar: number;
 }
 
 /** En referens att verifiera i nästa arbetslista (FR-10/FR-36). */
@@ -466,9 +476,9 @@ function idagsdatum(): string {
 }
 
 /**
- * Ett uppdrags svep: verifiering → spärrmapp → prognos (KRAV-4:s ordning), och
- * därefter förslagen. Allt hamnar i EN `upsertSvepvarden` — cachen ska aldrig
- * kunna stå halvskriven mellan två steg.
+ * Ett uppdrags svep: verifiering → spärrmapp → prognos (KRAV-4:s ordning),
+ * därefter tröskellarmen (S6.2) och sist förslagen. Allt hamnar i EN
+ * `upsertSvepvarden` — cachen ska aldrig kunna stå halvskriven mellan två steg.
  */
 async function svepEttUppdrag(
   client: PoolClient, companyId: string, userId: string, actor: Actor,
@@ -537,10 +547,12 @@ async function svepEttUppdrag(
   // — samma svar som ett oläst tak, och "ett oläst tak varnar aldrig".
   const kalender = obs.kalenderhandelser ?? [];
   const datum = kalender.map((h) => h.datum).sort();
+  const idag = idagsdatum();
   const delar = await forbrukningForAvtal(client, companyId, { contractId: rad.contract_id });
   const rot = delar.find((d) => d.code === ROTKOD && d.parent_code === null) ?? null;
+  const taxa = gallandeTaxa(null, null, rad.avtal_taxa, rad.projekt_taxa);
   const ramar = harledPrognosramar({
-    idag: idagsdatum(),
+    idag,
     registrerade_minuter: rot?.billable_minutes ?? 0,
     registrerade_oren: rot?.amount_ore ?? 0,
     cap_hours: rot?.cap_hours ?? null,
@@ -549,7 +561,7 @@ async function svepEttUppdrag(
     // Taxeordningen är husets (`gallandeTaxa`): avtalets, annars uppdragets. Ett
     // post- eller delled finns inte att fylla — en bokning i kalendern bär
     // ingen avtalsdel, och att välja en åt den hade varit en gissning.
-    taxa_ore: gallandeTaxa(null, null, rad.avtal_taxa, rad.projekt_taxa),
+    taxa_ore: taxa,
     handelser: kalender,
   });
   varden.push({
@@ -563,6 +575,48 @@ async function svepEttUppdrag(
       ram_timmar: ramar.ram_timmar,
       ram_kronor: ramar.ram_kronor,
     },
+  });
+
+  // (3b) Tröskellarmen (S6.2, FR-3). Samma `delar` som prognosen läste — husets
+  // enda takberäkning, ingen egen förbrukning (FR-25) — plus avtalsdelarnas
+  // perioder i ALLA versioner, så att `byggPlan` väljer den gällande och ärver
+  // intervallet med samma regel som Planen ritar med.
+  //
+  // Prognosunderlaget är det som redan räknats ovan: kalenderminuterna EFTER i
+  // dag, och deras värde i ören genom husets taxeordning. Utan taxa finns ingen
+  // kronprognos att pröva, och då säger tröskeln ingenting om kronorna —
+  // hellre tyst än ett larm ur ett hittat tal.
+  const framtida = kalender.filter((h) => h.datum > idag && h.minuter > 0);
+  const perioder = (await client.query<Plandel>(
+    `SELECT cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name,
+            cp.valid_from::text, cp.start_date::text, cp.end_date::text,
+            cp.date_precision, cp.sort_order, cp.active
+       FROM contract_parts cp
+      WHERE cp.company_id = $1 AND cp.contract_id = $2
+      ORDER BY cp.sort_order, cp.code, cp.valid_from`,
+    [companyId, rad.contract_id],
+  )).rows;
+  const trosklar: Trosklar = {
+    procent: Number(rad.troskel_procent),
+    golv_ore: rad.troskel_golv_ore,
+    golv_timmar: Number(rad.troskel_golv_timmar),
+    dagar: rad.troskel_dagar,
+  };
+  varden.push({
+    nyckel: 'troskellarm',
+    kalla: 'redovisning',
+    varde: harledTroskellarm({
+      idag,
+      trosklar,
+      delar,
+      perioder,
+      prognos: {
+        framtida_minuter: framtida.reduce((s, h) => s + h.minuter, 0),
+        framtida_oren: taxa === null
+          ? null
+          : framtida.reduce((s, h) => s + timeEntryAmountOre(h.minuter, taxa), 0),
+      },
+    }),
   });
 
   // (4) Statusförslaget per leverabel. Koden prövas mot leverabelregistret —
@@ -709,7 +763,9 @@ export async function korUppdragssvep(
 
   const alla = await client.query<Uppdragsrad>(
     `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus,
-            c.hourly_rate_ore AS avtal_taxa, p.hourly_rate_ore AS projekt_taxa
+            c.hourly_rate_ore AS avtal_taxa, p.hourly_rate_ore AS projekt_taxa,
+            c.troskel_procent::text, c.troskel_golv_ore,
+            c.troskel_golv_timmar::text, c.troskel_dagar
        FROM contracts c
        JOIN projects p ON p.id = c.project_id AND p.company_id = c.company_id
       WHERE c.company_id = $1
