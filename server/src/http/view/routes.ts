@@ -39,7 +39,8 @@ import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragR
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import type { Larm } from '../../lib/troskel.js';
-import { lasSvepvarden } from '../../services/uppdragSvep.js';
+import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
+import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
@@ -60,7 +61,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { aiMarkning, amount, chip, entityLink, esc, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, entityLink, esc, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -3537,6 +3538,9 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
   // S10.3: Leveranserna står mellan Planen och Kontraktet — 1D:s ordning, och
   // läsarens: när landar det, vad är "det", och vad lovade avtalet?
   ['leveranserna', 'Leveranserna'],
+  // S10.4: Pengarna står efter Leveranserna och före Kontraktet (1E Del 5) —
+  // vad kostar det vi levererar, innan man går tillbaka till vad som avtalades?
+  ['pengarna', 'Pengarna'],
   ['kontraktet', 'Kontraktet'],
 ];
 
@@ -4220,6 +4224,238 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
     // default-läget, aldrig i en tom sida.
     const tabell = req.query.lage === 'tabell';
     return leveransersida(companyId, await leveransunderlag(client, companyId, projectId), tabell);
+  }));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.4, våg 6: PENGARNA (FR-3, FR-5, FR-33, NFR-11)
+//
+// 1D:s fråga är en enda: *hur ligger vi mot ram — i timmar, kronor och enskilda
+// kostnader?* Sju beslut styr sidan:
+//
+//  1. **Allt är LÄST, ingenting räknat här.** Kurvan kommer ur husets enda
+//     takberäkning genom `lasUppdragspengar`, de två ramdatumen ordagrant ur
+//     svepets cache, tröskellarmet ur samma cache, beloppen ur redovisningen.
+//     Vyn har inte en enda egen jämförelse — kan sidan visa något tjänsten inte
+//     svarar har en av dem fel, och då vet ingen vilken.
+//  2. **Ingen procent, ingen progressbar (NFR-11).** Två tal bredvid varandra —
+//     förbrukat och tak — säger vilket av dem som rörde sig. "72 % klart" säger
+//     det aldrig, och en `<progress>` säger dessutom att någon VET hur långt
+//     kvar det är. Det är precis vad prognosen vägrar påstå.
+//  3. **Kurvan ritas bara när cachen bär ett DATUM.** Bär den ett villkor —
+//     'inget bekräftat tak', 'ingen taxa', 'ingen bokad framtid' — står villkoret
+//     i klartext i stället, med samma ord som cachen. En kurva som slutade i en
+//     gissning hade gjort svepets vägran till en bild som ändå svarar.
+//  4. **Heldraget är mätning, streckat är prognos.** Skillnaden bärs av
+//     streckningen OCH av texten under bilden: bilden är aldrig ensam bärare
+//     (WCAG 1.1.1), och därför står ramdatumet som text utanför SVG:n.
+//  5. **Färskhet per källa (FR-35).** Prognosen och tröskeln är SVEPTA värden
+//     och bär svepets lästidpunkt, inte sidans. Har svepet aldrig kört säger
+//     raden DET — ett tomt larm ser annars ut som lugn.
+//  6. **Kostnaden är bunden, aldrig hittad.** Bindningen kvitto → avtalsdel görs
+//     av svepet och kön (S6.1); här läses den. `Oplanerad` är samma chip och
+//     samma förklaringsrad som kvittolistan bär — en märkning som ser olika ut
+//     på två sidor är två märkningar.
+//  7. **Ren läsvy.** Inget formulär, ingen knapp, inget skript: allt som ändrar
+//     pengar går genom Att göra.
+// ---------------------------------------------------------------------------
+
+/** En ram som den ska läsas: seriens tal i ramens egen enhet, mot ramens tak. */
+interface Rambild {
+  rubrik: string;
+  serie: { datum: string; varde: number }[];
+  tak: number | null;
+  /** Cachens utfall. null = svepet har inte kört (eller värdet bar okänd form). */
+  utfall: Ramutfall | null;
+  /** Taket i klartext — husets egna format, aldrig ett eget talformat. */
+  takEtikett: string | null;
+  /** Seriens sista tal i klartext: "här står vi". */
+  forbrukatEtikett: string | null;
+  ariaLabel: string;
+}
+
+/** Timramen och kronramen ur SAMMA tjänstesvar — två enheter, ett underlag. */
+function rambilder(a: Avtalspengar): Rambild[] {
+  const sista = a.serie[a.serie.length - 1] ?? null;
+  const prognos = a.prognos?.varde ?? null;
+  return [
+    {
+      rubrik: 'Timmarna',
+      serie: a.serie.map((p) => ({ datum: p.work_date, varde: p.kum_minuter })),
+      tak: a.ram.tak_minuter,
+      utfall: prognos?.ram_timmar ?? null,
+      takEtikett: a.ram.tak_minuter === null ? null : hhmm(a.ram.tak_minuter),
+      forbrukatEtikett: sista === null ? null : hhmm(sista.kum_minuter),
+      ariaLabel: 'Kumulativ registrerad tid mot timramen',
+    },
+    {
+      rubrik: 'Kronorna',
+      serie: a.serie.map((p) => ({ datum: p.work_date, varde: p.kum_oren })),
+      tak: a.ram.tak_ore,
+      utfall: prognos?.ram_kronor ?? null,
+      // `money` är husets egen plaintextform av ett örebelopp — SVG-text kan
+      // inte bära `kronor()`:s markup, och ett eget talformat hade varit ett
+      // andra sätt att skriva samma belopp.
+      takEtikett: a.ram.tak_ore === null ? null : `${money(a.ram.tak_ore)} kr`,
+      forbrukatEtikett: sista === null ? null : `${money(sista.kum_oren)} kr`,
+      ariaLabel: 'Kumulativt belopp mot kronramen',
+    },
+  ];
+}
+
+/**
+ * Ramdatumet — eller varför det inte finns.
+ *
+ * Tre utfall, tre olika besked. Ett saknat svep är inte samma sak som ett
+ * villkor: det första betyder "vi vet inte", det andra "vi vet, och därför
+ * svarar vi inte". En yta som blandar ihop dem lär läsaren att tomt betyder
+ * lugnt.
+ */
+function ramdatumtext(b: Rambild, harSvep: boolean): Raw {
+  if (!harSvep) {
+    return html`<p class="muted" style="margin:8px 0 0;font-size:13px">Svepet har inte kört för uppdraget
+      — ingen prognos är läst, och därför står här inget datum och ritas ingen kurva.</p>`;
+  }
+  if (b.utfall === null) {
+    return html`<p class="muted" style="margin:8px 0 0;font-size:13px">Svepets cache bär inget läsbart
+      ramutfall för den här ramen. Inget datum härleds här i stället.</p>`;
+  }
+  if ('villkor' in b.utfall) {
+    return html`<p style="margin:8px 0 0;font-size:13px">Inget ramdatum:
+      <strong>${b.utfall.villkor}</strong>.
+      ${/* Ordet är cachens eget. Systemet hellre säger varför frågan inte går
+            att besvara än levererar ett tal som ser ut som ett svar (FR-5). */ ''}
+      Prognosen gissar aldrig ett datum ur ett underlag som saknas.</p>`;
+  }
+  return html`<p style="margin:8px 0 0;font-size:13px">Ramen nås
+    <span class="code">${b.utfall.datum}</span> — svepets prognos, läst ur cachen och aldrig omräknad här.</p>`;
+}
+
+/** Ett ramblock: bilden om den går att rita, och talen i klartext under den. */
+function ramblock(b: Rambild, harSvep: boolean): Raw {
+  const kurva = b.tak === null || b.utfall === null || b.takEtikett === null
+    ? null
+    : ramkurva({
+      serie: b.serie, tak: b.tak, utfall: b.utfall,
+      takEtikett: b.takEtikett,
+      ariaLabel: `${b.ariaLabel} ${b.takEtikett}${
+        'datum' in b.utfall ? `, ramen nås ${b.utfall.datum}` : ''}.`,
+    });
+  return html`<div style="padding:12px 16px 4px">
+    <h3 style="margin:0">${b.rubrik}</h3>
+    <p style="margin:4px 0 0;font-size:13px">${
+      b.forbrukatEtikett === null
+        ? html`<span class="muted">Ingen förbrukande tid är registrerad på avtalet ännu.</span>`
+        : html`Registrerat <strong>${b.forbrukatEtikett}</strong> av ${
+          b.takEtikett === null ? html`<span class="muted">ett tak som inte är läst</span>` : b.takEtikett}`}</p>
+    ${kurva ?? ''}
+    ${ramdatumtext(b, harSvep)}
+  </div>`;
+}
+
+/** Ramarna, deras kurvor och deras datum — plus svepets färskhet, sist. */
+function rampanel(a: Avtalspengar, idag: string): Raw {
+  const id = `ram-${a.contract_id}`;
+  return html`<section class="panel" aria-labelledby="${id}" style="margin-top:14px">
+    <div class="panel__head"><h2 id="${id}">Mot ramen</h2>${takstatusChipYta(a.ram.tak_status)}</div>
+    <div class="panel__body">
+      ${rambilder(a).map((b) => ramblock(b, a.prognos !== null))}
+      ${farskhetsrad([
+        a.prognos === null
+          ? 'prognosen: svepet har inte kört för uppdraget'
+          : `prognosen läst av svepet ${farskhetstid(a.prognos.farskhet.last_nar, idag)}`,
+      ])}
+    </div>
+  </section>`;
+}
+
+/** Tröskellarmet ur cachen — samma larmtext som Läget, aldrig omräknat. */
+function troskelpanel(a: Avtalspengar, idag: string): Raw {
+  const id = `troskel-${a.contract_id}`;
+  const larm = a.troskellarm?.varde.larm ?? [];
+  return html`<section class="panel" aria-labelledby="${id}">
+    <div class="panel__head"><h2 id="${id}">Tröskeln</h2>${
+      a.troskellarm === null
+        ? chip('Inte läst', 'muted', '○')
+        : (larm.length === 0
+          ? chip('Ingen tröskel passerad', 'ok', '✓')
+          : chip(larm.length === 1 ? '1 tröskel passerad' : `${String(larm.length)} trösklar passerade`, 'warn', '!'))}</div>
+    <div class="panel__body">
+      ${a.troskellarm === null
+        ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Svepet har inte kört för
+            uppdraget, så inget tröskellarm är läst. Tomt betyder här "vi vet inte" — inte "ingen tröskel
+            passerad".</p>`
+        : (larm.length === 0
+          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Ingen av avtalets trösklar är
+              passerad. Trösklarna är avtalets egna och prövas av svepet, aldrig av den här sidan.</p>`
+          : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
+              ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l)}</li>`)}
+            </ul>`)}
+      ${farskhetsrad([
+        a.troskellarm === null
+          ? 'tröskeln: svepet har inte kört för uppdraget'
+          : `tröskeln läst av svepet ${farskhetstid(a.troskellarm.farskhet.last_nar, idag)}`,
+      ])}
+    </div>
+  </section>`;
+}
+
+/**
+ * De bundna kostnaderna.
+ *
+ * Beloppet är redovisningens eget (`amount`), och ett OBOKFÖRT kvitto står med
+ * *ej bokförd* i stället för ett tal: kostnaden finns som handling men inte i
+ * bokföringen, och en siffra där hade varit ett påstående om pengar som ännu
+ * inte flyttat sig.
+ */
+function kostnadspanel(companyId: string, a: Avtalspengar): Raw {
+  if (a.kostnader.length === 0) {
+    return html`<div class="empty" style="margin-top:14px"><div class="big">Ingen kostnad är bunden till avtalet</div>
+      En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs av svepet, och
+      när den kräver ett omdöme av kön — aldrig på den här sidan.
+      <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</div>`;
+  }
+  return html`<div class="table-wrap" style="margin-top:14px"><table>
+      <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th></tr></thead>
+      <tbody>${a.kostnader.map((k) => html`<tr class="pengarad">
+        <td class="code">${k.datum}</td>
+        <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
+        <td><span class="code">${k.kod}</span>${k.oplanerad ? html` ${chip('Oplanerad', 'warn', '!')}` : ''}</td>
+        <td class="num">${k.status === 'booked'
+          ? amount(k.total_ore)
+          : html`<span class="muted">ej bokförd</span>`}</td></tr>`)}
+      </tbody></table></div>
+    ${a.kostnader.some((k) => k.oplanerad)
+      // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
+      // märkning, och två olika förklaringar vore två olika märkningar.
+      ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
+      : ''}`;
+}
+
+function pengasida(companyId: string, u: Uppdragspengar, idag: string): Raw {
+  const p = u.uppdrag;
+  const bas = `/app/c/${companyId}/projects/${p.project_id}`;
+  const flera = u.avtal.length > 1;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Pengarna</h1>
+      <p class="lede">Uppdrag ${String(p.number)} · ${entityLink(companyId, 'project', p.project_id, p.name)}${
+        p.customer_name ? html` · ${entityLink(companyId, 'customer', p.customer_id, p.customer_name)}` : ''}.
+        Hur ligger vi mot ram — i timmar, kronor och enskilda kostnader?</p></div>
+      <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
+        <a class="btn btn--ghost btn--sm" href="${bas}/laget">← Läget</a></div></div>
+    ${subnav(companyId, p.project_id, 'pengarna')}
+    <p class="muted" style="margin:0 0 4px;font-size:13px">Varje tal och datum på sidan är LÄST: kurvan och
+      taket ur husets takberäkning, de två ramdatumen ordagrant ur svepets cache, beloppen ur redovisningen.
+      Sidan räknar ingen egen takt, ingen egen prognos och ingen färdigställandegrad.</p>
+    ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.contract_name}</h2>` : ''}
+      ${rampanel(a, idag)}
+      ${troskelpanel(a, idag)}
+      ${kostnadspanel(companyId, a)}`)}`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/pengarna', pageFor('projects', 'Pengarna',
+  async (client, companyId, req) => {
+    const projectId = parseApprovalId(req.params.projectId);
+    const idag = new Date().toLocaleDateString('sv-SE');
+    return pengasida(companyId, await lasUppdragspengar(client, companyId, { project_id: projectId }), idag);
   }));
 
 // ---------------------------------------------------------------------------

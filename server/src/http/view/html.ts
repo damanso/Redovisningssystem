@@ -240,6 +240,100 @@ export function monthlyChart(points: readonly { ym: string; revenue_ore: number;
   return raw(`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Intäkter och kostnader per månad, senaste 12 månaderna">${baseline}${bars}</svg>`);
 }
 
+/**
+ * Kumulativ förbrukningskurva mot en vågrät ramlinje (S10.4, FR-5) — ren
+ * inline-SVG, noll JavaScript, samma teknik som `monthlyChart`.
+ *
+ * Funktionen är REN: ingen klocka, ingen databas, inga anrop. Serien, taket och
+ * ETT cachat ramutfall in — samma indata ger alltid samma bild.
+ *
+ * Formen bär hela FR-5:s "vägrar gissa". Bär utfallet ett DATUM ritas tre
+ * saker: ramlinjen (var gränsen går), den heldragna kurvan (den registrerade
+ * tiden, det som FAKTISKT hänt) och den streckade förlängningen fram till
+ * ramdatumet (svepets prognos, det som ännu inte hänt). Streckningen är inte
+ * dekor — den är skillnaden mellan mätning och prognos, och den syns i
+ * svartvitt.
+ *
+ * Bär utfallet i stället ett VILLKOR finns ingen kurva att rita, och funktionen
+ * svarar `null`: villkoret skrivs i klartext av den som anropar. En kurva utan
+ * ramdatum hade varit en bild som antyder ett svar systemet vägrat ge.
+ *
+ * Bilden är aldrig ensam bärare (WCAG 1.1.1): `role="img"` + `aria-label`, och
+ * ramdatumet står som text utanför den.
+ */
+export interface Ramkurva {
+  /** Kumulativt per dag, i datumordning. `varde` är minuter ELLER ören. */
+  serie: readonly { datum: string; varde: number }[];
+  /** Rotdelens tak i seriens egen enhet. */
+  tak: number;
+  /** Det cachade ramutfallet: ETT datum ELLER ETT villkor, aldrig båda. */
+  utfall: { datum: string } | { villkor: string };
+  /** Taket i klartext ("430 h", "605 900 kr") — bilden räknar aldrig om något. */
+  takEtikett: string;
+  ariaLabel: string;
+}
+
+const DYGN_MS = 86_400_000;
+
+/** `YYYY-MM-DD` → dygn sedan epok. Samma grepp som `lib/uppdragsplan.ts`. */
+function dagnummer(datum: string): number {
+  return Date.UTC(
+    Number(datum.slice(0, 4)), Number(datum.slice(5, 7)) - 1, Number(datum.slice(8, 10)),
+  ) / DYGN_MS;
+}
+
+export function ramkurva(k: Ramkurva): Raw | null {
+  if (!('datum' in k.utfall)) return null;
+  const forsta = k.serie[0];
+  const sista = k.serie[k.serie.length - 1];
+  // Utan registrerad tid finns ingen kurva att dra, och utan tak ingen linje att
+  // dra den mot. Då säger texten det i stället — en tom ruta säger ingenting.
+  if (forsta === undefined || sista === undefined || k.tak <= 0) return null;
+
+  const W = 720, H = 190, padT = 18, padB = 28, padL = 12, padR = 12;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const golv = padT + plotH;
+
+  const x0 = dagnummer(forsta.datum);
+  const xSista = dagnummer(sista.datum);
+  const xRam = dagnummer(k.utfall.datum);
+  // Spannet är minst ett dygn: en serie på en enda dag ska ge en punkt, inte en
+  // division med noll.
+  const spann = Math.max(1, Math.max(xSista, xRam) - x0);
+  // Taket får luft ovanför sig, och en kurva som PASSERAT taket får plats i
+  // bilden: skalan följer det största av de två, aldrig bara taket.
+  const yMax = Math.max(k.tak, sista.varde) * 1.08;
+  const X = (datum: string): string => (padL + ((dagnummer(datum) - x0) / spann) * plotW).toFixed(1);
+  const Y = (varde: number): string => (golv - (varde / yMax) * plotH).toFixed(1);
+
+  const punkter = k.serie.map((p) => `${X(p.datum)},${Y(p.varde)}`).join(' ');
+  const yta = `<path d="M ${X(forsta.datum)},${golv.toFixed(1)} L ${punkter
+    .split(' ').join(' L ')} L ${X(sista.datum)},${golv.toFixed(1)} Z" style="fill:var(--accent);opacity:.10"/>`;
+  const kurva = `<polyline points="${punkter}" fill="none" stroke-width="2" stroke-linejoin="round"`
+    + ' stroke-linecap="round" style="stroke:var(--accent)"/>';
+  const ramlinje = `<line x1="${padL}" y1="${Y(k.tak)}" x2="${W - padR}" y2="${Y(k.tak)}"`
+    + ' stroke-width="1.25" stroke-dasharray="2 3" style="stroke:var(--ink-2)"/>';
+  // Förlängningen ritas bara när det finns en framtid att rita: är ramdatumet
+  // seriens sista dag eller tidigare (ramen är redan nådd) står kurvan redan där
+  // linjen går, och ett streck bakåt hade varit en påhittad rörelse.
+  const framat = xRam > xSista && k.tak > sista.varde
+    ? `<line x1="${X(sista.datum)}" y1="${Y(sista.varde)}" x2="${X(k.utfall.datum)}" y2="${Y(k.tak)}"`
+      + ' stroke-width="2" stroke-dasharray="6 5" stroke-linecap="round" style="stroke:var(--accent);opacity:.72"/>'
+      + `<circle cx="${X(k.utfall.datum)}" cy="${Y(k.tak)}" r="3.5" fill="none" stroke-width="1.75" style="stroke:var(--accent)"/>`
+    : '';
+  const nu = `<circle cx="${X(sista.datum)}" cy="${Y(sista.varde)}" r="3.5" style="fill:var(--accent)"/>`;
+  const slutetikett = framat === '' ? sista.datum : k.utfall.datum;
+  const text = `<text class="ch-lbl" x="${W - padR}" y="${(Number(Y(k.tak)) - 6).toFixed(1)}" text-anchor="end">${esc(k.takEtikett)}</text>`
+    + `<text class="ch-lbl" x="${padL}" y="${H - 8}">${esc(forsta.datum)}</text>`
+    + `<text class="ch-lbl" x="${W - padR}" y="${H - 8}" text-anchor="end">${esc(slutetikett)}</text>`;
+  const baslinje = `<line class="ch-base" x1="${padL}" y1="${golv}" x2="${W - padR}" y2="${golv}"/>`;
+
+  return raw(
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(k.ariaLabel)}">`
+    + `${baslinje}${yta}${ramlinje}${kurva}${framat}${nu}${text}</svg>`,
+  );
+}
+
 // Navigationen är ordnad efter HUR OFTA sidorna används, inte efter i vilken
 // ordning de råkade byggas. 28 länkar på en rad gick varken att överblicka
 // eller använda i ett smalt fönster; nu ligger de i namngivna grupper bakom en
@@ -789,6 +883,19 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: color-mix(in oklch, var(--accent-weak) 45%, transparent); }
 td.num, th.num { text-align: right; }
 tbody td.code { color: var(--ink-2); }
+
+/* Kostnadsraden på Pengarna (1D §4.4, S10.4).
+ *
+ * Talen är MÄTNINGAR man jämför lodrätt — ett belopp under ett annat — och
+ * därför skrivmaskinsfamiljen med tabular-nums, högerställt. Det är samma skäl
+ * som .farskhet bär den: siffror man ställer mot varandra ska stå i linje.
+ *
+ * "Ej bokförd" står i SAMMA kolumn som beloppen men får aldrig se ut som ett
+ * tal: den byter tillbaka till brödtexten, lutar och dämpas. Ett obokfört
+ * kvitto har inget belopp i redovisningen ännu, och en nolla eller ett
+ * gråmarkerat tal där hade varit ett påstående om pengar som inte finns. */
+.pengarad td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+.pengarad td.num .muted { font-family: var(--sans); font-style: italic; font-size: 12.5px; }
 
 /* Chips */
 .chip {
