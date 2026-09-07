@@ -145,6 +145,19 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S11.2, våg 9 — modulsektionen i ARKITEKTUR.md
+  införd genom beslut #140):** Modulen var byggd (S0.1–S10.7) men lagen nämnde
+  den inte, och punkten Migrationer påstod "just nu 0001–0059" när kedjan går
+  0001–0071. `docs/ARKITEKTUR.md` fick sektionen **"## Uppdragsytan (modul)"**
+  mellan Arkitekturmonster och Granser — namnrymden `uppdrag_*`, ägandegränsen
+  (två datamängder ägda helt, en tredje utvidgad) och svepets hemvist hos
+  Hermes — och migrationsraden rättades till 0001–0071. Ändringsregeln kräver
+  att en arkitekturändring beslutas av David i beslutskön: beslut #140 **är**
+  den mekanismen, inte ett bygge som ändrar dokumentet i förbifarten. **Ingen
+  kod, ingen migration, inga tester, inga nya åtgärder eller beroenden**;
+  Granser och Andringsregel står ordagrant kvar. Diffen rör `docs/ARKITEKTUR.md`
+  och den här filen.
+
 - **2026-09-07 (uppdragsytan S10.7, våg 7 — mätpunkten: menyn, klassnamnen och
   agentens läsväg):** Sex ytor var byggda (S10.1–S10.6), men ingen av dem gick
   att MÄTA. **Uppdragsytan saknades i huvudmenyn, sju av 1D:s elva
