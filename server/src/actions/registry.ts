@@ -46,7 +46,9 @@ import {
 import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../services/uppdragReferens.js';
 import { bindaKostnad } from '../services/uppdragKostnad.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
-import { STATUSUTFALL, bekraftaStatusbyte } from '../services/uppdragStatus.js';
+import {
+  GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, godkannLeverabel, paborjaLeverabel,
+} from '../services/uppdragStatus.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
@@ -1838,6 +1840,71 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // klick framför den. `bekraftat_av` härleds likaså ur den inloggade
     // användaren, aldrig ur indatat.
     handler: (ctx, i) => bekraftaStatusbyte(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S2.1, våg 1: skalans två saknade övergångar (FR-12).
+  // `bekrafta_statusbyte` flyttar bara `pagar` vidare, så `ej_paborjad → pagar`
+  // och `levererad → godkand` hade ingen skrivväg alls — och utan den sista
+  // kunde ingen leverabel bli `godkand`, alltså kunde inget uppdrag avslutas med
+  // en TOM öppna-lista (FR-8). Hela flödet är därmed:
+  //
+  //   ej_paborjad → pagar → levererad → godkand   (+ retur: pagar → avvisad)
+  //
+  // Båda är `write` + `kravManniska` av samma skäl som `bekrafta_statusbyte`:
+  // ett agentanrop fälls i executeAction med 403 `human_required` FÖRE varje
+  // skrivning. Ingen tid, inget svep och ingen Drive-observation flyttar en
+  // status — de här stegen har ingen maskinell iakttagelse bakom sig alls, det
+  // är en människa som gjorde eller fick något.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'paborja_leverabel',
+    title: 'Påbörja en leverabel (ej påbörjad → pågår)',
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Koden ur registret (`uppdrag_leverabel_kod_uk`), aldrig ett
+        // radsurrogat — samma nyckel som kontraktstexten och svepet använder.
+        leverabel_kod: safeText(50),
+        // Bakåtdatering inom ett fönster: aldrig i framtiden (400
+        // `framtida_datum`), aldrig före avtalets `signed_date` (400
+        // `fore_avtalet`). Utelämnad = nu.
+        nar: IsoDateSchema.optional(),
+        // Valfri med flit: ett tvingande fält lär den som har bråttom att
+        // skriva "." — samma skäl som `kommentar` i `satt_bedomning`.
+        notering: safeText(500).optional(),
+      })
+      .strict(),
+    // Ingen `kanal` och ingen `mottagare`: ett påbörjande är ingen överlämning,
+    // och ett tomt kanalfält i en append-only historik hade sett ut som en
+    // överlämning som saknade sin form. Målstatusen härleds i tjänsten —
+    // ett fritt statusfält vore en andra skrivväg.
+    handler: (ctx, i) => paborjaLeverabel(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  def({
+    name: 'godkann_leverabel',
+    title: 'Godkänn en levererad leverabel (levererad → godkänd)',
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        leverabel_kod: safeText(50),
+        nar: IsoDateSchema.optional(),
+        notering: safeText(500).optional(),
+        // Exakt 0072:s CHECK-villkor. HUR beskedet kom är hela dess bevisvärde
+        // den dag någon frågar — obligatorisk därför, till skillnad från
+        // noteringen. Ett femte värde fälls här (400 `validation_error`), och av
+        // villkoret om det ändå nådde fram.
+        kanal: z.enum(GODKANNANDEKANALER),
+      })
+      .strict(),
+    // `mottagare` är INTE ett fält: den läses ur avtalets `godkannare`, och
+    // saknas den skrivs ingenting alls (409 `saknad_mottagare`, FR-13). En
+    // mottagare anroparen skriver in själv är ett påstående, inte ett spår —
+    // samma regel som `bekraftat_av`, `satt_av_manniska` och `tand_av`.
+    handler: (ctx, i) => godkannLeverabel(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S8.1, våg 4: uppdraget avslutas — med det öppna utskrivet

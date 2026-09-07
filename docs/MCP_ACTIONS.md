@@ -1275,6 +1275,53 @@ i klartext: leverabelkod, Drive-revision och handlingens id. **Bekräfta** och
 kortet — och oåterkalleligheten står före knappen. Ingen ny CSS, inget JS. Finns
 inget öppet förslag står ingenting alls.
 
+### Skalans två andra övergångar (S2.1, våg 1)
+
+**Flödet i sin helhet:** `ej_paborjad → pagar → levererad → godkand`, plus
+retur-grenen `pagar → avvisad`. `bekrafta_statusbyte` ovan äger mittensteget och
+returen; de två åtgärderna här äger ändarna. Före dem kunde ingen leverabel bli
+`godkand` — alltså kunde inget uppdrag avslutas med en **tom** öppna-lista (FR-8),
+hur färdigt det än var.
+
+- `paborja_leverabel` (write, **`kravManniska: true`**) — `contract_id`,
+  `leverabel_kod`, `nar?`, `notering?`. Flyttar `ej_paborjad` → `pagar`. Annan
+  status ger **409 `leverabel_ej_ej_paborjad`** (samma felform som
+  `leverabel_ej_pagaende`). **Ingen kanal och ingen mottagare:** ett påbörjande är
+  ingen överlämning, och ett ifyllt transmittalfält hade sagt att det var.
+- `godkann_leverabel` (write, **`kravManniska: true`**) — samma indata plus
+  **`kanal`** (`telefon` | `mejl` | `mote` | `protokoll`, obligatorisk). Flyttar
+  `levererad` → `godkand`; annan status ger **409 `leverabel_ej_levererad`**.
+  Mottagaren läses ur `contracts.godkannare` — är den NULL eller tom skrivs
+  **ingenting alls** (409 `saknad_mottagare`), exakt som i `bekrafta_statusbyte`
+  (FR-13). HUR beskedet kom är hela dess bevisvärde den dag någon frågar; därför
+  är kanalen obligatorisk och noteringen inte.
+- **Ingen maskin flyttar en status.** Båda är `write` + `kravManniska` av samma
+  skäl som `bekrafta_statusbyte`: ett agentanrop fälls i `executeAction` med **403
+  `human_required`** före varje skrivning. Inget svepförslag krävs (till skillnad
+  från `bekrafta_statusbyte`) — stegen har ingen maskinell iakttagelse bakom sig
+  alls, det är en människa som gjorde eller fick något.
+- **En rad i `uppdrag_leverabel_handelse` per steg**, i samma transaktion som
+  statusuppdateringen: `fran`/`till`, `bekraftat_av` ur åtgärdskontexten (aldrig
+  ur indata), `bekraftat_nar` = `nar` om angivet annars `now()`, `notering`, och
+  för godkännandet `kanal` + `mottagare`. **`revision` är alltid NULL:**
+  uppräkningen räknar ÖVERLÄMNINGAR, och varken ett påbörjande eller ett
+  godkännande är en — ett godkännande med revisionsnummer hade räknats som en
+  leverans nästa gång.
+- **Bakåtdatering med tak och golv:** `nar` i framtiden ger **400
+  `framtida_datum`**, `nar` före avtalets `signed_date` **400 `fore_avtalet`**.
+  Dagen jämförs mot databasens `current_date`, samma klocka som `now()`.
+- Leverabeln låses med `SELECT … FOR UPDATE` före statuskontrollen (samma
+  race-skydd som `bekrafta_statusbyte`), och **registerkopian köas om**
+  (`koaRegisterkopia`) i samma transaktion — statusen står i kopians innehåll.
+  Ett **avslutat** uppdrag fälls av 0068:s `vagrar_skrivning_pa_avslutat()` (409
+  `rule_violation`), inte av en kopia av regeln i koden.
+- **Migration 0072** (additiv, idempotent): `uppdrag_leverabel_handelse` får
+  `kanal` (text, nullbar, CHECK som speglar zod-enumen) och `notering` (text,
+  nullbar). Inget befintligt ändras; append-only står orört (`app` har SELECT +
+  INSERT och ingenting annat).
+- **Ingen vy:** stegen har ingen knapp och ingen egen yta — de körs via MCP/REST.
+  Leveranserna (S10.3) är fortsatt en ren läsvy.
+
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
 - `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`. Binder ett
