@@ -2406,10 +2406,19 @@ const bedomningsChip = (lage: string): Raw => {
   return l ? chip(l.etikett, l.kind, l.ikon) : chip(lage, 'muted');
 };
 
-interface Bedomningsunderlag {
+/**
+ * Uppdraget, dess avtal och hela bedömningshistoriken. Egen typ för att den har
+ * TVÅ läsare: Bedömningssidan och Rapporterna (S10.5). Ett andra sätt att hämta
+ * historiken hade varit ett andra svar på "vad sa vi om uppdraget?" — och den
+ * dagen de två glider isär vet ingen vilket av dem som gäller (KRAV-4).
+ */
+interface Bedomningshistorik {
   projekt: { id: string; number: number; name: string };
   avtal: { id: string; name: string }[];
   historik: (Bedomningsrad & { avtalsnamn: string })[];
+}
+
+interface Bedomningsunderlag extends Bedomningshistorik {
   /** Innevarande månad — formulärets förval OCH rapportens period. */
   period: { start: string; slut: string };
   /** Rapporten för det första avtalet. `null` = uppdraget har inget avtal. */
@@ -2431,10 +2440,10 @@ function standardperiod(): { start: string; slut: string } {
   };
 }
 
-/** Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. */
-async function bedomningsunderlag(
+/** Uppdraget, dess avtal och alla bedömningar — historikens enda läsväg. */
+async function bedomningshistorik(
   client: PoolClient, companyId: string, projectId: string,
-): Promise<Bedomningsunderlag> {
+): Promise<Bedomningshistorik> {
   const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
   const avtal = (await listContracts(client, companyId, { project_id: projectId }))
     .map((a) => ({ id: a.id as string, name: a.name as string }));
@@ -2448,6 +2457,14 @@ async function bedomningsunderlag(
   // uppdraget, inte som en tabell per avtal.
   historik.sort((a, b) => a.period_start.localeCompare(b.period_start)
     || a.created_at.localeCompare(b.created_at));
+  return { projekt: p, avtal, historik };
+}
+
+/** Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. */
+async function bedomningsunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Bedomningsunderlag> {
+  const { projekt: p, avtal, historik } = await bedomningshistorik(client, companyId, projectId);
   const period = standardperiod();
   // Rapporten byggs för det avtal formuläret har förvalt — samma tjänstefunktion
   // som fryser talen vid INSERT:en, så förhandsvisningen och den frysta raden
@@ -3541,6 +3558,9 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
   // S10.4: Pengarna står efter Leveranserna och före Kontraktet (1E Del 5) —
   // vad kostar det vi levererar, innan man går tillbaka till vad som avtalades?
   ['pengarna', 'Pengarna'],
+  // S10.5: Rapporterna står mellan Pengarna och Kontraktet (1E Del 5:s ruttlista)
+  // — vad har vi SAGT om uppdraget, innan man går tillbaka till vad som avtalades?
+  ['rapporterna', 'Rapporterna'],
   ['kontraktet', 'Kontraktet'],
 ];
 
@@ -4456,6 +4476,95 @@ viewRouter.get('/c/:companyId/projects/:projectId/pengarna', pageFor('projects',
     const projectId = parseApprovalId(req.params.projectId);
     const idag = new Date().toLocaleDateString('sv-SE');
     return pengasida(companyId, await lasUppdragspengar(client, companyId, { project_id: projectId }), idag);
+  }));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.5, våg 7: RAPPORTERNA (FR-17, FR-20; 1E Del 5)
+//
+// Bedömningarna fanns redan — men bara som en tabell under formuläret som sätter
+// nästa. Historien om ett uppdrag lästes alltså på den sida där man ändrar den,
+// i sex kolumner som är byggda för att jämföras rad mot rad. Rapporterna ger
+// samma rader en egen läsyta där varje bedömning är en POST man kan stanna vid.
+// Fem beslut styr sidan:
+//
+//  1. **En läsväg, inte två.** Posterna kommer ur `bedomningshistorik` — exakt
+//     den funktion Bedömningssidan läser — och de frysta talen renderas av
+//     `frystCell`, exakt samma komponent. Ingen egen fråga, ingen egen sortering
+//     och ingen andra frysningslogik: de två hemmen KAN inte glida isär, för det
+//     finns bara en kod att glida med.
+//  2. **Bedömningssidans historiktabell står kvar.** Att flytta hit den vore en
+//     ändring utöver överlämningen (Davids svarsregel 1). Dubbleringen hanteras
+//     alltså av delad kod, inte av att den ena ytan tas bort.
+//  3. **Post, inte tabellrad.** Perioden står i husets `.log-when`-kolumn — en
+//     mono-axel ögat kan löpa nedför — och omdömet till höger: läget först,
+//     människans egna ord näst, de frysta talen under dem och tidpunkten sist.
+//     En tabell tvingar fram jämförelse mellan rader; här läses en bedömning i
+//     taget, vilket är hur ett omdöme faktiskt läses. `.log` är husets egen
+//     kronologikomponent (revisionsloggen, notiserna) — ingen ny klass.
+//  4. **Talen är radens, aldrig dagens (FR-20).** `frystCell` rör aldrig
+//     källorna: NULL säger *Satt innan underlaget frystes* i stället för att en
+//     nolla ska se ut som ett underlag.
+//  5. **Ren läsvy.** Inget formulär och ingen knapp: bedömningen sätts där den
+//     alltid satts, och friktionen mellan de tre lägena (FR-17) är därmed
+//     oförändrad — samma klick, samma storlek, ingen bekräftelseruta på rött som
+//     saknas på grönt.
+// ---------------------------------------------------------------------------
+
+/**
+ * En bedömning som en post. Ordningen är läsningens: VAD sa vi (läget), VARFÖR
+ * (kommentaren), på vilket underlag (de frysta talen) — och när.
+ */
+function bedomningspost(b: Bedomningsrad & { avtalsnamn: string }, flera: boolean): Raw {
+  return html`<div class="log-row" style="align-items:start">
+    ${/* Perioden bryts på två rader: 168px mono rymmer ett datum, inte två. */ ''}
+    <div class="log-when">${b.period_start}<br>– ${b.period_slut}</div>
+    <div>
+      <div class="log-what">${bedomningsChip(b.lage)}
+        ${flera ? html`<span class="muted" style="font-size:12.5px">${b.avtalsnamn}</span>` : ''}</div>
+      ${/* Människans egna ord är postens huvudtext — allt annat är omständigheter. */ ''}
+      <p style="margin:7px 0 0;font-size:14px">${b.kommentar
+        ?? html`<span class="muted">Ingen kommentar skrevs — bara läget sattes.</span>`}</p>
+      <div style="margin-top:7px">${frystCell(b)}</div>
+      <p class="muted" style="margin:7px 0 0;font-size:12px">Satt <span class="code">${b.created_at.slice(0, 16)}</span>
+        ${b.satt_av_manniska ? '' : html` ${chip('Ej satt av människa', 'warn', '!')}`}</p>
+    </div>
+  </div>`;
+}
+
+function rapportersida(companyId: string, u: Bedomningshistorik): Raw {
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
+  const flera = u.avtal.length > 1;
+  const senaste = u.historik[u.historik.length - 1];
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Rapporterna</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Vad har vi sagt om uppdraget, när sa vi det — och vilka tal vilade omdömet på?</p></div>
+      <div class="actions">${senaste ? bedomningsChip(senaste.lage) : chip('Ingen bedömning', 'muted', '○')}
+        <a class="btn btn--ghost btn--sm" href="${bas}/laget">← Läget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'rapporterna')}
+    ${
+      u.avtal.length === 0
+        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+            Bedömningen sätts mot avtalet — det är där det står vad som lovats, och utan det finns ingen rapport att läsa.
+            <a href="${bas}/avtal">Läs in avtalet</a> först.</div>`
+        : u.historik.length === 0
+          ? html`<div class="empty"><div class="big">Ingen bedömning satt ännu</div>
+              Tomheten betyder att ingen ännu svarat på om uppdraget håller — inte att det gör det.
+              Den första bedömningen blir uppdragets utgångsläge och står här efteråt.
+              <a href="${bas}/bedomning">Sätt bedömningen</a>.</div>`
+          : html`<p class="muted" style="margin:0 0 10px;font-size:13px">Äldst först — listan läses som en berättelse
+              om uppdraget. Talen i varje post är de som frystes när bedömningen sattes; de räknas aldrig om, hur mycket
+              källorna än ändras efteråt. Raderna går bara att lägga till: databasen ger varken ändra eller ta bort på
+              dem. En ny bedömning sätts på <a href="${bas}/bedomning">Bedömning</a>.</p>
+            <section class="log" aria-label="Bedömningar i kronologisk ordning">
+              ${u.historik.map((b) => bedomningspost(b, flera))}
+            </section>`
+    }`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/rapporterna', pageFor('projects', 'Rapporterna',
+  async (client, companyId, req) => {
+    const projectId = parseApprovalId(req.params.projectId);
+    return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId));
   }));
 
 // ---------------------------------------------------------------------------
