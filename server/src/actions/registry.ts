@@ -1625,6 +1625,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // `satt_av_manniska` är INTE ett fält i schemat. Kolumnen är svaret på
     // "satte en människa den?" och sätts av tjänsten till true; ett indatafält
     // hade återinfört exakt den lögn kolumnen finns för att utesluta.
+    //
+    // Samma sak gäller `frysta_siffror` och `handelse_ref_ids` (S4.2): servern
+    // räknar om underlaget i insert-transaktionen och fryser det där. Ett
+    // medskickat underlag fälls av `.strict()` — ett underlag som anroparen
+    // skriver själv är inget underlag (FR-16/FR-26).
     handler: (ctx, i) => sattBedomning(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------

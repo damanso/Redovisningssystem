@@ -30,7 +30,9 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
-import { listaBedomningar, BEDOMNINGSLAGEN, type Bedomningslage, type Bedomningsrad } from '../../services/uppdragBedomning.js';
+import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
+  type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
+  type Scopelinje } from '../../services/uppdragBedomning.js';
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
@@ -2401,9 +2403,28 @@ interface Bedomningsunderlag {
   projekt: { id: string; number: number; name: string };
   avtal: { id: string; name: string }[];
   historik: (Bedomningsrad & { avtalsnamn: string })[];
+  /** Innevarande månad — formulärets förval OCH rapportens period. */
+  period: { start: string; slut: string };
+  /** Rapporten för det första avtalet. `null` = uppdraget har inget avtal. */
+  rapport: Rapportunderlag | null;
+  scopelinje: Scopelinje[];
 }
 
-/** Uppdraget, dess avtal och alla bedömningar — det sidan behöver, inget mer. */
+/**
+ * Innevarande månad. Det är en formulärhjälp, inte en rytm: rytmen har ingen
+ * lagring (1E Del 7). Samma period styr rapporten ovanför formuläret, så att
+ * sidan aldrig visar tal för ett annat intervall än det som står i fälten.
+ */
+function standardperiod(): { start: string; slut: string } {
+  const nu = new Date();
+  const dag = (d: Date): string => d.toISOString().slice(0, 10);
+  return {
+    start: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1))),
+    slut: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0))),
+  };
+}
+
+/** Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. */
 async function bedomningsunderlag(
   client: PoolClient, companyId: string, projectId: string,
 ): Promise<Bedomningsunderlag> {
@@ -2420,16 +2441,141 @@ async function bedomningsunderlag(
   // uppdraget, inte som en tabell per avtal.
   historik.sort((a, b) => a.period_start.localeCompare(b.period_start)
     || a.created_at.localeCompare(b.created_at));
-  return { projekt: p, avtal, historik };
+  const period = standardperiod();
+  // Rapporten byggs för det avtal formuläret har förvalt — samma tjänstefunktion
+  // som fryser talen vid INSERT:en, så förhandsvisningen och den frysta raden
+  // kan aldrig svara olika på samma fråga.
+  const forsta = avtal[0];
+  return {
+    projekt: p,
+    avtal,
+    historik,
+    period,
+    rapport: forsta ? await byggRapportunderlag(client, companyId, forsta.id, period.start, period.slut) : null,
+    scopelinje: forsta ? await lasScopelinjer(client, companyId, forsta.id) : [],
+  };
+}
+
+/** En rad i rapporten som saknas: sagt rakt ut, aldrig gissat (FR-32). */
+const saknasText = (text: string): Raw =>
+  html`<p class="muted" style="margin:2px 16px 12px;font-size:12.5px">${text}</p>`;
+
+/**
+ * Rapporten ovanför formuläret (S4.2, FR-16/FR-20/FR-32).
+ *
+ * Ordningen är den man bedömer i: hur mycket tid gick åt, hur står delarna mot
+ * sina tak, vad rörde sig i leveransen, vad hände — och sist vad avtalet
+ * faktiskt lovade. Talen är husets egna: förbrukningen kommer ur samma
+ * takberäkning som varningen och faktureringsspärren läser, och sidan räknar
+ * ingenting själv.
+ */
+function bedomningsrapport(companyId: string, u: Bedomningsunderlag): Raw {
+  const r = u.rapport;
+  if (!r) return html``;
+  const f = r.frysta;
+  const delar = f.delar;
+  const avSort = (sort: Scopelinje['sort']): Scopelinje[] => u.scopelinje.filter((s) => s.sort === sort);
+  return html`<section class="panel" style="margin-top:16px" aria-labelledby="underlag-rubrik">
+    <div class="panel__head"><h2 id="underlag-rubrik">Underlaget för perioden</h2>
+      <span class="code" style="font-size:12.5px">${f.period_start} – ${f.period_slut}</span></div>
+    <div class="panel__body">
+      <div class="kpi-grid" style="padding:10px 16px 4px">
+        ${kpiCell('Registrerad tid', html`${hhmm(f.timmar.minuter)}`)}
+        ${kpiCell('Debiterbar tid', html`${hhmm(f.timmar.fakturerbara_minuter)}`)}
+        ${kpiCell('Tidposter', html`<span class="num">${String(f.timmar.poster)}</span>`)}
+        ${kpiCell('Händelser', html`<span class="num">${String(f.handelser)}</span>`)}
+      </div>
+      ${/* Tiden är periodens; förbrukningen mot tak är avtalets hela livslängd.
+            Ett tak mäts aldrig per månad, och en kolumnrubrik som låtsas det
+            hade gjort en trygg siffra av ett missförstånd. */ ''}
+      <h3 style="margin:16px 16px 4px">Förbrukning mot tak <span class="muted" style="font-weight:400;font-size:12.5px">· hela avtalet</span></h3>
+      ${delar.length === 0
+        ? saknasText('Avtalet har inga delar ännu — utan baseline finns inget tak att mäta mot.')
+        : html`<div class="table-wrap" style="margin:4px 16px 12px">
+            <table><thead><tr><th scope="col">Kod</th><th scope="col">Del</th>
+              <th scope="col" class="num">Förbrukat</th><th scope="col" class="num">Belopp</th>
+              <th scope="col">Tak</th><th scope="col">Taket läst</th></tr></thead>
+            <tbody>${delar.map((d) => html`<tr>
+              <td class="code">${d.code}</td>
+              <td>${d.name}</td>
+              <td class="num">${hhmm(d.minuter)}</td>
+              <td class="num">${amount(d.belopp_ore)}</td>
+              <td>${takText(d.tak_timmar, d.tak_ore)}${d.andel === null
+                ? ''
+                : html` <span class="muted" style="font-size:12.5px">${String(Math.round(d.andel * 100))} %</span>`}</td>
+              <td>${takstatusChipYta(d.tak_status)}</td></tr>`)}
+            </tbody></table></div>`}
+
+      <h3 style="margin:16px 16px 4px">Leverabelrörelser i perioden</h3>
+      ${f.leverabelrorelser.length === 0
+        ? saknasText('Ingen leverabel bytte läge i perioden.')
+        : html`<ul style="margin:4px 16px 12px;padding-left:20px">
+            ${f.leverabelrorelser.map((h) => html`<li style="margin-bottom:3px">
+              <span class="code">${h.kod}</span> ${h.fran ?? '—'} → <b>${h.till}</b>
+              <span class="muted code" style="font-size:12px"> ${h.nar.slice(0, 10)}</span></li>`)}
+          </ul>`}
+
+      <h3 style="margin:16px 16px 4px">Händelser i perioden</h3>
+      ${/* Referenser, aldrig innehåll: id:t står här, mejlkroppen ligger kvar i
+            sitt källsystem (FR-26). Saknas de sägs det rakt ut — en tom lista
+            utan förklaring läses som "inget hände". */ ''}
+      ${r.handelser.length === 0
+        ? html`<p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Inga kalenderposter eller mejl är länkade
+            till avtalet i perioden. Underlag fästs när en fras tänds under
+            <a href="/app/c/${companyId}/projects/${u.projekt.id}/signaler">Signaler</a> — rapporten hittar aldrig på
+            en händelse som ingen länkat.</p>`
+        : html`<ul style="margin:4px 16px 12px;padding-left:20px">
+            ${r.handelser.map((h) => html`<li style="margin-bottom:3px">
+              ${chip(h.sort === 'mejl' ? 'Mejl' : 'Kalenderpost', 'muted', '○')}
+              ${h.titel_vid_lankning ?? html`<span class="muted">Utan titel</span>`}
+              <span class="code" style="font-size:12px"> ${h.extern_id}</span></li>`)}
+          </ul>`}
+
+      <h3 style="margin:16px 16px 4px">Vad avtalet lovade</h3>
+      ${u.scopelinje.length === 0
+        ? saknasText('Avtalet har inga scopelinjer ännu. De läses ur leveranskontraktets text och skrivs aldrig här.')
+        : html`${scopegrupp('Innanför uppdraget', chip('Ingår', 'ok', '✓'), avSort('innanfor'),
+            'Avtalet räknar inte upp något som uttryckligen ingår.')}
+          ${scopegrupp('Utanför uppdraget', chip('Ingår inte', 'info', '→'), avSort('utanfor'),
+            'Avtalet räknar inte upp något som uttryckligen ligger utanför.')}
+          ${scopegrupp('Fraser att lyssna efter', chip('Signal', 'muted', '○'), avSort('fras'),
+            'Kontraktet har inga signalfraser.')}`}
+
+      <p class="muted" style="margin:6px 16px 12px;font-size:12.5px">Talen är husets egna — samma förbrukning som
+        takvarningen och faktureringsspärren läser. Ändrar du perioden i formuläret räknas de om av servern och fryses
+        med bedömningen; det är de frysta talen historiken visar${u.avtal.length > 1
+          ? html`. Rapporten gäller <b>${u.avtal[0]!.name}</b>, avtalet som är förvalt i formuläret`
+          : ''}.</p>
+    </div>
+  </section>`;
+}
+
+/**
+ * Den frysta postens egna tal (FR-20). Kolumnen läser `frysta_siffror` och rör
+ * ALDRIG källorna: en bedömning ska gå att förstå i efterhand av det som stod
+ * då, inte av det som står nu. NULL = raden sattes före S4.2, och det sägs rakt
+ * ut — en nolla där hade sett ut som ett underlag utan innehåll.
+ */
+function frystCell(b: Bedomningsrad): Raw {
+  const f: FrystaSiffror | null = b.frysta_siffror;
+  if (f === null) return html`<span class="muted" style="font-size:12.5px">Satt innan underlaget frystes</span>`;
+  const antal = b.handelse_ref_ids?.length ?? 0;
+  const medTak = f.delar.filter((d) => d.andel !== null);
+  return html`<span style="font-size:13px">${hhmm(f.timmar.minuter)}
+      <span class="muted"> · ${String(antal)} ${antal === 1 ? 'händelse' : 'händelser'}
+        · ${String(f.leverabelrorelser.length)} ${f.leverabelrorelser.length === 1 ? 'rörelse' : 'rörelser'}</span></span>
+    ${medTak.length === 0
+      ? ''
+      : html`<details style="margin-top:2px">
+          <summary class="muted" style="cursor:pointer;font-size:12px;padding:1px 0">Mot taket då</summary>
+          ${medTak.map((d) => html`<div style="font-size:12.5px;margin-top:2px">
+            <span class="code">${d.code}</span> ${hhmm(d.minuter)} · ${amount(d.belopp_ore)}
+            <span class="muted">av ${takText(d.tak_timmar, d.tak_ore)} (${String(Math.round(d.andel! * 100))} %)</span></div>`)}
+        </details>`}`;
 }
 
 function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
-  const nu = new Date();
-  const dag = (d: Date): string => d.toISOString().slice(0, 10);
-  // Innevarande månad som utgångsläge — perioden syns i fälten och går att
-  // ändra. Det är en formulärhjälp, inte en rytm: rytmen har ingen lagring.
-  const start = dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1)));
-  const slut = dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0)));
+  const { start, slut } = u.period;
   const flera = u.avtal.length > 1;
   return html`<form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/bedomning" style="margin:0">
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:12px 16px 4px">
@@ -2479,6 +2625,10 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
         Håller det som lovats? Svaret ges av en människa, en gång per period, och skrivs aldrig om i efterhand.</p></div>
       <div class="actions">${senaste ? bedomningsChip(senaste.lage) : chip('Ingen bedömning', 'muted', '○')}
+        ${/* Rapporten står först, för den läses före omdömet. Genvägen finns
+              därför direkt i huvudet: den som redan bestämt sig — och den som
+              tabbar — ska inte behöva passera hela underlaget för att svara. */ ''}
+        ${u.avtal.length === 0 ? '' : html`<a class="btn btn--ghost btn--sm" href="#satt-bedomningen">Sätt bedömningen ↓</a>`}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
     ${felNotis(req)}
     ${
@@ -2486,7 +2636,8 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
             Bedömningen sätts mot avtalet — det är där det står vad som lovats.
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
-        : html`<div class="panel" style="margin-top:16px">
+        : html`${bedomningsrapport(companyId, u)}
+          <div class="panel" id="satt-bedomningen" style="margin-top:16px">
             <div class="panel__head"><h2>Sätt bedömningen</h2></div>
             <div class="panel__body" style="padding:4px 0 4px">${bedomningsformular(companyId, u)}</div>
           </div>`
@@ -2496,12 +2647,14 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
       u.historik.length === 0
         ? html`<p class="muted">Ingen bedömning satt ännu — den första du sätter blir uppdragets utgångsläge.</p>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Period</th>${flera ? html`<th>Avtal</th>` : ''}<th>Läge</th><th>Kommentar</th><th>Satt</th></tr></thead>
+            <thead><tr><th scope="col">Period</th>${flera ? html`<th scope="col">Avtal</th>` : ''}<th scope="col">Läge</th>
+              <th scope="col">Kommentar</th><th scope="col">Underlaget då</th><th scope="col">Satt</th></tr></thead>
             <tbody>${u.historik.map((b) => html`<tr>
               <td class="code">${b.period_start} – ${b.period_slut}</td>
               ${flera ? html`<td>${b.avtalsnamn}</td>` : ''}
               <td>${bedomningsChip(b.lage)}</td>
               <td>${b.kommentar ?? '—'}</td>
+              <td>${frystCell(b)}</td>
               ${/* Kolumnen talar bara när den har något att säga: varje rad här
                     ÄR satt av en människa (åtgärden kräver det), så en evig
                     ja-kolumn hade bara varit brus. En rad som säger något annat
@@ -2510,7 +2663,8 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
                 ${b.satt_av_manniska ? '' : html` ${chip('Ej satt av människa', 'warn', '!')}`}</td></tr>`)}
             </tbody></table></div>
           <p class="muted" style="margin-top:8px;font-size:12.5px">Äldst först. Raderna går bara att lägga till —
-            databasen ger varken ändra eller ta bort på den här tabellen.</p>`
+            databasen ger varken ändra eller ta bort på den här tabellen. Talen i <em>Underlaget då</em> är de som frystes
+            när bedömningen sattes; de räknas aldrig om, hur mycket källorna än ändras efteråt.</p>`
     }`;
 }
 

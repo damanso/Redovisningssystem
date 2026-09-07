@@ -906,17 +906,33 @@ valfri `kommentar` (≤ 2000 tecken). Svaret är den skrivna raden.
   bedömning för samma period — båda raderna står kvar, och vad man trodde i
   september går att läsa i oktober. Ingen unik-spärr hindrar den andra raden;
   det är meningen.
-- **`handelse_ref_ids` och `frysta_siffror` lämnas NULL.** De hör till svepets
-  stories (FR-16/FR-26/FR-32). En kolumn fylld med en gissning ser ut som ett
-  underlag.
+- **`handelse_ref_ids` och `frysta_siffror` fryses av SERVERN (S4.2, våg 6).**
+  Tjänsten räknar om underlaget i SAMMA transaktion som INSERT:en och skriver
+  det till raden: perioden, periodens timmar (`poster`, `minuter`,
+  `fakturerbara_minuter` ur `list_time_entries`-läsvägen, ignorerade poster
+  räknas aldrig), varje avtalsdel mot sitt tak ur `get_contract_usage` (alltså
+  husets ENDA takberäkning — modulen summerar aldrig ekonomi själv, FR-25),
+  periodens leverabelrörelser ur `uppdrag_leverabel_handelse` och antalet
+  händelser. `handelse_ref_ids` är PEKARE mot `uppdrag_referens` (sort
+  `kalender`/`mejl`, `created_at` i perioden) — aldrig kopior av mejlkropp eller
+  kalendertext (FR-26). Fälten är INTE indata: `.strict()` fäller dem, av samma
+  skäl som `satt_av_manniska`. En period helt utan tid och händelser fryser
+  nollor och en TOM array (`{}`); NULL betyder därmed entydigt "satt före S4.2",
+  och sådana rader renderas som förut, utan siffror (FR-16/FR-20/FR-32).
 - **Ingen rytm-mekanik.** FR-14:s rytm har varken lagring eller läsare i v1
   (1E Del 7) — den bärs av styrgruppsmötena i Davids kalender. Åtgärden spärrar
   därför ingen dag, och vyn visar inget "nästa bedömningstillfälle".
 
 **Vyn:** `/app/c/:id/projects/:projectId/bedomning`, undersida till uppdraget
-(knappen **Bedömning** bredvid *Läs in avtal*). Formuläret sätter läget för en
-period och sidan visar historiken kronologiskt. Den skriver genom
-`executeAction` med actor `human`, precis som resten av vyns skrivvägar.
+(knappen **Bedömning** bredvid *Läs in avtal*). Sidan är **förifylld** (S4.2):
+panelen *Underlaget för perioden* står över formuläret med periodens timmar,
+delarna mot sina tak, leverabelrörelserna, händelserna som referenser och
+scopelinjen (innanför/utanför/fraser, levande ur `uppdrag_scopelinje` — den
+fryses aldrig). Saknas händelser sägs det rakt ut i stället för att blockera
+eller gissa. Formuläret sätter läget för en period — det enda obligatoriska
+valet — och historiken visar varje rads FRYSTA tal, aldrig omräknade. Den
+skriver genom `executeAction` med actor `human`, precis som resten av vyns
+skrivvägar.
 
 ### Leverabelregistret läses (S3.1, våg 3)
 
