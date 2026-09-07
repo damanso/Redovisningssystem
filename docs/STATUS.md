@@ -145,6 +145,74 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.3, våg 6 — Leveranserna: brädan och tabellen):**
+  Registret fick sin läsväg i S3.1 och sin ålder i S3.3, men bara som svaret på
+  en åtgärd. **Frågan "vad ska levereras, var står varje leverabel, och hur länge
+  har den stått där?" gick alltså att STÄLLA men inte att se.**
+
+  Byggt: **en ny undersida `/app/c/:id/projects/:projectId/leveranserna`** i
+  `http/view/routes.ts`, med två JS-fria lägen — brädan (en `.panel` per
+  statusläge, default) och tabellen (`?lage=tabell`, samtliga fält) — plus
+  posten `['leveranserna', 'Leveranserna']` i `UPPDRAGSSIDOR` mellan *Planen*
+  och *Kontraktet*, och en ny svit. **Ingen migration, ingen ny eller ändrad
+  åtgärd eller tjänst** (`lasLeverabelregister` och `registry.ts` är orörda),
+  **ingen ny CSS-klass, ingen ny rutt utöver vyn, inga nya beroenden, ingen
+  ändrad känslighet.** Diffen rör `routes.ts`, `server/test/` och den här filen.
+
+  1. **Två lägen, ETT svar (FR-23).** Båda lägena renderas ur samma
+     `lasLeverabelregister`-svar per avtal — kolumnen är radens egen `status`,
+     åldern radens egen `dagar_i_laget`. Vyn räknar och härleder ingenting. Två
+     lägen som räknade var för sig hade kunnat säga emot varandra, och då vet
+     ingen vilket som gäller.
+  2. **Likvärdiga, inte huvudsak och sammanfattning.** Brädan svarar på "var står
+     det?" med formen; tabellen bär alla fält och är den som läses upp och skrivs
+     ut. En dold sr-only-tabell bakom brädan hade gjort skärmläsarens väg till en
+     andrahandsversion — här är den en adress man kan bokmärka och skicka.
+  3. **Växeln är en serverlänk.** `?lage=tabell`, ingen JavaScript i något läge.
+     Utan parametern — eller med ett värde ingen känner igen — visas brädan: en
+     felskriven parameter ska landa i default-läget, aldrig i en tom sida.
+  4. **Färg, form och ord, alltid alla tre (FR-12).** Lägena bärs av husets
+     `statusChip`: färgen i `chip--*`, formen i glyfen, ordet i etiketten. Ingen
+     ny etikett och ingen ny färg — en bräda som bara färgkodar är obrukbar i
+     svartvitt och för den som inte skiljer färgerna.
+  5. **En tom kolumn står kvar, ett tomt register säger varför.** En kolumn som
+     försvinner lär läsaren att brädan är ofullständig och gör kolumnernas ordning
+     olika för varje avtal. Ett tomt REGISTER är något annat: då står 1D:s
+     förklaring (registret fylls när kontraktet läses in) i stället för en tom
+     bräda som ser färdig ut.
+  6. **Ren läsvy (NFR-4).** Inget `draggable`, inget formulär, ingen knapp:
+     statusbytet ägs av `bekrafta_statusbyte` (S3.2) och går genom kön där en
+     människa läser transmittalen. Ett drag i en kolumn hade varit en andra
+     skrivväg förbi hela den ordningen.
+  7. **Grupperingen kan inte svälja en rad.** De fem lägena skapas före raderna
+     läggs in, och ett läge utanför skalan hamnar sist i stället för att tyst
+     försvinna. Kolumnerna är en PLACERING av tjänstens rader, aldrig ett urval.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-leveranserna.test.ts`: **(a)** undermenyn med
+  *Leveranserna* mellan *Planen* och *Kontraktet*, `aria-current` på exakt en
+  post, och posten synlig också från Läget; **(b)** kodsökaren prövad åt båda
+  hållen, och därefter SAMMA sex leverabelkoder i brädan, i tabellen och i
+  tjänstesvaret — plus att okänt `?lage`-värde ger brädan och att varje läge bär
+  en synlig serverlänk till det andra; **(c)** alla fem kolumnerna i FR-12:s
+  ordning inklusive den tomma `godkand`, tre bärare (färg, glyf, ord) per läge i
+  båda lägena, samtliga sju kolumner i tabellen, L6:s saknade läsväg redovisad
+  som saknad, och åldern renderad ur tjänstens `dagar_i_laget` (12 dagar
+  respektive "Mindre än ett dygn i läget"); **(d)** varken `draggable`,
+  `<script>`, `<form>`, `<button>` eller `<input>` i sidans egen markup;
+  **(e)** tomt register i båda lägena, ett projekt utan avtal, och tenantgränsen
+  — grannbolagets uppdrag och ett okänt id ger 404 medan grannen når sitt eget
+  uppdrag på sin egen väg. Statusarna riggas som ägarrollen (leverabelns enda
+  skrivväg är `bekrafta_statusbyte`, som bara flyttar `pagar` vidare) — riggning
+  av utgångsläge, inte en andra skrivväg.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Sidan nås via
+  undermenyn på uppdragets sidor. Drag-and-drop, kortknappen *Bekräfta byte →*
+  (1D 4.3, ägs av S3.2), 1D:s tabellfält Namn/Rev/Mottagare/Överlämnad (de finns
+  inte i tjänstesvaret), filtrering/sortering/paginering och en egen `.brada`-klass
+  är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-07 (uppdragsytan S10.1, våg 6 — Läget och uppdragslistan):** Alla
   fem delarna av FR-18 fanns redan i databasen, men i fem läsvägar och på fyra
   undersidor. **Kontrollytetestet — "kan David se läget utan att fråga?" — kunde

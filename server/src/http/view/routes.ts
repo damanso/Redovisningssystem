@@ -37,7 +37,7 @@ import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from 
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
-import { lasSvepfarskhet, lasUppdragslage, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
+import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden } from '../../services/uppdragSvep.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
@@ -3534,6 +3534,9 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
   ['bedomning', 'Bedömning'],
   ['signaler', 'Signaler'],
   ['planen', 'Planen'],
+  // S10.3: Leveranserna står mellan Planen och Kontraktet — 1D:s ordning, och
+  // läsarens: när landar det, vad är "det", och vad lovade avtalet?
+  ['leveranserna', 'Leveranserna'],
   ['kontraktet', 'Kontraktet'],
 ];
 
@@ -3979,6 +3982,245 @@ viewRouter.get('/c/:companyId/uppdrag', pageFor('projects', 'Uppdrag', async (cl
             </tbody></table></div>`
     }`;
 }));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.3, våg 6: LEVERANSERNA — brädan och tabellen (FR-12, FR-37,
+// FR-39)
+//
+// Registret fick sin läsväg i S3.1 och sin ålder i S3.3, men bara som svaret på
+// en åtgärd. Frågan *vad ska levereras, var står varje leverabel, och hur länge
+// har den stått där?* gick alltså att STÄLLA men inte att se. Sju beslut styr
+// sidan:
+//
+//  1. **Två lägen, ETT svar.** Brädan och tabellen renderas ur samma
+//     `lasLeverabelregister`-svar per avtal (FR-23). Kolumnen är radens egen
+//     `status`, åldern radens egen `dagar_i_laget` — vyn räknar ingenting och
+//     härleder ingenting. Två lägen som räknade var för sig hade kunnat säga
+//     emot varandra, och då vet ingen vilket som gäller.
+//  2. **Likvärdiga, inte huvudsak och sammanfattning.** Brädan svarar på "var
+//     står det?" med formen; tabellen bär ALLA fält och är den som läses upp och
+//     skrivs ut. Samma rader, samma koder, samma lägen — bara två sätt att se
+//     dem. En dold sr-only-tabell bakom brädan hade gjort skärmläsarens väg till
+//     en andrahandsversion; här är den en adress.
+//  3. **Växeln är en serverlänk.** `?lage=tabell` är en adress man kan bokmärka,
+//     skicka vidare och skriva ut, och sidan är JS-fri i båda lägena. Utan
+//     parametern — eller med ett värde ingen känner igen — visas brädan: en
+//     felskriven parameter ska aldrig ge en tom sida.
+//  4. **Färg, form och ord, alltid alla tre.** Lägena bärs av husets
+//     `statusChip`: färgen i `chip--*`, formen i glyfen, ordet i etiketten.
+//     Ingen ny etikett och ingen ny färg uppfanns här — en bräda som bara
+//     färgkodar är obrukbar i svartvitt och för den som inte skiljer färgerna.
+//  5. **En tom kolumn står kvar.** "Ingen leverabel står här" är ett svar; en
+//     kolumn som försvinner lär läsaren att brädan är ofullständig — och gör
+//     dessutom kolumnernas ordning olika för varje avtal. Ett TOMT register är
+//     något annat: då säger sidan varför det är tomt och var det fylls.
+//  6. **Ren läsvy.** Inget `draggable`, inget formulär, ingen knapp. Statusbytet
+//     ägs av `bekrafta_statusbyte` (S3.2) och går genom kön där en människa
+//     läser transmittalen; ett drag i en kolumn hade varit en andra skrivväg
+//     förbi hela den ordningen.
+//  7. **Ingen ny klass.** `.panel`, `.chip`, `.table-wrap`, `.subnav`, `.empty`
+//     och `.code` bär ytan, och kolumnrutnätet ligger i en inline-stil — samma
+//     teknik som Lägets kortrutnät (S10.1).
+// ---------------------------------------------------------------------------
+
+/** Ett avtal med sitt register — exakt tjänstens rader, i tjänstens ordning. */
+interface Leveransavtal {
+  contractId: string;
+  namn: string;
+  rader: Leverabelrad[];
+}
+
+interface Leveransunderlag {
+  projekt: { id: string; number: number; name: string };
+  avtal: Leveransavtal[];
+}
+
+/**
+ * Uppdragets avtal, vart och ett läst genom SAMMA tjänstefunktion som
+ * `las_leverabelregister` (FR-23) — samma mönster som kontraktsytan. Vyn har
+ * alltså ingen egen fråga mot databasen och kan inte visa något åtgärden inte
+ * svarar.
+ */
+async function leveransunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Leveransunderlag> {
+  const projekt = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const avtal: Leveransavtal[] = [];
+  for (const a of await listContracts(client, companyId, { project_id: projectId })) {
+    const contractId = a.id as string;
+    avtal.push({
+      contractId,
+      namn: String(a.name ?? ''),
+      rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
+    });
+  }
+  return { projekt, avtal };
+}
+
+/**
+ * Åldern i klartext (FR-37). Noll dagar skrivs som "mindre än ett dygn" och
+ * aldrig som "bytte läge nyss": en nyimporterad leverabel har ingen händelse
+ * alls, och räknas från sin `created_at` — den har inte bytt något.
+ */
+function dagarILaget(dagar: number): string {
+  if (dagar === 0) return 'Mindre än ett dygn i läget';
+  return dagar === 1 ? '1 dag i läget' : `${String(dagar)} dagar i läget`;
+}
+
+/** Ett fält kontraktstexten inte angav. Redovisas som saknat, aldrig ifyllt. */
+const saknatFalt = (vad: string): Raw => html`<span class="muted">${vad}</span>`;
+
+/**
+ * Raderna PLACERADE i sina kolumner — aldrig ett urval.
+ *
+ * De fem lägena skapas FÖRE raderna läggs in, så en tom kolumn står kvar i
+ * brädan. Ett läge utanför skalan (0068:s CHECK tillåter det inte i dag, men en
+ * kolumn får aldrig kunna svälja en rad i tysthet) hamnar sist i stället för att
+ * försvinna; `statusChip` renderar då värdet som sig självt.
+ */
+function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelrad[]> {
+  const karta = new Map<string, Leverabelrad[]>(
+    LEVERABELLAGEN.map((lage): [string, Leverabelrad[]] => [lage, []]),
+  );
+  for (const r of rader) {
+    const kolumn = karta.get(r.status);
+    if (kolumn) kolumn.push(r);
+    else karta.set(r.status, [r]);
+  }
+  return karta;
+}
+
+/**
+ * Ett kort i brädan. Chipet står PÅ kortet och inte bara i kolumnhuvudet: ett
+ * kort ska gå att läsa, citera och skriva ut utan sin kolumn. Skiljelinjen
+ * utelämnas på det första kortet — panelhuvudets egen linje ligger redan där.
+ */
+function leverabelkort(r: Leverabelrad, linje: boolean): Raw {
+  return html`<li style="padding:9px 0${linje ? ';border-top:1px solid var(--line)' : ''}">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <strong class="code">${r.kod}</strong>${statusChip(r.status)}</div>
+    <div class="muted" style="font-size:12.5px;margin-top:3px">${
+      r.klausul === null ? 'Ingen klausul angavs' : html`Klausul ${r.klausul}`}</div>
+    <div class="muted" style="font-size:12.5px;margin-top:2px">${dagarILaget(r.dagar_i_laget)}</div>
+  </li>`;
+}
+
+/** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
+function bradkolumn(contractId: string, lage: string, rader: readonly Leverabelrad[]): Raw {
+  const id = `kol-${lage}-${contractId}`;
+  return html`<div><section class="panel" aria-labelledby="${id}">
+    <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
+      ${rader.length === 0 ? '' : html`<span class="muted" style="font-size:12.5px">${String(rader.length)} st</span>`}</div>
+    <div class="panel__body">
+      ${rader.length === 0
+        ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
+        : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
+            ${rader.map((r, i) => leverabelkort(r, i > 0))}
+          </ul>`}
+    </div>
+  </section></div>`;
+}
+
+/**
+ * Brädan: en kolumn per läge, i FR-12:s ordning.
+ *
+ * Rutnätet bryter av sig självt. `minmax(190px, 1fr)` är mätt mot husets
+ * `--maxw` (1080 px minus sidpaddingen ger 1032 px): fem kolumner ryms med
+ * marginal, en sjätte gör det inte, så skalan står på EN rad i fullbredd och
+ * viker till fyra, tre, två och en på smalare skärmar — utan en mediefråga och
+ * utan att kolumnernas ordning ändras.
+ */
+function bradlage(a: Leveransavtal): Raw {
+  return html`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;align-items:start;margin-top:14px">
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(a.contractId, lage, rader))}
+  </div>`;
+}
+
+/**
+ * Tabellen: en rad per leverabel med SAMTLIGA fält ur tjänstesvaret.
+ *
+ * Bar `.table-wrap`, inte en tabell inuti en panel: ramen runt ramen tillför
+ * ingenting när sidans rubrik redan säger vad tabellen är, och på smal skärm
+ * staplas raderna av husets egen tabellregel (`staplabaraTabeller`) — då blir
+ * varje ruta sitt eget fält med sin egen etikett, utan att något hamnar utanför
+ * skärmen.
+ */
+function tabellage(a: Leveransavtal): Raw {
+  return html`<div class="table-wrap" style="margin-top:14px"><table>
+      <thead><tr><th>Kod</th><th>Klausul</th><th>Acceptanskriterium</th><th>Uppföljningsmått</th>
+        <th>Måttets läsväg</th><th>Läge</th><th class="num">Dagar i läget</th></tr></thead>
+      ${/* NULL står som saknat i sin egen ruta — aldrig som ett tomt fält och
+            aldrig ifyllt med en gissning. L6 i NVR-001 saknar med flit sin
+            läsväg, och det ska SYNAS att avtalet inte angav någon. */ ''}
+      <tbody>${a.rader.map((r) => html`<tr>
+        <td class="code">${r.kod}</td>
+        <td class="code">${r.klausul ?? saknatFalt('Ingen klausul')}</td>
+        <td>${r.acceptanskriterium ?? saknatFalt('Inget kriterium angavs')}</td>
+        <td>${r.uppfoljningsmatt ?? saknatFalt('Inget mått angavs')}</td>
+        <td>${r.matt_lasvag ?? saknatFalt('Ingen läsväg angavs')}</td>
+        <td>${statusChip(r.status)}</td>
+        <td class="num">${String(r.dagar_i_laget)}</td></tr>`)}
+      </tbody></table></div>
+    <p class="muted" style="margin:8px 2px 14px;font-size:12.5px">Fälten är avtalets egna: de läses ur
+      leveranskontraktets text och skrivs aldrig här. Åldern räknas ur registrets historik och säger hur länge
+      leverabeln stått i sitt nuvarande läge — inte hur nära den är att bli klar.</p>`;
+}
+
+/**
+ * Växeln: ett chip som säger vilket läge man står i, och en vanlig länk till det
+ * andra. Adressen ÄR läget, så den går att bokmärka, skicka vidare och skriva
+ * ut — och ingen av vägarna behöver JavaScript.
+ */
+function lagesvaxel(bas: string, tabell: boolean): Raw {
+  return html`${chip(tabell ? 'Tabellen' : 'Brädan', 'info', tabell ? '▤' : '▦')}
+    <a class="btn btn--ghost btn--sm" href="${bas}/leveranserna${tabell ? '' : '?lage=tabell'}">${
+      tabell ? 'Visa brädan' : 'Visa tabellen'}</a>`;
+}
+
+/** Ett avtal utan register: varför det är tomt, och var det fylls (KRAV-8). */
+const tomtRegister = (bas: string): Raw =>
+  html`<div class="empty" style="margin-top:14px"><div class="big">Registret är tomt</div>
+    Avtalet har inget leverabelregister ännu — det fylls när leveranskontraktet läses in, och hittas aldrig på här.
+    <a href="${bas}/avtal">Läs in kontraktet</a>, så står leverablerna i både brädan och tabellen.</div>`;
+
+function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean): Raw {
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
+  const flera = u.avtal.length > 1;
+  const totalt = u.avtal.reduce((n, a) => n + a.rader.length, 0);
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Leveranserna</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Vad ska levereras, var står varje leverabel — och hur länge har den stått där?</p></div>
+      <div class="actions">
+        ${totalt === 0 ? chip('Inget register', 'warn', '!') : chip(`${String(totalt)} leverabler`, 'muted')}
+        ${lagesvaxel(bas, tabell)}
+        <a class="btn btn--ghost btn--sm" href="${bas}">← Uppdraget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'leveranserna')}
+    ${u.avtal.length === 0
+      ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
+          Leverablerna står i leveranskontraktet — utan avtal finns inget register att visa.
+          <a href="${bas}/avtal">Läs in avtal</a> först.</div>`
+      : html`<p class="muted" style="margin:0 0 4px;font-size:13px">${
+          tabell
+            ? html`Tabellen bär hela registret: en rad per leverabel med varenda fält som lästes ur avtalet. Det är
+                den som läses upp och skrivs ut.`
+            : html`Brädan visar en kolumn per läge — där en leverabel står, står den. Tabellen bär samma rader med
+                alla fält.`}
+          ${/* Länktexten säger vart den går, inte "här": en länk ska gå att
+                förstå upplyst ur sin mening (WCAG 2.4.4). */ ''}
+          Statusen flyttas aldrig på den här sidan — den bekräftas bland statusförslagen på
+          <a href="${bas}">uppdragets förstasida</a> och går genom Att göra.</p>
+        ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
+          ${a.rader.length === 0 ? tomtRegister(bas) : tabell ? tabellage(a) : bradlage(a)}`)}`}`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projects', 'Leveranserna',
+  async (client, companyId, req) => {
+    const projectId = parseApprovalId(req.params.projectId);
+    // Okänt värde ger brädan. En parameter någon skrivit fel ska landa i
+    // default-läget, aldrig i en tom sida.
+    const tabell = req.query.lage === 'tabell';
+    return leveransersida(companyId, await leveransunderlag(client, companyId, projectId), tabell);
+  }));
 
 // ---------------------------------------------------------------------------
 // Tid (PRD_TIDSRAPPORTERING story 4): ofakturerad godkänd tid, stillastående
