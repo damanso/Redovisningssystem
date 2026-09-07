@@ -43,12 +43,28 @@ const S10_SIDOR = [
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
 ] as const;
 
+/**
+ * S10.8: undermenyns TIO poster i sin ordning — uppdraget självt först (tom
+ * slug), sedan S10.7:s nio. Samma lista som `UPPDRAGSSIDOR` i routes.ts; står
+ * de isär är en av dem fel, och provet ska säga vilken.
+ */
+const UNDERMENYN = [
+  ['', 'Projektet'], ['laget', 'Läget'], ['avtal', 'Avtal'], ['bedomning', 'Bedömning'],
+  ['signaler', 'Signaler'], ['planen', 'Planen'], ['leveranserna', 'Leveranserna'],
+  ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
+] as const;
+
+/** De fyra sidor S10.8 rättar: ingången och de tre som byggdes före menyn. */
+const RATTADE_SIDOR = ['', 'avtal', 'bedomning', 'signaler'] as const;
+
 let user: TestUser;
 let companyId: string;
 /** Ett andra bolag som SAMMA människa äger — agent-tokenet gäller ändå inte där. */
 let andraBolaget: string;
 let grannbolag: string;
 let projektId: string;
+/** Ett projekt UTAN avtal — alltså inget uppdrag, och därmed ingen undermeny. */
+let avtalslostProjekt: string;
 let agentToken: string;
 let ua: ReturnType<typeof supertest.agent>;
 
@@ -70,6 +86,10 @@ async function sida(path: string): Promise<string> {
 
 const lagetsVag = (bolag = companyId, projekt = projektId): string =>
   `/app/c/${bolag}/projects/${projekt}/laget`;
+
+/** En post i undermenyn → dess sökväg. Tom slug är uppdraget självt. */
+const uppdragsvag = (slug: string, projekt = projektId): string =>
+  `/app/c/${companyId}/projects/${projekt}${slug === '' ? '' : `/${slug}`}`;
 
 // --- Mätarna ----------------------------------------------------------------
 
@@ -143,6 +163,10 @@ beforeAll(async () => {
     .set(auth()).send({ project_id: projektId });
   expect(ko.status, JSON.stringify(ko.body)).toBe(202);
 
+  // S10.8: ett projekt utan avtal är ett projekt, inte ett uppdrag — det är
+  // hela skillnaden undermenyn villkoras på.
+  avtalslostProjekt = (await ok('create_project', { name: 'Bara ett projekt' })).id as string;
+
   const tok = await api.post(`/api/companies/${companyId}/agent-tokens`).set(auth()).send({ name: 'Cowork' });
   expect(tok.status, JSON.stringify(tok.body)).toBe(201);
   agentToken = tok.body.token;
@@ -202,6 +226,62 @@ describe('(a) navigationen', () => {
     const html = await sida(lagetsVag());
     expect(antalAktuella(meny(html, '<div class="nav__quick">'))).toBe(1);
     expect(antalAktuella(meny(html, '<nav class="subnav"'))).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (a2) S10.8: menyn på ALLA uppdragets sidor — rättelsen av S10.7
+//
+// S10.7 gav undermenyn till de sex sidor storyn själv byggde. Kvar stod
+// ingången (projektsidan, dit Projekt-listan länkar) och de tre äldre sidorna
+// utan meny — och på telefon, där `.nav__quick` är dold, betydde det ingen väg
+// vidare alls. Provet mäts därför utifrån, per sida, på det som levereras.
+// ---------------------------------------------------------------------------
+
+describe('(a2) undermenyn på varje uppdragssida', () => {
+  it('undermenyn bär uppdraget SJÄLVT först och S10.7:s nio efter — i ordning', async () => {
+    const nav = meny(await sida(lagetsVag()), '<nav class="subnav"');
+    expect(poster(nav)).toEqual(UNDERMENYN.map(([slug]) => uppdragsvag(slug).replace(`/app/c/${companyId}/`, '')));
+    for (const [, etikett] of UNDERMENYN) expect(nav).toContain(`>${etikett}</a>`);
+    // Ingen emoji i menyn, precis som i snabbraden (S10.7 KRAV-1).
+    expect(nav).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+  });
+
+  it.each(RATTADE_SIDOR)('sidan "%s" bär undermenyn med EXAKT en aktuell post — sin egen', async (slug) => {
+    const nav = meny(await sida(uppdragsvag(slug)), '<nav class="subnav"');
+    expect(antalAktuella(nav)).toBe(1);
+    expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
+    // Menyn är hel på var och en av dem: tio poster, inte ett urval.
+    expect(poster(nav)).toHaveLength(UNDERMENYN.length);
+  });
+
+  it('projektsidans aktuella post är "Projektet", och huvudmenyn markerar sin egen', async () => {
+    const html = await sida(uppdragsvag(''));
+    const nav = meny(html, '<nav class="subnav"');
+    // Etiketten sitter på just den post som är aktuell — inte bara någonstans.
+    expect(nav).toContain(`href="${uppdragsvag('')}" aria-current="page">Projektet</a>`);
+    // Och mätningen är per navigation: snabbraden markerar Projekt, menyn Projektet.
+    expect(antalAktuella(meny(html, '<div class="nav__quick">'))).toBe(1);
+    expect(antalAktuella(nav)).toBe(1);
+  });
+
+  it('ett projekt UTAN avtal får ingen undermeny — men behåller sina länkar', async () => {
+    const html = await sida(uppdragsvag('', avtalslostProjekt));
+    expect(html).not.toContain('class="subnav"');
+    // Knappbandet och sidans innehåll är oförändrade: länkarna står som förut.
+    expect(html).toContain(`href="/app/c/${companyId}/projects/${avtalslostProjekt}/laget"`);
+    expect(html).toContain(`href="/app/c/${companyId}/projects/${avtalslostProjekt}/avtal"`);
+    expect(html).toContain('Tidposter');
+    // Och samma regel på vägen in för det FÖRSTA avtalet: en meny till nio
+    // sidor som alla säger "inget avtal ännu" vore en lögn.
+    expect(await sida(uppdragsvag('avtal', avtalslostProjekt))).not.toContain('class="subnav"');
+  });
+
+  it('alla tio posterna i menyn svarar 200 för ett uppdrag — ingen död länk', async () => {
+    for (const [slug, etikett] of UNDERMENYN) {
+      const res = await ua.get(uppdragsvag(slug));
+      expect(res.status, `${etikett} (${uppdragsvag(slug)}) gav ${res.status}`).toBe(200);
+    }
   });
 });
 

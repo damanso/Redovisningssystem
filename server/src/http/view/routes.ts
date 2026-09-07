@@ -1678,6 +1678,11 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     // stå kvar från ett avslut som återöppnats på annat håll, och en panel om
     // "avslutet" på ett pågående uppdrag hade beskrivit ett läge som inte gäller.
     const avslut = p.status === 'closed' ? await lasAvslutslista(client, companyId, projectId) : [];
+    // S10.8: ett projekt ÄR ett uppdrag först när det har ett avtal — samma
+    // härledning som uppdragslistan (`listContracts`, husets enda läsväg), läst
+    // i sidans egen transaktion. Ett projekt utan avtal får ingen undermeny: nio
+    // av tio poster hade bara svarat "uppdraget har inget avtal ännu".
+    const harUppdrag = (await listContracts(client, companyId, { project_id: projectId })).length > 0;
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
@@ -1697,15 +1702,20 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a>
           ${/* S10.2: planen bor sist i bandet — den svarar på "när landar det?",
                 och den frågan ställs efter "vad står i avtalet?" och "håller
-                det?". Ingen egen meny: huset har ett knappband, och en andra
-                navigationsrad hade gjort uppdragssidan till två sidor. */ ''}
+                det?". (S10.8: bandet är fortfarande handgreppen härifrån —
+                undermenyn nedan är vägen MELLAN uppdragets tio sidor.) */ ''}
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/planen">Planen</a>
           ${/* S10.6: kontraktet sist i bandet. Planen svarar "när landar det?",
                 Kontraktet svarar "vad står det, var ligger det, och vad har
                 ändrats sedan dess?" — den frågan ställer man när ett av de
-                andra svaren förvånar. Fortfarande husets knappband: ingen egen
-                meny (S10.7 äger den frågan). */ ''}
+                andra svaren förvånar. Fortfarande husets knappband; menyn
+                står i `.subnav` nedan (S10.7, rättad av S10.8). */ ''}
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/kontraktet">Kontraktet</a></div></div>
+      ${/* S10.8: undermenyn direkt under sidhuvudet, som på modulens övriga
+            sidor. Knappbandet ovanför är handgreppen HÄRIFRÅN; menyn är vägen
+            mellan uppdragets tio sidor, och den är enda vägen på telefon där
+            `.nav__quick` är dold. `aria-current` sitter på "Projektet". */ ''}
+      ${harUppdrag ? subnav(companyId, projectId, '') : ''}
       ${tidsnotiser(req)}
       ${kopior.map((k) => registerkopiaRad(k))}
       ${/* S8.1: högst upp på ett avslutat uppdrag — det öppna är det enda som
@@ -2036,7 +2046,8 @@ function avtalsformular(
 
 function avtalsinlasningSida(
   req: Request, companyId: string, projekt: { id: string; number: number; name: string; customer_name: string | null },
-  kunder: { id: string; name: string }[], v: Avtalsformvarden, opts: { aiAv?: boolean; fel?: string } = {},
+  kunder: { id: string; name: string }[], v: Avtalsformvarden,
+  opts: { aiAv?: boolean; fel?: string; harUppdrag?: boolean } = {},
 ): Raw {
   const formular = avtalsformular(companyId, projekt.id, kunder, projekt.customer_name, v);
   const lasning = v.utkast;
@@ -2047,6 +2058,10 @@ function avtalsinlasningSida(
         Ladda upp avtalet som PDF (eller foto) så fylls formuläret i åt dig — allt går att rätta innan något sparas.
         Det som står här blir avtalets taxa och fasernas tak, alltså det faktureringen mäter emot.</p></div>
       <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projekt.id}">← Uppdraget</a></div></div>
+    ${/* S10.8: menyn står här när uppdraget redan har ett avtal — sidan är då
+          en av tio, inte en ensam ingång. Det FÖRSTA avtalet läses in innan
+          modulen finns, och en meny till nio tomma sidor vore en lögn. */ ''}
+    ${opts.harUppdrag ? subnav(companyId, projekt.id, 'avtal') : ''}
     ${opts.fel ? html`<p class="notice">${opts.fel}</p>` : felNotis(req)}
     ${
       opts.aiAv
@@ -2118,12 +2133,15 @@ async function avtalsunderlag(
 ): Promise<{
   projekt: { id: string; number: number; name: string; customer_id: string | null; customer_name: string | null };
   kunder: { id: string; name: string }[];
+  /** S10.8: bär projektet redan ett avtal står undermenyn här — annars inte. */
+  harUppdrag: boolean;
 }> {
   const p = await getProject(client, companyId, projectId) as {
     id: string; number: number; name: string; customer_id: string | null; customer_name: string | null;
   };
   const kunder = (await listCustomers(client, companyId)) as unknown as { id: string; name: string }[];
-  return { projekt: p, kunder: kunder.map((k) => ({ id: k.id, name: k.name })) };
+  const harUppdrag = (await listContracts(client, companyId, { project_id: projectId })).length > 0;
+  return { projekt: p, kunder: kunder.map((k) => ({ id: k.id, name: k.name })), harUppdrag };
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/avtal', page(async (req, res) => {
@@ -2132,11 +2150,11 @@ viewRouter.get('/c/:companyId/projects/:projectId/avtal', page(async (req, res) 
   const projectId = parseApprovalId(req.params.projectId);
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
+    const { projekt, kunder, harUppdrag } = await avtalsunderlag(client, companyId, projectId);
     return {
       name: company.name,
       body: avtalsinlasningSida(req, companyId, projekt, kunder, tommaAvtalsvarden(projekt.customer_name), {
-        aiAv: !config.ANTHROPIC_API_KEY,
+        aiAv: !config.ANTHROPIC_API_KEY, harUppdrag,
       }),
     };
   });
@@ -2166,12 +2184,12 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/las-in', avtalUpload, p
 
   const bas = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
-    return { name: company.name, projekt, kunder };
+    const { projekt, kunder, harUppdrag } = await avtalsunderlag(client, companyId, projectId);
+    return { name: company.name, projekt, kunder, harUppdrag };
   });
   const tomt = tommaAvtalsvarden(bas.projekt.customer_name);
   const sida = (v: Avtalsformvarden, opts: { aiAv?: boolean; fel?: string }): Raw =>
-    avtalsinlasningSida(req, companyId, bas.projekt, bas.kunder, v, opts);
+    avtalsinlasningSida(req, companyId, bas.projekt, bas.kunder, v, { ...opts, harUppdrag: bas.harUppdrag });
 
   const { name, body } = await (async () => {
     if (!req.file) {
@@ -2654,6 +2672,9 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
               tabbar — ska inte behöva passera hela underlaget för att svara. */ ''}
         ${u.avtal.length === 0 ? '' : html`<a class="btn btn--ghost btn--sm" href="#satt-bedomningen">Sätt bedömningen ↓</a>`}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${/* S10.8: undermenyn, som på modulens övriga sidor. Utan den var sidan en
+          återvändsgränd — man kom hit ur knappbandet och kunde bara gå tillbaka. */ ''}
+    ${u.avtal.length === 0 ? '' : subnav(companyId, u.projekt.id, 'bedomning')}
     ${felNotis(req)}
     ${
       u.avtal.length === 0
@@ -2750,8 +2771,10 @@ viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, 
 //     de fel kund nästa gång. Har importen inte körts säger sidan det, i stället
 //     för att visa en lista som ser komplett ut.
 //
-// Ingen egen meny och ingen egen CSS: knappen **Signaler** står i uppdragets
-// knappband bredvid **Bedömning**, och sidan följer S4.1:s mönster rakt av.
+// Ingen egen CSS: knappen **Signaler** står i uppdragets knappband bredvid
+// **Bedömning**, och sidan följer S4.1:s mönster rakt av. (S10.8: sidan bär
+// numera husets `.subnav` som modulens övriga sidor — ingen egen meny, samma
+// funktion och samma klass.)
 // ---------------------------------------------------------------------------
 
 /** Avgörandets två värden med husets färgspråk. Ingetdera är ett fel. */
@@ -2944,6 +2967,9 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
         ? chip(`${String(oppna.length)} öppna`, 'warn', '◔')
         : chip('Inga öppna', 'ok', '✓')}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${/* S10.8: undermenyn, som på modulens övriga sidor. Kommentaren nedan om
+          "ingen egen meny" beskrev S5.1:s läge och gäller inte längre. */ ''}
+    ${u.avtal.length === 0 ? '' : subnav(companyId, u.projekt.id, 'signaler')}
     ${felNotis(req)}
     ${
       u.avtal.length === 0
@@ -3539,9 +3565,12 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
 //     SVEPT — den bär svepets lästidpunkt, inte sidans — och har svepet aldrig
 //     kört säger raden det, i stället för att låta ett tomt larm se ut som lugn.
 //  5. **`.subnav`, inte en andra huvudmeny.** Modulens undersidor låg redan i
-//     husets knappband; Läget är den sida man kommer TILL och går vidare från,
-//     så den bär undermenyn — fyrkantig form, "en nivå ner", `aria-current` på
-//     exakt en post. Menyn i `.nav__quick` ägs av S10.7 och rörs inte.
+//     husets knappband; undermenyn står på VARJE uppdragssida — fyrkantig form,
+//     "en nivå ner", `aria-current` på exakt en post. Menyn i `.nav__quick` ägs
+//     av S10.7 och rörs inte. (S10.8 rättade S10.7: menyn fanns bara på de sex
+//     S10-sidorna, så projektsidan — ingången från Projekt-listan — och de tre
+//     äldre sidorna var återvändsgränder i en meny de själva saknade. På telefon,
+//     där `.nav__quick` är dold, fanns då ingen väg vidare alls.)
 //  6. **Vyn räknar ingenting.** Allt kommer ur `lasUppdragslage`, alltså ur
 //     samma svar som MCP och REST läser (FR-23). Kan sidan visa något åtgärden
 //     inte svarar har en av dem fel — och då vet ingen vilken.
@@ -3549,6 +3578,10 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
 
 /** Uppdragets undersidor. En post = en fråga; ordningen är frågornas ordning. */
 const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
+  // S10.8: uppdraget SJÄLVT först, med tom slug — det är sidan man kommer från
+  // (Projekt-listan länkar hit) och den man vill tillbaka till. Utan posten
+  // pekade menyn bara framåt: nio vägar in i modulen och ingen väg hem.
+  ['', 'Projektet'],
   ['laget', 'Läget'],
   ['avtal', 'Avtal'],
   ['bedomning', 'Bedömning'],
@@ -3574,7 +3607,7 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
 function subnav(companyId: string, projectId: string, aktuell: string): Raw {
   const bas = `/app/c/${companyId}/projects/${projectId}`;
   return html`<nav class="subnav" aria-label="Uppdragets sidor">
-    ${UPPDRAGSSIDOR.map(([slug, etikett]) => html`<a href="${bas}/${slug}"${
+    ${UPPDRAGSSIDOR.map(([slug, etikett]) => html`<a href="${slug === '' ? bas : `${bas}/${slug}`}"${
       slug === aktuell ? raw(' aria-current="page"') : ''
     }>${etikett}</a>`)}
   </nav>`;

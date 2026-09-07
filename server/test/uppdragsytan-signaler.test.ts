@@ -439,8 +439,10 @@ describe('(c) vyn', () => {
     }
     expect(html).toContain('name="underlag_id"');
     expect(html).toContain('name="eskalera"');
-    // Ingen `.subnav`: huset saknar klassen, och menyn ägs av S10.7.
-    expect(html).not.toContain('class="subnav"');
+    // S10.8 vänder S5.1:s rad öppet: undermenyn står på VARJE uppdragssida.
+    // Raden ovan kodifierade läget innan `.subnav` fanns — att låta den stå
+    // hade gjort provet till en spärr mot rättelsen av S10.7.
+    expect(html).toContain('<nav class="subnav"');
   });
 
   it('ett avtal utan fraser säger var fraserna kommer ifrån i stället för att hitta på dem', async () => {
