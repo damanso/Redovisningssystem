@@ -229,8 +229,25 @@ describe('brytpunkten 2026-09: bruttometod med skuldkonton (LOC-355)', () => {
       [2731, 0, SEP_EMPLOYER],        // avräkning sociala avgifter
       [1930, 0, SEP_NET],             // det som lämnade banken
     ]);
-    // Verifikatet balanserar per konstruktion: netto = brutto − skatt.
-    expect(SEP_GROSS + SEP_EMPLOYER).toBe(SEP_TAX + SEP_EMPLOYER + SEP_NET);
+    // HAR STOD ETT BALANSPROV SOM INTE VAR ETT PROV, och det ar borttaget:
+    //
+    //     expect(SEP_GROSS + SEP_EMPLOYER).toBe(SEP_TAX + SEP_EMPLOYER + SEP_NET)
+    //
+    // Fyra TESTKONSTANTER jamforda med varandra. Den kunde inte falla oavsett
+    // vad implementationen bokforde, och utgav sig anda for att kontrollera
+    // att verifikatet balanserar. Funnen av den korsvisa granskningen
+    // (gpt-6-astra) 2026-09-07, efter att fable-5 godkant bygget.
+    //
+    // Forsta rattelsen var samma fel i finare klader: en summering av
+    // lines.debit_ore mot lines.credit_ore. Den kan inte heller falla —
+    // postVoucher (services/accounting/vouchers.ts:99) kastar `unbalanced`
+    // innan verifikatet skrivs, sa ett verifikat som FINNS balanserar alltid.
+    //
+    // Skyddet finns redan, pa tva stallen som bada KAN falla:
+    //   * toEqual-raderna ovan: exakt fem rader, exakta konton och belopp.
+    //     Tappas en rad — t.ex. av withoutZeroLines — faller den.
+    //   * postVoucher: obalans blir ett kastat fel, inte ett tyst verifikat.
+    // En tredje rad som inte kan bli rod hade bara gjort sviten langre.
 
     // Skulden ligger nu i balansräkningen — det som saknades före LOC-355.
     const s = await saldo([2710, 2731]);

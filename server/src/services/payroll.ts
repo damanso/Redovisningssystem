@@ -46,8 +46,22 @@ function usesGrossMethod(period: string): boolean {
  * debet/kredit är positiv per rad. En lönepost kan sakna skatt (jämkning till
  * 0) och en öresdifferens är oftast just 0 — de raderna ska då inte skrivas.
  */
+// Tar bort rader som ar NOLL. Inte rader som ar "inte positiva".
+//
+// 2026-09-07, korsvis granskning (gpt-6-astra) av beslut #107: villkoret stod
+// `> 0`, vilket ocksa kastar bort en NEGATIV rad. Namnet sade noll, koden sade
+// icke-positiv, och en tappad rad i ett verifikat ar en tyst obalans.
+//
+// Verifierat samma dag: negativa belopp gar inte att na i dag — anropsstallena
+// bygger oresraden med `rounding < 0 ? -rounding : 0` och API-schemat
+// (http/routes/accounting.ts) kraver `nonnegative()`. Fyndet var alltso latent,
+// inte aktivt. Det lagas anda: en fälla som ligger och vantar pa nasta
+// rattelseverifikat kostar ingenting att ta bort nu.
+//
+// Det som SKYDDAR mot en tappad rad ar inte den har raden utan balansprovet i
+// server/test/payroll-payment.test.ts, som mater verifikatets egna rader.
 function withoutZeroLines(lines: VoucherLineInput[]): VoucherLineInput[] {
-  return lines.filter((l) => (l.debit_ore ?? 0) > 0 || (l.credit_ore ?? 0) > 0);
+  return lines.filter((l) => (l.debit_ore ?? 0) !== 0 || (l.credit_ore ?? 0) !== 0);
 }
 
 // Arbetsgivaravgift i promille (31,42 % = 3142). En förenkling: full avgift;
