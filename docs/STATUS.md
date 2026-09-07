@@ -145,6 +145,43 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S2.1, våg 1 — skalans två saknade övergångar):**
+  `bekrafta_statusbyte` (S3.2) var enda skrivvägen till
+  `uppdrag_leverabel.status` och flyttade bara `pagar` vidare. **`ej_paborjad →
+  pagar` och `levererad → godkand` hade alltså ingen kodväg alls — och utan den
+  sista kunde ingen leverabel bli `godkand`, alltså kunde inget uppdrag avslutas
+  med en TOM öppna-lista (FR-8), hur färdigt det än var.** Byggt: **migration
+  0072** (additiv, idempotent — `kanal` med CHECK som speglar zod-enumen, och
+  `notering`, båda nullbara på `uppdrag_leverabel_handelse`), **två åtgärder
+  `paborja_leverabel` och `godkann_leverabel`** (`write` + `kravManniska`) och
+  **`paborjaLeverabel`/`godkannLeverabel` i `services/uppdragStatus.ts`** efter
+  `bekraftaStatusbyte`-mönstret: `FOR UPDATE` före statuskontrollen, EN händelse
+  + statusen + `koaRegisterkopia` i samma transaktion. `revision` är alltid NULL
+  (varken påbörjande eller godkännande är en överlämning), mottagaren läses ur
+  avtalets `godkannare` (409 `saknad_mottagare`, FR-13) och `nar` får
+  bakåtdateras men aldrig till framtiden (400 `framtida_datum`) eller före
+  avtalets `signed_date` (400 `fore_avtalet`). **Ingen ny tjänstefil, ingen ny
+  vy, ingen ny CSS, inget nytt beroende, ingen ändring i `bekrafta_statusbyte`,
+  `avsluta_uppdrag`, svepet eller schemat i övrigt.** Diffen rör
+  `services/uppdragStatus.ts`, `actions/registry.ts`, `migrations/0072`,
+  `test/uppdragsytan-statusbyte.test.ts`, `docs/MCP_ACTIONS.md` och den här filen.
+  **Öppet redovisat:** KRAV-8(a) skriver "fyra händelserader", men kedjan i samma
+  mening (`ej_paborjad→pagar→levererad→godkand`) har TRE övergångar och ger tre
+  rader — provet kräver tre, och en fjärde hade krävt ett steg källan inte
+  namnger. **Grind:** `npm run migrate`, `npm test` och `npm run build` kördes
+  INTE i den här sessionen (körs av körskriptet efteråt) — utfallet ska klistras
+  in här innan bygget stängs. Provfilen utökades (ingen ny fil) med 0072:s form
+  och idempotens, agentspärren på båda åtgärderna, `.strict()` åt båda hållen
+  (inget statusfält, ingen mottagare, ingen kanal på påbörjandet, obligatorisk
+  kanal på godkännandet), hela skalan i tre steg med transmittalfälten rad för
+  rad, båda 409-lägena, saknad mottagare (även blanktecken), tenantgränsen,
+  bakåtdateringens tak och golv, triggern på ett avslutat uppdrag, och till sist
+  storyns bevis: alla leverabler genom hela skalan ⇒ `avslutat_med_oppna` är TOM
+  (`{}`), inte NULL. **Kvarstår för David:** kör `npm run migrate` en gång (0072).
+  Knappar eller vyändringar för de två stegen, automatisk statussättning ur tid/
+  svep/Drive, ångra-övergångar från `godkand`/`avvisad` och revisionsräkning i de
+  nya händelserna är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-07 (uppdragsytan S10.8 — undermenyn på projektsidan och de äldre
   sidorna; rättelse av S10.7):** S10.7 gav `.subnav` till **fyra** sidor — Läget,
   Leveranserna, Pengarna och Rapporterna. Kvar utan meny stod ingången —

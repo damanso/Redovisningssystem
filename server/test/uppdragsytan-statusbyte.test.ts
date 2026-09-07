@@ -19,6 +19,7 @@
 //   (4) **Historiken går inte att skriva om.** UPDATE och DELETE prövas som
 //       rollen `app` rakt mot tabellen: regeln ska gälla även för kod som inte
 //       går genom tjänstelagret.
+import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -27,6 +28,7 @@ import { upsertSvepvarden } from '../src/services/uppdragSvep.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const MOTTAGARE = 'Eva Lind, NVR Bygg AB';
+const MIGRATION_0072 = new URL('../migrations/0072_leverabelhandelse_kanal_notering.sql', import.meta.url);
 
 let user: TestUser;
 let companyId: string;
@@ -63,8 +65,12 @@ interface Handelserad {
   till: string;
   bekraftat_av: string | null;
   bekraftat_nar: string | null;
+  /** Samma tidsstämpel som DAG i databasens egen zon — bakåtdateringens prov. */
+  bekraftat_dag: string | null;
   revision: number | null;
   mottagare: string | null;
+  kanal: string | null;
+  notering: string | null;
 }
 
 /** Händelserna som de STÅR i tabellen, förbi hela applikationslagret. */
@@ -72,7 +78,8 @@ async function handelser(contractId: string): Promise<Handelserad[]> {
   return withAdmin(async (c) => (await c.query<Handelserad>(
     `SELECT h.id, l.kod, h.fran, h.till, h.bekraftat_av,
             to_char(h.bekraftat_nar AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bekraftat_nar,
-            h.revision, h.mottagare
+            to_char(h.bekraftat_nar, 'YYYY-MM-DD') AS bekraftat_dag,
+            h.revision, h.mottagare, h.kanal, h.notering
        FROM uppdrag_leverabel_handelse h
        JOIN uppdrag_leverabel l ON l.id = h.leverabel_id
       WHERE h.contract_id = $1
@@ -115,6 +122,8 @@ async function nyttUppdrag(namn: string, opts: {
   /** Drive-revisionen i förslaget — MEDVETET ett annat tal än överlämningens. */
   driveRevision?: number;
   forslagFor?: string[];
+  /** Utgångsläget. Default `pagar` — S3.2:s enda utgångspunkt. */
+  status?: string;
 }): Promise<{ projektId: string; avtalId: string }> {
   const projekt = (await ok('create_project', { name: `Uppdrag ${namn}` })).id as string;
   const avtal = (await ok('create_contract', {
@@ -128,8 +137,8 @@ async function nyttUppdrag(namn: string, opts: {
     for (const kod of opts.koder) {
       await c.query(
         `INSERT INTO uppdrag_leverabel (company_id, contract_id, kod, klausul, uppfoljningsmatt, status)
-         VALUES ($1, $2, $3, $4, $5, 'pagar')`,
-        [companyId, avtal, kod, `§4.${kod}`, 'Levererad handling i spärrmappen'],
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [companyId, avtal, kod, `§4.${kod}`, 'Levererad handling i spärrmappen', opts.status ?? 'pagar'],
       );
     }
   });
@@ -566,5 +575,463 @@ describe('vyn: statusförslaget på uppdragssidan', () => {
     expect([302, 303]).toContain(login.status);
     const res = await grannUa.get(`/app/c/${grannbolag}/projects/${projektId}`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ===========================================================================
+// S2.1, våg 1: skalans två saknade övergångar (FR-12)
+//
+// `bekrafta_statusbyte` ovan flyttar BARA `pagar` vidare. `ej_paborjad → pagar`
+// och `levererad → godkand` hade ingen skrivväg alls — och utan den sista kunde
+// ingen leverabel bli `godkand`, alltså kunde inget uppdrag avslutas med en TOM
+// öppna-lista (FR-8). Det är storyns poäng, och (f) längst ned är dess bevis.
+//
+// Fem påståenden bevakas, utöver de fyra ovan som fortsatt gäller:
+//
+//   (1) Hela skalan går att gå, och varje steg lämnar EN rad i historiken.
+//   (2) Ingen maskin flyttar en status — också de nya vägarna fälls med 403.
+//   (3) Godkännandet gissar aldrig sin mottagare (FR-13), precis som leveransen.
+//   (4) Bakåtdateringen har tak och golv: aldrig framtid, aldrig före avtalet.
+//   (5) Ett avslutat uppdrag tar inte emot något av stegen — 0068:s trigger,
+//       inte en kopia av regeln i koden (KRAV-7).
+// ===========================================================================
+
+/** Begär en känslig åtgärd: 202 och en köpost — aldrig en skrivning. */
+async function begar(namn: string, kropp: Record<string, unknown>): Promise<string> {
+  const res = await act(namn, kropp);
+  expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(202);
+  return (res.body.approval as { id: string }).id;
+}
+
+/** Godkänner köposten som människa — `avsluta_uppdrag` körs först här. */
+async function okKoad(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = await begar(namn, kropp);
+  const res = await api.post(`${co()}/approvals/${id}/approve`).set(auth()).send({});
+  expect(res.status, `${namn} (godkännande): ${JSON.stringify(res.body)}`).toBe(200);
+  return res.body.result as Record<string, unknown>;
+}
+
+/** Ett datum som ligger i framtiden oavsett zonskillnad mellan Node och Postgres. */
+function omTvaDagar(): string {
+  return new Date(Date.now() + 2 * 24 * 60 * 60_000).toISOString().slice(0, 10);
+}
+
+async function frystLista(contractId: string): Promise<string[] | null> {
+  return withAdmin(async (c) => (await c.query<{ avslutat_med_oppna: string[] | null }>(
+    'SELECT avslutat_med_oppna FROM contracts WHERE id = $1', [contractId],
+  )).rows[0]!.avslutat_med_oppna);
+}
+
+// ---------------------------------------------------------------------------
+// KRAV-1: migration 0072 — additiv och idempotent
+// ---------------------------------------------------------------------------
+
+describe('0072: kanal och notering på händelsen', () => {
+  it('två nullbara textkolumner, och 0068:s kolumner är orörda', async () => {
+    const kolumner = await withAdmin(async (c) => (await c.query<{ column_name: string; data_type: string; is_nullable: string }>(
+      `SELECT column_name, data_type, is_nullable
+         FROM information_schema.columns WHERE table_name = 'uppdrag_leverabel_handelse'`,
+    )).rows);
+
+    for (const namn of ['kanal', 'notering']) {
+      const kolumn = kolumner.find((k) => k.column_name === namn);
+      expect(kolumn, `${namn} saknas — 0072 har inte körts`).toBeDefined();
+      expect(kolumn!.data_type).toBe('text');
+      // NULL betyder "steget hade ingen" — en NOT NULL-kolumn hade krävt en tom
+      // sträng för ingenting, och det är inte samma sak.
+      expect(kolumn!.is_nullable).toBe('YES');
+    }
+
+    for (const namn of ['id', 'company_id', 'contract_id', 'leverabel_id', 'fran', 'till',
+      'bekraftat_av', 'bekraftat_nar', 'revision', 'mottagare', 'created_at']) {
+      expect(kolumner.map((k) => k.column_name), `0068:s ${namn} försvann`).toContain(namn);
+    }
+  });
+
+  it('CHECK-villkoret speglar zod-enumen: fyra kanaler, plus NULL', async () => {
+    const villkor = await withAdmin(async (c) => (await c.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conname = 'uppdrag_leverabel_handelse_kanal_check'`,
+    )).rows[0]?.def);
+    expect(villkor, 'villkoret saknas').toBeTruthy();
+    for (const kanal of ['telefon', 'mejl', 'mote', 'protokoll']) {
+      expect(villkor, `${kanal} saknas i villkoret`).toContain(kanal);
+    }
+    expect(villkor).toContain('IS NULL');
+  });
+
+  it('en femte kanal fälls av databasen — även förbi tjänstelagret', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 CHECK-villkoret', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    const rad = (await handelser(a))[0]!;
+
+    await expect(withAdmin(async (c) => c.query(
+      "UPDATE uppdrag_leverabel_handelse SET kanal = 'sms' WHERE id = $1", [rad.id],
+    ))).rejects.toThrow();
+    expect((await handelser(a))[0]!.kanal).toBeNull();
+  });
+
+  it('migrationen är idempotent: två körningar ger ett villkor och inget fel', async () => {
+    const sql = await readFile(MIGRATION_0072, 'utf8');
+    await withAdmin(async (c) => { await c.query(sql); });
+    await withAdmin(async (c) => { await c.query(sql); });
+    const antal = await withAdmin(async (c) => (await c.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM pg_constraint
+        WHERE conname = 'uppdrag_leverabel_handelse_kanal_check'`,
+    )).rows[0]!.n);
+    expect(antal).toBe('1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Registret: `write` + `kravManniska` och strikt indata på båda
+// ---------------------------------------------------------------------------
+
+describe('S2.1 registret', () => {
+  it('agenten fälls på BÅDA åtgärderna med 403 human_required — ingen rad, ingen status', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 agent', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    const { avtalId: b } = await nyttUppdrag('S2.1 agent godkänn', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'levererad',
+    });
+    const fore = await auditrader();
+
+    const paborja = await act('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' }, agentAuth());
+    expect(paborja.status, JSON.stringify(paborja.body)).toBe(403);
+    expect(paborja.body.error).toBe('human_required');
+
+    const godkann = await act('godkann_leverabel', {
+      contract_id: b, leverabel_kod: 'L1', kanal: 'mejl',
+    }, agentAuth());
+    expect(godkann.status, JSON.stringify(godkann.body)).toBe(403);
+    expect(godkann.body.error).toBe('human_required');
+
+    // Ingen händelse, ingen statusändring, ingen auditrad — och ingen köpost:
+    // åtgärderna är `write`, inte `sensitive`, så det finns ingenting att
+    // godkänna i efterhand.
+    expect(await handelser(a)).toHaveLength(0);
+    expect(await handelser(b)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('ej_paborjad');
+    expect((await statusar(b)).L1).toBe('levererad');
+    expect(await auditrader()).toEqual(fore);
+    const kon = await api.get(`${co()}/approvals`).set(auth());
+    expect(kon.body.approvals).toHaveLength(0);
+  });
+
+  it('`.strict()`: inget statusfält, ingen mottagare, och kanalen hör bara till godkännandet', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 strict', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+
+    for (const kropp of [
+      { contract_id: a, leverabel_kod: 'L1', status: 'godkand' },
+      { contract_id: a, leverabel_kod: 'L1', mottagare: 'Någon annan' },
+      // Kanalen finns inte på påbörjandet: det är ingen överlämning.
+      { contract_id: a, leverabel_kod: 'L1', kanal: 'mejl' },
+    ]) {
+      const res = await act('paborja_leverabel', kropp);
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toBe('validation_error');
+    }
+
+    // Godkännandet kräver sin kanal, och känner bara igen de fyra värdena.
+    const utan = await act('godkann_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    expect(utan.status, JSON.stringify(utan.body)).toBe(400);
+    expect(utan.body.error).toBe('validation_error');
+    const femte = await act('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', kanal: 'sms',
+    });
+    expect(femte.status, JSON.stringify(femte.body)).toBe(400);
+
+    expect(await handelser(a)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('ej_paborjad');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (a) Hela skalan — ej_paborjad → pagar → levererad → godkand
+// ---------------------------------------------------------------------------
+
+describe('(a) hela vägen genom skalan', () => {
+  it('tre steg, tre händelserader, och FR-12:s fem lägen blir nåbara', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 hela vägen', {
+      koder: ['L1'], godkannare: MOTTAGARE, driveRevision: 11, status: 'ej_paborjad',
+    });
+
+    const start = await ok('paborja_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', notering: 'Uppstartsmöte hållet',
+    });
+    expect(start.fran).toBe('ej_paborjad');
+    expect(start.status).toBe('pagar');
+    expect((await statusar(a)).L1).toBe('pagar');
+
+    // Mittensteget ägs av S3.2 och är orört: samma åtgärd, samma revision.
+    const levererad = await ok('bekrafta_statusbyte', {
+      contract_id: a, leverabel_kod: 'L1', utfall: 'bekraftad',
+    });
+    expect(levererad.status).toBe('levererad');
+    expect(levererad.revision).toBe(1);
+
+    const godkand = await ok('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', kanal: 'protokoll', notering: 'Punkt 4 i styrelseprotokollet',
+    });
+    expect(godkand.fran).toBe('levererad');
+    expect(godkand.status).toBe('godkand');
+    expect((await statusar(a)).L1).toBe('godkand');
+
+    // KRAV-8(a) skriver "fyra händelserader", men kedjan i samma mening har TRE
+    // övergångar (ej_paborjad→pagar→levererad→godkand) och alltså tre rader —
+    // fyra hade krävt ett fjärde steg källan inte namnger. Provet mäter det som
+    // faktiskt sker, rad för rad.
+    const rader = await handelser(a);
+    expect(rader.map((h) => `${h.fran ?? ''}→${h.till}`))
+      .toEqual(['ej_paborjad→pagar', 'pagar→levererad', 'levererad→godkand']);
+
+    // Påbörjandet: spår men ingen transmittal. Varken revision, mottagare eller
+    // kanal — det är ingen överlämning, och ett ifyllt fält hade sagt att det var.
+    const forsta = rader[0]!;
+    expect(forsta.bekraftat_av).toBe(user.userId);
+    expect(forsta.bekraftat_nar).not.toBeNull();
+    expect(forsta.revision).toBeNull();
+    expect(forsta.mottagare).toBeNull();
+    expect(forsta.kanal).toBeNull();
+    expect(forsta.notering).toBe('Uppstartsmöte hållet');
+
+    // Godkännandet: mottagaren ur avtalet, kanalen ur indatat, revision NULL —
+    // ett godkännande med revisionsnummer hade räknats som en leverans nästa gång.
+    const sista = rader[2]!;
+    expect(sista.bekraftat_av).toBe(user.userId);
+    expect(sista.mottagare).toBe(MOTTAGARE);
+    expect(sista.kanal).toBe('protokoll');
+    expect(sista.notering).toBe('Punkt 4 i styrelseprotokollet');
+    expect(sista.revision).toBeNull();
+    // Historiken står kvar oförändrad: den mellersta raden bär fortfarande sin
+    // revision 1. Append-only är hela poängen.
+    expect(rader[1]!.revision).toBe(1);
+    expect(rader[1]!.kanal).toBeNull();
+
+    expect(await auditrader()).toContain('action.executed:paborja_leverabel');
+    expect(await auditrader()).toContain('action.executed:godkann_leverabel');
+
+    // Registerkopian köades om av stegen: statusen står i kopians innehåll.
+    const ko = await withAdmin(async (c) => (await c.query<{ ko_status: string | null }>(
+      "SELECT ko_status FROM uppdrag_referens WHERE contract_id = $1 AND extern_nyckel = 'registerkopia'",
+      [a],
+    )).rows);
+    expect(ko[0]?.ko_status).toBe('koad');
+  });
+
+  it('noteringen är valfri — ett tvingande fält lär den som har bråttom att skriva "."', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 utan notering', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    expect((await handelser(a))[0]!.notering).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b)/(c) Fel utgångsläge och saknad mottagare
+// ---------------------------------------------------------------------------
+
+describe('(b)+(c) spärrarna', () => {
+  it('paborja_leverabel på en redan påbörjad ger 409 `leverabel_ej_ej_paborjad`', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 redan påbörjad', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+
+    const igen = await act('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    expect(igen.status, JSON.stringify(igen.body)).toBe(409);
+    expect(igen.body.error).toBe('leverabel_ej_ej_paborjad');
+    // Ett andra påbörjande hade lagt en andra rad i en historik som inte går att
+    // rätta — och åldern i läget (S3.3) hade nollställts utan att något hänt.
+    expect(await handelser(a)).toHaveLength(1);
+    expect((await statusar(a)).L1).toBe('pagar');
+  });
+
+  it('godkann_leverabel på något som inte är levererat ger 409 `leverabel_ej_levererad`', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 ej levererad', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    const res = await act('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', kanal: 'telefon',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('leverabel_ej_levererad');
+    expect(await handelser(a)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('ej_paborjad');
+  });
+
+  it('godkännande utan avtalets godkännare skriver INGENTING — 409 `saknad_mottagare`', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 utan godkännare', {
+      koder: ['L1'], godkannare: null, status: 'levererad',
+    });
+
+    const res = await act('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', kanal: 'mote', notering: 'Sa ja på plats',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('saknad_mottagare');
+    // Varken händelse eller status: en gissad mottagare i en append-only
+    // historik är en uppgift som ser ut som ett faktum (FR-13).
+    expect(await handelser(a)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('levererad');
+
+    // …och blanktecken räknas som saknad, precis som i bekräftelsen.
+    await withAdmin((c) => c.query("UPDATE contracts SET godkannare = '  ' WHERE id = $1", [a]));
+    const blank = await act('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', kanal: 'mote',
+    });
+    expect(blank.status).toBe(409);
+    expect(blank.body.error).toBe('saknad_mottagare');
+    expect(await handelser(a)).toHaveLength(0);
+  });
+
+  it('men påbörjandet kräver ingen mottagare — det är ingen överlämning', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 påbörja utan godkännare', {
+      koder: ['L1'], godkannare: null, status: 'ej_paborjad',
+    });
+    const svar = await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    expect(svar.status).toBe('pagar');
+    expect(svar.mottagare).toBeNull();
+  });
+
+  it('grannbolaget kan varken påbörja eller godkänna vår leverabel', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 tenantgräns', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    const res = await api.post(`/api/companies/${grannbolag}/actions/paborja_leverabel`)
+      .set({ Authorization: `Bearer ${grannen.token}` })
+      .send({ contract_id: a, leverabel_kod: 'L1' });
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe('not_found');
+    expect(await handelser(a)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('ej_paborjad');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) Bakåtdateringen: tak och golv (KRAV-5)
+// ---------------------------------------------------------------------------
+
+describe('(e) `nar` har både tak och golv', () => {
+  it('framtid ger 400 `framtida_datum` på båda stegen — och skriver ingenting', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 framtid', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    const { avtalId: b } = await nyttUppdrag('S2.1 framtid godkänn', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'levererad',
+    });
+    const framtida = omTvaDagar();
+
+    const paborja = await act('paborja_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', nar: framtida,
+    });
+    expect(paborja.status, JSON.stringify(paborja.body)).toBe(400);
+    expect(paborja.body.error).toBe('framtida_datum');
+
+    const godkann = await act('godkann_leverabel', {
+      contract_id: b, leverabel_kod: 'L1', nar: framtida, kanal: 'mejl',
+    });
+    expect(godkann.status, JSON.stringify(godkann.body)).toBe(400);
+    expect(godkann.body.error).toBe('framtida_datum');
+
+    expect(await handelser(a)).toHaveLength(0);
+    expect(await handelser(b)).toHaveLength(0);
+    expect((await statusar(a)).L1).toBe('ej_paborjad');
+    expect((await statusar(b)).L1).toBe('levererad');
+  });
+
+  it('före avtalets signeringsdatum ger 400 `fore_avtalet`', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 före avtalet', {
+      koder: ['L1'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    // Fixturens avtal är signerat 2026-01-01: dagen innan är ett steg i ett
+    // uppdrag som ännu inte fanns.
+    const res = await act('paborja_leverabel', {
+      contract_id: a, leverabel_kod: 'L1', nar: '2025-12-31',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('fore_avtalet');
+    expect(await handelser(a)).toHaveLength(0);
+  });
+
+  it('ett datum inom fönstret hamnar i `bekraftat_nar` — och utelämnat datum ger nu', async () => {
+    const { avtalId: a } = await nyttUppdrag('S2.1 bakåtdaterad', {
+      koder: ['L1', 'L2'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+
+    await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1', nar: '2026-02-03' });
+    await ok('paborja_leverabel', { contract_id: a, leverabel_kod: 'L2' });
+
+    const rader = await handelser(a);
+    expect(rader.find((h) => h.kod === 'L1')!.bekraftat_dag).toBe('2026-02-03');
+    const nu = rader.find((h) => h.kod === 'L2')!;
+    expect(Date.parse(nu.bekraftat_nar!)).toBeGreaterThan(Date.now() - 5 * 60_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KRAV-7: ett avslutat uppdrag tar inte emot stegen — 0068:s trigger
+// ---------------------------------------------------------------------------
+
+describe('avslutat uppdrag', () => {
+  it('båda stegen fälls med 409 `rule_violation` av triggern, inte av en kopia i koden', async () => {
+    const { projektId: p, avtalId: a } = await nyttUppdrag('S2.1 avslutat', {
+      koder: ['L1', 'L2'], godkannare: MOTTAGARE, status: 'ej_paborjad',
+    });
+    await sattStatus(a, 'L2', 'levererad');
+    // Avslut med öppna leverabler är tillåtet (S8.1) — det är just därför
+    // spärren måste gälla efteråt: det öppna får inte tystas i efterhand.
+    await okKoad('avsluta_uppdrag', { project_id: p });
+
+    const paborja = await act('paborja_leverabel', { contract_id: a, leverabel_kod: 'L1' });
+    expect(paborja.status, JSON.stringify(paborja.body)).toBe(409);
+    expect(paborja.body.error).toBe('rule_violation');
+
+    const godkann = await act('godkann_leverabel', {
+      contract_id: a, leverabel_kod: 'L2', kanal: 'mejl',
+    });
+    expect(godkann.status, JSON.stringify(godkann.body)).toBe(409);
+    expect(godkann.body.error).toBe('rule_violation');
+
+    expect(await handelser(a)).toHaveLength(0);
+    expect(await statusar(a)).toEqual({ L1: 'ej_paborjad', L2: 'levererad' });
+    // Den frysta listan står orörd: båda stod öppna vid avslutet.
+    expect(await frystLista(a)).toEqual(['L1', 'L2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) Storyns poäng: ett avslut som kan visa en TOM öppna-lista (FR-8)
+// ---------------------------------------------------------------------------
+
+describe('(f) avslut med tom öppna-lista', () => {
+  it('alla leverabler genom hela skalan ⇒ `avslutat_med_oppna` är TOM, inte NULL', async () => {
+    const { projektId: p, avtalId: a } = await nyttUppdrag('S2.1 tomt avslut', {
+      koder: ['L1', 'L2'], godkannare: MOTTAGARE, driveRevision: 6, status: 'ej_paborjad',
+    });
+
+    for (const kod of ['L1', 'L2']) {
+      await ok('paborja_leverabel', { contract_id: a, leverabel_kod: kod });
+      await ok('bekrafta_statusbyte', { contract_id: a, leverabel_kod: kod, utfall: 'bekraftad' });
+      await ok('godkann_leverabel', { contract_id: a, leverabel_kod: kod, kanal: 'mejl' });
+    }
+    expect(await statusar(a)).toEqual({ L1: 'godkand', L2: 'godkand' });
+
+    const svar = await okKoad('avsluta_uppdrag', { project_id: p });
+    const avtal = svar.avtal as { contract_id: string; oppna: string[] }[];
+    expect(avtal).toHaveLength(1);
+    expect(avtal[0]!.oppna).toEqual([]);
+
+    // Tom array och NULL är två olika saker: `{}` betyder "avslutad utan öppna",
+    // NULL betyder "aldrig avslutad via åtgärden". Före S2.1 gick det första
+    // läget inte att nå alls — det är hela storyns poäng.
+    expect(await frystLista(a)).toEqual([]);
+    expect(await frystLista(a)).not.toBeNull();
   });
 });
