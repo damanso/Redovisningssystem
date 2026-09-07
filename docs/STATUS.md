@@ -145,6 +145,89 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.4, våg 6 — Pengarna: kurvan mot ramen):**
+  S7.4 la de två ramdatumen i svepets cache, S6.2 la tröskellarmet där, 0068 gav
+  kvittot sin `contract_part_id` och sin `oplanerad`-märkning, och husets
+  takberäkning kunde redan säga hur mycket som var förbrukat. **Men 1D:s fråga —
+  "hur ligger vi mot ram, i timmar, kronor och enskilda kostnader?" — gick bara
+  att besvara genom att öppna tre olika ställen och lägga ihop dem i huvudet.**
+
+  Byggt: **ny tjänstefil `services/uppdragPengar.ts`** (`lasUppdragspengar`), **en
+  ren SVG-kurvhelper `ramkurva` + klassen `.pengarad` i `http/view/html.ts`**, **en
+  ny undersida `/app/c/:id/projects/:projectId/pengarna`** i `http/view/routes.ts`
+  med posten `['pengarna', 'Pengarna']` i `UPPDRAGSSIDOR` mellan *Leveranserna*
+  och *Kontraktet*, och en ny svit. **Ingen migration, ingen ny eller ändrad
+  åtgärd** (1E Del 4 listar ingen läsåtgärd för Pengarna — vyn läser tjänsten
+  direkt, som Leveranserna), **ingen ändrad känslighet, inga nya beroenden**;
+  `uppdragSvep.ts`, `uppdragKostnad.ts`, `contracts.ts` och `receipts.ts` är
+  **orörda**. Diffen rör `uppdragPengar.ts` (ny), `html.ts`, `routes.ts`,
+  `server/test/` och den här filen.
+
+  1. **Seriens slutsumma KAN inte avvika från takberäkningen.** Att den stämmer
+     är inte en avsikt utan en konstruktion: gruppnyckeln är
+     `forbrukningPerRad`:s egen (delens rad + de fyra taxekällorna), och det
+     kumulativa beloppet räknas ur den ackumulerade MINUTSUMMAN per grupp — inte
+     som en summa av dagsbelopp. Vid sista punkten är gruppens minutsumma hela
+     dess minutsumma, alltså exakt samma avrundning som rotdelens `amount_ore`.
+     En serie som summerade till något annat än ramkortet hade varit ett andra
+     svar på "hur mycket är förbrukat?", och då vet ingen vilket som gäller.
+  2. **Statuspredikatet härleddes, det kopierades inte.**
+     `contracts.FORBRUKANDE_STATUSAR` är privat i den fil S7.4/S6.2 äger, och en
+     kopierad lista glider isär den dag livscykeln ändras. `arGodkannande ||
+     arFakturerad` ÄR husets tre statusar, och provet fäller listan om den
+     upphör att vara det.
+  3. **Kurvan ritas ENDAST när cachen bär ett datum.** Bär den ett villkor —
+     'inget bekräftat tak', 'ingen taxa', 'ingen bokad framtid' — ritas ingen
+     kurva, ingen ramlinje och inget datum; villkorets egna ord står i klartext i
+     stället. En bild som slutade i en gissning hade gjort svepets vägran till
+     ett svar, och det är precis vad FR-5 finns för att hindra.
+  4. **Heldraget är mätning, streckat är prognos** — och skillnaden bärs också av
+     texten under bilden. SVG:n har `role="img"` + `aria-label`, och ramdatumen
+     står som text UTANFÖR den: bilden är aldrig ensam bärare (WCAG 1.1.1).
+  5. **Ingen procent, ingen progressbar (NFR-11).** Två tal bredvid varandra
+     säger vilket av dem som rörde sig; "72 %" säger det aldrig, och en
+     `<progress>` påstår dessutom att någon vet hur långt kvar det är.
+  6. **Ett oläst svep är inte ett lugnt svep.** Saknas prognosen eller
+     tröskellarmet i cachen säger sidan DET, med svepets egen färskhet per värde
+     (FR-35) — ett tomt larm renderas aldrig som "ingen tröskel passerad".
+  7. **En enda ny klass.** `.pengarad` enligt 1D:s klasstabell (tal i `--mono`,
+     högerställda, "ej bokförd" i `--muted`); resten bärs av `.panel`, `.chip`,
+     `.table-wrap`, `.subnav`, `.farskhet`, `.empty` och `.code`. Kurvan
+     återanvänder `.chart`/`.ch-base`/`.ch-lbl` från `monthlyChart` och färgar
+     med inline-stil mot husets tokens — ingen ny CSS-klass för bilden.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-pengarna.test.ts`: **(a)** tjänstelagret —
+  predikatet är husets tre statusar, seriens sista punkt är EXAKT rotdelens
+  `billable_minutes`/`amount_ore` ur `get_contract_usage`, dagens eget tillskott
+  står bredvid summan, ramen är rotdelens tak i hela minuter med sin takstatus,
+  och svepvärdena bär var sin källa (`kalender` resp. `redovisning`) medan ett
+  osvept uppdrag ger `null`; **(b)** undermenyn med *Pengarna* mellan
+  *Leveranserna* och *Kontraktet*, `aria-current` på exakt en post, och posten
+  synlig också från Läget; **(c)** två kurvor med streckad förlängning och
+  `role="img"`, och de TVÅ ramdatumen i klartext — riggade så att timramen och
+  kronramen nås OLIKA dagar (taken står med flit inte i taxans förhållande), så
+  att en sida som räknat själv inte kan råka svara rätt; **(d)** alla tre
+  villkorsfallen var för sig plus det fjärde som inte är ett villkor — svepet har
+  inte kört — var och en utan kurva och utan datum; **(e)** båda kvittona i
+  datumordning, `Oplanerad`-chipet på den svepbundna raden med kvittolistans egen
+  förklaring, det obokförda kvittot som *ej bokförd* utan tal, och tom-texten på
+  ett avtal utan bunden kostnad; **(f)** varken `<progress>`, `<script>`,
+  `<form>`, `<button>`, `<input>` eller ett procenttal i det som SYNS, på
+  samtliga fyra sidor; **(g)** grannbolagets uppdrag, ett okänt id och ett
+  projekt utan avtal ger alla 404 medan grannen når sitt eget på sin egen väg.
+  Proven är daterade RELATIVT dagens datum: prognosen mäts mot `idag`, och ett
+  hårdkodat framtidsdatum hade tyst blivit ett förflutet datum en dag i
+  framtiden — och då provat något annat än det står att det provar.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Sidan nås via
+  undermenyn på uppdragets sidor; kurvan syns så fort svepet kört. 1D:s mening
+  "sista bokade aktivitet den Y", tabellkolumnerna Aktivitet/Typ/Debiterbar/
+  Verifikat, obundna kvitton, `.harledning`-klassen, en egen läsåtgärd
+  `las_pengarna` och tröskelmarkörer inritade i kurvan är medvetet uteslutna —
+  källan kräver dem inte.
+
 - **2026-09-07 (uppdragsytan S10.3, våg 6 — Leveranserna: brädan och tabellen):**
   Registret fick sin läsväg i S3.1 och sin ålder i S3.3, men bara som svaret på
   en åtgärd. **Frågan "vad ska levereras, var står varje leverabel, och hur länge
