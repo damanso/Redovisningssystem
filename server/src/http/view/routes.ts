@@ -2310,10 +2310,12 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req
   const visaIgen = async (fel: string): Promise<void> => {
     const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
       const company = await loadCompany(client, companyId);
-      const { projekt, kunder } = await avtalsunderlag(client, companyId, projectId);
+      const { projekt, kunder, harUppdrag } = await avtalsunderlag(client, companyId, projectId);
       return {
         name: company.name,
-        body: avtalsinlasningSida(req, companyId, projekt, kunder, varden, { aiAv: !config.ANTHROPIC_API_KEY, fel }),
+        body: avtalsinlasningSida(req, companyId, projekt, kunder, varden, {
+          aiAv: !config.ANTHROPIC_API_KEY, fel, harUppdrag,
+        }),
       };
     });
     res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
@@ -3230,6 +3232,7 @@ function plansida(companyId: string, u: Planunderlag): Raw {
         får inget påhittat.</p></div>
       <div class="actions">${spann ? chip(spann, 'info', '▤') : chip('Ingen period', 'muted', '○')}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'planen')}
     ${
       u.avtal.length === 0
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
@@ -3521,6 +3524,7 @@ function kontraktssida(companyId: string, u: Kontraktsunderlag): Raw {
           ? html`<span class="muted" style="font-size:12.5px">Signerat ${en.contract.signed_date}</span>`
           : ''}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${u.projekt.id}">← Uppdraget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'kontraktet')}
     ${
       en === undefined
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
@@ -3567,10 +3571,12 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
 //  5. **`.subnav`, inte en andra huvudmeny.** Modulens undersidor låg redan i
 //     husets knappband; undermenyn står på VARJE uppdragssida — fyrkantig form,
 //     "en nivå ner", `aria-current` på exakt en post. Menyn i `.nav__quick` ägs
-//     av S10.7 och rörs inte. (S10.8 rättade S10.7: menyn fanns bara på de sex
-//     S10-sidorna, så projektsidan — ingången från Projekt-listan — och de tre
-//     äldre sidorna var återvändsgränder i en meny de själva saknade. På telefon,
-//     där `.nav__quick` är dold, fanns då ingen väg vidare alls.)
+//     av S10.7 och rörs inte. (S10.8 rättade S10.7: menyn fanns bara på fyra
+//     sidor — Läget, Leveranserna, Pengarna och Rapporterna. Projektsidan
+//     (ingången från Projekt-listan), Avtal, Bedömning, Signaler, Planen och
+//     Kontraktet stod som poster i en meny de själva saknade, alltså som
+//     återvändsgränder. På telefon, där `.nav__quick` är dold, fanns då ingen
+//     väg vidare alls. Alla tio poster bär nu menyn.)
 //  6. **Vyn räknar ingenting.** Allt kommer ur `lasUppdragslage`, alltså ur
 //     samma svar som MCP och REST läser (FR-23). Kan sidan visa något åtgärden
 //     inte svarar har en av dem fel — och då vet ingen vilken.

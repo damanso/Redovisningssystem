@@ -54,8 +54,12 @@ const UNDERMENYN = [
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
 ] as const;
 
-/** De fyra sidor S10.8 rättar: ingången och de tre som byggdes före menyn. */
-const RATTADE_SIDOR = ['', 'avtal', 'bedomning', 'signaler'] as const;
+/**
+ * Samma tio poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
+ * ett urval passerar nästa lucka grönt: S10.7 hade fyra sidor med meny och sex
+ * utan, och provet såg det inte.
+ */
+const UPPDRAGSSIDORNA = UNDERMENYN.map(([slug, etikett]) => ({ slug, etikett }));
 
 let user: TestUser;
 let companyId: string;
@@ -232,10 +236,16 @@ describe('(a) navigationen', () => {
 // ---------------------------------------------------------------------------
 // (a2) S10.8: menyn på ALLA uppdragets sidor — rättelsen av S10.7
 //
-// S10.7 gav undermenyn till de sex sidor storyn själv byggde. Kvar stod
-// ingången (projektsidan, dit Projekt-listan länkar) och de tre äldre sidorna
-// utan meny — och på telefon, där `.nav__quick` är dold, betydde det ingen väg
-// vidare alls. Provet mäts därför utifrån, per sida, på det som levereras.
+// S10.7 gav undermenyn till FYRA sidor: Läget, Leveranserna, Pengarna och
+// Rapporterna. De sex övriga posterna — ingången (projektsidan, dit
+// Projekt-listan länkar), Avtal, Bedömning, Signaler, Planen och Kontraktet —
+// stod i menyn utan att bära den, alltså som återvändsgränder; på telefon, där
+// `.nav__quick` är dold, betydde det ingen väg vidare alls.
+//
+// Lärdomen sitter i provets FORM: S10.7:s prov mätte menyn på Läget och drog
+// slutsatsen "menyn finns". Ett urval kan inte bära ett krav som lyder "på
+// VARJE sida", så här mäts alla tio posterna en och en, utifrån, på det som
+// faktiskt levereras över HTTP.
 // ---------------------------------------------------------------------------
 
 describe('(a2) undermenyn på varje uppdragssida', () => {
@@ -247,12 +257,14 @@ describe('(a2) undermenyn på varje uppdragssida', () => {
     expect(nav).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
   });
 
-  it.each(RATTADE_SIDOR)('sidan "%s" bär undermenyn med EXAKT en aktuell post — sin egen', async (slug) => {
-    const nav = meny(await sida(uppdragsvag(slug)), '<nav class="subnav"');
+  it.each(UPPDRAGSSIDORNA)('$etikett svarar 200 och bär hela undermenyn, aktuell på sin egen post', async ({ slug }) => {
+    const res = await ua.get(uppdragsvag(slug));
+    expect(res.status, `${uppdragsvag(slug)} gav ${res.status}`).toBe(200);
+    const nav = meny(res.text, '<nav class="subnav"');
+    // Menyn är HEL på var och en av de tio: tio poster, inte ett urval.
+    expect(poster(nav)).toHaveLength(UNDERMENYN.length);
     expect(antalAktuella(nav)).toBe(1);
     expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
-    // Menyn är hel på var och en av dem: tio poster, inte ett urval.
-    expect(poster(nav)).toHaveLength(UNDERMENYN.length);
   });
 
   it('projektsidans aktuella post är "Projektet", och huvudmenyn markerar sin egen', async () => {
@@ -275,13 +287,6 @@ describe('(a2) undermenyn på varje uppdragssida', () => {
     // Och samma regel på vägen in för det FÖRSTA avtalet: en meny till nio
     // sidor som alla säger "inget avtal ännu" vore en lögn.
     expect(await sida(uppdragsvag('avtal', avtalslostProjekt))).not.toContain('class="subnav"');
-  });
-
-  it('alla tio posterna i menyn svarar 200 för ett uppdrag — ingen död länk', async () => {
-    for (const [slug, etikett] of UNDERMENYN) {
-      const res = await ua.get(uppdragsvag(slug));
-      expect(res.status, `${etikett} (${uppdragsvag(slug)}) gav ${res.status}`).toBe(200);
-    }
   });
 });
 
