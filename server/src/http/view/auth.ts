@@ -38,7 +38,12 @@ export function setSessionCookie(res: Response, token: string): void {
     `${COOKIE}=${encodeURIComponent(token)}`,
     'HttpOnly',
     'SameSite=Lax',
-    'Path=/app',
+    // Path=/ och inte /app: sessionen ar HELA losningens identitet, inte
+    // redovisningsmodulens. En kaka med Path=/app skickas aldrig till ytorna
+    // (/) eller arendevyn (/vy). Kakor ignorerar portnummer, sa med Path=/
+    // nar den alla tre modulerna redan innan adresserna flyttas bakom en
+    // gemensam ingang. HttpOnly star kvar: inget skript nar den.
+    'Path=/',
     `Max-Age=${config.JWT_EXPIRES_IN_SECONDS}`,
   ];
   if (config.isProduction) attrs.push('Secure');
@@ -46,7 +51,12 @@ export function setSessionCookie(res: Response, token: string): void {
 }
 
 export function clearSessionCookie(res: Response): void {
-  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/app; Max-Age=0`);
+  // Path MASTE matcha den som sattes, annars rensas ingenting och utloggningen
+  // blir en lognen: knappen sager "utloggad", kakan ligger kvar.
+  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+  // Overgangsstadning: kakor satta fore 2026-09-07 bar Path=/app och skuggar
+  // den nya. Raden kan tas bort nar ingen session fran den tiden lever kvar.
+  res.appendHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/app; Max-Age=0`);
 }
 
 /** Verifierar inloggningsuppgifter (konstant tidsprofil via dummy-hash). */
@@ -221,6 +231,29 @@ export function viewAuth(req: Request, res: Response, next: NextFunction): void 
   } catch {
     clearSessionCookie(res);
     res.redirect('/app/login');
+  }
+}
+
+/**
+ * Vem sitter bakom sessionskakan? `null` nar ingen giltig session finns.
+ *
+ * Samma avvisningar som viewAuth, av samma skal: ett agent-token far aldrig
+ * bli en webbsession, och ett pending-2FA-token har bara passerat
+ * losenordssteget. Skillnaden mot viewAuth ar att den har inte omdirigerar -
+ * den svarar. Den anvands av /api/session/vem, som ar de ANDRA modulernas
+ * enda fraga om identitet.
+ */
+export function sessionsAnvandare(req: Request): string | null {
+  const token = parseCookie(req.headers.cookie, COOKIE);
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.JWT_SECRET, { algorithms: ['HS256'] });
+    if (typeof payload === 'string' || typeof payload.sub !== 'string') return null;
+    if (payload.actor === 'agent') return null;
+    if (payload.stage === 'pending_2fa') return null;
+    return payload.sub;
+  } catch {
+    return null;
   }
 }
 

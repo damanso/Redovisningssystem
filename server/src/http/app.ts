@@ -7,6 +7,8 @@ import { pool } from '../db/pool.js';
 import { authenticate } from './middleware/authenticate.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.js';
+import { sessionsAnvandare } from './view/auth.js';
+import { withTransaction } from '../db/tx.js';
 import { companiesRouter } from './routes/companies.js';
 import { viewRouter } from './view/routes.js';
 
@@ -88,6 +90,42 @@ export function createApp(): express.Express {
   });
 
   app.use('/api/auth', authRouter);
+
+  /**
+   * VEM sitter bakom sessionen? Losningens enda identitetsfraga.
+   *
+   * Ytorna och arendevyn kor pa egna portar men pa SAMMA vardnamn, och kakor
+   * ignorerar portnummer - sa sessionskakan nar dem redan. Det de saknar ar
+   * ratten att TOLKA den. De far den inte genom att dela JWT_SECRET (ett lack
+   * hade da fallt alla tre) utan genom att fraga har.
+   *
+   * Svaret bar ALDRIG en token. Bara vem.
+   *
+   * Ligger utanfor authRouter: den bar en inloggningsspecifik hastighetsspärr,
+   * och den har vagen fragas vid varje sidvisning i tva andra moduler.
+   */
+  app.get('/api/session/vem', async (req, res) => {
+    // Ingen cache. Ett svar som ligger kvar efter utloggning ar en oppen dorr.
+    res.setHeader('Cache-Control', 'no-store');
+    const userId = sessionsAnvandare(req);
+    if (!userId) {
+      res.status(401).json({ error: 'ingen_session' });
+      return;
+    }
+    const rad = await withTransaction((c) =>
+      c.query<{ id: string; name: string; email: string }>(
+        'SELECT id, name, email FROM users WHERE id = $1',
+        [userId],
+      ),
+    );
+    const u = rad.rows[0];
+    if (!u) {
+      // Giltig token, borttagen anvandare. Det ar ingen session.
+      res.status(401).json({ error: 'ingen_session' });
+      return;
+    }
+    res.json({ user_id: u.id, namn: u.name, epost: u.email });
+  });
   app.use('/api/companies', authenticate, companiesRouter);
 
   // Läsbar, i huvudsak read-only webbvy (Fas 4) — serverrenderad HTML.
