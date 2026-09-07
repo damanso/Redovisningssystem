@@ -252,9 +252,14 @@ describe('(c) vyn: Davids egen väg in', () => {
     expect(skrivna[0]!.lage).toBe('ur_spar');
     expect(skrivna[0]!.satt_av_manniska).toBe(true);
     expect(skrivna[0]!.kommentar).toBe('Två leverabler har glidit ur kvartalet.');
-    // Svepets kolumner hör till senare stories och fylls aldrig med en gissning.
-    expect(skrivna[0]!.handelse_ref_ids).toBeNull();
-    expect(skrivna[0]!.frysta_siffror).toBeNull();
+    // S4.2: servern fryser underlaget även när det inte finns något att frysa.
+    // Tom array, aldrig NULL — NULL betyder "satt före S4.2" och ingenting annat.
+    expect(skrivna[0]!.handelse_ref_ids).toEqual([]);
+    expect(skrivna[0]!.frysta_siffror).toMatchObject({
+      period_start: '2026-04-01', period_slut: '2026-06-30',
+      timmar: { poster: 0, minuter: 0, fakturerbara_minuter: 0 },
+      delar: [], leverabelrorelser: [], handelser: 0,
+    });
 
     expect(await auditrader()).toContain('action.executed:satt_bedomning');
 
@@ -373,5 +378,364 @@ describe('grannbolaget', () => {
     expect([302, 303]).toContain(login.status);
     const res = await grannUa.get(`/app/c/${grannbolag}/projects/${projektId}/bedomning`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ===========================================================================
+// S4.2, våg 6: den förifyllda rapporten (FR-16/FR-20/FR-25/FR-26/FR-32)
+//
+// Bedömningen ska vara ett UNDERLAG, inte en magkänsla: talen som gällde när
+// den sattes fryses med raden, och händelserna följer med som PEKARE. Provet
+// är skrivet mot de tre sätt det kan gå sönder på:
+//
+//   * Talen kommer från fel ställe. Förbrukningen mot tak ska vara husets enda
+//     takberäkning (FR-25) och periodens timmar ska vara periodens — därför
+//     ligger en tidpost UTANFÖR perioden i riggen: den syns i delens
+//     livslånga förbrukning men får aldrig synas i periodens timmar.
+//   * Talen räknas om i efterhand. En tidpost som läggs till EFTER bedömningen
+//     får inte röra en enda siffra i den frysta raden (FR-20).
+//   * Underlaget kommer utifrån. `frysta_siffror`/`handelse_ref_ids` är inte
+//     indatafält; `.strict()` fäller dem, precis som `satt_av_manniska`.
+// ===========================================================================
+
+async function begar(namn: string, kropp: Record<string, unknown>): Promise<string> {
+  const res = await act(namn, kropp);
+  expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(202);
+  return (res.body.approval as { id: string }).id;
+}
+
+async function okKoad(namn: string, kropp: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = await begar(namn, kropp);
+  const res = await api.post(`${co()}/approvals/${id}/approve`).set(auth()).send({});
+  expect(res.status, `${namn} (godkännande): ${JSON.stringify(res.body)}`).toBe(200);
+  return res.body.result as Record<string, unknown>;
+}
+
+interface FrystaSiffror {
+  period_start: string;
+  period_slut: string;
+  timmar: { poster: number; minuter: number; fakturerbara_minuter: number };
+  delar: {
+    code: string; name: string; minuter: number; belopp_ore: number;
+    tak_timmar: number | null; tak_ore: number | null;
+    tak_status: string; andel: number | null;
+  }[];
+  leverabelrorelser: { kod: string; fran: string | null; till: string; nar: string }[];
+  handelser: number;
+}
+
+/** Ett uppdrag med taxa, en avtalsdel med BEKRÄFTAT tak och en leverabel. */
+async function riggatUppdrag(namn: string, taxaOre: number): Promise<{
+  projektId: string; avtalId: string; leverabelId: string;
+}> {
+  const projektId = (await ok('create_project', { name: `Uppdrag ${namn}` })).id as string;
+  const avtalId = (await ok('create_contract', {
+    project_id: projektId, name: namn, signed_date: '2026-01-01', hourly_rate_ore: taxaOre,
+  })).id as string;
+  // Taket är bekräftat — ett oläst tak ger varken andel eller status
+  // 'bekraftat', och då hade rapporten inte haft något att visa.
+  await okKoad('upsert_contract_part', {
+    contract_id: avtalId, code: 'S1', name: 'Fas 1', valid_from: '2026-01-01',
+    cap_hours: 10, cap_amount_ore: 1_200_000, cap_confirmed: true,
+  });
+  const leverabelId = await withAdmin(async (c) => (await c.query<{ id: string }>(
+    `INSERT INTO uppdrag_leverabel (company_id, contract_id, kod, status)
+     VALUES ($1, $2, 'L1', 'pagar') RETURNING id`,
+    [companyId, avtalId],
+  )).rows[0]!.id);
+  return { projektId, avtalId, leverabelId };
+}
+
+/** Avtalsdelens id ur husets egen läsväg — aldrig ur en egen fråga. */
+async function delId(contractId: string, kod: string): Promise<string> {
+  const parts = (await ok('get_contract_usage', { contract_id: contractId }))
+    .parts as unknown as { part_id: string; code: string }[];
+  return parts.find((d) => d.code === kod)!.part_id;
+}
+
+/**
+ * Referenser med ett VALT `created_at`. Riggning av indata: `uppdrag_referens`
+ * bär inget eget händelsedatum (0068), så perioden mäts på när referensen
+ * länkades — och det datumet går inte att välja genom skrivvägen.
+ */
+async function riggaReferens(
+  contractId: string, sort: string, externId: string, nar: string,
+): Promise<string> {
+  return withAdmin(async (c) => (await c.query<{ id: string }>(
+    `INSERT INTO uppdrag_referens
+       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
+        titel_vid_lankning, status, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'gmail:david@locollabs.com', $6, 'levande', $7)
+     RETURNING id`,
+    [companyId, contractId, sort, externId, sort === 'mejl' ? 'rfc822#message-id' : 'icalendar#uid',
+      `Underlag ${externId}`, nar],
+  )).rows[0]!.id);
+}
+
+/** Ett statusbyte med valt datum. Tabellen är append-only för `app`. */
+async function riggaRorelse(
+  contractId: string, leverabelId: string, fran: string, till: string, nar: string,
+): Promise<void> {
+  await withAdmin((c) => c.query(
+    `INSERT INTO uppdrag_leverabel_handelse
+       (company_id, contract_id, leverabel_id, fran, till, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [companyId, contractId, leverabelId, fran, till, nar],
+  ));
+}
+
+const PERIOD = { start: '2026-05-01', slut: '2026-05-31' };
+
+describe('(S4.2 a) siffrorna fryses ur serverns egen omräkning', () => {
+  let uppdrag: { projektId: string; avtalId: string; leverabelId: string };
+  let iPerioden: string[] = [];
+  let fryst: FrystaSiffror;
+  let refIds: string[] | null = null;
+
+  beforeAll(async () => {
+    uppdrag = await riggatUppdrag('Fryst underlag', 120_000);
+    const del = await delId(uppdrag.avtalId, 'S1');
+
+    // 2 h i perioden och 1 h efter den. Delens förbrukning mot taket är
+    // avtalets hela livslängd (3 h); periodens timmar är periodens (2 h).
+    await ok('log_time', {
+      project_id: uppdrag.projektId, work_date: '2026-05-12', minutes: 120,
+      description: 'Arbete i perioden', contract_part_id: del,
+    });
+    await ok('log_time', {
+      project_id: uppdrag.projektId, work_date: '2026-06-05', minutes: 60,
+      description: 'Arbete efter perioden', contract_part_id: del,
+    });
+
+    iPerioden = [
+      await riggaReferens(uppdrag.avtalId, 'mejl', 'CAF7v2h9k@mail.gmail.com', '2026-05-10T09:00:00Z'),
+      await riggaReferens(uppdrag.avtalId, 'kalender', 'styrgrupp-maj@locollabs', '2026-05-20T09:00:00Z'),
+    ];
+    // Utanför perioden, och fel sort inuti den: ingen av dem får följa med.
+    await riggaReferens(uppdrag.avtalId, 'mejl', 'juni@mail.gmail.com', '2026-06-02T09:00:00Z');
+    await riggaReferens(uppdrag.avtalId, 'drive', 'drive-fil-1', '2026-05-15T09:00:00Z');
+
+    await riggaRorelse(uppdrag.avtalId, uppdrag.leverabelId, 'ej_paborjad', 'pagar', '2026-05-14T09:00:00Z');
+    await riggaRorelse(uppdrag.avtalId, uppdrag.leverabelId, 'pagar', 'levererad', '2026-06-03T09:00:00Z');
+
+    const svar = await ok('satt_bedomning', {
+      contract_id: uppdrag.avtalId, period_start: PERIOD.start, period_slut: PERIOD.slut,
+      lage: 'risk', kommentar: 'Taket närmar sig.',
+    });
+    fryst = svar.frysta_siffror as unknown as FrystaSiffror;
+    refIds = svar.handelse_ref_ids as string[];
+  });
+
+  it('perioden, timmarna och händelseantalet står i raden', () => {
+    expect(fryst.period_start).toBe(PERIOD.start);
+    expect(fryst.period_slut).toBe(PERIOD.slut);
+    // Junipostens 60 minuter ligger UTANFÖR perioden och är inte med.
+    expect(fryst.timmar).toEqual({ poster: 1, minuter: 120, fakturerbara_minuter: 120 });
+    expect(fryst.handelser).toBe(2);
+  });
+
+  it('förbrukningen mot taket är husets tal, inte en egen summering (FR-25)', () => {
+    expect(fryst.delar).toHaveLength(1);
+    const s1 = fryst.delar[0]!;
+    expect(s1.code).toBe('S1');
+    // 3 h totalt på delen (2 h + 1 h), värderade med avtalets taxa 1 200 kr/h.
+    expect(s1.minuter).toBe(180);
+    expect(s1.belopp_ore).toBe(360_000);
+    expect(s1.tak_timmar).toBe(10);
+    expect(s1.tak_ore).toBe(1_200_000);
+    expect(s1.tak_status).toBe('bekraftat');
+    expect(s1.andel).toBe(0.3);
+  });
+
+  it('bara periodens leverabelrörelse följer med', () => {
+    expect(fryst.leverabelrorelser).toHaveLength(1);
+    expect(fryst.leverabelrorelser[0]).toMatchObject({ kod: 'L1', fran: 'ej_paborjad', till: 'pagar' });
+  });
+
+  it('`handelse_ref_ids` pekar exakt på periodens referenser — inga kopior (FR-26)', () => {
+    expect(refIds).toEqual(iPerioden);
+  });
+
+  it('raden i tabellen bär samma frysta underlag som svaret', async () => {
+    const skrivna = await rader(uppdrag.avtalId);
+    expect(skrivna).toHaveLength(1);
+    expect(skrivna[0]!.frysta_siffror).toEqual(fryst);
+    expect(skrivna[0]!.handelse_ref_ids).toEqual(iPerioden);
+  });
+
+  it('en tidpost EFTER bedömningen rör inte en enda siffra i den (FR-20)', async () => {
+    await ok('log_time', {
+      project_id: uppdrag.projektId, work_date: '2026-05-25', minutes: 240,
+      description: 'Registrerad i efterhand', contract_part_id: await delId(uppdrag.avtalId, 'S1'),
+    });
+
+    // Källan har ändrats: samma period ger nu ett annat underlag …
+    const nyBedomning = await ok('satt_bedomning', {
+      contract_id: uppdrag.avtalId, period_start: PERIOD.start, period_slut: PERIOD.slut, lage: 'ur_spar',
+    });
+    expect((nyBedomning.frysta_siffror as unknown as FrystaSiffror).timmar.minuter).toBe(360);
+
+    // … men den FÖRSTA raden står kvar exakt som den skrevs.
+    const skrivna = await rader(uppdrag.avtalId);
+    expect(skrivna).toHaveLength(2);
+    expect(skrivna[0]!.frysta_siffror).toEqual(fryst);
+    expect(skrivna[0]!.handelse_ref_ids).toEqual(iPerioden);
+  });
+});
+
+describe('(S4.2 b) underlaget är serverns, aldrig anroparens', () => {
+  it('`frysta_siffror` som indata fälls av det strikta schemat', async () => {
+    const contractId = await nyttAvtal('Medskickat underlag');
+    const res = await act('satt_bedomning', {
+      contract_id: contractId, period_start: '2026-05-01', period_slut: '2026-05-31', lage: 'pa_spar',
+      frysta_siffror: { timmar: { minuter: 0, poster: 0, fakturerbara_minuter: 0 } },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+    expect(await rader(contractId)).toHaveLength(0);
+  });
+
+  it('`handelse_ref_ids` som indata fälls likadant', async () => {
+    const contractId = await nyttAvtal('Medskickade pekare');
+    const res = await act('satt_bedomning', {
+      contract_id: contractId, period_start: '2026-05-01', period_slut: '2026-05-31', lage: 'pa_spar',
+      handelse_ref_ids: ['00000000-0000-0000-0000-000000000001'],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+    expect(await rader(contractId)).toHaveLength(0);
+  });
+
+  it('agenten avvisas fortfarande med 403 `human_required` (FR-15)', async () => {
+    const contractId = await nyttAvtal('Agenten och underlaget');
+    const res = await act('satt_bedomning', {
+      contract_id: contractId, period_start: '2026-05-01', period_slut: '2026-05-31', lage: 'pa_spar',
+    }, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe('human_required');
+    expect(await rader(contractId)).toHaveLength(0);
+  });
+});
+
+describe('(S4.2 c) en tom period fryser nollor och lyckas', () => {
+  it('lägesvalet är fortfarande den enda obligatoriska inmatningen', async () => {
+    const contractId = await nyttAvtal('Tom period');
+    const svar = await ok('satt_bedomning', {
+      contract_id: contractId, period_start: '2026-07-01', period_slut: '2026-07-31', lage: 'pa_spar',
+    });
+    expect(svar.lage).toBe('pa_spar');
+    expect(svar.frysta_siffror).toMatchObject({
+      timmar: { poster: 0, minuter: 0, fakturerbara_minuter: 0 },
+      delar: [], leverabelrorelser: [], handelser: 0,
+    });
+
+    // Tom array, inte NULL: `{}` betyder "inget hände", NULL betyder "satt före
+    // S4.2". Ett fält som betyder två saker går inte att lita på.
+    const skrivna = await rader(contractId);
+    expect(skrivna[0]!.handelse_ref_ids).toEqual([]);
+    expect(skrivna[0]!.handelse_ref_ids).not.toBeNull();
+    expect(skrivna[0]!.frysta_siffror).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (S4.2 d) Vyn: rapporten är redan ifylld när sidan öppnas (KRAV-5/KRAV-6)
+// ---------------------------------------------------------------------------
+
+describe('(S4.2 d) vyn förifyller rapporten', () => {
+  let vy: { projektId: string; avtalId: string; leverabelId: string };
+  let manad: { start: string; slut: string };
+  let html = '';
+
+  beforeAll(async () => {
+    // Sidans förval är innevarande månad, så riggen måste ligga där: rapporten
+    // visar den period formuläret faktiskt skulle skicka.
+    const nu = new Date();
+    const dag = (d: Date): string => d.toISOString().slice(0, 10);
+    manad = {
+      start: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1))),
+      slut: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0))),
+    };
+
+    vy = await riggatUppdrag('Vyrapport', 100_000);
+    await ok('log_time', {
+      project_id: vy.projektId, work_date: dag(nu), minutes: 90,
+      description: 'Arbete den här månaden', contract_part_id: await delId(vy.avtalId, 'S1'),
+    });
+    await riggaReferens(vy.avtalId, 'mejl', 'manadens-mejl@mail.gmail.com', `${manad.start}T08:00:00Z`);
+    await riggaRorelse(vy.avtalId, vy.leverabelId, 'ej_paborjad', 'pagar', `${manad.start}T08:00:00Z`);
+    await withAdmin(async (c) => {
+      for (const [sort, text] of [['innanfor', 'Löpande bokföring och avstämning'],
+        ['utanfor', 'Systemimplementation hos tredje part'],
+        ['fras', 'kan ni även titta på']] as const) {
+        await c.query(
+          `INSERT INTO uppdrag_scopelinje (company_id, contract_id, sort, text, klausul)
+           VALUES ($1, $2, $3, $4, '§2.1')`,
+          [companyId, vy.avtalId, sort, text],
+        );
+      }
+    });
+    // En rad utan fryst underlag — så som S4.1 skrev dem. Den ska renderas som
+    // i dag, utan siffror, aldrig med en nolla som ser ut som ett underlag.
+    await withAdmin((c) => c.query(
+      `INSERT INTO uppdrag_bedomning
+         (company_id, contract_id, period_start, period_slut, lage, satt_av_manniska, kommentar)
+       VALUES ($1, $2, '2026-02-01', '2026-02-28', 'pa_spar', true, 'Satt av S4.1')`,
+      [companyId, vy.avtalId],
+    ));
+
+    const res = await ua.get(`/app/c/${companyId}/projects/${vy.projektId}/bedomning`);
+    expect(res.status, `sidan gav ${res.status}`).toBe(200);
+    html = res.text;
+  });
+
+  it('rapporten står på sidan med periodens timmar och delen mot sitt tak', () => {
+    expect(html).toContain('Underlaget för perioden');
+    expect(html).toContain(`${manad.start} – ${manad.slut}`);
+    expect(html).toContain('1 h 30 min');
+    expect(html).toContain('Förbrukning mot tak');
+    expect(html).toContain('S1');
+    expect(html).toContain('10 h');
+    expect(html).toContain('Bekräftat');
+  });
+
+  it('leverabelrörelsen, händelsen och scopelinjen står där — händelsen som referens', () => {
+    expect(html).toContain('Leverabelrörelser i perioden');
+    expect(html).toContain('Händelser i perioden');
+    expect(html).toContain('manadens-mejl@mail.gmail.com');
+    expect(html).toContain('Innanför uppdraget');
+    expect(html).toContain('Löpande bokföring och avstämning');
+    expect(html).toContain('Utanför uppdraget');
+    expect(html).toContain('Systemimplementation hos tredje part');
+    expect(html).toContain('kan ni även titta på');
+  });
+
+  it('formuläret är kvar med sitt förval, och sidan är JS-fri', () => {
+    expect(html).toContain(`value="${manad.start}"`);
+    expect(html).toContain('name="lage" value="pa_spar"');
+    expect(html).not.toContain('<script');
+  });
+
+  it('historiken visar den frysta radens tal — och säger ifrån när de saknas', async () => {
+    await ok('satt_bedomning', {
+      contract_id: vy.avtalId, period_start: manad.start, period_slut: manad.slut,
+      lage: 'risk', kommentar: 'Halva taket på en månad.',
+    });
+    const res = await ua.get(`/app/c/${companyId}/projects/${vy.projektId}/bedomning`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Underlaget då');
+    expect(res.text).toContain('Mot taket då');
+    // S4.1-raden bär NULL och renderas som just det.
+    expect(res.text).toContain('Satt innan underlaget frystes');
+    expect(res.text).toContain('Satt av S4.1');
+  });
+
+  it('ett uppdrag utan länkade händelser säger det i stället för att gissa (FR-32)', async () => {
+    const res = await ua.get(`/app/c/${companyId}/projects/${projektId}/bedomning`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Inga kalenderposter eller mejl är länkade');
+    expect(res.text).toContain('Avtalet har inga scopelinjer ännu');
+    // Rapporten blockerar aldrig formuläret.
+    expect(res.text).toContain('name="lage" value="risk"');
   });
 });

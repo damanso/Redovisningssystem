@@ -145,6 +145,83 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-06 (uppdragsytan S4.2, våg 6 — den förifyllda bedömningsrapporten):**
+  S4.1 gav bedömningen sin skrivväg, och 0068 hade burit `frysta_siffror` och
+  `handelse_ref_ids` sedan dag ett — men tjänsten lämnade dem med flit NULL, och
+  formuläret var en tom ruta med tre knappar. **Bedömningen var alltså ett
+  omdöme utan underlag: talen den vilade på gick inte att läsa i efterhand, och
+  den som skulle sätta den fick leta rätt på dem i fyra andra vyer först.**
+
+  Byggt: **en underlagsbyggare `byggRapportunderlag` + `lasScopelinjer` i
+  `services/uppdragBedomning.ts`**, **frysningen inuti `sattBedomning`** (samma
+  transaktion som INSERT:en), **panelen *Underlaget för perioden* över
+  formuläret** och **kolumnen *Underlaget då* i historiken** i
+  `http/view/routes.ts`, plus fyra nya provblock. **Ingen migration** (0068:s
+  kolumner finns), inget nytt beroende, ingen ny åtgärd, ingen ny rutt, ingen ny
+  CSS-klass, inga nya indatafält, ingen ändrad känslighet — `satt_bedomning` är
+  fortfarande `write` + `kravManniska` med oförändrat schema.
+
+  1. **Ingen andra förbrukningsberäkning (FR-25).** Delarna mot sina tak kommer
+     ur `getContractUsage`, alltså ur husets ENDA takberäkning — samma tal som
+     takvarningen och faktureringsspärren läser. Periodens timmar härleds ur
+     `listTimeEntries`-utdatan med husets egna predikat (`arIgnorerad`,
+     `arGodkannande`, `arFakturerad`), inte ur en egen SUM(): en andra
+     tolkning av vilka poster som räknas hade blivit ett andra svar på
+     "hur mycket är förbrukat?".
+  2. **En byggare, två användare.** Samma funktion bygger vyns förhandsvisning
+     och de tal som fryses vid INSERT:en. Två byggare hade betytt att sidan
+     visade ett tal och raden bar ett annat — och den skillnaden hade ingen
+     upptäckt förrän någon läste bedömningen ett halvår senare.
+  3. **Periodens tid, avtalets tak.** Timmarna är periodens; förbrukningen mot
+     taket är avtalets hela livslängd, för ett tak mäts aldrig per månad.
+     Provet riggar därför en tidpost UTANFÖR perioden: den syns i delens
+     förbrukning och får aldrig synas i periodens timmar.
+  4. **Pekare, aldrig kopior (FR-26).** `handelse_ref_ids` är id:n i
+     `uppdrag_referens`; mejlkroppen och kalendertexten ligger kvar i sitt
+     källsystem. Perioden mäts på `created_at` — raden bär inget annat datum
+     (`uppdragReferens.ts`) — och bara `kalender`/`mejl` räknas: `drive`-pekarna
+     pekar på avtalshandlingen, inte på något som hände.
+  5. **Tom array är inte NULL.** En period utan tid och händelser fryser nollor
+     och `{}`; lägesvalet förblir det enda obligatoriska (ett giltigt svar
+     spärras aldrig). NULL betyder därmed entydigt "satt före S4.2", och sådana
+     rader renderas som förut — utan siffror, med texten *Satt innan underlaget
+     frystes*. En nolla där hade sett ut som ett underlag.
+  6. **Scopelinjen fryses inte.** Acceptansen säger att rapporten BÄR den;
+     avtalets ord står redan i `uppdrag_scopelinje` och läses levande i vyn med
+     samma `scopegrupp`-komponent som kontraktsytan (S10.6) använder. En kopia
+     hade gjort bedömningen till en fjärde datamängd.
+  7. **Ytan: rapporten först, genvägen i huvudet.** Man läser innan man dömer,
+     så panelen står över formuläret — men *Sätt bedömningen ↓* ligger i
+     sidhuvudets knappband, så den som redan bestämt sig (och den som tabbar)
+     aldrig behöver passera hela underlaget för att svara. Inga nya klasser:
+     `.panel`, `.kpi-grid`, `.table-wrap`, `.chip`, `.code` och `<details>` bär
+     ytan, och sidan är fortsatt helt JS-fri.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs.
+  `server/test/uppdragsytan-bedomning.test.ts` utökad: **(a)** ett riggat
+  uppdrag (bekräftat tak 10 h/12 000 kr, taxa 1 200 kr/h, 2 h i perioden och 1 h
+  efter den, två referenser i perioden plus en utanför och en `drive` inuti, två
+  leverabelrörelser varav en i perioden) → frysta timmar 120 min/1 post, delen
+  180 min/360 000 öre mot taket med andel 0,30 och status `bekraftat`, EN
+  leverabelrörelse och `handelse_ref_ids` exakt de två — och efter att 4 h lagts
+  till i efterhand ger en NY bedömning 360 min medan den första raden står
+  oförändrad (FR-20); **(b)** `frysta_siffror` och `handelse_ref_ids` som indata
+  ger 400 `validation_error` utan rad, och agentanropet fortsatt 403
+  `human_required`; **(c)** tom period → nollor, `{}` (inte NULL) och en
+  lyckad insert; **(d)** vyn med rapporten för innevarande månad (timmar, delen
+  mot taket, rörelsen, händelsen som referens, alla tre scopegrupperna),
+  formulärets förval kvar, ingen `<script>`, historikens frysta tal och en
+  admin-skriven S4.1-rad som renderas utan siffror — plus ett uppdrag utan
+  länkade händelser som säger det rakt ut utan att blockera formuläret.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Bedömningen
+  sätts som förut på uppdragets **Bedömning**-sida, nu med underlaget ifyllt.
+  Retroaktiv frysning av äldre S4.1-rader, en periodväljare som räknar om
+  rapporten utan att sätta bedömningen, delningslogg/Drive-kopia (S7.5) och
+  rytm-mekanik för bedömningstillfället är medvetet uteslutna — källan kräver
+  dem inte.
+
 - **2026-09-06 (uppdragsytan S10.6, våg 5 — Kontraktet: en JS-fri läsyta per
   uppdrag):** Avtalets livscykel låg i fyra tabeller och fyra frågor som ingen
   kunde ställa på en gång: var är dokumentet, vad gäller nu, vilka tillägg har
