@@ -6,6 +6,7 @@ import { pool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
 import { AppError, ConflictError } from '../../lib/errors.js';
 import { signToken } from '../../lib/jwt.js';
+import { UuidSchema } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import { errorPage } from './html.js';
 
@@ -122,10 +123,83 @@ export function readPendingUserId(req: Request): string | null {
 }
 
 /**
- * Cookie-baserad autentisering för webbvyn. Verifierar JWT ur session-cookien
- * och sätter req.auth. Saknas/ogiltig → omdirigera till login (ingen JSON).
+ * Uppdragsytans GET-sidor, sedda från vyns monteringspunkt (`/app` är redan
+ * avskalat här): `/c/<bolag>/projects/<uppdrag>` och allt under det. Mönstret
+ * är avsiktligt SNÄVT — det är den enda ytan agent-läsningen öppnar (S10.7,
+ * FR-39), och en bredare regel hade öppnat hela vyn i tysthet nästa gång någon
+ * la till en sida.
+ */
+const UPPDRAGSYTANS_GET = /^\/c\/([^/]+)\/projects\/[^/]+(?:\/[^/]+)*$/;
+
+/**
+ * Agentens läsväg in i vyn.
+ *
+ * Mätpunkten i S10.7 kräver att uppdragsytan går att LÄSA med samma token som
+ * API:t använder — annars kan provvakten aldrig se det David ser. Fyra spärrar
+ * gör den till just en läsväg och ingenting mer:
+ *
+ *  1. **Bara GET.** Skrivvägarna i vyn (som alla går genom `executeAction` som
+ *     människa) kan därmed aldrig nås med ett agent-token — inte för att en
+ *     handler kontrollerar det, utan för att autentiseringen aldrig inträffar.
+ *  2. **Bara uppdragsytan.** Ett agent-token är bolagsskopat; resten av vyn är
+ *     inte byggd för det och öppnas inte här.
+ *  3. **Bara agent-tokens.** En människas Bearer-token är inte en webbsession —
+ *     den vägen förblir stängd, precis som i dag.
+ *  4. **Ingen cookie, någonsin.** Funktionen rör aldrig `Set-Cookie`: token
+ *     gäller för det anrop den skickades med, inte för en session efteråt.
+ *
+ * Returnerar null när något av villkoren brister — anropet faller då tillbaka
+ * på cookie-vägen nedan och får inloggningsomdirigeringen, exakt som förut.
+ */
+function agentLasning(req: Request): { userId: string; companyId: string; urlCompanyId: string } | null {
+  if (req.method !== 'GET') return null;
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return null;
+  const traff = UPPDRAGSYTANS_GET.exec(req.path);
+  if (!traff) return null;
+  const urlBolag = UuidSchema.safeParse(traff[1]);
+  if (!urlBolag.success) return null;
+  try {
+    const payload = jwt.verify(header.slice('Bearer '.length), config.JWT_SECRET, { algorithms: ['HS256'] });
+    if (typeof payload === 'string' || typeof payload.sub !== 'string') return null;
+    if (payload.actor !== 'agent') return null;
+    // Samma spärr som API:t: ett halvvägs-token från 2FA-steget är ingen session.
+    if (payload.stage === 'pending_2fa') return null;
+    // Ett agent-token MÅSTE vara bolagsscopat (samma regel som authenticate.ts).
+    if (typeof payload.company_id !== 'string') return null;
+    return {
+      userId: payload.sub,
+      // Gemener på båda sidor: `requireCompanyAccess` normaliserar likadant, och
+      // en jämförelse som är skiftlägeskänslig i vyn men inte i API:t vore två
+      // olika svar på samma fråga.
+      companyId: payload.company_id.toLowerCase(),
+      urlCompanyId: urlBolag.data.toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cookie-baserad autentisering för webbvyn — plus agentens läsväg till
+ * uppdragsytans GET-sidor (S10.7). Verifierar JWT ur session-cookien och sätter
+ * req.auth. Saknas/ogiltig → omdirigera till login (ingen JSON).
  */
 export function viewAuth(req: Request, res: Response, next: NextFunction): void {
+  const agent = agentLasning(req);
+  if (agent) {
+    // Fel bolag → 404, aldrig 403: huset läcker inte att bolaget existerar
+    // (`requireCompanyAccess`, samma regel och samma sida som vyns egen
+    // 404). Medlemskapet prövas ändå en gång till i `withTenantTransaction`,
+    // i samma transaktion som datafrågorna, och RLS är lagret under det.
+    if (agent.companyId !== agent.urlCompanyId) {
+      res.status(404).type('html').send(errorPage(404, 'Hittades inte eller ingen åtkomst.').value);
+      return;
+    }
+    req.auth = { userId: agent.userId, actor: 'agent', scopedCompanyId: agent.companyId };
+    next();
+    return;
+  }
   const token = parseCookie(req.headers.cookie, COOKIE);
   if (!token) {
     res.redirect('/app/login');
