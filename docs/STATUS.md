@@ -145,6 +145,83 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.5, våg 7 — Rapporterna: bedömningen som post):**
+  S4.1 gav bedömningen sin skrivväg och S4.2 sitt frysta underlag. Men
+  historiken bodde bara i en sexkolumnstabell UNDER formuläret som sätter nästa.
+  **Uppdragets berättelse lästes alltså på den sida där man ändrar den, i en form
+  byggd för att jämföra rad mot rad — och FR-20:s frysta tal låg i en kolumn man
+  scrollade förbi.**
+
+  Byggt: **en ny undersida `/app/c/:id/projects/:projectId/rapporterna`** i
+  `http/view/routes.ts`, posten `['rapporterna', 'Rapporterna']` i
+  `UPPDRAGSSIDOR` mellan *Pengarna* och *Kontraktet* (1E Del 5:s ruttlista), och
+  en ny svit. Den enda ändringen i befintlig kod är att `bedomningsunderlag`
+  delats i två: `bedomningshistorik` (uppdrag + avtal + historik) som båda
+  sidorna läser, och den gamla funktionen som bygger vidare på den. **Ingen
+  migration, ingen ny eller ändrad åtgärd, ingen ny tjänst, ingen ny CSS-klass,
+  ingen JS, ingen ändring av formulärets beteende** — `uppdragBedomning.ts`,
+  `registry.ts` och `docs/MCP_ACTIONS.md` är **orörda**. Diffen rör `routes.ts`,
+  `server/test/` och den här filen.
+
+  1. **En läsväg, inte två (KRAV-4).** Posterna kommer ur `bedomningshistorik` —
+     exakt den funktion Bedömningssidan läser — och de frysta talen renderas av
+     samma `frystCell`. Två hem för samma historik är precis den konstruktion som
+     glider isär i tysthet; här finns bara EN kod att glida med, och provet
+     jämför de två sidornas HTML på samma sex bitar.
+  2. **Bedömningssidans historiktabell står kvar.** Underlagets analysfråga ("får
+     Rapporterna bli historikens enda hem?") faller på Davids svarsregel 1: att
+     ta bort tabellen vore en ändring utöver överlämningen. Dubbleringen hanteras
+     därför av delad kod, inte av att den ena ytan tas bort.
+  3. **Post, inte tabellrad (KRAV-3).** Perioden står i husets `.log-when` — en
+     mono-axel ögat löper nedför — och omdömet till höger: läget först,
+     människans egna ord näst, de frysta talen under dem, tidpunkten sist. En
+     tabell tvingar fram jämförelse mellan rader; ett omdöme läses ett i taget.
+     `.log` ÄR husets kronologikomponent (revisionsloggen, notiserna, CRM-
+     anteckningarna) — återanvänd, inte uppfunnen, och därmed noll ny CSS.
+  4. **Talen är radens, aldrig dagens (FR-20).** Provet loggar 4 h EFTER att båda
+     bedömningarna satts och läser om sidan: posterna ska vara BYTE FÖR BYTE
+     identiska med före. En sida som råkat räkna live hade sett likadan ut ända
+     tills någon loggade mer tid — det är exakt det felet provet finns för.
+  5. **FR-17 mäts på markupen, inte på en ny knapp.** Friktionen bor i
+     `bedomningsformular`, som redan byggs ur `BEDOMNINGSLAGEN.map`. Provet
+     normaliserar bort exakt det som SKA skilja lägena (kod, chip, innebördstext)
+     och kräver att resten är byte för byte lika — plus tre radioknappar, EN
+     submitknapp, ingen `<dialog>`, ingen `onclick`, inget `confirm`. Ett rött
+     läge med ett extra steg är en tyst uppmaning att svara grönt.
+  6. **Tomhetens grammatik i två lägen (KRAV-6).** Utan avtal sägs DET (och vägen
+     går till `/avtal`); med avtal men utan bedömning står vad tomheten betyder —
+     *ingen har svarat på om uppdraget håller, inte att det gör det* — och vägen
+     går till Bedömningssidan. Aldrig en naken tom lista.
+  7. **Ren läsvy.** Inget formulär, ingen knapp, inget skript på Rapporterna:
+     bedömningen sätts där den alltid satts, och friktionen kan därmed inte
+     skilja sig mellan de två ytorna.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-rapporterna.test.ts`: **(a)** rutten med husets
+  sidhuvud, undermenyn med *Rapporterna* mellan *Pengarna* och *Kontraktet*,
+  `aria-current` på exakt en post, och posten synlig — men inte aktuell — också
+  från Läget; **(b)** tre poster i kronologisk ordning (februari, maj, juni) med
+  period, läges-chip i sin exakta markup, kommentar och satt-tidpunkt,
+  tomkommentaren som säger sig själv, varningschipet på den rad som inte sattes
+  av en människa och bara där, avtalsnamnet på uppdraget med TVÅ avtal men inte
+  på det med ett — plus att Bedömningssidan visar samma sex bitar och behåller
+  *Underlaget då*; **(c)** majpostens 1 h 30 min mot junipostens 2 h 30 min i
+  perioden och 4 h 00 min mot taket, FR-20-provet med 4 h loggade i efterhand
+  (posterna oförändrade, ingen 8 h någonstans), och S4.1-raden utan siffror med
+  *Satt innan underlaget frystes*; **(d)** friktionsprovet — normaliseringen
+  prövas åt båda hållen innan de tre alternativen jämförs — plus formulärets tre
+  radios/en knapp och Rapporterna helt utan `<form>`, `<button>`, `<input>` och
+  `<script>`; **(e)** båda tomlägena och tenantgränsen: grannbolagets uppdrag och
+  ett okänt id ger 404 medan grannen når sitt eget på sin egen väg utan att en
+  rad ur Locollabs historik läcker in.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Sidan nås via
+  undermenyn på uppdragets sidor. Att flytta historiken hit från Bedömningssidan,
+  ett formulär på Rapporterna, en egen läsåtgärd `las_rapporter`, filtrering/
+  paginering/periodval, en `.farskhet`-rad (talen är frysta, inte lästa nu) och
+  en egen postklass är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-07 (uppdragsytan S10.4, våg 6 — Pengarna: kurvan mot ramen):**
   S7.4 la de två ramdatumen i svepets cache, S6.2 la tröskellarmet där, 0068 gav
   kvittot sin `contract_part_id` och sin `oplanerad`-märkning, och husets
