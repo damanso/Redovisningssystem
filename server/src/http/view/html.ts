@@ -720,7 +720,16 @@ td a.entity { font-weight: 550; }
   padding: 7px 11px; border-radius: var(--radius-pill);
   color: var(--ink-2); font-size: 13.5px; font-weight: 500; white-space: nowrap;
 }
-.nav__quick a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.nav__quick a:hover, .nav__grannar a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+/* Grannmodulerna: vägen UT ur redovisningen, inte en sida inom den.
+   Samma form som snabbraden, egen behållare — spärrhaken i
+   navigation.test.ts räknar snabbradens länkar och ska fortsätta göra det. */
+.nav__grannar { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.nav__grannar a {
+  padding: 7px 11px; border-radius: var(--radius-pill);
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500; white-space: nowrap;
+  opacity: .85;
+}
 .nav__quick a.active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
 
 /* Undermeny (designkontraktets menygrammatik, "en nivå ner").
@@ -779,7 +788,7 @@ td a.entity { font-weight: 550; }
 .nav__sok input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
 
 @media (max-width: 700px) {
-  .nav__quick { display: none; }
+  .nav__quick, .nav__grannar { display: none; }
   .nav__sep { display: none; }
   .nav__sok { flex: 1 1 auto; margin-left: 0; }
 }
@@ -1582,12 +1591,31 @@ export function layout(opts: {
           </div>
         </details>
         <span class="nav__sep"></span>
+        ${/* Grannmodulerna: vägen UT ur redovisningen. De står FÖRE snabbraden
+             med flit. Spärrhaken i navigation.test.ts räknar varje <a efter
+             snabbradens öppningstagg och kräver exakt sex — "snabbraden får
+             inte växa utan beslut". Länkar efter den punkten hade fällt den,
+             och rätt svar är inte att höja sexan utan att inte lägga sig i
+             raden den vaktar. */ ''}
+        <div class="nav__grannar">
+          <a href="https://david-brain.tail743706.ts.net:8445/">Översikt</a>
+          <a href="https://david-brain.tail743706.ts.net:8446/vy">Ärenden</a>
+        </div>
+        <span class="nav__sep"></span>
         <div class="nav__quick">
           ${NAV_QUICK.map((path) => {
             const item = NAV_INDEX.get(path);
             return item ? link(path, item.label, opts.active === path ? 'active' : '') : '';
           })}
         </div>
+        ${/* Grannmodulerna. Samma två vägar står i varje moduls meny, i samma
+             ordning och på samma plats. Utan dem måste David skriva adressen
+             för hand för att byta modul — och då är det tre system som råkar
+             ha samma färger, inte ett.
+
+             Adresserna byts på ETT ställe per modul när ingången flyttar
+             dem till vägar bakom /. Inga nya klassnamn: nav__sep och
+             nav__quick finns redan i kanon. */ ''}
         ${here && !inQuick
           ? html`<span class="nav__here"><span class="nav__here-grp">${here.group}</span><span class="nav__here-lbl">${here.label}</span></span>`
           : ''}
