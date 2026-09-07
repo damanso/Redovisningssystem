@@ -39,6 +39,7 @@ import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImpo
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
+import { lasUppdragslage } from '../services/uppdragLage.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
@@ -1876,6 +1877,23 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ contract_id: UuidSchema }).strict(),
     handler: (ctx, i) => lasKontraktsyta(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S10.1, våg 6: LÄGET läses (FR-18). Kontrollytetestet — kan
+  // David se läget utan att fråga? — bärs av EN läsväg, inte av fem. Vyn och
+  // MCP läser samma svar, så de kan aldrig svara olika (FR-23).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'las_uppdragslage',
+    title: 'Läget för ett uppdrag: förbrukning mot ram, leverabler per läge, senaste bedömning, signaler och köposter',
+    // `read` och ingen `kravManniska` (1E Del 4:s tabell, rad `las_uppdragslage`):
+    // läget är uppdragets egna tal tillbakalästa — ingenting flyttas, ingenting
+    // beslutas, inget handgrepp. Ingen del räknas om här (FR-25): förbrukningen
+    // kommer ur `get_contract_usage` och tidsunderlaget ur `list_time_entries`,
+    // alltså ur husets enda takberäkning.
+    sensitivity: 'read',
+    inputSchema: z.object({ project_id: UuidSchema }).strict(),
+    handler: (ctx, i) => lasUppdragslage(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

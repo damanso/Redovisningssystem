@@ -1407,3 +1407,51 @@ bredaste kolumnen, och **Vad som ingår**. Ett avtal i `kontrakt_tillstand =
 där gäller; utkastets obesvarade frågor hänvisas till handlingen och återges
 aldrig. JS-fri serverrenderad HTML, inga externa anrop under rendering (NFR-6),
 ingen ny CSS och inga nya komponenter.
+
+### Läget (S10.1, våg 6)
+
+- `las_uppdragslage` (read, ingen `kravManniska`) — `project_id`. Uppdragets läge
+  ur EN definition (FR-18, FR-23): `uppdrag` (nummer, namn, status, kund),
+  `avtal[]` med **`forbrukning`** (rotdelens upprullade minuter och ören, taket i
+  hela minuter/ören, `tak_status`, plus tidsunderlaget `tidposter` och
+  `registrerade_minuter`), **`troskellarm`** (S6.2:s redan härledda larm ur
+  svepets cache, `null` = svepet har inte kört), **`leverabler`** (alla fem lägen
+  i skalans ordning med antal — uppräknade tillstånd, aldrig procent),
+  **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren) och
+  **`oppna_signaler`/`avgjorda_signaler`**, samt uppdragets **`koposter`** och
+  **`farskhet`** (en post per innehållsdel). Okänt eller främmande `project_id` —
+  och ett projekt UTAN avtal — ger **404 `not_found`**: ett projekt utan avtal är
+  ett projekt, inte ett uppdrag, och en tom yta hade sagt att uppdraget saknade
+  sina delar i stället för att det saknades.
+- **Ingenting räknas om (FR-25).** Förbrukningen kommer ur `getContractUsage`
+  (husets enda takberäkning — samma tal som takvarningen och faktureringsspärren
+  läser), tidsunderlaget ur `listTimeEntries` med husets eget `arIgnorerad`,
+  registret ur `lasLeverabelregister`, bedömningen ur `listaBedomningar`,
+  signalerna ur `listaSignaler` och kön ur `listApprovals`. Tröskeln HÄMTAS ur
+  `uppdrag_svepvarde` — att utvärdera FR-3:s dubbelvillkor en andra gång hade
+  gett två svar på "larmar det?".
+- **Färskhet per källa, aldrig en sidstämpel (FR-35).** De fem direktlästa
+  delarna bär `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
+  `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
+  betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
+  skillnaden i stället för att visa ett gammalt värde som färskt.
+- **Köfiltret ligger i tjänsten.** Kön är hela bolagets; en post hör till
+  uppdraget när dess indata namnger `project_id`, ett av avtalen (`contract_id`)
+  eller en av avtalsdelarnas versioner (`contract_part_id`, vägen `binda_kostnad`
+  tar). En post som namnger inget av dem gissas aldrig hit.
+
+**Vyerna:** `/app/c/:id/projects/:projectId/laget` (knappen **Läget** först i
+uppdragets knappband) och listan `/app/c/:id/uppdrag`. Läget bär
+handgreppsbandet överst — köposter, öppna signaler och svepets statusförslag,
+byggt med husets `.ai-card`, chip och knappband, med en rad per handgrepp som
+leder dit svaret ges — och därunder FR-18:s fem faktakort, alltid alla fem, var
+och ett med sin `.farskhet`-rad. Saknar ett kort sin innehållsdel renderas det
+ändå, med en mening om vad tomheten betyder och en väg vidare (FR-22) — aldrig en
+naken nolla. Tomt band byter från `.ai-card` till `.panel`: ockran betyder
+"väntar på en människa". Sidan bär `.subnav` till uppdragets undersidor
+(`aria-current="page"` på exakt en post). Listan visar ett uppdrag per rad
+(projekt med minst ett avtal, härlett ur `listContracts`) med läge ur den
+senaste bedömningen — saknas den står *Saknad*, aldrig grönt — och färskheten ur
+uppdragets svepvärden. Två nya klasser i `html.ts`: `.farskhet` och `.subnav`.
+Ingen migration, inget nytt beroende, JS-fri HTML, inga externa anrop under
+rendering (NFR-6).
