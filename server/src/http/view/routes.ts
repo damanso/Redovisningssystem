@@ -37,6 +37,8 @@ import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from 
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { lasSvepfarskhet, lasUppdragslage, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
+import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden } from '../../services/uppdragSvep.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
@@ -1678,6 +1680,10 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
+          ${/* S10.1: Läget FÖRST i bandet — den svarar "var står vi?", och det är
+                frågan man ställer innan alla andra. Utan knappen vore ytan en
+                url ingen hittar till. */ ''}
+          <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/laget">Läget</a>
           ${/* Vägen in för avtalet självt: utan den bor taket kvar i en DOCX,
                 och ett tak som inte är inskrivet kan aldrig varna. */ ''}
           <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${projectId}/avtal">Läs in avtal</a>
@@ -3487,6 +3493,491 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
     return { name: company.name, body: kontraktssida(companyId, await kontraktsunderlag(client, companyId, projectId)) };
   });
   res.type('html').send(layout({ title: 'Kontraktet', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.1, våg 6: LÄGET och uppdragslistan (FR-18, FR-22, FR-35)
+//
+// Kontrollytetestet, ordagrant: *kan David se läget utan att fråga?* Talen fanns
+// redan, men i fem vyer — och en fråga man måste ställa fem gånger ställer man
+// till slut noll gånger. Sex beslut styr ytan:
+//
+//  1. **Bandet överst, sedan fem kort.** Det som VÄNTAR på ett människosvar står
+//     före det som bara är sant: en obesvarad fråga som läses sist blir i
+//     praktiken ett ja. Korten står i FR-18:s egen ordning, och alla fem finns
+//     alltid i sidan — ett kort som försvinner när det saknar data lär läsaren
+//     att ytan är ofullständig.
+//  2. **Ockran är bandets, aldrig kortens.** `.ai-card` betyder "väntar på en
+//     människa" i huset (S8.1). Är bandet tomt byter det till `.panel` — det är
+//     inte längre något som ropar, och färgskiftet säger det innan orden gör det.
+//  3. **Aldrig en naken nolla (FR-22).** Varje kort som saknar sin innehållsdel
+//     skriver vad tomheten BETYDER och en väg vidare. En tyst nolla ser ut som
+//     ett sant svar (lärdom 7 i STATUS.md), och det är exakt den lögnen som gör
+//     att man slutar lita på en yta utan att någonsin klaga.
+//  4. **Färskhet per källa, aldrig en sidstämpel (FR-35).** `.farskhet`-raden
+//     står sist i varje kort och daterar just det kortets tal. Tröskeln är
+//     SVEPT — den bär svepets lästidpunkt, inte sidans — och har svepet aldrig
+//     kört säger raden det, i stället för att låta ett tomt larm se ut som lugn.
+//  5. **`.subnav`, inte en andra huvudmeny.** Modulens undersidor låg redan i
+//     husets knappband; Läget är den sida man kommer TILL och går vidare från,
+//     så den bär undermenyn — fyrkantig form, "en nivå ner", `aria-current` på
+//     exakt en post. Menyn i `.nav__quick` ägs av S10.7 och rörs inte.
+//  6. **Vyn räknar ingenting.** Allt kommer ur `lasUppdragslage`, alltså ur
+//     samma svar som MCP och REST läser (FR-23). Kan sidan visa något åtgärden
+//     inte svarar har en av dem fel — och då vet ingen vilken.
+// ---------------------------------------------------------------------------
+
+/** Uppdragets undersidor. En post = en fråga; ordningen är frågornas ordning. */
+const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
+  ['laget', 'Läget'],
+  ['avtal', 'Avtal'],
+  ['bedomning', 'Bedömning'],
+  ['signaler', 'Signaler'],
+  ['planen', 'Planen'],
+  ['kontraktet', 'Kontraktet'],
+];
+
+/**
+ * Undermenyn (designkontraktets menygrammatik). `aria-current="page"` sätts på
+ * EXAKT en post — WCAG 2.4.8 gäller per navigation, och två aktuella poster är
+ * lika obegripligt som noll.
+ */
+function subnav(companyId: string, projectId: string, aktuell: string): Raw {
+  const bas = `/app/c/${companyId}/projects/${projectId}`;
+  return html`<nav class="subnav" aria-label="Uppdragets sidor">
+    ${UPPDRAGSSIDOR.map(([slug, etikett]) => html`<a href="${bas}/${slug}"${
+      slug === aktuell ? raw(' aria-current="page"') : ''
+    }>${etikett}</a>`)}
+  </nav>`;
+}
+
+/**
+ * Lästidpunkten som den ska läsas: klockslaget när värdet lästes i dag, och
+ * DATUMET framför när det inte gjorde det. Ett svep från i förrgår som bara
+ * visar "08:30" ser färskt ut — och det är hela felet FR-35 finns för att
+ * hindra.
+ */
+function farskhetstid(iso: string, idag: string): string {
+  const d = new Date(iso);
+  const datum = d.toLocaleDateString('sv-SE');
+  const tid = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  return datum === idag ? tid : `${datum} ${tid}`;
+}
+
+/** `.farskhet`-raden: källa + lästidpunkt, sist i kortet. Aldrig en sidstämpel. */
+function farskhetsrad(delar: readonly string[]): Raw {
+  return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
+}
+
+const direktFarskhet = (f: Farskhet, idag: string): string =>
+  `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
+
+/**
+ * Tomhetens grammatik i kortformat (FR-22): vad tomheten betyder, plus en väg
+ * vidare. Aldrig ett räknat noll — det är ett databassvar, inte ett besked.
+ */
+function tomtIKort(mening: string, vag: Raw): Raw {
+  return html`<p class="muted" style="margin:10px 16px 4px;font-size:13px">${mening} ${vag}</p>`;
+}
+
+/** Ett faktakort. Egen behållare så att `.panel + .panel` inte flyttar rutnätet. */
+function faktakort(id: string, rubrik: string, marke: Raw, kropp: Raw, farskhet: Raw): Raw {
+  return html`<div><section class="panel" aria-labelledby="${id}">
+    <div class="panel__head"><h2 id="${id}">${rubrik}</h2>${marke}</div>
+    <div class="panel__body">${kropp}${farskhet}</div>
+  </section></div>`;
+}
+
+/** Avtalets namn som mellanrubrik — bara när uppdraget faktiskt har flera. */
+const avtalsrubrik = (namn: string, flera: boolean): Raw =>
+  flera ? html`<h3 style="margin:12px 16px 2px">${namn}</h3>` : html``;
+
+// --- Handgreppsbandet -------------------------------------------------------
+
+/** Ett handgrepp: vad som väntar, och vart man går för att svara på det. */
+interface Handgrepp {
+  marke: Raw;
+  text: string;
+  detalj: string | null;
+  href: string;
+  knapp: string;
+  /** Maskinens observation (AI-förordningen art. 50) — inte en människas fråga. */
+  ai: boolean;
+}
+
+function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforslagskort[]): Raw {
+  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const grepp: Handgrepp[] = [];
+  // Ordningen är hur hårt något blockerar: en köpost stoppar en åtgärd som
+  // redan är begärd, en signal väntar på ett omdöme, ett statusförslag väntar
+  // på en bekräftelse.
+  for (const k of l.koposter) {
+    grepp.push({
+      marke: chip('Köpost', 'warn', '◔'),
+      text: getAction(k.action)?.title ?? k.action,
+      detalj: k.action,
+      href: `/app/c/${companyId}/approvals`,
+      knapp: 'Granska',
+      ai: k.requested_actor === 'agent',
+    });
+  }
+  for (const a of l.avtal) {
+    for (const s of a.oppna_signaler) {
+      grepp.push({
+        marke: chip('Signal', 'warn', '!'),
+        text: `Scopesignal: ”${s.fras}”`,
+        detalj: s.klausul,
+        href: `${bas}/signaler`,
+        knapp: 'Avgör',
+        ai: false,
+      });
+    }
+  }
+  for (const f of forslag) {
+    grepp.push({
+      marke: chip('Leverans', 'warn', '→'),
+      text: `Leverabel ${f.kod} kan vara levererad`,
+      detalj: f.klausul,
+      href: bas,
+      knapp: 'Bekräfta',
+      ai: true,
+    });
+  }
+
+  if (grepp.length === 0) {
+    // Tomt band: en mening om vad tomheten BETYDER plus en väg vidare — aldrig
+    // en nolla. Och `.panel`, inte `.ai-card`: ockran betyder "väntar på en
+    // människa", och just nu gör ingenting det.
+    return html`<section class="panel" aria-labelledby="handgrepp">
+      <div class="panel__head"><h2 id="handgrepp">Väntar på dig</h2>${chip('Inget väntar', 'ok', '✓')}</div>
+      <div class="panel__body">
+        ${/* Tomheten SÄGS, den räknas inte: "0" hade varit ett databassvar. Kön
+              töms bara av medvetna beslut, och det är den meningen som gör tomt
+              till ett trovärdigt tillstånd i stället för ett misstänkt. */ ''}
+        <p class="muted" style="margin:10px 16px 12px;font-size:13px">
+          Ingen köpost, ingen oavgjord scopesignal och inget obekräftat statusbyte ligger på uppdraget.
+          Kön töms bara av medvetna beslut, så tomt betyder att allt är avgjort — inte att inget hände.
+          <a href="${bas}/bedomning">Sätt periodens bedömning</a> när det är dags.</p>
+      </div>
+    </section>`;
+  }
+
+  const etikett = grepp.length === 1 ? '1 handgrepp' : `${String(grepp.length)} handgrepp`;
+  return html`<section class="ai-card" aria-labelledby="handgrepp" style="margin:0 0 16px">
+    <div class="ai-card__head">
+      <span class="ai-card__title" id="handgrepp">Väntar på dig</span>${chip(etikett, 'warn', '!')}
+    </div>
+    <div class="ai-card__why">Det här är allt på uppdraget som står och väntar på ett svar från en
+      människa. Varje rad leder dit svaret ges — bandet svarar aldrig åt dig.</div>
+    ${/* En rad per handgrepp: vad som väntar till vänster, vägen dit till
+          höger. Husets komponenter bär raden (chip + knappband); ingen ny
+          klass, för överlämningen namnger bara `.farskhet` och `.subnav`. */ ''}
+    <ul style="list-style:none;margin:0;padding:2px 16px 14px">
+      ${grepp.map((g) => html`<li style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--ai-line)">
+        ${g.marke}
+        <span style="flex:1 1 220px;min-width:0">${g.text}
+          ${g.detalj ? html`<span class="code" style="margin-left:6px">${g.detalj}</span>` : ''}</span>
+        ${g.ai ? aiMarkning() : ''}
+        <a class="btn btn--ghost btn--sm" href="${g.href}">${g.knapp}</a>
+      </li>`)}
+    </ul>
+  </section>`;
+}
+
+// --- De fem faktakorten -----------------------------------------------------
+
+/**
+ * Ett tröskellarm i klartext (S6.2). Talen är AVVIKELSEN och TRÖSKELN i sin
+ * egen enhet — aldrig en kvot och aldrig en färdigställandegrad (NFR-11): det
+ * som gör ett larm läsbart är att man kan pröva jämförelsen för hand.
+ */
+function larmtext(larm: Larm): Raw {
+  const grund = 'grund' in larm && larm.grund === 'prognos' ? html` <span class="muted">(prognos)</span>` : html``;
+  if (larm.ram === 'timmar') {
+    return html`<span class="code">${larm.kod}</span> ${hhmm(larm.avvikelse_minuter)} över tröskeln ${
+      hhmm(larm.troskel_minuter)}${grund}`;
+  }
+  if (larm.ram === 'kronor') {
+    return html`<span class="code">${larm.kod}</span> ${kronor(larm.avvikelse_ore)} över tröskeln ${
+      kronor(larm.troskel_ore)}${grund}`;
+  }
+  return html`<span class="code">${larm.kod}</span> ${String(larm.forsening_dagar)} dagar efter ${larm.slutdatum}${
+    larm.arvt_fran === null ? '' : html` <span class="muted">(ärvt intervall från ${larm.arvt_fran})</span>`}`;
+}
+
+function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const flera = l.avtal.length > 1;
+  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const kropp = html`${l.avtal.map((a) => {
+    const f = a.forbrukning;
+    const tomt = f.tak_minuter === null && f.tak_ore === null && f.minuter === 0 && f.belopp_ore === 0;
+    return html`${avtalsrubrik(a.contract_name, flera)}
+      ${tomt
+        ? tomtIKort(
+          'Avtalet har varken ett läst tak eller registrerad tid. Utan ram finns ingenting att mäta '
+          + 'mot — och ett tak som inte är inskrivet kan aldrig varna.',
+          html`<a href="${bas}/kontraktet">Läs kontraktet</a>.`,
+        )
+        : html`<div class="kpi-grid" style="padding:10px 16px 2px">
+            ${kpiCell('Timmar', html`${hhmm(f.minuter)} av ${
+              f.tak_minuter === null ? html`<span class="muted">ett tak som inte är läst</span>` : html`${hhmm(f.tak_minuter)}`}`)}
+            ${kpiCell('Kronor', html`${kronor(f.belopp_ore)} av ${
+              f.tak_ore === null ? html`<span class="muted">ett tak som inte är läst</span>` : kronor(f.tak_ore)}`)}
+          </div>
+          ${/* Två tal, aldrig en kvot (1D §4.1 och NFR-11): en procentsats döljer
+                vilket av talen som rörde sig. */ ''}
+          ${/* Samma takstatus-chip som kontraktsytan: ett oläst tak varnar
+                aldrig och spärrar aldrig, och det ska stå — inte gissas. */ ''}
+          <p class="muted" style="margin:6px 16px 2px;font-size:12.5px">Taket: ${takstatusChipYta(f.tak_status)}
+            ${f.tidposter > 0
+              ? html` Underlaget: ${String(f.tidposter)} tidposter, ${hhmm(f.registrerade_minuter)} registrerat.`
+              : html` Ingen tid är registrerad på uppdraget ännu.`}</p>`}
+      ${a.troskellarm === null
+        ? ''
+        : (a.troskellarm.larm.length === 0
+          ? html`<p class="muted" style="margin:6px 16px 2px;font-size:12.5px">${chip('Ingen tröskel passerad', 'ok', '✓')}</p>`
+          : html`<p class="muted" style="margin:6px 16px 0;font-size:12.5px">${
+              chip(a.troskellarm.larm.length === 1 ? '1 tröskel passerad' : `${String(a.troskellarm.larm.length)} trösklar passerade`, 'warn', '!')}</p>
+            <ul style="margin:4px 16px 4px;padding-left:20px;font-size:12.5px">
+              ${a.troskellarm.larm.map((larm) => html`<li>${larmtext(larm)}</li>`)}
+            </ul>`)}`;
+  })}`;
+  return faktakort('kort-ram', 'Förbrukning mot ram',
+    chip(l.avtal.length === 1 ? '1 avtal' : `${String(l.avtal.length)} avtal`, 'muted'),
+    kropp,
+    farskhetsrad([
+      direktFarskhet(l.farskhet.forbrukning, idag),
+      l.farskhet.troskel === null
+        ? 'tröskeln: svepet har inte kört för uppdraget'
+        : `tröskeln läst av svepet ${farskhetstid(l.farskhet.troskel.last_nar, idag)}`,
+    ]));
+}
+
+function kortLeverabler(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const flera = l.avtal.length > 1;
+  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const totalt = l.avtal.reduce((n, a) => n + a.leverabler_totalt, 0);
+  const kropp = html`${l.avtal.map((a) => html`${avtalsrubrik(a.contract_name, flera)}
+    ${a.leverabler_totalt === 0
+      ? tomtIKort(
+        'Avtalet har inget leverabelregister ännu. Registret läses ur leveranskontraktets text '
+        + 'och hittas aldrig på här — utan det finns ingen leverans att följa.',
+        html`<a href="${bas}/avtal">Läs in avtalet</a>.`,
+      )
+      : html`<div style="display:flex;flex-wrap:wrap;gap:6px 14px;padding:10px 16px 4px;font-size:13px">
+          ${/* Uppräknade tillstånd, aldrig en procentsats (NFR-11): "70 % klart"
+                döljer vilka som står stilla. */ ''}
+          ${a.leverabler.map((r) => html`<span style="display:inline-flex;align-items:baseline;gap:6px">${
+            statusChip(r.lage)}<strong>${String(r.antal)}</strong></span>`)}
+        </div>`}`)}`;
+  return faktakort('kort-leverabler', 'Leverabler per läge',
+    totalt === 0 ? chip('Inget register', 'warn', '!') : chip(`${String(totalt)} leverabler`, 'muted'),
+    kropp, farskhetsrad([direktFarskhet(l.farskhet.leverabler, idag)]));
+}
+
+function kortBedomning(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const flera = l.avtal.length > 1;
+  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const nagon = l.avtal.some((a) => a.bedomning !== null);
+  const kropp = html`${l.avtal.map((a) => {
+    const b = a.bedomning;
+    return html`${avtalsrubrik(a.contract_name, flera)}
+      ${b === null
+        ? tomtIKort(
+          'Ingen bedömning är satt. Läget är alltså inte okänt för att det är bra — det är okänt, '
+          + 'och en bedömning är alltid en människas.',
+          html`<a href="${bas}/bedomning">Sätt bedömningen</a>.`,
+        )
+        : html`<p style="margin:10px 16px 2px">${bedomningsChip(b.lage)}
+            <span class="code" style="margin-left:6px">${b.period_start} – ${b.period_slut}</span>
+            ${/* "Vem" är det raden faktiskt bär: satte en människa den? Ett namn
+                  hade varit en uppgift kolumnen inte har (0068). */ ''}
+            <span class="muted" style="margin-left:6px;font-size:12.5px">${
+              b.satt_av_manniska ? 'satt av en människa' : 'satt utan människa'} ${b.created_at.slice(0, 10)}</span></p>
+          <p class="muted" style="margin:4px 16px 4px;font-size:13px">${
+            b.forsta_meningen ?? html`<em>Ingen kommentar skrevs till bedömningen.</em>`}</p>`}`;
+  })}`;
+  return faktakort('kort-bedomning', 'Senaste bedömning',
+    // Aldrig grön default: en saknad bedömning är ett öppet läge, inte ett bra.
+    nagon ? chip('Satt', 'muted', '✓') : chip('Saknad', 'warn', '!'),
+    kropp, farskhetsrad([direktFarskhet(l.farskhet.bedomning, idag)]));
+}
+
+function kortSignaler(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const flera = l.avtal.length > 1;
+  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const oppna = l.avtal.reduce((n, a) => n + a.oppna_signaler.length, 0);
+  const kropp = html`${l.avtal.map((a) => html`${avtalsrubrik(a.contract_name, flera)}
+    ${a.oppna_signaler.length === 0 && a.avgjorda_signaler === 0
+      ? tomtIKort(
+        'Ingen scopesignal har tänts. Fraserna att lyssna efter står i kontraktet, och en signal '
+        + 'tänds av en människa som hört en av dem — aldrig av en maskin.',
+        html`<a href="${bas}/signaler">Öppna signalerna</a>.`,
+      )
+      : html`${a.oppna_signaler.length === 0
+          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Inga öppna signaler.
+              ${String(a.avgjorda_signaler)} avgjorda står i historiken.</p>`
+          : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
+              ${/* Öppna först — en obesvarad signal är ett ärende, en avgjord är
+                    historik, och en lista som blandar dem lär läsaren att inte titta. */ ''}
+              ${a.oppna_signaler.map((s) => html`<li style="margin-bottom:3px">”${s.fras}”
+                ${s.klausul ? html`<span class="code">${s.klausul}</span>` : ''}</li>`)}
+            </ul>
+            ${a.avgjorda_signaler === 0
+              ? ''
+              : html`<p class="muted" style="margin:2px 16px 2px;font-size:12.5px">Därtill ${
+                  String(a.avgjorda_signaler)} avgjorda i historiken.</p>`}`}`}`)}`;
+  return faktakort('kort-signaler', 'Tända scopesignaler',
+    oppna === 0 ? chip('Inga öppna', 'ok', '✓') : chip(`${String(oppna)} öppna`, 'warn', '!'),
+    kropp, farskhetsrad([direktFarskhet(l.farskhet.signaler, idag)]));
+}
+
+function kortKoposter(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const kropp = l.koposter.length === 0
+    ? tomtIKort(
+      'Ingen köpost väntar på uppdraget. Känsliga åtgärder — avsluta uppdraget, binda en kostnad, '
+      + 'ändra baselinen — bokförs aldrig automatiskt utan hamnar här först.',
+      html`<a href="/app/c/${companyId}/approvals">Öppna Att göra</a>.`,
+    )
+    : html`<ul style="margin:10px 16px 4px;padding-left:20px;font-size:13px">
+        ${l.koposter.map((k) => html`<li style="margin-bottom:3px">${getAction(k.action)?.title ?? k.action}
+          <span class="code">${k.action}</span>
+          <span class="muted" style="font-size:12.5px">${
+            k.requested_actor === 'agent' ? 'begärd av AI:t' : 'begärd av en människa'}
+            ${k.created_at.slice(0, 10)}</span></li>`)}
+      </ul>
+      <p class="muted" style="margin:2px 16px 4px;font-size:12.5px">Avgörs i
+        <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>`;
+  return faktakort('kort-koposter', 'Öppna köposter',
+    l.koposter.length === 0 ? chip('Inga', 'ok', '✓') : chip(`${String(l.koposter.length)} väntar`, 'warn', '!'),
+    kropp, farskhetsrad([direktFarskhet(l.farskhet.koposter, idag)]));
+}
+
+function lagessida(companyId: string, l: Uppdragslage, forslag: Statusforslagskort[], idag: string): Raw {
+  const p = l.uppdrag;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Läget</h1>
+      <p class="lede">Uppdrag ${String(p.number)} · ${entityLink(companyId, 'project', p.project_id, p.name)}${
+        p.customer_name ? html` · ${entityLink(companyId, 'customer', p.customer_id, p.customer_name)}` : ''}.
+        Var står vi — utan att någon behöver fråga.</p></div>
+      <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag">← Uppdragen</a></div></div>
+    ${subnav(companyId, p.project_id, 'laget')}
+    ${handgreppsband(companyId, l, forslag)}
+    ${/* Fem kort, alltid alla fem, i FR-18:s ordning. Rutnätet ligger i en
+          inline-stil och inte i en ny klass: överlämningen namnger `.farskhet`
+          och `.subnav` som de enda nya, och husets `.panel` bär korten. */ ''}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(298px,1fr));gap:14px;align-items:start">
+      ${kortForbrukning(companyId, l, idag)}
+      ${kortLeverabler(companyId, l, idag)}
+      ${kortBedomning(companyId, l, idag)}
+      ${kortSignaler(companyId, l, idag)}
+      ${kortKoposter(companyId, l, idag)}
+    </div>`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const idag = new Date().toLocaleDateString('sv-SE');
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const company = await loadCompany(client, companyId);
+    const lage = await lasUppdragslage(client, companyId, { project_id: projectId });
+    // Statusförslagen är svepets cache, inte en innehållsdel i FR-18 — de hör
+    // till bandet. Samma hjälpare som uppdragssidan använder, så de två ytorna
+    // aldrig kan visa olika förslag.
+    const forslag = await statusforslag(client, companyId, projectId);
+    return { name: company.name, body: lagessida(companyId, lage, forslag, idag) };
+  });
+  res.type('html').send(layout({ title: 'Läget', companyId, companyName: name, active: 'projects', body }).value);
+}));
+
+// --- Uppdragslistan ---------------------------------------------------------
+
+/** En rad i uppdragslistan: ett uppdrag, dess läge och dess färskhet. */
+interface Uppdragslistrad {
+  projectId: string;
+  namn: string;
+  kundId: string | null;
+  kund: string | null;
+  avtal: number;
+  bedomning: Bedomningsrad | null;
+  farskhet: Farskhet | null;
+}
+
+/**
+ * Uppdragen: projekt med minst ETT avtal, härlett ur `listContracts` — samma
+ * regel som `registerkopiaKo` använder. Ett projekt utan avtal är ett projekt,
+ * inte ett uppdrag, och listan hittar aldrig på ett avtal åt det.
+ */
+async function uppdragslista(client: PoolClient, companyId: string): Promise<Uppdragslistrad[]> {
+  const per = new Map<string, { rad: Uppdragslistrad; avtalIds: string[] }>();
+  for (const a of await listContracts(client, companyId, {})) {
+    const projectId = a.project_id as string;
+    const post = per.get(projectId) ?? {
+      rad: {
+        projectId,
+        namn: String(a.project_name ?? ''),
+        kundId: (a.customer_id as string | null) ?? null,
+        kund: (a.customer_name as string | null) ?? null,
+        avtal: 0,
+        bedomning: null,
+        farskhet: null,
+      },
+      avtalIds: [],
+    };
+    post.rad.avtal += 1;
+    post.avtalIds.push(a.id as string);
+    per.set(projectId, post);
+  }
+  const rader: Uppdragslistrad[] = [];
+  for (const post of per.values()) {
+    for (const contractId of post.avtalIds) {
+      for (const b of await listaBedomningar(client, companyId, contractId)) {
+        // Den senaste satta bedömningen över uppdragets alla avtal. `created_at`
+        // och inte perioden: läget är det man SA sist, inte det som gällde sist.
+        if (post.rad.bedomning === null || b.created_at > post.rad.bedomning.created_at) post.rad.bedomning = b;
+      }
+    }
+    post.rad.farskhet = await lasSvepfarskhet(client, companyId, post.avtalIds);
+    rader.push(post.rad);
+  }
+  return rader.sort((a, b) => a.namn.localeCompare(b.namn, 'sv'));
+}
+
+viewRouter.get('/c/:companyId/uppdrag', pageFor('projects', 'Uppdrag', async (client, companyId) => {
+  const rader = await uppdragslista(client, companyId);
+  const idag = new Date().toLocaleDateString('sv-SE');
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Uppdragen</h1>
+      <p class="lede">Ett uppdrag är ett projekt med minst ett avtal. Läget kommer ur den senaste
+        bedömningen — en människas omdöme, aldrig en uträkning.</p></div></div>
+    ${
+      rader.length === 0
+        ? html`<div class="empty"><div class="big">Inga uppdrag ännu</div>
+            Ett projekt blir ett uppdrag när det får ett avtal med tak, leverabler och scopelinje.
+            Öppna ett projekt och <a href="/app/c/${companyId}/projects">läs in dess avtal</a> —
+            utan avtal finns varken ram eller leverans att följa.</div>`
+        : html`<div class="table-wrap"><table>
+            <thead><tr><th>Uppdrag</th><th>Kund</th><th class="num">Avtal</th><th>Läge</th><th>Färskhet</th><th></th></tr></thead>
+            <tbody>${rader.map((r) => html`<tr>
+              <td>${entityLink(companyId, 'project', r.projectId, r.namn)}</td>
+              <td>${entityLink(companyId, 'customer', r.kundId, r.kund)}</td>
+              <td class="num">${String(r.avtal)}</td>
+              ${/* Saknas bedömningen står det SAKNAD — aldrig en grön förvald
+                    etikett. Ett läge ingen satt är inte ett bra läge. */ ''}
+              <td>${r.bedomning === null
+                ? html`${chip('Saknad', 'warn', '!')}`
+                : html`${bedomningsChip(r.bedomning.lage)}
+                    <span class="muted" style="font-size:12.5px">${r.bedomning.created_at.slice(0, 10)}</span>`}</td>
+              ${/* Färskheten är svepets, inte sidans: har svepet aldrig kört står
+                    det, i stället för ett tomt fält som ser ut som "nyss". */ ''}
+              <td>${r.farskhet === null
+                ? html`<span class="muted" style="font-size:12.5px">Svepet har inte kört</span>`
+                : html`<span class="code">${farskhetstid(r.farskhet.last_nar, idag)}</span>`}</td>
+              <td><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${r.projectId}/laget">Läget</a></td>
+            </tr>`)}
+            </tbody></table></div>`
+    }`;
 }));
 
 // ---------------------------------------------------------------------------

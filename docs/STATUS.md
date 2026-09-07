@@ -145,6 +145,88 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.1, våg 6 — Läget och uppdragslistan):** Alla
+  fem delarna av FR-18 fanns redan i databasen, men i fem läsvägar och på fyra
+  undersidor. **Kontrollytetestet — "kan David se läget utan att fråga?" — kunde
+  alltså bara besvaras med nej: en fråga man måste ställa fem gånger ställer man
+  till slut noll gånger.** Två fynd styrde bygget: `.farskhet` och `.subnav`
+  fanns inte i `html.ts` (1C runda 2 punkt D), och husets modulundersidor ligger
+  under `/c/:id/projects/:projectId/*` — inte på 1E:s `/uppdrag/:kod`.
+
+  Byggt: **ny tjänstefil `services/uppdragLage.ts`** (`lasUppdragslage` +
+  `lasSvepfarskhet`), **EN ny åtgärd `las_uppdragslage` (`read`, ingen
+  `kravManniska`)**, **två vyer i `http/view/routes.ts`** (`/projects/:id/laget`
+  och listan `/c/:id/uppdrag`), **två nya klasser i `html.ts`** (`.farskhet`,
+  `.subnav`) och en ny svit. **Ingen migration**, inget nytt beroende, ingen
+  ändrad känslighet, ingen ändring i någon befintlig tjänst eller åtgärd — den
+  enda ändringen i en befintlig vy är knappen *Läget* först i uppdragets
+  knappband (utan den vore ytan en url ingen hittar till).
+
+  1. **Ingen sjätte läsväg och ingen andra beräkning (FR-25).** Förbrukningen
+     kommer ur `getContractUsage` — husets ENDA takberäkning, samma tal som
+     takvarningen och faktureringsspärren läser — och tidsunderlaget ur
+     `listTimeEntries` med husets eget `arIgnorerad`. Registret, bedömningen,
+     signalerna och kön kommer ur sina egna tjänster. Vyn räknar ingenting alls:
+     den läser samma svar som MCP och REST, så de två kan aldrig svara olika.
+  2. **Tröskeln HÄMTAS, den härleds inte om.** S6.2 la larmet i svepets cache;
+     att utvärdera FR-3:s dubbelvillkor en andra gång här hade gett två svar på
+     "larmar det?". Larmet är därmed också det enda SVEPTA värdet på sidan — och
+     det är precis därför det bär svepets `last_nar` och inte sidans.
+  3. **Färskhet per källa, aldrig en sidstämpel (FR-35).** `.farskhet` står sist
+     i det kort vars tal den daterar. Har svepet aldrig kört säger raden DET
+     (`farskhet.troskel = null`) i stället för att låta ett tomt larm se ut som
+     lugn — och listvyns färskhetskolumn skriver "Svepet har inte kört" i stället
+     för ett tomt fält som ser ut som "nyss".
+  4. **Alla fem korten finns ALLTID i sidan (FR-22, lärdom 7).** Ett kort som
+     försvinner när det saknar data lär läsaren att ytan är ofullständig, och en
+     tyst nolla ser ut som ett sant svar. Saknas innehållsdelen skrivs vad
+     tomheten BETYDER plus en väg vidare. En saknad bedömning renderas som
+     *Saknad* i ockra — aldrig grön, för ett läge ingen satt är inte ett bra läge.
+  5. **Ockran är bandets, aldrig kortens.** `.ai-card` betyder "väntar på en
+     människa" i huset (S8.1). Väntar ingenting byter bandet till `.panel`:
+     färgskiftet säger det innan orden gör det. Statusförslagsraderna — och bara
+     de — bär `aiMarkning()`; en köpost en människa själv begärt är ingen
+     maskinobservation.
+  6. **Två klasser, inte tio.** Överlämningen namnger `.farskhet` och `.subnav`;
+     `.handgrepp` och 1D:s åtta övriga klasser byggdes INTE. Bandet och korten
+     bärs av husets `.ai-card`, `.panel`, `.kpi`, chip och knappband, och
+     kortrutnätet av en inline-stil — samma teknik som resten av modulens ytor.
+  7. **Husets ruttmönster, inte 1E:s.** `/projects/:id/laget` och `.subnav` till
+     uppdragets befintliga undersidor, med `aria-current="page"` på exakt en post
+     (WCAG 2.4.8). Ingen post i `.nav__quick` (FR-21 ägs av S10.7), och `.subnav`
+     lades inte retroaktivt på de andra undersidorna.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-laget.test.ts`: registret (`read`, ingen
+  `kravManniska`, `.strict()` som fäller ett medskickat `contract_id`); **(a)**
+  ett riggat uppdrag (importerat NVR-001, 2 h på rotdelen à 1 100 kr, bedömning
+  `risk`, en tänd signal, ett svep och två köposter — en som namnger avtalet, en
+  som namnger uppdraget) → alla fem delarna med rätt tal, alla fem
+  leverabellägena i skalans ordning, kommentarens FÖRSTA mening, och färskhet per
+  del där tröskeln bär svepets tidpunkt; **(b)** grannbolagets `project_id`, ett
+  okänt och ett projekt UTAN avtal ger alla 404 genom hela stacken — i åtgärden
+  och i vyn — medan grannen når sitt eget uppdrag på sin egen väg; **(c)**
+  TOMFALLET med en nollsökare som prövas åt BÅDA hållen (den måste fälla en
+  insmugen `<strong>0</strong>` och ett "0 kr", och släppa igenom "09:04" och
+  "10 h 30 min av 430 h"): fem kort, var sin tomtext med väg vidare, ingen naken
+  nolla i något kort, och ett tomt band som förklarar tomheten utan ockra;
+  **(d)** listvyn tom (`.tomt`-grammatik i ett eget bolag utan avtal) respektive
+  med rader — projektet utan avtal står INTE där, läget är *Risk* respektive
+  *Saknad*, färskheten en klockslagstid respektive "Svepet har inte kört";
+  **(e)** exakt fem `.farskhet`-rader, tröskelraden daterad av svepet på det
+  svepta uppdraget och "svepet har inte kört" på det osvepta, ingen procentsats i
+  ramkortet, `.subnav` med `aria-current` på exakt EN post och alla sex
+  undersidorna, ingen `<script>`, och knappen till Läget på uppdragssidan.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. Läget nås via
+  knappen på uppdragssidan; listan ligger på `/app/c/<bolag>/uppdrag`. En post i
+  huvudmenyn för listan (FR-21, ägs av S10.7), prognoskortet "Nästa datum"
+  (FR-5), rytm-mekaniken och bedömningens förfallodatum i bandet (FR-14 saknar
+  lagring och läsare i repot), en egen `.handgrepp`-klass, `.subnav` retroaktivt
+  på modulens övriga undersidor och 1D:s åtta andra komponentklasser är medvetet
+  uteslutna — källan kräver dem inte.
+
 - **2026-09-06 (uppdragsytan S4.2, våg 6 — den förifyllda bedömningsrapporten):**
   S4.1 gav bedömningen sin skrivväg, och 0068 hade burit `frysta_siffror` och
   `handelse_ref_ids` sedan dag ett — men tjänsten lämnade dem med flit NULL, och

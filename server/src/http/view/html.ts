@@ -619,6 +619,34 @@ td a.entity { font-weight: 550; }
 .nav__quick a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
 .nav__quick a.active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
 
+/* Undermeny (designkontraktets menygrammatik, "en nivå ner").
+ *
+ * Samma grammatik som snabbraden — en vågrätt rullande rad, aldrig radbrytning,
+ * aria-current="page" på exakt EN post (WCAG 2.4.8) — men i FYRKANTIG form.
+ * Formskillnaden säger "en nivå ner" utan ett ord, och sidan slipper därmed en
+ * andra huvudmeny som konkurrerar med den riktiga.
+ *
+ * Läget bärs av aria-current, inte av färgen: strecket under den aktuella
+ * posten är den andra ledtråden, och den syns i svartvitt och i högkontrastläge.
+ * Helt JS-fritt — rullningen är CSS, precis som i .nav__quick. */
+.subnav {
+  display: flex; align-items: stretch; gap: 2px;
+  min-width: 0; overflow-x: auto; scrollbar-width: none;
+  margin: 6px 0 16px; border-bottom: 1px solid var(--line);
+}
+.subnav::-webkit-scrollbar { display: none; }
+.subnav a {
+  padding: 8px 11px; margin-bottom: -1px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-2); font-size: 13px; font-weight: 500; white-space: nowrap;
+}
+.subnav a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.subnav a[aria-current="page"] {
+  background: var(--accent-weak); color: var(--accent-ink);
+  border-bottom-color: var(--accent); font-weight: 600;
+}
+
 /* "Du är här" — visas när sidan inte finns i snabbraden. */
 .nav__here {
   display: inline-flex; align-items: baseline; gap: 7px;
@@ -728,6 +756,24 @@ h3 { font-family: var(--display); font-size: 12.5px; font-weight: 600; letter-sp
 }
 .kpi .l { color: var(--ink-3); font-size: 12.5px; font-weight: 500; }
 .kpi .v { font-size: 21px; font-weight: 620; letter-spacing: -0.02em; margin-top: 5px; }
+
+/* Färskhet per värde (FR-35).
+ *
+ * Motmedlet mot tyst tillitstapp är INTE en "uppdaterad 09:15" högst upp på
+ * sidan: en global stämpel daterar värden den aldrig läste. Raden står därför
+ * sist i det kort vars tal den gäller, och säger varifrån talet kom och när.
+ *
+ * var(--mono) därför att raden bär en MÄTNING — en tidpunkt man jämför med
+ * klockan — inte en text man läser; tabular-nums så att siffrorna står i
+ * lodrät linje mellan korten. Tyst med flit: den ska gå att hitta när man
+ * tvivlar, och aldrig konkurrera med talet den daterar. */
+.farskhet {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 14px;
+  margin: 4px 16px 12px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: var(--ink-3); font-variant-numeric: tabular-nums;
+}
 
 /* Tabeller */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-1); }
