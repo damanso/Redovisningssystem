@@ -145,6 +145,95 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.7, våg 7 — mätpunkten: menyn, klassnamnen och
+  agentens läsväg):** Sex ytor var byggda (S10.1–S10.6), men ingen av dem gick
+  att MÄTA. **Uppdragsytan saknades i huvudmenyn, sju av 1D:s elva
+  komponentklasser fanns inte som CSS-regler alls — brädan i Leveranserna var
+  byggd med inline-stil utan klassnamn — och provvakten kunde inte läsa en enda
+  sida, för vyn avvisade agent-tokenet.** En yta ingen hittar till och ingen kan
+  mäta är byggd men inte levererad.
+
+  Byggt: `'projects'` **sist i `NAV_QUICK`** (html.ts), **sju nya CSS-regler**
+  (`.handgrepp`, `.stapel--baseline`, `.milstolpe`, `.brada`, `.brada__kol`,
+  `.leverabelkort`, `.harledning`) i samma stilmall och med husets egna tokens,
+  **namnen inlagda på vyernas befintliga element** i `http/view/routes.ts`, och
+  **en läsande agent-väg i `http/view/auth.ts`**. **Ingen migration, ingen ny
+  åtgärd, ingen ny tjänst, ingen ny vy, ingen ny rutt, inga nya beroenden, ingen
+  JS, ingen ändrad känslighet**; `authenticate.ts`, `docs/MCP_ACTIONS.md` och
+  husets gemensamma tokens är **orörda**. Diffen rör `html.ts`, `routes.ts`,
+  `view/auth.ts`, `server/test/` och den här filen.
+
+  1. **Sist, inte först (KRAV-1).** Snabbradens ordning är dagens ordning
+     (översikt, i dag, det som väntar, pengarna in, pengarna ut) och uppdraget är
+     det man går till EFTER dem. De fem befintliga posterna står orörda: en
+     snabbrad som flyttar sig under fötterna på den som lärt sig var något ligger
+     är ingen snabbrad. Etiketten är `NAV_GROUPS` egen ("Projekt") — två namn på
+     samma sida är två sidor för läsaren. Raden växer inte fritt: den rullar i
+     sidled och viker undan helt under 700 px, så nästa post kräver samma sorts
+     beslut som den här.
+  2. **`aria-current` mäts PER navigation (KRAV-2).** Markeringen betyder "den
+     här posten är sidan du står på" och är en egenskap hos en meny, inte hos
+     dokumentet. Snabbraden och undermenyn markerar därför var sin post, och
+     provet mäter dem var för sig — precis som designparitet.py. Ingen av
+     menyerna byggdes om.
+  3. **Riktiga regler, aldrig tomma alias (KRAV-3).** Varje nytt namn bär en
+     regel med deklarationer ur kanons tokens. `.stapel` blev geometrin i
+     rutnätet och `.stapel--baseline` påståendet "det här är baselinen"
+     (`.stapel[data-arvd]` har högre specificitet och står därför oförändrad
+     streckad). Provet fäller en tom alias-regel: ett namn utan komponent bakom
+     sig är precis det designkontraktet finns för att hindra.
+  4. **`.brada`-familjen är ett FÖRSTAGÅNGSNAMN, inte ett namnbyte.** Brädan var
+     byggd med inline-stil utan klass alls. Samma flytt gjordes för
+     handgreppsbandet och härledningsraden — reglerna är de som redan gällde, nu
+     med ett namn någon kan peka på. `.leverabelkort + .leverabelkort` ersatte
+     dessutom kortets `linje`-argument: ett kort ska inte behöva veta var i
+     kolumnen det står för att se rätt ut.
+  5. **Agentens läsväg är minsta möjliga (KRAV-5).** `viewAuth` accepterar ett
+     agent-token ENDAST för GET, ENDAST under `/c/:companyId/projects/...`, och
+     ENDAST när tokenets `scopedCompanyId` (gemener) är URL:ens bolag. Fel bolag
+     → **404, aldrig 403**: huset läcker inte existens (`companyAccess.ts`), och
+     att den ena vägen svarade 403 och den andra 404 hade varit två svar på samma
+     fråga. Ingen cookie sätts någonsin — tokenet gäller anropet, inte tiden
+     efter det — och POST-vägarna kan inte nås som agent, inte för att en handler
+     kontrollerar det utan för att autentiseringen aldrig inträffar. Ogiltigt
+     eller saknat token ger inloggningsomdirigeringen exakt som förut.
+     **Vägvalet:** API:ts `authenticate` återanvändes INTE. Den svarar JSON på
+     ett fel där vyn måste svara HTML, och den bär ingen tenantkoppling — den
+     ligger före `requireCompanyAccess`, som vyn inte använder. En rak
+     återanvändning hade alltså krävt att vyn fick API:ts felformat och att
+     bolagsspärren byggdes en tredje gång.
+  6. **Att den öppnar rätt yta är halva kravet.** Att den inte öppnar något annat
+     — inte ett annat bolag (inte ens ett den egna människan är medlem i), inte
+     en POST, inte resten av vyn, inte med en människas Bearer-token — är den
+     andra halvan, och den som går sönder tyst. Provet mäter båda sidor.
+  7. **Två prov utanför sviten fick följa med.** `navigation.test.ts` slog fast
+     "snabbraden växer inte: fem poster" och `uppdragsytan-plan.test.ts` räknade
+     `class="stapel"`. Båda är nu uppdaterade MED sitt skäl i kommentaren —
+     beslut #139 respektive modifierarens namn — i stället för att tystas.
+
+  **Grind:** typecheck och svit kördes INTE i den här sessionen (körs av
+  körskriptet efteråt) — utfallet ska klistras in här innan bygget stängs. Ny
+  svit `server/test/uppdragsytan-menyn.test.ts`: **(a)** snabbradens sex poster i
+  exakt ordning med uppdragsytan sist, etiketten "Projekt", ingen emoji, och en
+  aktuell post per meny — mätt i snabbraden och i undermenyn var för sig, med de
+  sex S10-sidorna i 1E:s ordning och de tre övriga posterna kvar; **(b)** alla
+  elva selektorerna i den LEVERERADE stilmallen, var och en med minst en
+  deklaration, plus sökaren prövad åt båda hållen (den måste fälla
+  `.stapel--baseline` som svar på `.stapel` och fälla en tom alias-regel), tokens
+  i stället för hexfärger, och namnen faktiskt använda i alla fyra vyerna utan
+  kvarlämnad inline-stil; **(c)** agent-token → 200 med `<nav class="nav"` och
+  `<nav class="subnav"` utan `Set-Cookie`, utan token → `/app/login`, annat
+  bolags id → 404 (både grannbolaget och människans EGET andra bolag), och
+  POST/övriga vysidor/människans Bearer/ett trasigt token → inloggningen.
+
+  **Kvarstår för David:** inget att migrera och ingenting att köra. **KRAV-7
+  ligger utanför repot och är alltså INTE gjort här:** mätpunkten med agent-token
+  och de elva klassnamnen ska in i `~/.hermes/prov/designparitet.py`, och
+  klassnamnen i designkontraktet i vaulten. Att krympa undermenyn till sex
+  poster, en auditrad för agent-läsning i vyn, agent-läsning av andra vysidor än
+  uppdragsytans och 403 vid fel bolag är medvetet uteslutna — källan kräver dem
+  inte.
+
 - **2026-09-07 (uppdragsytan S10.5, våg 7 — Rapporterna: bedömningen som post):**
   S4.1 gav bedömningen sin skrivväg och S4.2 sitt frysta underlag. Men
   historiken bodde bara i en sexkolumnstabell UNDER formuläret som sätter nästa.

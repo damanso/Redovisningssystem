@@ -101,12 +101,17 @@ describe('var är jag?', () => {
     const nav = navMarkup(await ua.get(`/app/c/${companyId}/`).then((r) => r.text));
     const quick = nav.slice(nav.indexOf('<div class="nav__quick">'));
     // Ordningsprincipen är hur OFTA sidan används. Idag öppnas dagligen, Lön en
-    // gång i månaden — därför bytte de plats när dagsytan kom till. Snabbraden
-    // växer inte: fem poster är vad som får plats utan att spilla på telefon.
-    for (const label of ['Översikt', 'Idag', 'Att göra', 'Fakturor', 'Kvitton']) {
+    // gång i månaden — därför bytte de plats när dagsytan kom till.
+    //
+    // Sedan S10.7 (Davids beslut #139, FR-21) står uppdragsytan SIST som sjätte
+    // post. Raden växer inte fritt: den rullar i sidled utan rullningslist
+    // (`.nav__quick { overflow-x: auto }`) och viker undan helt under 700 px, så
+    // taket är läsbarheten på skrivbordet — inte ett tal. Nästa post kräver
+    // därför samma sorts beslut som den här gjorde.
+    for (const label of ['Översikt', 'Idag', 'Att göra', 'Fakturor', 'Kvitton', 'Projekt']) {
       expect(quick, `${label} saknas i snabbraden`).toContain(`>${label}</a>`);
     }
-    expect(quick.match(/<a /g) ?? [], 'snabbraden får inte växa').toHaveLength(5);
+    expect(quick.match(/<a /g) ?? [], 'snabbraden får inte växa utan beslut').toHaveLength(6);
     // Lön är inte borta — den finns kvar i menyn, ett klick bort.
     expect(nav, 'Lön ska finnas i menyn').toContain(`href="/app/c/${companyId}/payroll"`);
   });

@@ -360,7 +360,9 @@ describe('(b) vyn: Planen', () => {
     // Varje rad är stum för skärmläsaren — tabellen är den som läses.
     expect(antal(html, 'class="tidslinje" aria-hidden="true"')).toBe(11);
     // Elva rader, men bara nio har en period (UPPDRAG och STYRNING saknar).
-    expect(antal(html, 'class="stapel"')).toBe(9);
+    // Sedan S10.7 bär stapeln också 1D:s namn `.stapel--baseline`: `.stapel` är
+    // geometrin i rutnätet, modifieraren är påståendet "det här är baselinen".
+    expect(antal(html, 'class="stapel stapel--baseline"')).toBe(9);
   });
 
   it('staplarna står där gridtesterna säger: S1 1/2, S2 2/5, S3 6/2 över sju månader', async () => {
@@ -427,7 +429,7 @@ describe('(b) vyn: Planen', () => {
   it('ett uppdrag utan avtal säger det, i stället för att visa ett tomt rutnät', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${avtalslostProjekt}/planen`);
     expect(html).toContain('Uppdraget har inget avtal ännu');
-    expect(html).not.toContain('class="stapel"');
+    expect(html).not.toContain('class="stapel stapel--baseline"');
   });
 });
 

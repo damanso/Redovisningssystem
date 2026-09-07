@@ -419,7 +419,17 @@ const NAV_GROUPS: readonly NavGroup[] = [
 ];
 
 // Snabbraden: alltid framme (viker undan först på riktigt smala skärmar).
-const NAV_QUICK: readonly string[] = ['', 'idag', 'approvals', 'invoices', 'receipts'];
+//
+// S10.7/FR-21: uppdragsytan står SIST. Snabbradens ordning är dagens ordning —
+// översikten, i dag, det som väntar på ett svar, pengarna in, pengarna ut — och
+// uppdraget är det man går till EFTER dem, aldrig i stället för dem. De fem
+// befintliga posterna står orörda i sin ordning: en snabbrad som flyttar sig
+// under fötterna på den som lärt sig var något ligger är ingen snabbrad.
+//
+// Etiketten hämtas ur NAV_GROUPS ("Projekt", gruppen Lön & projekt) som för
+// varje annan post — ingen egen etikett, ingen emoji, ingen egen stil. Två namn
+// på samma sida är två sidor för läsaren.
+const NAV_QUICK: readonly string[] = ['', 'idag', 'approvals', 'invoices', 'receipts', 'projects'];
 
 // Uppslag sökväg → { etikett, grupp }, byggt EN gång (layout() körs per request).
 const NAV_INDEX = new Map<string, { label: string; group: string }>(
@@ -1316,15 +1326,38 @@ input[type='file']::file-selector-button {
   grid-column: var(--start) / span var(--span);
   min-width: 0; margin: 4px 1px;
   padding: 4px 8px; border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent);
-  background: var(--accent-weak); color: var(--accent-ink);
+  /* Bredden hör till geometrin (den påverkar rutan), färgen till påståendet.
+     Utan raden här hade en stapel utan modifierare tappat sin kant helt. */
+  border: 1px solid transparent;
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Baselinestapeln (1D:s klassnamn, S10.7).
+ *
+ * '.stapel' är GEOMETRIN — var i rutnätet perioden ligger. '.stapel--baseline'
+ * är PÅSTÅENDET: det här är den avtalade baselinen, och därför husets accent i
+ * heldragen ram. Delningen är inte kosmetisk: den dagen något annat än en
+ * baseline ritas i samma rutnät (ett utfall, ett förslag) ska det kunna få sin
+ * egen ton utan att röra geometrin — och tills dess säger klassnamnet högt vad
+ * stapeln påstår.
+ *
+ * Ärvt intervall vinner ändå: '.stapel[data-arvd]' har högre specificitet än
+ * modifieraren, så den streckade, otonade formen står kvar oförändrad. */
+.stapel--baseline {
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, transparent);
+  background: var(--accent-weak); color: var(--accent-ink);
 }
 .stapel[data-arvd] {
   border-style: dashed; background: transparent; color: var(--ink-3);
   border-color: var(--line-2);
 }
+/* Milstolpen: ett datum i datumlistan som ersätter tidslinjen på smal skärm.
+ *
+ * Punkten dämpas till '--ink-3' — den är en uppräkningsmarkör, inte en del av
+ * budskapet, och full bläckstyrka gör tre punkter lika tunga som tre datum.
+ * Radavståndet är listans, inte styckets: milstolpar läses som en kolumn. */
+.milstolpe { margin-bottom: 3px; line-height: 1.5; }
+.milstolpe::marker { color: var(--ink-3); }
 
 /* Tidslinjen kräver bredd. Under den bredden skulle den antingen krympa till
    oläsliga staplar eller tvinga fram rullning i sidled — och en plan man måste
@@ -1336,6 +1369,56 @@ input[type='file']::file-selector-button {
 @media (min-width: 641px) {
   [data-planlista] { display: none; }
 }
+
+/* Uppdragsytans komponentnamn (1D Del 5, S10.7).
+ *
+ * Ytorna fanns redan — de var byggda av husets paneler, chip och knappband med
+ * en inline-stil där rutnätet krävde en. Det som saknades var NAMNEN: en
+ * komponent utan klassnamn går inte att peka på i ett designkontrakt, inte att
+ * mäta i provvakten och inte att ändra på ett ställe. Reglerna nedan flyttar
+ * alltså in de stilar som redan gällde, med husets egna tokens — ingen ny yta,
+ * ingen ny färg, ingen ny skala.
+ *
+ * '.handgrepp' — bandet på Läget: raderna som väntar på en människa. Linjen
+ * mellan raderna är '--ai-line', inte '--line': bandet står i ockra när något
+ * väntar, och en neutral linje inuti den hade sett ut som ett hål i kortet. */
+.handgrepp { list-style: none; margin: 0; padding: 2px 16px 14px; }
+.handgrepp > li {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 8px 0; border-top: 1px solid var(--ai-line);
+}
+
+/* '.brada' — Leveransernas bräda: en kolumn per statusläge.
+ *
+ * 'auto-fit' med 190 px minimum är mätt mot husets '--maxw' (1080 px minus
+ * sidpaddingen ger 1032 px): de fem lägena ryms på EN rad i fullbredd och viker
+ * till fyra, tre, två och en på smalare skärmar — utan en enda mediefråga och
+ * utan att kolumnernas ordning ändras. 'align-items: start' så att en kort
+ * kolumn inte sträcks ut till grannens höjd och ser ut att sakna innehåll.
+ *
+ * 'min-width: 0' på kolumnen är inte prydnad: utan den spränger en lång
+ * leverabelkod rutnätets spår och drar hela sidan i sidled. */
+.brada {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px; align-items: start; margin-top: 14px;
+}
+.brada__kol { min-width: 0; }
+
+/* '.leverabelkort' — ett kort i en kolumn. Skiljelinjen bärs av syskonväljaren,
+ * inte av ett villkor i koden: panelhuvudets egen linje ligger redan över det
+ * första kortet, och en andra linje där hade dubblerats. */
+.leverabelkort { padding: 9px 0; }
+.leverabelkort + .leverabelkort { border-top: 1px solid var(--line); }
+
+/* '.harledning' — Pengarnas härledningsrad: meningen under kurvan som säger var
+ * talet kommer ifrån, eller varför det inte finns något tal. Den står ALLTID
+ * kvar, också när svaret är ett villkor i stället för ett datum (FR-5), och är
+ * därför en komponent och inte en variant av brödtexten.
+ *
+ * Datumet i raden får tabellsiffror: två ramblock under varandra ska kunna
+ * jämföras med ögat, och då måste siffrorna stå i lodrät linje. */
+.harledning { margin: 8px 0 0; font-size: 13px; line-height: 1.55; }
+.harledning .code { font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

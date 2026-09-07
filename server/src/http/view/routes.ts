@@ -3141,7 +3141,7 @@ function tidslinjerad(plan: Plan, rad: Planrad): Raw {
   // fortfarande vara stum. Skärmläsaren läser tabellen.
   return html`<div class="tidslinje" aria-hidden="true" style="--kolumner:${plan.kolumner}">${
     rad.stapel
-      ? html`<span class="stapel" style="--start:${rad.stapel.start};--span:${rad.stapel.span}"${
+      ? html`<span class="stapel stapel--baseline" style="--start:${rad.stapel.start};--span:${rad.stapel.span}"${
           rad.stapel.arvd ? raw(' data-arvd') : ''
         }${
           rad.stapel.precision ? raw(` data-precision="${esc(rad.stapel.precision)}"`) : ''
@@ -3163,7 +3163,9 @@ function datumlista(u: Planunderlag): Raw {
     ${nagot
       ? avsnitt.filter((a) => a.rader.length > 0).map((a) => html`<h3>${a.rubrik}</h3>
           <ul style="margin:0 0 4px;padding-left:20px">
-            ${a.rader.map((r) => html`<li><span class="code">${r.code}</span> ${r.name}
+            ${/* En rad = en milstolpe: koden, delen och det datum den landar.
+                  1D:s namn på just den raden är `.milstolpe` (S10.7). */ ''}
+            ${a.rader.map((r) => html`<li class="milstolpe"><span class="code">${r.code}</span> ${r.name}
               — <span class="code">${r.stapel!.end_date}</span>
               ${r.stapel!.arvd ? html` ${chip(`Ärvd från ${r.stapel!.kalla_kod}`, 'muted', '↳')}` : ''}</li>`)}
           </ul>`)
@@ -3697,10 +3699,11 @@ function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforsl
     <div class="ai-card__why">Det här är allt på uppdraget som står och väntar på ett svar från en
       människa. Varje rad leder dit svaret ges — bandet svarar aldrig åt dig.</div>
     ${/* En rad per handgrepp: vad som väntar till vänster, vägen dit till
-          höger. Husets komponenter bär raden (chip + knappband); ingen ny
-          klass, för överlämningen namnger bara `.farskhet` och `.subnav`. */ ''}
-    <ul style="list-style:none;margin:0;padding:2px 16px 14px">
-      ${grepp.map((g) => html`<li style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--ai-line)">
+          höger. Husets komponenter bär raden (chip + knappband); bandets egen
+          form bärs sedan S10.7 av `.handgrepp` — 1D:s namn på just den här
+          komponenten — i stället för av en inline-stil utan namn. */ ''}
+    <ul class="handgrepp">
+      ${grepp.map((g) => html`<li>
         ${g.marke}
         <span style="flex:1 1 220px;min-width:0">${g.text}
           ${g.detalj ? html`<span class="code" style="margin-left:6px">${g.detalj}</span>` : ''}</span>
@@ -4115,12 +4118,15 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
 }
 
 /**
- * Ett kort i brädan. Chipet står PÅ kortet och inte bara i kolumnhuvudet: ett
- * kort ska gå att läsa, citera och skriva ut utan sin kolumn. Skiljelinjen
- * utelämnas på det första kortet — panelhuvudets egen linje ligger redan där.
+ * Ett kort i brädan (1D:s `.leverabelkort`, S10.7). Chipet står PÅ kortet och
+ * inte bara i kolumnhuvudet: ett kort ska gå att läsa, citera och skriva ut
+ * utan sin kolumn. Skiljelinjen utelämnas på det första kortet — panelhuvudets
+ * egen linje ligger redan där — men det avgörs nu av CSS:ens syskonväljare i
+ * stället för av ett villkor här: ett kort ska inte behöva veta var i kolumnen
+ * det står för att se rätt ut.
  */
-function leverabelkort(r: Leverabelrad, linje: boolean): Raw {
-  return html`<li style="padding:9px 0${linje ? ';border-top:1px solid var(--line)' : ''}">
+function leverabelkort(r: Leverabelrad): Raw {
+  return html`<li class="leverabelkort">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <strong class="code">${r.kod}</strong>${statusChip(r.status)}</div>
     <div class="muted" style="font-size:12.5px;margin-top:3px">${
@@ -4132,30 +4138,29 @@ function leverabelkort(r: Leverabelrad, linje: boolean): Raw {
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
 function bradkolumn(contractId: string, lage: string, rader: readonly Leverabelrad[]): Raw {
   const id = `kol-${lage}-${contractId}`;
-  return html`<div><section class="panel" aria-labelledby="${id}">
+  return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
       ${rader.length === 0 ? '' : html`<span class="muted" style="font-size:12.5px">${String(rader.length)} st</span>`}</div>
     <div class="panel__body">
       ${rader.length === 0
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
-            ${rader.map((r, i) => leverabelkort(r, i > 0))}
+            ${rader.map((r) => leverabelkort(r))}
           </ul>`}
     </div>
   </section></div>`;
 }
 
 /**
- * Brädan: en kolumn per läge, i FR-12:s ordning.
+ * Brädan: en kolumn per läge, i FR-12:s ordning (1D:s `.brada`, S10.7).
  *
- * Rutnätet bryter av sig självt. `minmax(190px, 1fr)` är mätt mot husets
- * `--maxw` (1080 px minus sidpaddingen ger 1032 px): fem kolumner ryms med
- * marginal, en sjätte gör det inte, så skalan står på EN rad i fullbredd och
- * viker till fyra, tre, två och en på smalare skärmar — utan en mediefråga och
- * utan att kolumnernas ordning ändras.
+ * Rutnätet bryter av sig självt, och regeln bor sedan S10.7 i `.brada` i
+ * html.ts i stället för i en inline-stil här: brädan är en komponent i
+ * designkontraktet, och en komponent som bara finns som en attributsträng går
+ * varken att peka på eller mäta.
  */
 function bradlage(a: Leveransavtal): Raw {
-  return html`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;align-items:start;margin-top:14px">
+  return html`<div class="brada">
     ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(a.contractId, lage, rader))}
   </div>`;
 }
@@ -4331,22 +4336,26 @@ function rambilder(a: Avtalspengar): Rambild[] {
  * lugnt.
  */
 function ramdatumtext(b: Rambild, harSvep: boolean): Raw {
+  // Raden är EN komponent i alla fyra lägena — 1D:s `.harledning` (S10.7) — och
+  // det är hela poängen: den som läser ska hitta svaret på "varifrån kommer det
+  // här?" på samma plats oavsett om svaret är ett datum eller ett skäl till att
+  // datum saknas. Byter raden form när den saknar tal blir tomheten osynlig.
   if (!harSvep) {
-    return html`<p class="muted" style="margin:8px 0 0;font-size:13px">Svepet har inte kört för uppdraget
+    return html`<p class="harledning muted">Svepet har inte kört för uppdraget
       — ingen prognos är läst, och därför står här inget datum och ritas ingen kurva.</p>`;
   }
   if (b.utfall === null) {
-    return html`<p class="muted" style="margin:8px 0 0;font-size:13px">Svepets cache bär inget läsbart
+    return html`<p class="harledning muted">Svepets cache bär inget läsbart
       ramutfall för den här ramen. Inget datum härleds här i stället.</p>`;
   }
   if ('villkor' in b.utfall) {
-    return html`<p style="margin:8px 0 0;font-size:13px">Inget ramdatum:
+    return html`<p class="harledning">Inget ramdatum:
       <strong>${b.utfall.villkor}</strong>.
       ${/* Ordet är cachens eget. Systemet hellre säger varför frågan inte går
             att besvara än levererar ett tal som ser ut som ett svar (FR-5). */ ''}
       Prognosen gissar aldrig ett datum ur ett underlag som saknas.</p>`;
   }
-  return html`<p style="margin:8px 0 0;font-size:13px">Ramen nås
+  return html`<p class="harledning">Ramen nås
     <span class="code">${b.utfall.datum}</span> — svepets prognos, läst ur cachen och aldrig omräknad här.</p>`;
 }
 
