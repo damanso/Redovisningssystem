@@ -43,12 +43,32 @@ const S10_SIDOR = [
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
 ] as const;
 
+/**
+ * S10.8: undermenyns TIO poster i sin ordning — uppdraget självt först (tom
+ * slug), sedan S10.7:s nio. Samma lista som `UPPDRAGSSIDOR` i routes.ts; står
+ * de isär är en av dem fel, och provet ska säga vilken.
+ */
+const UNDERMENYN = [
+  ['', 'Projektet'], ['laget', 'Läget'], ['avtal', 'Avtal'], ['bedomning', 'Bedömning'],
+  ['signaler', 'Signaler'], ['planen', 'Planen'], ['leveranserna', 'Leveranserna'],
+  ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
+] as const;
+
+/**
+ * Samma tio poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
+ * ett urval passerar nästa lucka grönt: S10.7 hade fyra sidor med meny och sex
+ * utan, och provet såg det inte.
+ */
+const UPPDRAGSSIDORNA = UNDERMENYN.map(([slug, etikett]) => ({ slug, etikett }));
+
 let user: TestUser;
 let companyId: string;
 /** Ett andra bolag som SAMMA människa äger — agent-tokenet gäller ändå inte där. */
 let andraBolaget: string;
 let grannbolag: string;
 let projektId: string;
+/** Ett projekt UTAN avtal — alltså inget uppdrag, och därmed ingen undermeny. */
+let avtalslostProjekt: string;
 let agentToken: string;
 let ua: ReturnType<typeof supertest.agent>;
 
@@ -70,6 +90,10 @@ async function sida(path: string): Promise<string> {
 
 const lagetsVag = (bolag = companyId, projekt = projektId): string =>
   `/app/c/${bolag}/projects/${projekt}/laget`;
+
+/** En post i undermenyn → dess sökväg. Tom slug är uppdraget självt. */
+const uppdragsvag = (slug: string, projekt = projektId): string =>
+  `/app/c/${companyId}/projects/${projekt}${slug === '' ? '' : `/${slug}`}`;
 
 // --- Mätarna ----------------------------------------------------------------
 
@@ -143,6 +167,10 @@ beforeAll(async () => {
     .set(auth()).send({ project_id: projektId });
   expect(ko.status, JSON.stringify(ko.body)).toBe(202);
 
+  // S10.8: ett projekt utan avtal är ett projekt, inte ett uppdrag — det är
+  // hela skillnaden undermenyn villkoras på.
+  avtalslostProjekt = (await ok('create_project', { name: 'Bara ett projekt' })).id as string;
+
   const tok = await api.post(`/api/companies/${companyId}/agent-tokens`).set(auth()).send({ name: 'Cowork' });
   expect(tok.status, JSON.stringify(tok.body)).toBe(201);
   agentToken = tok.body.token;
@@ -202,6 +230,63 @@ describe('(a) navigationen', () => {
     const html = await sida(lagetsVag());
     expect(antalAktuella(meny(html, '<div class="nav__quick">'))).toBe(1);
     expect(antalAktuella(meny(html, '<nav class="subnav"'))).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (a2) S10.8: menyn på ALLA uppdragets sidor — rättelsen av S10.7
+//
+// S10.7 gav undermenyn till FYRA sidor: Läget, Leveranserna, Pengarna och
+// Rapporterna. De sex övriga posterna — ingången (projektsidan, dit
+// Projekt-listan länkar), Avtal, Bedömning, Signaler, Planen och Kontraktet —
+// stod i menyn utan att bära den, alltså som återvändsgränder; på telefon, där
+// `.nav__quick` är dold, betydde det ingen väg vidare alls.
+//
+// Lärdomen sitter i provets FORM: S10.7:s prov mätte menyn på Läget och drog
+// slutsatsen "menyn finns". Ett urval kan inte bära ett krav som lyder "på
+// VARJE sida", så här mäts alla tio posterna en och en, utifrån, på det som
+// faktiskt levereras över HTTP.
+// ---------------------------------------------------------------------------
+
+describe('(a2) undermenyn på varje uppdragssida', () => {
+  it('undermenyn bär uppdraget SJÄLVT först och S10.7:s nio efter — i ordning', async () => {
+    const nav = meny(await sida(lagetsVag()), '<nav class="subnav"');
+    expect(poster(nav)).toEqual(UNDERMENYN.map(([slug]) => uppdragsvag(slug).replace(`/app/c/${companyId}/`, '')));
+    for (const [, etikett] of UNDERMENYN) expect(nav).toContain(`>${etikett}</a>`);
+    // Ingen emoji i menyn, precis som i snabbraden (S10.7 KRAV-1).
+    expect(nav).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+  });
+
+  it.each(UPPDRAGSSIDORNA)('$etikett svarar 200 och bär hela undermenyn, aktuell på sin egen post', async ({ slug }) => {
+    const res = await ua.get(uppdragsvag(slug));
+    expect(res.status, `${uppdragsvag(slug)} gav ${res.status}`).toBe(200);
+    const nav = meny(res.text, '<nav class="subnav"');
+    // Menyn är HEL på var och en av de tio: tio poster, inte ett urval.
+    expect(poster(nav)).toHaveLength(UNDERMENYN.length);
+    expect(antalAktuella(nav)).toBe(1);
+    expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
+  });
+
+  it('projektsidans aktuella post är "Projektet", och huvudmenyn markerar sin egen', async () => {
+    const html = await sida(uppdragsvag(''));
+    const nav = meny(html, '<nav class="subnav"');
+    // Etiketten sitter på just den post som är aktuell — inte bara någonstans.
+    expect(nav).toContain(`href="${uppdragsvag('')}" aria-current="page">Projektet</a>`);
+    // Och mätningen är per navigation: snabbraden markerar Projekt, menyn Projektet.
+    expect(antalAktuella(meny(html, '<div class="nav__quick">'))).toBe(1);
+    expect(antalAktuella(nav)).toBe(1);
+  });
+
+  it('ett projekt UTAN avtal får ingen undermeny — men behåller sina länkar', async () => {
+    const html = await sida(uppdragsvag('', avtalslostProjekt));
+    expect(html).not.toContain('class="subnav"');
+    // Knappbandet och sidans innehåll är oförändrade: länkarna står som förut.
+    expect(html).toContain(`href="/app/c/${companyId}/projects/${avtalslostProjekt}/laget"`);
+    expect(html).toContain(`href="/app/c/${companyId}/projects/${avtalslostProjekt}/avtal"`);
+    expect(html).toContain('Tidposter');
+    // Och samma regel på vägen in för det FÖRSTA avtalet: en meny till nio
+    // sidor som alla säger "inget avtal ännu" vore en lögn.
+    expect(await sida(uppdragsvag('avtal', avtalslostProjekt))).not.toContain('class="subnav"');
   });
 });
 

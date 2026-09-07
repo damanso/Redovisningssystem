@@ -145,6 +145,35 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-07 (uppdragsytan S10.8 — undermenyn på projektsidan och de äldre
+  sidorna; rättelse av S10.7):** S10.7 gav `.subnav` till **fyra** sidor — Läget,
+  Leveranserna, Pengarna och Rapporterna. Kvar utan meny stod ingången —
+  projektsidan, dit Projekt-listan länkar — samt Avtal, Bedömning och Signaler
+  (byggda före menyn fanns) och Planen och Kontraktet, som stod som poster i
+  menyn utan att själva bära den. På telefon (≤700 px döljer `.nav__quick`)
+  betydde det ingen väg vidare alls: man kom in i uppdraget och kunde bara backa.
+  Davids ord 7/9: "Undermenyn är inte implementerad". `UPPDRAGSSIDOR` fick en
+  **första** post **Projektet** med tom slug (de nio står oflyttade efter), och
+  alla tio sidorna renderar nu husets befintliga `subnav()` — ingen kopia, ingen
+  ny klass, ingen ny CSS. Planen och Kontraktet bär den villkorslöst som övriga
+  S10-sidor. För projektsidan, Avtal, Bedömning och Signaler är villkoret
+  "projektet har minst ett avtal", härlett ur husets
+  `listContracts(client, companyId, { project_id })` i sidans egen transaktion
+  (Bedömning och Signaler bar redan `avtal` i sitt underlag); ett projekt utan
+  avtal får ingen meny — nio av tio poster hade svarat "inget avtal ännu" — och
+  behåller knappband och innehåll oförändrade. `aria-current="page"` sitter
+  fortsatt på exakt EN post per navigation (WCAG 2.4.8), på projektsidan på
+  Projektet. **Öppet redovisat:** `uppdragsytan-signaler.test.ts` krävde
+  `not.toContain('class="subnav"')` — den raden kodifierade S5.1:s läge och är
+  vänd till att kräva menyn, för annars hade provet varit en spärr mot
+  rättelsen. `uppdragsytan-menyn.test.ts` utökades (ingen ny fil) med de tio
+  posternas ordning, tomläget utan meny på projektsidan, och ett prov som går
+  igenom **var och en** av de tio rutterna och kräver 200, `class="subnav"` med
+  tio länkar och exakt EN `aria-current` på just den sidans post — mäts menyn
+  bara på ett urval passerar nästa lucka grönt. Diffen rör
+  `server/src/http/view/routes.ts`, de två testfilerna och den här filen;
+  `docs/MCP_ACTIONS.md` orörd.
+
 - **2026-09-07 (uppdragsytan S11.2, våg 9 — modulsektionen i ARKITEKTUR.md
   införd genom beslut #140):** Modulen var byggd (S0.1–S10.7) men lagen nämnde
   den inte, och punkten Migrationer påstod "just nu 0001–0059" när kedjan går
