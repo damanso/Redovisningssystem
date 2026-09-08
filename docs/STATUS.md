@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (157
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (192
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -30,7 +30,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 870 tester i 101 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 1598 tester i 135 sviter, `npm run build` ren)
 
 > Senast körd 2026-09-02: 869 gröna, 1 rött — `fixed-assets.test.ts` föll på
 > `Error: socket hang up`. Omkörning av filen ensam: 10/10 gröna på 2,9 s. Alltså
