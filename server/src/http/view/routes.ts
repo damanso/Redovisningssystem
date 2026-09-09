@@ -198,6 +198,71 @@ viewRouter.post('/logout', (req, res) => {
 viewRouter.use(viewAuth);
 
 // Företagsval.
+/**
+ * Jämlika ingångar: /app/g/ekonomi, /app/g/projekt, /app/g/crm.
+ *
+ * Hermes huvudmeny är identisk i tre kodbaser och kan inte känna till vilket
+ * bolag som är valt — därför slår den här rutten upp bolaget själv, med samma
+ * fråga som bolagsväljaren på /app. Ett bolag går rakt in; flera visar
+ * väljaren med målet bevarat, så att valet inte kastar bort vart man var på
+ * väg.
+ *
+ * Redovisningen är inte längre taket över projekt och CRM. Den är en av
+ * fyra jämlika delar (Astras analys 2026-09-09 §3).
+ */
+const OMRADESMAL: Record<string, string> = {
+  ekonomi: '',
+  projekt: 'projects',
+  crm: 'relations',
+};
+
+viewRouter.get(
+  '/g/:omrade',
+  page(async (req, res) => {
+    const mal = OMRADESMAL[String(req.params.omrade)];
+    if (mal === undefined) {
+      res.status(404).type('html').send(
+        layout({ title: 'Finns inte', body: html`<h1>Området finns inte</h1>
+          <p class="lede">Kända områden: ekonomi, projekt, crm.</p>` }).value);
+      return;
+    }
+    const userId = getUserId(req);
+    const companies = await withUserTransaction(userId, async (client) => {
+      const r = await client.query<{ id: string; name: string }>(
+        `SELECT c.id, c.name FROM companies c JOIN company_members m ON m.company_id = c.id
+         WHERE m.user_id = $1 ORDER BY c.name`,
+        [userId],
+      );
+      return r.rows;
+    });
+    if (companies.length === 1) {
+      res.redirect(`/app/c/${companies[0]!.id}${mal ? '/' + mal : ''}`);
+      return;
+    }
+    const rubrik =
+      req.params.omrade === 'projekt' ? 'Projekt'
+        : req.params.omrade === 'crm' ? 'CRM'
+          : 'Redovisning';
+    const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}<h1>${rubrik}</h1>
+        <p class="lede">Området finns per bolag. Välj vilket.</p></div></div>
+      ${
+        companies.length === 0
+          ? html`<div class="empty"><div class="big">Inga bolag ännu</div>
+              Skapa ett bolag på <a href="/app">startsidan</a> först.</div>`
+          : html`<div class="kpi-grid" style="margin-top:14px">
+              ${companies.map(
+                (c) => html`<a class="kpi" href="/app/c/${c.id}${mal ? '/' + mal : ''}"
+                    style="text-decoration:none;color:inherit;display:block">
+                  <div class="v" style="font-size:18px">${c.name}</div>
+                  <div class="muted" style="font-size:12.5px;margin-top:6px">Öppna →</div>
+                </a>`,
+              )}
+            </div>`
+      }`;
+    res.type('html').send(layout({ title: rubrik, body }).value);
+  }),
+);
+
 viewRouter.get(
   '/',
   page(async (req, res) => {

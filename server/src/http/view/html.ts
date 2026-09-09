@@ -1453,15 +1453,35 @@ function head(title: string): Raw {
 const HUVUDVAL: [string, string][] = [
   ['/', 'Hem'],
   ['/beslut', 'Din insats'],
-  ['/vy', 'Arbete'],
-  ['/app', 'Bolaget'],
+  // De fyra jämlika områdena. Redovisningen är inte längre taket över projekt
+  // och CRM — den var bara den första modulen, byggd ur ett konkret behov.
+  ['/app/g/ekonomi', 'Redovisning'],
+  ['/app/g/projekt', 'Projekt'],
+  ['/app/g/crm', 'CRM'],
+  ['/vy', 'Ärenden'],
   ['/bibliotek', 'Bibliotek'],
 ];
 
-const huvudnav = html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
-  ([vag, text]) =>
-    html`<a href="${vag}"${vag === '/app' ? raw(' aria-current="page"') : ''}>${text}</a>`,
-)}</nav>`;
+/** Vilka av redovisningens sidor som hör till vilket jämlikt område. */
+const OMRADE_PROJEKT = new Set(['projects', 'tid', 'tid/forslag', 'steering']);
+const OMRADE_CRM = new Set(['relations', 'crm/personer', 'commitments', 'customers', 'idag']);
+
+function aktivtOmrade(active?: string): string {
+  if (active !== undefined && OMRADE_PROJEKT.has(active)) return '/app/g/projekt';
+  if (active !== undefined && OMRADE_CRM.has(active)) return '/app/g/crm';
+  return '/app/g/ekonomi';
+}
+
+function huvudnavFor(active?: string): Raw {
+  const har = aktivtOmrade(active);
+  return html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
+    ([vag, text]) =>
+      html`<a href="${vag}"${vag === har ? raw(' aria-current="page"') : ''}>${text}</a>`,
+  )}</nav>`;
+}
+
+/** Skallosa sidor (inloggning, fel) har ingen aktiv sida — inget val lyser. */
+const huvudnav = huvudnavFor(undefined);
 
 /**
  * Toppraden för sidor utan session: inloggning, registrering, tvåfaktor och
@@ -1681,7 +1701,7 @@ export function layout(opts: {
           </form>
         </div>
       </div>
-      ${huvudnav}
+      ${huvudnavFor(opts.active)}
       ${nav}
       </header>
       <main>${raw(staplabaraTabeller(opts.body.value))}</main>
