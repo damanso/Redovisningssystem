@@ -226,7 +226,13 @@ describe('vyerna är JS-fria och når varandra från menyn', () => {
 
   it('sidorna ligger i menyn', async () => {
     const res = await ua.get(`/app/c/${companyId}/relations`);
-    const nav = res.text.slice(res.text.indexOf('<nav class="nav"'), res.text.indexOf('</nav>'));
+    const nav = (() => {
+      // Sidan bar tva navrader: Hermes huvudmeny forst, modulens egen
+      // efter. Slutmarkoren maste sokas EFTER startmarkoren, annars
+      // klipps ett tomt stycke ut. (2026-09-09)
+      const i = res.text.indexOf('<nav class="nav"');
+      return res.text.slice(i, res.text.indexOf('</nav>', i));
+    })();
     expect(nav).toContain(`href="/app/c/${companyId}/relations"`);
     expect(nav).toContain(`href="/app/c/${companyId}/commitments"`);
     expect(nav).toContain(`href="/app/c/${companyId}/steering"`);

@@ -146,7 +146,13 @@ describe('dagsytan är JS-fri och skickar ingenting', () => {
 
   it('sidan ligger i snabbraden — den ska öppnas dagligen', async () => {
     const res = await ua.get(`/app/c/${companyId}/idag`);
-    const nav = res.text.slice(res.text.indexOf('<nav class="nav"'), res.text.indexOf('</nav>'));
+    const nav = (() => {
+      // Sidan bar tva navrader: Hermes huvudmeny forst, modulens egen
+      // efter. Slutmarkoren maste sokas EFTER startmarkoren, annars
+      // klipps ett tomt stycke ut. (2026-09-09)
+      const i = res.text.indexOf('<nav class="nav"');
+      return res.text.slice(i, res.text.indexOf('</nav>', i));
+    })();
     expect(nav).toContain(`href="/app/c/${companyId}/idag"`);
   });
 });

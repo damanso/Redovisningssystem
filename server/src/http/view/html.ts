@@ -578,6 +578,15 @@ const STYLE = `
 @view-transition { navigation: auto; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 180ms; }
 .topbar { view-transition-name: topbar; }
+/* Huvudmenyn: samma fem val som i Hermes ovriga moduler, samma ordning.
+   Den star FORE modulens egen meny och ersatts aldrig av den. */
+.nav--huvud { display:flex; gap:4px; align-items:center; flex-wrap:wrap;
+  padding:6px 18px; border-bottom:1px solid var(--linje, #e3e8ec); }
+.nav--huvud a { display:inline-flex; align-items:center; padding:6px 10px;
+  border-radius:8px; text-decoration:none; color:inherit; font-size:.92rem; }
+.nav--huvud a:hover { background:var(--yta-sankt, rgba(0,0,0,.05)); }
+.nav--huvud a[aria-current] { background:var(--accent-weak, rgba(31,77,107,.12));
+  font-weight:600; }
 
 /* Rörelse är inte gratis för alla. Har användaren sagt ifrån i sitt
  * operativsystem gäller det här, utan undantag. */
@@ -1438,13 +1447,13 @@ function head(title: string): Raw {
   return html`<meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
-    <title>${title} — Redovisning</title><style>${raw(STYLE)}</style>`;
+    <title>${title} — Hermes</title><style>${raw(STYLE)}</style>`;
 }
 
 export function loginPage(error?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Logga in')}</head>
     <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/login">
-      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Logga in</h1>
       <p class="lede">Din bokföring — lugn, tydlig och alltid granskbar.</p>
       ${error ? html`<p class="notice">${error}</p>` : ''}
@@ -1460,7 +1469,7 @@ export function loginPage(error?: string): Raw {
 export function registerPage(error?: string, values?: { email?: string; name?: string }): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Skapa konto')}</head>
     <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/register">
-      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Skapa konto</h1>
       <p class="lede">Kom igång med din bokföring — det tar en minut.</p>
       ${error ? html`<p class="notice">${error}</p>` : ''}
@@ -1479,7 +1488,7 @@ export function registerPage(error?: string, values?: { email?: string; name?: s
 export function totpChallengePage(error?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Tvåfaktor')}</head>
     <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/login/2fa">
-      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Tvåfaktor</h1>
       <p class="lede">Ange den sexsiffriga koden från din autentiseringsapp.</p>
       ${error ? html`<p class="notice">${error}</p>` : ''}
@@ -1573,6 +1582,25 @@ export function layout(opts: {
       opts.active === path ? raw(' aria-current="page"') : ''
     }>${label}</a>`;
 
+/**
+ * HUVUDVALEN. Samma fem, i samma ordning, i alla tre kodbaserna (Astras
+ * UX-granskning 2026-09-09). Rotrelativa: sedan modulerna monterats bakom
+ * samma värd är /vy och /beslut grannar i SAMMA miljö, inte andra system.
+ * prov/enmiljo.py mäter att raden är identisk överallt.
+ */
+const HUVUDVAL: [string, string][] = [
+  ['/', 'Hem'],
+  ['/beslut', 'Din insats'],
+  ['/vy', 'Arbete'],
+  ['/app', 'Bolaget'],
+  ['/bibliotek', 'Bibliotek'],
+];
+
+const huvudnav = html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
+  ([vag, text]) =>
+    html`<a href="${vag}"${vag === '/app' ? raw(' aria-current="page"') : ''}>${text}</a>`,
+)}</nav>`;
+
   const nav = opts.companyId
     ? html`<nav class="nav" aria-label="Huvudmeny">
         <details class="navmenu">
@@ -1597,11 +1625,7 @@ export function layout(opts: {
              inte växa utan beslut". Länkar efter den punkten hade fällt den,
              och rätt svar är inte att höja sexan utan att inte lägga sig i
              raden den vaktar. */ ''}
-        <div class="nav__grannar">
-          <a href="https://david-brain.tail743706.ts.net:8445/">Översikt</a>
-          <a href="https://david-brain.tail743706.ts.net:8446/vy">Ärenden</a>
-        </div>
-        <span class="nav__sep"></span>
+
         <div class="nav__quick">
           ${NAV_QUICK.map((path) => {
             const item = NAV_INDEX.get(path);
@@ -1632,7 +1656,7 @@ export function layout(opts: {
     <body>
       <header class="topbar">
       <div class="appbar">
-        <a class="brand" href="/app">${MARK}<b>Redovisning</b>${
+        <a class="brand" href="/">${MARK}<b>Hermes</b>${
           opts.companyName ? html`<span class="sep">/</span><span class="co">${opts.companyName}</span>` : ''
         }</a>
         <div style="display:flex;gap:8px;align-items:center">
@@ -1643,6 +1667,7 @@ export function layout(opts: {
           </form>
         </div>
       </div>
+      ${huvudnav}
       ${nav}
       </header>
       <main>${raw(staplabaraTabeller(opts.body.value))}</main>
@@ -1652,7 +1677,7 @@ export function layout(opts: {
 export function errorPage(status: number, message: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head(String(status))}</head>
     <body><div class="auth-wrap"><div class="auth-card">
-      <div class="auth-brand">${MARK}<b>Redovisning</b></div>
+      <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>${status}</h1>
       <p class="lede">${message}</p>
       <p><a class="btn btn--ghost btn--sm" href="/app">Till översikten</a></p>

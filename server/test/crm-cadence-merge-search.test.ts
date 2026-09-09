@@ -250,7 +250,13 @@ describe('sökning: man ska slippa veta var något ligger', () => {
 describe('söksidan och relationskortet i vyn', () => {
   it('sökrutan finns i navraden på varje sida', async () => {
     const res = await ua.get(`/app/c/${companyId}/idag`);
-    const nav = res.text.slice(res.text.indexOf('<nav class="nav"'), res.text.indexOf('</nav>'));
+    const nav = (() => {
+      // Sidan bar tva navrader: Hermes huvudmeny forst, modulens egen
+      // efter. Slutmarkoren maste sokas EFTER startmarkoren, annars
+      // klipps ett tomt stycke ut. (2026-09-09)
+      const i = res.text.indexOf('<nav class="nav"');
+      return res.text.slice(i, res.text.indexOf('</nav>', i));
+    })();
     expect(nav).toContain(`action="/app/c/${companyId}/sok"`);
     expect(nav).toContain('type="search"');
   });
