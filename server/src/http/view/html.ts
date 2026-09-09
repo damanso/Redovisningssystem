@@ -1450,9 +1450,34 @@ function head(title: string): Raw {
     <title>${title} — Hermes</title><style>${raw(STYLE)}</style>`;
 }
 
+const HUVUDVAL: [string, string][] = [
+  ['/', 'Hem'],
+  ['/beslut', 'Din insats'],
+  ['/vy', 'Arbete'],
+  ['/app', 'Bolaget'],
+  ['/bibliotek', 'Bibliotek'],
+];
+
+const huvudnav = html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
+  ([vag, text]) =>
+    html`<a href="${vag}"${vag === '/app' ? raw(' aria-current="page"') : ''}>${text}</a>`,
+)}</nav>`;
+
+/**
+ * Toppraden för sidor utan session: inloggning, registrering, tvåfaktor och
+ * felsidor. Samma märke och samma karta som resten av miljön (Astras
+ * UX-granskning 2026-09-09 §5). Utan den var inloggningen en egen liten
+ * produkt: eget märke, ingen väg tillbaka, ingen upplysning om var man var.
+ */
+function authSkal(): Raw {
+  return html`<header class="topbar"><div class="appbar">
+      <a class="brand" href="/">${MARK}<b>Hermes</b></a>
+    </div>${huvudnav}</header>`;
+}
+
 export function loginPage(error?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Logga in')}</head>
-    <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/login">
+    <body>${authSkal()}<div class="auth-wrap"><form class="auth-card" method="post" action="/app/login">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Logga in</h1>
       <p class="lede">Din bokföring — lugn, tydlig och alltid granskbar.</p>
@@ -1468,7 +1493,7 @@ export function loginPage(error?: string): Raw {
 
 export function registerPage(error?: string, values?: { email?: string; name?: string }): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Skapa konto')}</head>
-    <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/register">
+    <body>${authSkal()}<div class="auth-wrap"><form class="auth-card" method="post" action="/app/register">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Skapa konto</h1>
       <p class="lede">Kom igång med din bokföring — det tar en minut.</p>
@@ -1487,7 +1512,7 @@ export function registerPage(error?: string, values?: { email?: string; name?: s
 /** Andra steget vid inloggning: engångskod från autentiseringsappen. */
 export function totpChallengePage(error?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Tvåfaktor')}</head>
-    <body><div class="auth-wrap"><form class="auth-card" method="post" action="/app/login/2fa">
+    <body>${authSkal()}<div class="auth-wrap"><form class="auth-card" method="post" action="/app/login/2fa">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Tvåfaktor</h1>
       <p class="lede">Ange den sexsiffriga koden från din autentiseringsapp.</p>
@@ -1588,18 +1613,7 @@ export function layout(opts: {
  * samma värd är /vy och /beslut grannar i SAMMA miljö, inte andra system.
  * prov/enmiljo.py mäter att raden är identisk överallt.
  */
-const HUVUDVAL: [string, string][] = [
-  ['/', 'Hem'],
-  ['/beslut', 'Din insats'],
-  ['/vy', 'Arbete'],
-  ['/app', 'Bolaget'],
-  ['/bibliotek', 'Bibliotek'],
-];
 
-const huvudnav = html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
-  ([vag, text]) =>
-    html`<a href="${vag}"${vag === '/app' ? raw(' aria-current="page"') : ''}>${text}</a>`,
-)}</nav>`;
 
   const nav = opts.companyId
     ? html`<nav class="nav" aria-label="Huvudmeny">
@@ -1676,7 +1690,7 @@ const huvudnav = html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL
 
 export function errorPage(status: number, message: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head(String(status))}</head>
-    <body><div class="auth-wrap"><div class="auth-card">
+    <body>${authSkal()}<div class="auth-wrap"><div class="auth-card">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>${status}</h1>
       <p class="lede">${message}</p>
