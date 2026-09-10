@@ -136,7 +136,17 @@ export type Modell = {
 };
 
 function post(d: Destination, bolag: string | null): Post {
-  return { id: d.id, label: d.label, hint: d.hint, href: destinationsAdress(d, bolag) };
+  // `destinationsAdress` svarar null for "kraver ett bolag som inte ar valt".
+  // I /app/-handlern betyder det "erbjud bolagsval"; i MENYN betyder det att
+  // lanken ska ga till bolagsupplosningen (Astras regel 2), aldrig till
+  // ingenting och aldrig till en mall.
+  const adr = destinationsAdress(d, bolag);
+  return {
+    id: d.id,
+    label: d.label,
+    hint: d.hint,
+    href: adr ?? (d.canonical_url.kind === 'company' ? `/app/?destination=${d.id}` : null),
+  };
 }
 
 export function modell(beslut?: string | null, bolag?: string | null): Modell {
