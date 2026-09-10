@@ -1510,6 +1510,11 @@ export function layout(opts: {
   companyId?: string;
   companyName?: string;
   active?: string;
+  /** Destinations-id for ett OMRADES INGANG nar sidan ar ingangen sjalv och
+   *  inte nagon av omradets sidor (/app/g/:omrade nar flera bolag finns).
+   *  Da ar omradets namn i navraden svaret pa "var ar jag?" -- utan det bar
+   *  sidan noll markeringar, precis som / och /vy gjorde 2026-09-10. */
+  ingang?: string;
   /** Namnet pa objektet nar sidan ar en UNDERDESTINATION (en faktura, ett
    *  projekt, en flik) i stallet for destinationssidan sjalv. Satt det och
    *  menyposten markeras som "location", inte "page", och brodsmulan far ett
@@ -1548,6 +1553,11 @@ export function layout(opts: {
           .find((p) => kortform(p.href) === opts.active) ?? null;
   const insatsen = navmodell.global.find((p) => p.id === 'intervention') ?? null;
 
+  // Ingangen man star PA, nar man inte star pa nagon av omradets sidor.
+  const aktivIngang = opts.ingang
+    ? navmodell.groups.find((g) => g.entry?.id === opts.ingang) ?? null
+    : null;
+
   const here = aktivDest
     ? {
         group:
@@ -1560,7 +1570,7 @@ export function layout(opts: {
   // "Sidorna bredvid" ar sidorna i den del man faktiskt star i.
   const omradet = aktivDest
     ? navmodell.groups.find((g) => g.items.some((p) => p.id === aktivDest.id)) ?? null
-    : null;
+    : aktivIngang;
   const snabbrad: Post[] = omradet
     ? omradet.id === 'accounting'
       ? navmodell.quick
@@ -1620,7 +1630,7 @@ export function layout(opts: {
                        gruppsida (Astras §3). */ ''}
                   ${
                     g.entry?.href
-                      ? html`<a class="eyebrow navmenu__grpl" href="${g.entry.href}" data-destination-id="${g.entry.id}">${g.label}</a>`
+                      ? html`<a class="eyebrow navmenu__grpl${aktivIngang && g.id === aktivIngang.id ? ' is-active' : ''}" href="${g.entry.href}"${aktivIngang && g.id === aktivIngang.id ? raw(' aria-current="page"') : ''} data-destination-id="${g.entry.id}">${g.label}</a>`
                       : html`<span class="eyebrow">${g.label}</span>`
                   }
                   <span class="navmenu__hint">${g.hint}</span>
@@ -1635,7 +1645,7 @@ export function layout(opts: {
         ${
           omradet
             ? omradet.entry?.href
-              ? html`<a class="nav__omrade" href="${omradet.entry.href}" data-destination-id="${omradet.entry.id}">${omradet.label}</a>`
+              ? html`<a class="nav__omrade" href="${omradet.entry.href}"${aktivDest === null && aktivIngang !== null ? raw(' aria-current="page"') : ''} data-destination-id="${omradet.entry.id}">${omradet.label}</a>`
               : html`<span class="nav__omrade">${omradet.label}</span>`
             : ''
         }
@@ -1659,7 +1669,7 @@ export function layout(opts: {
              dem till vägar bakom /. Inga nya klassnamn: nav__sep och
              nav__quick finns redan i kanon. */ ''}
         ${here && !inQuick
-          ? html`<span class="nav__here"><span class="nav__here-grp">${here.group}</span><span class="nav__here-lbl">${here.label}</span></span>`
+          ? html`<span class="nav__here" aria-current="page" data-destination-id="${aktivDest!.id}"><span class="nav__here-grp">${here.group}</span><span class="nav__here-lbl">${here.label}</span></span>`
           : ''}
         ${/* F5: sökrutan ligger i navraden, inte på en egen sida man måste hitta
              till först. Poängen är att slippa VETA var något ligger — samma

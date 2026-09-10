@@ -223,6 +223,19 @@ const OMRADESMAL: Record<string, string> = {
   crm: 'relations',
 };
 
+/**
+ * Omradets INGANG i navigationskontraktet. Bolagsvaljaren ar sjalv ingangen:
+ * utan det har id:t bar sidan varken omradesnamn eller markering, och sager
+ * alltsa ingenting om var man ar (WCAG 2.4.8). Id:na ar kontraktets egna —
+ * navigation.test.ts kraver att de finns, sa ett omdopt id faller dar och
+ * inte tyst har.
+ */
+const OMRADESINGANG: Record<string, string> = {
+  ekonomi: 'accounting_entry',
+  projekt: 'projects_entry',
+  crm: 'crm_entry',
+};
+
 viewRouter.get(
   '/g/:omrade',
   page(async (req, res) => {
@@ -266,7 +279,9 @@ viewRouter.get(
               )}
             </div>`
       }`;
-    res.type('html').send(layout({ title: rubrik, body }).value);
+    res.type('html').send(
+      layout({ title: rubrik, ingang: OMRADESINGANG[String(req.params.omrade)], body }).value,
+    );
   }),
 );
 
