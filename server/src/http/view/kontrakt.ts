@@ -132,7 +132,14 @@ export type Modell = {
   global: Post[];
   account: Post[];
   quick: Post[];
-  groups: { id: string; label: string; hint: string; entry_id: string | null; items: Post[] }[];
+  groups: {
+    id: string;
+    label: string;
+    hint: string;
+    entry_id: string | null;
+    entry: Post | null;
+    items: Post[];
+  }[];
 };
 
 function post(d: Destination, bolag: string | null): Post {
@@ -182,6 +189,9 @@ export function modell(beslut?: string | null, bolag?: string | null): Modell {
       label: g.label,
       hint: g.hint,
       entry_id: g.entry_id,
+      // Gruppens ingang som en fardig post: rubriken ar vagen dit sedan
+      // huvudraden togs bort.
+      entry: g.entry_id && perId.has(g.entry_id) ? post(perId.get(g.entry_id)!, co) : null,
       items: k.destinations
         .filter((d) => d.group_id === g.id && d.id !== g.entry_id && !dolda.has(d.id))
         .sort((a, c) => a.order - c.order)

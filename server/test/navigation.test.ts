@@ -122,7 +122,11 @@ describe('navigationens meny', () => {
     const nav = navMarkup(await ua.get(`/app/c/${companyId}/`).then((r) => r.text));
     let forra = -1;
     for (const g of SYNLIGA_GRUPPER) {
-      const i = nav.indexOf(`<span class="eyebrow">${esc(g.label)}</span>`);
+      // Rubriken ar en LANK nar gruppen har en ingang (vagen dit sedan
+      // huvudraden togs bort), annars en ren rubrik. Bada duger for ordningen.
+      const somLank = nav.indexOf(`data-destination-id="${g.entry_id}">${esc(g.label)}</a>`);
+      const somText = nav.indexOf(`<span class="eyebrow">${esc(g.label)}</span>`);
+      const i = somLank >= 0 ? somLank : somText;
       expect(i, `gruppen "${g.label}" saknas i menyn`).toBeGreaterThan(-1);
       expect(i, `gruppen "${g.label}" står i fel ordning`).toBeGreaterThan(forra);
       forra = i;

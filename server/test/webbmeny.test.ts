@@ -109,17 +109,37 @@ afterAll(async () => {
 });
 
 describe('navigationsytorna i webbläsaren', () => {
-  it('huvudraden bär kontraktets globala rad, i ordning och utan dubbletter', async () => {
+  it('menyns rubriker bär gruppernas ingångar — den enda vägen dit sedan huvudraden togs bort', async () => {
+    // David 2026-09-10: "allt ska gå att nå via menyn". Huvudraden med Hem,
+    // Din insats, Redovisning, Projekt, CRM, Ärenden och Bibliotek togs bort.
+    // De sju är gruppernas INGÅNGAR — utan rubrikerna som länkar blir Hem och
+    // Bibliotek omöjliga att nå, och det är precis vad det här provar.
     const page = await webblasare.newPage();
     try {
       await loggaIn(page);
       await page.goto(`${bas}/app/c/${companyId}/`);
-      const lankar = await ytan(page, 'nav.nav--huvud');
-      expect(lankar.map((l) => l.id)).toEqual(KONTRAKT.surfaces.global);
-      for (const l of lankar) {
-        expect(l.text, `${l.id} saknar text`).not.toBe('');
-        expect(l.synlig, `${l.id} är osynlig`).toBe(true);
-        expect(l.href, `${l.id} bär en olöst mall`).not.toContain(':companyId');
+      expect(await page.$('nav.nav--huvud'), 'huvudraden finns kvar').toBeNull();
+      await oppnaMenyn(page);
+      const rubriker = await page.$$eval('.navmenu__grpl', (as) =>
+        as.map((a) => ({
+          id: a.getAttribute('data-destination-id'),
+          href: a.getAttribute('href'),
+          text: (a.textContent ?? '').trim(),
+        })),
+      );
+      for (const g of KONTRAKT.groups) {
+        if (!g.entry_id) continue;
+        const r = rubriker.find((x) => x.id === g.entry_id);
+        expect(r, `gruppen ${g.label} saknar väg till sin ingång`).toBeTruthy();
+        expect(r!.text).toBe(g.label);
+        expect(r!.href, `${g.entry_id} bär en olöst mall`).not.toContain(':companyId');
+      }
+      // Var och en av den gamla radens sju destinationer ska gå att nå.
+      const nabara = new Set(rubriker.map((r) => r.id));
+      for (const id of KONTRAKT.surfaces.global) {
+        const d = PER_ID.get(id)!;
+        const iMenyn = (await ytan(page, '.navmenu__panel')).some((l) => l.id === id);
+        expect(nabara.has(id) || iMenyn, `${id} går inte att nå från menyn`).toBe(true);
       }
     } finally {
       await page.close();
@@ -321,10 +341,11 @@ describe('beslut #157 i webbläsaren', () => {
         const sista = await page.textContent('nav.smula b');
         expect(sista?.trim(), `${id} säger inte var man är`).toBe(d.label);
         if (JA) {
-          // Ägarskapet flyttade till Din insats — man står UNDER den.
-          const huvud = (await ytan(page, 'nav.nav--huvud')).filter((l) => l.aktuell !== null);
-          expect(huvud.map((l) => l.id)).toEqual(['intervention']);
-          expect(huvud[0]!.aktuell).toBe('location');
+          // Ägarskapet flyttade till Din insats. Sedan huvudraden togs bort
+          // står det i BRÖDSMULAN: första ledet är vägen till Din insats,
+          // sista ledet är sidan man står på.
+          const forsta = await page.getAttribute('nav.smula a', 'href');
+          expect(forsta, `${id} pekar inte tillbaka till Din insats`).toBe('/beslut');
         }
       }
     } finally {

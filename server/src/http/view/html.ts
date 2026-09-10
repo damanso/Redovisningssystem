@@ -482,6 +482,11 @@ const STYLE = `
 .topbar { view-transition-name: topbar; }
 /* Huvudmenyn: samma fem val som i Hermes ovriga moduler, samma ordning.
    Den star FORE modulens egen meny och ersatts aldrig av den. */
+.nav__omrade { font-weight: 600; font-size: 13px; color: var(--ink);
+  padding: 5px 4px; white-space: nowrap; flex: none; text-decoration: none; }
+a.nav__omrade:hover { text-decoration: underline; }
+.navmenu__grpl { display: block; margin-bottom: 1px; text-decoration: none; }
+.navmenu__grpl:hover { text-decoration: underline; }
 .nav--konto { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .smula { display:flex; gap:6px; align-items:center; flex-wrap:wrap;
   padding:8px 16px 0; font-size:12.5px; color:var(--ink-3, #667); }
@@ -1359,37 +1364,11 @@ function head(title: string): Raw {
     <title>${title} — Hermes</title><style>${raw(STYLE)}</style>`;
 }
 
-// HUVUDVALEN HARLEDS UR KONTRAKTET. Omradet man star i raknas ut ur sidans
-// DESTINATION: dess grupp har en ingang (`entry_id`), och den ingangen ar det
-// val som ska lysa. Forr var det tva handskrivna mangder over sokvagar, som
-// tystnade sa fort en ny sida lades till i fel mangd.
+// NAVMODELLEN utan bolagskontext. Anvands av de skallosa sidorna och av
+// berakningar som inte har ett valt bolag. Huvudraden som stod har togs bort
+// 2026-09-10 pa Davids besked: "allt ska ga att na via menyn". Gruppernas
+// ingangar nas nu genom menyns rubriker.
 const NAVMODELL_UTAN_BOLAG = modell(null, null);
-
-function omradetsIngang(dest: Post | null): string {
-  if (dest) {
-    const g = NAVMODELL_UTAN_BOLAG.groups.find((x) => x.items.some((p) => p.id === dest.id));
-    const ing = g?.entry_id
-      ? NAVMODELL_UTAN_BOLAG.global.find((p) => p.id === g.entry_id)
-      : null;
-    if (ing?.href) return ing.href;
-  }
-  return '/app/g/ekonomi';
-}
-
-function huvudnavFor(aktivDest: Post | null, tvingad: string | null = null): Raw {
-  const har = tvingad ?? omradetsIngang(aktivDest);
-  return html`<nav class="nav nav--huvud" aria-label="Hermes">${NAVMODELL_UTAN_BOLAG.global.map(
-    (p) =>
-      html`<a href="${p.href ?? '/'}"${
-        p.href === har
-          ? raw(tvingad ? ' aria-current="location"' : ' aria-current="page"')
-          : ''
-      } data-destination-id="${p.id}">${p.label}</a>`,
-  )}</nav>`;
-}
-
-/** Skallosa sidor (inloggning, fel) har ingen aktiv sida - inget val lyser. */
-const huvudnav = huvudnavFor(null, null);
 
 /**
  * Toppraden för sidor utan session: inloggning, registrering, tvåfaktor och
@@ -1398,9 +1377,13 @@ const huvudnav = huvudnavFor(null, null);
  * produkt: eget märke, ingen väg tillbaka, ingen upplysning om var man var.
  */
 function authSkal(): Raw {
+  // Inloggning, registrering och felsidor: markesraden racker. Huvudraden
+  // som stod har fanns for att sidan skulle bara "samma karta som resten" —
+  // sedan kartan flyttat in i menyn, och menyn kraver en session, vore en
+  // halvtom rad bara en pafyllnad.
   return html`<header class="topbar"><div class="appbar">
       <a class="brand" href="/">${MARK}<b>Hermes</b></a>
-    </div>${huvudnav}</header>`;
+    </div></header>`;
 }
 
 export function loginPage(error?: string, destination?: string): Raw {
@@ -1572,7 +1555,18 @@ export function layout(opts: {
         label: aktivDest.label,
       }
     : null;
-  const inQuick = aktivDest !== null && navmodell.quick.some((p) => p.id === aktivDest.id);
+  // OMRADET man star i, och DESS vanligaste sidor. Redovisningen har en
+  // kurerad snabbrad i registret; ovriga omraden visar sina egna poster.
+  // "Sidorna bredvid" ar sidorna i den del man faktiskt star i.
+  const omradet = aktivDest
+    ? navmodell.groups.find((g) => g.items.some((p) => p.id === aktivDest.id)) ?? null
+    : null;
+  const snabbrad: Post[] = omradet
+    ? omradet.id === 'accounting'
+      ? navmodell.quick
+      : omradet.items.slice(0, 6)
+    : [];
+  const inQuick = aktivDest !== null && snabbrad.some((p) => p.id === aktivDest.id);
   const link = (p: Post, cls: string) =>
     html`<a class="${cls}" href="${p.href ?? '#'}"${
       aktivDest && p.id === aktivDest.id
@@ -1614,10 +1608,21 @@ export function layout(opts: {
           <div class="navmenu__panel">
             <div class="navmenu__grid">
               ${navmodell.groups
-                .filter((g) => g.items.length > 0)
+                // En grupp UTAN poster men MED ingang ar inte tom:
+                // rubriken ar vagen dit. Bibliotek har bara sin egen
+                // ingang och foll ur menyn helt med det gamla filtret.
+                .filter((g) => g.items.length > 0 || g.entry?.href)
                 .map(
                   (g) => html`<div class="navmenu__grp">
-                  <span class="eyebrow">${g.label}</span>
+                  ${/* Rubriken ar vagen till omradets ingang. Sedan huvudraden
+                       togs bort finns ingen annan vag dit — och en grupp utan
+                       ingang ar en rubrik, aldrig en lank till en pahittad
+                       gruppsida (Astras §3). */ ''}
+                  ${
+                    g.entry?.href
+                      ? html`<a class="eyebrow navmenu__grpl" href="${g.entry.href}" data-destination-id="${g.entry.id}">${g.label}</a>`
+                      : html`<span class="eyebrow">${g.label}</span>`
+                  }
                   <span class="navmenu__hint">${g.hint}</span>
                   ${g.items.map((p) =>
                     link(p, `navmenu__link${aktivDest && p.id === aktivDest.id ? ' is-active' : ''}`))}
@@ -1627,6 +1632,13 @@ export function layout(opts: {
           </div>
         </details>
         <span class="nav__sep"></span>
+        ${
+          omradet
+            ? omradet.entry?.href
+              ? html`<a class="nav__omrade" href="${omradet.entry.href}" data-destination-id="${omradet.entry.id}">${omradet.label}</a>`
+              : html`<span class="nav__omrade">${omradet.label}</span>`
+            : ''
+        }
         ${/* Grannmodulerna: vägen UT ur redovisningen. De står FÖRE snabbraden
              med flit. Spärrhaken i navigation.test.ts räknar varje <a efter
              snabbradens öppningstagg och kräver exakt sex — "snabbraden får
@@ -1635,7 +1647,7 @@ export function layout(opts: {
              raden den vaktar. */ ''}
 
         <div class="nav__quick">
-          ${navmodell.quick.map((p) =>
+          ${snabbrad.map((p) =>
             link(p, aktivDest && p.id === aktivDest.id ? 'active' : ''))}
         </div>
         ${/* Grannmodulerna. Samma två vägar står i varje moduls meny, i samma
@@ -1682,7 +1694,9 @@ export function layout(opts: {
           </form>
         </div>
       </div>
-      ${huvudnavFor(aktivDest, doldDest ? '/beslut' : null)}
+      ${/* HUVUDRADEN AR BORTTAGEN (David 2026-09-10): "allt ska ga att na
+           via menyn". Gruppernas ingangar — Hem, Din insats, Redovisning,
+           Projekt, CRM, Arenden, Bibliotek — nas nu genom menyns rubriker. */ ''}
       ${nav}
       </header>
       ${smula}

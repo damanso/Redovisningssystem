@@ -45,7 +45,13 @@ const KONTRAKT = JSON.parse(
   readFileSync(new URL('../kontrakt/navigation.v1.json', import.meta.url), 'utf8'),
 ) as {
   decision_157: string;
-  destinations: { id: string; canonical_url: { kind: string; template?: string } }[];
+  groups: { id: string; label: string; order: number; entry_id: string | null }[];
+  destinations: {
+    id: string;
+    group_id: string;
+    order: number;
+    canonical_url: { kind: string; template?: string };
+  }[];
   surfaces: Record<string, string[]>;
 };
 const SNABBRAD: string[] = KONTRAKT.surfaces[
@@ -220,10 +226,23 @@ beforeAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe('(a) navigationen', () => {
-  it('snabbraden bär uppdragsytan SIST, med de fem befintliga posterna orörda', async () => {
+  it('snabbraden bär OMRÅDETS sidor — på ett uppdrag är det projektens', async () => {
+    // David 2026-09-10: menyn bredvid "de delar av sidorna som är vanligast"
+    // för den del man står i. På en projektsida är det projektgruppens poster,
+    // inte redovisningens kurerade rad. Den raden vaktas av navigation.test.ts
+    // på en redovisningssida, där den hör hemma.
+    const grupp = KONTRAKT.groups.find((g) => g.id === 'projects')!;
+    const vantad = KONTRAKT.destinations
+      .filter((d) => d.group_id === 'projects' && d.id !== grupp.entry_id)
+      .sort((a, b) => a.order - b.order)
+      .slice(0, 6)
+      .map((d) => {
+        const rest = (d.canonical_url.template ?? '').slice('/app/c/:companyId'.length);
+        return rest.startsWith('/') ? rest.slice(1) : '';
+      });
     const quick = meny(await sida(lagetsVag()), '<div class="nav__quick">');
-    expect(poster(quick)).toEqual([...SNABBRAD]);
-    // Etiketten är NAV_GROUPS egen — ingen ny etikett, ingen emoji (KRAV-1).
+    expect(poster(quick)).toEqual(vantad);
+    // Etiketten är kontraktets egen — ingen ny etikett, ingen emoji (KRAV-1).
     expect(quick).toContain('>Projekt</a>');
     expect(quick).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
   });
