@@ -1763,7 +1763,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
-  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const p = await getProject(client, companyId, projectId) as {
       id: string; number: number; name: string; status: string;
@@ -1881,9 +1881,9 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
                 <td><a href="/app/c/${companyId}/tid/${e.id}">${e.invoiced ? 'Visa' : 'Ändra'}</a></td></tr>`)}
               </tbody></table></div>${fakturalankSaknas()}`
       }`;
-    return { name: company.name, body: b };
+    return { name: company.name, objekt: p.name, body: b };
   });
-  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', objekt: name, body }).value);
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', objekt: objektnamn, body }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -6068,7 +6068,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const companyId = parseCompanyId(req.params.companyId);
   const orgId = parseApprovalId(req.params.orgId);
   const filter: ThreadFilter = isThreadFilter(req.query.visa) ? req.query.visa : 'allt';
-  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const o = await getOrganization(client, companyId, orgId) as {
       id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
@@ -6334,9 +6334,9 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
           }
         </div>
       </div>`;
-    return { name: company.name, body: b };
+    return { name: company.name, objekt: o.name, body: b };
   });
-  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', objekt: name, body }).value);
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', objekt: objektnamn, body }).value);
 }));
 
 viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden', async (client, companyId, req) => {

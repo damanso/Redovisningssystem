@@ -149,14 +149,31 @@ function post(d: Destination, bolag: string | null): Post {
   };
 }
 
+/**
+ * Destinationerna som beslut #157 tar ur menyn — vid `yes`, annars inga.
+ *
+ * EN hemvist for listan. Bade modellen (som utelamnar dem ur grupperna) och
+ * renderaren (som ger dem Din insats som agare) laser den har. Tva listor med
+ * samma tva id:n vore ett nytt exemplar av felet steg 5 tog bort.
+ */
+export function doldaAv157(beslut?: string | null): Destination[] {
+  const k = helaKontraktet();
+  const b = beslut ?? k.decision_157;
+  if (b !== 'yes') return [];
+  return k.destinations.filter((d) => d.id === 'crm_today' || d.id === 'approvals');
+}
+
+/** En destination som en menypost — samma form som modellens poster. */
+export function postFor(d: Destination, bolag: string | null): Post {
+  return post(d, bolag);
+}
+
 export function modell(beslut?: string | null, bolag?: string | null): Modell {
   const k = helaKontraktet();
   const b = beslut ?? k.decision_157;
   const co = bolag ?? null;
   const perId = new Map(k.destinations.map((d) => [d.id, d]));
-  // #157: vid JA lämnar Idag och Att göra den grupperade menyn. Sidorna
-  // avvecklas inte — bara menyposterna. "pending beter sig som no."
-  const dolda = b === 'yes' ? new Set(['crm_today', 'approvals']) : new Set<string>();
+  const dolda = new Set(doldaAv157(b).map((d) => d.id));
 
   const groups = [...k.groups]
     .sort((a, c) => a.order - c.order)

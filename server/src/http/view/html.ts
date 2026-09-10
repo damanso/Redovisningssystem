@@ -1,5 +1,5 @@
 import { formatOre, type Ore } from '../../domain/money.js';
-import { modell, type Post } from './kontrakt.js';
+import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -482,6 +482,7 @@ const STYLE = `
 .topbar { view-transition-name: topbar; }
 /* Huvudmenyn: samma fem val som i Hermes ovriga moduler, samma ordning.
    Den star FORE modulens egen meny och ersatts aldrig av den. */
+.nav--konto { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .smula { display:flex; gap:6px; align-items:center; flex-wrap:wrap;
   padding:8px 16px 0; font-size:12.5px; color:var(--ink-3, #667); }
 .smula a { color:inherit; text-decoration:none; border-bottom:1px solid transparent; }
@@ -1375,18 +1376,20 @@ function omradetsIngang(dest: Post | null): string {
   return '/app/g/ekonomi';
 }
 
-function huvudnavFor(aktivDest: Post | null): Raw {
-  const har = omradetsIngang(aktivDest);
+function huvudnavFor(aktivDest: Post | null, tvingad: string | null = null): Raw {
+  const har = tvingad ?? omradetsIngang(aktivDest);
   return html`<nav class="nav nav--huvud" aria-label="Hermes">${NAVMODELL_UTAN_BOLAG.global.map(
     (p) =>
       html`<a href="${p.href ?? '/'}"${
-        p.href === har ? raw(' aria-current="page"') : ''
+        p.href === har
+          ? raw(tvingad ? ' aria-current="location"' : ' aria-current="page"')
+          : ''
       } data-destination-id="${p.id}">${p.label}</a>`,
   )}</nav>`;
 }
 
 /** Skallosa sidor (inloggning, fel) har ingen aktiv sida - inget val lyser. */
-const huvudnav = huvudnavFor(null);
+const huvudnav = huvudnavFor(null, null);
 
 /**
  * Toppraden för sidor utan session: inloggning, registrering, tvåfaktor och
@@ -1551,6 +1554,17 @@ export function layout(opts: {
     opts.active === undefined
       ? null
       : allaPoster.find((p) => kortform(p.href) === opts.active) ?? null;
+  // En destination som #157 tagit ur menyn har ingen grupp att sta i — men
+  // den ska anda kunna saga var man ar. Astras tabell ger den Din insats som
+  // agare, och da ar man UNDER Din insats, inte pa den.
+  const doldDest: Post | null =
+    opts.active === undefined || aktivDest !== null
+      ? null
+      : doldaAv157(null)
+          .map((d) => postFor(d, opts.companyId ?? null))
+          .find((p) => kortform(p.href) === opts.active) ?? null;
+  const insatsen = navmodell.global.find((p) => p.id === 'intervention') ?? null;
+
   const here = aktivDest
     ? {
         group:
@@ -1575,7 +1589,13 @@ export function layout(opts: {
   const ingangen = gruppen?.entry_id
     ? navmodell.global.find((p) => p.id === gruppen.entry_id) ?? null
     : null;
-  const smula = aktivDest
+  const smula = doldDest
+    ? html`<nav class="smula" aria-label="Var du är"><a href="${
+        insatsen?.href ?? '/beslut'
+      }">${insatsen?.label ?? 'Din insats'}</a><span class="smula__sep">/</span><b>${
+        doldDest.label
+      }</b></nav>`
+    : aktivDest
     ? html`<nav class="smula" aria-label="Var du är">${
         ingangen?.href
           ? html`<a href="${ingangen.href}">${gruppen!.label}</a>`
@@ -1646,14 +1666,23 @@ export function layout(opts: {
           opts.companyName ? html`<span class="sep">/</span><span class="co">${opts.companyName}</span>` : ''
         }</a>
         <div style="display:flex;gap:8px;align-items:center">
-          <a class="btn btn--ghost btn--sm" href="/app/notifications">Notiser${opts.unread ? html` <span class="badge">${String(opts.unread)}</span>` : ''}</a>
-          <a class="btn btn--ghost btn--sm" href="/app/account">Konto</a>
+          ${/* Kontoytan ur kontraktet. Forr stod har tva handskrivna knappar,
+               och tre av registrets fem kontoposter gick inte att na fran
+               nagon meny alls. */ ''}
+          <nav class="nav nav--konto" aria-label="Konto och bolag">${navmodell.account.map(
+            (p) =>
+              html`<a class="btn btn--ghost btn--sm" href="${p.href ?? '/app/'}" data-destination-id="${p.id}">${
+                p.id === 'notifications' && opts.unread
+                  ? html`${p.label} <span class="badge">${String(opts.unread)}</span>`
+                  : html`${p.label}`
+              }</a>`,
+          )}</nav>
           <form method="post" action="/app/logout" style="margin:0">
             <button class="btn btn--ghost btn--sm" type="submit">Logga ut</button>
           </form>
         </div>
       </div>
-      ${huvudnavFor(aktivDest)}
+      ${huvudnavFor(aktivDest, doldDest ? '/beslut' : null)}
       ${nav}
       </header>
       ${smula}

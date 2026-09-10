@@ -12,6 +12,10 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 # Lockfil + manifest först för lagercache på beroenden.
+# Webblasarprovet kor bara i utveckling. Utan den har raden laddar
+# playwrights postinstall ner Chromium i varje bygge — for att `npm prune`
+# ska kasta bort den tva steg senare.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 COPY package.json package-lock.json ./
 COPY server/package.json server/package.json
 RUN npm ci
