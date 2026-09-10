@@ -125,7 +125,11 @@ function meny(html: string, start: string): string {
   return html.slice(i, slut);
 }
 
-const antalAktuella = (nav: string): number => (nav.match(/aria-current="page"/g) ?? []).length;
+// Astras matchningsregel 6: "page" pa en exakt destinationssida,
+// "location" pa en underdestination. Bada ar en markering; vilken av dem det
+// ska vara provas dar det spelar roll, inte har.
+const antalAktuella = (nav: string): number =>
+  (nav.match(/aria-current="(page|location)"/g) ?? []).length;
 
 /** Sökvägarna i en meny, i den ordning de står. */
 function poster(nav: string, bolag = companyId): string[] {
@@ -227,9 +231,13 @@ describe('(a) navigationen', () => {
   it('snabbraden markerar EXAKT en post — uppdragsytan när man står på den', async () => {
     const quick = meny(await sida(lagetsVag()), '<div class="nav__quick">');
     expect(antalAktuella(quick)).toBe(1);
-    expect(quick).toContain(`href="/app/c/${companyId}/projects" aria-current="page"`);
+    // UNDERDESTINATION: sidan man star pa ar projektets Laget, inte
+    // projektlistan. Menyns agare markeras darfor "location" — pastar den
+    // "page" sager sidan att man star pa en lista man inte star pa.
+    expect(quick).toContain(`href="/app/c/${companyId}/projects" aria-current="location"`);
 
-    // …och på en sida utanför uppdragsytan är det den sidan som är aktuell.
+    // …och på en sida utanför uppdragsytan är det den sidan som är aktuell —
+    // dar ar den EXAKT, och da ar det "page".
     const annan = meny(await sida(`/app/c/${companyId}/receipts`), '<div class="nav__quick">');
     expect(antalAktuella(annan)).toBe(1);
     expect(annan).toContain(`href="/app/c/${companyId}/receipts" aria-current="page"`);
@@ -291,6 +299,19 @@ describe('(a2) undermenyn på varje uppdragssida', () => {
     expect(poster(nav)).toHaveLength(UNDERMENYN.length);
     expect(antalAktuella(nav)).toBe(1);
     expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
+  });
+
+  it('brödsmulan slutar på projektet, inte på projektlistan', async () => {
+    // Astras regel 6: sista ledet ar den aktuella sidan. Star projektlistan
+    // sist sager sidan att man star pa listan — och da ar brodsmulan en karta
+    // over nagon annans position.
+    const html = await sida(uppdragsvag(''));
+    const i = html.indexOf('<nav class="smula"');
+    expect(i, 'ingen brödsmula på projektsidan').toBeGreaterThan(-1);
+    const smulan = html.slice(i, html.indexOf('</nav>', i));
+    expect(smulan, 'destinationen ska vara en väg tillbaka')
+      .toContain(`href="/app/c/${companyId}/projects"`);
+    expect(smulan, 'sista ledet ska vara projektet').toMatch(/<b>[^<]+<\/b>\s*<\/nav>|<b>[^<]+<\/b>$/);
   });
 
   it('projektsidans aktuella post är "Projektet", och huvudmenyn markerar sin egen', async () => {

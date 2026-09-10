@@ -202,3 +202,21 @@ describe('var är jag?', () => {
     expect(nav, 'Lön ska finnas i menyn').toContain(`href="/app/c/${companyId}/payroll"`);
   });
 });
+
+describe('brödsmulan', () => {
+  it('på en destinationssida är sista ledet sidan själv — och ingen länk', async () => {
+    const skatt = PER_ID.get('tax')!;
+    const grupp = GRUPP.get(skatt.group_id)!;
+    const ingang = PER_ID.get(grupp.entry_id!)!;
+    const sida = await ua.get(`/app/c/${companyId}/tax`).then((r) => r.text);
+    const i = sida.indexOf('<nav class="smula"');
+    expect(i, 'ingen brödsmula på sidan').toBeGreaterThan(-1);
+    const smula = sida.slice(i, sida.indexOf('</nav>', i));
+    // Gruppen är en väg tillbaka; sidan man står på är det inte.
+    expect(smula).toContain(
+      `href="${(ingang.canonical_url as { value: string }).value}">${esc(grupp.label)}</a>`,
+    );
+    expect(smula).toContain(`<b>${esc(skatt.label)}</b>`);
+    expect(smula).not.toContain(`href="/app/c/${companyId}/tax"`);
+  });
+});

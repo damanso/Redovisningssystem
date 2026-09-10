@@ -1883,7 +1883,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       }`;
     return { name: company.name, body: b };
   });
-  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', objekt: name, body }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -2266,7 +2266,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/avtal', page(async (req, res) 
       }),
     };
   });
-  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
 }));
 
 // Multer-fel (för stor fil, trasig multipart) → vänlig notis (samma mönster som
@@ -2359,7 +2359,7 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/las-in', avtalUpload, p
       throw err;
     }
   })();
-  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
 }));
 
 /** Formulärets rader → avtalsdelar. Tomma rader och "Utelämna" faller bort. */
@@ -2426,7 +2426,7 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req
         }),
       };
     });
-    res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', body }).value);
+    res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
   };
 
   if (radfel) { await visaIgen(radfel); return; }
@@ -2831,7 +2831,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/bedomning', page(async (req, r
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: bedomningsSida(req, companyId, await bedomningsunderlag(client, companyId, projectId)) };
   });
-  res.type('html').send(layout({ title: 'Bedömning', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Bedömning', companyId, companyName: name, active: 'projects', objekt: 'Bedömning', body }).value);
 }));
 
 viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, res) => {
@@ -3133,7 +3133,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/signaler', page(async (req, re
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: signalsida(req, companyId, await signalunderlag(client, companyId, projectId, userId)) };
   });
-  res.type('html').send(layout({ title: 'Signaler', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Signaler', companyId, companyName: name, active: 'projects', objekt: 'Signaler', body }).value);
 }));
 
 viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, res) => {
@@ -3389,7 +3389,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res)
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag)) };
   });
-  res.type('html').send(layout({ title: 'Planen', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Planen', companyId, companyName: name, active: 'projects', objekt: 'Planen', body }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -3650,7 +3650,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: kontraktssida(companyId, await kontraktsunderlag(client, companyId, projectId)) };
   });
-  res.type('html').send(layout({ title: 'Kontraktet', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Kontraktet', companyId, companyName: name, active: 'projects', objekt: 'Kontraktet', body }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -4066,7 +4066,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
     const forslag = await statusforslag(client, companyId, projectId);
     return { name: company.name, body: lagessida(companyId, lage, forslag, idag) };
   });
-  res.type('html').send(layout({ title: 'Läget', companyId, companyName: name, active: 'projects', body }).value);
+  res.type('html').send(layout({ title: 'Läget', companyId, companyName: name, active: 'projects', objekt: 'Läget', body }).value);
 }));
 
 // --- Uppdragslistan ---------------------------------------------------------
@@ -5534,7 +5534,7 @@ viewRouter.get('/c/:companyId/tid/:entryId', page(async (req, res) => {
               ${handelseDetalj(h)}</div></div>`)}</div>`}`;
     return { name: company.name, body: b };
   });
-  res.type('html').send(layout({ title: 'Tidpost', companyId, companyName: name, active: 'tid', body }).value);
+  res.type('html').send(layout({ title: 'Tidpost', companyId, companyName: name, active: 'tid', objekt: 'Tidpost', body }).value);
 }));
 
 /** Statusens namn i en select — samma ord som chippen använder. */
@@ -6336,7 +6336,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       </div>`;
     return { name: company.name, body: b };
   });
-  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', body }).value);
+  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'relations', objekt: name, body }).value);
 }));
 
 viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden', async (client, companyId, req) => {

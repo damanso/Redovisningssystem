@@ -482,6 +482,12 @@ const STYLE = `
 .topbar { view-transition-name: topbar; }
 /* Huvudmenyn: samma fem val som i Hermes ovriga moduler, samma ordning.
    Den star FORE modulens egen meny och ersatts aldrig av den. */
+.smula { display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+  padding:8px 16px 0; font-size:12.5px; color:var(--ink-3, #667); }
+.smula a { color:inherit; text-decoration:none; border-bottom:1px solid transparent; }
+.smula a:hover { border-bottom-color:currentColor; }
+.smula b { color:var(--ink, #223); font-weight:600; }
+.smula__sep { opacity:.5; }
 .nav--huvud { display:flex; gap:4px; align-items:center; flex-wrap:wrap;
   padding:6px 18px; border-bottom:1px solid var(--linje, #e3e8ec); }
 .nav--huvud a { display:inline-flex; align-items:center; padding:6px 10px;
@@ -1518,6 +1524,11 @@ export function layout(opts: {
   companyId?: string;
   companyName?: string;
   active?: string;
+  /** Namnet pa objektet nar sidan ar en UNDERDESTINATION (en faktura, ett
+   *  projekt, en flik) i stallet for destinationssidan sjalv. Satt det och
+   *  menyposten markeras som "location", inte "page", och brodsmulan far ett
+   *  sista led. Astras matchningsregel 6. */
+  objekt?: string;
   unread?: number;
   body: Raw;
 }): Raw {
@@ -1550,9 +1561,31 @@ export function layout(opts: {
   const inQuick = aktivDest !== null && navmodell.quick.some((p) => p.id === aktivDest.id);
   const link = (p: Post, cls: string) =>
     html`<a class="${cls}" href="${p.href ?? '#'}"${
-      aktivDest && p.id === aktivDest.id ? raw(' aria-current="page"') : ''
+      aktivDest && p.id === aktivDest.id
+        ? raw(opts.objekt ? ' aria-current="location"' : ' aria-current="page"')
+        : ''
     } data-destination-id="${p.id}">${p.label}</a>`;
 
+
+  // BRODSMULAN. Grupp -> destination -> objekt. Sista ledet ar aldrig en
+  // lank: det ar sidan man star pa. Utan objekt ar destinationen sista ledet.
+  const gruppen = aktivDest
+    ? navmodell.groups.find((g) => g.items.some((p) => p.id === aktivDest.id)) ?? null
+    : null;
+  const ingangen = gruppen?.entry_id
+    ? navmodell.global.find((p) => p.id === gruppen.entry_id) ?? null
+    : null;
+  const smula = aktivDest
+    ? html`<nav class="smula" aria-label="Var du är">${
+        ingangen?.href
+          ? html`<a href="${ingangen.href}">${gruppen!.label}</a>`
+          : html`<span>${gruppen?.label ?? ''}</span>`
+      }<span class="smula__sep">/</span>${
+        opts.objekt
+          ? html`<a href="${aktivDest.href ?? '#'}">${aktivDest.label}</a><span class="smula__sep">/</span><b>${opts.objekt}</b>`
+          : html`<b>${aktivDest.label}</b>`
+      }</nav>`
+    : '';
 
   const nav = opts.companyId
     ? html`<nav class="nav" aria-label="Huvudmeny">
@@ -1623,6 +1656,7 @@ export function layout(opts: {
       ${huvudnavFor(aktivDest)}
       ${nav}
       </header>
+      ${smula}
       <main>${raw(staplabaraTabeller(opts.body.value))}</main>
     </body></html>`;
 }
