@@ -1495,13 +1495,14 @@ function authSkal(): Raw {
     </div>${huvudnav}</header>`;
 }
 
-export function loginPage(error?: string): Raw {
+export function loginPage(error?: string, destination?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Logga in')}</head>
     <body>${authSkal()}<div class="auth-wrap"><form class="auth-card" method="post" action="/app/login">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Logga in</h1>
       <p class="lede">Din bokföring — lugn, tydlig och alltid granskbar.</p>
       ${error ? html`<p class="notice">${error}</p>` : ''}
+      ${destination ? html`<input type="hidden" name="destination" value="${destination}">` : ''}
       <label class="field"><span>E-post</span>
         <input type="email" name="email" autocomplete="username" required autofocus></label>
       <label class="field"><span>Lösenord</span>
@@ -1530,13 +1531,14 @@ export function registerPage(error?: string, values?: { email?: string; name?: s
 }
 
 /** Andra steget vid inloggning: engångskod från autentiseringsappen. */
-export function totpChallengePage(error?: string): Raw {
+export function totpChallengePage(error?: string, destination?: string): Raw {
   return html`<!doctype html><html lang="sv"><head>${head('Tvåfaktor')}</head>
     <body>${authSkal()}<div class="auth-wrap"><form class="auth-card" method="post" action="/app/login/2fa">
       <div class="auth-brand">${MARK}<b>Hermes</b></div>
       <h1>Tvåfaktor</h1>
       <p class="lede">Ange den sexsiffriga koden från din autentiseringsapp.</p>
       ${error ? html`<p class="notice">${error}</p>` : ''}
+      ${destination ? html`<input type="hidden" name="destination" value="${destination}">` : ''}
       <label class="field"><span>Engångskod</span>
         <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="6" required autofocus></label>
       <button class="btn btn--primary" type="submit">Verifiera</button>

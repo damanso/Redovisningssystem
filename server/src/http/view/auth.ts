@@ -9,6 +9,7 @@ import { signToken } from '../../lib/jwt.js';
 import { UuidSchema } from '../../lib/validation.js';
 import { writeAudit } from '../../services/auditService.js';
 import { errorPage } from './html.js';
+import { destination, destinationsFraga } from './kontrakt.js';
 
 const COOKIE = 'session';
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', config.BCRYPT_ROUNDS);
@@ -195,6 +196,17 @@ function agentLasning(req: Request): { userId: string; companyId: string; urlCom
  * uppdragsytans GET-sidor (S10.7). Verifierar JWT ur session-cookien och sätter
  * req.auth. Saknas/ogiltig → omdirigera till login (ingen JSON).
  */
+/**
+ * Inloggningsadressen med destinationen bevarad.
+ *
+ * Bara ett KÄNT destinations-id följer med — aldrig en retur-URL, aldrig en
+ * sträng som inte står i kontraktet. Målet ska överleva inloggningen, och
+ * parametern får inte kunna bära en godtycklig adress.
+ */
+function inloggningen(req: Request, vag: string): string {
+  return vag + destinationsFraga(destination((req.query as { destination?: unknown }).destination));
+}
+
 export function viewAuth(req: Request, res: Response, next: NextFunction): void {
   const agent = agentLasning(req);
   if (agent) {
@@ -212,7 +224,7 @@ export function viewAuth(req: Request, res: Response, next: NextFunction): void 
   }
   const token = parseCookie(req.headers.cookie, COOKIE);
   if (!token) {
-    res.redirect('/app/login');
+    res.redirect(inloggningen(req, '/app/login'));
     return;
   }
   try {
@@ -225,12 +237,12 @@ export function viewAuth(req: Request, res: Response, next: NextFunction): void 
     // En pending-2FA-token har bara passerat lösenordssteget — inte 2FA. Den får
     // aldrig ge åtkomst till appen; skicka till 2FA-steget UTAN att rensa cookien
     // (annars förlorar användaren sitt mellansteg bara genom att öppna appen).
-    if (payload.stage === 'pending_2fa') { res.redirect('/app/login/2fa'); return; }
+    if (payload.stage === 'pending_2fa') { res.redirect(inloggningen(req, '/app/login/2fa')); return; }
     req.auth = { userId: payload.sub, actor: 'human' };
     next();
   } catch {
     clearSessionCookie(res);
-    res.redirect('/app/login');
+    res.redirect(inloggningen(req, '/app/login'));
   }
 }
 

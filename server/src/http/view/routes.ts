@@ -85,13 +85,17 @@ import { k10Computation, generateK10Sru, type K10Result } from '../../services/k
 import { k10Prefill } from '../../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
 import { createFiscalYear, setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
+import { destination, destinationsAdress, destinationsFraga } from './kontrakt.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
 
 // ---- Autentisering ----
-viewRouter.get('/login', (_req, res) => {
-  res.type('html').send(loginPage().value);
+viewRouter.get('/login', (req, res) => {
+  // Destinationen foljer med IN i formularet som ett dolt falt, sa att den
+  // overlever POST:en. Bara ett kant id -- ett okant slappas tyst, aldrig
+  // vidare som en adress.
+  res.type('html').send(loginPage(undefined, destination(req.query.destination)?.id).value);
 });
 
 viewRouter.post(
@@ -99,24 +103,25 @@ viewRouter.post(
   rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
   page(async (req, res) => {
     assertSameOrigin(req);
+    const mal = destination((req.body as { destination?: unknown }).destination);
     const parsed = z.object({ email: z.string().max(254), password: z.string().max(200) }).safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).type('html').send(loginPage('Fyll i e-post och lösenord.').value);
+      res.status(400).type('html').send(loginPage('Fyll i e-post och lösenord.', mal?.id).value);
       return;
     }
     const user = await verifyCredentials(parsed.data.email, parsed.data.password);
     if (!user) {
-      res.status(401).type('html').send(loginPage('Fel e-post eller lösenord.').value);
+      res.status(401).type('html').send(loginPage('Fel e-post eller lösenord.', mal?.id).value);
       return;
     }
     if (user.totpEnabled) {
       // Lösenordet stämmer men kontot har 2FA → utfärda mellansteg och be om kod.
       issuePendingSession(res, user.id);
-      res.redirect('/app/login/2fa');
+      res.redirect('/app/login/2fa' + destinationsFraga(mal));
       return;
     }
     issueSession(res, user.id);
-    res.redirect('/app');
+    res.redirect(mal ? '/app/' + destinationsFraga(mal) : '/app');
   }),
 );
 
@@ -166,25 +171,27 @@ viewRouter.post(
 
 // Andra steget i 2FA-inloggning: kräver en giltig pending-cookie + TOTP-kod.
 viewRouter.get('/login/2fa', page(async (req, res) => {
+  const mal = destination(req.query.destination);
   const pending = readPendingUserId(req);
-  if (!pending) { res.redirect('/app/login'); return; }
-  res.type('html').send(totpChallengePage().value);
+  if (!pending) { res.redirect('/app/login' + destinationsFraga(mal)); return; }
+  res.type('html').send(totpChallengePage(undefined, mal?.id).value);
 }));
 
 viewRouter.post('/login/2fa',
   rateLimit({ windowMs: 60_000, limit: config.isTest ? 100_000 : 20, standardHeaders: true, legacyHeaders: false }),
   page(async (req, res) => {
     assertSameOrigin(req);
+    const mal = destination((req.body as { destination?: unknown }).destination);
     const pending = readPendingUserId(req);
-    if (!pending) { res.redirect('/app/login'); return; }
+    if (!pending) { res.redirect('/app/login' + destinationsFraga(mal)); return; }
     const code = z.string().max(12).safeParse((req.body as { code?: unknown }).code);
     const ok = code.success && await withUserTransaction(pending, (client) => verifyLoginTotp(client, pending, code.data));
     if (!ok) {
-      res.status(401).type('html').send(totpChallengePage('Fel kod. Försök igen.').value);
+      res.status(401).type('html').send(totpChallengePage('Fel kod. Försök igen.', mal?.id).value);
       return;
     }
     issueSession(res, pending); // ersätter pending-cookien med en full session
-    res.redirect('/app');
+    res.redirect(mal ? '/app/' + destinationsFraga(mal) : '/app');
   }),
 );
 
@@ -266,6 +273,20 @@ viewRouter.get(
 viewRouter.get(
   '/',
   page(async (req, res) => {
+    // BOLAGSUPPLOSNINGEN. En meny som inte vet vilket bolag som galler lankar
+    // hit med ?destination=<id> i stallet for att gissa ett bolags-id.
+    // Parametern bar ett ID ur navigationskontraktet, aldrig en retur-URL.
+    const mal = destination(req.query.destination);
+    if (req.query.destination !== undefined && mal === undefined) {
+      res.status(404).type('html').send(layout({
+        title: 'Okänd destination',
+        body: html`<div class="page-head"><div><h1>Okänd destination</h1>
+          <p class="lede">Adressen bad om en destination som inte finns i
+          navigationskontraktet. Den avvisas — ett okänt mål gissas aldrig.</p>
+          </div></div><p><a class="btn btn--ghost btn--sm" href="/app">Till dina bolag</a></p>`,
+      }).value);
+      return;
+    }
     const userId = getUserId(req);
     const companies = await withUserTransaction(userId, async (client) => {
       const r = await client.query<{ id: string; name: string; role: string }>(
@@ -275,16 +296,34 @@ viewRouter.get(
       );
       return r.rows;
     });
+    if (mal) {
+      // Ett mal som inte behover ett bolag gar direkt.
+      const utan = destinationsAdress(mal, null);
+      if (utan) { res.redirect(utan); return; }
+      // Ett tillgangligt bolag valjs at honom. Flera kraver ett val. Noll
+      // visar befintligt flode for att skapa bolag -- och behaller avsikten.
+      if (companies.length === 1) {
+        res.redirect(destinationsAdress(mal, companies[0]!.id)!);
+        return;
+      }
+    }
+    const malLank = (id: string): string =>
+      (mal ? destinationsAdress(mal, id) : null) ?? `/app/c/${id}`;
     const created = typeof req.query.skapat === 'string';
-    const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}<h1>Dina bolag</h1>
-        <p class="lede">Öppna ett bolag för att se dess bokföring.</p></div></div>
+    const body = html`<div class="page-head"><div>${eyebrow('Välj bolag')}
+        <h1>${mal ? mal.label : 'Dina bolag'}</h1>
+        <p class="lede">${
+          mal
+            ? html`${mal.hint} — välj vilket bolag det gäller.`
+            : html`Öppna ett bolag för att se dess bokföring.`
+        }</p></div></div>
       ${felNotis(req)}
       ${
         companies.length === 0
           ? html`<div class="empty"><div class="big">Inga bolag ännu</div>Skapa ditt första bolag nedan för att komma igång.</div>`
           : html`<div class="kpi-grid" style="margin-top:14px">
               ${companies.map(
-                (c) => html`<a class="kpi" href="/app/c/${c.id}" style="text-decoration:none;color:inherit;display:block">
+                (c) => html`<a class="kpi" href="${malLank(c.id)}" style="text-decoration:none;color:inherit;display:block">
                   <div class="l">${chip(roleLabel(c.role), c.role === 'owner' ? 'info' : 'muted')}</div>
                   <div class="v" style="font-size:18px;margin-top:9px">${c.name}</div>
                   <div class="muted" style="font-size:12.5px;margin-top:6px">Öppna →</div>
@@ -298,6 +337,7 @@ viewRouter.get(
         <div class="panel__body" style="padding:16px">
           ${created ? html`<p class="notice">Bolaget skapades.</p>` : ''}
           <form method="post" action="/app/companies" style="display:flex;flex-direction:column;gap:12px">
+            ${mal ? html`<input type="hidden" name="destination" value="${mal.id}">` : ''}
             <label class="field" style="margin:0"><span>Bolagsnamn</span>
               <input type="text" name="name" required autofocus placeholder="T.ex. Mitt Företag AB"></label>
             <label class="field" style="margin:0"><span>Organisationsnummer (valfritt)</span>
@@ -326,7 +366,10 @@ viewRouter.post(
       return;
     }
     const company = await createOwnedCompany(userId, parsed.data);
-    res.redirect(`/app/c/${company.id}`);
+    // Avsikten overlever bolagsskapandet: bad han om Fakturor innan han hade
+    // ett bolag ar det Fakturor han ska landa pa, inte en oversikt.
+    const mal = destination((req.body as { destination?: unknown }).destination);
+    res.redirect((mal && destinationsAdress(mal, company.id)) ?? `/app/c/${company.id}`);
   }),
 );
 

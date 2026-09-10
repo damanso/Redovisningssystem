@@ -29,7 +29,12 @@ async function customerRow(id: string) {
   return withAdmin(async (c) => (await c.query('SELECT name, org_number, vat_number, email, phone, address, tags, is_active FROM customers WHERE id = $1', [id])).rows[0]);
 }
 async function fileCount(): Promise<number> {
-  return withAdmin(async (c) => Number((await c.query('SELECT count(*) FROM files')).rows[0].count));
+  // Bara DET HAR provets bolag. Ett globalt count(*) over den delade
+  // provdatabasen ar en proxy: den svarar pa "hur manga filrader finns det"
+  // nar fragan ar "togs kundens PDF-rad bort", och den andras av vilken annan
+  // provfil som helst som rakar kora samtidigt.
+  return withAdmin(async (c) => Number(
+    (await c.query('SELECT count(*) FROM files WHERE company_id = $1', [companyId])).rows[0].count));
 }
 async function countRows(table: string, partyType: string, partyId: string): Promise<number> {
   return withAdmin(async (c) => Number((await c.query(`SELECT count(*) FROM ${table} WHERE company_id = $1 AND party_type = $2 AND party_id = $3`, [companyId, partyType, partyId])).rows[0].count));
