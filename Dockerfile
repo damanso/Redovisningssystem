@@ -35,6 +35,10 @@ RUN apt-get update \
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./dist
 COPY --from=build /app/server/migrations ./migrations
+# Navigationskontraktet. Kors tjansten fran kallan pa VM:en ligger
+# filen redan i server/kontrakt/; i bilden maste den kopieras hit
+# uttryckligen, annars startar /app utan sitt register.
+COPY --from=build /app/server/kontrakt ./kontrakt
 COPY --from=build /app/server/package.json ./package.json
 COPY docker/start.sh ./start.sh
 RUN chmod +x start.sh && mkdir -p /data/uploads && chown -R app:app /app /data

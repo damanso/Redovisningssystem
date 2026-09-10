@@ -1,0 +1,3124 @@
+{
+  "schema_version": 1,
+  "contract_version": "1.0.0-rc.1",
+  "decision_157": "yes",
+  "groups": [
+    {
+      "id": "start",
+      "label": "Start",
+      "order": 10,
+      "hint": "Hem och det som behöver dig",
+      "entry_id": "home"
+    },
+    {
+      "id": "company_work",
+      "label": "Bolagets arbete",
+      "order": 20,
+      "hint": "Överläggning, läge och arbetsprotokoll",
+      "entry_id": null
+    },
+    {
+      "id": "accounting",
+      "label": "Redovisning",
+      "order": 30,
+      "hint": "Ekonomi, bokföring och rapportering",
+      "entry_id": "accounting_entry"
+    },
+    {
+      "id": "projects",
+      "label": "Projekt",
+      "order": 40,
+      "hint": "Uppdrag, tid och projektstyrning",
+      "entry_id": "projects_entry"
+    },
+    {
+      "id": "crm",
+      "label": "CRM",
+      "order": 50,
+      "hint": "Relationer, personer och åtaganden",
+      "entry_id": "crm_entry"
+    },
+    {
+      "id": "cases",
+      "label": "Ärenden",
+      "order": 60,
+      "hint": "Ärenden, historik och rättelser",
+      "entry_id": "cases_all"
+    },
+    {
+      "id": "knowledge",
+      "label": "Bibliotek",
+      "order": 70,
+      "hint": "Dokument och underlag",
+      "entry_id": "library"
+    },
+    {
+      "id": "system",
+      "label": "System & drift",
+      "order": 80,
+      "hint": "Drift, spårbarhet och anslutningar",
+      "entry_id": null
+    },
+    {
+      "id": "account",
+      "label": "Konto & bolag",
+      "order": 90,
+      "hint": "Bolagsval och personliga inställningar",
+      "entry_id": "companies"
+    }
+  ],
+  "destinations": [
+    {
+      "id": "home",
+      "label": "Hem",
+      "group_id": "start",
+      "order": 10,
+      "hint": "Hermes ingång",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "intervention",
+      "label": "Din insats",
+      "group_id": "start",
+      "order": 20,
+      "hint": "Det som behöver dig, med redovisad täckning",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/beslut"
+      },
+      "legacy_urls": [
+        {
+          "method": "GET",
+          "pathname": "/uppfoljning",
+          "behavior": "redirect",
+          "status": 308
+        }
+      ],
+      "active_match": [
+        {
+          "pathname": "/beslut",
+          "mode": "exact",
+          "query": null
+        },
+        {
+          "pathname": "/uppfoljning",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "rooms",
+      "label": "Rum",
+      "group_id": "company_work",
+      "order": 10,
+      "hint": "Bolagets nästlade överläggningsrum",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/rum"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/rum",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "situation",
+      "label": "Läget",
+      "group_id": "company_work",
+      "order": 20,
+      "hint": "Bolagets lägesyta",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/laget"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/laget",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "label": "Uppgifter",
+      "group_id": "company_work",
+      "order": 30,
+      "hint": "Den befintliga uppgiftsytan",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/uppgifter"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/uppgifter",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "role_runs",
+      "label": "Rollpassen",
+      "group_id": "company_work",
+      "order": 40,
+      "hint": "Arbetsprotokoll, serier och eskalering per roll",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/katalog/02-Områden/ledningsgrupp/pass"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/katalog/02-Områden/ledningsgrupp/pass",
+          "mode": "subtree",
+          "query": null
+        },
+        {
+          "pathname": "/fil/02-Områden/ledningsgrupp/pass",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "accounting_entry",
+      "label": "Redovisning",
+      "group_id": "accounting",
+      "order": 10,
+      "hint": "Välj bolag och öppna ekonomin",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/g/ekonomi"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/g/ekonomi",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "accounting_overview",
+      "label": "Översikt",
+      "group_id": "accounting",
+      "order": 20,
+      "hint": "Bolagets ekonomiska översikt",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "approvals",
+      "label": "Att göra",
+      "group_id": "accounting",
+      "order": 30,
+      "hint": "Godkännanden i redovisningen",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/approvals",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/approvals",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "invoices",
+      "label": "Fakturor",
+      "group_id": "accounting",
+      "order": 40,
+      "hint": "Fakturor och fakturadetaljer",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/invoices",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/invoices",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "receipts",
+      "label": "Kvitton",
+      "group_id": "accounting",
+      "order": 50,
+      "hint": "Kvitton och registrering",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/receipts",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/receipts",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "accounting_search",
+      "label": "Sök",
+      "group_id": "accounting",
+      "order": 60,
+      "hint": "Sök i bolagets redovisning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/sok",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/sok",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "receivables",
+      "label": "Kundreskontra",
+      "group_id": "accounting",
+      "order": 70,
+      "hint": "Kundfordringar",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/receivables",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/receivables",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "suppliers",
+      "label": "Leverantörer",
+      "group_id": "accounting",
+      "order": 80,
+      "hint": "Leverantörsregister",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/suppliers",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/suppliers",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "payables",
+      "label": "Leverantörsreskontra",
+      "group_id": "accounting",
+      "order": 90,
+      "hint": "Leverantörsskulder",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/payables",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/payables",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "recurring",
+      "label": "Abonnemang",
+      "group_id": "accounting",
+      "order": 100,
+      "hint": "Återkommande fakturering",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/recurring",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/recurring",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "payroll",
+      "label": "Lön",
+      "group_id": "accounting",
+      "order": 110,
+      "hint": "Lönehantering",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/payroll",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/payroll",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "vat",
+      "label": "Moms",
+      "group_id": "accounting",
+      "order": 120,
+      "hint": "Momsredovisning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/vat",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/vat",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "tax",
+      "label": "Skatt",
+      "group_id": "accounting",
+      "order": 130,
+      "hint": "Bolagets skatteöversikt",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/tax",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/tax",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "ec_sales",
+      "label": "EU-moms",
+      "group_id": "accounting",
+      "order": 140,
+      "hint": "Periodisk sammanställning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/ec-sales",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/ec-sales",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "ink2",
+      "label": "Deklaration",
+      "group_id": "accounting",
+      "order": 150,
+      "hint": "Inkomstdeklaration för bolaget",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/ink2",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/ink2",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "k10",
+      "label": "K10 (3:12)",
+      "group_id": "accounting",
+      "order": 160,
+      "hint": "K10-underlag",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/k10",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/k10",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "annual",
+      "label": "Bokslut",
+      "group_id": "accounting",
+      "order": 170,
+      "hint": "Årsavslut och årsredovisning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/annual",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/annual",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "assets",
+      "label": "Anläggningar",
+      "group_id": "accounting",
+      "order": 180,
+      "hint": "Anläggningstillgångar",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/assets",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/assets",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cashflow",
+      "label": "Kassaflöde",
+      "group_id": "accounting",
+      "order": 190,
+      "hint": "In- och utbetalningar",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/cashflow",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/cashflow",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "reports",
+      "label": "Rapporter",
+      "group_id": "accounting",
+      "order": 200,
+      "hint": "Ekonomiska rapporter",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/reports",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/reports",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "ledger",
+      "label": "Huvudbok",
+      "group_id": "accounting",
+      "order": 210,
+      "hint": "Bokföringens poster",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/ledger",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/ledger",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "analytics",
+      "label": "Analys",
+      "group_id": "accounting",
+      "order": 220,
+      "hint": "Ekonomisk analys",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/analytics",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/analytics",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "label": "Dokument",
+      "group_id": "accounting",
+      "order": 230,
+      "hint": "Redovisningens dokument",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/documents",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/documents",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "articles",
+      "label": "Artiklar",
+      "group_id": "accounting",
+      "order": 240,
+      "hint": "Artikelregister",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/articles",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/articles",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "import",
+      "label": "Import",
+      "group_id": "accounting",
+      "order": 250,
+      "hint": "Importera bokföring och bankunderlag",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/import",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/import",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "projects_entry",
+      "label": "Projekt",
+      "group_id": "projects",
+      "order": 10,
+      "hint": "Välj bolag och öppna projekten",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/g/projekt"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/g/projekt",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "projects_list",
+      "label": "Projekt",
+      "group_id": "projects",
+      "order": 20,
+      "hint": "Bolagets projekt och projektdetaljer",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/projects",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/projects",
+          "mode": "subtree",
+          "query": null
+        },
+        {
+          "pathname": "/app/c/:companyId/uppdrag",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "time",
+      "label": "Tid",
+      "group_id": "projects",
+      "order": 30,
+      "hint": "Registrerad tid och tidposter",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/tid",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/tid",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "time_proposals",
+      "label": "Tidsförslag",
+      "group_id": "projects",
+      "order": 40,
+      "hint": "Föreslagen tid att behandla",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/tid/forslag",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/tid/forslag",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "steering",
+      "label": "Styrning",
+      "group_id": "projects",
+      "order": 50,
+      "hint": "Projektstyrning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/steering",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/steering",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "crm_entry",
+      "label": "CRM",
+      "group_id": "crm",
+      "order": 10,
+      "hint": "Välj bolag och öppna relationerna",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/g/crm"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/g/crm",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "relations",
+      "label": "Relationer",
+      "group_id": "crm",
+      "order": 20,
+      "hint": "Organisationer och relationshistorik",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/relations",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/relations",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "people",
+      "label": "Personer",
+      "group_id": "crm",
+      "order": 30,
+      "hint": "CRM:s personregister",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/crm/personer",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/crm/personer",
+          "mode": "exact",
+          "query": null
+        },
+        {
+          "pathname": "/katalog/03-Resurser/kontakter",
+          "mode": "subtree",
+          "query": null
+        },
+        {
+          "pathname": "/fil/03-Resurser/kontakter",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "commitments",
+      "label": "Åtaganden",
+      "group_id": "crm",
+      "order": 40,
+      "hint": "Löften och deras riktning",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/commitments",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/commitments",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "customers",
+      "label": "Kunder",
+      "group_id": "crm",
+      "order": 50,
+      "hint": "Kundregister och kunddetaljer",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/customers",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/customers",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "crm_today",
+      "label": "Idag",
+      "group_id": "crm",
+      "order": 60,
+      "hint": "CRM:s befintliga dagsyta",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/idag",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/idag",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "ilt",
+      "label": "ILT — ambassadörerna",
+      "group_id": "crm",
+      "order": 70,
+      "hint": "Kundyta med personer och öppna ärenden",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/ilt"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/ilt",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cases_all",
+      "label": "Ärenden",
+      "group_id": "cases",
+      "order": 10,
+      "hint": "Ärendeöverblick och ärendedetaljer",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/vy"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/vy",
+          "mode": "exact",
+          "query": null
+        },
+        {
+          "pathname": "/vy/arende",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cases_mine",
+      "label": "Mina ärenden",
+      "group_id": "cases",
+      "order": 20,
+      "hint": "Den befintliga personliga ärendevyn",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/vy/mitt"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/vy/mitt",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cases_digest",
+      "label": "Ärendehistorik",
+      "group_id": "cases",
+      "order": 30,
+      "hint": "Ärendeplattformens digest",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/vy/digest"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/vy/digest",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cases_search",
+      "label": "Sök ärenden",
+      "group_id": "cases",
+      "order": 40,
+      "hint": "Sök i ärendeplattformen",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/vy/sok"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/vy/sok",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "cases_corrections",
+      "label": "Rättelser",
+      "group_id": "cases",
+      "order": 50,
+      "hint": "Ärendeplattformens rättelsevy",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/vy/rattelser"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/vy/rattelser",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "label": "Bibliotek",
+      "group_id": "knowledge",
+      "order": 10,
+      "hint": "Dokument och kataloger",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/bibliotek"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/bibliotek",
+          "mode": "exact",
+          "query": null
+        },
+        {
+          "pathname": "/katalog",
+          "mode": "subtree",
+          "query": null
+        },
+        {
+          "pathname": "/fil",
+          "mode": "subtree",
+          "query": null
+        },
+        {
+          "pathname": "/vy/dok",
+          "mode": "subtree",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "judgments",
+      "label": "Granskningsdomar",
+      "group_id": "system",
+      "order": 10,
+      "hint": "Den befintliga domsytan",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/domar"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/domar",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "events",
+      "label": "Händelser",
+      "group_id": "system",
+      "order": 20,
+      "hint": "Den befintliga händelseytan",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/handelser"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/handelser",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "operations",
+      "label": "Drift",
+      "group_id": "system",
+      "order": 30,
+      "hint": "Driftöversikt",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/drift"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/drift",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "audit",
+      "label": "Revisionslogg",
+      "group_id": "system",
+      "order": 40,
+      "hint": "Redovisningens revisionsspår",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/audit",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/audit",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "connect",
+      "label": "Anslut AI",
+      "group_id": "system",
+      "order": 50,
+      "hint": "Anslutning till redovisningen",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/connect",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/connect",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "companies",
+      "label": "Välj bolag",
+      "group_id": "account",
+      "order": 10,
+      "hint": "Välj eller skapa bolag",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "account",
+      "label": "Mitt konto",
+      "group_id": "account",
+      "order": 20,
+      "hint": "Personliga kontoinställningar",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/account"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/account",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "notifications",
+      "label": "Aviseringar",
+      "group_id": "account",
+      "order": 30,
+      "hint": "Personliga aviseringar",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/notifications"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/notifications",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "consolidated",
+      "label": "Bolagsöversikt",
+      "group_id": "account",
+      "order": 40,
+      "hint": "Samlad ekonomisk översikt",
+      "canonical_url": {
+        "kind": "path",
+        "value": "/app/consolidated"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/consolidated",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    },
+    {
+      "id": "team",
+      "label": "Team",
+      "group_id": "account",
+      "order": 50,
+      "hint": "Inbjudna människor och deras roller i bolaget",
+      "canonical_url": {
+        "kind": "company",
+        "template": "/app/c/:companyId/team",
+        "resolver": "company_destination"
+      },
+      "legacy_urls": [],
+      "active_match": [
+        {
+          "pathname": "/app/c/:companyId/team",
+          "mode": "exact",
+          "query": null
+        }
+      ]
+    }
+  ],
+  "surfaces": {
+    "global": [
+      "home",
+      "intervention",
+      "accounting_entry",
+      "projects_entry",
+      "crm_entry",
+      "cases_all",
+      "library"
+    ],
+    "account": [
+      "companies",
+      "account",
+      "notifications",
+      "consolidated",
+      "team"
+    ],
+    "accounting_quick_pending_or_no": [
+      "accounting_overview",
+      "crm_today",
+      "approvals",
+      "invoices",
+      "receipts",
+      "projects_list"
+    ],
+    "accounting_quick_yes": [
+      "accounting_overview",
+      "invoices",
+      "receipts",
+      "projects_list"
+    ]
+  },
+  "routes": [
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/",
+      "public_pattern": "/",
+      "category": "a",
+      "owner_id": "home",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/beslut",
+      "public_pattern": "/beslut",
+      "category": "a",
+      "owner_id": "intervention",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/uppfoljning",
+      "public_pattern": "/uppfoljning",
+      "category": "a",
+      "owner_id": "intervention",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/bibliotek",
+      "public_pattern": "/bibliotek",
+      "category": "a",
+      "owner_id": "library",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/domar",
+      "public_pattern": "/domar",
+      "category": "a",
+      "owner_id": "judgments",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/drift",
+      "public_pattern": "/drift",
+      "category": "a",
+      "owner_id": "operations",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/handelser",
+      "public_pattern": "/handelser",
+      "category": "a",
+      "owner_id": "events",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/ilt",
+      "public_pattern": "/ilt",
+      "category": "a",
+      "owner_id": "ilt",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/laget",
+      "public_pattern": "/laget",
+      "category": "a",
+      "owner_id": "situation",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/rum",
+      "public_pattern": "/rum",
+      "category": "a",
+      "owner_id": "rooms",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/uppgifter",
+      "public_pattern": "/uppgifter",
+      "category": "a",
+      "owner_id": "tasks",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/rum/*",
+      "public_pattern": "/rum/*",
+      "category": "b",
+      "owner_id": "rooms",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/katalog/*",
+      "public_pattern": "/katalog/*",
+      "category": "b",
+      "owner_id": "library",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/fil/*",
+      "public_pattern": "/fil/*",
+      "category": "d",
+      "owner_id": "library",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/yta/typsnitt/*",
+      "public_pattern": "/yta/typsnitt/*",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/punktsvar",
+      "public_pattern": "/punktsvar",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/rapport",
+      "public_pattern": "/rapport",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/ruminlagg",
+      "public_pattern": "/ruminlagg",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/svara",
+      "public_pattern": "/svara",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/",
+      "public_pattern": "/vy",
+      "category": "a",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/mitt",
+      "public_pattern": "/vy/mitt",
+      "category": "a",
+      "owner_id": "cases_mine",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/digest",
+      "public_pattern": "/vy/digest",
+      "category": "a",
+      "owner_id": "cases_digest",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/sok",
+      "public_pattern": "/vy/sok",
+      "category": "a",
+      "owner_id": "cases_search",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/rattelser",
+      "public_pattern": "/vy/rattelser",
+      "category": "a",
+      "owner_id": "cases_corrections",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/arende/:identifier",
+      "public_pattern": "/vy/arende/:identifier",
+      "category": "b",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/dok/*sokvag",
+      "public_pattern": "/vy/dok/*sokvag",
+      "category": "b",
+      "owner_id": "library",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/logga-in",
+      "public_pattern": "/vy/logga-in",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/typsnitt/:fil",
+      "public_pattern": "/vy/typsnitt/:fil",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/logga-in",
+      "public_pattern": "/vy/logga-in",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/logga-ut",
+      "public_pattern": "/vy/logga-ut",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/arende/:identifier/kommentar",
+      "public_pattern": "/vy/arende/:identifier/kommentar",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/arende/:identifier/ratta",
+      "public_pattern": "/vy/arende/:identifier/ratta",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/arende/:identifier/etikett/tabort",
+      "public_pattern": "/vy/arende/:identifier/etikett/tabort",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/kommentar/:id/ratta",
+      "public_pattern": "/vy/kommentar/:id/ratta",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/kommentar/:id/tabort",
+      "public_pattern": "/vy/kommentar/:id/tabort",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/kommentar/:id/aterstall",
+      "public_pattern": "/vy/kommentar/:id/aterstall",
+      "category": "c",
+      "owner_id": "cases_all",
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/namn/projekt",
+      "public_pattern": "/vy/namn/projekt",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/namn/etikett",
+      "public_pattern": "/vy/namn/etikett",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/nyckel/:id/aterkalla",
+      "public_pattern": "/vy/nyckel/:id/aterkalla",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/actions",
+      "public_pattern": "/api/actions",
+      "category": "e",
+      "owner_id": null,
+      "verification": "conflict"
+    },
+    {
+      "service": "arenden",
+      "method": "POST",
+      "router_pattern": "/actions/:name",
+      "public_pattern": "/api/actions/:name",
+      "category": "c",
+      "owner_id": null,
+      "verification": "conflict"
+    },
+    {
+      "service": "arenden",
+      "method": "GET",
+      "router_pattern": "/health",
+      "public_pattern": "/health",
+      "category": "e",
+      "owner_id": null,
+      "verification": "conflict"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId",
+      "public_pattern": "/app/c/:companyId",
+      "category": "a",
+      "owner_id": "accounting_overview",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/analytics",
+      "public_pattern": "/app/c/:companyId/analytics",
+      "category": "a",
+      "owner_id": "analytics",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/annual",
+      "public_pattern": "/app/c/:companyId/annual",
+      "category": "a",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/approvals",
+      "public_pattern": "/app/c/:companyId/approvals",
+      "category": "a",
+      "owner_id": "approvals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/articles",
+      "public_pattern": "/app/c/:companyId/articles",
+      "category": "a",
+      "owner_id": "articles",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/assets",
+      "public_pattern": "/app/c/:companyId/assets",
+      "category": "a",
+      "owner_id": "assets",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/audit",
+      "public_pattern": "/app/c/:companyId/audit",
+      "category": "a",
+      "owner_id": "audit",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/cashflow",
+      "public_pattern": "/app/c/:companyId/cashflow",
+      "category": "a",
+      "owner_id": "cashflow",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/commitments",
+      "public_pattern": "/app/c/:companyId/commitments",
+      "category": "a",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/connect",
+      "public_pattern": "/app/c/:companyId/connect",
+      "category": "a",
+      "owner_id": "connect",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/crm/personer",
+      "public_pattern": "/app/c/:companyId/crm/personer",
+      "category": "a",
+      "owner_id": "people",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/customers",
+      "public_pattern": "/app/c/:companyId/customers",
+      "category": "a",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/documents",
+      "public_pattern": "/app/c/:companyId/documents",
+      "category": "a",
+      "owner_id": "documents",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/ec-sales",
+      "public_pattern": "/app/c/:companyId/ec-sales",
+      "category": "a",
+      "owner_id": "ec_sales",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/idag",
+      "public_pattern": "/app/c/:companyId/idag",
+      "category": "a",
+      "owner_id": "crm_today",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/import",
+      "public_pattern": "/app/c/:companyId/import",
+      "category": "a",
+      "owner_id": "import",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/ink2",
+      "public_pattern": "/app/c/:companyId/ink2",
+      "category": "a",
+      "owner_id": "ink2",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/invoices",
+      "public_pattern": "/app/c/:companyId/invoices",
+      "category": "a",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/k10",
+      "public_pattern": "/app/c/:companyId/k10",
+      "category": "a",
+      "owner_id": "k10",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/ledger",
+      "public_pattern": "/app/c/:companyId/ledger",
+      "category": "a",
+      "owner_id": "ledger",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/payables",
+      "public_pattern": "/app/c/:companyId/payables",
+      "category": "a",
+      "owner_id": "payables",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/payroll",
+      "public_pattern": "/app/c/:companyId/payroll",
+      "category": "a",
+      "owner_id": "payroll",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects",
+      "public_pattern": "/app/c/:companyId/projects",
+      "category": "a",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/receipts",
+      "public_pattern": "/app/c/:companyId/receipts",
+      "category": "a",
+      "owner_id": "receipts",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/receivables",
+      "public_pattern": "/app/c/:companyId/receivables",
+      "category": "a",
+      "owner_id": "receivables",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/recurring",
+      "public_pattern": "/app/c/:companyId/recurring",
+      "category": "a",
+      "owner_id": "recurring",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/relations",
+      "public_pattern": "/app/c/:companyId/relations",
+      "category": "a",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/reports",
+      "public_pattern": "/app/c/:companyId/reports",
+      "category": "a",
+      "owner_id": "reports",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/sok",
+      "public_pattern": "/app/c/:companyId/sok",
+      "category": "a",
+      "owner_id": "accounting_search",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/steering",
+      "public_pattern": "/app/c/:companyId/steering",
+      "category": "a",
+      "owner_id": "steering",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/suppliers",
+      "public_pattern": "/app/c/:companyId/suppliers",
+      "category": "a",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/tax",
+      "public_pattern": "/app/c/:companyId/tax",
+      "category": "a",
+      "owner_id": "tax",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/team",
+      "public_pattern": "/app/c/:companyId/team",
+      "category": "a",
+      "owner_id": "team",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/tid",
+      "public_pattern": "/app/c/:companyId/tid",
+      "category": "a",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/tid/forslag",
+      "public_pattern": "/app/c/:companyId/tid/forslag",
+      "category": "a",
+      "owner_id": "time_proposals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/vat",
+      "public_pattern": "/app/c/:companyId/vat",
+      "category": "a",
+      "owner_id": "vat",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/",
+      "public_pattern": "/app/",
+      "category": "a",
+      "owner_id": "companies",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/account",
+      "public_pattern": "/app/account",
+      "category": "a",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/notifications",
+      "public_pattern": "/app/notifications",
+      "category": "a",
+      "owner_id": "notifications",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/consolidated",
+      "public_pattern": "/app/consolidated",
+      "category": "a",
+      "owner_id": "consolidated",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/g/:omrade",
+      "public_pattern": "/app/g/:omrade",
+      "category": "a",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId",
+      "category": "b",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/customers/:partyId",
+      "public_pattern": "/app/c/:companyId/customers/:partyId",
+      "category": "b",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/suppliers/:partyId",
+      "public_pattern": "/app/c/:companyId/suppliers/:partyId",
+      "category": "b",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/relations/:orgId",
+      "public_pattern": "/app/c/:companyId/relations/:orgId",
+      "category": "b",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId",
+      "public_pattern": "/app/c/:companyId/projects/:projectId",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/tid/:entryId",
+      "public_pattern": "/app/c/:companyId/tid/:entryId",
+      "category": "b",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/avtal",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/avtal",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/bedomning",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/bedomning",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/kontraktet",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/kontraktet",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/laget",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/laget",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/leveranserna",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/leveranserna",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/pengarna",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/pengarna",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/planen",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/planen",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/rapporterna",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/rapporterna",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/signaler",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/signaler",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/uppdrag",
+      "public_pattern": "/app/c/:companyId/uppdrag",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId/pdf",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId/pdf",
+      "category": "d",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/annual/arsredovisning.xhtml",
+      "public_pattern": "/app/c/:companyId/annual/arsredovisning.xhtml",
+      "category": "d",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/annual/export.csv",
+      "public_pattern": "/app/c/:companyId/annual/export.csv",
+      "category": "d",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/annual/export.sie",
+      "public_pattern": "/app/c/:companyId/annual/export.sie",
+      "category": "d",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/ink2/blanketter.sru",
+      "public_pattern": "/app/c/:companyId/ink2/blanketter.sru",
+      "category": "d",
+      "owner_id": "ink2",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/ink2/info.sru",
+      "public_pattern": "/app/c/:companyId/ink2/info.sru",
+      "category": "d",
+      "owner_id": "ink2",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/payroll/agi.xml",
+      "public_pattern": "/app/c/:companyId/payroll/agi.xml",
+      "category": "d",
+      "owner_id": "payroll",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/payroll/ku10.xml",
+      "public_pattern": "/app/c/:companyId/payroll/ku10.xml",
+      "category": "d",
+      "owner_id": "payroll",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/reports/export/balance.csv",
+      "public_pattern": "/app/c/:companyId/reports/export/balance.csv",
+      "category": "d",
+      "owner_id": "reports",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/reports/export/income.csv",
+      "public_pattern": "/app/c/:companyId/reports/export/income.csv",
+      "category": "d",
+      "owner_id": "reports",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/reports/export/ledger.csv",
+      "public_pattern": "/app/c/:companyId/reports/export/ledger.csv",
+      "category": "d",
+      "owner_id": "reports",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/reports/export/vat.csv",
+      "public_pattern": "/app/c/:companyId/reports/export/vat.csv",
+      "category": "d",
+      "owner_id": "reports",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/receivables/export.csv",
+      "public_pattern": "/app/c/:companyId/receivables/export.csv",
+      "category": "d",
+      "owner_id": "receivables",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/payables/export.csv",
+      "public_pattern": "/app/c/:companyId/payables/export.csv",
+      "category": "d",
+      "owner_id": "payables",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/documents/:fileId/download",
+      "public_pattern": "/app/c/:companyId/documents/:fileId/download",
+      "category": "d",
+      "owner_id": "documents",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/login",
+      "public_pattern": "/app/login",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/login/2fa",
+      "public_pattern": "/app/login/2fa",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/register",
+      "public_pattern": "/app/register",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/",
+      "public_pattern": "/",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/health",
+      "public_pattern": "/health",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/typsnitt/:fil",
+      "public_pattern": "/typsnitt/:fil",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/api/session/vem",
+      "public_pattern": "/api/session/vem",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/login",
+      "public_pattern": "/app/login",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/register",
+      "public_pattern": "/app/register",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/login/2fa",
+      "public_pattern": "/app/login/2fa",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/logout",
+      "public_pattern": "/app/logout",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/companies",
+      "public_pattern": "/app/companies",
+      "category": "c",
+      "owner_id": "companies",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/account/name",
+      "public_pattern": "/app/account/name",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/account/password",
+      "public_pattern": "/app/account/password",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/account/totp/begin",
+      "public_pattern": "/app/account/totp/begin",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/account/totp/confirm",
+      "public_pattern": "/app/account/totp/confirm",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/account/totp/disable",
+      "public_pattern": "/app/account/totp/disable",
+      "category": "c",
+      "owner_id": "account",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/notifications/read-all",
+      "public_pattern": "/app/notifications/read-all",
+      "category": "c",
+      "owner_id": "notifications",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/notifications/:id/read",
+      "public_pattern": "/app/notifications/:id/read",
+      "category": "c",
+      "owner_id": "notifications",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/fiscal-years",
+      "public_pattern": "/app/c/:companyId/fiscal-years",
+      "category": "c",
+      "owner_id": "consolidated",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/connect/token",
+      "public_pattern": "/app/c/:companyId/connect/token",
+      "category": "c",
+      "owner_id": "connect",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/annual/description",
+      "public_pattern": "/app/c/:companyId/annual/description",
+      "category": "c",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/annual/pf",
+      "public_pattern": "/app/c/:companyId/annual/pf",
+      "category": "c",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/annual/tax",
+      "public_pattern": "/app/c/:companyId/annual/tax",
+      "category": "c",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/annual/result",
+      "public_pattern": "/app/c/:companyId/annual/result",
+      "category": "c",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/annual/lock",
+      "public_pattern": "/app/c/:companyId/annual/lock",
+      "category": "c",
+      "owner_id": "annual",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/statusforslag",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/statusforslag",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/avtal/las-in",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/avtal/las-in",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/avtal/skapa",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/avtal/skapa",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/bedomning",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/bedomning",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/signaler",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/signaler",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/forslag/rad",
+      "public_pattern": "/app/c/:companyId/tid/forslag/rad",
+      "category": "c",
+      "owner_id": "time_proposals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/forslag/dag",
+      "public_pattern": "/app/c/:companyId/tid/forslag/dag",
+      "category": "c",
+      "owner_id": "time_proposals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/registrera",
+      "public_pattern": "/app/c/:companyId/tid/registrera",
+      "category": "c",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/:entryId/spara",
+      "public_pattern": "/app/c/:companyId/tid/:entryId/spara",
+      "category": "c",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/:entryId/lank",
+      "public_pattern": "/app/c/:companyId/tid/:entryId/lank",
+      "category": "c",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tid/:entryId/lank/ta-bort",
+      "public_pattern": "/app/c/:companyId/tid/:entryId/lank/ta-bort",
+      "category": "c",
+      "owner_id": "time",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/retention",
+      "public_pattern": "/app/c/:companyId/relations/retention",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/purge",
+      "public_pattern": "/app/c/:companyId/relations/purge",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/create",
+      "public_pattern": "/app/c/:companyId/relations/create",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/log",
+      "public_pattern": "/app/c/:companyId/relations/:id/log",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/snooze",
+      "public_pattern": "/app/c/:companyId/relations/:id/snooze",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/mute",
+      "public_pattern": "/app/c/:companyId/relations/:id/mute",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/commit",
+      "public_pattern": "/app/c/:companyId/relations/:id/commit",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/cadence",
+      "public_pattern": "/app/c/:companyId/relations/:id/cadence",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/merge",
+      "public_pattern": "/app/c/:companyId/relations/:id/merge",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/confirm",
+      "public_pattern": "/app/c/:companyId/relations/:id/confirm",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/edit",
+      "public_pattern": "/app/c/:companyId/relations/:id/edit",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/alias/remove",
+      "public_pattern": "/app/c/:companyId/relations/:id/alias/remove",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/commitments/:id/done",
+      "public_pattern": "/app/c/:companyId/commitments/:id/done",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/commitments/:id/drop",
+      "public_pattern": "/app/c/:companyId/commitments/:id/drop",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/commitments/:id/reopen",
+      "public_pattern": "/app/c/:companyId/commitments/:id/reopen",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/commitments/:id/snooze",
+      "public_pattern": "/app/c/:companyId/commitments/:id/snooze",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/crm/personer/slaihop",
+      "public_pattern": "/app/c/:companyId/crm/personer/slaihop",
+      "category": "c",
+      "owner_id": "people",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/crm/personer/olika",
+      "public_pattern": "/app/c/:companyId/crm/personer/olika",
+      "category": "c",
+      "owner_id": "people",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/crm/personer/namn",
+      "public_pattern": "/app/c/:companyId/crm/personer/namn",
+      "category": "c",
+      "owner_id": "people",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tax/reminders",
+      "public_pattern": "/app/c/:companyId/tax/reminders",
+      "category": "c",
+      "owner_id": "tax",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tax/opening-loss",
+      "public_pattern": "/app/c/:companyId/tax/opening-loss",
+      "category": "c",
+      "owner_id": "tax",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/tax/vat-period",
+      "public_pattern": "/app/c/:companyId/tax/vat-period",
+      "category": "c",
+      "owner_id": "tax",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/ec-sales/file",
+      "public_pattern": "/app/c/:companyId/ec-sales/file",
+      "category": "c",
+      "owner_id": "ec_sales",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/ink2/adjustment",
+      "public_pattern": "/app/c/:companyId/ink2/adjustment",
+      "category": "c",
+      "owner_id": "ink2",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/ink2/adjustment/delete",
+      "public_pattern": "/app/c/:companyId/ink2/adjustment/delete",
+      "category": "c",
+      "owner_id": "ink2",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/k10/sru",
+      "public_pattern": "/app/c/:companyId/k10/sru",
+      "category": "c",
+      "owner_id": "k10",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/k10/save",
+      "public_pattern": "/app/c/:companyId/k10/save",
+      "category": "c",
+      "owner_id": "k10",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/customers/create",
+      "public_pattern": "/app/c/:companyId/customers/create",
+      "category": "c",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/customers/:partyId/update",
+      "public_pattern": "/app/c/:companyId/customers/:partyId/update",
+      "category": "c",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/customers/:partyId/gdpr-anonymize",
+      "public_pattern": "/app/c/:companyId/customers/:partyId/gdpr-anonymize",
+      "category": "c",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/suppliers/create",
+      "public_pattern": "/app/c/:companyId/suppliers/create",
+      "category": "c",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/suppliers/:partyId/update",
+      "public_pattern": "/app/c/:companyId/suppliers/:partyId/update",
+      "category": "c",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/suppliers/:partyId/payment",
+      "public_pattern": "/app/c/:companyId/suppliers/:partyId/payment",
+      "category": "c",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/suppliers/:partyId/gdpr-anonymize",
+      "public_pattern": "/app/c/:companyId/suppliers/:partyId/gdpr-anonymize",
+      "category": "c",
+      "owner_id": "suppliers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/invoices/create",
+      "public_pattern": "/app/c/:companyId/invoices/create",
+      "category": "c",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId/book",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId/book",
+      "category": "c",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId/pay",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId/pay",
+      "category": "c",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId/delete",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId/delete",
+      "category": "c",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/invoices/:invoiceId/pdf/regenerate",
+      "public_pattern": "/app/c/:companyId/invoices/:invoiceId/pdf/regenerate",
+      "category": "c",
+      "owner_id": "invoices",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/receipts/create",
+      "public_pattern": "/app/c/:companyId/receipts/create",
+      "category": "c",
+      "owner_id": "receipts",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/receipts/:receiptId/book",
+      "public_pattern": "/app/c/:companyId/receipts/:receiptId/book",
+      "category": "c",
+      "owner_id": "receipts",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/documents/upload",
+      "public_pattern": "/app/c/:companyId/documents/upload",
+      "category": "c",
+      "owner_id": "documents",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/approvals/:id/approve",
+      "public_pattern": "/app/c/:companyId/approvals/:id/approve",
+      "category": "c",
+      "owner_id": "approvals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/approvals/:id/reject",
+      "public_pattern": "/app/c/:companyId/approvals/:id/reject",
+      "category": "c",
+      "owner_id": "approvals",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/team/invite",
+      "public_pattern": "/app/c/:companyId/team/invite",
+      "category": "c",
+      "owner_id": "team",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/team/role",
+      "public_pattern": "/app/c/:companyId/team/role",
+      "category": "c",
+      "owner_id": "team",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/team/remove",
+      "public_pattern": "/app/c/:companyId/team/remove",
+      "category": "c",
+      "owner_id": "team",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/import/sie",
+      "public_pattern": "/app/c/:companyId/import/sie",
+      "category": "c",
+      "owner_id": "import",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/import/bank",
+      "public_pattern": "/app/c/:companyId/import/bank",
+      "category": "c",
+      "owner_id": "import",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/import/reconcile",
+      "public_pattern": "/app/c/:companyId/import/reconcile",
+      "category": "c",
+      "owner_id": "import",
+      "verification": "source"
+    }
+  ]
+}
