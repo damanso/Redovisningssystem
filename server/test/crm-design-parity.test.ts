@@ -108,7 +108,12 @@ describe('1. de sex nyckeltalen är designens sex', () => {
     // som heter Personer fällde det, och en Personer-ruta i railen hade kunnat
     // gömma sig bakom samma otydlighet. Slutet (första 'Uppgifter') är nästa korts
     // rubrik och avgränsar railen redan som det är.
-    const rail = res.text.slice(res.text.indexOf('class="factcard"'), res.text.indexOf('Uppgifter'));
+    // Slutmarkoren soks EFTER startmarkoren. Utan det klipps fonstret ut
+    // mellan kortet och forsta "Uppgifter" i HELA sidan -- och sedan menyn
+    // harleds ur kontraktet finns en menypost med det namnet ovanfor kortet,
+    // vilket gjorde fonstret tomt och provet blint. (2026-09-10)
+    const kortet = res.text.indexOf('class="factcard"');
+    const rail = res.text.slice(kortet, res.text.indexOf('Uppgifter', kortet));
     for (const k of ['Senaste kontakt', 'Omsättning 12 mån', 'Andel', 'Obetalt', 'Ofakturerad tid', 'Öppna löften']) {
       expect(rail, `nyckeltalet "${k}" saknas`).toContain(k);
     }

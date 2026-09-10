@@ -1,4 +1,5 @@
 import { formatOre, type Ore } from '../../domain/money.js';
+import { modell, type Post } from './kontrakt.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -334,113 +335,14 @@ export function ramkurva(k: Ramkurva): Raw | null {
   );
 }
 
-// Navigationen är ordnad efter HUR OFTA sidorna används, inte efter i vilken
-// ordning de råkade byggas. 28 länkar på en rad gick varken att överblicka
-// eller använda i ett smalt fönster; nu ligger de i namngivna grupper bakom en
-// menyknapp, med de vanligaste alltid framme i en snabbrad.
-interface NavGroup { label: string; hint: string; items: readonly (readonly [string, string])[] }
-
-const NAV_GROUPS: readonly NavGroup[] = [
-  {
-    label: 'Dagligen',
-    hint: 'Det du öppnar oftast',
-    items: [
-      ['', 'Översikt'],
-      ['idag', 'Idag'],
-      ['approvals', 'Att göra'],
-      ['invoices', 'Fakturor'],
-      ['receipts', 'Kvitton'],
-      // Sökrutan står i navraden, men sidan måste ändå finnas i menyn: annars
-      // står användaren på en sida som navigationen påstår inte existerar —
-      // ingen markering, ingen "du är här".
-      ['sok', 'Sök'],
-    ],
-  },
-  {
-    label: 'Kunder & leverantörer',
-    hint: 'Register, relation och obetalt',
-    items: [
-      ['relations', 'Relationer'],
-      ['crm/personer', 'Personer'],
-      ['commitments', 'Åtaganden'],
-      ['customers', 'Kunder'],
-      ['receivables', 'Kundreskontra'],
-      ['suppliers', 'Leverantörer'],
-      ['payables', 'Leverantörsreskontra'],
-      ['recurring', 'Abonnemang'],
-    ],
-  },
-  {
-    label: 'Lön & projekt',
-    hint: 'Varje månad',
-    items: [
-      ['payroll', 'Lön'],
-      ['projects', 'Projekt'],
-      ['tid', 'Tid'],
-      ['tid/forslag', 'Tidsförslag'],
-    ],
-  },
-  {
-    label: 'Moms, skatt & bokslut',
-    hint: 'Period och årsslut',
-    items: [
-      ['vat', 'Moms'],
-      ['tax', 'Skatt'],
-      ['ec-sales', 'EU-moms'],
-      ['ink2', 'Deklaration'],
-      ['k10', 'K10 (3:12)'],
-      ['annual', 'Bokslut'],
-      ['assets', 'Anläggningar'],
-      ['cashflow', 'Kassaflöde'],
-    ],
-  },
-  {
-    label: 'Rapporter & arkiv',
-    hint: 'Följa upp och slå upp',
-    items: [
-      ['steering', 'Styrning'],
-      ['reports', 'Rapporter'],
-      ['ledger', 'Huvudbok'],
-      ['analytics', 'Analys'],
-      ['documents', 'Dokument'],
-      ['audit', 'Revisionslogg'],
-    ],
-  },
-  {
-    label: 'System',
-    hint: 'Ställs in sällan',
-    items: [
-      ['articles', 'Artiklar'],
-      ['import', 'Import'],
-      ['team', 'Team'],
-      ['connect', 'Anslut AI'],
-    ],
-  },
-];
-
-// Snabbraden: alltid framme (viker undan först på riktigt smala skärmar).
+// Navigationen HARLEDS UR KONTRAKTET (Astras steg 5): grupper, ordning,
+// etiketter och snabbrad kommer ur navigation.v1.json, inte ur listor har.
+// Skalet till FORMEN star kvar och galler an: 28 lankar pa en rad gick varken
+// att overblicka eller anvanda i ett smalt fonster; nu ligger de i namngivna
+// grupper bakom en menyknapp, med de vanligaste alltid framme i en snabbrad.
 //
-// S10.7/FR-21: uppdragsytan står SIST. Snabbradens ordning är dagens ordning —
-// översikten, i dag, det som väntar på ett svar, pengarna in, pengarna ut — och
-// uppdraget är det man går till EFTER dem, aldrig i stället för dem. De fem
-// befintliga posterna står orörda i sin ordning: en snabbrad som flyttar sig
-// under fötterna på den som lärt sig var något ligger är ingen snabbrad.
-//
-// Etiketten hämtas ur NAV_GROUPS ("Projekt", gruppen Lön & projekt) som för
-// varje annan post — ingen egen etikett, ingen emoji, ingen egen stil. Två namn
-// på samma sida är två sidor för läsaren.
-const NAV_QUICK: readonly string[] = ['', 'idag', 'approvals', 'invoices', 'receipts', 'projects'];
-
-// Uppslag sökväg → { etikett, grupp }, byggt EN gång (layout() körs per request).
-const NAV_INDEX = new Map<string, { label: string; group: string }>(
-  NAV_GROUPS.flatMap((g) => g.items.map(([path, label]) => [path, { label, group: g.label }] as const)),
-);
-
-/** Var är jag? Gruppen + sidans namn, för brödsmulan i navraden. */
-function navLocate(active: string | undefined): { group: string; label: string } | null {
-  if (active === undefined) return null;
-  return NAV_INDEX.get(active) ?? null;
-}
+// Snabbradens innehall foljer beslut #157 genom kontraktets `surfaces`. Den
+// vaxer inte av en slump langre: den vaxer bara om registret sager det.
 
 // Hamburgare / kryss — ren SVG, byts via [open] i CSS (inget skript).
 const ICON_MENU = raw(
@@ -1450,38 +1352,35 @@ function head(title: string): Raw {
     <title>${title} — Hermes</title><style>${raw(STYLE)}</style>`;
 }
 
-const HUVUDVAL: [string, string][] = [
-  ['/', 'Hem'],
-  ['/beslut', 'Din insats'],
-  // De fyra jämlika områdena. Redovisningen är inte längre taket över projekt
-  // och CRM — den var bara den första modulen, byggd ur ett konkret behov.
-  ['/app/g/ekonomi', 'Redovisning'],
-  ['/app/g/projekt', 'Projekt'],
-  ['/app/g/crm', 'CRM'],
-  ['/vy', 'Ärenden'],
-  ['/bibliotek', 'Bibliotek'],
-];
+// HUVUDVALEN HARLEDS UR KONTRAKTET. Omradet man star i raknas ut ur sidans
+// DESTINATION: dess grupp har en ingang (`entry_id`), och den ingangen ar det
+// val som ska lysa. Forr var det tva handskrivna mangder over sokvagar, som
+// tystnade sa fort en ny sida lades till i fel mangd.
+const NAVMODELL_UTAN_BOLAG = modell(null, null);
 
-/** Vilka av redovisningens sidor som hör till vilket jämlikt område. */
-const OMRADE_PROJEKT = new Set(['projects', 'tid', 'tid/forslag', 'steering']);
-const OMRADE_CRM = new Set(['relations', 'crm/personer', 'commitments', 'customers', 'idag']);
-
-function aktivtOmrade(active?: string): string {
-  if (active !== undefined && OMRADE_PROJEKT.has(active)) return '/app/g/projekt';
-  if (active !== undefined && OMRADE_CRM.has(active)) return '/app/g/crm';
+function omradetsIngang(dest: Post | null): string {
+  if (dest) {
+    const g = NAVMODELL_UTAN_BOLAG.groups.find((x) => x.items.some((p) => p.id === dest.id));
+    const ing = g?.entry_id
+      ? NAVMODELL_UTAN_BOLAG.global.find((p) => p.id === g.entry_id)
+      : null;
+    if (ing?.href) return ing.href;
+  }
   return '/app/g/ekonomi';
 }
 
-function huvudnavFor(active?: string): Raw {
-  const har = aktivtOmrade(active);
-  return html`<nav class="nav nav--huvud" aria-label="Hermes">${HUVUDVAL.map(
-    ([vag, text]) =>
-      html`<a href="${vag}"${vag === har ? raw(' aria-current="page"') : ''}>${text}</a>`,
+function huvudnavFor(aktivDest: Post | null): Raw {
+  const har = omradetsIngang(aktivDest);
+  return html`<nav class="nav nav--huvud" aria-label="Hermes">${NAVMODELL_UTAN_BOLAG.global.map(
+    (p) =>
+      html`<a href="${p.href ?? '/'}"${
+        p.href === har ? raw(' aria-current="page"') : ''
+      } data-destination-id="${p.id}">${p.label}</a>`,
   )}</nav>`;
 }
 
-/** Skallosa sidor (inloggning, fel) har ingen aktiv sida — inget val lyser. */
-const huvudnav = huvudnavFor(undefined);
+/** Skallosa sidor (inloggning, fel) har ingen aktiv sida - inget val lyser. */
+const huvudnav = huvudnavFor(null);
 
 /**
  * Toppraden för sidor utan session: inloggning, registrering, tvåfaktor och
@@ -1622,19 +1521,37 @@ export function layout(opts: {
   unread?: number;
   body: Raw;
 }): Raw {
-  const here = navLocate(opts.active);
-  const inQuick = opts.active !== undefined && NAV_QUICK.includes(opts.active);
-  const link = (path: string, label: string, cls: string) =>
-    html`<a class="${cls}" href="/app/c/${opts.companyId}/${path}"${
-      opts.active === path ? raw(' aria-current="page"') : ''
-    }>${label}</a>`;
-
-/**
- * HUVUDVALEN. Samma fem, i samma ordning, i alla tre kodbaserna (Astras
- * UX-granskning 2026-09-09). Rotrelativa: sedan modulerna monterats bakom
- * samma värd är /vy och /beslut grannar i SAMMA miljö, inte andra system.
- * prov/enmiljo.py mäter att raden är identisk överallt.
- */
+  // Modellen raknas fram MED bolagskontexten, sa att varje href ar en konkret
+  // adress. Saknas bolaget blir en bolagsbunden destination
+  // /app/?destination=<id> -- aldrig mallen, aldrig ett gissat bolags-id.
+  const navmodell = modell(null, opts.companyId ?? null);
+  const bas = opts.companyId ? `/app/c/${opts.companyId}` : null;
+  /** Sidans kortform ('', 'invoices', 'tid/forslag') ur en full adress. */
+  const kortform = (href: string | null): string | null => {
+    if (!href || !bas) return null;
+    if (href === bas || href === `${bas}/`) return '';
+    return href.startsWith(`${bas}/`) ? href.slice(bas.length + 1) : null;
+  };
+  const allaPoster: Post[] = navmodell.groups.flatMap((g) => g.items);
+  // Den aktiva sidan ar en DESTINATION, inte en strang. Markeringen och
+  // "var ar jag"-raden foljer id:t; en etikett kan bytas och en adress
+  // flyttas utan att markeringen tappar fotfaste.
+  const aktivDest: Post | null =
+    opts.active === undefined
+      ? null
+      : allaPoster.find((p) => kortform(p.href) === opts.active) ?? null;
+  const here = aktivDest
+    ? {
+        group:
+          navmodell.groups.find((g) => g.items.some((p) => p.id === aktivDest.id))?.label ?? '',
+        label: aktivDest.label,
+      }
+    : null;
+  const inQuick = aktivDest !== null && navmodell.quick.some((p) => p.id === aktivDest.id);
+  const link = (p: Post, cls: string) =>
+    html`<a class="${cls}" href="${p.href ?? '#'}"${
+      aktivDest && p.id === aktivDest.id ? raw(' aria-current="page"') : ''
+    } data-destination-id="${p.id}">${p.label}</a>`;
 
 
   const nav = opts.companyId
@@ -1643,14 +1560,16 @@ export function layout(opts: {
           <summary>${ICON_MENU}${ICON_CLOSE}<span>Meny</span></summary>
           <div class="navmenu__panel">
             <div class="navmenu__grid">
-              ${NAV_GROUPS.map(
-                (g) => html`<div class="navmenu__grp">
+              ${navmodell.groups
+                .filter((g) => g.items.length > 0)
+                .map(
+                  (g) => html`<div class="navmenu__grp">
                   <span class="eyebrow">${g.label}</span>
                   <span class="navmenu__hint">${g.hint}</span>
-                  ${g.items.map(([path, label]) =>
-                    link(path, label, `navmenu__link${opts.active === path ? ' is-active' : ''}`))}
+                  ${g.items.map((p) =>
+                    link(p, `navmenu__link${aktivDest && p.id === aktivDest.id ? ' is-active' : ''}`))}
                 </div>`,
-              )}
+                )}
             </div>
           </div>
         </details>
@@ -1663,10 +1582,8 @@ export function layout(opts: {
              raden den vaktar. */ ''}
 
         <div class="nav__quick">
-          ${NAV_QUICK.map((path) => {
-            const item = NAV_INDEX.get(path);
-            return item ? link(path, item.label, opts.active === path ? 'active' : '') : '';
-          })}
+          ${navmodell.quick.map((p) =>
+            link(p, aktivDest && p.id === aktivDest.id ? 'active' : ''))}
         </div>
         ${/* Grannmodulerna. Samma två vägar står i varje moduls meny, i samma
              ordning och på samma plats. Utan dem måste David skriva adressen
@@ -1703,7 +1620,7 @@ export function layout(opts: {
           </form>
         </div>
       </div>
-      ${huvudnavFor(opts.active)}
+      ${huvudnavFor(aktivDest)}
       ${nav}
       </header>
       <main>${raw(staplabaraTabeller(opts.body.value))}</main>

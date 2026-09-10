@@ -25,15 +25,26 @@ export type Destination = {
   id: string;
   label: string;
   group_id: string;
+  order: number;
   hint: string;
   canonical_url: KontraktUrl;
+};
+
+export type Grupp = {
+  id: string;
+  label: string;
+  order: number;
+  hint: string;
+  entry_id: string | null;
 };
 
 type Kontrakt = {
   schema_version: number;
   contract_version: string;
   decision_157: 'pending' | 'yes' | 'no';
+  groups: Grupp[];
   destinations: Destination[];
+  surfaces: Record<string, string[]>;
 };
 
 // dist/http/view -> server/ ; i containern /app/dist/http/view -> /app/.
@@ -43,20 +54,32 @@ const KONTRAKTSFIL = resolve(
   '../../../kontrakt/navigation.v1.json',
 );
 
-let cache: { version: string; per_id: Map<string, Destination> } | null = null;
+let cache: { rat: Kontrakt; per_id: Map<string, Destination> } | null = null;
 
-function las(): { version: string; per_id: Map<string, Destination> } {
+function las(): { rat: Kontrakt; per_id: Map<string, Destination> } {
   if (cache) return cache;
-  const rat = JSON.parse(readFileSync(KONTRAKTSFIL, 'utf8')) as Kontrakt;
-  cache = {
-    version: rat.contract_version,
-    per_id: new Map(rat.destinations.map((d) => [d.id, d])),
-  };
+  let rat: Kontrakt;
+  try {
+    rat = JSON.parse(readFileSync(KONTRAKTSFIL, 'utf8')) as Kontrakt;
+  } catch (e) {
+    // En saknad kontraktsfil stoppar tjansten. Det ar med flit: alternativet
+    // vore en tyst reservlista, och en tyst reservlista ar precis det
+    // motprovet finns for att fanga.
+    throw new Error(
+      `navigationskontraktet gick inte att lasa (${KONTRAKTSFIL}): ${String(e)}` +
+        ' — kor ~/.hermes/bin/sprid_kontraktet.sh',
+    );
+  }
+  cache = { rat, per_id: new Map(rat.destinations.map((d) => [d.id, d])) };
   return cache;
 }
 
 export function kontraktsversion(): string {
-  return las().version;
+  return las().rat.contract_version;
+}
+
+export function helaKontraktet(): Kontrakt {
+  return las().rat;
 }
 
 /**
@@ -88,4 +111,65 @@ export function destinationsAdress(d: Destination, companyId: string | null): st
 /** `?destination=<id>` att hänga på en adress, eller tom sträng. */
 export function destinationsFraga(d: Destination | undefined): string {
   return d ? `?destination=${encodeURIComponent(d.id)}` : '';
+}
+
+/**
+ * Den beräknade navigationsmodellen — samma form i alla tre kodbaserna.
+ *
+ * Astras steg 5: "Renderarna ska läsa registret." Menyn stod förr som tre
+ * handskrivna listor i tre kodbaser, identiska tills någon rörde en av dem,
+ * och ingenting mätte att de fortfarande var det.
+ *
+ * `~/.hermes/prov/adresskontraktet.py` kör den här modellen genom varje
+ * applikations egen provadapter och jämför de tre mot ett referenskontrakt
+ * som räknas fram oberoende. En adapter som fortsätter använda sin gamla
+ * inbyggda lista faller där.
+ */
+export type Post = { id: string; label: string; hint: string; href: string | null };
+export type Modell = {
+  contract_version: string;
+  decision_157: string;
+  global: Post[];
+  account: Post[];
+  quick: Post[];
+  groups: { id: string; label: string; hint: string; entry_id: string | null; items: Post[] }[];
+};
+
+function post(d: Destination, bolag: string | null): Post {
+  return { id: d.id, label: d.label, hint: d.hint, href: destinationsAdress(d, bolag) };
+}
+
+export function modell(beslut?: string | null, bolag?: string | null): Modell {
+  const k = helaKontraktet();
+  const b = beslut ?? k.decision_157;
+  const co = bolag ?? null;
+  const perId = new Map(k.destinations.map((d) => [d.id, d]));
+  // #157: vid JA lämnar Idag och Att göra den grupperade menyn. Sidorna
+  // avvecklas inte — bara menyposterna. "pending beter sig som no."
+  const dolda = b === 'yes' ? new Set(['crm_today', 'approvals']) : new Set<string>();
+
+  const groups = [...k.groups]
+    .sort((a, c) => a.order - c.order)
+    .map((g) => ({
+      id: g.id,
+      label: g.label,
+      hint: g.hint,
+      entry_id: g.entry_id,
+      items: k.destinations
+        .filter((d) => d.group_id === g.id && d.id !== g.entry_id && !dolda.has(d.id))
+        .sort((a, c) => a.order - c.order)
+        .map((d) => post(d, co)),
+    }));
+
+  const snabb = k.surfaces[b === 'yes' ? 'accounting_quick_yes' : 'accounting_quick_pending_or_no']!;
+  const ur = (ids: string[]): Post[] => ids.map((i) => post(perId.get(i)!, co));
+
+  return {
+    contract_version: k.contract_version,
+    decision_157: b,
+    global: ur(k.surfaces.global!),
+    account: ur(k.surfaces.account!),
+    quick: ur(snabb),
+    groups,
+  };
 }

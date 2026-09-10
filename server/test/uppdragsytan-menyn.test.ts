@@ -23,6 +23,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { api, app, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { readFileSync } from 'node:fs';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -35,7 +36,25 @@ const KOMPONENTKLASSER = [
 ] as const;
 
 /** Snabbradens poster i sin ordning: de fem befintliga, och uppdragsytan sist. */
-const SNABBRAD = ['', 'idag', 'approvals', 'invoices', 'receipts', 'projects'] as const;
+// Snabbraden star i kontraktet, inte har. Den handskrivna listan var en
+// kopia av renderarens lista: tva listor som ska vara lika och som ingen
+// jamfor ar en lista for mycket. Raden foljer dessutom beslut #157, och ett
+// prov som kodar in ett av utfallen skulle falla nar beslutet andras --
+// oavsett om produkten gjorde ratt eller fel.
+const KONTRAKT = JSON.parse(
+  readFileSync(new URL('../kontrakt/navigation.v1.json', import.meta.url), 'utf8'),
+) as {
+  decision_157: string;
+  destinations: { id: string; canonical_url: { kind: string; template?: string } }[];
+  surfaces: Record<string, string[]>;
+};
+const SNABBRAD: string[] = KONTRAKT.surfaces[
+  KONTRAKT.decision_157 === 'yes' ? 'accounting_quick_yes' : 'accounting_quick_pending_or_no'
+]!.map((id) => {
+  const u = KONTRAKT.destinations.find((d) => d.id === id)!.canonical_url;
+  const rest = (u.template ?? '').slice('/app/c/:companyId'.length);
+  return rest.startsWith('/') ? rest.slice(1) : '';
+});
 
 /** Undermenyns S10-sidor (1E Del 5). De tre övriga posterna står kvar bredvid. */
 const S10_SIDOR = [
@@ -110,7 +129,14 @@ const antalAktuella = (nav: string): number => (nav.match(/aria-current="page"/g
 
 /** Sökvägarna i en meny, i den ordning de står. */
 function poster(nav: string, bolag = companyId): string[] {
-  return [...nav.matchAll(/href="([^"]+)"/g)].map((m) => m[1]!.replace(`/app/c/${bolag}/`, ''));
+  // Bolagets rot ar `/app/c/<id>` UTAN avslutande snedstreck: sa star den i
+  // kontraktet, och matchningsregel 4 sager att snedstrecket inte avgor nagot.
+  // Utan den forsta ersattningen blev oversiktens kortform hela adressen.
+  return [...nav.matchAll(/href="([^"]+)"/g)].map((m) =>
+    m[1]! === `/app/c/${bolag}`
+      ? ''
+      : m[1]!.replace(`/app/c/${bolag}/`, ''),
+  );
 }
 
 /** Stilmallen som den LEVERERAS — samma sträng provvakten läser ur sidan. */

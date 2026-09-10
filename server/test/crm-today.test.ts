@@ -10,6 +10,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, app, createCompany, registerUser, type TestUser } from './helpers.js';
+import { readFileSync } from 'node:fs';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -144,15 +145,33 @@ describe('dagsytan är JS-fri och skickar ingenting', () => {
     expect(res.text).toContain('Ingenting går härifrån ut till en kund');
   });
 
-  it('sidan ligger i snabbraden — den ska öppnas dagligen', async () => {
+  it('renderar sin sida oavsett vad #157 sager om menyn', async () => {
+    // Det har ar kravet som INTE far falla bort med beslutet: sidan ska
+    // finnas och fungera aven nar den lamnat menyn.
+    const res = await ua.get(`/app/c/${companyId}/idag`);
+    expect(res.status).toBe(200);
+    expect(res.text.length).toBeGreaterThan(500);
+  });
+
+  it('star i menyn eller inte — enligt kontraktets beslut #157', async () => {
+    const beslut = (
+      JSON.parse(
+        readFileSync(new URL('../kontrakt/navigation.v1.json', import.meta.url), 'utf8'),
+      ) as { decision_157: string }
+    ).decision_157;
     const res = await ua.get(`/app/c/${companyId}/idag`);
     const nav = (() => {
       // Sidan bar tva navrader: Hermes huvudmeny forst, modulens egen
       // efter. Slutmarkoren maste sokas EFTER startmarkoren, annars
       // klipps ett tomt stycke ut. (2026-09-09)
-      const i = res.text.indexOf('<nav class="nav"');
+      const i = res.text.indexOf('<nav class="nav" aria-label="Huvudmeny"');
       return res.text.slice(i, res.text.indexOf('</nav>', i));
     })();
-    expect(nav).toContain(`href="/app/c/${companyId}/idag"`);
+    if (beslut === 'yes') {
+      expect(nav, 'Idag skulle ha lamnat menyn vid ja pa #157')
+        .not.toContain('data-destination-id="crm_today"');
+    } else {
+      expect(nav).toContain(`href="/app/c/${companyId}/idag"`);
+    }
   });
 });
