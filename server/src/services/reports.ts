@@ -234,6 +234,19 @@ export interface Dashboard {
 }
 
 /** Nyckeltal för dashboarden. year = räkenskapsårets intervall (för resultat). */
+/** Det senast påbörjade räkenskapsåret — samma regel som Översiktsrutten
+ *  använder för sin period. Finns inget räkenskapsår är perioden "allt",
+ *  och det syns i svaret som 0001-01-01 – 9999-12-31, aldrig som ett gissat år. */
+export async function latestFiscalPeriod(client: PoolClient, companyId: string): Promise<{ from: string; to: string }> {
+  const r = await client.query<{ start_date: string; end_date: string }>(
+    'SELECT start_date::text, end_date::text FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC LIMIT 1',
+    [companyId],
+  );
+  return r.rows[0]
+    ? { from: r.rows[0].start_date, to: r.rows[0].end_date }
+    : { from: '0001-01-01', to: '9999-12-31' };
+}
+
 export async function dashboard(
   client: PoolClient,
   companyId: string,

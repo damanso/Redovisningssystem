@@ -22,7 +22,7 @@ import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.j
 import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { listFiscalYears, setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
-import { accountsPayableAging, accountsReceivableAging, cashFlow, liquidityForecast, monthlyRevenue } from '../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, cashFlow, dashboard, latestFiscalPeriod, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import {
@@ -598,6 +598,36 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+  }),
+  def({
+    // ÖVERSIKTENS TAL, SOM HANDLING. Samma beräkning som /app/c/:id visar —
+    // inte en variant av den. Hermes-ytan (Hem) läser den här i stället för
+    // att sätta ihop en egen bild ur andra rapporter: "ett korrekt namngivet
+    // annat tal är fortfarande ett annat tal" (Astra, 2026-09-13).
+    //
+    // `scope` säger VAD varje tal omfattar, med producentens egna ord. Utan
+    // det måste läsaren gissa om kassan är 1910–1940 (Översikten) eller
+    // 1900–1999 (likviditetsprognosen) — och de två är inte samma sak.
+    name: 'dashboard',
+    title: 'Översiktens tal (samma som /app/c/:id)',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: async (ctx) => {
+      const period = await latestFiscalPeriod(ctx.client, ctx.companyId);
+      const d = await dashboard(ctx.client, ctx.companyId, period);
+      return {
+        as_of: new Date().toISOString().slice(0, 10),
+        period,
+        scope: {
+          receivables_ore: 'saldo på konto 1510 (kundfordringar)',
+          payables_ore: 'kreditsaldo på konto 2440 (leverantörsskulder), visat positivt',
+          bank_ore: 'saldo på bankkonton 1910, 1920, 1930 och 1940',
+          result_ore: 'intäkter minus kostnader inom räkenskapsårets period (period ovan)',
+          pending_approvals: 'AI-förslag i kön action_approvals med status pending',
+        },
+        ...d,
+      };
+    },
   }),
   def({
     name: 'list_notifications',
