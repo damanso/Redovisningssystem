@@ -25,7 +25,10 @@ describe('månadsintäkter', () => {
   it('monthly_revenue ger 12 nollfyllda månader med intäkt i rätt månad', async () => {
     const res = await api.post(`/api/companies/${companyId}/actions/monthly_revenue`).set(auth()).send({ as_of: '2025-03-31' });
     expect(res.status).toBe(200);
-    const points = res.body.result as { ym: string; revenue_ore: number; expense_ore: number }[];
+    // Svaret bär sin observationstid och sin omfattning; serien ligger i `months`.
+    expect(res.body.result.as_of).toBe('2025-03-31');
+    expect(res.body.result.scope).toMatch(/bokförda verifikat/);
+    const points = res.body.result.months as { ym: string; revenue_ore: number; expense_ore: number }[];
     expect(points).toHaveLength(12);
     expect(points[points.length - 1]!.ym).toBe('2025-03'); // fönstret slutar på as_of-månaden
     const march = points.find((p) => p.ym === '2025-03')!;

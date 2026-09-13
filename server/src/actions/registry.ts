@@ -597,7 +597,16 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Intäkter och kostnader per månad (12 mån)',
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
-    handler: (ctx, i: { as_of?: string }) => monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+    // EN OBSERVATIONSTID FÖLJER MED. Serien räknas ur verifikaten i samma
+    // stund som frågan ställs, fram till `as_of` (default i dag). Läsaren
+    // (Hem) fick förut ingen tid alls och satte sista månadens etikett som
+    // observationstid — en periodetikett är inte en tidpunkt. Formen är nu
+    // { as_of, months }, samma mönster som reskontrorna och prognosen.
+    handler: async (ctx, i: { as_of?: string }) => ({
+      as_of: i.as_of ?? new Date().toISOString().slice(0, 10),
+      scope: 'bokförda verifikat: kreditsaldo på intäktskonton och debetsaldo på kostnadskonton per verifikationsmånad, de tolv månaderna t.o.m. as_of',
+      months: await monthlyRevenue(ctx.client, ctx.companyId, i.as_of),
+    }),
   }),
   def({
     // ÖVERSIKTENS TAL, SOM HANDLING. Samma beräkning som /app/c/:id visar —
@@ -619,11 +628,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         as_of: new Date().toISOString().slice(0, 10),
         period,
         scope: {
-          receivables_ore: 'saldo på konto 1510 (kundfordringar)',
-          payables_ore: 'kreditsaldo på konto 2440 (leverantörsskulder), visat positivt',
-          bank_ore: 'saldo på bankkonton 1910, 1920, 1930 och 1940',
-          result_ore: 'intäkter minus kostnader inom räkenskapsårets period (period ovan)',
-          pending_approvals: 'AI-förslag i kön action_approvals med status pending',
+          receivables_ore: 'bokfört saldo på konto 1510 (kundfordringar), alla verifikationsdatum',
+          payables_ore: 'bokfört kreditsaldo på konto 2440 (leverantörsskulder), alla verifikationsdatum, visat positivt',
+          bank_ore: 'bokfört saldo på bankkonton 1910, 1920, 1930 och 1940, alla verifikationsdatum',
+          result_ore: 'bokförda intäkter minus bokförda kostnader — verifikat inom räkenskapsårets period (period ovan)',
+          pending_approvals: 'bolagets AI-förslag i kön action_approvals med status pending — kön har ingen utpekad mottagare; den som har tillgång till bolaget avgör',
         },
         ...d,
       };
