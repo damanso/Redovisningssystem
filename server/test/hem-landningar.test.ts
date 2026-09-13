@@ -8,19 +8,26 @@
 //   eller urval och den konkreta insatsen, även för täckningsbristerna."
 //
 // Varje landning prövas därför på tre saker: RÄTT BOLAG (namnet står på
-// sidan), RÄTT SIDA (sidans egen etikett) och RÄTT URVAL (det tal eller det
+// sidan), RÄTT SIDA (sidans egen etikett) och RÄTT MÅTT (det tal eller det
 // förbehåll Hem visade står på sidan, formaterat med sidans egen formaterare).
+//
+// Astras femte dom, punkt 1: kontosaldona (1510, 2440, 1910–1940) landar på
+// balansräkningen — reskontrorna räknar fakturor, inte konton — och trenden
+// landar på Översikten, som bär samma tolv månader. Provdata är valda så att
+// kontosaldo och reskontra SKILJER SIG (manuella verifikat utan faktura) och
+// så att trendens tolv månader korsar två räkenskapsår.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
 import { formatOre } from '../src/domain/money.js';
-import { esc } from '../src/http/view/html.js';
+import { amount, esc } from '../src/http/view/html.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const BOLAG = 'Landning AB';
 let user: TestUser;
 let companyId: string;
 let fyId: string;
+let fy26Id: string;
 let ua: ReturnType<typeof supertest.agent>;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
@@ -56,6 +63,30 @@ beforeAll(async () => {
     net_ore: 30_000, vat_rate: 25, expense_account: 6110,
   });
   await godkand('book_supplier_invoice', { supplier_invoice_id: si.body.result.id, fiscal_year_id: fyId });
+  // KONTOSALDO ≠ RESKONTRA: manuella verifikat utan faktura på 2440 och 1510,
+  // och ett banksaldo på 1930 — så att balansräkningen och reskontrorna
+  // visar OLIKA tal, och provet kan se vilken sida som bär vilket mått.
+  await godkand('post_voucher', {
+    fiscal_year_id: fyId, voucher_date: '2025-06-01', description: 'Kostnad utan faktura',
+    lines: [{ account_number: 6110, debit_ore: 100_000, credit_ore: 0 }, { account_number: 2440, debit_ore: 0, credit_ore: 100_000 }],
+  });
+  await godkand('post_voucher', {
+    fiscal_year_id: fyId, voucher_date: '2025-06-02', description: 'Fordran utan faktura',
+    lines: [{ account_number: 1510, debit_ore: 20_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 20_000 }],
+  });
+  await godkand('post_voucher', {
+    fiscal_year_id: fyId, voucher_date: '2025-06-03', description: 'Insättning',
+    lines: [{ account_number: 1930, debit_ore: 50_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 50_000 }],
+  });
+  // TVÅ RÄKENSKAPSÅR: trendens tolv månader (t.o.m. i dag) korsar årsskiftet,
+  // resultatet räknar bara det senaste året.
+  const fy26 = await api.post(`${co()}/accounting/fiscal-years`).set(auth())
+    .send({ label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+  fy26Id = fy26.body.fiscal_year.id;
+  await godkand('post_voucher', {
+    fiscal_year_id: fy26Id, voucher_date: '2026-03-15', description: 'Intäkt i det nya året',
+    lines: [{ account_number: 1930, debit_ore: 30_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 30_000 }],
+  });
   // Ett AI-förslag lämnas obeslutat i kön: det är "insatsen" Hem pekar på.
   const vantar = await api.post(`${co()}/actions/register_supplier_payment`).set(auth())
     .send({ supplier_invoice_id: si.body.result.id, fiscal_year_id: fyId, payment_date: '2025-06-10' });
@@ -123,15 +154,69 @@ describe('Hems länkar landar på rätt bolag, rätt sida och rätt urval', () =
     }
   });
 
-  it('Rapporter och Översikten: bolaget och sidan', async () => {
+  // Kontots rad i balansräkningen: <td class="code">1510</td><td>Namn</td><td class="num"><span class="amount">…</span></td>
+  function kontosaldo(sida: string, konto: number): string | null {
+    const m = new RegExp(`<td class="code">${konto}</td><td>[^<]*</td><td class="num"><span class="amount[^"]*">([^<]*)</span>`).exec(sida);
+    return m ? m[1]! : null;
+  }
+
+  it('Kontosaldona (1510, 2440, banken): balansräkningen på Rapporter bär SALDOT — reskontran ett annat tal', async () => {
+    const d = await handling('dashboard');
+    const ar = await handling('accounts_receivable_aging');
+    const ap = await handling('accounts_payable_aging');
+    // Provdata: saldona skiljer sig från reskontrorna, annars mäter provet inget.
+    expect(d.receivables_ore).toBe(120_000);
+    expect(ar.totals.total_ore).toBe(100_000);
+    expect(d.payables_ore).toBe(137_500);
+    expect(ap.totals.total_ore).toBe(37_500);
+    expect(d.bank_ore).toBe(80_000);
+
     const rap = await ua.get(`/app/c/${companyId}/reports`);
     expect(rap.status).toBe(200);
     expect(rap.text).toContain(esc(BOLAG));
     expect(rap.text).toContain('>Rapporter<');
+    expect(rap.text).toContain('Balansräkning');
+    expect(kontosaldo(rap.text, 1510)).toBe(formatOre(d.receivables_ore));
+    // Skulden står positiv i balansräkningen (som på Översikten) eller som
+    // kreditsaldo — bägge är samma konto, samma belopp.
+    expect([formatOre(d.payables_ore), formatOre(-d.payables_ore)]).toContain(kontosaldo(rap.text, 2440));
+    const bank = [1910, 1920, 1930, 1940].map((k) => kontosaldo(rap.text, k)).filter((v): v is string => v !== null);
+    expect(bank).toContain(formatOre(d.bank_ore)); // hela banksaldot ligger på 1930
+    // Period: balansräkningen per räkenskapsårets slut, samma period som handlingen.
+    expect(rap.text).toContain(`Period: ${d.period.from} – ${d.period.to}`);
+    // …och reskontrorna visar sitt (andra) mått, inte saldot.
+    const rec = await ua.get(`/app/c/${companyId}/receivables`);
+    expect(rec.text).toContain(formatOre(ar.totals.total_ore));
+    expect(rec.text).not.toContain(formatOre(d.receivables_ore));
+    const pay = await ua.get(`/app/c/${companyId}/payables`);
+    expect(pay.text).toContain(formatOre(ap.totals.total_ore));
+    expect(pay.text).not.toContain(formatOre(d.payables_ore));
+  });
+
+  it('Årets resultat: Rapporter visar samma resultat för samma period (bara det senaste året)', async () => {
     const d = await handling('dashboard');
+    expect(d.period).toEqual({ from: '2026-01-01', to: '2026-12-31' });
+    expect(d.result_ore).toBe(30_000); // 2025 års intäkter och kostnader räknas inte
+    const rap = await ua.get(`/app/c/${companyId}/reports`);
+    expect(rap.text).toContain(`Period: ${d.period.from} – ${d.period.to}`);
+    expect(rap.text).toContain(`<span>Resultat</span>${amount(d.result_ore, { signed: true }).value}`);
+  });
+
+  it('Trenden: Översikten bär samma tolv månader, över årsskiftet, med samma tal', async () => {
+    const mr = await handling('monthly_revenue');
+    expect(mr.months).toHaveLength(12);
+    const ym = mr.months.map((m: { ym: string }) => m.ym);
+    expect(ym).toContain('2025-11');
+    expect(ym).toContain('2026-03'); // fönstret korsar årsskiftet
     const ov = await ua.get(`/app/c/${companyId}`);
     expect(ov.status).toBe(200);
     expect(ov.text).toContain(esc(BOLAG));
+    expect(ov.text).toContain('Senaste 12 månaderna');
+    for (const m of mr.months) {
+      expect(ov.text, `månaden ${m.ym} saknas i Översiktens diagram`).toContain(`<title>${m.ym} · Intäkt ${formatOre(m.revenue_ore)} kr</title>`);
+      expect(ov.text).toContain(`<title>${m.ym} · Kostnad ${formatOre(m.expense_ore)} kr</title>`);
+    }
+    const d = await handling('dashboard');
     expect(ov.text).toContain('Årets resultat');
     expect(ov.text).toContain(`Räkenskapsår ${d.period.from} – ${d.period.to}`);
   });

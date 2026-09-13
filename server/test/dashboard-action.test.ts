@@ -116,8 +116,10 @@ describe('dashboard som handling', () => {
     expect(vidEtikett(text, 'Kundfordringar')).toBe(amount(d.receivables_ore).value);
     expect(vidEtikett(text, 'Leverantörsskulder')).toBe(amount(d.payables_ore).value);
     expect(text).toContain(`Räkenskapsår ${d.period.from} – ${d.period.to}`);
-    // Att göra-chipen bär samma räknare.
-    expect(text).toContain(`${d.pending_approvals} väntar`);
+    // Att göra-chipen bär samma räknare — VID rubriken Att göra, inte
+    // någonstans i sidtexten (Astras femte dom, punkt 10).
+    const attGora = /<h2>Att göra<\/h2>\s*<span class="chip[^"]*">(?:<span[^>]*>[^<]*<\/span>)?([^<]*)<\/span>/.exec(text);
+    expect(attGora?.[1]).toBe(`${d.pending_approvals} väntar`);
     // Periodglidning: resultatet för det ÄLDRE året får inte stå vid etiketten.
     expect(vidEtikett(text, 'Årets resultat')).not.toBe(amount(FAKTURA_2024_NETTO, { signed: true }).value);
     expect(vidEtikett(text, 'Årets resultat')).not.toBe(amount(FAKTURA_2024_NETTO + FAKTURA_2025_NETTO - LEVFAKTURA_NETTO, { signed: true }).value);
