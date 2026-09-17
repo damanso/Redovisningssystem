@@ -2,6 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": ".",
+    // DOM behovs for callbacks till page.$$eval och page.evaluate: de
+    // kors i webblasaren, inte i node. Star HAR och inte i basen —
+    // serverkoden ska inte kunna rora document eller window.
+    "lib": ["ES2023", "DOM"],
     "outDir": "dist-test",
     "noEmit": true
   },

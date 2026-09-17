@@ -227,7 +227,7 @@ describe('Hems länkar landar på rätt bolag, rätt sida och rätt urval', () =
     const steg1 = await ua.get('/app/?destination=approvals');
     expect(steg1.status).toBe(302);
     expect(steg1.headers.location).toBe(`/app/c/${companyId}/approvals`);
-    const sida = await ua.get(steg1.headers.location);
+    const sida = await ua.get(steg1.headers.location as string);
     expect(sida.status).toBe(200);
     expect(sida.text).toContain(esc(BOLAG));
     expect(sida.text).toContain('Väntar på din granskning');
@@ -248,7 +248,7 @@ describe('Hems länkar landar på rätt bolag, rätt sida och rätt urval', () =
     for (let i = 0; i < 4 && plats; i++) {
       const r = await ny.get(plats);
       if (r.status !== 302) { expect(r.status).toBe(200); break; }
-      plats = r.headers.location;
+      plats = r.headers.location as string;
     }
     expect(plats).toBe(`/app/c/${companyId}/approvals`);
   });

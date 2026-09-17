@@ -136,7 +136,7 @@ describe('navigationsytorna i webbläsaren', () => {
       }
       // Var och en av den gamla radens sju destinationer ska gå att nå.
       const nabara = new Set(rubriker.map((r) => r.id));
-      for (const id of KONTRAKT.surfaces.global) {
+      for (const id of KONTRAKT.surfaces.global!) {
         const d = PER_ID.get(id)!;
         const iMenyn = (await ytan(page, '.navmenu__panel')).some((l) => l.id === id);
         expect(nabara.has(id) || iMenyn, `${id} går inte att nå från menyn`).toBe(true);
