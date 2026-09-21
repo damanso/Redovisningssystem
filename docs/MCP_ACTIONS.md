@@ -1502,3 +1502,39 @@ senaste bedömningen — saknas den står *Saknad*, aldrig grönt — och färsk
 uppdragets svepvärden. Två nya klasser i `html.ts`: `.farskhet` och `.subnav`.
 Ingen migration, inget nytt beroende, JS-fri HTML, inga externa anrop under
 rendering (NFR-6).
+
+### Övrigt — anteckningsloggen (överlämning #268)
+
+- `skriv_uppdragsanteckning` (write, **`kravManniska: true`**) — `contract_id`,
+  `text` (1–2 000 tecken) och `utanfor_avtal` (valfri, default `false`). Skriver
+  EN rad i uppdragets anteckningslogg (`uppdrag_anteckning`, migration 0073) och
+  svarar med raden: `id`, `contract_id`, `text`, `utanfor_avtal`, `skriven_av`,
+  `skriven_av_namn` och `created_at`. Ett agentanrop (MCP) fälls i
+  `executeAction` med **403 `human_required`** före varje skrivning: raden är
+  människans egna ord (0072:s princip), och en AI-skriven anteckning i en
+  append-only logg är en gissning som inte går att ta tillbaka.
+- **Aldrig en tyst tom rad.** Tom text fälls av zod-schemat (400
+  `validation_error`), blanktecken av tjänsten (400 `tom_anteckning`) och båda av
+  0073:s CHECK för kod som inte går genom tjänstelagret. Ett okänt eller
+  främmande `contract_id` ger **404 `not_found`**.
+- **Append-only i rättigheterna, inte i en konvention.** `app` har SELECT +
+  INSERT på `uppdrag_anteckning` och ingenting annat — samma tre försvarslinjer
+  som `audit_log` (0003) och `uppdrag_bedomning` (0068). Raden går alltså varken
+  att ändra eller ta bort; nästa rad rättar. `skriven_av` läses ur den inloggade
+  användaren och kan inte skickas in (`.strict()`).
+- **Ingen automatik.** Bocken *utanför avtalet* är en markering att läsa, aldrig
+  en trigger: ingen rad blir ett tillägg eller en scopesignal av sig själv, och
+  någon "behandlad"-status finns inte. `contracts.notes` (avtalsformulärets
+  *Anteckningar*) och `projects.notes` är orörda — de är en annan sak.
+
+**Vyn:** panelen **Övrigt** sist på Läget
+(`/app/c/:id/projects/:projectId/laget`), i full bredd under FR-18:s fem kort.
+Raderna nyast överst i husets `.log` — datum i mono-axeln, avsändare och
+markeringen *Utanför avtalet* (chip med färg, glyf och ord) på flaggade rader,
+och orden själva som postens huvudtext. Panelhuvudet räknar de flaggade raderna
+i klartext ("2 rader gäller arbete utanför avtalet"); är ingen bockad sägs det.
+Under listan ett formulär med textarea, kryssrutan *Gäller arbete utanför
+avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte går att
+ändra står FÖRE knappen. Posten går genom `executeAction` (actor `human`, lärdom
+5) och landar tillbaka på Läget med raden synlig; en tom rad kommer tillbaka som
+`?fel=` i sidans notis. Ingen ny CSS-klass, ingen JS.
