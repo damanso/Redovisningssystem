@@ -427,3 +427,210 @@ describe('PDF:en skriver aldrig ut ett nummer en annan fakturas PDF redan bär',
     }
   });
 });
+
+/**
+ * Överlämning #269 (beslut #58), migration 0074: bilageradens väg TILLBAKA till
+ * tidposten.
+ *
+ * Ledet tidpost → faktura finns sedan 0062. Proven nedan mäter det andra ledet
+ * och båda riktningarna PÅ SAMMA RADER: bilageraden bär id:t på den tidpost den
+ * kopierades ur, och just den tidposten bär id:t på fakturan som låste den.
+ * Skulle något av leden gå sönder är kedjan bruten åt ett håll — och en halv
+ * kedja är precis den gissning kolumnen finns för att slippa.
+ *
+ * Fältet läses med ägarrollen: `get_invoice_appendix` exponerar det INTE (det
+ * hör till underlaget, inte till fakturans svar), och kravspecen låter API-svaret
+ * stå orört.
+ */
+describe('0074: bilageraden pekar tillbaka på tidposten', () => {
+  type Bilagerad = {
+    row_no: number; entry_date: string | null; description: string;
+    minutes: number | null; amount_ore: string | null; time_entry_id: string | null;
+  };
+
+  async function bilagerader(invoiceId: string): Promise<Bilagerad[]> {
+    return withAdmin(async (admin) => (await admin.query<Bilagerad>(
+      `SELECT row_no, entry_date::text, description, minutes, amount_ore::text, time_entry_id
+         FROM invoice_appendix_rows WHERE invoice_id = $1 AND company_id = $2 ORDER BY row_no`,
+      [invoiceId, companyId],
+    )).rows);
+  }
+
+  async function utkast(): Promise<string> {
+    const res = await act('create_invoice', {
+      customer_id: customerId, invoice_date: '2026-06-30',
+      lines: [{ description: 'Konsulttid', quantity: 1, unit: 'h', unit_price_ore: TAXA, vat_rate: 25 }],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.result.id as string;
+  }
+
+  it('kolumnen är nullbar och släpper taget med ON DELETE SET NULL', async () => {
+    // Formen först, på schemat: en NOT NULL-kolumn hade gjort varje handskriven
+    // rad omöjlig, och en FK utan SET NULL hade gjort tidposten oraderbar.
+    const form = await withAdmin(async (admin) => (await admin.query<{
+      nullbar: boolean; typ: string; confdeltype: string | null; reftabell: string | null;
+    }>(
+      `SELECT NOT a.attnotnull AS nullbar, format_type(a.atttypid, a.atttypmod) AS typ,
+              con.confdeltype, cl.relname AS reftabell
+         FROM pg_attribute a
+         LEFT JOIN pg_constraint con
+           ON con.conrelid = a.attrelid AND con.contype = 'f' AND con.conkey = ARRAY[a.attnum]
+         LEFT JOIN pg_class cl ON cl.oid = con.confrelid
+        WHERE a.attrelid = 'invoice_appendix_rows'::regclass
+          AND a.attname = 'time_entry_id' AND NOT a.attisdropped`,
+    )).rows[0]);
+    // 'n' = ON DELETE SET NULL i pg_constraint.confdeltype.
+    expect(form).toMatchObject({ nullbar: true, typ: 'uuid', reftabell: 'time_entries', confdeltype: 'n' });
+
+    // Och beteendet, inte bara katalogen: raderas tidposten står bilageraden
+    // kvar med NULL i stället för att dra fakturans underlag med sig.
+    const projekt = await nyttUppdrag('0074 — raderad tidpost');
+    const post = await loggaTid(projekt, { work_date: '2026-06-02', minutes: 60, description: 'Rad som får stå kvar' });
+    const skapad = await act('create_invoice_from_time', {
+      customer_id: customerId, project_id: projekt,
+      from: '2026-06-01', to: '2026-06-30', invoice_date: '2026-06-30',
+    });
+    expect(skapad.status, JSON.stringify(skapad.body)).toBe(200);
+    const fakturaId = (skapad.body.result.invoice as { id: string }).id;
+    expect((await bilagerader(fakturaId))[0]!.time_entry_id).toBe(post);
+
+    await withAdmin(async (admin) => admin.query('DELETE FROM time_entries WHERE id = $1', [post]));
+    const efter = await bilagerader(fakturaId);
+    expect(efter).toHaveLength(1);
+    expect(efter[0]).toMatchObject({ description: 'Rad som får stå kvar', minutes: 60, time_entry_id: null });
+  });
+
+  it('create_invoice_from_time: varje rad pekar på sin tidpost, och tidposten på fakturan', async () => {
+    const projekt = await nyttUppdrag('0074 — kedjan åt båda håll');
+    const a = await loggaTid(projekt, { work_date: '2026-06-10', minutes: 120, description: 'Modellstart' });
+    const b = await loggaTid(projekt, {
+      work_date: '2026-06-11', minutes: 120, description: 'Körplan',
+      billable_minutes: 90, adjustment_reason: 'Halva överdraget bärs av oss',
+    });
+    const undantagen = await loggaTid(projekt, {
+      work_date: '2026-06-12', minutes: 60, description: 'Kundmöte om nästa fas',
+    });
+
+    const res = await act('create_invoice_from_time', {
+      customer_id: customerId, project_id: projekt,
+      from: '2026-06-01', to: '2026-06-30', invoice_date: '2026-06-30',
+      exclude_entry_ids: [undantagen],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const fakturaId = (res.body.result.invoice as { id: string }).id;
+
+    // Riktning 1 (0074): raden → tidposten. Ordningen är urvalets (work_date,
+    // created_at), och varje rad bär EXAKT den post dess minuter kom ur — inte
+    // bara "någon post i perioden".
+    const rader = await bilagerader(fakturaId);
+    expect(rader).toHaveLength(2);
+    expect(rader.map((r) => [r.entry_date, r.minutes, r.time_entry_id])).toEqual([
+      ['2026-06-10', 120, a],
+      ['2026-06-11', 90, b],
+    ]);
+
+    // Riktning 2 (0062): tidposten → fakturan. Samma två poster, samma faktura.
+    for (const id of [a, b]) {
+      const r = await tidpost(id);
+      expect(r.status).toBe('fakturerad');
+      expect(r.invoice_id).toBe(fakturaId);
+    }
+
+    // Kedjan är sluten och sluter sig inte om något annat: den undantagna
+    // posten finns på ingen rad och bär ingen faktura.
+    expect(rader.some((r) => r.time_entry_id === undantagen)).toBe(false);
+    const kvar = await tidpost(undantagen);
+    expect(kvar.status).toBe('godkand');
+    expect(kvar.invoice_id).toBeNull();
+  });
+
+  it('invoice_appendix_from_time_entries: samma koppling på den andra anropsvägen', async () => {
+    const projekt = await nyttUppdrag('0074 — bilaga ur tid på befintligt utkast');
+    const a = await loggaTid(projekt, { work_date: '2026-06-17', minutes: 90, description: 'Datamodell' });
+    const b = await loggaTid(projekt, { work_date: '2026-06-18', minutes: 45, description: 'Avstämning' });
+    const fakturaId = await utkast();
+
+    const res = await act('invoice_appendix_from_time_entries', {
+      invoice_id: fakturaId, project_id: projekt, from: '2026-06-01', to: '2026-06-30',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const rader = await bilagerader(fakturaId);
+    expect(rader.map((r) => [r.description, r.minutes, r.time_entry_id])).toEqual([
+      ['Datamodell', 90, a],
+      ['Avstämning', 45, b],
+    ]);
+    for (const id of [a, b]) expect((await tidpost(id)).invoice_id).toBe(fakturaId);
+  });
+
+  it('en handskriven tidsbilaga ger rader med time_entry_id NULL', async () => {
+    // KRAV-3: bypass-vägen låser ingen tidpost, alltså får den inte heller
+    // kunna PÅSTÅ en koppling till någon. Skälet står i auditloggen, kopplingen
+    // står ingenstans — och det är skillnaden mellan de två bilagorna.
+    const fakturaId = await utkast();
+    const res = await act('set_invoice_appendix', {
+      invoice_id: fakturaId, kind: 'time', bypass_time_entries: true,
+      reason: 'Underlag från tiden före tidrapporteringen',
+      rows: [
+        { entry_date: '2026-06-20', description: 'Handskriven rad', minutes: 60 },
+        { entry_date: '2026-06-21', description: 'Andra handskrivna raden', minutes: 30 },
+      ],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const rader = await bilagerader(fakturaId);
+    expect(rader).toHaveLength(2);
+    for (const r of rader) expect(r.time_entry_id).toBeNull();
+  });
+
+  it('utlägg, kategori och per_avtalsdel-bilagan bär också NULL', async () => {
+    const utlagg = await utkast();
+    expect((await act('set_invoice_appendix', {
+      invoice_id: utlagg, kind: 'expense',
+      rows: [{ entry_date: '2026-06-22', description: 'Tågbiljett', amount_ore: 89_500 }],
+    })).status).toBe(200);
+    expect((await bilagerader(utlagg))[0]!.time_entry_id).toBeNull();
+
+    const kategori = await utkast();
+    expect((await act('set_invoice_appendix', {
+      invoice_id: kategori, kind: 'category',
+      rows: [{ description: 'Fas 2A — Commercial Cockpit', minutes: 120, amount_ore: 220_000 }],
+    })).status).toBe(200);
+    expect((await bilagerader(kategori))[0]!.time_entry_id).toBeNull();
+
+    // Kategoribilagan ur tid (story 3) är en SUMMA över flera poster och kan
+    // inte peka på en av dem — att välja den första hade varit en gissning som
+    // ser ut som ett faktum.
+    const projekt = await nyttUppdrag('0074 — kategori ur tid');
+    const a = await loggaTid(projekt, { work_date: '2026-06-24', minutes: 60, description: 'Första' });
+    const b = await loggaTid(projekt, { work_date: '2026-06-25', minutes: 30, description: 'Andra' });
+    const res = await act('create_invoice_from_time', {
+      customer_id: customerId, project_id: projekt,
+      from: '2026-06-01', to: '2026-06-30', invoice_date: '2026-06-30',
+      appendix_layout: 'per_avtalsdel',
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const fakturaId = (res.body.result.invoice as { id: string }).id;
+    const rader = await bilagerader(fakturaId);
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ entry_date: null, minutes: 90, time_entry_id: null });
+    // Låsningen är oförändrad: posterna hör till fakturan även utan radpekare.
+    for (const id of [a, b]) expect((await tidpost(id)).invoice_id).toBe(fakturaId);
+  });
+
+  it('time_entry_id går ALDRIG att skicka in — strict-schemat fäller fältet', async () => {
+    // Vore fältet indata kunde en handskriven bilaga utpeka en tidpost den
+    // aldrig låst, och kedjan hade blivit ett påstående i stället för ett spår.
+    const projekt = await nyttUppdrag('0074 — inte indata');
+    const post = await loggaTid(projekt, { work_date: '2026-06-27', minutes: 60, description: 'Låst av ingen' });
+    const fakturaId = await utkast();
+    const res = await act('set_invoice_appendix', {
+      invoice_id: fakturaId, kind: 'time', bypass_time_entries: true, reason: 'Prövar spärren',
+      rows: [{ entry_date: '2026-06-27', description: 'Påstådd koppling', minutes: 60, time_entry_id: post }],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+    expect(await bilagerader(fakturaId)).toHaveLength(0);
+    expect((await tidpost(post)).invoice_id).toBeNull();
+  });
+});

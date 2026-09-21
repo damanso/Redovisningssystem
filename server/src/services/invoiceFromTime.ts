@@ -225,10 +225,14 @@ export async function createInvoiceFromTime(
     kind: layout === 'per_avtalsdel' ? 'category' : 'time',
     title: input.title,
     preamble: input.preamble,
+    // `time_entry_id` (0074) sätts BARA i per_datum-läget, och då ur de låsta
+    // posternas egna id:n. En kategorirad är en summa över flera poster och kan
+    // inte peka på en av dem — den får NULL, som den handskrivna bilagan.
     rows: layout === 'per_avtalsdel'
       ? [...perAvtalsdel.values()].map((g) => ({ description: g.text, minutes: g.minuter }))
       : entries.map((e) => ({
         entry_date: e.work_date, description: e.description, minutes: e.billable_minutes,
+        time_entry_id: e.id,
       })),
   });
 
