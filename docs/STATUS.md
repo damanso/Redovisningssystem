@@ -153,6 +153,92 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-21 (uppdragsytan, överlämning #268 — panelen Övrigt: anteckningsloggen
+  per uppdrag):** Småuppdragen (ILT) sägs i förbifarten, görs samma dag och levde
+  sedan i mejl och i huvudet. **Det som inte har en plats i systemet finns inte
+  den dag ett tillägg ska skrivas** — och då är frågan "gjorde vi det här innanför
+  eller utanför avtalet?" en minnesövning. Byggt: **migration 0073** (additiv,
+  idempotent — tabellen `uppdrag_anteckning` med sammansatt FK mot
+  `contracts(id, company_id)`, CHECK mot tom text och 2 000-teckenstaket,
+  `utanfor_avtal boolean NOT NULL DEFAULT false`, `skriven_av` → `users`,
+  tabellkommentar ÄGD, index `(company_id, contract_id, created_at)`, RLS
+  SELECT/INSERT via `app_has_company_access` och `GRANT SELECT, INSERT` till
+  `app` — aldrig UPDATE, aldrig DELETE), **tjänsten
+  `services/uppdragAnteckning.ts`** (`skrivUppdragsanteckning` +
+  `listaUppdragsanteckningar`), **åtgärden `skriv_uppdragsanteckning`** (`write` +
+  `kravManniska`, strict zod) och **panelen Övrigt på Läget** med sin POST-rutt.
+  **Ingen ny CSS-klass, ingen ny vy eller rutt utöver panelens POST, inget nytt
+  beroende, ingen JS, ingen ändrad känslighet, ingen befintlig tabell, åtgärd
+  eller yta ändrad.** Diffen rör `migrations/0073`, `uppdragAnteckning.ts` (ny),
+  `actions/registry.ts`, `http/view/routes.ts`, `server/test/uppdragsytan-anteckning.test.ts`
+  (ny), `docs/MCP_ACTIONS.md` och den här filen.
+
+  1. **Människans egna ord, aldrig systemets** (0072:s princip). Åtgärden bär
+     `kravManniska`, så ett agentanrop fälls med 403 `human_required` FÖRE varje
+     skrivning. Underlagets ord var "kraver_manniska"; kodens konstant heter
+     `human_required` (`execute.ts:57`) och det är den som gäller — samma spärr,
+     rätt namn. Ingen AI-rad, ingen svepobservation, ingen kö: `write` och inte
+     `sensitive`, för att köa Davids egen anteckning för Davids eget godkännande
+     vore ett handgrepp utan innehåll (samma skäl som `satt_bedomning`).
+  2. **Append-only i rättigheterna, inte i en konvention.** `app` har SELECT +
+     INSERT och ingenting annat — samma tre försvarslinjer som `audit_log` (0003)
+     och `uppdrag_bedomning` (0068). En anteckning som är underlag för ett tillägg
+     är värdelös om den kan putsas i efterhand; nästa rad rättar.
+  3. **Aldrig en tyst tom rad, i tre lager.** Tom text fälls av zod (400
+     `validation_error`), blanktecken av tjänsten (400 `tom_anteckning`, med ett
+     begripligt svenskt besked) och båda av 0073:s CHECK för kod som inte går
+     genom tjänstelagret. Vyn skickar texten OTRIMMAD med flit, så en blank ruta
+     möts av tjänstens egna ord i stället för den generella formulärtexten.
+  4. **Räkningen avser flaggade rader TOTALT**, som överlämningens exempel, och
+     står i klartext i panelhuvudet ("2 rader gäller arbete utanför avtalet") —
+     aldrig en naken siffra. Någon "behandlad"-status finns inte och ska inte
+     finnas: loggen är append-only och ingenting i den drivs vidare automatiskt.
+     Är ingen rad bockad sägs DET; ett tomt chip hade sett ut som ett svar ingen
+     gett.
+  5. **Full bredd under de fem korten, i husets `.log`.** En logg är löpande text
+     och läses inte i en 298px-kolumn, så panelen ligger under rutnätet och stjäl
+     ingen plats från FR-18:s fem delar. Kronologikomponenten är den som redan bär
+     revisionsloggen, notiserna, CRM-anteckningarna och Rapporterna — noll ny CSS.
+     Markeringen bär färg, form OCH ord (`.chip--info`, glyf, *Utanför avtalet*),
+     och `white-space:pre-wrap` behåller radbrytningarna människan själv skrev.
+  6. **Fälten före knappen** (KRAV-3): texten, bocken och meningen om att raden
+     inte går att ändra står alla ovanför *Lägg till*. Läget fick dessutom sin
+     `felNotis(req)` — utan den hade en avvisad rad varit en tyst omladdning.
+  7. **Öppet redovisat:** `docs/ARKITEKTUR.md` är INTE ändrad (kravspecens
+     avgränsning). Modulsektionens uppräkningar där är dock redan efter kedjan —
+     den skriver "migrationerna 0068–0071" och saknar `paborja_leverabel`/
+     `godkann_leverabel` sedan S2.1, och nu även 0073 och
+     `skriv_uppdragsanteckning`. Bygget ryms i namnrymden (`uppdrag_*`,
+     `services/uppdrag*.ts`, åtgärd i registret), så ingen invariant bryts — men
+     att rätta uppräkningen är en ändring i det styrande dokumentet och hör till
+     beslutskön enligt ändringsregeln, inte till ett enskilt bygge.
+
+  **Grind:** `npm run migrate`, `npm test` och `npm run build` kördes INTE i den
+  här sessionen (körs av körskriptet efteråt) — utfallet ska klistras in här innan
+  bygget stängs. Ny svit `server/test/uppdragsytan-anteckning.test.ts`: **(a)**
+  registret (`write` + `kravManniska`), agentanropet → 403 `human_required` med
+  auditloggen, tabellen och kön ORÖRDA, samma anrop som människa igenom, schemat
+  strikt åt båda hållen (`skriven_av`, ett okänt fält och en saknad text fälls),
+  tom och blank text, och `contracts.notes` oförändrat efter en skrivning;
+  **(b)** UPDATE (text och bock) och DELETE som rollen `app` → `permission
+  denied` med raden kvar byte för byte, plus CHECK:en prövad förbi tjänstelagret;
+  **(c)** grannbolaget — åtgärden 404, RLS fäller den råa INSERT:en, listan tom,
+  vyns GET och POST 404 medan grannen når sitt eget uppdrag; **(d)** rundturen ur
+  #268:s "Klart när" — formuläret → 302 tillbaka till Läget → raden synlig med
+  datum, avsändare och markering, och panelen BYTE FÖR BYTE identisk efter
+  omladdning — nyast överst, räkningen på två av tre flaggade, en ensam obockad
+  rad utan markering och utan räkning, tomläget med vad tomheten betyder och
+  formuläret kvar, fältordningen (textarea → bock → varningen → knappen), ingen
+  `<script>`, avtalsväljaren på uppdraget med två avtal mot dolt fält på det med
+  ett, och en blank rad i formuläret som ger en SYNLIG notis och ingen rad.
+
+  **Kvarstår för David:** kör `npm run migrate` en gång (0073). Panelen ligger
+  sist på Läget. Redigering och radering av rader, automatik som gör en rad till
+  tillägg eller scopesignal, AI- eller agentskrivna rader, godkännandekö för
+  anteckningar, notiser på utanför-avtalet-rader, återanvändning av CRM:s
+  `party_notes` (0033 har DELETE för GDPR och är nycklad på part) och ett nytt
+  fält på avtalsdelarna är medvetet uteslutna — källan kräver dem inte.
+
 - **2026-09-21 (LOC-355 verifierad i DRIFT; navmenyfixen från 14/9 portad till
   main; beslut #163 stängt):** Davids fråga 18/9 var inte "är buggen behandlad"
   utan "finns fixen i min drift och inte bara i repot". Kontroll 2026-09-21

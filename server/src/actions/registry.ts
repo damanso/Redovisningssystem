@@ -40,6 +40,7 @@ import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js'
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
+import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
@@ -2000,6 +2001,43 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ project_id: UuidSchema }).strict(),
     handler: (ctx, i) => lasUppdragslage(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan, överlämning #268: anteckningsloggen under Övrigt på Läget.
+  // Småuppdragen (ILT) lever annars i mejl och i huvudet — och det som inte har
+  // en plats i systemet finns inte den dag ett tillägg ska skrivas.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'skriv_uppdragsanteckning',
+    title: 'Skriv en rad i uppdragets anteckningslogg (append-only)',
+    // `write` + `kravManniska`, inte `sensitive` — samma skäl som
+    // `satt_bedomning`: kön finns för beslut som ska LÄSAS av en människa innan
+    // de gäller, och här ÄR människan den som skriver. Spärren är att ingen
+    // ANNAN kan skriva: ett agentanrop fälls i executeAction med 403
+    // `human_required`, före varje skrivning. Raden är människans egna ord
+    // (0072:s princip) — en AI-skriven anteckning i en append-only logg är en
+    // gissning som inte går att ta tillbaka.
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Samma tak som bedömningens kommentar: en anteckning, inte ett
+        // dokument. Blanktecken passerar `min(1)` och fälls i tjänsten (400
+        // `tom_anteckning`) — en tyst tom rad ser i listan ut som att något
+        // skrevs.
+        text: safeText(2000),
+        // Utelämnad = innanför avtalet. Bocken är en människas markering att
+        // läsa, aldrig en trigger: ingen automatik gör raden till ett tillägg
+        // eller en scopesignal.
+        utanfor_avtal: z.boolean().optional(),
+      })
+      .strict(),
+    // `skriven_av` är INTE ett fält: avsändaren läses ur den inloggade
+    // användaren. Ett indatafält hade gjort spåret till ett påstående anroparen
+    // skriver om sig själv — samma lögnmöjlighet som `satt_av_manniska`,
+    // `tand_av` och `bekraftat_av` finns för att utesluta.
+    handler: (ctx, i) => skrivUppdragsanteckning(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtalet läses in ur sin egen handling (story 6). Två steg med flit: det

@@ -38,6 +38,7 @@ import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdr
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
+import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
@@ -4045,7 +4046,128 @@ function kortKoposter(companyId: string, l: Uppdragslage, idag: string): Raw {
     kropp, farskhetsrad([direktFarskhet(l.farskhet.koposter, idag)]));
 }
 
-function lagessida(companyId: string, l: Uppdragslage, forslag: Statusforslagskort[], idag: string): Raw {
+// --- Panelen Övrigt: anteckningsloggen (överlämning #268) -------------------
+//
+// Småuppdragen (ILT) sägs i förbifarten, görs samma dag och lever sedan i mejl
+// och i huvudet. Panelen är den plats raden får i stället — en rad i taget, i
+// Davids egna ord, med en bock för det som gäller arbete UTANFÖR avtalet.
+//
+// Sex beslut styr panelen:
+//
+//  1. **Full bredd under de fem korten, inte ett sjätte kort.** Korten svarar på
+//     var sin mätbar fråga i en 298px-kolumn; en logg är löpande text och läses
+//     inte i en smal spalt. Panelen ligger därför under rutnätet, i husets
+//     `.panel`, och stjäl ingen plats från FR-18:s fem delar.
+//  2. **`.log`, inte en ny komponent.** Husets kronologikomponent bär redan
+//     revisionsloggen, notiserna, CRM-anteckningarna och Rapporterna: datumet i
+//     mono-axeln till vänster, innehållet till höger. Noll ny CSS, och en läsare
+//     som sett en logg i huset känner igen den här.
+//  3. **Räkningen står i panelhuvudet, i ord.** "2 rader gäller arbete utanför
+//     avtalet" — inte en naken siffra och inte en procentsats. Är ingen rad
+//     bockad sägs DET; ett tomt chip hade sett ut som ett svar ingen gett.
+//     Någon "behandlad"-status finns inte och ska inte finnas: loggen är
+//     append-only och ingenting i den drivs vidare automatiskt.
+//  4. **Markeringen bär färg, form OCH ord** (samma regel som statuschippen):
+//     `.chip--info` med glyf och etiketten *Utanför avtalet*. En rad som bara
+//     färgkodats är obrukbar i svartvitt och för den som inte skiljer färgerna.
+//  5. **Fälten före knappen.** Det som inte går att ångra ska stå framför handen
+//     som gör det: texten, bocken och meningen om att raden inte går att ändra
+//     står alla ovanför *Lägg till*.
+//  6. **JS-fri, som resten av vyn.** Formuläret postar till Lägets egen adress
+//     och landar tillbaka där med raden synlig; felet — en tom rad — kommer
+//     tillbaka som `?fel=` i `felNotis`, aldrig som en tyst omladdning.
+
+/** Markeringen på en flaggad rad. Färg, form och ord — alltid alla tre. */
+const utanforChip = (): Raw => chip('Utanför avtalet', 'info', '↗');
+
+/** Panelhuvudets räkning: flaggade rader TOTALT, i ord (överlämningens exempel). */
+function utanforRakning(antal: number): Raw {
+  if (antal === 0) return chip('Ingen rad gäller arbete utanför avtalet', 'muted', '○');
+  return chip(
+    antal === 1 ? '1 rad gäller arbete utanför avtalet' : `${String(antal)} rader gäller arbete utanför avtalet`,
+    'info', '↗',
+  );
+}
+
+/**
+ * En anteckning som en post: när den skrevs, av vem, om den gäller utanför
+ * avtalet — och därunder orden själva, som huvudtext.
+ *
+ * `white-space:pre-wrap` är inte kosmetik: raden ÄR människans egna ord, och
+ * radbrytningarna hon skrev är en del av dem.
+ */
+function anteckningspost(r: Anteckningsrad, avtalsnamn: string | undefined, flera: boolean): Raw {
+  return html`<div class="log-row" style="align-items:start">
+    <div class="log-when">${r.created_at.replace('T', ' ').slice(0, 16)}</div>
+    <div>
+      <div class="log-what">${r.utanfor_avtal ? utanforChip() : ''}
+        <span class="muted" style="font-size:12.5px">${r.skriven_av_namn}</span>
+        ${flera && avtalsnamn ? html`<span class="muted" style="font-size:12.5px">${avtalsnamn}</span>` : ''}</div>
+      <p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${r.text}</p>
+    </div>
+  </div>`;
+}
+
+/** Formuläret: avtal (bara när uppdraget har flera), texten, bocken, knappen. */
+function anteckningsformular(companyId: string, l: Uppdragslage): Raw {
+  const flera = l.avtal.length > 1;
+  return html`<form method="post" action="/app/c/${companyId}/projects/${l.uppdrag.project_id}/laget"
+      style="margin:0;border-top:1px solid var(--line)">
+    ${flera
+      ? html`<div style="padding:12px 16px 0">
+          <label class="field" style="margin:0;max-width:320px"><span>Avtal</span>
+            <select name="contract_id" required>
+              ${l.avtal.map((a) => html`<option value="${a.contract_id}">${a.contract_name}</option>`)}
+            </select></label></div>`
+      : html`<input type="hidden" name="contract_id" value="${l.avtal[0]!.contract_id}">`}
+    <div style="padding:12px 16px 0">
+      <label class="field" style="margin:0"><span>Anteckning
+          <span class="muted" style="font-weight:400">· dina egna ord, en rad i taget</span></span>
+        <textarea name="text" rows="3" maxlength="2000" required
+          placeholder="T.ex. Rättade ILT:s momskod på tre fakturor efter samtal med Karin, ca 40 min."></textarea></label>
+    </div>
+    ${/* Hela raden är träffyta, inte bara den lilla rutan — samma grepp som
+          bedömningens lägesval och signalens eskaleringsbock. */ ''}
+    <label style="display:flex;gap:9px;align-items:flex-start;margin:11px 16px 0;font-size:13.5px">
+      <input type="checkbox" name="utanfor_avtal" value="ja" style="width:auto;margin-top:2px">
+      <span>Gäller arbete utanför avtalet
+        <span class="muted" style="display:block;font-size:12.5px;margin-top:3px">Markeringen följer raden och räknas
+          i panelhuvudet. Den blir aldrig ett tillägg av sig själv — ett tillägg skrivs där tillägg skrivs.</span></span>
+    </label>
+    ${/* Före knappen, aldrig efter: det som inte går att ångra ska stå framför
+          handen som ska göra det. */ ''}
+    <p class="muted" style="margin:11px 16px 0;font-size:12px">Raden går inte att ändra eller ta bort efteråt —
+      den står kvar som du skrev den. Blev det fel skriver du nästa rad, som rättar.</p>
+    <div class="actions" style="padding:12px 16px 14px"><button class="btn btn--primary" type="submit">Lägg till</button></div>
+  </form>`;
+}
+
+function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Anteckningsrad[]): Raw {
+  const flera = l.avtal.length > 1;
+  const avtalsnamn = new Map(l.avtal.map((a): [string, string] => [a.contract_id, a.contract_name]));
+  const utanfor = rader.reduce((n, r) => n + (r.utanfor_avtal ? 1 : 0), 0);
+  return html`<section class="panel" aria-labelledby="kort-ovrigt" style="margin-top:16px">
+    <div class="panel__head"><h2 id="kort-ovrigt">Övrigt</h2>${utanforRakning(utanfor)}</div>
+    <div class="panel__body" style="padding:0">
+      <p class="muted" style="margin:0;padding:12px 16px 4px;font-size:13px">En rad i taget om det som görs vid sidan
+        av: ett samtal, ett småuppdrag, en fråga som var besvarad på tio minuter. Raderna går bara att lägga till —
+        databasen ger varken ändra eller ta bort på dem — och de står här som underlag den dag ett tillägg ska skrivas.</p>
+      ${rader.length === 0
+        ? html`<p class="muted" style="margin:0;padding:6px 16px 14px;font-size:13px">Ingen anteckning är skriven ännu.
+            Det som sägs i förbifarten — <em>”kan ni titta på det här också?”</em> — hamnar annars i mejlen och i
+            huvudet; den första raden du skriver är uppdragets första spår av det.</p>`
+        : html`<div class="log" style="border:0;border-radius:0;box-shadow:none;border-top:1px solid var(--line)">
+            ${rader.map((r) => anteckningspost(r, avtalsnamn.get(r.contract_id), flera))}
+          </div>`}
+      ${anteckningsformular(companyId, l)}
+    </div>
+  </section>`;
+}
+
+function lagessida(
+  req: Request, companyId: string, l: Uppdragslage, forslag: Statusforslagskort[],
+  anteckningar: readonly Anteckningsrad[], idag: string,
+): Raw {
   const p = l.uppdrag;
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Läget</h1>
       <p class="lede">Uppdrag ${String(p.number)} · ${entityLink(companyId, 'project', p.project_id, p.name)}${
@@ -4054,6 +4176,7 @@ function lagessida(companyId: string, l: Uppdragslage, forslag: Statusforslagsko
       <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag">← Uppdragen</a></div></div>
     ${subnav(companyId, p.project_id, 'laget')}
+    ${felNotis(req)}
     ${handgreppsband(companyId, l, forslag)}
     ${/* Fem kort, alltid alla fem, i FR-18:s ordning. Rutnätet ligger i en
           inline-stil och inte i en ny klass: överlämningen namnger `.farskhet`
@@ -4064,7 +4187,8 @@ function lagessida(companyId: string, l: Uppdragslage, forslag: Statusforslagsko
       ${kortBedomning(companyId, l, idag)}
       ${kortSignaler(companyId, l, idag)}
       ${kortKoposter(companyId, l, idag)}
-    </div>`;
+    </div>
+    ${ovrigtpanelen(companyId, l, anteckningar)}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {
@@ -4079,9 +4203,38 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
     // till bandet. Samma hjälpare som uppdragssidan använder, så de två ytorna
     // aldrig kan visa olika förslag.
     const forslag = await statusforslag(client, companyId, projectId);
-    return { name: company.name, body: lagessida(companyId, lage, forslag, idag) };
+    // Anteckningarna hör till uppdragets avtal, och avtalen slås upp ur
+    // uppdragsläget som rutten redan läst — ingen egen avtalsfråga här.
+    const anteckningar = await listaUppdragsanteckningar(
+      client, companyId, lage.avtal.map((a) => a.contract_id),
+    );
+    return { name: company.name, body: lagessida(req, companyId, lage, forslag, anteckningar, idag) };
   });
   res.type('html').send(layout({ title: 'Läget', companyId, companyName: name, active: 'projects', objekt: 'Läget', body }).value);
+}));
+
+/**
+ * Övrigt: en rad läggs till (överlämning #268).
+ *
+ * Samma väg som AI:t skulle ha tagit om den fick — den får inte:
+ * `skriv_uppdragsanteckning` bär `kravManniska`, och här är actor 'human'
+ * (lärdom 5). Tillbaka till Läget utan kvittotext: den nya raden ÄR kvittot.
+ */
+viewRouter.post('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  // Texten skickas OTRIMMAD med flit: en blank ruta ska mötas av tjänstens egna
+  // ord ("anteckningen är tom …"), inte av den generella formulärtexten som ett
+  // tomt fält hade gett. Tomheten fälls ändå — i tjänsten och i 0073:s CHECK.
+  const text = typeof kropp.text === 'string' ? kropp.text : '';
+  const contractId = typeof kropp.contract_id === 'string' ? kropp.contract_id.trim() : '';
+  await runViewAction(req, res, companyId, 'skriv_uppdragsanteckning', {
+    contract_id: contractId,
+    text,
+    ...(kropp.utanfor_avtal === 'ja' ? { utanfor_avtal: true } : {}),
+  }, `/app/c/${companyId}/projects/${projectId}/laget`);
 }));
 
 // --- Uppdragslistan ---------------------------------------------------------
