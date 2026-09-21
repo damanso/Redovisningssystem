@@ -2150,6 +2150,15 @@
     },
     {
       "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/laget",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/laget",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
       "method": "GET",
       "router_pattern": "/c/:companyId/projects/:projectId/leveranserna",
       "public_pattern": "/app/c/:companyId/projects/:projectId/leveranserna",
