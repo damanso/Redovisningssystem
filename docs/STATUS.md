@@ -13,12 +13,20 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
 — oavsett vem som föreslog dem. Arkitekturinvarianter: se `CLAUDE.md` (rot).
 
-## Driftläge just nu (uppdaterat 2026-08-25)
+## Driftläge just nu (uppdaterat 2026-09-21)
 
-- **Användaren (David Mancilla, oteknisk) kör systemet SKARPT lokalt på sin Mac**
-  för bolaget **Locollabs AB**: `bash start-lokalt.sh` (Docker-Postgres på 5433,
-  API på `localhost:3000`, webbvyn på `/app`). Backup: `bash backup.sh` → `backups/`.
-- Mac-appikon: `bash skapa-macapp.sh` skapar "Redovisning.app" (dubbelklick-start).
+- **Skarp drift körs på VPS:en david-brain** för **Locollabs AB**: oföränderliga
+  releaser under `/opt/redovisning-app/releases`, symlänken `current` läses av
+  systemd-tjänsten `redovisning` (API på 127.0.0.1:3001 bakom ytan, Postgres i
+  containern `redovisning-postgres` på 5434). Byte sker ENBART via
+  `redovisning-deploy`. Se `docs/DRIFT_VPS.md`. Belägg 2026-09-21: löner
+  2026-03–2026-08 bokförda där (beslut #49 för augusti), senaste verifikat
+  2026-09-01.
+- Den lokala Mac-installationen (`~/redovisningssystem`, `Redovisning.app`,
+  Docker-Postgres 5433, `localhost:3000/app`, backup via `bash backup.sh`) finns
+  kvar men är **inte drift**: senast uppdaterad 2026-09-02, 132 commits efter
+  main, utan LOC-355. Startas den kör `start-lokalt.sh` migreringarna
+  automatiskt och utan backup — uppdatera den inte i förbifarten.
 - **Claude Desktop är anslutet via MCP** (token mintas i vyn under **Anslut AI**;
   konfig i `~/Library/Application Support/Claude/claude_desktop_config.json`).
   Claude fyller register/bokföring; användaren godkänner i Att göra.
@@ -144,6 +152,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-09-21 (LOC-355 verifierad i DRIFT; navmenyfixen från 14/9 portad till
+  main; beslut #163 stängt):** Davids fråga 18/9 var inte "är buggen behandlad"
+  utan "finns fixen i min drift och inte bara i repot". Kontroll 2026-09-21
+  10:46 UTC på david-brain: tjänsten `redovisning` (MainPID 2688865, startad
+  2026-09-14 08:58 UTC, `WorkingDirectory=/opt/redovisning-app/current/server`,
+  `current -> releases/20260913T115626Z-aef30fc`, `/health` på 127.0.0.1:3001 =
+  `{"status":"ok"}`). aef30fc har merge 4b004f9 (beslut #107, LOC-355) som
+  förfader; releasens `payroll.ts` bär `GROSS_METHOD_FROM_PERIOD = '2026-09'`.
+  Driftdatabasen (5434) har 72 migrationer applicerade, inklusive `konto_2731`
+  (0067). Septemberlönen (~25/9) bokförs alltså med bruttometoden. **Macens
+  lokala installation är INTE drift:** HEAD a3e51fe, senast pullad 2026-09-02,
+  132 commits efter origin/main, 4b004f9 saknas, ingen 0067. Driftläget ovan är
+  rättat — det sade sedan 25/8 att David kör skarpt på Macen, och det var den
+  premissen som fick #163 att peka på fel maskin. Två fynd på vägen:
+  (1) **Navmenyns klippningsfix från 14/9 låg enbart i releasekatalogen**
+  (`current/server/src/http/view/html.ts` patchad på plats 14/9 08:58, backup
+  `.fore-navmeny`) och i #163:s UTKAST-gren — inte på main. Nästa deploy hade
+  återinfört klippningen. Portad till main i commit före denna, byte för byte
+  identisk med releasen; typecheck grönt, `webbmeny` + `hem-landningar` 21/21.
+  (2) **Driftdatabasen bär testrester:** 2 717 bolag och 2 652 användare
+  skapade 7/9 (14:57–18:37) och 10/9 (14:26–20:29) med vitest-fixturernas namn
+  (Grannbolaget AB, Främmande AB, Tomma Holding AB, Utan orgnr AB …) i
+  databasen `redovisning` på 5434 — inte i `redovisning_test` på 5433 dit
+  `test/env.ts` pekar. Källan är inte funnen: ingen `TEST_DATABASE_URL` i
+  någon konfiguration, crontab eller skill. Locollabs riktiga data (c1ef13b6,
+  217 verifikat, löner 2026-03–2026-08) är orörd. Städning är en radering i
+  produktionsdata och görs inte utan Davids ja; backup tas först. #163:s gren
+  `cto/r-tta-verl-mning-103-till-25-9-och-kompl-163` raderas: UTKASTET bar 30
+  ovidkommande filer ur den delade arbetskopian och `// @ts-nocheck` i två
+  prov, och dess enda egna innehåll (datumrättelsen i #103) är gjord här.
 
 - **2026-09-07 (uppdragsytan S2.1, våg 1 — skalans två saknade övergångar):**
   `bekrafta_statusbyte` (S3.2) var enda skrivvägen till
