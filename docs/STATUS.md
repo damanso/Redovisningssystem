@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-21 (överlämning #271 / beslut #65 — Linear-datat tillbaka i
+  ärendeplattformen: VERIFIERING + journal, ingen kod ändrad):** Kravspecen
+  gäller ett annat repo (`/opt/arenden`) och står på verifiering + skarp körning
+  + journalföring. **Verifieringen faller inte i någon punkt** — KRAV-1 till
+  KRAV-5 är redan byggda där: `priority` (CHECK 1–4) och `due_date` i
+  `migrations/0003_arenden.sql:36-38`; `foralder_id` med självförälder-CHECK och
+  cykelspärrtrigger i `0007`; `issue_relations` med typ-CHECK och symmetriskt
+  unikt index i `0008`; `issue_attachments` med `UNIQUE (issue_id, url)` och
+  `GRANT SELECT, INSERT` i `0009`; återläsaren `src/import/aterlasLinear.ts` som
+  skriver ENBART via `executeAction` (aktör `system/linear-aterlasning`),
+  validerar hela prioritetsskalan mot `priorityLabel` före första skrivningen och
+  är idempotent via `bara_om_osatt` + `source_ref`-uppslag. Grepet i ACCEPTANS
+  bekräftat: **noll** `INSERT/UPDATE/DELETE` och **noll** `client.query` i
+  `aterlasLinear.ts`. Minsta-ändring-regeln gör därmed att ingen kod rörs; diffen
+  rör bara `docs/byggen/beslut-065.md` och den här filen.
+
+  **KVAR, och görs av David — inte av en session:** KRAV-6:s skarpa körning
+  (`npm run aterlas -- --fas falt|hierarki|relationer|bilagor`) och ACCEPTANS
+  `npm run check` i `/opt/arenden`. `docs/ARKITEKTUR.md:47` lägger handgrepp mot
+  produktionsdatan hos David, byggreglerna säger "kör inga kommandon", och skalet
+  i den här miljön är låst till `/opt/redovisning` — siffror utan körning vore
+  just den falska statusrapport CLAUDE.md-regel 2 förbjuder. Körordningen och de
+  väntade talen (192 prioriteter / 8 deadlines / 121 föräldrar / 71 relationer
+  varav 5 `blocks` / 50 länkar på 28 ärenden) står i byggjournalen. Körningen är
+  ofarlig att upprepa: omkörning ändrar noll rader. `--fas milstolpe` ska INTE
+  köras — de 28 milstolparna är uttryckligen uteslutna ur beslut #65.
+
 - **2026-09-21 (överlämning #270 / beslut #62 — typsnittsparet: VERIFIERING av
   ett redan mergat bygge, plus byggjournalen som aldrig skrevs):** Kravspecen
   beskriver ett bygge som **redan är gjort och mergat till main** — commit
