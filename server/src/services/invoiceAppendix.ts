@@ -26,6 +26,14 @@ export interface AppendixRowInput {
   minutes?: number;
   /** Belopp i hela ören. Krävs för 'expense', valfritt för 'category'. */
   amount_ore?: number;
+  /**
+   * Tidposten raden kopierades ur (0074). Sätts ENDAST av bilagan ur
+   * tidrapporteringen, och då ur `valjOchLasTidposter`-resultatets egna id:n —
+   * aldrig ur indata utifrån. Inget action-schema exponerar fältet, så en
+   * handskriven bilaga kan inte påstå en koppling till en tidpost den aldrig
+   * låst. Utelämnat betyder NULL i raden.
+   */
+  time_entry_id?: string;
 }
 
 export interface SetAppendixInput {
@@ -114,9 +122,11 @@ export async function setInvoiceAppendix(
   );
   for (const [i, r] of input.rows.entries()) {
     await client.query(
-      `INSERT INTO invoice_appendix_rows (invoice_id, company_id, row_no, entry_date, description, minutes, amount_ore)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [input.invoiceId, companyId, i + 1, r.entry_date ?? null, r.description, r.minutes ?? null, r.amount_ore ?? null],
+      `INSERT INTO invoice_appendix_rows
+         (invoice_id, company_id, row_no, entry_date, description, minutes, amount_ore, time_entry_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [input.invoiceId, companyId, i + 1, r.entry_date ?? null, r.description, r.minutes ?? null, r.amount_ore ?? null,
+        r.time_entry_id ?? null],
     );
   }
 
@@ -300,8 +310,13 @@ export async function appendixFromTimeEntries(
     kind: 'time',
     title: input.title,
     preamble: input.preamble,
+    // `time_entry_id` (0074) kommer ur de LÅSTA radernas egna id:n — samma
+    // transaktion som låsningen nedan. Raden vet därmed vilken tidpost den är
+    // en kopia av, och tidposten vet vilken faktura som låste den (0062):
+    // kedjan är sluten åt båda håll utan en enda härledning.
     rows: entries.map((e) => ({
       entry_date: e.work_date, description: e.description, minutes: e.billable_minutes,
+      time_entry_id: e.id,
     })),
   });
 

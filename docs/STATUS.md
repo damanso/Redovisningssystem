@@ -153,6 +153,78 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-21 (överlämning #269 / beslut #58 — bilageradens väg TILLBAKA till
+  tidposten):** Ledet tidpost → faktura fanns redan (`time_entries.invoice_id`,
+  migration 0062, satt av `lasTidposterTillFaktura`). **Motriktningen saknades:
+  en rad på en tidsbilaga var en kopia av en tidpost — datum, beskrivning,
+  debiterbara minuter — utan pekare tillbaka till raden den kopierades ur, så
+  kedjan kund → projekt → tidpost → faktura bara gick att sluta genom att gissa
+  på kund+datum.** Byggt: **migration 0074** (additiv, idempotent —
+  `invoice_appendix_rows.time_entry_id uuid REFERENCES time_entries(id) ON
+  DELETE SET NULL`, nullbar, ingen backfill, `COMMENT ON COLUMN` som säger vad
+  NULL betyder), **`time_entry_id` i `AppendixRowInput` + i den enda
+  INSERT-satsen** (`services/invoiceAppendix.ts`), och **ifyllnaden ur de LÅSTA
+  posternas egna id:n** i båda per-datum-mappningarna. **Ingen ny tabell, ingen
+  ny åtgärd, ingen ny tjänstefil, inget nytt beroende, inget ändrat
+  action-schema, ingen ändrad vy, inget ändrat API/MCP-svar, ingen ändrad
+  auditlogg, ingen backfill.** Diffen rör `migrations/0074_bilagerad_tidpost.sql`
+  (ny), `services/invoiceAppendix.ts`, `services/invoiceFromTime.ts`,
+  `server/test/faktura-ur-tid.test.ts` och den här filen.
+
+  1. **Enkel FK, inte husets komposit-FK (0047/0062/0065) — med skäl.**
+     `ON DELETE SET NULL` på `(time_entry_id, company_id)` hade nollställt även
+     `company_id`, som är NOT NULL: raderingen av en tidpost hade fällt hela
+     satsen. Tenant-säkerheten bärs i stället av RLS på båda tabellerna plus av
+     att värdet ALDRIG kan komma någon annanstans ifrån än
+     `valjOchLasTidposter`-resultatet inuti samma tenant-transaktion.
+  2. **Fältet är aldrig indata (KRAV-3).** Inget zod-schema i registret ändrades,
+     så `.strict()` fäller ett inskickat `time_entry_id` med 400
+     `validation_error`. En handskriven bilaga (`bypass_time_entries` med skäl),
+     en utläggsbilaga och en kategoribilaga ger alla rader med NULL — en bilaga
+     som inte låst en tidpost får inte kunna PÅSTÅ att den gjort det.
+  3. **Kategoriraden får NULL med flit.** `per_avtalsdel`-bilagan är en summa
+     över flera poster; att peka på den första hade varit en gissning som ser ut
+     som ett faktum.
+  4. **Öppet redovisat — kravspecen har fel på en punkt.** KRAV-2 säger att
+     `create_invoice_from_time` får ifyllnaden "gratis via den enda funktionen".
+     Det stämmer för INSERT-satsen (`setInvoiceAppendix` är enda skrivstället),
+     men rad-mappningen finns på TVÅ ställen: `appendixFromTimeEntries`
+     (`invoiceAppendix.ts`) och `createInvoiceFromTime` (`invoiceFromTime.ts:230`,
+     per_datum-läget) — den senare anropar `setInvoiceAppendix` direkt och går
+     inte via `appendixFromTimeEntries`. KRAV-4 mäter uttryckligen
+     `create_invoice_from_time`, så båda mappningarna fick fältet. Det är en rad
+     i `invoiceFromTime.ts` utöver avgränsningens uppräkning, och utan den hade
+     KRAV-4 varit ogenomförbart.
+  5. **Vyerna är orörda (avgränsningen).** `fakturalankSaknas()` i
+     `http/view/routes.ts` står kvar ordagrant, inklusive sin kommentar från
+     25/8 som numera är delvis förlegad (den skriver att
+     `appendixFromTimeEntries` inte sparar vilken faktura det blev — 0062 gjorde
+     det). R-2:s sista led är ett senare bygge; att skriva om texten nu vore en
+     ändring källan inte kräver.
+
+  **Grind:** `npm run migrate`, `npm test` och `npm run build` kördes INTE i den
+  här sessionen (körs av körskriptet efteråt) — utfallet ska klistras in här
+  innan bygget stängs. `server/test/faktura-ur-tid.test.ts` utökades (ingen ny
+  fil, husets mönster) med sex prov: **(a)** kolumnens form läst ur katalogen
+  (nullbar, uuid, FK mot `time_entries`, `confdeltype = 'n'`) OCH beteendet —
+  raderas tidposten står bilageraden kvar med NULL i stället för att dra
+  fakturans underlag med sig; **(b)** KRAV-4 åt båda håll på samma rader:
+  varje bilagerad bär EXAKT den post dess minuter kom ur, och just den posten
+  bär fakturans id, medan den `exclude_entry_ids`-undantagna posten finns på
+  ingen rad och bär ingen faktura; **(c)** samma koppling på den andra
+  anropsvägen (`invoice_appendix_from_time_entries` mot ett befintligt utkast);
+  **(d)** handskriven tidsbilaga → NULL på varje rad; **(e)** utlägg, kategori
+  och `per_avtalsdel`-bilagan → NULL, med låsningen oförändrad; **(f)** ett
+  inskickat `time_entry_id` fälls av strict-schemat (400 `validation_error`) och
+  varken bilagerad eller låsning uppstår. Fältet läses med ägarrollen —
+  `get_invoice_appendix` exponerar det inte, och API-svaret står orört.
+
+  **Kvarstår för David:** kör `npm run migrate` en gång (0074). Backfill av
+  historiska bilagerader, visningen av länken faktura → tidpost i vyerna (R-2:s
+  sista led), `time_entry_id` i `getInvoiceAppendix`/API-svaret, komposit-FK,
+  index på kolumnen och härledning ur kund+datum för gamla rader är medvetet
+  uteslutna — källan kräver dem inte.
+
 - **2026-09-21 (uppdragsytan, överlämning #268 — panelen Övrigt: anteckningsloggen
   per uppdrag):** Småuppdragen (ILT) sägs i förbifarten, görs samma dag och levde
   sedan i mejl och i huvudet. **Det som inte har en plats i systemet finns inte
