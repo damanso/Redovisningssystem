@@ -153,6 +153,74 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-21 (överlämning #270 / beslut #62 — typsnittsparet: VERIFIERING av
+  ett redan mergat bygge, plus byggjournalen som aldrig skrevs):** Kravspecen
+  beskriver ett bygge som **redan är gjort och mergat till main** — commit
+  `e047a05` (2026-08-26, "R-1, D-4, D-5, H-2"), som är förfader till HEAD. Den
+  la de fem woff2-filerna, de två OFL-licenserna, vitlisterouten i `app.ts`,
+  `@font-face`-blocken och de tre variablerna i `html.ts`, samt provet
+  `server/test/typsnitt.test.ts`. **Ingen kod är ändrad i den här sessionen:**
+  varje KRAV står uppfyllt i HEAD, och minsta-ändring-regeln gör att ett bygge
+  ovanpå ett uppfyllt krav vore ett bygge utöver källan. Diffen rör ENBART den
+  här filen.
+
+  **Det som faktiskt saknades var journalen.** `e047a05` rörde `docs/STATUS.md`
+  med **en** rad (provräknaren 743/89 → 780/94) och skrev ingen sessionsloggspost
+  alls. Avsteget från Davids ordagranna svar levde därmed bara i
+  commit-meddelandet och i en CSS-kommentar — inte där en ny session läser.
+  Kravspecens KALLA säger uttryckligen att tolkningen "ska stå i byggjournalen";
+  det är den meningen den här posten infriar.
+
+  1. **Avsteget, öppet: Roboto valdes BORT.** Davids ord (#270/#62) var *"Roboto
+     och skrivmaskinsstil"*. Skrivmaskinsstilen blev **IBM Plex Mono** (IBM
+     Selectric-släkten). Men **Roboto står namngiven i antimönster 1** i
+     `brain/03-Resurser/kunskap/impeccable-design-skills.md`, och ersattes av
+     **Public Sans** (US Web Design System, byggd för tät data) som lugn brödtext.
+     Det är ett tolkningsval gjort MOT bokstaven i Davids svar — se
+     "Kvarstår för David" nedan.
+  2. **Självvärdat betyder noll externa anrop.** Filerna ligger i
+     `server/assets/typsnitt/` och serveras på `GET /typsnitt/<fil>` bakom en
+     **uppräknad** vitlista (sju namn i en `Set`) — aldrig en regex över filnamn,
+     som är ett skydd som går att lura. Katalogen ligger bredvid `dist/`, inte i
+     den: `tsc` kopierar inte binärfiler, och en katalog som försvinner vid bygge
+     hade gjort ytan typsnittslös utan att något sa något.
+  3. **CSP:n är orörd, med flit.** `defaultSrc 'self'` och ingen egen `font-src`
+     ⇒ `font-src` **ärver** `'self'`. Att lägga till en rad hade varit att ändra
+     säkerhetsläget för att lösa ett problem som inte fanns.
+  4. **En laddad familj är inte en använd familj.** Det är felet som går sönder
+     tyst: en `@font-face` som hämtas men aldrig refereras ser identisk ut i
+     koden, i allt utom på skärmen. Därför mäter provet att `h1`–`h3` bär
+     `var(--display)` och brödtexten `font: 15px/1.55 var(--sans)` — inte bara
+     att variablerna är deklarerade.
+  5. **Fallbacken är kvar med flit.** `--sans`/`--mono`/`--display` slutar alla
+     på `sans-serif`/`monospace`: går woff2-hämtningen fel ska ytan bli **ful,
+     inte oläslig**.
+
+  **Grind:** `npm test` och `npm run build` kördes INTE i den här sessionen
+  (körs av körskriptet efteråt) — utfallet ska klistras in här innan bygget
+  stängs. Kontrollen här var statisk läsning av HEAD, KRAV för KRAV: fem woff2
+  på plats (magiskt byte `wOF2` verifierat på filerna, 14,5–15,6 kB styck) och
+  båda licensfilerna med strängen *SIL Open Font License* (KRAV-1, KRAV-2);
+  `font-display: swap` på alla fem `@font-face`, och **samtliga** `url()` i
+  hela stilmallen pekar inåt — fem `/typsnitt/…` plus en `data:`-URI, noll
+  `http(s)://` (KRAV-3); de tre variablerna på `html.ts:437–439` och deras
+  användning på `:518` och `:755–757` (KRAV-4); förstanamnen är "Public Sans"
+  respektive "IBM Plex Mono", alltså ingen av de sex förbjudna (KRAV-5). Inget
+  `express.static` finns i `server/src/` — vitlisterouten är enda vägen till en
+  statisk fil. `e047a05` själv redovisar körd bevisning: *"Svit: 94 filer, 780
+  prov, exit 0"* och okulärt *"Mätt i webbläsare: båda familjerna laddade,
+  svenska tecken renderas i dem (ä har samma teckenbredd som a i Plex Mono,
+  24.0 px monospace)"* — det är den körningen ACCEPTANS okulära led vilar på,
+  inte en körning i den här sessionen.
+
+  **Kvarstår för David — ett smakbeslut, inte en bugg:** vill du ha **bokstavligt
+  Roboto** trots att den står i antimönster 1, så är det `--sans` (och provets
+  antimönsterlista) som ska ändras — alltså KRAV-4 och KRAV-5, ingenting annat.
+  Säger du inget står Public Sans kvar. Preload-/prestandahintar, kursiva eller
+  variabla vikter, typsnittsval per sida eller tema och de tre förslagen att
+  välja mellan är medvetet uteslutna — källan kräver dem inte. Inget att migrera
+  och ingenting att köra.
+
 - **2026-09-21 (överlämning #269 / beslut #58 — bilageradens väg TILLBAKA till
   tidposten):** Ledet tidpost → faktura fanns redan (`time_entries.invoice_id`,
   migration 0062, satt av `lasTidposterTillFaktura`). **Motriktningen saknades:
