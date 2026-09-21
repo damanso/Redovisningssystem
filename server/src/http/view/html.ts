@@ -579,7 +579,10 @@ td a.entity { font-weight: 550; }
   background: color-mix(in oklch, var(--surface) 97%, transparent);
   border-bottom: 1px solid var(--line);
 }
-.navmenu { position: relative; flex: none; }
+.navmenu { flex: none; }   /* INTE position:relative — se 2026-09-14: .nav har
+   overflow-x:auto, vilket berakar overflow-y till auto och klipper bort allt
+   utanfor navraden. Panelen maste ha .topbar som containing block for att
+   slippa klippningen; da blir den synlig och klickbar. */
 .navmenu > summary {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 12px 7px 10px; border-radius: var(--radius-pill);
