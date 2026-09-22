@@ -43,9 +43,10 @@ function signatur(op: Bilageoperation, fileId: string, innehall: SignaturInnehal
  *
  * Basen tas som argument (med config som förval) så att regeln går att pröva
  * utan att starta om processen — `config.ts` är fortfarande den enda som läser
- * process.env.
+ * process.env. `null` betyder uttryckligen saknad (provet); ett `undefined`
+ * ersätts av språket med förvalet och når aldrig hit som värde.
  */
-export function publikApiBas(bas: string | undefined = config.PUBLIC_API_URL): string {
+export function publikApiBas(bas: string | null | undefined = config.PUBLIC_API_URL): string {
   if (!bas) {
     throw new BadRequestError(
       'public_api_url_saknas',

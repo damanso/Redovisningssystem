@@ -122,7 +122,7 @@ describe('trestegsvägen in för originalkvittot', () => {
 
     // Bifogningen ligger i auditloggen med sha256, uppladdare och tid.
     const audit = await withAdmin(async (admin) => (await admin.query(
-      "SELECT user_id, details, created_at FROM audit_log WHERE company_id = $1 AND action = 'receipt.file_attached' AND entity_id = $2",
+      "SELECT user_id, details, occurred_at FROM audit_log WHERE company_id = $1 AND action = 'receipt.file_attached' AND entity_id = $2",
       [companyId, receiptId],
     )).rows);
     expect(audit).toHaveLength(1);
@@ -335,9 +335,9 @@ describe('den signerade länken', () => {
   });
 
   it('utan PUBLIC_API_URL ges ett tydligt fel — aldrig en localhost-URL', () => {
-    expect(() => publikApiBas(undefined)).toThrowError(/PUBLIC_API_URL/);
+    expect(() => publikApiBas(null)).toThrowError(/PUBLIC_API_URL/);
     try {
-      publikApiBas(undefined);
+      publikApiBas(null);
     } catch (err) {
       expect((err as { code: string }).code).toBe('public_api_url_saknas');
     }
