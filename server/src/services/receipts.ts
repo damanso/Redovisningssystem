@@ -8,6 +8,7 @@ import { postExpense } from './accounting/autopost.js';
 import { writeAudit } from './auditService.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 import { removeStoredFile, validateUpload, writeStoredFile } from './fileStorage.js';
+import { bilagorForKvitton } from './receiptFiles.js';
 import { withTenantTransaction } from '../db/tx.js';
 
 export interface CreateReceiptInput {
@@ -64,6 +65,14 @@ export async function getReceipt(client: PoolClient, companyId: string, id: stri
   return result.rows[0];
 }
 
+/**
+ * Kvittolistan bär sina BILAGOR (beslut #178): antal, metadata och vilken som
+ * är den primära. `receipts.file_id` ligger kvar som den är — den är
+ * multipart-vägens pekare in i `files` (FK) och kan inte bära en
+ * `receipt_files`-rad. Den primära bilagan HÄRLEDS därför ur `receipt_files`
+ * (äldsta aktiva, ej ersatta) i stället för att skrivas in i en andra kolumn:
+ * sanningen om bilagorna finns på ett ställe och dupliceras inte.
+ */
 export async function listReceipts(
   client: PoolClient, companyId: string, opts: { status?: string } = {},
 ): Promise<Record<string, unknown>[]> {
@@ -72,7 +81,16 @@ export async function listReceipts(
      WHERE company_id = $1 AND ($2::text IS NULL OR status = $2) ORDER BY receipt_number DESC`,
     [companyId, opts.status ?? null],
   );
-  return result.rows;
+  const bilagor = await bilagorForKvitton(client, companyId, result.rows.map((r) => r.id as string));
+  return result.rows.map((rad) => {
+    const lista = bilagor.get(rad.id as string) ?? [];
+    return {
+      ...rad,
+      attachments: lista,
+      attachment_count: lista.length,
+      primary_attachment_id: (lista.find((b) => b.superseded_by === null)?.file_id as string | undefined) ?? null,
+    };
+  });
 }
 
 /**

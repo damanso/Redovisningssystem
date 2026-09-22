@@ -211,6 +211,44 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
   Momsmetodvakten varnar (notis + audit, blockerar inte) när ett nytt
   verifikat bryter mot metoden; SIE-import och rättelser undantas.
 
+### Kvittobilagor — tre steg, där steg 2 inte är ett MCP-anrop (beslut #178)
+
+Underlaget bär avdraget: Skatteverket kräver originalkvittot. En kvittobild från
+en telefon är ~1,3 MB, alltså ~1,7 miljoner tecken som base64 — det ryms inte i
+ett verktygsargument. Därför går **bara metadata** genom MCP och bytesen direkt
+till API:t:
+
+1. `create_receipt_upload_url` (write) — `receipt_id`, `filename`, `mime_type`,
+   `size_bytes` → `{ upload_url, file_id, expires_at }`. Signerad **engångs-PUT**,
+   giltig 15 minuter. Tillåtet: `image/jpeg`, `image/png`, `image/heic`,
+   `application/pdf`; tak 25 MB. Basen kommer ur `PUBLIC_API_URL` — saknas den
+   ges ett tydligt fel, aldrig en localhost-URL som uppladdaren inte når.
+2. **Utanför MCP:** `PUT <upload_url>` med filens råa bytes (t.ex. `curl -X PUT
+   --data-binary @kvitto.jpg -H 'Content-Type: image/jpeg' "<upload_url>"`).
+   Endpointen har ingen JWT — HMAC-signaturen i länken är behörigheten. Den
+   prövar signatur, giltighetstid, mime, storlek och innehållets magic bytes,
+   och vägrar både överskrivning och en återanvänd signatur.
+3. `confirm_receipt_file` (write) — `file_id` (+ valfritt `ersatter_file_id`).
+   Servern läser objektet, sparar `sha256` och aktiverar bilagan.
+
+Läsvägen: `get_receipt_file_url` (write) ger en signerad GET med kort TTL (5
+min) plus filnamn, mime-typ, storlek och sha256. `list_receipts` bär
+`attachments`, `attachment_count` och `primary_attachment_id` per kvitto.
+
+Livscykeln: en bilaga får bifogas **både** före och efter `book_receipt`. På ett
+BOKFÖRT kvitto är bilagan oföränderlig — den går varken att skriva över eller
+radera (RLS-policy + trigger i migration 0075); en felaktig bilaga rättas genom
+att ladda upp rätt och ange `ersatter_file_id`, varpå den gamla raden märks med
+`superseded_by` och ligger kvar. `delete_draft_receipt` städar ett OBOKAT
+utkasts bilagerader och objekt. Varje bifogning auditloggas
+(`receipt.file_attached`) med sha256, uppladdare och tid, i samma transaktion
+som mutationen. Påbörjade men aldrig bekräftade uppladdningar städas lazily i
+tjänstens egna anrop — redovisningen har ingen scheduler.
+
+`receipts.file_id` är oförändrad och tillhör den äldre multipart-vägen
+(`POST .../receipts/:id/file` → `files`); den primära bilagan **härleds** ur
+`receipt_files` i stället för att dupliceras.
+
 ### Städning (K7)
 
 `delete_draft_invoice` / `delete_draft_receipt` /

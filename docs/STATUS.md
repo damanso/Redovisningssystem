@@ -153,6 +153,55 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-22 (överlämning #272 / beslut #178 — kvittobilagor: `receipt_files`
+  + tre åtgärder + signerad PUT utanför MCP):** Alla 60+ bokförda kvitton hade
+  `file_id: null` — inte av slarv, utan för att ingen väg in fanns: base64 genom
+  MCP är omöjligt (1,3 MB bild ≈ 1,7 M tecken) och MCP-servern ser inte filerna
+  som ligger i Anthropics container. Byggt: migration **0075** (`receipt_files`,
+  flera rader per kvitto, RLS + GRANT enligt husmönstret, DELETE-policy som
+  aldrig släpper en AKTIV bilaga på ett bokfört kvitto, trigger
+  `receipt_files_write_once` som bara tillåter att `superseded_by` sätts en
+  gång); lagringsgränssnittet `services/objektlagring.ts` med **en** drivrutin
+  (lokal katalog ur `config.RECEIPT_FILES_DIR`); HMAC-signerade engångslänkar
+  (`lib/bilagesignatur.ts`, nyckel härledd ur `JWT_SECRET`, node:crypto, inga
+  nya paket); tjänsten `services/receiptFiles.ts`; de osignerade byte-vägarna
+  `PUT|GET /api/receipt-files/:fileId/content` (utanför `authenticate` —
+  signaturen ÄR behörigheten, tenant/RLS/audit gäller ändå); åtgärderna
+  `create_receipt_upload_url`, `confirm_receipt_file` (valfritt
+  `ersatter_file_id` = rättelsevägen), `get_receipt_file_url`, alla `write` som
+  `create_receipt`; `list_receipts` bär `attachments`/`attachment_count`/
+  `primary_attachment_id`; `delete_draft_receipt` städar utkastets bilagerader
+  och objekt; lat städning av obekräftade rader i tjänstens egna anrop (ingen
+  scheduler i redovisningen); hård 60 s-timeout på MCP-serverns fetch-anrop med
+  begripligt fel. Prov: `server/test/kvittobilagor.test.ts`.
+
+  **Värt att veta för nästa session:** byte-vägen är den enda muterande
+  HTTP-vägen i systemet UTAN JWT. Den vilar på beslut #178:s KRAV-4 (bytesen kan
+  inte gå genom `executeAction` — det är hela poängen med bygget) och följer
+  samma undantag som den äldre multipart-uppladdningen, som inte heller går via
+  action-lagret. Den är INTE fri prejudikat för nya ytor: en ny osignerad väg
+  kräver ett eget beslut av David. `docs/ARKITEKTUR.md` är orörd — säger David
+  att undantaget ska stå skrivet där är det hans beslut att fatta, inte
+  sessionens.
+
+  **Två saker David måste göra för att det ska fungera skarpt:** sätta
+  `PUBLIC_API_URL` (publikt nåbar bas-URL) och `RECEIPT_FILES_DIR`
+  (`/opt/redovisning-app/shared/receipt-files`) i shared/.env, samt köra
+  `npm run migrate` via `redovisning-deploy`. Utan `PUBLIC_API_URL` ger
+  `create_receipt_upload_url` ett tydligt fel — aldrig en localhost-URL som tyst
+  inte går att nå.
+
+  **Medvetna avsteg, båda av kravbilden själv:** (1) `receipts.file_id` ligger
+  KVAR orörd och pekar fortfarande in i `files` (FK) — en `receipt_files`-rad
+  kan inte skrivas dit utan en schemaändring på `receipts`, som avgränsningen
+  förbjuder. Den "primära bilagan" HÄRLEDS därför i läsvägen
+  (`primary_attachment_id`) i stället för att dupliceras i en kolumn. (2) Vyns
+  kolumn *Underlag* på `/app/c/:id/receipts` läser fortfarande bara `file_id`
+  (multipart-vägen) — uppladdnings-UI och miniatyrer i verifikatvyn är
+  uttryckligen uteslutna ur beslut #178 och är ett eget bygge.
+  `npm test`/`npm run build` kördes INTE i sessionen (byggskriptet kör dem) —
+  inga siffror påstås här.
+
 - **2026-09-21 (överlämning #271 / beslut #65 — Linear-datat tillbaka i
   ärendeplattformen: VERIFIERING + journal, ingen kod ändrad):** Kravspecen
   gäller ett annat repo (`/opt/arenden`) och står på verifiering + skarp körning

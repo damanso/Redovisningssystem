@@ -10,6 +10,7 @@ import { authRouter } from './routes/auth.js';
 import { sessionsAnvandare } from './view/auth.js';
 import { withTransaction } from '../db/tx.js';
 import { companiesRouter } from './routes/companies.js';
+import { receiptFilesRouter } from './routes/receiptFiles.js';
 import { viewRouter } from './view/routes.js';
 
 // Typsnittskatalogen ligger bredvid dist/, inte i den: tsc kopierar inte
@@ -127,6 +128,12 @@ export function createApp(): express.Express {
     res.json({ user_id: u.id, namn: u.name, epost: u.email });
   });
   app.use('/api/companies', authenticate, companiesRouter);
+
+  // Kvittobilagornas bytes. Medvetet UTANFÖR authenticate: behörigheten är
+  // HMAC-signaturen i den kortlivade länken (se routes/receiptFiles.ts), och
+  // laddaren har ingen session. Allt annat — tenant, RLS, audit — gäller som
+  // vanligt inne i tjänsten.
+  app.use('/api/receipt-files', receiptFilesRouter);
 
   // Läsbar, i huvudsak read-only webbvy (Fas 4) — serverrenderad HTML.
   app.use('/app', viewRouter);

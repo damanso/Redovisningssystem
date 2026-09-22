@@ -18,6 +18,37 @@ const MAGIC_CHECKS: Record<string, (buf: Buffer) => boolean> = Object.assign(Obj
   jpeg: isJpeg,
 });
 
+// HEIC (iPhone-kvittot) är en ISO-BMFF-container: bytes 4–8 är 'ftyp' och
+// varumärket därefter säger vilken sort. Listan är de varumärken som betyder
+// HEIF-bild — 'mif1'/'msf1' ingår eftersom iOS skriver dem för enkel- och
+// sekvensbilder.
+const HEIC_VARUMARKEN = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
+const isHeic = (b: Buffer): boolean =>
+  b.length >= 12 &&
+  b.subarray(4, 8).toString('latin1') === 'ftyp' &&
+  HEIC_VARUMARKEN.has(b.subarray(8, 12).toString('latin1'));
+
+/**
+ * Magic-kontroll nycklad på MIME-TYP — för vägar som får typen ur en begäran
+ * i stället för ur ett filnamn (kvittobilagornas signerade PUT, 0075). Samma
+ * primitiver som ändelse-allowlisten ovan, så de kan aldrig drifta isär.
+ *
+ * `image/heic` finns ENBART här: multipart-vägens ändelse-allowlist är
+ * oförändrad och släpper fortfarande bara in pdf/png/jpg.
+ */
+const MAGIC_PER_MIME: Record<string, (buf: Buffer) => boolean> = Object.assign(Object.create(null), {
+  'application/pdf': MAGIC_CHECKS.pdf!,
+  'image/png': MAGIC_CHECKS.png!,
+  'image/jpeg': isJpeg,
+  'image/heic': isHeic,
+});
+
+/** Matchar innehållets magic bytes den uppgivna MIME-typen? Okänd typ = nej. */
+export function matcharMagicBytes(mimeType: string, buffer: Buffer): boolean {
+  const kontroll = MAGIC_PER_MIME[mimeType];
+  return kontroll ? kontroll(buffer) : false;
+}
+
 const CANONICAL_EXT: Record<string, string> = Object.assign(Object.create(null), { jpeg: 'jpg' });
 const MIME_BY_EXT: Record<string, string> = Object.assign(Object.create(null), {
   pdf: 'application/pdf',

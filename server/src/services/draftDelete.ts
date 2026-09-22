@@ -12,6 +12,7 @@ import type { PoolClient } from 'pg';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 import { removeStoredFile } from './fileStorage.js';
+import { raderaBilageObjekt, raderaBilagorForUtkast } from './receiptFiles.js';
 
 type DraftKind = 'invoice' | 'receipt' | 'supplier_invoice' | 'payslip';
 
@@ -87,6 +88,12 @@ async function deleteDraft(
     }
   }
 
+  // Kvittots BILAGOR (beslut #178) följer utkastet i graven: raderna först (de
+  // har en FK till kvittot), objekten sist. Bokförda kvitton når aldrig hit —
+  // de avvisas ovan, och DELETE-policyn i 0075 är den hårda garantin.
+  const removedAttachments: { id: string; storage_key: string }[] =
+    kind === 'receipt' ? await raderaBilagorForUtkast(client, companyId, id) : [];
+
   const del = await client.query(`DELETE FROM ${spec.table} WHERE id = $1 AND company_id = $2`, [id, companyId]);
   if (del.rowCount !== 1) {
     // RLS:en släppte inte igenom (t.ex. status ändrad av samtidig transaktion).
@@ -100,15 +107,18 @@ async function deleteDraft(
     details: {
       snapshot, unlinked_documents: unlinked.rowCount ?? 0, removed_file_id: removedFile?.id ?? null,
       reopened_time_entries: reopenedTimeEntries,
+      removed_attachments: removedAttachments.map((b) => b.id),
     },
   });
 
   // Diskblobben sist (efter lyckade DB-steg); idempotent städning.
   if (removedFile) await removeStoredFile(companyId, removedFile.stored_name);
+  await raderaBilageObjekt(removedAttachments.map((b) => b.storage_key));
 
   return {
     deleted: true, [`${kind}_id`]: id, unlinked_documents: unlinked.rowCount ?? 0,
     removed_file_id: removedFile?.id ?? null, reopened_time_entries: reopenedTimeEntries,
+    removed_attachments: removedAttachments.length,
   };
 }
 

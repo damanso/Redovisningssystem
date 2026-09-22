@@ -32,6 +32,8 @@ beforeAll(async () => {
   }
   // Nollställ även uppladdningskatalogen så inga filer från en tidigare fil ligger kvar.
   await rm(path.resolve(process.env.UPLOAD_DIR!), { recursive: true, force: true });
+  // Samma sak för kvittobilagornas objektlagring (0075).
+  await rm(path.resolve(process.env.RECEIPT_FILES_DIR!), { recursive: true, force: true });
 });
 
 afterAll(async () => {
