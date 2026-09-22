@@ -31,6 +31,23 @@ const EnvSchema = z.object({
     ),
   JWT_EXPIRES_IN_SECONDS: z.coerce.number().int().positive().default(12 * 60 * 60),
   UPLOAD_DIR: z.string().min(1).default('data/uploads'),
+  // Publik bas-URL för de SIGNERADE kvittobilagelänkarna (create_receipt_upload_url /
+  // get_receipt_file_url). Medvetet UTAN default: uppladdaren sitter någon
+  // annanstans än servern, så en localhost-adress hade varit en länk som tyst
+  // inte går att nå. Saknas värdet vägrar åtgärden ge en URL (tydligt fel) —
+  // vi fail-fastar INTE vid start (jfr ANTHROPIC_API_KEY), resten av systemet
+  // fungerar utan den.
+  PUBLIC_API_URL: z
+    .string()
+    .url()
+    .refine((v) => v.startsWith('http://') || v.startsWith('https://'), 'PUBLIC_API_URL måste vara http(s)')
+    .transform((v) => v.replace(/\/+$/, ''))
+    .optional(),
+  // Objektlagringens rot för kvittobilagor. Skild från UPLOAD_DIR: bilagorna är
+  // en egen lagringsyta bakom lagringsgränssnittet (services/objektlagring.ts),
+  // och i drift ligger den under /opt/redovisning-app/shared/ så den överlever
+  // en release.
+  RECEIPT_FILES_DIR: z.string().min(1).default('data/receipt-files'),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),

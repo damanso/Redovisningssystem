@@ -193,6 +193,9 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
   drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
   trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
+  // Kvittobilagor (0075). `active` finns redan ovan.
+  awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
+  uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files
 };
 /**
  * Har det har statusvardet en svensk etikett?

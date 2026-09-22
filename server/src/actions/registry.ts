@@ -19,6 +19,10 @@ const PartyTypeSchema = z.enum(['customer', 'supplier']);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers, updateCustomer, updateSupplier } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
+import {
+  bekraftaBilaga, hamtaBilagelank, skapaUppladdningsLank,
+  MAX_BILAGA_BYTES, TILLATNA_BILAGE_MIME, type BilageMime,
+} from '../services/receiptFiles.js';
 import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { listFiscalYears, setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
@@ -2350,6 +2354,52 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => createReceipt(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+
+  // Kvittobilagorna (beslut #178). Tre steg, och steg 2 är INTE ett MCP-anrop:
+  // en kvittobild ryms inte som verktygsargument (1,3 MB blir ~1,7 M tecken
+  // base64), så bara metadata går genom MCP och bytesen går direkt till API:t.
+  // Alla tre är `write`: de skapar underlag, de flyttar inga pengar — precis
+  // som create_receipt körs de direkt utan godkännande.
+  def({
+    name: 'create_receipt_upload_url',
+    title:
+      'Steg 1 av 3 — begär en uppladdningslänk för en kvittobilaga (returnerar upload_url, file_id, expires_at). ' +
+      'Steg 2 sker UTANFÖR MCP: gör en HTTP PUT med filens råa bytes mot upload_url (engångs, giltig 15 minuter). ' +
+      'Steg 3 är confirm_receipt_file(file_id). Tillåtet: image/jpeg, image/png, image/heic, application/pdf, högst 25 MB',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      receipt_id: UuidSchema,
+      filename: safeText(300),
+      mime_type: z.enum(TILLATNA_BILAGE_MIME),
+      size_bytes: z.number().int().positive().max(MAX_BILAGA_BYTES),
+    }).strict(),
+    handler: (ctx, i: { receipt_id: string; filename: string; mime_type: BilageMime; size_bytes: number }) =>
+      skapaUppladdningsLank(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'confirm_receipt_file',
+    title:
+      'Steg 3 av 3 — bekräfta en uppladdad kvittobilaga: servern läser objektet, sparar sha256 och aktiverar bilagan. ' +
+      'Körs efter PUT:en mot upload_url. Bilagor får bifogas både före och efter book_receipt; på ett bokfört kvitto ' +
+      'är bilagan oföränderlig, och en felaktig bilaga rättas genom att ladda upp rätt och ange ersatter_file_id',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      file_id: UuidSchema,
+      ersatter_file_id: UuidSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { file_id: string; ersatter_file_id?: string }) =>
+      bekraftaBilaga(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
+    name: 'get_receipt_file_url',
+    title:
+      'Hämta en kortlivad nedladdningslänk (signerad GET, 5 minuter) till en bekräftad kvittobilaga, ' +
+      'med filnamn, mime-typ, storlek och sha256. Nedladdningen sker utanför MCP',
+    sensitivity: 'write',
+    inputSchema: z.object({ file_id: UuidSchema }).strict(),
+    handler: (ctx, i: { file_id: string }) =>
+      hamtaBilagelank(ctx.client, ctx.companyId, ctx.userId, i.file_id),
   }),
 
   def({

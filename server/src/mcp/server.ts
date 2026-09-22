@@ -85,7 +85,7 @@ async function selfCheck(): Promise<Record<string, unknown>> {
   let apiStatus: string | number = 'unreachable';
   let tokenValid = false;
   try {
-    const health = await fetch(`${API_URL}/health`);
+    const health = await hamta(`${API_URL}/health`);
     apiReachable = health.ok;
     apiStatus = health.status;
   } catch (err) {
@@ -116,8 +116,29 @@ async function selfCheck(): Promise<Record<string, unknown>> {
   };
 }
 
+// Hård timeout på ALLA utgående anrop. Den 21 september 2026 hängde
+// create_receipt i fyra minuter utan att skapa något utkast (rotorsaken låg
+// utanför koden: MCP-klienten pekade på en port där /api aldrig proxats). Ett
+// verktyg som tyst hänger är värre än ett som säger nej på en gång — utan
+// timeout finns ingen övre gräns alls, för fetch har ingen som standard.
+const TIMEOUT_MS = 60_000;
+
+async function hamta(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new Error(
+        `anropet till ${url} svarade inte inom ${TIMEOUT_MS / 1000} s och avbröts — ` +
+          'är API:t igång och pekar REDOVISNING_API_URL på rätt adress? (kör self_check)',
+      );
+    }
+    throw err;
+  }
+}
+
 async function api(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await hamta(`${API_URL}${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });

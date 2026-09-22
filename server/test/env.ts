@@ -24,5 +24,11 @@ export function applyTestEnv(): void {
   process.env.MAINTENANCE_DATABASE_URL =
     process.env.TEST_MAINTENANCE_DATABASE_URL ?? `postgres://postgres@${HOST}:${PORT}/postgres`;
   process.env.UPLOAD_DIR = process.env.TEST_UPLOAD_DIR ?? 'data/test-uploads';
+  // Kvittobilagornas objektlagring + den publika basen för de signerade
+  // länkarna. Basen måste vara satt i test eftersom supertest kör appen utan
+  // lyssnande port — vi plockar isär URL:en och kör sökvägen genom supertest.
+  // Att den SAKNAS prövas mot publikApiBas() i kvittobilagor.test.ts.
+  process.env.RECEIPT_FILES_DIR = process.env.TEST_RECEIPT_FILES_DIR ?? 'data/test-receipt-files';
+  process.env.PUBLIC_API_URL = process.env.TEST_PUBLIC_API_URL ?? 'https://redovisning.test';
   process.env.TRUST_PROXY = 'false';
 }
