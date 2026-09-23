@@ -153,6 +153,35 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-23 (överlämning #286 / beslut #177 + #179 — stängning av #268 via
+  beslut #174: VERIFIERING + journal, ingen kod ändrad):** Beslut #177 innehåller
+  **inget nytt bygge**. Frågan i #177 var om överlämning #268 kunde stängas som
+  klar via beslut #174; CTO-svaret i beslutsloggen (23/9 13:36) var *"Stäng …
+  inget ytterligare bygge"*, och Davids "Ja" i #179 svarar på metafrågan (ska
+  bygget köras) så att byggvakten släpper ärendet — det är inte en beställning av
+  ny funktion. Verifieringen mot main faller inte i någon punkt: merge `2916d1b`
+  är förfader till HEAD, migration `0073_uppdrag_anteckning.sql` (append-only:
+  ENABLE + FORCE RLS, endast SELECT/INSERT-policy, `GRANT SELECT, INSERT` rad 78,
+  sammansatt FK mot `contracts (id, company_id)`), tjänsten
+  `services/uppdragAnteckning.ts:76,113`, åtgärden `skriv_uppdragsanteckning`
+  med `kravManniska: true` (`actions/registry.ts:2015,2025`, spärren i
+  `execute.ts:57`), panelen **Övrigt** på Läget
+  (`http/view/routes.ts:4145,4194,4223`) och 17 prov i
+  `test/uppdragsytan-anteckning.test.ts`. Minsta-ändring-regeln gör därmed att
+  ingen rad kod rörs: diffen mot main rör bara `docs/byggen/beslut-177.md` och
+  den här filen — noll ändringar under `server/`.
+
+  **Värt att veta för nästa session:** panelen Övrigt är byggd och stängd. En ny
+  funktion där (redigering, notiser, automatik som gör en rad till tillägg eller
+  scopesignal) är uttryckligen utesluten ur #174 och kräver ett eget beslut av
+  David. Byggvakten ändras inte för att tolka fritext-svar — det var också
+  uteslutet.
+
+  `npm run migrate`/`npm test`/`npm run build` kördes INTE i sessionen
+  (byggskriptet kör dem, och 0073 migrerades redan i #174) — **inga siffror
+  påstås här**. Blir någon körning röd gäller ACCEPTANS-linjen: stängningen av
+  #268 står kvar som inte klar tills det är utrett som ett eget beslut.
+
 - **2026-09-22 (överlämning #272 / beslut #178 — kvittobilagor: `receipt_files`
   + tre åtgärder + signerad PUT utanför MCP):** Alla 60+ bokförda kvitton hade
   `file_id: null` — inte av slarv, utan för att ingen väg in fanns: base64 genom
