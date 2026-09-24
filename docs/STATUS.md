@@ -153,6 +153,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-24 (överlämning #289 / beslut #183 — de sista pixlarna i produktmenyn;
+  följdbygge inom #182, endast `server/src/http/view/html.ts` + provet):** #182 gav
+  menypanelen rätt FORM men inte hela höjdbudgeten: Hermes mätte efter release
+  `20260924T195938Z-9eea6ae` 13 px dolt innehåll på 1440×900 och 26 px på
+  1280×800 (2560×1440 låg redan på 0). Kanon fick därför samma tre mått som
+  kopiorna (Hermes-ytan, ärendevyn `f7b26da`) där de bevisat ger 0 px:
+  `.navmenu__link` får **egen** `line-height: 1.3` — den ärvda 1.55 från
+  `body { font: 15px/1.55 }` gav 21 px text och 33 px rad för en länk som aldrig
+  bryts (tre spalter à ~364 px), alltså luft INUTI raden där paddingen redan
+  står; nu 30 px rad, långt över WCAG 2.5.8:s 24 px träffyta.
+  `.navmenu__grp` går från `margin: 0 0 17px` till `0 0 11px` (nio grupper = åtta
+  mellanrum, så varje sänkning betalar sig åtta gånger) och till **9 px** i
+  `@media (min-width:1100px) and (max-height:880px)`, där hint-döljningen står
+  kvar. `.navmenu__hint` får `margin: 0 0 4px` och `line-height: 1.35`. Allt från
+  #182 står orört: taket `calc(100vh - 100% - 24px)`, bredden
+  `min(1180px, calc(100vw - 48px))`, spalterna 3/2/1, 12-postersvillkoret,
+  `background: var(--surface)`, navrise; `.navmenu` förblir opositionerad, ingen
+  JavaScript, inga andra selektorer eller sidor.
+
+  **Prov:** `server/test/appmenyn-hel.test.ts` — medieblockets fall SKÄRPTES från
+  `margin-bottom: 11px` till `9px` (det var det enda provet som annars hade fällt
+  bygget), och tre nya fall vaktar de nya värdena så att de inte kan falla
+  tillbaka tyst: att länken har en EGEN `line-height` (utan den ärver den 1.55) och
+  att radhöjden räknad ur reglernas egna `font-size`/`padding`/`line-height` är
+  ≤ 34 px, att gruppluften är 11 px på hög skärm och 9 px på låg, och att hinten
+  bär `margin: 0 0 4px` + `line-height: 1.35`. `oskarpa.test.ts` och
+  `navigation.test.ts` asserterar inget av måtten och står orörda. Den
+  geometriska mätningen (0 px dolt på 1280×800, 1440×900, 2560×1440, ljust och
+  mörkt) görs som förut av Hermes rigg (`~/.hermes/ytor-gui/matvy.js`) efter
+  deploy — provet vaktar reglerna, riggen mäter följden.
+
 - **2026-09-24 (överlämning #288 / beslut #182 — produktmenyn i `/app` visar hela
   sitt innehåll; endast `server/src/http/view/html.ts`):** Menyn bär 50 länkar i
   nio grupper, och panelens tak var `min(72vh, 640px)`. På varje bärbar skärm

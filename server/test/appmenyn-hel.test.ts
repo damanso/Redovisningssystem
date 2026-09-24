@@ -191,7 +191,43 @@ describe('bredden och spalterna', () => {
     const lagt = mediablock(css, 'min-width: 1100px', 'max-height: 880px');
     expect(lagt, 'mediefrågan för låga fönster saknas').not.toBe('');
     expect(regel(lagt, '.navmenu__panel .navmenu__hint')).toMatch(/display:\s*none/);
-    expect(regel(lagt, '.navmenu__grp')).toMatch(/margin-bottom:\s*11px/);
+    expect(regel(lagt, '.navmenu__grp')).toMatch(/margin-bottom:\s*9px/);
+  });
+});
+
+// Taket, bredden och spalterna gav formen; de tre måtten nedan gav de sista
+// pixlarna (beslut #183). Efter #182 låg 13 px under kanten på 1440×900 och
+// 26 px på 1280×800, och de betalas av radhöjden, gruppluften och hintens
+// marginal — samma tre värden som Hermes-ytan och ärendevyn redan bär.
+// Provet vaktar värdena, inte pixlarna: den geometriska mätningen görs av
+// Hermes rigg efter deploy, precis som filens övriga regler.
+describe('höjdbudgeten: raden, gruppluften och hinten', () => {
+  it('länken har EGEN radhöjd — den ärvda 1.55 gav 33 px rad', () => {
+    const lank = regel(toppniva(css), '.navmenu__link');
+    expect(lank, '.navmenu__link saknas i stilmallen').not.toBe('');
+    const m = /line-height:\s*([\d.]+)/.exec(lank);
+    expect(m, 'utan egen line-height ärver länken husets 1.55').not.toBeNull();
+    // 13.5 px text + 6 px padding upp och ner: 34 px rad ⇒ line-height ≤ 1.63.
+    // Gränsen räknas ur måtten som står här, så en ändrad textstorlek fångas.
+    const fontM = /font-size:\s*([\d.]+)px/.exec(lank);
+    const padM = /padding:\s*([\d.]+)px/.exec(lank);
+    expect(fontM, 'länkens font-size saknas').not.toBeNull();
+    expect(padM, 'länkens padding saknas').not.toBeNull();
+    const rad = Number(fontM![1]) * Number(m![1]) + 2 * Number(padM![1]);
+    expect(rad, `beräknad radhöjd ${rad} px överstiger taket 34 px`).toBeLessThanOrEqual(34);
+  });
+
+  it('grupperna bär 11 px luft på hög skärm och 9 px på låg', () => {
+    expect(regel(toppniva(css), '.navmenu__grp')).toMatch(/margin:\s*0 0 11px/);
+    expect(regel(mediablock(css, 'min-width: 1100px', 'max-height: 880px'), '.navmenu__grp'))
+      .toMatch(/margin-bottom:\s*9px/);
+  });
+
+  it('hinten har egen radhöjd och 4 px ner till första länken', () => {
+    const hint = regel(toppniva(css), '.navmenu__hint');
+    expect(hint, '.navmenu__hint saknas i stilmallen').not.toBe('');
+    expect(hint).toMatch(/margin:\s*0 0 4px/);
+    expect(hint).toMatch(/line-height:\s*1\.35/);
   });
 });
 

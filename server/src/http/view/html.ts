@@ -652,7 +652,12 @@ td a.entity { font-weight: 550; }
    lank ryms pa EN rad, och tre spalter ar ocksa sa manga som en blick hinner
    lasa utan att tappa vilken grupp den var i. */
 .navmenu__grid { columns: 3; column-gap: 26px; }
-.navmenu__grp { break-inside: avoid; margin: 0 0 17px; }
+/* 11 px, inte 17. Nio grupper ger atta mellanrum, sa varje sanka har kostar
+   atta ganger sa mycket hojd som den ser ut att kosta. 11 px ar fortfarande
+   mer an gruppens egen radtathet (30 px rad) och lasningen ser dem darfor
+   alltjamt som nio saker och inte en. Samma matt som Hermes-ytan och
+   arendevyn redan bar, dar de ger noll dolt innehall. */
+.navmenu__grp { break-inside: avoid; margin: 0 0 11px; }
 /* En grupp som ar hogre an panelen kan 'break-inside: avoid' inte halla ihop —
    den spiller over spaltkanten eller tvingar fram rullning. Bokforingsgruppen
    ar den enda som ar det i dag. Den far darfor tva egna spalter INUTI sig:
@@ -666,11 +671,22 @@ td a.entity { font-weight: 550; }
 .navmenu__grp--spalter > .eyebrow,
 .navmenu__grp--spalter > .navmenu__hint { column-span: all; }
 .navmenu__grp > .eyebrow { display: block; margin-bottom: 1px; }
-.navmenu__hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
+/* Hinten har egen radhojd i stallet for husets arvda 1.55: den ar satt i
+   11.5 px och hor till rubriken ovanfor, inte till lankarna under. 1.35 ger
+   15.5 px rad, och 4 px ner till forsta lanken binder den till gruppen. */
+.navmenu__hint {
+  display: block; font-size: 11.5px; color: var(--ink-3);
+  margin: 0 0 4px; line-height: 1.35;
+}
+/* Egen radhojd: husets arvda 1.55 gav 21 px text och 33 px rad for en lank
+   som ALDRIG bryts (tre spalter à ~364 px ryms varje rubrik pa en rad), sa
+   luften lag i raden i stallet for mellan raderna — dar padding redan star.
+   1.3 ger 17.5 px text och 30 px rad: over WCAG 2.5.8:s 24 px traffyta, och
+   de tre pixlarna per rad ar femtio lankar gangar tre. */
 .navmenu__link {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 9px; border-radius: var(--radius-sm);
-  color: var(--ink-2); font-size: 13.5px; font-weight: 500;
+  color: var(--ink-2); font-size: 13.5px; font-weight: 500; line-height: 1.3;
 }
 .navmenu__link:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
 .navmenu__link.is-active { background: var(--accent-weak); color: var(--accent-ink); font-weight: 600; }
@@ -687,7 +703,7 @@ td a.entity { font-weight: 550; }
    billigare an att ta bort en lank eller krympa texten. */
 @media (min-width: 1100px) and (max-height: 880px) {
   .navmenu__panel .navmenu__hint { display: none; }
-  .navmenu__grp { margin-bottom: 11px; }
+  .navmenu__grp { margin-bottom: 9px; }
 }
 /* Telefonbredd: panelen tar skarmen. Den ar inte langre ett kort som svavar
    bredvid knappen utan menyn sjalv, och 8 px pa var sida racker for att
