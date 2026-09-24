@@ -48,7 +48,12 @@ function regler(rawCss: string): Regel[] {
     const selektor = m[1]!.trim().split('\n').pop()!.trim();
     const block = m[2]!;
     const mix = /color-mix\(\s*in oklch\s*,\s*var\(--surface\)\s*(\d+)%\s*,\s*transparent\s*\)/.exec(block);
-    ut.push({ selektor, block, opacitet: mix ? Number(mix[1]) : null });
+    // En bakgrund UTAN color-mix slapper inte igenom nagot alls — den ar 100 %
+    // opak och maste raknas som det. Utan den raden vore vagen runt regeln att
+    // ta bort genomskinligheten och behalla filtret, och just den vagen gick
+    // navmenyns panel 2026-09-24 nar den blev tackande.
+    const helt = /background\s*:\s*var\(--surface\)\s*(?:;|$)/m.test(block);
+    ut.push({ selektor, block, opacitet: mix ? Number(mix[1]) : helt ? 100 : null });
   }
   return ut;
 }
@@ -82,10 +87,16 @@ describe('CSS:en som faktiskt når webbläsaren går att granska', () => {
 });
 
 describe('ingen oskärpa bakom en yta som inte släpper igenom något', () => {
-  it('navmenyns panel är fortfarande 97 % opak men bär ingen backdrop-filter', () => {
+  // 2026-09-24, beslut #182: panelen gick från 97 % till HELT täckande. Den
+  // bär femtio länkar tätt packade, och sidans egen text som lyser igenom
+  // mellan dem gör raderna till brus. Skärpningen gäller fortfarande — och
+  // hårdare: vid alfa 1 finns inte ens tre procent för ett filter att verka på.
+  it('navmenyns panel är helt täckande och bär ingen backdrop-filter', () => {
     const panel = regler(css).find((r) => r.selektor === '.navmenu__panel');
     expect(panel, '.navmenu__panel finns inte i den renderade CSS:en').toBeTruthy();
-    expect(panel!.opacitet).toBe(97);
+    expect(panel!.block, 'panelen är genomskinlig igen').toMatch(/background:\s*var\(--surface\);/);
+    expect(panel!.block).not.toMatch(/color-mix/);
+    expect(panel!.opacitet).toBe(100);
     expect(panel!.block).not.toMatch(/backdrop-filter/);
   });
 
@@ -128,6 +139,16 @@ describe('negativ kontroll: granskaren måste se fyndet när det finns', () => {
       border-radius: var(--radius);
     }`;
     expect(glasBakomOgenomskinligt(gammal)).toEqual(['.navmenu__panel (97 % opak)']);
+  });
+
+  // Vägen runt regeln: ta bort genomskinligheten, behåll filtret. Den vägen
+  // gick panelen 2026-09-24 av helt andra skäl, och granskaren måste se den.
+  it('en HELT täckande yta med filter ger också ett fynd', () => {
+    const tackande = `.navmenu__panel {
+      background: var(--surface);
+      backdrop-filter: saturate(1.3) blur(14px);
+    }`;
+    expect(glasBakomOgenomskinligt(tackande)).toEqual(['.navmenu__panel (100 % opak)']);
   });
 
   it('en yta under gränsen rapporteras inte — regeln är en gräns, inget förbud', () => {

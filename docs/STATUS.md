@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-24 (överlämning #288 / beslut #182 — produktmenyn i `/app` visar hela
+  sitt innehåll; endast `server/src/http/view/html.ts`):** Menyn bär 50 länkar i
+  nio grupper, och panelens tak var `min(72vh, 640px)`. På varje bärbar skärm
+  betydde det inre rullning med hälften av valen under kanten. Kanon (html.ts)
+  får nu samma utfall som Hermes-ytan och ärendevyn fick 24/9 (`f7b26da` där), och
+  kanon är facit för kopiorna. Ändrat i CSS:en: taket är avståndet ner till
+  skärmens nederkant, `max-height: calc(100vh - 100% - 24px)` — `100%` är
+  **topbarens** höjd, eftersom `.navmenu` med flit är opositionerad och `.topbar`
+  (sticky) därmed är panelens containing block; panelen är 1180 px bred
+  (48 px-headroomen för rullisten behållen) och **helt täckande**
+  (`background: var(--surface)`, alfa 1 i båda lägena) medan sidhuvudet behåller
+  sina 97 %; rutnätet är `columns: 3` med två spalter under 1100 px och en vid
+  ≤640 px; `@keyframes navrise` animerar bara transform (opaciteten togs bort —
+  den gjorde panelen genomskinlig medan den steg); vid `min-width:1100px` och
+  `max-height:880px` göms hintarna och gruppmarginalerna dras åt så att 1280×800
+  räcker; vid ≤640 px tar panelen skärmens bredd (`margin: 0 8px; width:
+  calc(100vw - 16px)`). I `layout()` får en grupp med **minst 12 poster** klassen
+  `navmenu__grp--spalter` (två spalter inuti gruppen, eyebrow och hint
+  `column-span: all`) — villkoret är antalet poster, aldrig ett gruppnamn, så
+  nästa grupp som växer förbi gränsen får formen av sig själv. Inga nya
+  tokenvärden, ingen JavaScript, snabbraden/grannmodulerna/`.nav__here`/
+  brödsmulan orörda.
+
+  **Prov:** nytt `server/test/appmenyn-hel.test.ts` (19 fall) mäter kontraktet i
+  den CSS och den markup som faktiskt levereras — taket, att `.navmenu` förblir
+  opositionerad (hela måttet vilar på det), bredden, spalterna per brytpunkt,
+  täckningen, att navrise saknar opacity, reduced-motion, telefonläget, och
+  **härlett** att formen följer antalet poster i varje grupp, med negativa
+  kontroller som visar att granskaren ser fyndet när det finns.
+  `server/test/oskarpa.test.ts` uppdaterad, inte försvagad: panelens fall
+  förväntar nu alfa 1 i stället för 97 %, och granskaren räknar en bakgrund utan
+  `color-mix` som 100 % opak — annars hade vägen runt regeln varit att ta bort
+  genomskinligheten och behålla filtret. Ny negativ kontroll för just den vägen.
+
+  **Kört i sessionen:** inga kommandon (byggskriptet kör typecheck + tester efter
+  bygget) — **inga siffror påstås här**. Mätningen av utfallet (0 px dolt innehåll
+  i 1280×800, 1440×900, 2560×1440; en spalt och rullbar till sista länken i
+  390×844) görs av Hermes egen rigg `~/.hermes/ytor-gui/matvy.js` efter deploy via
+  `redovisning_update.sh`, och `~/.hermes/prov/designparitet.py` ska vara grön
+  efter deploy. Repot fick medvetet ingen egen mätrigg — den fanns redan.
+
 - **2026-09-23 (överlämning #286 / beslut #177 + #179 — stängning av #268 via
   beslut #174: VERIFIERING + journal, ingen kod ändrad):** Beslut #177 innehåller
   **inget nytt bygge**. Frågan i #177 var om överlämning #268 kunde stängas som

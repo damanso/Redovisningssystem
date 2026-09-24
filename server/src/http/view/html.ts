@@ -606,11 +606,18 @@ td a.entity { font-weight: 550; }
   /* 48px headroom: 100vw inkluderar en ev. klassisk rullist (~17px på
      Windows/Linux) — med bara 24px spiller panelens högerkant utanför
      clientWidth och skapar en vågrät rullist så fort menyn öppnas. */
-  width: min(880px, calc(100vw - 48px));
+  width: min(1180px, calc(100vw - 48px));
   padding: 16px 18px 18px;
-  background: color-mix(in oklch, var(--surface) 97%, transparent);
-  /* Ingen backdrop-filter har. Bakgrunden ar 97 % ogenomskinlig, sa ett filter
-     kan bara verka pa de 3 % som lyser igenom.
+  /* TACKANDE, inte genomskinlig (alfa 1 i bade ljust och morkt lage).
+     Sidhuvudet behaller sina 97 % — det ar ett tunt band som ligger OVER en
+     sida man rullar, och de tre procenten ar signalen att texten passerar
+     under det. Panelen ar motsatsen: femtio lankar tatt packade, produktens
+     tataste yta. Nar sidans egen text lyser igenom mellan dem blir raderna
+     brus, och en meny som tacker ska tacka. */
+  background: var(--surface);
+  /* Ingen backdrop-filter har. Bakgrunden slapper numera inte igenom nagot
+     alls, sa ett filter har ingenting kvar att verka pa. Matningen nedan
+     gjordes vid 97 % och holl redan da.
      MATT i Chrome 2026-08-25 pa en identisk panel med och utan filtret, pixel
      for pixel: hogst 7 av 255 nivaers skillnad over hela ytan, och 210 449 av
      558 000 pixlar skilde exakt 4 nivaer - det ar de tre procenten. Undantaget
@@ -620,14 +627,44 @@ td a.entity { font-weight: 550; }
      ett svar och inte en trasig matning. */
   border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow-2);
-  max-height: min(72vh, 640px); overflow-y: auto; overscroll-behavior: contain;
+  /* Taket ar avstandet ner till skarmens nederkant — inte en andel av skarmen.
+     'min(72vh, 640px)' stod har forut och lamnade menyn med inre rullning pa
+     varenda barbar skarm: 640 px racker inte till femtio lankar, och en meny
+     man maste rulla i for att se sina val ar en lista, inte en karta.
+     100 % ar TOPBARENS hojd: panelen ar absolut positionerad och dess
+     containing block ar '.topbar' (sticky, alltsa positionerad) — '.navmenu'
+     ar med flit inte det, se kommentaren dar. Kvar under panelen blir 24 px
+     minus de 9 som 'top' redan lagt till. Rullningen finns kvar som skyddsnat
+     for de fonster som anda ar for laga. */
+  max-height: calc(100vh - 100% - 24px);
+  overflow-y: auto; overscroll-behavior: contain;
 }
-@keyframes navrise { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
+/* Bara rorelse, aldrig genomskinlighet: en opacitet under 1 gor hela panelen
+   halvgenomskinlig medan den stiger, och det ar precis den genomskinligheten
+   som togs bort ovan. Rorelsen ar kvar for att panelen ska komma NAGONSTANS
+   ifran — knappen den hanger under. */
+@keyframes navrise { from { transform: translateY(-6px) scale(.985); } to { transform: none; } }
 .navmenu[open] .navmenu__panel { animation: navrise .17s cubic-bezier(.2,.7,.3,1) both; }
 /* Kolumnflöde (inte grid): grupperna packas tätt utan döda rader när de är
-   olika höga, och antalet kolumner följer bredden av sig självt. */
-.navmenu__grid { columns: 196px 4; column-gap: 26px; }
+   olika höga. Antalet spalter foljde forut bredden av sig sjalvt ('196px 4'),
+   och 196 px ar for smalt for husets langsta lankrubriker — de bra pa tva
+   rader. Tre spalter i en 1180 px bred panel ger ~364 px per spalt: varje
+   lank ryms pa EN rad, och tre spalter ar ocksa sa manga som en blick hinner
+   lasa utan att tappa vilken grupp den var i. */
+.navmenu__grid { columns: 3; column-gap: 26px; }
 .navmenu__grp { break-inside: avoid; margin: 0 0 17px; }
+/* En grupp som ar hogre an panelen kan 'break-inside: avoid' inte halla ihop —
+   den spiller over spaltkanten eller tvingar fram rullning. Bokforingsgruppen
+   ar den enda som ar det i dag. Den far darfor tva egna spalter INUTI sig:
+   samma innehall, halva hojden, gruppen fortfarande en sammanhallen sak.
+   Villkoret i 'layout()' ar antalet poster (>= 12) och aldrig ett gruppnamn —
+   menyn ar kontraktsdriven, och nasta grupp som vaxer over gransen ska fa
+   formen utan att nagon kommer ihag den.
+   Rubriken och hinten spanner over bada spalterna: de beskriver gruppen, inte
+   den forsta halvan av den. */
+.navmenu__grp--spalter { columns: 2; }
+.navmenu__grp--spalter > .eyebrow,
+.navmenu__grp--spalter > .navmenu__hint { column-span: all; }
 .navmenu__grp > .eyebrow { display: block; margin-bottom: 1px; }
 .navmenu__hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 7px; }
 .navmenu__link {
@@ -641,6 +678,26 @@ td a.entity { font-weight: 550; }
   content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none;
 }
 .navmenu__link:not(.is-active)::before { content: ""; width: 5px; flex: none; }
+/* Spalterna foljer bredden i tva steg i stallet for att flyta: under 1100 px
+   ryms inte tre lasbara spalter, och pa telefonbredd ingen mer an en. */
+@media (max-width: 1099px) { .navmenu__grid { columns: 2; } }
+/* Bred skarm men LAGT fonster — 1280x800 ar den vanligaste barbara, och dar
+   gar hela menyn precis inte ihop. Det som far ga ar hintarna: gruppens namn
+   sager redan vad gruppen ar, och raderna under den sager resten. Det ar
+   billigare an att ta bort en lank eller krympa texten. */
+@media (min-width: 1100px) and (max-height: 880px) {
+  .navmenu__panel .navmenu__hint { display: none; }
+  .navmenu__grp { margin-bottom: 11px; }
+}
+/* Telefonbredd: panelen tar skarmen. Den ar inte langre ett kort som svavar
+   bredvid knappen utan menyn sjalv, och 8 px pa var sida racker for att
+   skuggan ska ha nagot att falla pa. Har rullar den inuti — femtio lankar
+   ryms inte pa en telefon, och det ska de inte heller. */
+@media (max-width: 640px) {
+  .navmenu__grid { columns: 1; }
+  .navmenu__grp--spalter { columns: 1; }
+  .navmenu__panel { margin: 0 8px; width: calc(100vw - 16px); }
+}
 
 /* Snabbrad */
 .nav__quick { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -1629,7 +1686,12 @@ export function layout(opts: {
                 // ingang och foll ur menyn helt med det gamla filtret.
                 .filter((g) => g.items.length > 0 || g.entry?.href)
                 .map(
-                  (g) => html`<div class="navmenu__grp">
+                  // En lang grupp far tva spalter inuti sig — annars ar den
+                  // hogre an panelen och tvingar fram inre rullning. Gransen
+                  // ar ANTALET poster, aldrig gruppens namn: menyn kommer ur
+                  // kontraktet, och den grupp som vaxer forbi tolv ska fa
+                  // formen av sig sjalv.
+                  (g) => html`<div class="navmenu__grp${g.items.length >= 12 ? ' navmenu__grp--spalter' : ''}">
                   ${/* Rubriken ar vagen till omradets ingang. Sedan huvudraden
                        togs bort finns ingen annan vag dit — och en grupp utan
                        ingang ar en rubrik, aldrig en lank till en pahittad
