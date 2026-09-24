@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-24 (överlämning #291 / beslut #184 — privatekonomin som egen yta
+  `/privat`; INGEN kod i detta repo):** Bygget bor helt i Hermes enligt
+  `docs/ARKITEKTUR.md` (samma hemvist som svepet och provvakten) och var redan
+  genomfört och driftsatt av Hermes byggslinga (`~/.hermes/privat-bygge/`, varv
+  1–2) när sessionen började: `ytor_server.py` bär `/privat` som egen
+  sidfunktion utan produktmeny, utan länk ut och utan JavaScript, plus
+  manifestet och de två ikonrutterna; `brief_underlag.py` har linsen
+  `privatekonomi` och avsnittet `## Hushållet`, `morgonbrief.py` tar in det
+  ordagrant — allt bakom `HERMES_PRIVATEKONOMI=1`; `~/.hermes/prov/privatgransen.py`
+  vaktar gränsen. Driftsättningens egen utdata 21:19:45: *"/privat skarp, 27 prov
+  + privatgransen (GRON …) + briefproven gröna"*. **Sessionen ändrade en (1)
+  rad kommentar** i `morgonbrief.py` vid `PRIVATA`: den påstod att
+  hushållsfilen ligger i `FORBJUDET`. Det gör den inte — den ligger i
+  `EJ_I_YTOR`. Skillnaden är inte kosmetisk: `FORBJUDET` **är** R5-gränsen,
+  David avgjorde 2026-08-24 att privatekonomin inte är R5, och `r5_yta_acceptans.py`
+  och `startsida_prov.py` härleder skyddade strängar ur listan — i varv 1
+  fällde just den flytten en grön startsida, eftersom "privat" är fyra tecken
+  och står legitimt på Hem ("privatekonomi"). Kommentaren var kvar som en
+  inbjudan till nästa läsare att göra om felet; den pekar nu på rätt lista och
+  på skälet. Varv 2:s andra fynd (köp utan budgetpost visar rått kategori-id)
+  lämnades — kravet säger att de ska listas men inte räknas in, och det gör de.
+  **I detta repo:** `server/kontrakt/navigation.v1.json` bar redan de fyra
+  `/privat`-rutterna (kategori `e`, ingen ägare) sedan `bf782ce`, synkade av
+  kravställaren; ingen annan fil i `/opt/redovisning` rördes och inga tester
+  behövde skrivas — repot har ingen kod i bygget. Sessionen körde inga prov
+  själv; siffrorna ovan är byggslingans egen loggade utdata, inte en egen
+  mätning.
+
 - **2026-09-24 (överlämning #289 / beslut #183 — de sista pixlarna i produktmenyn;
   följdbygge inom #182, endast `server/src/http/view/html.ts` + provet):** #182 gav
   menypanelen rätt FORM men inte hela höjdbudgeten: Hermes mätte efter release
