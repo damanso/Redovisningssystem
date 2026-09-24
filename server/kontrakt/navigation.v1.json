@@ -1448,6 +1448,42 @@
     },
     {
       "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/privat",
+      "public_pattern": "/privat",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/privat/manifest.webmanifest",
+      "public_pattern": "/privat/manifest.webmanifest",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/privat/ikon-180.png",
+      "public_pattern": "/privat/ikon-180.png",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/privat/ikon-512.png",
+      "public_pattern": "/privat/ikon-512.png",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
       "method": "POST",
       "router_pattern": "/punktsvar",
       "public_pattern": "/punktsvar",
