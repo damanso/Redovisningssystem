@@ -1485,6 +1485,33 @@
     {
       "service": "hermes",
       "method": "POST",
+      "router_pattern": "/privat/kop",
+      "public_pattern": "/privat/kop",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/privat/kop/ta-bort",
+      "public_pattern": "/privat/kop/ta-bort",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/privat/kop/ater",
+      "public_pattern": "/privat/kop/ater",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
       "router_pattern": "/punktsvar",
       "public_pattern": "/punktsvar",
       "category": "c",
