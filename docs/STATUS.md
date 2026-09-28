@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-28 (överlämning #300 / beslut #188 — S10.9: handgreppen Påbörja och
+  Godkänn på Leveranserna, LOC-419):** S3.4 byggde `paborja_leverabel` och
+  `godkann_leverabel`, men båda bär `kravManniska` — en agent fälls med 403
+  `human_required` före varje skrivning — så utan knappar i vyn kunde ingen
+  utföra dem. Nu finns två POST-rutter i vyroutern,
+  `…/projects/:projectId/leverabel/paborja` och `…/leverabel/godkann`, byggda
+  exakt som `statusforslag`-rutten: `assertSameOrigin`, `parseCompanyId`/
+  `parseApprovalId`, och `runViewAction` (actor `human`) — ingen egen SQL, ingen
+  egen felhantering. Tomma valfria fält (`nar`, `notering`) UTELÄMNAS ur indatat;
+  `kanal` skickas alltid, så ett tomt val fälls av åtgärdens enum i stället för
+  att tystas. Båda leder tillbaka till uppdragets förstasida, som bär `felNotis`
+  (Leveranserna har ingen och fick ingen). Knapparna bor på brädans
+  leverabelkort: `ej_paborjad` får Påbörja, `levererad` får Godkänn med
+  kanalvalet synligt och obligatoriskt (ett obligatoriskt fält i en hopfälld
+  `<details>` går inte att fokusera) och tomt förstaval; `pagar`, `godkand` och
+  `avvisad` får ingenting — en knapp som ger 409 är en knapp som ljuger.
+  Datum/notering ligger i en hopfälld `<details>`; ingen ny CSS-klass, ingen JS.
+  Sidtexten som sa *"Statusen flyttas aldrig på den här sidan"* var inte längre
+  sann och säger nu var vart och ett av stegen görs. Provet
+  `uppdragsytan-leveranserna.test.ts`: det gamla fallet "(d) sidan skriver
+  ingenting" mäter numera rätt knapp per läge (förbudet mot `<form>`/`<button>`
+  står kvar för tabelläget), och en ny svit (f) prövar de fem fallen ur storyn.
+  **Utanför repot:** de två nya POST-rutterna måste in i adresskontraktet
+  (`navigation.v1.json`, kategori `c`, ägare `projects_list`) via generatorn i
+  Davids valv — filen här är genererad och rördes inte, så
+  `~/.hermes/prov/adresskontraktet.py` står rött tills den synkats.
+
 - **2026-09-24 (överlämning #291 / beslut #184 — privatekonomin som egen yta
   `/privat`; INGEN kod i detta repo):** Bygget bor helt i Hermes enligt
   `docs/ARKITEKTUR.md` (samma hemvist som svepet och provvakten) och var redan
