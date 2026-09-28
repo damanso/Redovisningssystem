@@ -36,6 +36,7 @@ import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
 import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
+import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
@@ -4440,18 +4441,81 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  * stället för av ett villkor här: ett kort ska inte behöva veta var i kolumnen
  * det står för att se rätt ut.
  */
-function leverabelkort(r: Leverabelrad): Raw {
+function leverabelkort(bas: string, contractId: string, r: Leverabelrad): Raw {
   return html`<li class="leverabelkort">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <strong class="code">${r.kod}</strong>${statusChip(r.status)}</div>
     <div class="muted" style="font-size:12.5px;margin-top:3px">${
       r.klausul === null ? 'Ingen klausul angavs' : html`Klausul ${r.klausul}`}</div>
     <div class="muted" style="font-size:12.5px;margin-top:2px">${dagarILaget(r.dagar_i_laget)}</div>
+    ${leverabelhandgrepp(bas, contractId, r)}
   </li>`;
 }
 
+/** Kanalerna som ord — registrets värden är nycklar, aldrig etiketter. */
+const KANALORD: Record<Godkannandekanal, string> = {
+  telefon: 'Telefon', mejl: 'Mejl', mote: 'Möte', protokoll: 'Protokoll',
+};
+
+/**
+ * Handgreppet på kortet (S10.9): det ENDA steg leverabeln kan ta härifrån.
+ *
+ * Fyra beslut styr formuläret:
+ *
+ *  1. **En knapp per läge, aldrig fler.** `ej_paborjad` får Påbörja och
+ *     `levererad` får Godkänn; `pagar`, `godkand` och `avvisad` får ingenting.
+ *     Åtgärderna svarar 409 på varje annat utgångsläge, och en knapp som ger
+ *     409 är en knapp som ljuger om vad den gör. Steget `pagar → levererad` har
+ *     en maskinell iakttagelse bakom sig och bekräftas därför bland
+ *     statusförslagen på förstasidan — inte här.
+ *  2. **Kanalen är synlig och obligatorisk för godkännandet.** HUR beskedet kom
+ *     är hela dess bevisvärde (0072:s CHECK), så den kan inte bo i en hopfälld
+ *     `details`: ett obligatoriskt fält som webbläsaren inte kan fokusera
+ *     stoppar hela formuläret. Förstavalet är tomt — ett förvalt "Telefon"
+ *     hade skrivit ett påstående ingen gjort.
+ *  3. **Datum och notering är hopfällda.** Normalfallet är "det hände nu, och
+ *     det finns inget mer att säga": utelämnad `nar` betyder just nu i
+ *     tjänsten. Två öppna fält per kort i en 190 px-kolumn hade dessutom gjort
+ *     brädan oläsbar som bräda.
+ *  4. **Knappen sist i formuläret.** Fälten fylls före de skickas — både för
+ *     ögat och för tangentbordets ordning. Knappens namn bär koden
+ *     (`aria-label`), för sex likadana "Påbörja" i en kolumn är sex knappar
+ *     utan urskiljbart namn (WCAG 2.4.6).
+ */
+function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad): Raw | '' {
+  const steg = r.status === 'ej_paborjad' ? 'paborja' : r.status === 'levererad' ? 'godkann' : null;
+  if (steg === null) return '';
+  const etikett = steg === 'paborja' ? 'Påbörja' : 'Godkänn';
+  return html`<form method="post" action="${bas}/leverabel/${steg}" style="margin:8px 0 0">
+    <input type="hidden" name="contract_id" value="${contractId}">
+    <input type="hidden" name="leverabel_kod" value="${r.kod}">
+    ${steg === 'godkann'
+      ? html`<label class="field" style="margin:0 0 7px"><span>Beskedet kom via</span>
+          <select name="kanal" required>
+            <option value="">Välj kanal…</option>
+            ${GODKANNANDEKANALER.map((k) => html`<option value="${k}">${KANALORD[k]}</option>`)}
+          </select></label>`
+      : ''}
+    <details style="margin-bottom:8px">
+      ${/* Samma skäl som knappens `aria-label`: en kolumn med sex likadana
+            "Datum och notering" är sex knappar den som lyssnar inte kan skilja
+            åt. Den synliga texten hålls kort — kolumnen är 190 px. */ ''}
+      <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0"
+        aria-label="Datum och notering för leverabel ${r.kod}">Datum och notering</summary>
+      <label class="field" style="margin:7px 0 0"><span>Skedde den</span>
+        <input type="date" name="nar"></label>
+      <label class="field" style="margin:7px 0 0"><span>Notering</span>
+        <input type="text" name="notering" maxlength="500"></label>
+      <p class="muted" style="margin:6px 0 0;font-size:12px">Lämnas datumet tomt antecknas steget som skett nu.
+        Det går att backa inom fönstret mellan avtalets signering och i dag — aldrig framåt.</p>
+    </details>
+    <button class="btn btn--ghost btn--sm" type="submit"
+      aria-label="${etikett} leverabel ${r.kod}">${etikett}</button>
+  </form>`;
+}
+
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
-function bradkolumn(contractId: string, lage: string, rader: readonly Leverabelrad[]): Raw {
+function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[]): Raw {
   const id = `kol-${lage}-${contractId}`;
   return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
@@ -4460,7 +4524,7 @@ function bradkolumn(contractId: string, lage: string, rader: readonly Leverabelr
       ${rader.length === 0
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
-            ${rader.map((r) => leverabelkort(r))}
+            ${rader.map((r) => leverabelkort(bas, contractId, r))}
           </ul>`}
     </div>
   </section></div>`;
@@ -4474,9 +4538,9 @@ function bradkolumn(contractId: string, lage: string, rader: readonly Leverabelr
  * designkontraktet, och en komponent som bara finns som en attributsträng går
  * varken att peka på eller mäta.
  */
-function bradlage(a: Leveransavtal): Raw {
+function bradlage(bas: string, a: Leveransavtal): Raw {
   return html`<div class="brada">
-    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(a.contractId, lage, rader))}
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader))}
   </div>`;
 }
 
@@ -4550,12 +4614,71 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean)
             : html`Brädan visar en kolumn per läge — där en leverabel står, står den. Tabellen bär samma rader med
                 alla fält.`}
           ${/* Länktexten säger vart den går, inte "här": en länk ska gå att
-                förstå upplyst ur sin mening (WCAG 2.4.4). */ ''}
-          Statusen flyttas aldrig på den här sidan — den bekräftas bland statusförslagen på
-          <a href="${bas}">uppdragets förstasida</a> och går genom Att göra.</p>
+                förstå upplyst ur sin mening (WCAG 2.4.4). S10.9: raden sa
+                tidigare att statusen aldrig flyttas här. Det är inte längre
+                sant — två av skalans steg görs på korten — och en mening som
+                ljuger om var handgreppet finns är värre än ingen mening. */ ''}
+          Påbörja och Godkänn görs på brädans kort: de stegen har ingen maskinell iakttagelse bakom sig,
+          utan en människa som gjorde eller fick något. Steget Pågår → Levererad bekräftas i stället bland
+          statusförslagen på <a href="${bas}">uppdragets förstasida</a>.</p>
         ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
-          ${a.rader.length === 0 ? tomtRegister(bas) : tabell ? tabellage(a) : bradlage(a)}`)}`}`;
+          ${a.rader.length === 0 ? tomtRegister(bas) : tabell ? tabellage(a) : bradlage(bas, a)}`)}`}`;
 }
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.9: handgreppen Påbörja och Godkänn (beslut #188, LOC-419).
+//
+// S3.4 byggde åtgärderna, men båda bär `kravManniska`: en agent fälls med 403
+// `human_required` före varje skrivning. Utan knappar i vyn kunde alltså INGEN
+// utföra dem — de två stegen fanns bara på papperet.
+//
+// Rutterna är transport och ingenting annat: samma `runViewAction` som resten
+// av vyn, samma `assertSameOrigin`, samma zod-strict-scheman i registret. Ingen
+// egen SQL, ingen egen felhantering — tjänstens `saknad_mottagare`,
+// `leverabel_ej_ej_paborjad`, `leverabel_ej_levererad`, `framtida_datum` och
+// `fore_avtalet` kommer tillbaka som `?fel=` och visas av `felNotis` på
+// uppdragets förstasida, som är dit båda leder (Leveranserna bär ingen notis).
+//
+// Ett tomt valfritt formulärfält UTELÄMNAS ur indatat i stället för att skickas
+// som tom sträng: en tom ruta är inget svar, och `nar: ''` hade fällts av
+// `IsoDateSchema` som om användaren skrivit ett felaktigt datum.
+// ---------------------------------------------------------------------------
+
+viewRouter.post('/c/:companyId/projects/:projectId/leverabel/paborja', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const nar = falt(kropp.nar);
+  const notering = falt(kropp.notering);
+  await runViewAction(req, res, companyId, 'paborja_leverabel', {
+    contract_id: falt(kropp.contract_id),
+    leverabel_kod: falt(kropp.leverabel_kod),
+    ...(nar ? { nar } : {}),
+    ...(notering ? { notering } : {}),
+  }, `/app/c/${companyId}/projects/${projectId}`);
+}));
+
+viewRouter.post('/c/:companyId/projects/:projectId/leverabel/godkann', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const nar = falt(kropp.nar);
+  const notering = falt(kropp.notering);
+  // `kanal` är INTE valfri och utelämnas därför aldrig: ett tomt val ska fällas
+  // av åtgärdens enum, inte tystas till ett godkännande utan form. Mottagaren
+  // skickas inte alls — den läses ur avtalets godkännare (FR-13).
+  await runViewAction(req, res, companyId, 'godkann_leverabel', {
+    contract_id: falt(kropp.contract_id),
+    leverabel_kod: falt(kropp.leverabel_kod),
+    kanal: falt(kropp.kanal),
+    ...(nar ? { nar } : {}),
+    ...(notering ? { notering } : {}),
+  }, `/app/c/${companyId}/projects/${projectId}`);
+}));
 
 viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projects', 'Leveranserna',
   async (client, companyId, req) => {

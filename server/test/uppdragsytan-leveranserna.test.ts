@@ -312,20 +312,37 @@ describe('(c) lägena bärs av färg, form och ord', () => {
 });
 
 // ---------------------------------------------------------------------------
-// (d) Ren läsvy (KRAV-7)
+// (d) Sidan skriver bara det den får skriva (KRAV-7, S10.9)
+//
+// Fallet hette tidigare "sidan skriver ingenting" och förbjöd varje formulär.
+// S10.9 (beslut #188) gav brädans kort handgreppen Påbörja och Godkänn, så
+// förbudet mäter numera fel sak. Kvar står det som ALLTID gäller — inget
+// skript, inget draggable — och i stället för förbudet prövas att brädan bär
+// exakt rätt knapp per läge, och att tabellen fortfarande inte bär någon.
 // ---------------------------------------------------------------------------
 
-describe('(d) sidan skriver ingenting', () => {
-  it('inget draggable, inget skript, inget formulär och ingen knapp i något läge', async () => {
+describe('(d) sidan skriver bara det den får skriva', () => {
+  it('inget draggable och inget skript i något läge, och tabellen bär ingen knapp', async () => {
     for (const html of [await brada(), await tabell()]) {
-      const main = huvud(html);
-      expect(main).not.toContain('draggable');
-      expect(main).not.toContain('<form');
-      expect(main).not.toContain('<button');
-      expect(main).not.toContain('<input');
+      expect(huvud(html)).not.toContain('draggable');
       // Skript finns inte ens i skalet: hela vyn är JS-fri (CSP script-src 'none').
       expect(html).not.toContain('<script');
     }
+    const tabmain = huvud(await tabell());
+    expect(tabmain).not.toContain('<form');
+    expect(tabmain).not.toContain('<button');
+    expect(tabmain).not.toContain('<input');
+  });
+
+  it('brädan bär en knapp per leverabel som KAN flyttas härifrån — och inte en till', async () => {
+    const main = huvud(await brada());
+    const antal = (m: RegExp) => [...main.matchAll(m)].length;
+    // L1, L5 och L6 står i ej_paborjad; L3 i levererad. L2 (pagar) och L4
+    // (avvisad) har inget steg härifrån, och godkand-kolumnen är tom.
+    expect(antal(/\/leverabel\/paborja"/g)).toBe(3);
+    expect(antal(/\/leverabel\/godkann"/g)).toBe(1);
+    expect(antal(/<button/g)).toBe(4);
+    expect(antal(/<form/g)).toBe(4);
   });
 });
 
@@ -362,5 +379,98 @@ describe('(e) tomt och stängt', () => {
     expect(grannens).toContain('Leveranserna');
     expect(grannens).toContain('Registret är tomt');
     expect(koder(grannens)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) Handgreppen på kortet (S10.9, beslut #188)
+//
+// Åtgärderna `paborja_leverabel` och `godkann_leverabel` bär `kravManniska` och
+// kan alltså BARA utföras av en människa i vyn. Provet mäter två saker: att
+// kortet visar exakt det steg leverabeln faktiskt kan ta (en knapp som ger 409
+// är en knapp som ljuger), och att knappen går hela vägen genom action-lagret.
+//
+// Fallen ligger SIST i filen med flit: de flyttar statusen på riktigt, och
+// sviten ovanför läser samma sex rader.
+// ---------------------------------------------------------------------------
+
+describe('(f) handgreppen på kortet', () => {
+  /** Ett kort ur brädan, isolerat: en kod, ett `<li class="leverabelkort">`. */
+  function kort(main: string, kod: string): string {
+    const bitar = main.split('<li class="leverabelkort">').slice(1)
+      .map((b) => b.slice(0, b.indexOf('</li>')));
+    const traff = bitar.filter((b) => b.includes(`>${kod}</strong>`));
+    expect(traff, `kortet ${kod} ska stå exakt en gång i brädan`).toHaveLength(1);
+    return traff[0]!;
+  }
+
+  const post = (steg: string) => `/app/c/${companyId}/projects/${projektId}/leverabel/${steg}`;
+
+  it('(a) en ej påbörjad leverabel bär Påbörja — och inte Godkänn', async () => {
+    const k = kort(huvud(await brada()), 'L5');
+    expect(k).toContain(`action="${post('paborja')}"`);
+    expect(k).toContain(`name="contract_id" value="${avtalId}"`);
+    expect(k).toContain('name="leverabel_kod" value="L5"');
+    expect(k).toContain('>Påbörja</button>');
+    // Datum och notering är valfria och hopfällda; ingen kanal finns att välja.
+    expect(k).toContain('name="nar"');
+    expect(k).toContain('name="notering"');
+    expect(k).not.toContain(post('godkann'));
+    expect(k).not.toContain('name="kanal"');
+    expect(k).not.toContain('Godkänn');
+  });
+
+  it('(b) en levererad leverabel bär Godkänn med de fyra kanalerna — och inte Påbörja', async () => {
+    const k = kort(huvud(await brada()), 'L3');
+    expect(k).toContain(`action="${post('godkann')}"`);
+    expect(k).toContain('name="leverabel_kod" value="L3"');
+    expect(k).toContain('<select name="kanal" required>');
+    const kanaler: Record<string, string> = { telefon: 'Telefon', mejl: 'Mejl', mote: 'Möte', protokoll: 'Protokoll' };
+    for (const [varde, ord] of Object.entries(kanaler)) {
+      expect(k, `kanalen ${varde} saknas`).toContain(`<option value="${varde}">${ord}</option>`);
+    }
+    // Inget förvalt: ett förvalt "Telefon" hade skrivit ett påstående ingen gjort.
+    expect(k).toContain('<option value="">');
+    expect(k).not.toContain('selected');
+    expect(k).toContain('>Godkänn</button>');
+    expect(k).not.toContain(post('paborja'));
+    expect(k).not.toContain('Påbörja');
+  });
+
+  it('(c) pågår, avvisad och godkänd får ingen knapp alls', async () => {
+    const main = huvud(await brada());
+    for (const kod of ['L2', 'L4']) {
+      const k = kort(main, kod);
+      expect(k, `${kod} ska inte bära ett handgrepp`).not.toContain('<form');
+      expect(k).not.toContain('<button');
+    }
+    // `godkand` är tom i fixturen — läget riggas som ägaren (samma grepp som
+    // `riggaStatus` ovan) enbart för att kunna läsa kortet.
+    await riggaStatus(avtalId, 'L1', 'godkand');
+    const efter = kort(huvud(await brada()), 'L1');
+    expect(efter).toContain(chipMarkup('godkand'));
+    expect(efter).not.toContain('<form');
+    expect(efter).not.toContain('<button');
+  });
+
+  it('(d) Påbörja flyttar statusen genom action-lagret och landar på uppdragssidan', async () => {
+    const res = await ua.post(post('paborja')).type('form').send({
+      contract_id: avtalId, leverabel_kod: 'L5', nar: SIGNERAT, notering: 'Uppstart hållen med NVR.',
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`/app/c/${companyId}/projects/${projektId}`);
+    expect((await register()).find((r) => r.kod === 'L5')!.status).toBe('pagar');
+    // …och kortet bär inte längre någon knapp: steget är taget.
+    expect(kort(huvud(await brada()), 'L5')).not.toContain('<button');
+  });
+
+  it('(e) Godkänn utan kanal fälls av åtgärdens schema och kommer tillbaka som ?fel=', async () => {
+    const res = await ua.post(post('godkann')).type('form').send({
+      contract_id: avtalId, leverabel_kod: 'L3', kanal: '',
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain(`/app/c/${companyId}/projects/${projektId}?fel=`);
+    // Ingenting skrevs: leverabeln står kvar i sitt läge.
+    expect((await register()).find((r) => r.kod === 'L3')!.status).toBe('levererad');
   });
 });
