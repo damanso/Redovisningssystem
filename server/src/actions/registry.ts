@@ -52,6 +52,9 @@ import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../servi
 import { bindaKostnad } from '../services/uppdragKostnad.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
 import {
+  DokumentforteckningSchema, LasForteckningSchema, lasDokumentforteckning, skrivDokumentforteckning,
+} from '../services/uppdragDokument.js';
+import {
   GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, godkannLeverabel, paborjaLeverabel,
 } from '../services/uppdragStatus.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
@@ -1831,6 +1834,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // inuti svepets egen transaktion, och kön ska visa vem som bad om
     // bindningen — precis som varje annan köpost.
     handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S10.10: dokumentförteckningen (FR-43). Samma riktning och samma
+  // prejudikat som svepet ovan — Hermes läser projektets mappar och PUSHAR in
+  // förteckningen; appen öppnar aldrig Drive (ADR-4/NFR-6).
+  //
+  // `write` UTAN `kravManniska`: raden är källsystemets fakta om vilka filer som
+  // finns, inte ett beslut. Att köa en mappläsning för godkännande hade betytt en
+  // kö som fylls varje timme och ett människosvar på frågan "finns filen?".
+  // Läsningen är `read` och grupperar i tjänsten, så vyn, REST och MCP får exakt
+  // samma svar (FR-23).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'skriv_dokumentforteckning',
+    title: 'Skriv projektets dokumentförteckning — ersätter hela förteckningen',
+    sensitivity: 'write',
+    // Schemat bor i tjänsten (prejudikat: `SvepIndataSchema`, `DriveRapportSchema`)
+    // — det är samma strikta form som funktionen parsar.
+    inputSchema: DokumentforteckningSchema,
+    handler: (ctx, i) => skrivDokumentforteckning(ctx.client, ctx.companyId, i as never),
+  }),
+  def({
+    name: 'las_dokumentforteckning',
+    title: 'Läs projektets dokumentförteckning, grupperad per mapp med tidigare versioner',
+    sensitivity: 'read',
+    inputSchema: LasForteckningSchema,
+    handler: (ctx, i) => lasDokumentforteckning(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S6.1, våg 4: kostnaden binds till avtalsdelen (FR-33). Svepet

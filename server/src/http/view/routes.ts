@@ -40,6 +40,8 @@ import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdra
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
+import { ROTMAPP, lasDokumentforteckning, type Dokumentfamilj, type Dokumentforteckning,
+  type Dokumentrad } from '../../services/uppdragDokument.js';
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
@@ -3728,6 +3730,11 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
   // — vad har vi SAGT om uppdraget, innan man går tillbaka till vad som avtalades?
   ['rapporterna', 'Rapporterna'],
   ['kontraktet', 'Kontraktet'],
+  // S10.10: Dokumenten SIST, efter Kontraktet (beslut #189). Ordningen är
+  // frågornas: först vad som lovats och vad som levererats — sedan var
+  // underlaget för allt det ligger. Förteckningen är en hänvisning, inte ett
+  // omdöme, och en hänvisning läses när man redan vet vad man letar efter.
+  ['dokumenten', 'Dokumenten'],
 ];
 
 /**
@@ -5012,6 +5019,163 @@ viewRouter.get('/c/:companyId/projects/:projectId/rapporterna', pageFor('project
   async (client, companyId, req) => {
     const projectId = parseApprovalId(req.params.projectId);
     return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId));
+  }));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.10, våg 7: DOKUMENTEN (FR-43; även FR-22, FR-23, FR-35)
+//
+// Frågan är en enda, och den ställs mitt i ett samtal: *var ligger underlaget?*
+// "I Drive" är inget svar — det är en uppmaning att leta bland åtta filer som
+// alla heter nästan samma sak. Sex beslut styr ytan:
+//
+//  1. **En rad per DOKUMENT, inte per fil.** Versionerna av samma underlag är
+//     samma sak i läsarens huvud, och en lista som visar dem som åtta jämbördiga
+//     rader tvingar läsaren att göra grupperingen själv — varje gång. Raden bär
+//     därför senaste versionen, och de tidigare ligger i ett hopfällt
+//     `<details>`: de finns kvar, men de konkurrerar inte.
+//  2. **Länken går till källan, aldrig till en kopia här.** Vi lagrar namn,
+//     länk, datum och storlek — aldrig innehållet. `target="_blank"` därför att
+//     Drive är ett annat system och den som öppnar ett underlag mitt i ett
+//     samtal inte ska tappa sidan han läste det på; `rel="noopener"` därför att
+//     en extern flik aldrig ska få röra vår.
+//  3. **Mappvägen är rubriken, i Drives egna ord.** Vi hittar inte på en egen
+//     struktur och inte på egna mappnamn: byter David namn på en mapp är nästa
+//     läsning hela rättelsen. Roten heter "Mappens rot" — det är den enda mapp
+//     som inte har ett eget namn i en sökväg.
+//  4. **Datumet är källans, i en egen kolumn.** `.log-row`/`.log-when` — husets
+//     tidslinjeform — därför att ett datum man jämför lodrätt mellan rader är en
+//     mätning, och mätningar står i skrivmaskinsfamiljen med tabular-nums.
+//     Saknas datumet SÄGS det; en tom ruta hade sett ut som "i dag".
+//  5. **Tomheten har två betydelser, och de blandas aldrig (FR-22).** "Inte läst
+//     än" och "mappen är tom" är olika besked med olika åtgärd, och en tom lista
+//     som svarar på båda är den tysta nollan som gör att man slutar lita på ytan.
+//  6. **Vyn grupperar ingenting.** Familjerna, ordningen och mapparna kommer ur
+//     `lasDokumentforteckning`, alltså ur samma svar som REST och MCP läser
+//     (FR-23). Ingen egen sortering, ingen egen jämförelse, ingen ny CSS-klass
+//     och ingen JavaScript — `<details>` är webbläsarens eget handgrepp.
+// ---------------------------------------------------------------------------
+
+interface Dokumentunderlag {
+  projekt: { id: string; number: number; name: string };
+  forteckning: Dokumentforteckning;
+}
+
+/**
+ * Projektet och dess förteckning, den senare genom SAMMA tjänstefunktion som
+ * `las_dokumentforteckning` (FR-23) — samma mönster som `leveransunderlag`. Vyn
+ * har alltså ingen egen fråga mot databasen.
+ */
+async function dokumentunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Dokumentunderlag> {
+  const projekt = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  return {
+    projekt,
+    forteckning: await lasDokumentforteckning(client, companyId, { project_id: projectId }),
+  };
+}
+
+/** Källans ändringsdatum. Saknas det står det som saknat, aldrig som i dag. */
+const dokumentdatum = (d: Dokumentrad): Raw =>
+  d.andrad === null
+    ? saknatFalt('Inget datum')
+    : html`${new Date(d.andrad).toLocaleDateString('sv-SE')}`;
+
+/** En version som en klickbar länk till källsystemet. */
+const versionslank = (d: Dokumentrad): Raw =>
+  html`<a href="${d.lank}" target="_blank" rel="noopener">${d.namn}</a>`;
+
+/** "3 tidigare versioner" — och "1 tidigare version", för en lista ljuger inte i grammatiken. */
+const tidigareOrd = (n: number): string =>
+  n === 1 ? '1 tidigare version' : `${String(n)} tidigare versioner`;
+
+/**
+ * En familj som EN rad: datum, senaste versionen, och de tidigare infällda.
+ *
+ * `<summary>` bär ett `aria-label` med dokumentets namn av samma skäl som
+ * leverabelkortens knappar gör det: en mapp med tolv likadana "3 tidigare
+ * versioner" är tolv handgrepp den som lyssnar inte kan skilja åt. Den synliga
+ * texten hålls kort — raden är inte en mening.
+ */
+function familjerad(f: Dokumentfamilj): Raw {
+  return html`<div class="log-row">
+    <div class="log-when">${dokumentdatum(f.senaste)}</div>
+    <div>
+      <div class="log-what">${versionslank(f.senaste)}</div>
+      ${f.tidigare.length === 0 ? '' : html`<details style="margin-top:4px">
+        <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0"
+          aria-label="${tidigareOrd(f.tidigare.length)} av ${f.senaste.namn}">${tidigareOrd(f.tidigare.length)}</summary>
+        ${/* Samma radform som raden ovan — sidopaddingen kommer från föräldern,
+              så de infällda versionerna står indragna under sitt dokument. */ ''}
+        ${f.tidigare.map((d) => html`<div class="log-row" style="padding:7px 0">
+          <div class="log-when">${dokumentdatum(d)}</div>
+          <div class="log-what">${versionslank(d)}</div>
+        </div>`)}
+      </details>`}
+    </div>
+  </div>`;
+}
+
+/** Ett avsnitt: rubriken, och familjerna som husets tidslinjelista. */
+function dokumentavsnitt(id: string, rubrik: Raw, familjer: readonly Dokumentfamilj[]): Raw {
+  return html`<h2 id="${id}">${rubrik}</h2>
+    <section class="log" aria-labelledby="${id}">${familjer.map((f) => familjerad(f))}</section>`;
+}
+
+function dokumentsida(companyId: string, u: Dokumentunderlag, idag: string): Raw {
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
+  const f = u.forteckning;
+  const mappar = f.mappar.length;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Dokumenten</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Var ligger underlaget — och vilken version är den senaste?</p></div>
+      <div class="actions">
+        ${f.rot === null
+          ? chip('Inte läst', 'muted', '○')
+          : (f.antal === 0 ? chip('Tom mapp', 'warn', '!') : chip(`${String(f.antal)} dokument`, 'muted'))}
+        <a class="btn btn--ghost btn--sm" href="${bas}">← Uppdraget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'dokumenten')}
+    <section class="panel" aria-labelledby="forteckningen">
+      <div class="panel__head"><h2 id="forteckningen">Förteckningen</h2></div>
+      <div class="panel__body">
+        ${f.rot === null
+          ? tomtIKort(
+            'Förteckningen har inte lästs än — Hermes läser projektets mappar varje timme.',
+            html`Står raden kvar i morgon har läsningen tystnat, och det larmar Hermes provvakt om — aldrig den
+              här sidan.`)
+          : html`${f.antal === 0
+            ? tomtIKort('Mappen är tom i Drive.',
+              html`Lägg underlaget i mappen, så står det här efter nästa läsning.`)
+            : html`<p style="margin:10px 16px 4px;font-size:13px">${String(f.antal)} dokument i
+                ${String(mappar)} ${mappar === 1 ? 'mapp' : 'mappar'}. Varje rad bär den senaste versionen;
+                de tidigare ligger infällda under den.</p>`}
+            <p style="margin:6px 16px 4px;font-size:13px">
+              <a href="${f.rot.lank}" target="_blank" rel="noopener">Öppna mappen i Drive</a>
+              <span class="muted">· ${f.rot.namn}</span></p>`}
+        ${farskhetsrad([
+          f.last_nar === null
+            ? 'förteckningen: Hermes har inte läst projektets mappar än'
+            : `läst ur Drive ${farskhetstid(f.last_nar, idag)}`,
+        ])}
+      </div>
+    </section>
+    ${f.mappar.map((m, i) => dokumentavsnitt(
+      `mapp-${String(i)}`,
+      m.sokvag === ROTMAPP ? html`Mappens rot` : html`<span class="code">${m.sokvag}</span>`,
+      m.familjer,
+    ))}
+    ${f.valv.length === 0
+      ? ''
+      : html`${dokumentavsnitt('valvet', html`I valvet`, f.valv)}
+        <p class="muted" style="margin:8px 2px 14px;font-size:12.5px">Dokument som ligger i husets eget valv och
+          inte i Drives mappträd — de räknas i talet ovan, men de har ingen mappväg.</p>`}`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/dokumenten', pageFor('projects', 'Dokumenten',
+  async (client, companyId, req) => {
+    const projectId = parseApprovalId(req.params.projectId);
+    const idag = new Date().toLocaleDateString('sv-SE');
+    return dokumentsida(companyId, await dokumentunderlag(client, companyId, projectId), idag);
   }));
 
 // ---------------------------------------------------------------------------

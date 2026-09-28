@@ -62,25 +62,28 @@ const SNABBRAD: string[] = KONTRAKT.surfaces[
   return rest.startsWith('/') ? rest.slice(1) : '';
 });
 
-/** Undermenyns S10-sidor (1E Del 5). De tre övriga posterna står kvar bredvid. */
+/** Undermenyns S10-sidor (1E Del 5, + S10.10:s Dokumenten). De tre övriga posterna står kvar bredvid. */
 const S10_SIDOR = [
   ['laget', 'Läget'], ['planen', 'Planen'], ['leveranserna', 'Leveranserna'],
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
+  ['dokumenten', 'Dokumenten'],
 ] as const;
 
 /**
- * S10.8: undermenyns TIO poster i sin ordning — uppdraget självt först (tom
- * slug), sedan S10.7:s nio. Samma lista som `UPPDRAGSSIDOR` i routes.ts; står
- * de isär är en av dem fel, och provet ska säga vilken.
+ * S10.8: undermenyns poster i sin ordning — uppdraget självt först (tom slug),
+ * sedan S10.7:s nio. S10.10 la Dokumenten SIST, efter Kontraktet: ELVA poster.
+ * Samma lista som `UPPDRAGSSIDOR` i routes.ts; står de isär är en av dem fel,
+ * och provet ska säga vilken.
  */
 const UNDERMENYN = [
   ['', 'Projektet'], ['laget', 'Läget'], ['avtal', 'Avtal'], ['bedomning', 'Bedömning'],
   ['signaler', 'Signaler'], ['planen', 'Planen'], ['leveranserna', 'Leveranserna'],
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
+  ['dokumenten', 'Dokumenten'],
 ] as const;
 
 /**
- * Samma tio poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
+ * Samma elva poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
  * ett urval passerar nästa lucka grönt: S10.7 hade fyra sidor med meny och sex
  * utan, och provet såg det inte.
  */
@@ -262,7 +265,7 @@ describe('(a) navigationen', () => {
     expect(annan).toContain(`href="/app/c/${companyId}/receipts" aria-current="page"`);
   });
 
-  it('undermenyn bär de sex S10-sidorna, i ordning, med EXAKT en aktuell post', async () => {
+  it('undermenyn bär de sju S10-sidorna, i ordning, med EXAKT en aktuell post', async () => {
     const html = await sida(lagetsVag());
     const nav = meny(html, '<nav class="subnav"');
     const vagar = poster(nav).map((p) => p.replace(`projects/${projektId}/`, ''));
@@ -297,13 +300,14 @@ describe('(a) navigationen', () => {
 //
 // Lärdomen sitter i provets FORM: S10.7:s prov mätte menyn på Läget och drog
 // slutsatsen "menyn finns". Ett urval kan inte bära ett krav som lyder "på
-// VARJE sida", så här mäts alla tio posterna en och en, utifrån, på det som
+// VARJE sida", så här mäts alla elva posterna en och en, utifrån, på det som
 // faktiskt levereras över HTTP.
 // ---------------------------------------------------------------------------
 
 describe('(a2) undermenyn på varje uppdragssida', () => {
-  it('undermenyn bär uppdraget SJÄLVT först och S10.7:s nio efter — i ordning', async () => {
+  it('undermenyn bär uppdraget SJÄLVT först och de tio andra efter — i ordning, elva poster', async () => {
     const nav = meny(await sida(lagetsVag()), '<nav class="subnav"');
+    expect(UNDERMENYN).toHaveLength(11);
     expect(poster(nav)).toEqual(UNDERMENYN.map(([slug]) => uppdragsvag(slug).replace(`/app/c/${companyId}/`, '')));
     for (const [, etikett] of UNDERMENYN) expect(nav).toContain(`>${etikett}</a>`);
     // Ingen emoji i menyn, precis som i snabbraden (S10.7 KRAV-1).
@@ -314,7 +318,7 @@ describe('(a2) undermenyn på varje uppdragssida', () => {
     const res = await ua.get(uppdragsvag(slug));
     expect(res.status, `${uppdragsvag(slug)} gav ${res.status}`).toBe(200);
     const nav = meny(res.text, '<nav class="subnav"');
-    // Menyn är HEL på var och en av de tio: tio poster, inte ett urval.
+    // Menyn är HEL på var och en av de elva: elva poster, inte ett urval.
     expect(poster(nav)).toHaveLength(UNDERMENYN.length);
     expect(antalAktuella(nav)).toBe(1);
     expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
