@@ -52,6 +52,9 @@ import { DriveRapportSchema, hamtaDriveKo, rapporteraDriveKopia } from '../servi
 import { bindaKostnad } from '../services/uppdragKostnad.js';
 import { SvepIndataSchema, korUppdragssvep } from '../services/uppdragSvep.js';
 import {
+  DokumentforteckningSchema, lasDokumentforteckning, skrivDokumentforteckning,
+} from '../services/uppdragDokument.js';
+import {
   GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, godkannLeverabel, paborjaLeverabel,
 } from '../services/uppdragStatus.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
@@ -1831,6 +1834,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // inuti svepets egen transaktion, och kön ska visa vem som bad om
     // bindningen — precis som varje annan köpost.
     handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan S10.10: dokumentförteckningen (FR-43, beslut #189). Samma
+  // hållning som svepet: Hermes läser Drive och valvet och pushar in hela
+  // projektets förteckning; appen lagrar den som CACHE (0076) och ritar den.
+  // Repot öppnar aldrig ett grannsystem själv (ADR-4).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'skriv_dokumentforteckning',
+    title: 'Skriv projektets dokumentförteckning (ersätter hela förteckningen)',
+    // `write` och INTE `kravManniska` — samma skäl som `kor_uppdragssvep`: det är
+    // källsystemets fakta om vilka filer som finns, inte ett omdöme. En människa
+    // i vägen hade betytt att förteckningen aldrig uppdaterades av sig själv.
+    sensitivity: 'write',
+    // Schemat bor i tjänsten (prejudikat: `SvepIndataSchema`) — det är samma
+    // strikta form som funktionen parsar, och två kopior hinner divergera.
+    inputSchema: DokumentforteckningSchema,
+    handler: (ctx, i) => skrivDokumentforteckning(ctx.client, ctx.companyId, i),
+  }),
+  def({
+    name: 'las_dokumentforteckning',
+    title: 'Projektets dokument grupperade per mapp, senaste versionen först',
+    // `read`: grupperingen görs i tjänsten, så vyn, REST och MCP får exakt samma
+    // familjer i samma ordning (FR-23).
+    sensitivity: 'read',
+    inputSchema: z.object({ project_id: UuidSchema }).strict(),
+    handler: (ctx, i) => lasDokumentforteckning(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S6.1, våg 4: kostnaden binds till avtalsdelen (FR-33). Svepet

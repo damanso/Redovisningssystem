@@ -69,18 +69,20 @@ const S10_SIDOR = [
 ] as const;
 
 /**
- * S10.8: undermenyns TIO poster i sin ordning — uppdraget självt först (tom
- * slug), sedan S10.7:s nio. Samma lista som `UPPDRAGSSIDOR` i routes.ts; står
- * de isär är en av dem fel, och provet ska säga vilken.
+ * S10.8: undermenyns poster i sin ordning — uppdraget självt först (tom slug),
+ * sedan S10.7:s nio. S10.10 lade Dokumenten SIST, efter Kontraktet: elva poster.
+ * Samma lista som `UPPDRAGSSIDOR` i routes.ts; står de isär är en av dem fel,
+ * och provet ska säga vilken.
  */
 const UNDERMENYN = [
   ['', 'Projektet'], ['laget', 'Läget'], ['avtal', 'Avtal'], ['bedomning', 'Bedömning'],
   ['signaler', 'Signaler'], ['planen', 'Planen'], ['leveranserna', 'Leveranserna'],
   ['pengarna', 'Pengarna'], ['rapporterna', 'Rapporterna'], ['kontraktet', 'Kontraktet'],
+  ['dokumenten', 'Dokumenten'],
 ] as const;
 
 /**
- * Samma tio poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
+ * Samma elva poster som fall åt `it.each` — en rad per sida. Mäts menyn bara på
  * ett urval passerar nästa lucka grönt: S10.7 hade fyra sidor med meny och sex
  * utan, och provet såg det inte.
  */
@@ -297,12 +299,14 @@ describe('(a) navigationen', () => {
 //
 // Lärdomen sitter i provets FORM: S10.7:s prov mätte menyn på Läget och drog
 // slutsatsen "menyn finns". Ett urval kan inte bära ett krav som lyder "på
-// VARJE sida", så här mäts alla tio posterna en och en, utifrån, på det som
-// faktiskt levereras över HTTP.
+// VARJE sida", så här mäts alla posterna en och en, utifrån, på det som
+// faktiskt levereras över HTTP. S10.10 la till en elfte post (Dokumenten) och
+// förväntningarna uppdaterades i SAMMA bygge — aldrig grönt mot en gammal
+// förväntan (S10.7:s lärdom).
 // ---------------------------------------------------------------------------
 
 describe('(a2) undermenyn på varje uppdragssida', () => {
-  it('undermenyn bär uppdraget SJÄLVT först och S10.7:s nio efter — i ordning', async () => {
+  it('undermenyn bär uppdraget SJÄLVT först och de tio övriga efter — i ordning', async () => {
     const nav = meny(await sida(lagetsVag()), '<nav class="subnav"');
     expect(poster(nav)).toEqual(UNDERMENYN.map(([slug]) => uppdragsvag(slug).replace(`/app/c/${companyId}/`, '')));
     for (const [, etikett] of UNDERMENYN) expect(nav).toContain(`>${etikett}</a>`);
@@ -314,8 +318,9 @@ describe('(a2) undermenyn på varje uppdragssida', () => {
     const res = await ua.get(uppdragsvag(slug));
     expect(res.status, `${uppdragsvag(slug)} gav ${res.status}`).toBe(200);
     const nav = meny(res.text, '<nav class="subnav"');
-    // Menyn är HEL på var och en av de tio: tio poster, inte ett urval.
+    // Menyn är HEL på var och en av sidorna: elva poster, inte ett urval.
     expect(poster(nav)).toHaveLength(UNDERMENYN.length);
+    expect(UNDERMENYN).toHaveLength(11);
     expect(antalAktuella(nav)).toBe(1);
     expect(nav).toContain(`href="${uppdragsvag(slug)}" aria-current="page"`);
   });
