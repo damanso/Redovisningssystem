@@ -153,6 +153,42 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-28 (överlämning #302 / beslut #189 — S10.10: sidan Dokumenten på
+  uppdragsytan, FR-43):** Davids ord 28/9: senaste versionen av varje underlag
+  ska vara direkt tillgänglig ur projektytan, och all dokumentation som inte är
+  raderad ska gå att se. Byggt: **migration 0076** med två CACHE-tabeller
+  (`uppdrag_dokument` med `unique (company_id, project_id, kalla, extern_id)`,
+  `kalla`-CHECK `'drive'|'valv'` och https-CHECK på länken enligt 0065:s mönster;
+  `uppdrag_dokumentrot` med pk `(company_id, project_id)`), RLS/policyer och
+  `GRANT SELECT/INSERT/UPDATE/DELETE` till `app` exakt som `uppdrag_svepvarde` i
+  0068 — DELETE är kategorins innebörd och det som gör att "inte raderad" kan
+  hållas sann. **`services/uppdragDokument.ts`**: zod-strict-schemat (bor i
+  tjänsten, prejudikat `SvepIndataSchema`), `skrivDokumentforteckning` som
+  ERSÄTTER projektets hela förteckning i en transaktion (upsert + DELETE av det
+  som inte kom + upsert av roten; svar `{ project_id, antal, borttagna, last_nar }`;
+  idempotent), `lasDokumentforteckning`, och familjeregeln som två rena funktioner
+  (`familjenyckel`, `grupperaDokument`) — versions-, datum-, status-, kopie- och
+  löpnummerled faller bara som EGNA led, allt annat hör till namnet. **Två
+  registerposter:** `skriv_dokumentforteckning` (`write`, INTE `kravManniska` —
+  källsystemets fakta, samma skäl som `kor_uppdragssvep`) och
+  `las_dokumentforteckning` (`read`); båda faller ut som REST och MCP (FR-23).
+  **Sidan** `/c/:companyId/projects/:projectId/dokumenten` via `pageFor`, och
+  `UPPDRAGSSIDOR` fick `['dokumenten', 'Dokumenten']` sist efter Kontraktet —
+  **elva** poster på alla uppdragssidor. Sidan bär husets `.panel`, `.log`,
+  `.log-when`, `.log-what`, `.chip`, `.muted` och `.farskhet`; inga nya
+  CSS-klasser, ingen JS (tidigare versioner i `<details>`), `target="_blank"
+  rel="noopener"` på varje länk ut. Tomhetens två texter är skilda med flit:
+  oläst förteckning ≠ tom mapp. Prov: `server/test/uppdragsytan-dokumenten.test.ts`
+  ((a)–(g)) och menytestets förväntningar uppdaterade till elva poster i SAMMA
+  bygge. **Verifiering:** sessionen körde inga kommandon själv (bygget kör
+  typecheck och `npm test` efter sessionen) — utdatan i överlämningen är
+  byggskriptets, inte en egen mätning. **Utanför repot, står rött tills det
+  synkas:** den nya GET-rutten måste in i adresskontraktet (`navigation.v1.json`,
+  kategori `c`, ägare `projects_list`) via generatorn i Davids valv — filen här är
+  genererad och rördes inte. Hermes-skillen `dokumentforteckning.py` byggs av
+  Cowork mot kontraktet i registret. `docs/MCP_ACTIONS.md` beskriver ännu inte de
+  två nya åtgärderna — det låg utanför storyns avgränsning och bör läggas till.
+
 - **2026-09-28 (överlämning #300 / beslut #188 — S10.9: handgreppen Påbörja och
   Godkänn på Leveranserna, LOC-419):** S3.4 byggde `paborja_leverabel` och
   `godkann_leverabel`, men båda bär `kravManniska` — en agent fälls med 403

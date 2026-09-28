@@ -40,6 +40,10 @@ import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdra
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
+import {
+  lasDokumentforteckning,
+  type Dokumentfamilj, type Dokumentforteckning, type Dokumentrad,
+} from '../../services/uppdragDokument.js';
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
@@ -3728,6 +3732,10 @@ const UPPDRAGSSIDOR: readonly (readonly [string, string])[] = [
   // — vad har vi SAGT om uppdraget, innan man går tillbaka till vad som avtalades?
   ['rapporterna', 'Rapporterna'],
   ['kontraktet', 'Kontraktet'],
+  // S10.10: Dokumenten SIST, efter Kontraktet — vad avtalet lovade, och sedan
+  // var underlagen ligger. Posten står sist därför att den är den enda som inte
+  // svarar på en fråga om uppdragets LÄGE: den svarar på "var är handlingen?".
+  ['dokumenten', 'Dokumenten'],
 ];
 
 /**
@@ -5012,6 +5020,161 @@ viewRouter.get('/c/:companyId/projects/:projectId/rapporterna', pageFor('project
   async (client, companyId, req) => {
     const projectId = parseApprovalId(req.params.projectId);
     return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId));
+  }));
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan S10.10, beslut #189: DOKUMENTEN (FR-43, FR-22, FR-23, FR-35)
+//
+// Davids ord 28/9: senaste versionen av varje underlag ska vara direkt
+// tillgänglig ur projektytan, och all dokumentation som inte är raderad ska gå
+// att se. I dag hittas den genom att leta i Drive. Sex beslut styr sidan:
+//
+//  1. **Sidan räknar och grupperar INGENTING.** Familjerna, ordningen och
+//     mapparna kommer ur `lasDokumentforteckning`, alltså ur samma svar som MCP
+//     och REST läser (FR-23). Kunde sidan gruppera själv hade den kunnat visa
+//     något åtgärden inte svarar — och då vet ingen vilken av dem som har rätt.
+//  2. **Senaste versionen är RADEN, tidigare versioner är ett veck.** Det man
+//     kommer hit för är att öppna det senaste underlaget med ett klick; historien
+//     är svaret på en annan, ovanligare fråga. Därför ligger den i en hopfälld
+//     `<details>` och inte i en andra kolumn: progressiv disclosure är husets
+//     mönster (CSP `script-src 'none'`, alltså noll JavaScript), och en lista där
+//     varje version är en likvärdig rad hade gjort "vilken är senaste?" till en
+//     läsuppgift igen.
+//  3. **Mappen är källsystemets indelning och behålls.** En platt lista hade varit
+//     kortare men ljugit: samma filnamn i två mappar ÄR två underlag, och var en
+//     handling ligger är en del av vad den är. Roten heter "Mappens rot" — inte
+//     ett tomt rubrikled.
+//  4. **Färskhet per källa, aldrig en sidstämpel (FR-35).** `.farskhet`-raden bär
+//     förteckningens lästidpunkt — inte renderingens — med datumet framför när
+//     den inte är i dag. Har förteckningen aldrig lästs säger sidan det, i stället
+//     för att låta en tom mapp se ut som ett svar (lärdom 7).
+//  5. **Talet överst stämmer med sidans egna rubriker.** "N dokument i M mappar"
+//     räknar valvet som EN plats, för det är en plats på sidan: den som misstror
+//     talet kan räkna `<h2>`-rubrikerna och få samma svar.
+//  6. **Ingen ny klass och ingen ny komponent.** Husets `.panel`, `.log`,
+//     `.log-when`, `.log-what`, `.chip`, `.muted` och `.farskhet` bär hela ytan —
+//     en egen "dokumentlista" hade blivit ett andra formspråk i samma hus.
+//     `designparitet.py` räknar klasser; igenkänningen är hela poängen.
+// ---------------------------------------------------------------------------
+
+interface Dokumentunderlag {
+  projekt: { id: string; number: number; name: string };
+  forteckning: Dokumentforteckning;
+}
+
+/**
+ * Förteckningen läst genom SAMMA tjänstefunktion som `las_dokumentforteckning`
+ * (FR-23) — samma mönster som kontrakts- och leveransytan. Vyn har alltså ingen
+ * egen fråga mot databasen.
+ */
+async function dokumentunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Dokumentunderlag> {
+  const projekt = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  return {
+    projekt,
+    forteckning: await lasDokumentforteckning(client, companyId, { project_id: projectId }),
+  };
+}
+
+/** Källans datum, i `sv-SE`. Saknas det står det som saknat — aldrig som i dag. */
+const dokumentdatum = (r: Dokumentrad): Raw =>
+  r.andrad === null
+    ? saknatFalt('Utan datum')
+    : html`${new Date(r.andrad).toLocaleDateString('sv-SE')}`;
+
+/**
+ * En dokumentrad: datumet till vänster, handlingen som länk till höger.
+ *
+ * `target="_blank" rel="noopener"` — handlingen bor i sitt källsystem (ADR-4) och
+ * ska öppnas där utan att lämna ytan man letade från. `noopener` är inte pynt:
+ * utan det får den öppnade sidan en referens tillbaka till vårt fönster.
+ */
+function dokumentrad(r: Dokumentrad, veck: Raw = html``): Raw {
+  return html`<div class="log-row" style="align-items:start">
+    <div class="log-when">${dokumentdatum(r)}</div>
+    ${/* `min-width:0` + `overflow-wrap` är inte pynt: ett filnamn utan mellanslag
+          (och de finns i Drive) spränger annars rutnätets andra kolumn på telefon. */ ''}
+    <div style="min-width:0;overflow-wrap:anywhere"><div class="log-what"><a href="${r.lank}" target="_blank" rel="noopener">${r.namn}</a></div>${veck}</div>
+  </div>`;
+}
+
+/** "2 tidigare versioner" — och "1 tidigare version" när det är en. */
+const tidigareEtikett = (n: number): string =>
+  `${String(n)} tidigare version${n === 1 ? '' : 'er'}`;
+
+/** En familj: senaste versionen som rad, historien som ett veck under den. */
+const familjerad = (f: Dokumentfamilj): Raw =>
+  dokumentrad(f.senaste, f.tidigare.length === 0 ? html`` : html`<details style="margin-top:2px">
+      <summary class="muted" style="font-size:12.5px;cursor:pointer;padding:2px 0">${tidigareEtikett(f.tidigare.length)}</summary>
+      ${f.tidigare.map((r) => dokumentrad(r))}
+    </details>`);
+
+/** En mapp med sina familjer. Roten har ett namn, inte ett tomt rubrikled. */
+function mappavsnitt(rubrik: string, id: string, familjer: readonly Dokumentfamilj[]): Raw {
+  return html`<section aria-labelledby="${id}">
+    ${/* Mappvägen kan vara lång (`01_Kunder/ILT - Education/Fas 2`) — den bryts
+          i stället för att skjuta ut sidan. Typskalan är kanons, aldrig egen. */ ''}
+    <h2 id="${id}" style="margin:22px 0 8px;overflow-wrap:anywhere">${rubrik}</h2>
+    <div class="log">${familjer.map(familjerad)}</div>
+  </section>`;
+}
+
+/**
+ * Talet överst. Valvet räknas som en plats — se beslut 5: räkningen ska stämma
+ * med de rubriker sidan faktiskt ritar.
+ */
+function forteckningsrubrik(f: Dokumentforteckning): string {
+  const platser = f.mappar.length + (f.valv.length > 0 ? 1 : 0);
+  return `${String(f.antal)} dokument i ${String(platser)} ${platser === 1 ? 'mapp' : 'mappar'}`;
+}
+
+function dokumentsida(companyId: string, u: Dokumentunderlag, idag: string): Raw {
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
+  const f = u.forteckning;
+  const aldrigLast = f.last_nar === null && f.antal === 0;
+  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Dokumenten</h1>
+      <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
+        Vilka underlag hör till uppdraget, var ligger de — och vilken är senaste versionen?</p></div>
+      <div class="actions">${
+        aldrigLast ? chip('Inte läst än', 'warn', '○')
+          : f.antal === 0 ? chip('Tom mapp', 'muted', '○')
+            : chip(`${String(f.antal)} dokument`, 'muted')}
+        <a class="btn btn--ghost btn--sm" href="${bas}">← Uppdraget</a></div></div>
+    ${subnav(companyId, u.projekt.id, 'dokumenten')}
+    <section class="panel" aria-labelledby="dok-oversikt">
+      <div class="panel__head"><h2 id="dok-oversikt">${
+        f.antal === 0 ? 'Projektets dokument' : forteckningsrubrik(f)}</h2>
+        ${f.rot === null
+          ? ''
+          : html`<a class="btn btn--ghost btn--sm" href="${f.rot.lank}" target="_blank" rel="noopener">Öppna mappen i Drive</a>`}</div>
+      <div class="panel__body">
+        ${/* Tomhetens grammatik (FR-22): "vi vet inte" och "det finns inget" är
+              två olika besked, och en gemensam nolla hade sagt det senare om det
+              första. */ ''}
+        ${aldrigLast
+          ? tomtIKort('Förteckningen har inte lästs än — Hermes läser projektets mappar varje timme.', html``)
+          : f.antal === 0
+            ? tomtIKort('Mappen är tom i Drive.', f.rot === null
+              ? html``
+              : html`<a href="${f.rot.lank}" target="_blank" rel="noopener">Öppna mappen i Drive</a> för att lägga dit underlagen.`)
+            : html`<p class="muted" style="margin:10px 16px 4px;font-size:13px">Senaste versionen står som rad;
+                äldre versioner av samma underlag ligger hopfällda under den. Länkarna öppnar handlingen i sitt
+                källsystem i en ny flik — appen visar aldrig innehållet, bara var det finns.</p>`}
+        ${f.last_nar === null ? '' : farskhetsrad([`läst ur Drive ${farskhetstid(f.last_nar, idag)}`])}
+      </div>
+    </section>
+    ${f.mappar.map((m, i) => mappavsnitt(m.sokvag === '' ? 'Mappens rot' : m.sokvag, `mapp-${String(i)}`, m.familjer))}
+    ${f.valv.length === 0 ? '' : mappavsnitt('I valvet', 'mapp-valv', f.valv)}`;
+}
+
+viewRouter.get('/c/:companyId/projects/:projectId/dokumenten', pageFor('projects', 'Dokumenten',
+  async (client, companyId, req) => {
+    const projectId = parseApprovalId(req.params.projectId);
+    // Samma form som `.farskhet`-raden jämför mot: datumet står framför tiden
+    // bara när lästidpunkten INTE är i dag (FR-35).
+    const idag = new Date().toLocaleDateString('sv-SE');
+    return dokumentsida(companyId, await dokumentunderlag(client, companyId, projectId), idag);
   }));
 
 // ---------------------------------------------------------------------------
