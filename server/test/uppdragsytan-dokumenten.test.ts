@@ -218,8 +218,9 @@ describe('(a) familjeregeln', () => {
       rad('NVR-001 rapport v3 importform.xlsx', '2026-09-10T10:00:00Z'),
     ]);
     expect(mappar.map((m) => m.sokvag)).toEqual(['', 'Underlag']);
-    // Roten: två familjer, ingen med en tidigare version.
-    expect(mappar[0]!.familjer).toHaveLength(2);
+    // Roten: tre familjer — Protokoll, rapporten och importformen — ingen med en
+    // tidigare version. `-v3-importform-` är sin egen familj (storyn, punkt 4).
+    expect(mappar[0]!.familjer).toHaveLength(3);
     for (const f of mappar[0]!.familjer) expect(f.tidigare).toEqual([]);
     expect(mappar[1]!.familjer).toHaveLength(1);
     expect(mappar[1]!.familjer[0]!.tidigare).toEqual([]);
