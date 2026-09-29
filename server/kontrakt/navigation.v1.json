@@ -2681,6 +2681,33 @@
     },
     {
       "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/projects/:projectId/dokumenten",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/dokumenten",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/leverabel/godkann",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/leverabel/godkann",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/projects/:projectId/leverabel/paborja",
+      "public_pattern": "/app/c/:companyId/projects/:projectId/leverabel/paborja",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
       "method": "POST",
       "router_pattern": "/c/:companyId/projects/:projectId/signaler",
       "public_pattern": "/app/c/:companyId/projects/:projectId/signaler",
