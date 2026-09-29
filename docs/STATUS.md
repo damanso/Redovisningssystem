@@ -38,7 +38,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 - Branch: **`main`** är sedan 2026-07-21 den kanoniska branchen (innehåller
   ombyggnaden + K-serien). Utveckling sker på arbetsbrancher som mergas till main.
 
-## Byggt och verifierat (allt grönt: `npm test` = 1694 tester i 142 sviter, `npm run build` ren)
+## Byggt och verifierat (allt grönt: `npm test` = 1733 tester i 143 sviter, `npm run build` ren)
 
 > Senast körd 2026-09-02: 869 gröna, 1 rött — `fixed-assets.test.ts` föll på
 > `Error: socket hang up`. Omkörning av filen ensam: 10/10 gröna på 2,9 s. Alltså
