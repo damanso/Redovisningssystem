@@ -155,9 +155,21 @@ describe('periodlås', () => {
       .set(auth())
       .send(balancedVoucher({ fiscal_year_id: lockedFyId, voucher_date: '2024-06-01' }));
     expect(ok.status).toBe(201);
+    // FR-38: låset hamnar i godkännandekön — året är öppet tills en människa godkänt.
     const lock = await api.patch(`${base()}/fiscal-years/${lockedFyId}`).set(auth()).send({ locked: true });
-    expect(lock.status).toBe(200);
-    expect(lock.body.fiscal_year.is_locked).toBe(true);
+    expect(lock.status, JSON.stringify(lock.body)).toBe(202);
+    expect(lock.body.status).toBe('pending_approval');
+    expect(lock.body.action).toBe('lock_period');
+    const isLocked = async () =>
+      (await api.get(`${base()}/fiscal-years`).set(auth())).body.fiscal_years
+        .find((f: { id: string }) => f.id === lockedFyId).is_locked;
+    expect(await isLocked()).toBe(false);
+    const approved = await api
+      .post(`/api/companies/${companyId}/approvals/${lock.body.approval.id}/approve`)
+      .set(auth())
+      .send({});
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(await isLocked()).toBe(true);
 
     const blocked = await api
       .post(`${base()}/vouchers`)

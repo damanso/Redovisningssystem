@@ -82,7 +82,8 @@ describe('bokförda bokslutstransaktioner', () => {
   });
 
   it('låst räkenskapsår vägrar fler bokslutstransaktioner', async () => {
-    await api.patch(`${co()}/accounting/fiscal-years/${fiscalYearId}`).set(auth()).send({ locked: true });
+    const lock = await approveAction('lock_period', { fiscal_year_id: fiscalYearId, locked: true });
+    expect(lock.status, JSON.stringify(lock.body)).toBe(200);
     const req = await api.post(`${co()}/actions/book_periodiseringsfond`).set(auth()).send({ fiscal_year_id: fiscalYearId, type: 'avsattning', amount_ore: 1000_00 });
     const done = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
     expect(done.status).toBe(409); // year_locked

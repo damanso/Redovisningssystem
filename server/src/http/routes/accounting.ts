@@ -8,15 +8,12 @@ import {
   listAccounts,
   type AccountType,
 } from '../../services/accounting/accounts.js';
-import {
-  createFiscalYear,
-  listFiscalYears,
-  setFiscalYearLock,
-} from '../../services/accounting/fiscalYears.js';
+import { executeAction } from '../../actions/execute.js';
+import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
 import { getVoucher, postVoucher, reverseVoucher } from '../../services/accounting/vouchers.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
-import { getUserId, requireHuman } from '../middleware/authenticate.js';
+import { getActor, getUserId, requireHuman } from '../middleware/authenticate.js';
 
 const ISO_DATE = IsoDateSchema;
 // Belopp: heltal ören inom säkert intervall (annars 500 via assertSafeOre).
@@ -89,15 +86,21 @@ accountingRouter.post('/fiscal-years', async (req, res) => {
 
 const LockSchema = z.object({ locked: z.boolean() }).strict();
 
+// FR-2/FR-38: periodlåset är sensitive — samma lock_period-action som vyn och
+// MCP, via godkännandekön (Att göra), aldrig ett direktanrop till tjänsten.
 accountingRouter.patch('/fiscal-years/:fiscalYearId', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const fyId = z.string().uuid().parse(req.params.fiscalYearId);
   const input = LockSchema.parse(req.body);
-  const fiscalYear = await withTenantTransaction(userId, companyId, (c) =>
-    setFiscalYearLock(c, companyId, userId, fyId, input.locked),
-  );
-  res.json({ fiscal_year: fiscalYear });
+  const outcome = await executeAction({
+    companyId,
+    userId,
+    actor: getActor(req),
+    actionName: 'lock_period',
+    input: { fiscal_year_id: fyId, locked: input.locked },
+  });
+  res.status(outcome.status === 'pending_approval' ? 202 : 200).json(outcome);
 });
 
 const VoucherLineSchema = z
