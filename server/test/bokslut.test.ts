@@ -1,8 +1,9 @@
 // Fas C2: bokförda bokslutstransaktioner. Periodiseringsfond (8811/2110), årets
 // skatt (8910/2512), överföring av årets resultat (8999/2099), dubbelbokningsspärr
 // och lås. Verifieras via K2-rapporten (balansposter) + huvudbok.
+import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
 
 let user: TestUser;
 let companyId: string;
@@ -128,5 +129,45 @@ describe('ordningsspärr: dispositioner före resultatöverföring (grindfynd)',
     const pf = await api.post(`${c()}/actions/book_periodiseringsfond`).set(a()).send({ fiscal_year_id: fyId, type: 'avsattning', amount_ore: 5000_00 });
     const pfDone = await api.post(`${c()}/approvals/${pf.body.approval.id}/approve`).set(a()).send({});
     expect(pfDone.status).toBe(409); // result_transferred
+  });
+});
+
+// FR-2/FR-38: "Lås bokslut" i bokslutsvyn låser inte året direkt — låset är
+// sensitive och hamnar i godkännandekön (Att göra) som lock_period, samma action
+// som API/MCP. Först när en människa godkänt är året låst.
+describe('vyns bokslutslås går via godkännandekön (FR-38)', () => {
+  let u: TestUser;
+  let cid: string;
+  let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  async function locked(): Promise<boolean> {
+    const res = await api.get(`${c()}/accounting/fiscal-years`).set(a());
+    return res.body.fiscal_years.find((f: { id: string }) => f.id === fyId).is_locked;
+  }
+
+  beforeAll(async () => {
+    u = await registerUser('bokslut-lock-vy');
+    cid = await createCompany(u.token, 'Låskö AB');
+    const fy = await api.post(`${c()}/accounting/fiscal-years`).set(a()).send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    fyId = fy.body.fiscal_year.id;
+  });
+
+  it('knappen skapar ett lock_period-förslag; året låses först vid godkännande', async () => {
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: u.email, password: 'mycket-hemligt-losen-123' });
+    const res = await ua.post(`/app/c/${cid}/annual/lock`).type('form').send({ fy: fyId });
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toBe(`/app/c/${cid}/approvals`);
+    expect(await locked()).toBe(false);
+
+    const ko = (await api.get(`${c()}/approvals?status=pending`).set(a())).body.approvals;
+    const forslag = ko.find((p: { action: string }) => p.action === 'lock_period');
+    expect(forslag, 'förslaget ska ligga i kön').toBeDefined();
+    expect(forslag.input).toEqual({ fiscal_year_id: fyId, locked: true });
+
+    const done = await api.post(`${c()}/approvals/${forslag.id}/approve`).set(a()).send({});
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(await locked()).toBe(true);
   });
 });

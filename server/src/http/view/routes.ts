@@ -90,7 +90,7 @@ import { generateKu10Xml } from '../../services/ku10.js';
 import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
 import { k10Prefill } from '../../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
-import { createFiscalYear, setFiscalYearLock } from '../../services/accounting/fiscalYears.js';
+import { createFiscalYear } from '../../services/accounting/fiscalYears.js';
 import { destination, destinationsAdress, destinationsFraga } from './kontrakt.js';
 
 export const viewRouter = Router();
@@ -1392,13 +1392,13 @@ viewRouter.post('/c/:companyId/annual/result', page(async (req, res) => {
     withTenantTransaction(userId, companyId, (client) => bookYearResult(client, companyId, userId, fy)));
 }));
 
+// FR-38: periodlåset är sensitive — samma lock_period-action som API/MCP, via
+// godkännandekön (Att göra), aldrig ett direktanrop till tjänsten.
 viewRouter.post('/c/:companyId/annual/lock', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  await bokslutRedirect(companyId, fy, res, () =>
-    withTenantTransaction(userId, companyId, (client) => setFiscalYearLock(client, companyId, userId, fy, true)));
+  await runViewAction(req, res, companyId, 'lock_period', { fiscal_year_id: fy, locked: true }, `/app/c/${companyId}/annual?fy=${fy}`);
 }));
 
 viewRouter.get('/c/:companyId/annual/export.csv', page(async (req, res) => {

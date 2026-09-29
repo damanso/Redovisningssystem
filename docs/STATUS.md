@@ -153,6 +153,18 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-2 i PRD redovisningen, fryst enl. beslut #194 — astras fynd
+  DELVIS):** Bokslutsvyns "Lås bokslut" (`POST /app/c/:id/annual/lock`) anropade
+  `setFiscalYearLock` direkt och gick förbi godkännandekön. Nu går den via
+  `runViewAction` → `lock_period` (sensitive), så förslaget hamnar i Att göra
+  och året låses först när en människa godkänner (FR-38). Importen av
+  `setFiscalYearLock` är borttagen ur vyroutern. Knappens markup är oförändrad.
+  Test: `bokslut.test.ts`, describe "vyns bokslutslås går via
+  godkännandekön (FR-38)". Ingen migration, inget kontrakt ändrat. Sessionen
+  körde inga kommandon, så tester och typecheck körs av skriptet efteråt. Kvar
+  utanför fyndet: REST-`PATCH /accounting/fiscal-years/:id` (requireHuman)
+  låser också direkt, men astra pekade inte på den vägen.
+
 - **2026-09-28 (överlämning #302 / beslut #189 — S10.10: sidan Dokumenten på
   uppdragsytan, FR-43):** Davids ord 28/9: senaste versionen av varje underlag
   ska vara direkt tillgänglig ur projektytan, och all dokumentation som inte är
