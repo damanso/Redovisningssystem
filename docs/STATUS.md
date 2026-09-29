@@ -153,6 +153,16 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-3, beslut #194 — verksamhetsbeskrivningen auditloggas):**
+  astras fynd: vyns `POST /app/c/:companyId/annual/description` gjorde en direkt
+  `UPDATE companies` utan auditrad. Rutten kör nu `executeAction`
+  (`set_business_description`, actor `human`) → `action.executed` i samma
+  transaktion. Actionens schema tar `null` (tömmer beskrivningen) så vyns
+  tomma fält behåller sitt beteende; vyn rensar även DEL (0x7f) som `safeText`
+  avvisar. Ingen migration, ingen markup ändrad. Test i
+  `annual-management.test.ts` (auditrad vid spara och vid tömning). Kommandon
+  kördes inte i sessionen — typecheck och tester körs av byggskriptet.
+
 - **2026-09-29 (FR-2 steg 2, beslut #194 — REST-API:ts lås och återföring via
   godkännandekön, FR-38):** astras återstående fynd efter steg 1: `PATCH
   /api/companies/:id/accounting/fiscal-years/:fyId` anropade `setFiscalYearLock`

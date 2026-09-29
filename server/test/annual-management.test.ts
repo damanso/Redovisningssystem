@@ -2,7 +2,7 @@
 // förändring eget kapital, resultatdisposition), anläggningsnot, fastställelseintyg.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -72,5 +72,34 @@ describe('förvaltningsberättelse', () => {
     expect(res.text).toContain('Resultatdisposition');
     expect(res.text).toContain('Fastställelseintyg');
     expect(res.text).toContain('IT-konsult'); // sparad verksamhetstext
+  });
+
+  it('FR-3: vyns ändring av verksamhetsbeskrivningen går via action-lagret och auditloggas', async () => {
+    const auditrader = () => withAdmin(async (admin) => (await admin.query<{ user_id: string; details: Record<string, unknown> }>(
+      `SELECT user_id, details FROM audit_log
+        WHERE company_id = $1 AND action = 'action.executed' AND entity_id = 'set_business_description'`,
+      [companyId])).rows);
+    const fore = (await auditrader()).length;
+
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    const sparad = await ua.post(`/app/c/${companyId}/annual/description`).type('form')
+      .send({ fy: fiscalYearId, business_description: 'Bolaget bedriver redovisningskonsultation.' });
+    expect(sparad.status).toBe(302);
+    const efter = await auditrader();
+    expect(efter.length).toBe(fore + 1);
+    expect(efter.at(-1)).toMatchObject({ user_id: user.userId, details: { actor: 'human', sensitivity: 'write' } });
+    const lagrad = await withAdmin(async (admin) => (await admin.query<{ business_description: string | null }>(
+      'SELECT business_description FROM companies WHERE id = $1', [companyId])).rows[0]!.business_description);
+    expect(lagrad).toBe('Bolaget bedriver redovisningskonsultation.');
+
+    // Tomt fält tömmer beskrivningen — också det en genomförd, loggad skrivning.
+    const tomd = await ua.post(`/app/c/${companyId}/annual/description`).type('form')
+      .send({ fy: fiscalYearId, business_description: '' });
+    expect(tomd.status).toBe(302);
+    expect((await auditrader()).length).toBe(fore + 2);
+    const tom = await withAdmin(async (admin) => (await admin.query<{ business_description: string | null }>(
+      'SELECT business_description FROM companies WHERE id = $1', [companyId])).rows[0]!.business_description);
+    expect(tom).toBeNull();
   });
 });

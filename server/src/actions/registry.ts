@@ -988,8 +988,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'set_business_description',
     title: 'Sätt verksamhetsbeskrivning (förvaltningsberättelse)',
     sensitivity: 'write',
-    inputSchema: z.object({ business_description: safeText(4000) }).strict(),
-    handler: async (ctx, i: { business_description: string }) => {
+    // null tömmer beskrivningen (vyns formulär med tomt fält går hit, FR-3).
+    inputSchema: z.object({ business_description: safeText(4000).nullable() }).strict(),
+    handler: async (ctx, i: { business_description: string | null }) => {
       await ctx.client.query('UPDATE companies SET business_description = $2 WHERE id = $1', [ctx.companyId, i.business_description]);
       return { business_description: i.business_description };
     },

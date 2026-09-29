@@ -1356,10 +1356,12 @@ viewRouter.post('/c/:companyId/annual/description', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  // Rensa NUL/C0-styrtecken (utom tab/CR/LF) som Postgres text inte kan lagra.
+  // Rensa NUL/C0-styrtecken (utom tab/CR/LF) och DEL som safeText avvisar.
   const desc = z.string().max(4000).parse((req.body as { business_description?: unknown }).business_description ?? '')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
-  await withTenantTransaction(userId, companyId, (client) => client.query('UPDATE companies SET business_description = $2 WHERE id = $1', [companyId, desc || null]));
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+  // Via executeAction (actor human) så att ändringen auditloggas som alla
+  // andra genomförda åtgärder (FR-3, lärdom 5) — ingen direkt UPDATE här.
+  await executeAction({ companyId, userId, actor: 'human', actionName: 'set_business_description', input: { business_description: desc || null } });
   res.redirect(`/app/c/${companyId}/annual?fy=${fy}`);
 }));
 
