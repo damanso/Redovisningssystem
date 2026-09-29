@@ -313,6 +313,14 @@ export async function hamtaBilagelank(
   };
 }
 
+/**
+ * Verifikatvyns läsväg (T4): samma signerade GET och samma korta TTL som
+ * get_receipt_file_url. Anroparen har redan läst raden under RLS.
+ */
+export function signeradBilageLasning(companyId: string, userId: string, fileId: string): { url: string; expires_at: string } {
+  return signeraBilagelank({ op: 'get', fileId, companyId, userId, ttlSekunder: NEDLADDNING_TTL_SEK });
+}
+
 /** Nedladdningsvägen bakom den signerade GET-länken. Egen transaktion. */
 export async function hamtaBilageInnehall(
   fileId: string, innehall: SignaturInnehall,

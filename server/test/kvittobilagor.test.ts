@@ -337,36 +337,75 @@ describe('verifikatvyn visar underlaget (T4)', () => {
 
     const sida = await agent.get(`/app/c/${companyId}/ledger`);
     expect(sida.status).toBe(200);
-    const bildHref = `/app/c/${companyId}/receipt-files/${bild.fileId}`;
-    const pdfHref = `/app/c/${companyId}/receipt-files/${dokument.fileId}`;
-    expect(sida.text).toContain(`<img src="${bildHref}"`);
-    expect(sida.text).toContain(`href="${bildHref}"`);
-    expect(sida.text).toContain(`href="${pdfHref}"`);
     expect(sida.text).toContain('nota.jpg');
     expect(sida.text).toContain('faktura.pdf');
     expect(sida.text).toContain('class="underlag__typ" aria-hidden="true">PDF');
+
+    // Vyns länkar är den signerade GET-vägen (samma som get_receipt_file_url),
+    // relativa så att CSP:ns 'self' gäller — ingen cookie-väg till bytesen.
+    const lankFor = (fileId: string): string => {
+      const traff = sida.text.match(new RegExp(`href="(/api/receipt-files/${fileId}/content\\?[^"]+)"`));
+      expect(traff, `signerad länk för ${fileId} saknas`).not.toBeNull();
+      return traff![1]!.replaceAll('&amp;', '&');
+    };
+    const bildLank = lankFor(bild.fileId);
+    const pdfLank = lankFor(dokument.fileId);
+    expect(sida.text).toContain(`<img src="${bildLank.replaceAll('&', '&amp;')}"`);
+    for (const l of [bildLank, pdfLank]) {
+      const q = new URL(l, 'https://redovisning.test').searchParams;
+      expect(q.get('cid')).toBe(companyId);
+      expect(q.get('uid')).toBe(user.userId);
+      // Kort giltighet: högst fem minuter framåt.
+      expect(Number(q.get('exp'))).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
+      expect(Number(q.get('exp'))).toBeGreaterThan(Date.now());
+    }
+    expect(sida.text).not.toContain(`/app/c/${companyId}/receipt-files/`);
 
     const binar = (r: supertest.Test) => r.buffer().parse((res, cb) => {
       const delar: Buffer[] = [];
       res.on('data', (d: Buffer) => delar.push(d));
       res.on('end', () => cb(null, Buffer.concat(delar)));
     });
-    for (const b of [bild, dokument]) {
-      const hamtad = await binar(agent.get(`/app/c/${companyId}/receipt-files/${b.fileId}`));
+    for (const [b, l] of [[bild, bildLank], [dokument, pdfLank]] as const) {
+      const hamtad = await binar(agent.get(l));
       expect(hamtad.status).toBe(200);
       expect(createHash('sha256').update(hamtad.body as Buffer).digest('hex')).toBe(b.sha256);
     }
 
-    // Tenant: en inloggad användare i ett annat bolag når varken filen eller sidan.
+    // Den gamla cookie-vägen till bytesen finns inte.
+    const cookievag = await binar(agent.get(`/app/c/${companyId}/receipt-files/${bild.fileId}`));
+    expect(cookievag.status).not.toBe(200);
+    expect((cookievag.body as Buffer).equals(bild.bytes)).toBe(false);
+
+    // Utgången och manipulerad signatur avvisas även för vyns länkar.
+    const utgangen = new URL(signeraBilagelank({
+      op: 'get', fileId: bild.fileId, companyId, userId: user.userId, ttlSekunder: -60,
+    }).url);
+    const svarUtgangen = await agent.get(`${utgangen.pathname}${utgangen.search}`);
+    expect(svarUtgangen.status).toBe(403);
+    expect(svarUtgangen.body.error).toBe('signature_expired');
+    const flyttad = new URL(bildLank, 'https://redovisning.test');
+    flyttad.searchParams.set('exp', String(Date.now() + 86_400_000));
+    const svarFlyttad = await agent.get(`${flyttad.pathname}${flyttad.search}`);
+    expect(svarFlyttad.status).toBe(403);
+    expect(svarFlyttad.body.error).toBe('invalid_signature');
+    const bytt = new URL(bildLank, 'https://redovisning.test');
+    bytt.searchParams.set('cid', annatBolag);
+    const svarBytt = await agent.get(`${bytt.pathname}${bytt.search}`);
+    expect(svarBytt.status).toBe(403);
+    expect(svarBytt.body.error).toBe('invalid_signature');
+
+    // Tenant: en inloggad användare i ett annat bolag ser inte sidan och får
+    // inga länkar till bolag A:s bilagor.
     const annan = supertest.agent(app);
     const annanLogin = await annan.post('/app/login').type('form')
       .send({ email: annanAnvandare.email, password: PASSWORD });
     expect([302, 303]).toContain(annanLogin.status);
-    const nekad = await binar(annan.get(`/app/c/${companyId}/receipt-files/${bild.fileId}`));
-    expect([403, 404]).toContain(nekad.status);
-    expect((nekad.body as Buffer).equals(bild.bytes)).toBe(false);
-    const viaEgetBolag = await binar(annan.get(`/app/c/${annatBolag}/receipt-files/${bild.fileId}`));
-    expect(viaEgetBolag.status).toBe(404);
+    const annanSida = await annan.get(`/app/c/${companyId}/ledger`);
+    expect(annanSida.status).not.toBe(200);
+    expect(annanSida.text).not.toContain(bild.fileId);
+    const egenSida = await annan.get(`/app/c/${annatBolag}/ledger`);
+    expect(egenSida.text).not.toContain(bild.fileId);
   });
 });
 
