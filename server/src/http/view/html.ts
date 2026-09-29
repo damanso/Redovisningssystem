@@ -954,6 +954,31 @@ details.kontering[open] > summary::before { transform: rotate(90deg); }
 details.kontering[open] > summary { border-bottom: 1px solid var(--line); }
 details.kontering table { min-width: 0; }
 details.kontering th, details.kontering td { padding: 8px 16px; }
+/* Verifikatets underlag (kvittobilagor). Remsan ligger mellan huvudet och
+   konteringen: underlaget är det verifikatet vilar på. Typrutan för PDF/HEIC
+   bär verifikatnumrets mono-stämpel så att den läses som ett dokument, inte
+   som en ikon; en ersatt bilaga står kvar, genomstruken. */
+.underlag { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 0 16px 13px; }
+.underlag__rubrik { font-size: 12.5px; font-weight: 550; color: var(--ink-3); }
+.underlag__lista { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.underlag__fil {
+  display: flex; align-items: center; gap: 10px; max-width: 280px; min-height: var(--traff);
+  padding: 4px 12px 4px 4px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--ink-2); font-size: 12.5px; font-weight: 550; text-decoration: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.underlag__fil:hover { border-color: var(--accent); background: var(--accent-weak); color: var(--accent-ink); }
+.underlag__fil img, .underlag__typ { flex: none; width: 40px; height: 40px; border-radius: 6px; }
+.underlag__fil img { object-fit: cover; background: var(--surface); outline: 1px solid var(--line); outline-offset: -1px; }
+.underlag__typ {
+  display: grid; place-items: center; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.04em; color: var(--accent-ink); background: var(--accent-weak);
+  border: 1px solid color-mix(in oklch, var(--accent) 22%, transparent);
+}
+.underlag__namn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.underlag__fil--ersatt .underlag__namn { text-decoration: line-through; color: var(--ink-3); }
+.underlag__fil--ersatt img, .underlag__fil--ersatt .underlag__typ { opacity: 0.55; }
+.underlag__ersatt { flex: none; font-size: 11px; color: var(--ink-3); }
 
 /* Rapporter */
 .statement { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }

@@ -8,8 +8,9 @@
 import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { publikApiBas, signeraBilagelank } from '../src/lib/bilagesignatur.js';
 
 let user: TestUser;
@@ -255,6 +256,117 @@ describe('livscykel och oföränderlighet', () => {
     )).rowCount);
     expect(kvar).toBe(0);
     await expect(access(full)).rejects.toThrow();
+  });
+});
+
+describe('bokfört underlag efter baklänkning och unlink_voucher', () => {
+  it('underlaget förblir oföränderligt och oraderbart när verifikatkopplingen tas bort', async () => {
+    const receiptId = await skapaKvitto('Baklänkat kvitto');
+    const bilaga = await bifoga(receiptId, jpeg(10_000), 'underlag.jpg');
+
+    // Importverifikatet finns redan i huvudboken; kvittot baklänkas till det.
+    const post = await api.post(`${co()}/actions/post_voucher`).set(auth()).send({
+      fiscal_year_id: fiscalYearId, voucher_date: '2026-03-02', description: '[SIE I7] Representation',
+      lines: [
+        { account_number: 5410, debit_ore: 80_000 },
+        { account_number: 2640, debit_ore: 20_000 },
+        { account_number: 1930, credit_ore: 100_000 },
+      ],
+    });
+    expect(post.status, JSON.stringify(post.body)).toBe(202);
+    const godkand = await api.post(`${co()}/approvals/${post.body.approval.id}/approve`).set(auth()).send({});
+    expect(godkand.status, JSON.stringify(godkand.body)).toBe(200);
+    const lank = await api.post(`${co()}/actions/link_voucher`).set(auth())
+      .send({ entity_type: 'receipt', entity_id: receiptId, voucher_id: godkand.body.result.id });
+    expect(lank.status, JSON.stringify(lank.body)).toBe(200);
+    const bort = await api.post(`${co()}/actions/unlink_voucher`).set(auth())
+      .send({ entity_type: 'receipt', entity_id: receiptId });
+    expect(bort.status, JSON.stringify(bort.body)).toBe(200);
+
+    // Kvittot ser obokat ut igen — men underlaget styrker ett verifikat som finns kvar.
+    const radera = await api.post(`${co()}/actions/delete_draft_receipt`).set(auth()).send({ receipt_id: receiptId });
+    expect(radera.status, JSON.stringify(radera.body)).toBe(409);
+    expect(radera.body.error).toBe('not_deletable');
+
+    const nyckel = await withAdmin(async (admin) => (await admin.query<{ storage_key: string }>(
+      'SELECT storage_key FROM receipt_files WHERE id = $1', [bilaga.fileId],
+    )).rows[0]?.storage_key);
+    expect(nyckel).toBeDefined();
+    await expect(access(path.resolve(process.env.RECEIPT_FILES_DIR!, nyckel!))).resolves.toBeUndefined();
+
+    // Och databasens egna spärrar håller, inte bara tjänsten.
+    const somApp = <T>(fn: (admin: Parameters<Parameters<typeof withAdmin>[0]>[0]) => Promise<T>) =>
+      withAdmin(async (admin) => {
+        await admin.query('BEGIN');
+        await admin.query('SET LOCAL ROLE app');
+        await admin.query("SELECT set_config('app.user_id', $1, true)", [user.userId]);
+        try {
+          return await fn(admin);
+        } finally {
+          await admin.query('ROLLBACK');
+        }
+      });
+    const raderade = await somApp(async (admin) =>
+      (await admin.query('DELETE FROM receipt_files WHERE id = $1', [bilaga.fileId])).rowCount);
+    expect(raderade).toBe(0);
+    const andring = await somApp(async (admin) => {
+      try {
+        await admin.query("UPDATE receipt_files SET sha256 = repeat('a', 64) WHERE id = $1", [bilaga.fileId]);
+        return null;
+      } catch (err) {
+        return (err as { message: string }).message;
+      }
+    });
+    expect(andring).toContain('oföränderlig');
+  });
+});
+
+describe('verifikatvyn visar underlaget (T4)', () => {
+  const PASSWORD = 'mycket-hemligt-losen-123'; // samma som registerUser använder
+
+  it('bokfört kvitto: miniatyr och länk per bilaga, nedladdning matchar sha256, annat bolag nekas', async () => {
+    const receiptId = await skapaKvitto('Kvitto i verifikatvyn');
+    const bild = await bifoga(receiptId, jpeg(14_000), 'nota.jpg');
+    await bokfor(receiptId);
+    const pdf = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(3_000, 0x20), Buffer.from('\n%%EOF')]);
+    const dokument = await bifoga(receiptId, pdf, 'faktura.pdf', 'application/pdf');
+
+    const agent = supertest.agent(app);
+    const login = await agent.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    expect([302, 303]).toContain(login.status);
+
+    const sida = await agent.get(`/app/c/${companyId}/ledger`);
+    expect(sida.status).toBe(200);
+    const bildHref = `/app/c/${companyId}/receipt-files/${bild.fileId}`;
+    const pdfHref = `/app/c/${companyId}/receipt-files/${dokument.fileId}`;
+    expect(sida.text).toContain(`<img src="${bildHref}"`);
+    expect(sida.text).toContain(`href="${bildHref}"`);
+    expect(sida.text).toContain(`href="${pdfHref}"`);
+    expect(sida.text).toContain('nota.jpg');
+    expect(sida.text).toContain('faktura.pdf');
+    expect(sida.text).toContain('class="underlag__typ" aria-hidden="true">PDF');
+
+    const binar = (r: supertest.Test) => r.buffer().parse((res, cb) => {
+      const delar: Buffer[] = [];
+      res.on('data', (d: Buffer) => delar.push(d));
+      res.on('end', () => cb(null, Buffer.concat(delar)));
+    });
+    for (const b of [bild, dokument]) {
+      const hamtad = await binar(agent.get(`/app/c/${companyId}/receipt-files/${b.fileId}`));
+      expect(hamtad.status).toBe(200);
+      expect(createHash('sha256').update(hamtad.body as Buffer).digest('hex')).toBe(b.sha256);
+    }
+
+    // Tenant: en inloggad användare i ett annat bolag når varken filen eller sidan.
+    const annan = supertest.agent(app);
+    const annanLogin = await annan.post('/app/login').type('form')
+      .send({ email: annanAnvandare.email, password: PASSWORD });
+    expect([302, 303]).toContain(annanLogin.status);
+    const nekad = await binar(annan.get(`/app/c/${companyId}/receipt-files/${bild.fileId}`));
+    expect([403, 404]).toContain(nekad.status);
+    expect((nekad.body as Buffer).equals(bild.bytes)).toBe(false);
+    const viaEgetBolag = await binar(annan.get(`/app/c/${annatBolag}/receipt-files/${bild.fileId}`));
+    expect(viaEgetBolag.status).toBe(404);
   });
 });
 

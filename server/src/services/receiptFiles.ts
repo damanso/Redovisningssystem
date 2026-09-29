@@ -364,9 +364,36 @@ export async function bilagorForKvitton(
 }
 
 /**
+ * Verifikatvyns underlag (T4): bilagorna per verifikat, via kvittona som pekar
+ * på verifikaten. Samma urval och ordning som bilagorForKvitton.
+ */
+export async function bilagorForVerifikat(
+  client: PoolClient, companyId: string, voucherIds: string[],
+): Promise<Map<string, Record<string, unknown>[]>> {
+  const karta = new Map<string, Record<string, unknown>[]>();
+  if (voucherIds.length === 0) return karta;
+  const kvitton = await client.query<{ id: string; voucher_id: string }>(
+    'SELECT id, voucher_id FROM receipts WHERE company_id = $1 AND voucher_id = ANY($2::uuid[])',
+    [companyId, voucherIds],
+  );
+  const perKvitto = await bilagorForKvitton(client, companyId, kvitton.rows.map((k) => k.id));
+  for (const k of kvitton.rows) {
+    const bilagor = perKvitto.get(k.id);
+    if (!bilagor) continue;
+    karta.set(k.voucher_id, [...(karta.get(k.voucher_id) ?? []), ...bilagor]);
+  }
+  return karta;
+}
+
+/**
  * Bilagerader + objekt för ett OBOKAT kvittoutkast som raderas. Bokförda
  * kvitton når aldrig hit (delete_draft_receipt avvisar dem), och DELETE-policyn
- * i 0075 är den hårda garantin.
+ * i 0075/0077 är den hårda garantin.
+ *
+ * Ett kvitto som baklänkats och sedan fått unlink_voucher ser obokat ut, men
+ * dess aktiva bilagor är underlag till ett verifikat som finns kvar — policyn
+ * släpper då inte igenom dem (0077). Blir något kvar ges ett rent 409 i stället
+ * för FK-felet när kvittoraden sedan raderas.
  */
 export async function raderaBilagorForUtkast(
   client: PoolClient, companyId: string, receiptId: string,
@@ -375,6 +402,16 @@ export async function raderaBilagorForUtkast(
     'DELETE FROM receipt_files WHERE company_id = $1 AND receipt_id = $2 RETURNING id, storage_key',
     [companyId, receiptId],
   );
+  const kvar = await client.query(
+    'SELECT 1 FROM receipt_files WHERE company_id = $1 AND receipt_id = $2 LIMIT 1',
+    [companyId, receiptId],
+  );
+  if (kvar.rows[0]) {
+    throw new ConflictError(
+      'not_deletable',
+      'kvittot har bokfört underlag (det har varit kopplat till ett verifikat) — bilagorna raderas aldrig; rättelse sker via superseded_by',
+    );
+  }
   return borttagna.rows;
 }
 

@@ -19,6 +19,7 @@ import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
+import { bilagorForVerifikat, hamtaBilageInnehall } from '../../services/receiptFiles.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
@@ -873,11 +874,34 @@ viewRouter.get(
   }),
 );
 
+// Verifikatets underlag (kvittobilagor, FR-12 T4). Bilder webbläsaren kan visa
+// får en miniatyr, PDF och HEIC en typruta; hela rutan är länken till filen.
+// En ersatt bilaga ligger kvar synlig och utpekad, aldrig dold.
+function underlagsremsa(companyId: string, bilagor: Record<string, unknown>[]): Raw {
+  if (bilagor.length === 0) return html``;
+  return html`<div class="underlag">
+    <span class="underlag__rubrik" id="underlag-${String(bilagor[0]!.file_id)}">Underlag</span>
+    <ul class="underlag__lista" aria-labelledby="underlag-${String(bilagor[0]!.file_id)}">${bilagor.map((b) => {
+      const href = `/app/c/${companyId}/receipt-files/${String(b.file_id)}`;
+      const mime = String(b.mime_type);
+      const ersatt = b.superseded_by != null;
+      const miniatyr = mime === 'image/jpeg' || mime === 'image/png'
+        ? html`<img src="${href}" alt="" width="40" height="40" loading="lazy" decoding="async">`
+        : html`<span class="underlag__typ" aria-hidden="true">${mime === 'application/pdf' ? 'PDF' : 'HEIC'}</span>`;
+      return html`<li><a class="underlag__fil${ersatt ? ' underlag__fil--ersatt' : ''}" href="${href}">
+        ${miniatyr}<span class="underlag__namn">${String(b.filename)}</span>${
+          ersatt ? html`<span class="underlag__ersatt">Ersatt</span>` : ''
+        }</a></li>`;
+    })}</ul>
+  </div>`;
+}
+
 // Huvudbok / verifikationslista
 viewRouter.get(
   '/c/:companyId/ledger',
   pageFor('ledger', 'Huvudbok', async (client, companyId) => {
     const vouchers = await generalLedger(client, companyId, { limit: 100 });
+    const underlag = await bilagorForVerifikat(client, companyId, vouchers.map((v) => v.id));
     return html`<div class="page-head"><div>${eyebrow('Huvudbok')}<h1>Huvudbok</h1>
         <p class="lede">Varje affärshändelse blir ett verifikat. Öppna “Visa konteringen” för debet och kredit.</p></div></div>
       ${
@@ -894,6 +918,7 @@ viewRouter.get(
                   <span class="voucher__desc">${v.description}</span>
                   <span style="margin-left:auto">${amount(total)}</span>
                 </div>
+                ${underlagsremsa(companyId, underlag.get(v.id) ?? [])}
                 <details class="kontering">
                   <summary>Visa konteringen · ${v.lines.length} rader</summary>
                   <table><thead><tr><th>Konto</th><th>Text</th><th class="num">Debet</th><th class="num">Kredit</th></tr></thead><tbody>
@@ -9334,6 +9359,25 @@ viewRouter.get(
     res.sendFile(resolveStoredPath(companyId, file.stored_name), (err) => {
       if (err && !res.headersSent) res.status(404).end();
     });
+  }),
+);
+
+// Kvittobilagornas bytes för vyn (FR-12 T4): cookie-auth som dokumenthämtningen
+// ovan, samma tjänsteläsning som den signerade GET-vägen (tenant prövas i
+// hamtaBilageInnehall). Ingen signerad länk här: en sida som står öppen längre
+// än länkens fem minuter hade annars fått döda miniatyrer.
+viewRouter.get(
+  '/c/:companyId/receipt-files/:fileId',
+  page(async (req, res) => {
+    const userId = getUserId(req);
+    const companyId = parseCompanyId(req.params.companyId);
+    const parsedFile = UuidSchema.safeParse(req.params.fileId);
+    if (!parsedFile.success) throw new NotFoundError('receipt_file');
+    const bilaga = await hamtaBilageInnehall(parsedFile.data, { companyId, userId });
+    res.attachment(bilaga.filename);
+    res.type(bilaga.mimeType);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(bilaga.bytes);
   }),
 );
 

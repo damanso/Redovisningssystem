@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-12, beslut #194 — kvittobilagornas T4 och bokfört underlag):**
+  astras två fynd. (1) Verifikatvyn visade inga `receipt_files`: huvudboken
+  (`/app/c/:id/ledger`) hämtar nu bilagorna per verifikat
+  (`bilagorForVerifikat` i `services/receiptFiles.ts`, via kvittonas
+  `voucher_id`) och visar en underlagsremsa mellan verifikathuvudet och
+  konteringen: miniatyr för JPEG/PNG, typruta för PDF/HEIC, ersatt bilaga
+  genomstruken men kvar. Länken går till den nya cookie-vägen
+  `GET /app/c/:id/receipt-files/:fileId` (samma mönster som
+  `documents/:id/download`, samma tjänsteläsning `hamtaBilageInnehall` som den
+  signerade GET:en). (2) Raderingsskyddet byggde på aktuellt `voucher_id`, så
+  `unlink_voucher` gjorde underlaget skriv- och raderbart. Migration 0077:
+  `receipt_har_bokfort_underlag()` = har verifikat ELLER har baklänkats
+  (`receipt.voucher_linked` i auditloggen); triggern och DELETE-policyn från
+  0075 använder den. `delete_draft_receipt` ger då 409 `not_deletable` i
+  stället för FK-fel. Två nya prov i `kvittobilagor.test.ts`. Inget
+  API-kontrakt ändrat. `impeccable`-skillen gick inte att ladda (verktygsfel);
+  stilen följer husets tokens. Kommandon kördes inte i sessionen —
+  typecheck och tester körs av byggskriptet.
+
 - **2026-09-29 (FR-6, beslut #194 — fakturaräknarens flytt serialiserad):**
   astras fynd: `setInvoiceNumberSeries` läste räknaren utan lås, så två
   godkännanden kunde läsa samma gamla värde och en lägre flytt skriva över en
