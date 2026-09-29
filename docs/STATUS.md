@@ -153,6 +153,18 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-2 ur den frysta PRD:n, beslut #194 — bokslutsvyns lås via
+  godkännandekön, FR-38):** astras kodgranskning gav FR-2 DELVIS: `POST
+  /app/c/:companyId/annual/lock` anropade `setFiscalYearLock` direkt och gick
+  förbi Att göra. Rutten kör nu `runViewAction(... 'lock_period', { fiscal_year_id,
+  locked: true })` — samma sensitive-action som REST/MCP, köas och låser först
+  när en människa godkänt; användaren skickas till Att göra. Oanvänd import av
+  `setFiscalYearLock` borttagen ur vyroutern. Ingen migration, inget nytt
+  mönster, ingen markup ändrad (knappen "Lås bokslut" står kvar). Test:
+  `k2-annual.test.ts` — vy-POST ger redirect till approvals, året är olåst,
+  pending `lock_period` med rätt input finns, godkännande låser. Ej körd i
+  sessionen (skriptet kör typecheck och tester efteråt).
+
 - **2026-09-28 (överlämning #302 / beslut #189 — S10.10: sidan Dokumenten på
   uppdragsytan, FR-43):** Davids ord 28/9: senaste versionen av varje underlag
   ska vara direkt tillgänglig ur projektytan, och all dokumentation som inte är
