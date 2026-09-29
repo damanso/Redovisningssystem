@@ -14,7 +14,7 @@ import { app, api, createCompany, createFiscalYear, pdfText, registerUser, withA
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
 import { createInvoice } from '../src/services/invoices.js';
-import { setInvoiceNumberSeries } from '../src/services/invoiceNumbering.js';
+import { setExternalInvoiceNumbers, setInvoiceNumberSeries } from '../src/services/invoiceNumbering.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -359,5 +359,49 @@ describe('räknarflytten är serialiserad (samtidiga godkännanden och fakturask
     expect(fel!.code).toBe('series_cannot_move_backwards');
     expect(await nastaNummer()).toBe(start + 1);
     expect((await newInvoice()).number).toBe(start + 1);
+  });
+
+  it('kundnummertilldelning kan inte skriva över en högre flytt som godkändes samtidigt', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setInvoiceNumberSeries(a, companyId, user.userId, start + 20),
+      // Utan låset läser tilldelningen det gamla värdet och sätter räknaren till
+      // start + 6 — under flytten ovan.
+      (b) => setExternalInvoiceNumbers(b, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+    );
+    expect(fel, JSON.stringify(fel)).toBeNull();
+    expect(await nastaNummer(), 'kundnummertilldelningen backade räknaren').toBe(start + 20);
+    expect((await newInvoice()).number).toBe(start + 20);
+  });
+
+  it('en flytt kan inte backa förbi ett kundnummer som tilldelades samtidigt', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setExternalInvoiceNumbers(a, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+      (b) => setInvoiceNumberSeries(b, companyId, user.userId, start + 3),
+    );
+    expect(fel, 'flytten backade räknaren under kundnumret').toBeTruthy();
+    expect(fel!.status).toBe(409);
+    expect(fel!.code).toBe('series_cannot_move_backwards');
+    expect(await nastaNummer()).toBe(start + 6);
+    expect((await newInvoice()).number).toBe(start + 6);
+  });
+
+  it('en faktura som skapas samtidigt som ett kundnummer tilldelas får numret efter det', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setExternalInvoiceNumbers(a, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+      (b) => createInvoice(b, companyId, user.userId, {
+        customer_id: customerId, invoice_date: '2026-07-31', due_date: '2026-08-30',
+        lines: [{ description: 'Konsulttid', quantity: 1, unit: 'h', unit_price_ore: 110_000, vat_rate: 25 }],
+      }),
+    );
+    expect(fel, JSON.stringify(fel)).toBeNull();
+    // Den samtidiga fakturan fick start + 6; räknaren står därefter.
+    expect(await nastaNummer()).toBe(start + 7);
+    expect((await newInvoice()).number).toBe(start + 7);
   });
 });
