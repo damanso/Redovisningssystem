@@ -21,18 +21,43 @@ interface SeriesState {
   max_effective: number | null;
 }
 
-async function readSeriesState(client: PoolClient, companyId: string): Promise<SeriesState> {
-  const seq = await client.query<{ next_value: number }>(
-    'SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = $2',
+/**
+ * Låser räknarraden (FOR UPDATE) och returnerar dess värde. Raden skapas först
+ * om den saknas — FOR UPDATE på en rad som inte finns låser ingenting.
+ *
+ * Samma radlås som `nextDocumentNumber` tar när en faktura skapas, så en flytt
+ * serialiseras både mot andra flyttar och mot fakturaskapande: utan låset kan
+ * två godkännanden läsa samma gamla värde och en lägre flytt skriva över en
+ * högre, eller en flytt missa numret en pågående faktura just fått.
+ */
+async function lockSequence(client: PoolClient, companyId: string): Promise<number> {
+  await client.query(
+    `INSERT INTO number_sequences (company_id, kind, next_value) VALUES ($1, $2, 1)
+     ON CONFLICT (company_id, kind) DO NOTHING`,
     [companyId, INVOICE_KIND],
   );
+  const seq = await client.query<{ next_value: number }>(
+    'SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = $2 FOR UPDATE',
+    [companyId, INVOICE_KIND],
+  );
+  return seq.rows[0]!.next_value;
+}
+
+async function readSeriesState(client: PoolClient, companyId: string, lock = false): Promise<SeriesState> {
+  const nextValue = lock
+    ? await lockSequence(client, companyId)
+    : (await client.query<{ next_value: number }>(
+      'SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = $2',
+      [companyId, INVOICE_KIND],
+    )).rows[0]?.next_value;
+  // Läses EFTER låset: en faktura som skapades medan vi väntade syns här.
   const max = await client.query<{ max_effective: number | null }>(
     'SELECT max(effective_invoice_number) AS max_effective FROM invoices WHERE company_id = $1',
     [companyId],
   );
   return {
     // Ingen rad ännu = ingen faktura skapad; nästa nummer blir 1.
-    next_value: seq.rows[0]?.next_value ?? 1,
+    next_value: nextValue ?? 1,
     max_effective: max.rows[0]?.max_effective ?? null,
   };
 }
@@ -63,7 +88,7 @@ export async function setInvoiceNumberSeries(
   if (!Number.isInteger(nextNumber) || nextNumber < 1) {
     throw new BadRequestError('invalid_next_number', 'nästa fakturanummer måste vara ett positivt heltal');
   }
-  const state = await readSeriesState(client, companyId);
+  const state = await readSeriesState(client, companyId, true);
   if (nextNumber < state.next_value) {
     throw new ConflictError(
       'series_cannot_move_backwards',
@@ -117,6 +142,10 @@ export async function setExternalInvoiceNumbers(
     seen.add(a.externalNumber);
   }
 
+  // Lås räknaren FÖRST, så batchen serialiseras mot flyttar och fakturaskapande
+  // och värdet nedan inte hinner bli inaktuellt innan räknaren hålls i takt.
+  const currentNext = await lockSequence(client, companyId);
+
   // Skjut upp unikhetskontrollen till COMMIT — ordningen i listan ska inte spela roll.
   await client.query('SET CONSTRAINTS invoices_effective_number_uk DEFERRED');
 
@@ -151,11 +180,6 @@ export async function setExternalInvoiceNumbers(
   // faktura bli 31, annars skulle den krocka med ett nummer kunden redan sett
   // (unikhetsvillkoret skulle fälla den vid skapandet — långt från felkällan).
   const highestAssigned = Math.max(...assignments.map((a) => a.externalNumber));
-  const seq = await client.query<{ next_value: number }>(
-    'SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = $2',
-    [companyId, INVOICE_KIND],
-  );
-  const currentNext = seq.rows[0]?.next_value ?? 1;
   if (highestAssigned >= currentNext) {
     await client.query(
       `INSERT INTO number_sequences (company_id, kind, next_value) VALUES ($1, $2, $3)

@@ -6,9 +6,15 @@
 //     ger 34 562,00 exkl. moms och 43 202,50 att betala.
 //   0000024 (NVR juni 2026): utläggsbilaga, summa 14 503,00 exkl. moms.
 // Seriesynk: internt 14 = externt 26, internt 26 = externt 27 (Davids läge).
+import pg from 'pg';
+import type { PoolClient } from 'pg';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { pool } from '../src/db/pool.js';
+import { setTenantContext } from '../src/db/tx.js';
+import { createInvoice } from '../src/services/invoices.js';
+import { setExternalInvoiceNumbers, setInvoiceNumberSeries } from '../src/services/invoiceNumbering.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -268,5 +274,134 @@ describe('bilagan ur systemets egen tidrapportering', () => {
     });
     expect(again.status).toBe(400);
     expect(again.body.error).toBe('no_time_entries');
+  });
+});
+
+describe('räknarflytten är serialiserad (samtidiga godkännanden och fakturaskapande)', () => {
+  /** Väntar tills någon anslutning blockerats av ett lås — annars provas bara ordningsföljden. */
+  async function vantaPaLasvantan(admin: pg.Client): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      const r = await admin.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+      );
+      if ((r.rows[0]?.n ?? 0) > 0) return;
+      await new Promise((klar) => setTimeout(klar, 25));
+    }
+    throw new Error('ingen transaktion blockerades — kapplöpningen uppstod aldrig');
+  }
+
+  /** A gör sitt arbete utan att committa; B startar och måste vänta på A:s lås. */
+  async function kapplopning(
+    forsta: (c: PoolClient) => Promise<unknown>,
+    andra: (c: PoolClient) => Promise<unknown>,
+  ): Promise<{ status?: number; code?: string } | null> {
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
+    await admin.connect();
+    const a = await pool.connect();
+    const b = await pool.connect();
+    let bUtfall: Promise<unknown> = Promise.resolve(null);
+    try {
+      await a.query('BEGIN');
+      await setTenantContext(a, user.userId, companyId);
+      await b.query('BEGIN');
+      await setTenantContext(b, user.userId, companyId);
+      await forsta(a);
+      bUtfall = andra(b).then(() => null, (err: unknown) => err);
+      await vantaPaLasvantan(admin);
+      await a.query('COMMIT');
+      const fel = await bUtfall as { status?: number; code?: string } | null;
+      await b.query(fel ? 'ROLLBACK' : 'COMMIT');
+      return fel;
+    } finally {
+      // Släpp A:s lås först så B:s väntande fråga kan gå klart; en anslutning
+      // som lämnas tillbaka mitt i en fråga förgiftar nästa test.
+      await a.query('ROLLBACK').catch(() => undefined);
+      await bUtfall.catch(() => undefined);
+      await b.query('ROLLBACK').catch(() => undefined);
+      a.release();
+      b.release();
+      await admin.end();
+    }
+  }
+
+  async function nastaNummer(): Promise<number> {
+    const s = await api.post(`${co()}/actions/get_invoice_number_series`).set(auth()).send({});
+    expect(s.status, JSON.stringify(s.body)).toBe(200);
+    return s.body.result.next_invoice_number as number;
+  }
+
+  it('en lägre flytt kan inte skriva över en högre som godkändes samtidigt', async () => {
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setInvoiceNumberSeries(a, companyId, user.userId, start + 20),
+      (b) => setInvoiceNumberSeries(b, companyId, user.userId, start + 10),
+    );
+    expect(fel, 'den lägre flytten skrev över den högre — räknaren backade').toBeTruthy();
+    expect(fel!.status).toBe(409);
+    expect(fel!.code).toBe('series_cannot_move_backwards');
+    expect(await nastaNummer()).toBe(start + 20);
+  });
+
+  it('en flytt ser numret som en samtidigt skapad faktura just fick', async () => {
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => createInvoice(a, companyId, user.userId, {
+        customer_id: customerId, invoice_date: '2026-07-31', due_date: '2026-08-30',
+        lines: [{ description: 'Konsulttid', quantity: 1, unit: 'h', unit_price_ore: 110_000, vat_rate: 25 }],
+      }),
+      // Utan låset läser flytten det gamla värdet och lägger tillbaka räknaren
+      // på numret fakturan ovan redan fått.
+      (b) => setInvoiceNumberSeries(b, companyId, user.userId, start),
+    );
+    expect(fel, 'flytten delade ut ett nummer som redan fanns på en faktura').toBeTruthy();
+    expect(fel!.status).toBe(409);
+    expect(fel!.code).toBe('series_cannot_move_backwards');
+    expect(await nastaNummer()).toBe(start + 1);
+    expect((await newInvoice()).number).toBe(start + 1);
+  });
+
+  it('kundnummertilldelning kan inte skriva över en högre flytt som godkändes samtidigt', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setInvoiceNumberSeries(a, companyId, user.userId, start + 20),
+      // Utan låset läser tilldelningen det gamla värdet och sätter räknaren till
+      // start + 6 — under flytten ovan.
+      (b) => setExternalInvoiceNumbers(b, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+    );
+    expect(fel, JSON.stringify(fel)).toBeNull();
+    expect(await nastaNummer(), 'kundnummertilldelningen backade räknaren').toBe(start + 20);
+    expect((await newInvoice()).number).toBe(start + 20);
+  });
+
+  it('en flytt kan inte backa förbi ett kundnummer som tilldelades samtidigt', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setExternalInvoiceNumbers(a, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+      (b) => setInvoiceNumberSeries(b, companyId, user.userId, start + 3),
+    );
+    expect(fel, 'flytten backade räknaren under kundnumret').toBeTruthy();
+    expect(fel!.status).toBe(409);
+    expect(fel!.code).toBe('series_cannot_move_backwards');
+    expect(await nastaNummer()).toBe(start + 6);
+    expect((await newInvoice()).number).toBe(start + 6);
+  });
+
+  it('en faktura som skapas samtidigt som ett kundnummer tilldelas får numret efter det', async () => {
+    const inv = await newInvoice();
+    const start = await nastaNummer();
+    const fel = await kapplopning(
+      (a) => setExternalInvoiceNumbers(a, companyId, user.userId, [{ invoiceId: inv.id, externalNumber: start + 5 }]),
+      (b) => createInvoice(b, companyId, user.userId, {
+        customer_id: customerId, invoice_date: '2026-07-31', due_date: '2026-08-30',
+        lines: [{ description: 'Konsulttid', quantity: 1, unit: 'h', unit_price_ore: 110_000, vat_rate: 25 }],
+      }),
+    );
+    expect(fel, JSON.stringify(fel)).toBeNull();
+    // Den samtidiga fakturan fick start + 6; räknaren står därefter.
+    expect(await nastaNummer()).toBe(start + 7);
+    expect((await newInvoice()).number).toBe(start + 7);
   });
 });

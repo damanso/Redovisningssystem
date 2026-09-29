@@ -153,6 +153,18 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-6, beslut #194 — fakturaräknarens flytt serialiserad):**
+  astras fynd: `setInvoiceNumberSeries` läste räknaren utan lås, så två
+  godkännanden kunde läsa samma gamla värde och en lägre flytt skriva över en
+  högre, och en flytt kunde missa numret en pågående faktura just fått.
+  `invoiceNumbering.ts` låser nu räknarraden (`lockSequence`: skapa-om-saknas +
+  `SELECT … FOR UPDATE`) före kontroll och uppdatering — samma radlås som
+  `nextDocumentNumber` tar vid fakturaskapande — och läser högsta nummer efter
+  låset. `setExternalInvoiceNumbers` tar samma lås först. Ingen migration,
+  inget kontrakt eller markup ändrat. Två kapplöpningsprov i
+  `invoice-series-appendix.test.ts` (flytt mot flytt, flytt mot ny faktura).
+  Kommandon kördes inte i sessionen — typecheck och tester körs av byggskriptet.
+
 - **2026-09-29 (FR-3, beslut #194 — verksamhetsbeskrivningen auditloggas):**
   astras fynd: vyns `POST /app/c/:companyId/annual/description` gjorde en direkt
   `UPDATE companies` utan auditrad. Rutten kör nu `executeAction`
