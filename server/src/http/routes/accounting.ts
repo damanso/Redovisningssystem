@@ -10,7 +10,7 @@ import {
 } from '../../services/accounting/accounts.js';
 import { executeAction } from '../../actions/execute.js';
 import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
-import { getVoucher, postVoucher, reverseVoucher } from '../../services/accounting/vouchers.js';
+import { getVoucher, postVoucher } from '../../services/accounting/vouchers.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
 import { getActor, getUserId, requireHuman } from '../middleware/authenticate.js';
@@ -152,14 +152,20 @@ accountingRouter.get('/vouchers/:voucherId', async (req, res) => {
   res.json({ voucher });
 });
 
+// FR-2/FR-38: rättelseverifikatet är sensitive — samma reverse_voucher-action
+// som vyn och MCP, via godkännandekön (Att göra), aldrig ett direktanrop.
 accountingRouter.post('/vouchers/:voucherId/reverse', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const voucherId = z.string().uuid().parse(req.params.voucherId);
-  const voucher = await withTenantTransaction(userId, companyId, (c) =>
-    reverseVoucher(c, companyId, userId, voucherId),
-  );
-  res.status(201).json({ voucher });
+  const outcome = await executeAction({
+    companyId,
+    userId,
+    actor: getActor(req),
+    actionName: 'reverse_voucher',
+    input: { voucher_id: voucherId },
+  });
+  res.status(outcome.status === 'pending_approval' ? 202 : 200).json(outcome);
 });
 
 accountingRouter.get('/vat-report', async (req, res) => {

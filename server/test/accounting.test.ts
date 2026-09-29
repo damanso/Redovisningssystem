@@ -116,25 +116,49 @@ describe('oföränderlighet + rättelseverifikat', () => {
     );
   });
 
+  // FR-38: rättelsen köas i godkännandekön och körs först när en människa godkänt.
+  const requestReversal = async (id: string) => {
+    const req = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    expect(req.body.status).toBe('pending_approval');
+    expect(req.body.action).toBe('reverse_voucher');
+    return req.body.approval.id as string;
+  };
+  const approve = (approvalId: string) =>
+    api.post(`/api/companies/${companyId}/approvals/${approvalId}/approve`).set(auth()).send({});
+  const reversalCount = async (id: string) =>
+    Number(
+      (
+        await withAdmin((c) =>
+          c.query('SELECT count(*) FROM vouchers WHERE reverses_voucher_id = $1', [id]),
+        )
+      ).rows[0].count,
+    );
+
   it('rättelse sker via nytt verifikat som speglar originalet', async () => {
     const orig = await api.get(`${base()}/vouchers/${voucherId}`).set(auth());
-    const rev = await api.post(`${base()}/vouchers/${voucherId}/reverse`).set(auth());
-    expect(rev.status, JSON.stringify(rev.body)).toBe(201);
-    expect(rev.body.voucher.reverses_voucher_id).toBe(voucherId);
+    const approvalId = await requestReversal(voucherId);
+    // Inget rättelseverifikat finns före godkännandet.
+    expect(await reversalCount(voucherId)).toBe(0);
+    const rev = await approve(approvalId);
+    expect(rev.status, JSON.stringify(rev.body)).toBe(200);
+    expect(rev.body.result.reverses_voucher_id).toBe(voucherId);
+    expect(await reversalCount(voucherId)).toBe(1);
     // Debet/kredit är omvända mot originalet.
     const origLine = orig.body.voucher.lines.find((l: { account_number: number }) => l.account_number === 1930);
-    const revLine = rev.body.voucher.lines.find((l: { account_number: number }) => l.account_number === 1930);
+    const revLine = rev.body.result.lines.find((l: { account_number: number }) => l.account_number === 1930);
     expect(origLine.debit_ore).toBe(revLine.credit_ore);
   });
 
   it('samma verifikat kan inte återföras två gånger (idempotens, grindfynd)', async () => {
     const res = await api.post(`${base()}/vouchers`).set(auth()).send(balancedVoucher());
     const id = res.body.voucher.id;
-    const first = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
-    expect(first.status).toBe(201);
-    const second = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
+    const first = await approve(await requestReversal(id));
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const second = await approve(await requestReversal(id));
     expect(second.status).toBe(409); // redan återfört — inget dubbel-rättat saldo
     expect(second.body.error).toBe('already_reversed');
+    expect(await reversalCount(id)).toBe(1);
   });
 });
 
