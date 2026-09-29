@@ -153,6 +153,19 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-12 T4, rättning efter underkänd granskning):** Den
+  osignerade vyvägen `GET /app/c/:id/kvittobilagor/:fileId` är BORTTAGEN.
+  Verifikatvyn hämtar signerade GET-länkar (5 min) via `hamtaBilagelank`
+  (samma tjänst som `get_receipt_file_url`) för länk och miniatyr; CSP:ns
+  `img-src` fick PUBLIC_API_URL:s ursprung. Utan publik PUBLIC_API_URL visas
+  bilagorna utan länk, med ett tydligt meddelande. `publikApiBas` avvisar nu
+  lokala adresser (localhost, 127/8, 0.0.0.0, ::1) med `public_api_url_lokal`
+  + prov. `kvittobilagor-verifikatvy.test.ts` använder riktiga JPEG/PNG
+  (skärmdumpade av Chromium) och prövar i playwright att miniatyrerna
+  avkodas och syns. ÖPPET: miniatyr för PDF/HEIC går inte inom ARKITEKTUR.md
+  (kräver nytt beroende för rastrering/HEVC-avkodning, eller ändrad CSP +
+  inline-disposition för PDF) — kräver Davids beslut. EJ KÖRT i sessionen.
+
 - **2026-09-29 (FR-12 T4 — kvittobilagor i verifikatvyn, PRD fryst beslut
   #194):** Astras kodgranskning: huvudboken visade bara konteringen, T4
   saknades. Byggt: `bilagorForVerifikat` i `services/receiptFiles.ts`

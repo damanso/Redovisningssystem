@@ -343,6 +343,21 @@ describe('den signerade länken', () => {
     }
     expect(publikApiBas('https://exempel.se/')).toBe('https://exempel.se');
   });
+
+  it('en lokal PUBLIC_API_URL avvisas med tydligt fel — aldrig en localhost-URL i länken', () => {
+    for (const lokal of [
+      'http://localhost:3000', 'http://LOCALHOST:3000/', 'http://api.localhost:3000',
+      'http://127.0.0.1:3000', 'http://127.1.2.3', 'http://0.0.0.0:3000', 'http://[::1]:3000',
+    ]) {
+      expect(() => publikApiBas(lokal), lokal).toThrowError(/PUBLIC_API_URL/);
+      try {
+        publikApiBas(lokal);
+      } catch (err) {
+        expect((err as { code: string }).code, lokal).toBe('public_api_url_lokal');
+      }
+    }
+    expect(publikApiBas('http://redovisning.exempel.se:3000')).toBe('http://redovisning.exempel.se:3000');
+  });
 });
 
 describe('tenant-isolering', () => {

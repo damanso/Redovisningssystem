@@ -54,7 +54,30 @@ export function publikApiBas(bas: string | null | undefined = config.PUBLIC_API_
         'sätt den till den publikt nåbara bas-URL:en för API:t',
     );
   }
+  // En lokal adress är lika onåbar för uppladdaren som en saknad — config.ts
+  // tar emot vilken http(s)-URL som helst, så spärren ligger här, där länken
+  // byggs, och ger samma sorts tydliga fel.
+  if (arLokalVard(bas)) {
+    throw new BadRequestError(
+      'public_api_url_lokal',
+      `signerade bilagelänkar kräver en publikt nåbar PUBLIC_API_URL — ${bas} är en lokal adress`,
+    );
+  }
   return bas.replace(/\/+$/, '');
+}
+
+function arLokalVard(bas: string): boolean {
+  let vard: string;
+  try {
+    vard = new URL(bas).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return true;
+  }
+  return (
+    vard === 'localhost' || vard.endsWith('.localhost') ||
+    vard === '0.0.0.0' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(vard) ||
+    vard === '::' || vard === '::1' || vard.startsWith('::ffff:127.') || vard === '::ffff:7f00:1'
+  );
 }
 
 export function signeraBilagelank(params: {

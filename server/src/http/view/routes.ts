@@ -19,7 +19,7 @@ import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
 import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } from '../../services/parties.js';
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
-import { bilagorForVerifikat, hamtaBilageInnehall, type VerifikatBilaga } from '../../services/receiptFiles.js';
+import { bilagorForVerifikat, hamtaBilagelank, type VerifikatBilaga } from '../../services/receiptFiles.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
@@ -883,25 +883,31 @@ function bilageStorlek(bytes: number): string {
 // T4 (FR-12): kvittots bilagor i verifikatkortet. JPEG/PNG visas som
 // miniatyr; HEIC (som de flesta webbläsare inte kan rita) och PDF som en
 // typbricka. Hela brickan är länken, så tangentbord och skärmläsare får EN
-// fokuspunkt per bilaga med filnamn, typ och storlek i namnet.
-function verifikatBilagor(companyId: string, bilagor: VerifikatBilaga[]): Raw | '' {
+// fokuspunkt per bilaga med filnamn, typ och storlek i namnet. Länken och
+// miniatyren är den signerade GET-vägen (samma som get_receipt_file_url, kort
+// giltighet) — vyn har ingen egen, osignerad läsväg. Saknas länken (ingen
+// publik PUBLIC_API_URL) visas brickan utan länk och bild.
+function verifikatBilagor(bilagor: VerifikatBilaga[], lankar: Map<string, string>): Raw | '' {
   if (bilagor.length === 0) return '';
   return html`<ul class="bilagor" aria-label="Bilagor">
     ${bilagor.map((b) => {
-      const href = `/app/c/${companyId}/kvittobilagor/${b.file_id}`;
+      const href = lankar.get(b.file_id);
       const typ = b.mime_type === 'application/pdf' ? 'PDF' : b.mime_type === 'image/heic' ? 'HEIC'
         : b.mime_type === 'image/png' ? 'PNG' : 'JPEG';
       const bild = b.mime_type === 'image/jpeg' || b.mime_type === 'image/png';
       const ersatt = b.superseded_by !== null;
-      return html`<li class="bilaga${ersatt ? ' bilaga--ersatt' : ''}">
-        <a class="bilaga__lank" href="${href}" download="${b.filename}" title="sha256 ${b.sha256 ?? ''}">
-          <span class="bilaga__tumme" aria-hidden="true">${
-            bild ? html`<img src="${href}" alt="" width="72" height="72" loading="lazy" decoding="async">`
+      const innehall = html`<span class="bilaga__tumme" aria-hidden="true">${
+            bild && href ? html`<img src="${href}" alt="" width="72" height="72" loading="lazy" decoding="async">`
               : html`<span class="bilaga__typ">${typ}</span>`
           }</span>
           <span class="bilaga__namn">${b.filename}</span>
-          <span class="bilaga__meta">${typ} · ${bilageStorlek(b.size_bytes)}${ersatt ? ' · ersatt' : ''}</span>
-        </a>
+          <span class="bilaga__meta">${typ} · ${bilageStorlek(b.size_bytes)}${ersatt ? ' · ersatt' : ''}</span>`;
+      return html`<li class="bilaga${ersatt ? ' bilaga--ersatt' : ''}">
+        ${
+          href
+            ? html`<a class="bilaga__lank" href="${href}" download="${b.filename}" title="sha256 ${b.sha256 ?? ''}">${innehall}</a>`
+            : html`<span class="bilaga__lank" title="sha256 ${b.sha256 ?? ''}">${innehall}</span>`
+        }
       </li>`;
     })}
   </ul>`;
@@ -910,11 +916,27 @@ function verifikatBilagor(companyId: string, bilagor: VerifikatBilaga[]): Raw | 
 // Huvudbok / verifikationslista
 viewRouter.get(
   '/c/:companyId/ledger',
-  pageFor('ledger', 'Huvudbok', async (client, companyId) => {
+  pageFor('ledger', 'Huvudbok', async (client, companyId, req) => {
     const vouchers = await generalLedger(client, companyId, { limit: 100 });
     const bilagor = await bilagorForVerifikat(client, companyId, vouchers.map((v) => v.id));
+    // Signerade GET-länkar per bilaga via get_receipt_file_url:s tjänst. Utan
+    // publik PUBLIC_API_URL ges ingen länk alls — aldrig en localhost-adress —
+    // och vyn säger varför i stället för att fallera.
+    const userId = getUserId(req);
+    const lankar = new Map<string, string>();
+    let lankfel = false;
+    for (const b of [...bilagor.values()].flat()) {
+      try {
+        const lank = await hamtaBilagelank(client, companyId, userId, b.file_id);
+        lankar.set(b.file_id, String(lank.download_url));
+      } catch (err) {
+        if (err instanceof BadRequestError && err.code.startsWith('public_api_url_')) { lankfel = true; break; }
+        throw err;
+      }
+    }
     return html`<div class="page-head"><div>${eyebrow('Huvudbok')}<h1>Huvudbok</h1>
         <p class="lede">Varje affärshändelse blir ett verifikat. Öppna “Visa konteringen” för debet och kredit.</p></div></div>
+      ${lankfel ? html`<p class="lede" role="status">Bilagorna kan inte visas eller laddas ner: PUBLIC_API_URL saknas eller är en lokal adress. Sätt den till API:ts publikt nåbara adress.</p>` : ''}
       ${
         vouchers.length === 0
           ? html`<div class="empty"><div class="big">Inga verifikat ännu</div>Bokförda fakturor och kvitton dyker upp här.</div>`
@@ -929,7 +951,7 @@ viewRouter.get(
                   <span class="voucher__desc">${v.description}</span>
                   <span style="margin-left:auto">${amount(total)}</span>
                 </div>
-                ${verifikatBilagor(companyId, bilagor.get(v.id) ?? [])}
+                ${verifikatBilagor(bilagor.get(v.id) ?? [], lankar)}
                 <details class="kontering">
                   <summary>Visa konteringen · ${v.lines.length} rader</summary>
                   <table><thead><tr><th>Konto</th><th>Text</th><th class="num">Debet</th><th class="num">Kredit</th></tr></thead><tbody>
@@ -9368,25 +9390,6 @@ viewRouter.get(
     res.sendFile(resolveStoredPath(companyId, file.stored_name), (err) => {
       if (err && !res.headersSent) res.status(404).end();
     });
-  }),
-);
-
-// Kvittobilagornas bytes för verifikatvyn (T4). Samma tjänst som den signerade
-// GET-vägen (hamtaBilageInnehall), men behörigheten är sessionen + medlemskapet
-// i stället för en HMAC-länk: vyn är samma ursprung, så miniatyrerna ryms i
-// CSP:ns img-src 'self' och kräver ingen PUBLIC_API_URL. Annat bolag → 404.
-viewRouter.get(
-  '/c/:companyId/kvittobilagor/:fileId',
-  page(async (req, res) => {
-    const userId = getUserId(req);
-    const companyId = parseCompanyId(req.params.companyId);
-    const parsedFile = UuidSchema.safeParse(req.params.fileId);
-    if (!parsedFile.success) throw new NotFoundError('receipt_file');
-    const bilaga = await hamtaBilageInnehall(parsedFile.data, { companyId, userId });
-    res.attachment(bilaga.filename);
-    res.type(bilaga.mimeType);
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.send(bilaga.bytes);
   }),
 );
 

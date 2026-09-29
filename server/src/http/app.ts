@@ -36,6 +36,9 @@ export function createApp(): express.Express {
           defaultSrc: ["'self'"],
           scriptSrc: ["'none'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
+          // Kvittobilagornas miniatyrer i verifikatvyn är signerade GET-länkar
+          // mot PUBLIC_API_URL (FR-12 T4) — det ursprunget, och bara det.
+          imgSrc: ["'self'", 'data:', ...(config.PUBLIC_API_URL ? [new URL(config.PUBLIC_API_URL).origin] : [])],
           objectSrc: ["'none'"],
           baseUri: ["'none'"],
           formAction: ["'self'"],
