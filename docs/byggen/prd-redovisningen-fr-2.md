@@ -1,12 +1,16 @@
 # PRD-bygget redovisningen FR-2 — PRD redovisningen FR-2: FR-2 | Bokfört verifikat kan inte ändras eller raderas; rättelse sker via ny
 
-Datum: 2026-09-29 15:04 · Branch: cto/prd-redovisningen-fr-2-9003 · Kalla: 02-Områden/hermes/prd/redovisningen-1c-prd.md (fryst 29/9, Davids beslut #194)
+Datum: 2026-09-29 20:10 · Branch: cto/prd-redovisningen-fr-2-9004 · Kalla: 02-Områden/hermes/prd/redovisningen-1c-prd.md (fryst 29/9, Davids beslut #194)
 
 ## Mal
 PRD redovisningen FR-2: FR-2 | Bokfört verifikat kan inte ändras eller raderas; rättelse sker via nytt verifikat, perioder kan låsas och en åter
 
 ## PRD-kravet (ordagrant ur den frysta PRD:n) och astras kodgranskning
 ```
+ÅTERSTÅR EFTER FÖRRA STEGET (steg 1, 2026-09-29 15:05, astras granskning mot PRD-kravet — bygg vidare härifrån, det som redan är i drift följer kravet):
+ATERSTAR | server/src/http/routes/accounting.ts:92–101 låser fortfarande perioden direkt via setFiscalYearLock; även denna väg behöver godkännandekön och test av uppskjuten låsning.
+ATERSTAR | server/src/http/routes/accounting.ts:152–160 återför fortfarande verifikat direkt via reverseVoucher; även denna väg behöver godkännandekön och test av uppskjuten återföring.
+
 KALLA | PRD redovisningen (02-Områden/hermes/prd/redovisningen-1c-prd.md), fryst 29/9 — Davids beslut #194; astras kodgranskning av den fardiga koden
 MAL | Koden ska folja PRD-kravet nedan och dess acceptans. PRD:n andras inte.
 ARKITEKTUR | docs/ARKITEKTUR.md galler oforandrad — befintliga monster, inga nya beroenden
@@ -24,7 +28,7 @@ AVGRANSNING | bara det som kravs for att koden ska folja kravet ovan — minsta 
 ```
 
 ## Utfall
-Tester: 143 passed (143) · Granskning: DELVIS | Bokslutsvyn köar nu låsningen korrekt via befintligt action-lager med regressionstest, men FR-2:s tillämpning av FR-38 är inte fullständig. · Byggforsok: 1
+Tester: 143 passed (143) · Granskning: GODKANT | Båda REST-vägarna använder befintlig godkännandekö med testad uppskjuten verkan, bevarad FR-2-acceptans och utan nya beroenden eller arkitekturmönster. · Byggforsok: 2
 
 ## Modellkedja (Davids krav 17/8, reservvag 7/9)
 

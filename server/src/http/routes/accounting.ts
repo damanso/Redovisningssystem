@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { executeAction } from '../../actions/execute.js';
 import { withTenantTransaction } from '../../db/tx.js';
 import { BadRequestError } from '../../lib/errors.js';
 import { IsoDateSchema, safeText } from '../../lib/validation.js';
@@ -8,15 +9,11 @@ import {
   listAccounts,
   type AccountType,
 } from '../../services/accounting/accounts.js';
-import {
-  createFiscalYear,
-  listFiscalYears,
-  setFiscalYearLock,
-} from '../../services/accounting/fiscalYears.js';
-import { getVoucher, postVoucher, reverseVoucher } from '../../services/accounting/vouchers.js';
+import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
+import { getVoucher, postVoucher } from '../../services/accounting/vouchers.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
-import { getUserId, requireHuman } from '../middleware/authenticate.js';
+import { getActor, getUserId, requireHuman } from '../middleware/authenticate.js';
 
 const ISO_DATE = IsoDateSchema;
 // Belopp: heltal ören inom säkert intervall (annars 500 via assertSafeOre).
@@ -89,15 +86,21 @@ accountingRouter.post('/fiscal-years', async (req, res) => {
 
 const LockSchema = z.object({ locked: z.boolean() }).strict();
 
+// Låset är sensitive (FR-2/FR-38): rutten köar lock_period i Att göra i stället
+// för att låsa direkt — samma godkännandeväg som vyn och MCP.
 accountingRouter.patch('/fiscal-years/:fiscalYearId', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const fyId = z.string().uuid().parse(req.params.fiscalYearId);
   const input = LockSchema.parse(req.body);
-  const fiscalYear = await withTenantTransaction(userId, companyId, (c) =>
-    setFiscalYearLock(c, companyId, userId, fyId, input.locked),
-  );
-  res.json({ fiscal_year: fiscalYear });
+  const outcome = await executeAction({
+    companyId,
+    userId,
+    actor: getActor(req),
+    actionName: 'lock_period',
+    input: { fiscal_year_id: fyId, locked: input.locked },
+  });
+  res.status(202).json(outcome);
 });
 
 const VoucherLineSchema = z
@@ -149,14 +152,20 @@ accountingRouter.get('/vouchers/:voucherId', async (req, res) => {
   res.json({ voucher });
 });
 
+// Återföringen är sensitive (FR-2/FR-38): rutten köar reverse_voucher i Att göra
+// i stället för att återföra direkt.
 accountingRouter.post('/vouchers/:voucherId/reverse', requireHuman, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const voucherId = z.string().uuid().parse(req.params.voucherId);
-  const voucher = await withTenantTransaction(userId, companyId, (c) =>
-    reverseVoucher(c, companyId, userId, voucherId),
-  );
-  res.status(201).json({ voucher });
+  const outcome = await executeAction({
+    companyId,
+    userId,
+    actor: getActor(req),
+    actionName: 'reverse_voucher',
+    input: { voucher_id: voucherId },
+  });
+  res.status(202).json(outcome);
 });
 
 accountingRouter.get('/vat-report', async (req, res) => {

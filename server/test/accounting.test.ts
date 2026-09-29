@@ -22,6 +22,12 @@ beforeAll(async () => {
   fiscalYearId = fy.body.fiscal_year.id;
 });
 
+// FR-2/FR-38: återföring och periodlås är sensitive — REST-rutten köar (202) och
+// verkan uppstår först när en människa godkänt i Att göra.
+async function approve(approvalId: string) {
+  return api.post(`/api/companies/${companyId}/approvals/${approvalId}/approve`).set(auth()).send({});
+}
+
 function balancedVoucher(overrides: Record<string, unknown> = {}) {
   return {
     fiscal_year_id: fiscalYearId,
@@ -118,23 +124,47 @@ describe('oföränderlighet + rättelseverifikat', () => {
 
   it('rättelse sker via nytt verifikat som speglar originalet', async () => {
     const orig = await api.get(`${base()}/vouchers/${voucherId}`).set(auth());
-    const rev = await api.post(`${base()}/vouchers/${voucherId}/reverse`).set(auth());
-    expect(rev.status, JSON.stringify(rev.body)).toBe(201);
-    expect(rev.body.voucher.reverses_voucher_id).toBe(voucherId);
+    const req = await api.post(`${base()}/vouchers/${voucherId}/reverse`).set(auth());
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    expect(req.body.status).toBe('pending_approval');
+    expect(req.body.approval.action).toBe('reverse_voucher');
+    expect(req.body.approval.input).toEqual({ voucher_id: voucherId });
+    const rev = await approve(req.body.approval.id);
+    expect(rev.status, JSON.stringify(rev.body)).toBe(200);
+    expect(rev.body.result.reverses_voucher_id).toBe(voucherId);
     // Debet/kredit är omvända mot originalet.
     const origLine = orig.body.voucher.lines.find((l: { account_number: number }) => l.account_number === 1930);
-    const revLine = rev.body.voucher.lines.find((l: { account_number: number }) => l.account_number === 1930);
+    const revLine = rev.body.result.lines.find((l: { account_number: number }) => l.account_number === 1930);
     expect(origLine.debit_ore).toBe(revLine.credit_ore);
+  });
+
+  it('återföringen väntar i Att göra — inget rättelseverifikat före godkännande', async () => {
+    const res = await api.post(`${base()}/vouchers`).set(auth()).send(balancedVoucher());
+    const id = res.body.voucher.id;
+    const req = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const { rows } = await withAdmin((c) =>
+      c.query('SELECT id FROM vouchers WHERE reverses_voucher_id = $1', [id]),
+    );
+    expect(rows).toHaveLength(0);
+    const ok = await approve(req.body.approval.id);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    const after = await withAdmin((c) =>
+      c.query('SELECT id FROM vouchers WHERE reverses_voucher_id = $1', [id]),
+    );
+    expect(after.rows).toHaveLength(1);
   });
 
   it('samma verifikat kan inte återföras två gånger (idempotens, grindfynd)', async () => {
     const res = await api.post(`${base()}/vouchers`).set(auth()).send(balancedVoucher());
     const id = res.body.voucher.id;
     const first = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
-    expect(first.status).toBe(201);
+    expect((await approve(first.body.approval.id)).status).toBe(200);
     const second = await api.post(`${base()}/vouchers/${id}/reverse`).set(auth());
-    expect(second.status).toBe(409); // redan återfört — inget dubbel-rättat saldo
-    expect(second.body.error).toBe('already_reversed');
+    expect(second.status).toBe(202);
+    const done = await approve(second.body.approval.id);
+    expect(done.status).toBe(409); // redan återfört — inget dubbel-rättat saldo
+    expect(done.body.error).toBe('already_reversed');
   });
 });
 
@@ -156,8 +186,26 @@ describe('periodlås', () => {
       .send(balancedVoucher({ fiscal_year_id: lockedFyId, voucher_date: '2024-06-01' }));
     expect(ok.status).toBe(201);
     const lock = await api.patch(`${base()}/fiscal-years/${lockedFyId}`).set(auth()).send({ locked: true });
-    expect(lock.status).toBe(200);
-    expect(lock.body.fiscal_year.is_locked).toBe(true);
+    expect(lock.status, JSON.stringify(lock.body)).toBe(202);
+    expect(lock.body.status).toBe('pending_approval');
+    expect(lock.body.approval.input).toEqual({ fiscal_year_id: lockedFyId, locked: true });
+
+    // Uppskjuten låsning: året är olåst och tar emot bokningar tills godkännandet.
+    const isLocked = async () => {
+      const res = await api.get(`${base()}/fiscal-years`).set(auth());
+      return res.body.fiscal_years.find((f: { id: string }) => f.id === lockedFyId).is_locked as boolean;
+    };
+    expect(await isLocked()).toBe(false);
+    const before = await api
+      .post(`${base()}/vouchers`)
+      .set(auth())
+      .send(balancedVoucher({ fiscal_year_id: lockedFyId, voucher_date: '2024-06-01' }));
+    expect(before.status).toBe(201);
+
+    const approved = await approve(lock.body.approval.id);
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body.result.is_locked).toBe(true);
+    expect(await isLocked()).toBe(true);
 
     const blocked = await api
       .post(`${base()}/vouchers`)
