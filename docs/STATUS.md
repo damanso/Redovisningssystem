@@ -153,6 +153,22 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-2 steg 2, beslut #194 — REST-API:ts lås och återföring via
+  godkännandekön, FR-38):** astras återstående fynd efter steg 1: `PATCH
+  /api/companies/:id/accounting/fiscal-years/:fyId` anropade `setFiscalYearLock`
+  direkt och `POST …/accounting/vouchers/:id/reverse` anropade `reverseVoucher`
+  direkt. Båda rutterna kör nu `executeAction` med `lock_period` resp.
+  `reverse_voucher` (samma sensitive-actions som vyn/MCP) och svarar **202**
+  `{ status: 'pending_approval', approval }` i stället för 200/201 — verkan
+  uppstår först vid godkännande i Att göra; `already_reversed` (409) kommer
+  därmed vid godkännandet av andra återföringen. `requireHuman` står kvar
+  (agent får fortfarande 403, `actions.test.ts`). Ingen migration, ingen markup,
+  inget nytt mönster. Tester: `accounting.test.ts` (återföring via kön, uppskjuten
+  återföring — inget rättelseverifikat före godkännande, andra återföringen 409
+  vid godkännande, uppskjuten låsning — året olåst och bokningsbart tills
+  godkännande) och `bokslut.test.ts` (låset godkänns innan periodlåsprovet).
+  Ej körd i sessionen (skriptet kör typecheck och tester efteråt).
+
 - **2026-09-29 (FR-2 ur den frysta PRD:n, beslut #194 — bokslutsvyns lås via
   godkännandekön, FR-38):** astras kodgranskning gav FR-2 DELVIS: `POST
   /app/c/:companyId/annual/lock` anropade `setFiscalYearLock` direkt och gick
