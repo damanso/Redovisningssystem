@@ -125,4 +125,29 @@ describe('K2-årsredovisning', () => {
     expect(text).toContain('#FLAGGA');
     expect(text).toContain('#VER'); // innehåller verifikat
   });
+
+  // FR-2/FR-38: "Lås bokslut" i vyn låser inte direkt — lock_period köas i Att göra
+  // och året är olåst tills en människa godkänt.
+  it('Lås bokslut i vyn köar lock_period i Att göra och låser först vid godkännande', async () => {
+    const isLocked = async () => {
+      const res = await api.get(`${co()}/accounting/fiscal-years`).set(auth());
+      return res.body.fiscal_years.find((f: { id: string }) => f.id === fiscalYearId).is_locked as boolean;
+    };
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: user.email, password: PASSWORD });
+    const res = await ua.post(`/app/c/${companyId}/annual/lock`).type('form').send({ fy: fiscalYearId });
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.location).toBe(`/app/c/${companyId}/approvals`);
+    expect(await isLocked()).toBe(false);
+
+    const kon = await api.get(`${co()}/approvals`).set(auth());
+    const lock = kon.body.approvals.find((a: { action: string; status: string }) => a.action === 'lock_period' && a.status === 'pending');
+    expect(lock?.input).toEqual({ fiscal_year_id: fiscalYearId, locked: true });
+
+    const ok = await api.post(`${co()}/approvals/${lock.id}/approve`).set(auth()).send({});
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(await isLocked()).toBe(true);
+
+    expect((await approveAction('lock_period', { fiscal_year_id: fiscalYearId, locked: false })).status).toBe(200);
+  });
 });
