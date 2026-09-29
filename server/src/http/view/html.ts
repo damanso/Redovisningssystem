@@ -954,6 +954,29 @@ details.kontering[open] > summary::before { transform: rotate(90deg); }
 details.kontering[open] > summary { border-bottom: 1px solid var(--line); }
 details.kontering table { min-width: 0; }
 details.kontering th, details.kontering td { padding: 8px 16px; }
+/* Kvittobilagorna (FR-12 T4): originalen häftade vid verifikatet, som på
+   papper. Miniatyren är beviset, raden under är arkivetiketten — filnamn
+   och typ/storlek i husets mono. En ersatt bilaga ligger kvar, streckad
+   och överstruken: den försvinner aldrig, den är utpekad. */
+.bilagor { list-style: none; margin: 0; padding: 4px 16px 14px; display: flex; flex-wrap: wrap; gap: 10px; }
+.bilaga__lank {
+  display: grid; grid-template-columns: 72px minmax(0, 1fr); column-gap: 10px; align-items: center;
+  min-height: var(--traff); max-width: 260px; padding: 6px 12px 6px 6px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface);
+  color: var(--ink); transition: border-color .15s ease, background .15s ease;
+}
+.bilaga__lank:hover { border-color: var(--line-2); background: var(--surface-2); }
+.bilaga__tumme {
+  grid-row: span 2; width: 72px; height: 72px; border-radius: 6px; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--line); display: grid; place-items: center;
+}
+.bilaga__tumme img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bilaga__typ { font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: var(--accent-ink); }
+.bilaga__namn { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: end; }
+.bilaga__meta { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); align-self: start; }
+.bilaga--ersatt .bilaga__lank { border-style: dashed; }
+.bilaga--ersatt .bilaga__namn { text-decoration: line-through; color: var(--ink-3); }
+.bilaga--ersatt .bilaga__tumme { opacity: .55; }
 
 /* Rapporter */
 .statement { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }

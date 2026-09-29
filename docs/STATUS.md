@@ -153,6 +153,23 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-09-29 (FR-12 T4 — kvittobilagor i verifikatvyn, PRD fryst beslut
+  #194):** Astras kodgranskning: huvudboken visade bara konteringen, T4
+  saknades. Byggt: `bilagorForVerifikat` i `services/receiptFiles.ts`
+  (verifikat → kvitto via `receipts.voucher_id` → aktiva `receipt_files`,
+  ersatta med), bilageremsa i verifikatkortet (`/app/c/:id/ledger`):
+  miniatyr för JPEG/PNG, typbricka för PDF/HEIC, filnamn + typ/storlek,
+  ersatt bilaga streckad och överstruken. Läsvägen i vyn är
+  `GET /app/c/:id/kvittobilagor/:fileId` — samma tjänst som den signerade
+  GET:en (`hamtaBilageInnehall`), behörighet via session + medlemskap så att
+  miniatyrerna håller CSP:ns `img-src 'self'` utan PUBLIC_API_URL;
+  `Cache-Control: private, no-store`, annat bolag → 404. CSS i `html.ts`
+  (`.bilagor`/`.bilaga*`) på husets tokens. Nytt prov:
+  `test/kvittobilagor-verifikatvy.test.ts` (miniatyr/länk före+efter
+  bokföring, sha256 vid nedladdning, ersatt märkt, RLS, obekräftad döljs).
+  Inga migrationer, inget API-kontrakt ändrat. EJ KÖRT i sessionen —
+  skriptet kör typecheck och tester efteråt.
+
 - **2026-09-28 (överlämning #302 / beslut #189 — S10.10: sidan Dokumenten på
   uppdragsytan, FR-43):** Davids ord 28/9: senaste versionen av varje underlag
   ska vara direkt tillgänglig ur projektytan, och all dokumentation som inte är

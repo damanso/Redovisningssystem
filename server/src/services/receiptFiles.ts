@@ -363,6 +363,41 @@ export async function bilagorForKvitton(
   return karta;
 }
 
+export interface VerifikatBilaga {
+  file_id: string;
+  receipt_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string | null;
+  superseded_by: string | null;
+}
+
+/**
+ * Bilagorna per verifikat för verifikatvyn (T4): via kvittot som bokförts på
+ * verifikatet. Bara aktiva rader; ersatta följer med och märks i vyn.
+ */
+export async function bilagorForVerifikat(
+  client: PoolClient, companyId: string, voucherIds: string[],
+): Promise<Map<string, VerifikatBilaga[]>> {
+  const karta = new Map<string, VerifikatBilaga[]>();
+  if (voucherIds.length === 0) return karta;
+  const rader = await client.query<VerifikatBilaga & { voucher_id: string }>(
+    `SELECT r.voucher_id, f.id AS file_id, f.receipt_id, f.filename, f.mime_type,
+            f.size_bytes, f.sha256, f.superseded_by
+       FROM receipt_files f JOIN receipts r ON r.id = f.receipt_id AND r.company_id = f.company_id
+      WHERE f.company_id = $1 AND r.voucher_id = ANY($2::uuid[]) AND f.status = 'active'
+      ORDER BY f.uploaded_at, f.created_at`,
+    [companyId, voucherIds],
+  );
+  for (const { voucher_id, ...bilaga } of rader.rows) {
+    const lista = karta.get(voucher_id) ?? [];
+    lista.push(bilaga);
+    karta.set(voucher_id, lista);
+  }
+  return karta;
+}
+
 /**
  * Bilagerader + objekt för ett OBOKAT kvittoutkast som raderas. Bokförda
  * kvitton når aldrig hit (delete_draft_receipt avvisar dem), och DELETE-policyn
