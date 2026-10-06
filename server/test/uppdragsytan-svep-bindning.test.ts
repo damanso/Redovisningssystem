@@ -26,6 +26,7 @@ import {
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import type { SvepIndata, Svepsvar, Uppdragsutfall } from '../src/services/uppdragSvep.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -139,7 +140,7 @@ async function nyttUppdrag(namn: string): Promise<string> {
   const avtal = (await ok('skapa_uppdrag', {
     project_id: projekt, name: `Leveranskontrakt ${namn}`, signed_date: '2026-09-03',
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
   return avtal;
 }
 

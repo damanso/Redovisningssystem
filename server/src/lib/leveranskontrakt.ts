@@ -12,7 +12,7 @@
 // åtagande i tiden utan att någon ser det. Saknade fält ska synas som saknade
 // — det är därför de får vara NULL hela vägen ner i kolumnen.
 //
-// FORMEN som läses (leveranskontraktets kända form, NVR-001 v1):
+// FORMEN som läses (rubrikformen i v1 och tabellformen i v3):
 //
 //   * **Fältpar** — antingen en tvåkolumnsrad i en tabell (`| Takvolym | 430 h |`)
 //     eller en rad `Etikett: värde`. Etiketten normaliseras (gemener, utan
@@ -27,6 +27,10 @@
 //   * **Leverablerna** — rubriker som börjar med `L1`…`L99` (eller `STYRNING`),
 //     med sina egna fältpar: `Ström`, `Takvolym`, `Klausul`,
 //     `Acceptanskriterium`, `Uppföljningsmått`, `Måttets läsväg`.
+//     Tabeller med `Id` eller `Leverabel` som kod förenas per leverabel:
+//     namn, timmar, klausul, acceptans, mått och placering under `Ström`.
+//   * **V3:s ram** — `Ram`, `Timmar` och svensk dagperiod i `Period`;
+//     `kontrakt_tillstand` avgör om texten får bli ett baselineförslag.
 //   * **Omfattningen (del 5)** — avsnitt vars rubrik nämner "innanför",
 //     "utanför" respektive "signalfras". Raderna läses ur en tabell
 //     (`Rad`/`Text`/`Fras` + valfri `Klausul`) eller ur en punktlista, och då
@@ -45,6 +49,9 @@ export type Lasvag = (typeof LASVAGAR)[number];
 export interface Ram {
   cap_hours: number | null;
   cap_amount_ore: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  date_precision: Datumprecision | null;
 }
 
 export interface Strom {
@@ -80,6 +87,7 @@ export interface Scopelinje {
 }
 
 export interface Leveranskontrakt {
+  kontrakt_tillstand: 'fryst' | 'utkast' | null;
   ram: Ram;
   strommar: Strom[];
   leverabler: Leverabel[];
@@ -188,8 +196,10 @@ function faltkarta(avsnitten: Avsnitt[]): Map<string, string> {
     }
     for (const rad of a.rader) {
       if (rad.includes('|')) continue;
-      const par = /^\s*(?:[-*]\s+)?\*{0,2}([^:*]{1,40}?)\*{0,2}\s*:\s*(.+?)\s*$/.exec(rad);
-      if (par) satt(par[1]!, par[2]!.replace(/\*/g, '').trim());
+      for (const led of rad.split('·')) {
+        const par = /^\s*(?:[-*]\s+)?([^:]{1,44}?)\s*:\s*(.*?)\s*$/.exec(led);
+        if (par) satt(par[1]!.replace(/\*/g, ''), par[2]!.replace(/\*/g, '').trim());
+      }
     }
   }
   return karta;
@@ -269,6 +279,24 @@ export function datumvarde(varde: string | undefined, kant: 'start' | 'slut'): D
   return null;
 }
 
+/** Svensk dagperiod. När startåret saknas gäller slutledets uttryckliga år. */
+export function periodvarde(varde: string | undefined): Pick<Ram, 'start_date' | 'end_date' | 'date_precision'> {
+  const saknat = { start_date: null, end_date: null, date_precision: null };
+  if (!varde) return saknat;
+  const m = /^(\d{1,2})\s+([a-zåäö]+)\.?\s*(\d{4})?\s+till\s+(\d{1,2})\s+([a-zåäö]+)\.?\s+(\d{4})$/i.exec(varde.trim());
+  if (!m) return saknat;
+  const manader = ['januari', 'februari', 'mars', 'april', 'maj', 'juni', 'juli', 'augusti', 'september', 'oktober', 'november', 'december'];
+  const datum = (dag: string, manad: string, ar: string): string | null => {
+    const index = manader.findIndex((namn) => namn === manad.toLowerCase() || namn.slice(0, 3) === manad.toLowerCase());
+    if (index < 0) return null;
+    return datumvarde(`${ar}-${String(index + 1).padStart(2, '0')}-${dag.padStart(2, '0')}`, 'start')?.datum ?? null;
+  };
+  const start = datum(m[1]!, m[2]!, m[3] ?? m[6]!);
+  const slut = datum(m[4]!, m[5]!, m[6]!);
+  if (!start || !slut || start > slut) return saknat;
+  return { start_date: start, end_date: slut, date_precision: 'dag' };
+}
+
 /** Den GROVSTA av två precisioner: en period är aldrig exaktare än sin luddigaste ände. */
 const PRECISIONSORDNING: Datumprecision[] = ['ar', 'halvar', 'kvartal', 'manad', 'dag'];
 
@@ -294,7 +322,8 @@ const text = (varde: string | undefined): string | null => {
 // Parsern
 // ---------------------------------------------------------------------------
 
-const LEVERABELRUBRIK = /^(L\d{1,2}|STYRNING)\b[\s.:—–-]*(.*)$/i;
+const LEVERABELRUBRIK = /^(L[1-9]\d?|STYRNING)\b[\s.:—–-]*(.*)$/i;
+const LEVERABELKOD = /^L[1-9]\d?$/i;
 
 const SCOPESORTER: Array<{ nyckel: string; sort: Scopelinje['sort'] }> = [
   { nyckel: 'innanfor', sort: 'innanfor' },
@@ -305,7 +334,6 @@ const SCOPESORTER: Array<{ nyckel: string; sort: Scopelinje['sort'] }> = [
 export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
   const avsnitten = avsnitt(kontraktstext);
 
-  const leverabelavsnitt = avsnitten.filter((a) => LEVERABELRUBRIK.test(a.titel));
   const ovriga = avsnitten.filter((a) => !LEVERABELRUBRIK.test(a.titel));
   const dokumentfalt = faltkarta(ovriga);
 
@@ -334,28 +362,75 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     }
   }
 
-  // Leverablerna och styrningen: en rubrik var, med sina egna fältpar.
-  const leverabler: Leverabel[] = [];
-  let styrning: Styrning | null = null;
-  for (const a of leverabelavsnitt) {
-    const m = LEVERABELRUBRIK.exec(a.titel)!;
-    const kod = m[1]!.toUpperCase();
-    const namn = text(m[2]);
-    const falt = faltkarta([a]);
-    if (kod === STYRNINGSKOD) {
-      styrning = { kod, namn, cap_hours: timmar(falt.get('takvolym') ?? falt.get('tak')) };
-      continue;
+  // Rubrikfält och tabellfält förenas i textordning. Första fältförekomsten
+  // vinner också när värdet inte går att tolka — senare text rättar inte avtalet.
+  const leverabelkarta = new Map<string, Leverabel>();
+  const lastaFalt = new Map<string, Set<string>>();
+  const sammanfoga = (kod: string, falt: Partial<Leverabel>): void => {
+    let leverabel = leverabelkarta.get(kod);
+    if (!leverabel) {
+      leverabel = { kod, namn: null, strom_kod: null, cap_hours: null, klausul: null,
+        acceptanskriterium: null, uppfoljningsmatt: null, matt_lasvag: null };
+      leverabelkarta.set(kod, leverabel);
+      lastaFalt.set(kod, new Set());
     }
-    leverabler.push({
-      kod,
-      namn,
-      strom_kod: text(falt.get('strom')),
-      cap_hours: timmar(falt.get('takvolym') ?? falt.get('tak')),
-      klausul: text(falt.get('klausul')),
-      acceptanskriterium: text(falt.get('acceptanskriterium')),
-      uppfoljningsmatt: text(falt.get('uppfoljningsmatt')),
-      matt_lasvag: lasvag(falt.get('mattetslasvag') ?? falt.get('lasvag')),
-    });
+    const lasta = lastaFalt.get(kod)!;
+    for (const [nyckel, varde] of Object.entries(falt)) {
+      if (!lasta.has(nyckel)) {
+        Object.assign(leverabel, { [nyckel]: varde });
+        lasta.add(nyckel);
+      }
+    }
+  };
+  let styrning: Styrning | null = null;
+  for (const a of avsnitten) {
+    const m = LEVERABELRUBRIK.exec(a.titel);
+    if (m) {
+      const kod = m[1]!.toUpperCase();
+      const namn = text(m[2]);
+      const falt = faltkarta([a]);
+      if (kod === STYRNINGSKOD) {
+        styrning = { kod, namn, cap_hours: timmar(falt.get('takvolym') ?? falt.get('tak')) };
+        continue;
+      }
+      const f: Partial<Leverabel> = {};
+      if (namn) f.namn = namn;
+      if (falt.has('strom')) f.strom_kod = text(falt.get('strom'));
+      if (falt.has('takvolym') || falt.has('tak')) f.cap_hours = timmar(falt.get('takvolym') ?? falt.get('tak'));
+      if (falt.has('klausul')) f.klausul = text(falt.get('klausul'));
+      if (falt.has('acceptanskriterium')) f.acceptanskriterium = text(falt.get('acceptanskriterium'));
+      if (falt.has('uppfoljningsmatt')) f.uppfoljningsmatt = text(falt.get('uppfoljningsmatt'));
+      if (falt.has('mattetslasvag') || falt.has('lasvag')) f.matt_lasvag = lasvag(falt.get('mattetslasvag') ?? falt.get('lasvag'));
+      sammanfoga(kod, f);
+    }
+    for (const tabell of tabeller(a.rader)) {
+      const iId = kolumn(tabell.rubrik, ['id']);
+      const iLeverabel = kolumn(tabell.rubrik, ['leverabel']);
+      if (iId < 0 && iLeverabel < 0) continue;
+      const iStrom = kolumn(tabell.rubrik, ['strom']);
+      const iTimmar = kolumn(tabell.rubrik, ['timmar']);
+      const prefix = (nyckel: string): number => tabell.rubrik?.findIndex((c) => normalisera(c).startsWith(nyckel)) ?? -1;
+      const iKlausul = prefix('klausul');
+      const iAcceptans = prefix('acceptanskriterium');
+      const iMatt = prefix('uppfoljningsmatt');
+      for (const rad of tabell.rader) {
+        const id = text(rad[iId]);
+        const namn = text(rad[iLeverabel]);
+        const kod = id && LEVERABELKOD.test(id) ? id : namn && LEVERABELKOD.test(namn) ? namn : null;
+        if (!kod) continue;
+        const f: Partial<Leverabel> = {};
+        if (namn && !LEVERABELKOD.test(namn)) f.namn = namn;
+        if (iStrom >= 0) f.strom_kod = text(rad[iStrom]);
+        if (iTimmar >= 0) {
+          const varde = rad[iTimmar] ?? '';
+          f.cap_hours = timmar(/^[\d\s ]+(?:[.,]\d{1,2})?$/.test(varde) ? `${varde} h` : varde);
+        }
+        if (iKlausul >= 0) f.klausul = text(rad[iKlausul]);
+        if (iAcceptans >= 0) f.acceptanskriterium = text(rad[iAcceptans]);
+        if (iMatt >= 0) f.uppfoljningsmatt = text(rad[iMatt]);
+        sammanfoga(kod.toUpperCase(), f);
+      }
+    }
   }
 
   // Del 5: innanför, utanför och signalfraserna.
@@ -390,12 +465,15 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
   }
 
   return {
+    kontrakt_tillstand: dokumentfalt.get('kontrakttillstand') === 'fryst' ? 'fryst'
+      : dokumentfalt.get('kontrakttillstand') === 'utkast' ? 'utkast' : null,
     ram: {
-      cap_hours: timmar(dokumentfalt.get('takvolym')),
-      cap_amount_ore: oren(dokumentfalt.get('takbelopp')),
+      cap_hours: timmar(dokumentfalt.get('takvolym') ?? dokumentfalt.get('timmar')),
+      cap_amount_ore: oren(dokumentfalt.get('takbelopp') ?? dokumentfalt.get('ram')),
+      ...periodvarde(dokumentfalt.get('period')),
     },
     strommar,
-    leverabler,
+    leverabler: [...leverabelkarta.values()],
     styrning,
     scopelinjer,
     godkannare: text(dokumentfalt.get('godkannare')),

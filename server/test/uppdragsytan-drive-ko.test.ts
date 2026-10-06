@@ -23,6 +23,7 @@ import { ACTIONS } from '../src/actions/registry.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -110,7 +111,7 @@ async function nyttUppdrag(namn: string): Promise<{ projektId: string; contractI
 /** Ett importerat uppdrag: sex registerrader och en köad kopia. */
 async function importerat(namn: string): Promise<{ projektId: string; contractId: string }> {
   const u = await nyttUppdrag(namn);
-  await ok('importera_leveranskontrakt', {
+  await importeraOchGodkann(companyId, auth(), {
     contract_id: u.contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
   });
   return u;
@@ -256,7 +257,7 @@ describe('KRAV-5: importen köar kopian', () => {
     // Före importen finns varken register eller kö.
     expect(await referenser(contractId)).toEqual([]);
 
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 
@@ -444,7 +445,7 @@ describe('KRAV-2: omkö', () => {
       referens_id: ref.id, utfall: { lage: 'skriven', drive_id: `${DRIVE_ID}-g` },
     });
 
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 
@@ -464,7 +465,7 @@ describe('KRAV-2: omkö', () => {
     });
     expect((await kopian(contractId)).ko_fel).toBe('Drive svarade 500');
 
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 

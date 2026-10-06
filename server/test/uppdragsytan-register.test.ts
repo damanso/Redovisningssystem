@@ -18,6 +18,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SIGNERAT = '2026-09-03';
@@ -116,7 +117,7 @@ describe('leverabelregistret för det importerade kontraktet', () => {
 
   beforeAll(async () => {
     contractId = await nyttAvtal('NVR-001 Fas 2');
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
     rader = await las(contractId);
@@ -192,7 +193,7 @@ describe('KRAV-5, positiv kontroll: full täckning ger noll saknade', () => {
 
   it('sex rader, alla med läsväg — täckningskontrollen finner noll', async () => {
     const contractId = await nyttAvtal('NVR-002 full täckning');
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: MED_FULL_TACKNING,
     });
     const rader = await las(contractId);
@@ -240,7 +241,7 @@ describe('dagar_i_laget räknas ur senaste händelsen (FR-37)', () => {
 
   beforeAll(async () => {
     contractId = await nyttAvtal('NVR-003 ålder i läget');
-    await ok('importera_leveranskontrakt', {
+    await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 

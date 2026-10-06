@@ -39,7 +39,7 @@ import {
 import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
-import { importeraLeveranskontrakt, skapaUppdrag } from '../services/uppdragImport.js';
+import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
 import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
@@ -1605,13 +1605,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     handler: (ctx, i) => assignContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
-  // Uppdragsytan S1.2: uppdraget skapas, kontraktet importeras. Två ENGÅNGS-
-  // åtgärder som FÖDER baselinen — de skapar den första versionen av varje kod
-  // och sätter ALDRIG `cap_confirmed`. Därför är de `write` (1E Del 4, Davids
-  // svar 6/9) medan `upsert_contract_part`/`andra_baseline` är `sensitive`:
-  // kön i S0.1 finns för att skydda ÄNDRINGEN av ett läst tak. Ett bekräftat
-  // tak går inte att röra härifrån heller — 0068:s trigger fäller varje
-  // in-place-ändring av en bekräftad rad med 409 `rule_violation`.
+  // Uppdraget skapas på ett befintligt projekt. Importen förhandsvisar texten
+  // och köar den frysta baselinen; skrivningen kräver mänskligt godkännande.
   // -------------------------------------------------------------------------
   def({
     name: 'skapa_uppdrag',
@@ -1632,7 +1627,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'importera_leveranskontrakt',
-    title: 'Importera det frysta leveranskontraktet som baseline',
+    title: 'Läs leveranskontraktet och föreslå baseline',
     sensitivity: 'write',
     inputSchema: z
       .object({
@@ -1643,7 +1638,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         kontraktstext: safeText(200_000),
       })
       .strict(),
-    handler: (ctx, i) => importeraLeveranskontrakt(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => importeraLeveranskontrakt(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  def({
+    name: 'satt_baseline',
+    title: 'Sätt baseline v1 ur det frysta leveranskontraktet',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({ contract_id: UuidSchema, kontraktstext: safeText(200_000) }).strict(),
+    handler: (ctx, i) => sattBaseline(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S4.1: bedömningen. Uppdragets enda subjektiva tal — och det

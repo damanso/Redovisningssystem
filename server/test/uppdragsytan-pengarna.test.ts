@@ -32,6 +32,7 @@ import { formatOre } from '../src/domain/money.js';
 import { FORBRUKANDE_STATUSAR, lasUppdragspengar, type Uppdragspengar } from '../src/services/uppdragPengar.js';
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, app, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -181,7 +182,7 @@ beforeAll(async () => {
   avtalA = (await ok('skapa_uppdrag', {
     project_id: projektA, name: 'Leveranskontrakt NVR-001', signed_date: SIGNERAT,
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtalA, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtalA, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   // Rotdelens tak BEKRÄFTAS. `valid_from` utelämnad = avtalets signeringsdatum,
   // alltså samma rad importen skrev: en ÄNDRING av den gällande versionen, inte

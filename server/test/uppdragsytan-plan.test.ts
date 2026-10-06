@@ -23,6 +23,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { byggPlan, grupperaEfterSlut, manadsetikett, type Plandel } from '../src/lib/uppdragsplan.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -320,7 +321,7 @@ beforeAll(async () => {
   const contractId = (await ok('skapa_uppdrag', {
     project_id: projektId, name: 'Leveranskontrakt NVR-001 v1', signed_date: SIGNERAT,
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   avtalslostProjekt = (await ok('create_project', { name: 'Uppdrag utan avtal' })).id as string;
 

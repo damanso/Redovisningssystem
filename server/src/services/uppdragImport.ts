@@ -6,8 +6,8 @@
 //   1. `skapaUppdrag` föder avtalet med sin ROTDEL (`UPPDRAG`). Allt annat i
 //      avtalet hänger under den, så att `get_contract_usage` alltid har en nod
 //      som bär hela uppdragets tak — 0064:s föräldertak över barnens summa.
-//   2. `importeraLeveranskontrakt` lägger strömmarna, leverablerna, styrningen,
-//      registerraderna, scopelinjerna och godkännarna ur KONTRAKTSTEXTEN.
+//   2. `importeraLeveranskontrakt` förhandsvisar texten och köar `satt_baseline`
+//      när den är fryst. `sattBaseline` skriver först efter godkännandet.
 //
 // Tre regler som filen inte får bryta:
 //
@@ -22,12 +22,14 @@
 //     0068:s `vagrar_baseline_i_utkast`. Ett tak som en maskin bekräftat åt en
 //     människa är exakt det oläst tak som aldrig varnar.
 import type { PoolClient } from 'pg';
+import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import {
   parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
+import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, upsertContractPart } from './contracts.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
 
@@ -219,12 +221,16 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
   };
   kolla('ram.cap_hours', k.ram.cap_hours);
   kolla('ram.cap_amount_ore', k.ram.cap_amount_ore);
+  kolla('ram.start_date', k.ram.start_date);
+  kolla('ram.end_date', k.ram.end_date);
+  kolla('ram.date_precision', k.ram.date_precision);
   for (const s of k.strommar) {
     kolla(`${s.kod}.start_date`, s.start_date);
     kolla(`${s.kod}.end_date`, s.end_date);
     kolla(`${s.kod}.date_precision`, s.date_precision);
   }
   for (const l of k.leverabler) {
+    kolla(`${l.kod}.strom_kod`, l.strom_kod);
     kolla(`${l.kod}.cap_hours`, l.cap_hours);
     kolla(`${l.kod}.klausul`, l.klausul);
     kolla(`${l.kod}.acceptanskriterium`, l.acceptanskriterium);
@@ -238,8 +244,38 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
 }
 
 export async function importeraLeveranskontrakt(
+  client: PoolClient, companyId: string, userId: string, actor: Actor, input: ImporteraLeveranskontraktInput,
+): Promise<Record<string, unknown>> {
+  const kontrakt = parseLeveranskontrakt(input.kontraktstext);
+  const avtal = await hamtaAvtal(client, companyId, input.contract_id);
+  const forslag = {
+    uppdrag: { code: ROTKOD, ...kontrakt.ram },
+    strommar: kontrakt.strommar,
+    leverabler: kontrakt.leverabler,
+    saknade_falt: saknadeFalt(kontrakt),
+  };
+  const svar = { contract_id: input.contract_id, kontrakt_tillstand: kontrakt.kontrakt_tillstand, forslag };
+  if (kontrakt.kontrakt_tillstand !== 'fryst') return svar;
+  if (!avtal.signed_date) {
+    throw new BadRequestError('valid_from_required', 'avtalet saknar undertecknandedatum — baselinen kan inte tidsättas');
+  }
+  const koad = await createApproval(client, companyId, userId, actor, 'satt_baseline', input);
+  await writeAudit(client, {
+    companyId, userId, action: 'action.approval_requested',
+    entityType: 'approval', entityId: koad.id,
+    details: { action: 'satt_baseline', actor },
+  });
+  return { ...svar, approval_id: koad.id };
+}
+
+/** Den tidigare importskrivningen, körd av `approveAction` i samma tenanttransaktion. */
+export async function sattBaseline(
   client: PoolClient, companyId: string, userId: string, input: ImporteraLeveranskontraktInput,
 ): Promise<Record<string, unknown>> {
+  const kontrakt = parseLeveranskontrakt(input.kontraktstext);
+  if (kontrakt.kontrakt_tillstand !== 'fryst') {
+    throw new BadRequestError('kontrakt_not_frozen', 'baseline kräver kontrakt_tillstand: fryst i kontraktstexten');
+  }
   const avtal = await hamtaAvtal(client, companyId, input.contract_id);
   const validFrom = avtal.signed_date;
   if (!validFrom) {
@@ -249,7 +285,6 @@ export async function importeraLeveranskontrakt(
     );
   }
 
-  const kontrakt = parseLeveranskontrakt(input.kontraktstext);
   const befintliga = await delarVid(client, companyId, input.contract_id, validFrom);
   const skriv = (onskad: Onskad): Promise<{ id: string; skriven: boolean }> =>
     skrivDel(client, companyId, userId, input.contract_id, validFrom, onskad, befintliga.get(onskad.code));
@@ -267,9 +302,9 @@ export async function importeraLeveranskontrakt(
     parent_part_id: null,
     cap_hours: kontrakt.ram.cap_hours,
     cap_amount_ore: kontrakt.ram.cap_amount_ore,
-    start_date: null,
-    end_date: null,
-    date_precision: null,
+    start_date: kontrakt.ram.start_date,
+    end_date: kontrakt.ram.end_date,
+    date_precision: kontrakt.ram.date_precision,
     sort_order: 0,
   }));
 
@@ -419,8 +454,7 @@ export async function importeraLeveranskontrakt(
     oforandrad,
     uppdrag: {
       code: ROTKOD,
-      cap_hours: kontrakt.ram.cap_hours,
-      cap_amount_ore: kontrakt.ram.cap_amount_ore,
+      ...kontrakt.ram,
     },
     strommar: kontrakt.strommar.length,
     leverabler: kontrakt.leverabler.length,

@@ -16,6 +16,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import { LEVERABELLAGEN, type Uppdragslage } from '../src/services/uppdragLage.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -122,7 +123,7 @@ beforeAll(async () => {
   avtalId = (await ok('skapa_uppdrag', {
     project_id: projektId, name: 'Leveranskontrakt NVR-001', signed_date: SIGNERAT,
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   const yta = await ok('las_kontraktsyta', { contract_id: avtalId }) as unknown as {
     gallande: { code: string; parent_code: string | null; part_id: string }[];

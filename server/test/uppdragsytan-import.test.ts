@@ -13,14 +13,71 @@
 //     (bekräftat tak på ett nyskapat avtal) är öppen igen för ett SIGNERAT
 //     avtal, och stängd som förut för ett utkast.
 import { beforeAll, describe, expect, it } from 'vitest';
+import supertest from 'supertest';
 import {
-  datumvarde, lasvag, oren, parseLeveranskontrakt, timmar,
+  datumvarde, lasvag, oren, parseLeveranskontrakt, periodvarde, timmar,
 } from '../src/lib/leveranskontrakt.js';
 import { IMPORTORSAK } from '../src/services/uppdragImport.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SIGNERAT = '2026-09-03';
+
+// Syntetiskt formprov, inte Drive-originalet. Namnen ska hämtas ur texten.
+const TABELLKONTRAKT = `kontrakt_tillstand: fryst
+**Period:** 1 sep till 31 dec 2026
+**Ram:** 473 000 kr · **Timmar:** 430 h
+
+## Leverabler
+| Id | Leverabel | Klausul |
+| --- | --- | --- |
+| L1 | Första leveransen | 2.1 |
+| L2 | Andra leveransen | 2.2 |
+| L3 | Tredje leveransen | 2.3 |
+| L4 | Fjärde leveransen | 2.4 |
+| L5 | Femte leveransen | 2.5 |
+| L6 | Sjätte leveransen | 2.6 |
+
+## Timtabell
+| Leverabel | Timmar |
+| --- | --- |
+| L1 | 40 |
+| L2 | 70 |
+| L3 | 205 |
+| L4 | 40 |
+| L5 | 40 |
+| L6 | 20 |
+| - | 15 |
+| Summa | 430 |
+
+## Acceptans och uppföljning
+| Leverabel | Acceptanskriterium (förslag) | Uppföljningsmått (förslag) | Klausul (förslag) |
+| --- | --- | --- | --- |
+| L1 | Första leveransen mottagen | Antal mottagna | Senare klausul |
+
+## Bilaga 1
+| Kod | Ström | Start | Slut |
+| --- | --- | --- | --- |
+| STEG1 | Första steget ur texten | 2026-08-31 | 2026-09-13 |
+| STEG2 | Andra steget ur texten | 2026-09-07 | 2026-11-01 |
+| STEG3 | Tredje steget ur texten | 2026-10-26 | 2026-12-20 |
+| STEG4 | Fjärde steget ur texten | 2026-09-01 | 2026-12-31 |
+
+## Placering
+| Leverabel | Ström |
+| --- | --- |
+| L1 | STEG1 |
+| L2 | STEG2 |
+| L3 | STEG2 |
+| L4 | STEG3 |
+| L5 | STEG3 |
+| L6 | STEG4 |
+
+### L1
+Start: 2026-12-01
+Slut: 2026-12-02
+`;
 
 let user: TestUser;
 let companyId: string;
@@ -81,6 +138,17 @@ async function delrader(contractId: string): Promise<Delrad[]> {
 }
 
 const per = (rader: Delrad[]): Map<string, Delrad> => new Map(rader.map((r) => [r.code, r]));
+
+/** Hela raderna: även en UPDATE eller köad registerkopia måste upptäckas. */
+async function importtillstand(): Promise<Record<string, unknown[]>> {
+  return withAdmin(async (c) => {
+    const ut: Record<string, unknown[]> = {};
+    for (const tabell of ['contract_parts', 'uppdrag_leverabel', 'uppdrag_scopelinje', 'contracts', 'action_approvals', 'uppdrag_referens']) {
+      ut[tabell] = (await c.query(`SELECT * FROM ${tabell} WHERE company_id = $1 ORDER BY id`, [companyId])).rows;
+    }
+    return ut;
+  });
+}
 
 async function tillstand(contractId: string): Promise<string> {
   return withAdmin(async (c) => (await c.query<{ t: string }>(
@@ -160,13 +228,29 @@ describe('parsern: värdena var för sig', () => {
     expect(lasvag('drive')).toBeNull();
     expect(lasvag('ur systemet')).toBeNull();
   });
+
+  it('svensk period är dagprecis med slutårets år på startledet', () => {
+    expect(periodvarde('1 sep till 31 dec 2026')).toEqual({ start_date: '2026-09-01', end_date: '2026-12-31', date_precision: 'dag' });
+    expect(periodvarde('1 december 2025 till 31 januari 2026')).toEqual({ start_date: '2025-12-01', end_date: '2026-01-31', date_precision: 'dag' });
+    for (const varde of [undefined, 'hösten 2026', '31 feb till 31 dec 2026', '1 sep till 31 dec', '31 dec till 1 sep 2026']) {
+      expect(periodvarde(varde)).toEqual({ start_date: null, end_date: null, date_precision: null });
+    }
+  });
+
+  it('bara fältvärdet exakt fryst fryser texten', () => {
+    expect(parseLeveranskontrakt('kontrakt_tillstand: fryst').kontrakt_tillstand).toBe('fryst');
+    expect(parseLeveranskontrakt('kontrakt_tillstand: utkast').kontrakt_tillstand).toBe('utkast');
+    for (const text of ['# FRYST avtal', 'kontrakt_tillstand: FRYST', 'kontrakt_tillstand: fryst v3', 'kontrakt_tillstand: annat']) {
+      expect(parseLeveranskontrakt(text).kontrakt_tillstand).toBeNull();
+    }
+  });
 });
 
 describe('parsern: leveranskontraktets form', () => {
   const k = parseLeveranskontrakt(LEVERANSKONTRAKT_NVR001);
 
   it('ramen läses i timmar och ÖREN', () => {
-    expect(k.ram).toEqual({ cap_hours: 430, cap_amount_ore: 47_300_000 });
+    expect(k.ram).toEqual({ cap_hours: 430, cap_amount_ore: 47_300_000, start_date: null, end_date: null, date_precision: null });
   });
 
   it('strömmarna får sin period och precisionen manad', () => {
@@ -222,7 +306,7 @@ describe('parsern: leveranskontraktets form', () => {
 
   it('en text utan fälten ger NULL rakt igenom — inga nollor, inga defaultvärden', () => {
     const tomt = parseLeveranskontrakt('# Avtal\n\n## 2. Leverabler\n\n### L1 — Utan fält\n\nIngen tabell alls.\n');
-    expect(tomt.ram).toEqual({ cap_hours: null, cap_amount_ore: null });
+    expect(tomt.ram).toEqual({ cap_hours: null, cap_amount_ore: null, start_date: null, end_date: null, date_precision: null });
     expect(tomt.strommar).toEqual([]);
     expect(tomt.styrning).toBeNull();
     expect(tomt.scopelinjer).toEqual([]);
@@ -232,6 +316,43 @@ describe('parsern: leveranskontraktets form', () => {
       kod: 'L1', namn: 'Utan fält', strom_kod: null, cap_hours: null,
       klausul: null, acceptanskriterium: null, uppfoljningsmatt: null, matt_lasvag: null,
     }]);
+  });
+});
+
+describe('parsern: tabeller utan omformatering', () => {
+  it('läser ram, sex leverabler och placering över flera tabeller', () => {
+    const k = parseLeveranskontrakt(TABELLKONTRAKT);
+    expect(k.ram).toEqual({ cap_hours: 430, cap_amount_ore: 47_300_000, start_date: '2026-09-01', end_date: '2026-12-31', date_precision: 'dag' });
+    expect(k.leverabler.map((l) => [l.kod, l.cap_hours, l.strom_kod])).toEqual([
+      ['L1', 40, 'STEG1'], ['L2', 70, 'STEG2'], ['L3', 205, 'STEG2'],
+      ['L4', 40, 'STEG3'], ['L5', 40, 'STEG3'], ['L6', 20, 'STEG4'],
+    ]);
+    expect(k.leverabler[0]).toMatchObject({ namn: 'Första leveransen', klausul: '2.1', acceptanskriterium: 'Första leveransen mottagen', uppfoljningsmatt: 'Antal mottagna', matt_lasvag: null });
+    expect(k.styrning).toBeNull();
+  });
+
+  it('Id vinner, annars läses Leverabel; första fältvärdet vinner även när det är ogiltigt', () => {
+    const k = parseLeveranskontrakt(`
+| Id | Leverabel | Timmar |
+| --- | --- | --- |
+| L1 | L2 | oklart |
+| - | L99 | 7,5 |
+| L0 | - | 10 |
+| L100 | Summa | 10 |
+
+| Leverabel | Timmar | Ström |
+| --- | --- | --- |
+| L1 | 40 | STEG1 |
+| L99 | 20 | STEG4 |
+
+### L1 — Rubriknamnet
+Ström: SENARE
+Takvolym: 50 h
+Klausul: 2.1
+`);
+    expect(k.leverabler.map((l) => l.kod)).toEqual(['L1', 'L99']);
+    expect(k.leverabler[0]).toMatchObject({ namn: 'Rubriknamnet', cap_hours: null, strom_kod: 'STEG1', klausul: '2.1' });
+    expect(k.leverabler[1]).toMatchObject({ cap_hours: 7.5, strom_kod: 'STEG4' });
   });
 });
 
@@ -279,7 +400,7 @@ describe('importera_leveranskontrakt', () => {
     contractId = (await ok('skapa_uppdrag', {
       project_id: projekt, name: 'Leveranskontrakt NVR-001 v1', signed_date: SIGNERAT,
     })).contract_id as string;
-    resultat = await ok('importera_leveranskontrakt', {
+    resultat = await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
   });
@@ -387,7 +508,7 @@ describe('importera_leveranskontrakt', () => {
       scope: (await c.query('SELECT id, sort, text, klausul, ordning FROM uppdrag_scopelinje WHERE contract_id = $1 ORDER BY ordning', [contractId])).rows,
     }));
 
-    const om = await ok('importera_leveranskontrakt', {
+    const om = await importeraOchGodkann(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
     expect(om).toMatchObject({
@@ -415,6 +536,162 @@ describe('importera_leveranskontrakt', () => {
 // ---------------------------------------------------------------------------
 // KRAV-1 + KRAV-7: 0069 — att signera är att frysa
 // ---------------------------------------------------------------------------
+
+describe('baselineförslaget och godkännandet', () => {
+  it('hela tabellformen: befintligt projekt → ett förslag → baseline v1 med ärvda leverabelintervall', async () => {
+    const projektId = await nyttUppdrag('Tabellformens uppdrag');
+    const contractId = (await ok('skapa_uppdrag', {
+      project_id: projektId, name: 'Tabellkontraktet', signed_date: '2026-09-07',
+    })).contract_id as string;
+    const token = await api.post(`${co()}/agent-tokens`).set(auth()).send({ name: 'Kontraktsimport' });
+    expect(token.status, JSON.stringify(token.body)).toBe(201);
+    const agentAuth = { Authorization: `Bearer ${token.body.token}` };
+    const fore = await importtillstand();
+    const forslag = await api.post(`${co()}/actions/importera_leveranskontrakt`).set(agentAuth)
+      .send({ contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(forslag.status, JSON.stringify(forslag.body)).toBe(200);
+    expect(forslag.body.result).toMatchObject({
+      kontrakt_tillstand: 'fryst', approval_id: expect.any(String),
+      forslag: {
+        uppdrag: { start_date: '2026-09-01', end_date: '2026-12-31', date_precision: 'dag', cap_hours: 430, cap_amount_ore: 47_300_000 },
+        leverabler: expect.arrayContaining([expect.objectContaining({ kod: 'L1', strom_kod: 'STEG1' })]),
+      },
+    });
+    const efter = await importtillstand();
+    for (const tabell of ['contract_parts', 'uppdrag_leverabel', 'uppdrag_scopelinje', 'contracts', 'uppdrag_referens']) {
+      expect(efter[tabell], tabell).toEqual(fore[tabell]);
+    }
+    expect(efter.action_approvals!.length - fore.action_approvals!.length).toBe(1);
+    const approvalId = forslag.body.result.approval_id as string;
+    const kopost = await withAdmin(async (c) => (await c.query(
+      'SELECT action, input, status, requested_actor FROM action_approvals WHERE id = $1', [approvalId],
+    )).rows[0]);
+    expect(kopost).toEqual({ action: 'satt_baseline', input: { contract_id: contractId, kontraktstext: TABELLKONTRAKT }, status: 'pending', requested_actor: 'agent' });
+    const audit = await withAdmin(async (c) => (await c.query(
+      "SELECT details FROM audit_log WHERE entity_id = $1 AND action = 'action.approval_requested'", [approvalId],
+    )).rows);
+    expect(audit).toEqual([{ details: { action: 'satt_baseline', actor: 'agent' } }]);
+
+    const ua = supertest.agent(app);
+    const login = await ua.post('/app/login').type('form').send({ email: user.email, password: 'mycket-hemligt-losen-123' });
+    expect([302, 303]).toContain(login.status);
+    const sidan = await ua.get(`/app/c/${companyId}/approvals`);
+    expect(sidan.status).toBe(200);
+    expect(sidan.text).toContain('ingen baseline ur kontraktet');
+    expect(sidan.text).toContain('UPPDRAG 2026-09-01 till 2026-12-31');
+    for (const [steg, start, slut] of [
+      ['STEG1', '2026-08-31', '2026-09-13'], ['STEG2', '2026-09-07', '2026-11-01'],
+      ['STEG3', '2026-10-26', '2026-12-20'], ['STEG4', '2026-09-01', '2026-12-31'],
+    ]) {
+      expect(sidan.text).toContain(steg);
+      expect(sidan.text).toContain(`${start} till ${slut}`);
+    }
+    for (const [kod, steg] of [['L1', 'STEG1'], ['L2', 'STEG2'], ['L3', 'STEG2'], ['L4', 'STEG3'], ['L5', 'STEG3'], ['L6', 'STEG4']]) {
+      expect(sidan.text).toContain(`${kod} under ${steg}`);
+    }
+    expect(sidan.text).toContain('Avtalets datum blir baseline v1');
+    expect(sidan.text).toContain('Leverablerna ärver sitt stegs intervall');
+    expect(sidan.text).toContain(`href="/app/c/${companyId}/projects/${projektId}/kontraktet"`);
+    expect(sidan.text).toContain('class="ai-card"');
+    expect(sidan.text).toContain('class="andring"');
+
+    const agentBeslut = await api.post(`${co()}/approvals/${approvalId}/approve`).set(agentAuth).send({});
+    expect(agentBeslut.status).toBe(403);
+    expect(await delrader(contractId)).toHaveLength(1);
+    const godkant = await api.post(`${co()}/approvals/${approvalId}/approve`).set(auth()).send({});
+    expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
+    expect(godkant.body.approval.status).toBe('executed');
+    const rader = await delrader(contractId);
+    expect(rader).toHaveLength(11);
+    expect(rader.every((r) => r.valid_from === '2026-09-07' && !r.cap_confirmed)).toBe(true);
+    const delar = per(rader);
+    const rot = delar.get('UPPDRAG')!;
+    expect(rot).toMatchObject({ start_date: '2026-09-01', end_date: '2026-12-31', date_precision: 'dag', cap_hours: 430, cap_amount_ore: 47_300_000 });
+    const intervall = [
+      ['STEG1', 'Första steget ur texten', '2026-08-31', '2026-09-13'],
+      ['STEG2', 'Andra steget ur texten', '2026-09-07', '2026-11-01'],
+      ['STEG3', 'Tredje steget ur texten', '2026-10-26', '2026-12-20'],
+      ['STEG4', 'Fjärde steget ur texten', '2026-09-01', '2026-12-31'],
+    ];
+    for (const [kod, namn, start, slut] of intervall) {
+      expect(delar.get(kod!)!).toMatchObject({ name: namn, start_date: start, end_date: slut, date_precision: 'dag', parent_part_id: rot.id });
+    }
+    for (const [kod, steg] of [['L1', 'STEG1'], ['L2', 'STEG2'], ['L3', 'STEG2'], ['L4', 'STEG3'], ['L5', 'STEG3'], ['L6', 'STEG4']]) {
+      expect(delar.get(kod!)!).toMatchObject({ parent_part_id: delar.get(steg!)!.id, start_date: null, end_date: null, date_precision: null });
+    }
+    const register = await ok('las_leverabelregister', { contract_id: contractId }) as unknown as Array<{ kod: string }>;
+    expect(register.map((r) => r.kod)).toEqual(['L1', 'L2', 'L3', 'L4', 'L5', 'L6']);
+    const importAudit = await withAdmin(async (c) => (await c.query(
+      "SELECT id FROM audit_log WHERE entity_id = $1 AND action = 'uppdrag.leveranskontrakt_importerat'", [contractId],
+    )).rows);
+    expect(importAudit).toHaveLength(1);
+
+    const samma = await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(samma).toMatchObject({ oforandrad: true, avtalsdelar_skrivna: 0 });
+    expect(await delrader(contractId)).toEqual(rader);
+
+    // Båda befintliga datumvägarna kräver godkännande. Importtexten innehåller
+    // med flit egna leverabelfält; varken importen eller satt_baseline läser dem.
+    for (const atgard of ['upsert_contract_part', 'andra_baseline']) {
+      const datum = atgard === 'upsert_contract_part' ? '2026-09-10' : '2026-09-11';
+      const begaran = await act(atgard, { contract_id: contractId, code: 'L1', valid_from: '2026-09-07', start_date: datum, end_date: datum, date_precision: 'dag', change_reason: 'Davids datumbeslut' });
+      expect(begaran.status).toBe(202);
+      const foreBeslut = per(await delrader(contractId)).get('L1')!;
+      expect(foreBeslut.start_date).toBe(atgard === 'upsert_contract_part' ? null : '2026-09-10');
+      const beslut = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+      expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
+      expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: datum, end_date: datum });
+    }
+    await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: '2026-09-11', end_date: '2026-09-11' });
+  });
+
+  for (const signerat of [false, true]) {
+    it(`utkast förhandsvisas utan en enda domänrad eller köpost, signed_date ${signerat ? 'finns' : 'saknas'}`, async () => {
+      const projectId = await nyttUppdrag(`Utkast ${signerat}`);
+      const contractId = (await ok('create_contract', { project_id: projectId, name: 'Förhandsvisning', ...(signerat ? { signed_date: SIGNERAT } : {}) })).id as string;
+      const fore = await importtillstand();
+      const svar = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: TABELLKONTRAKT.replace('kontrakt_tillstand: fryst', 'kontrakt_tillstand: utkast') });
+      expect(svar).toMatchObject({ kontrakt_tillstand: 'utkast', forslag: { uppdrag: { start_date: '2026-09-01', end_date: '2026-12-31', cap_hours: 430, cap_amount_ore: 47_300_000 }, strommar: expect.any(Array), leverabler: expect.any(Array), saknade_falt: expect.arrayContaining(['L1.matt_lasvag']) } });
+      expect(svar).not.toHaveProperty('approval_id');
+      expect(await importtillstand()).toEqual(fore);
+    });
+  }
+
+  it('okänt tillstånd och ogiltig ram förhandsvisas med NULL och saknade_falt', async () => {
+    const contractId = (await ok('create_contract', { project_id: await nyttUppdrag('Otolkad ram'), name: 'Otolkat kontrakt' })).id as string;
+    const fore = await importtillstand();
+    const svar = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: 'kontrakt_tillstand: FRYST\n**Period:** oklart\n**Ram:** oklart · **Timmar:** oklart' });
+    expect(svar).toMatchObject({ kontrakt_tillstand: null, forslag: { uppdrag: { start_date: null, end_date: null, date_precision: null, cap_hours: null, cap_amount_ore: null }, saknade_falt: expect.arrayContaining(['ram.start_date', 'ram.end_date', 'ram.date_precision', 'ram.cap_hours', 'ram.cap_amount_ore']) } });
+    expect(await importtillstand()).toEqual(fore);
+  });
+
+  it('fryst text utan signed_date ger valid_from_required utan köpost', async () => {
+    const contractId = (await ok('create_contract', { project_id: await nyttUppdrag('Fryst text osignerad'), name: 'Osignerat' })).id as string;
+    const fore = await importtillstand();
+    const svar = await act('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(svar.status).toBe(400);
+    expect(svar.body.error).toBe('valid_from_required');
+    expect(await importtillstand()).toEqual(fore);
+  });
+
+  it('satt_baseline vägrar utkast också när åtgärden begärts direkt', async () => {
+    const contractId = (await ok('skapa_uppdrag', { project_id: await nyttUppdrag('Direkt baselineutkast'), name: 'Avtal', signed_date: SIGNERAT })).contract_id as string;
+    const fore = await delrader(contractId);
+    const svar = await koaOchGodkann('satt_baseline', { contract_id: contractId, kontraktstext: TABELLKONTRAKT.replace('kontrakt_tillstand: fryst', 'kontrakt_tillstand: utkast') });
+    expect(svar.status).toBe(400);
+    expect(svar.body.error).toBe('kontrakt_not_frozen');
+    expect(await delrader(contractId)).toEqual(fore);
+    const register = await ok('las_leverabelregister', { contract_id: contractId });
+    expect(register).toEqual([]);
+  });
+
+  it('satt_baseline har strikt indata och köar inga okända fält', async () => {
+    const svar = await act('satt_baseline', { contract_id: '00000000-0000-4000-8000-000000000000', kontraktstext: TABELLKONTRAKT, start_date: '2026-09-01' });
+    expect(svar.status).toBe(400);
+    expect(svar.body.error).toBe('validation_error');
+  });
+});
 
 describe('0069: signeringen är frysningen', () => {
   it('ett avtal med signed_date föds fryst', async () => {

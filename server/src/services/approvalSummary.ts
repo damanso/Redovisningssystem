@@ -10,6 +10,7 @@
 // utelämnas den — sammanfattningen får aldrig hindra att kön visas.
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
+import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 
 const SEP = ' · ';
 
@@ -153,6 +154,28 @@ export async function explainApproval(
   client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, base: string,
 ): Promise<ApprovalExplanation> {
   const none: ApprovalExplanation = { change: null, why: null, source: null };
+
+  if (action === 'satt_baseline') {
+    const contractId = asUuid(input.contract_id);
+    if (!contractId || typeof input.kontraktstext !== 'string') return none;
+    const avtal = await one<{ name: string; project_id: string }>(client,
+      'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
+    if (!avtal) return none;
+    const kontrakt = parseLeveranskontrakt(input.kontraktstext);
+    const intervall = (start: string | null, slut: string | null): string => `${start ?? 'datum saknas'} till ${slut ?? 'datum saknas'}`;
+    return {
+      change: {
+        from: 'ingen baseline ur kontraktet',
+        to: [
+          `UPPDRAG ${intervall(kontrakt.ram.start_date, kontrakt.ram.end_date)}`,
+          ...kontrakt.strommar.map((s) => `${s.kod}${s.namn ? ` — ${s.namn}` : ''}: ${intervall(s.start_date, s.end_date)}`),
+          ...kontrakt.leverabler.map((l) => `${l.kod} under ${l.strom_kod ?? 'UPPDRAG (steg saknas)'}`),
+        ].join(SEP),
+      },
+      why: 'Avtalets datum blir baseline v1. Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.',
+      source: { label: avtal.name, href: `${base}/projects/${avtal.project_id}/kontraktet` },
+    };
+  }
 
   const invoiceId = asUuid(input.invoice_id);
   if (invoiceId) {

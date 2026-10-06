@@ -341,3 +341,30 @@ kundens beställare är kontakt med kunden.
 `crm_contact_suggestions` är en läsning. Systemet föreslår; människan skriver
 och skickar. Det finns ingen väg härifrån ut till en kund — inte mail, inte
 påminnelser, ingenting. Den spärren är inte en inställning som kan slås på.
+
+## Leveranskontraktets import (uppdragsytan)
+
+`POST /api/companies/<company_id>/actions/importera_leveranskontrakt` tar
+strikt `{ contract_id, kontraktstext }` (UUID och högst 200 000 tecken).
+Texten skickas av källsystemet; redovisningen läser aldrig filer eller Drive.
+Svaret är HTTP 200 med `status: 'ok'` och `result` som innehåller
+`contract_id`, textens `kontrakt_tillstand` (`fryst`, `utkast` eller `null`)
+och `forslag`: `uppdrag` med ram och ytterdatum, `strommar` med intervall,
+`leverabler` med `strom_kod` och `saknade_falt`. Saknade eller otolkbara
+fält är `null`; belopp är heltal i ören.
+
+Endast text med exakt `kontrakt_tillstand: fryst` och ett avtal med
+`signed_date` köar ett förslag för `satt_baseline`; svaret innehåller då
+också `approval_id`. Importanropet skriver ingen baseline. Fryst text utan
+signeringsdatum ger HTTP 400 `valid_from_required`. Utkast och okänt
+tillstånd ger bara förhandsvisningen, även utan signeringsdatum, och skriver
+inga domänrader, godkännandeposter eller köposter för registerkopian.
+
+`satt_baseline` är känslig och har samma strikta indata. Den exekveras genom
+det befintliga mänskliga godkännandet
+`POST /api/companies/<company_id>/approvals/<approval_id>/approve`.
+Godkännandet skriver UPPDRAG med ytterdatum, strömmarna med sina intervall
+och leverablerna under sina strömmar med egna datum `null`; intervallet ärvs.
+Text som inte är fryst avvisas med HTTP 400 `kontrakt_not_frozen` vid
+godkännandet. Att göra visar datumen och placeringarna samt länken till
+avtalets `/app/c/<company_id>/projects/<project_id>/kontraktet`.

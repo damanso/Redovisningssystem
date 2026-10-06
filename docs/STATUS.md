@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-06 (FR-1, beslut #194 — kontraktets baseline via godkännandekön):**
+  `leveranskontrakt.ts` läser textens tillstånd, svensk Period, Ram/Timmar
+  och leverabeltabeller förenade per kod med placering. Importtjänsten ger
+  utkast en förhandsvisning utan domänskrivning, även utan signed_date, och
+  köar fryst text som ett `satt_baseline`-förslag med actor och auditrad.
+  Den tidigare skrivvägen (a)–(g) körs vid godkännandet; UPPDRAG får ramens
+  ytterdatum och leverablerna behåller egna datum NULL med ärvt stegintervall.
+  `explainApproval` fyller befintliga Att göra-kort med intervall, placering
+  och avtalslänk; husets markup, tokens och fokusregler används oförändrade.
+  Befintliga importsådder i testerna går nu via förslag + HTTP-godkännande.
+  Nya prov i `uppdragsytan-import.test.ts` omfattar tabellformen, utkast utan
+  skrivning, en köpost före baseline, agentspärr, auditrader och godkända
+  leverabeldatum. API-kontraktet är uppdaterat. Ingen migration eller nya
+  beroenden. **KRAV-13 återstår:** den angivna v3-speglingen finns inte i
+  repot; originaltexten har begärts från uppdragsgivaren. Formprovet är
+  uttryckligen syntetiskt och ersätter inte den ordagranna v3-fixturen.
+  Typecheck och tester har inte körts i sessionen enligt uppdragets förbud;
+  verifieringen lämnas till byggskriptet. Ingen commit eller deploy utförd.
+
 - **2026-09-29 (FR-6, beslut #194 — fakturaräknarens flytt serialiserad):**
   astras fynd: `setInvoiceNumberSeries` läste räknaren utan lås, så två
   godkännanden kunde läsa samma gamla värde och en lägre flytt skriva över en
