@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-06 (Story 1.2, KRAV-13 — det frysta v3-kontraktet ordagrant i repot):**
+  `server/test/fixtures/leveranskontrakt-nvr-001-v3.ts` bär NVR-001:s frysta
+  leveranskontrakt v3 (2026-09-07) tecken för tecken, framställt mekaniskt ur
+  `$HOME/brain/03-Resurser/kunddokument/Nordic Vision Retail/Leveranskontrakt-NVR-001-FRYST-v3-2026-09-07.md`,
+  rad 14 till slutet. Källa i Drive:
+  `01_Kunder/Nordic Vision Retail/Fas 2/Leveranskontrakt-NVR-001-FRYST-v3-2026-09-07.md`;
+  Drive-id `1NeHDvs26pipOSACQJAwgYdkbm1xcp-9-`, andrad `2026-09-07 18:23`,
+  metod `ren text (text/markdown)`.
+  sha256 `4daaea5f30ad8738a9d11e7ad51739f0cda684720641d5f695cb08c74bfe29d8`.
+  Provet `server/test/uppdragsytan-v3-fixtur.test.ts` låser text, konstant och
+  kommentar vid källans summa. Tre negativa kontroller finns. Formfixturen
+  `leveranskontrakt-nvr-001.ts` är märkt SYNTETISK och dess text oförändrad:
+  sha256 `763bca31183af6d74dff79edff647c73695745353e51ef5fa4676f2ce847b608`
+  både före och efter. **KRAV-13 stängd 2026-10-06.** Kört: `sha256sum` och
+  UTF-8-skript gav lika summor; identitetskontroll gav `true`. En planterad
+  teckenändring gav rött, mekanisk återställning gav grönt och samma filsumma.
+  `npm run typecheck` och `npm run build`: exit 0. `npm test` och
+  `npx vitest run test/uppdragsytan-v3-fixtur.test.ts`: exit 1 före insamling,
+  `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+  `npx tsx --no-cache` nekades också IPC-socket; samma installerade tsx-loader
+  kördes med `TSX_DISABLE_CACHE=1 node --import tsx`, utan cache och databas:
+  sex motsvarande kontroller godkända (exit 0). Inte kört: vitest-proven,
+  inklusive befintliga tretton formprov; kedjan kör hela sviten efter sessionen.
+  Ingen tjänst startad eller driftsättning utförd. Speglingen tar bort
+  blanktecken i textens kanter (`dokument_index.py` skriv()); jämförelsen mot
+  Drive-filens egen summa görs i Hermes importsteg (Story 2.5).
+
 - **2026-10-06 (FR-1, beslut #194 — kontraktets baseline via godkännandekön):**
   `leveranskontrakt.ts` läser textens tillstånd, svensk Period, Ram/Timmar
   och leverabeltabeller förenade per kod med placering. Importtjänsten ger

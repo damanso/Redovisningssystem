@@ -1,4 +1,6 @@
-// Fixtur: leveranskontraktets STRUKTUR (NVR-001, fryst v1).
+// SYNTETISK formfixtur. Detta är INTE NVR-001:s kontrakt och inget belägg för vad det innehåller.
+// Texten är skriven för formprov av parsern och importkedjan, i v1:s rubrikform.
+// NVR-001:s frysta kontrakt finns ordagrant i `leveranskontrakt-nvr-001-v3.ts` (KRAV-13).
 //
 // Originalet ligger i Drive (`Min enhet/01_Kunder/Nordic Vision Retail/Fas 2/
 // Leveranskontrakt-NVR-001-FRYST-v1-2026-09-03.md`) och skickas som indata till
