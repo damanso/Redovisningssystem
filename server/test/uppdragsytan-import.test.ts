@@ -18,6 +18,8 @@ import {
   datumvarde, lasvag, oren, parseLeveranskontrakt, periodvarde, timmar,
 } from '../src/lib/leveranskontrakt.js';
 import { IMPORTORSAK } from '../src/services/uppdragImport.js';
+import { explainApproval } from '../src/services/approvalSummary.js';
+import { withTenantTransaction } from '../src/db/tx.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -320,6 +322,22 @@ describe('parsern: leveranskontraktets form', () => {
 });
 
 describe('parsern: tabeller utan omformatering', () => {
+  it('mittpunkter i fritext bevaras; bara identifierade fältpar delar raden', () => {
+    for (const etikett of ['Acceptanskriterium:', '**Acceptanskriterium:**']) {
+      const k = parseLeveranskontrakt(`**Ram:** 473 000 kr · **Timmar:** 430 h
+### L1 — Rapport
+${etikett} Rapport klar · kunden har godkänt · villkor: skriftligt
+Uppföljningsmått: Godkänt · protokollfört
+`);
+      expect(k.ram.cap_hours).toBe(430);
+      expect(k.ram.cap_amount_ore).toBe(47_300_000);
+      expect(k.leverabler[0]).toMatchObject({
+        acceptanskriterium: 'Rapport klar · kunden har godkänt · villkor: skriftligt',
+        uppfoljningsmatt: 'Godkänt · protokollfört',
+      });
+    }
+  });
+
   it('läser ram, sex leverabler och placering över flera tabeller', () => {
     const k = parseLeveranskontrakt(TABELLKONTRAKT);
     expect(k.ram).toEqual({ cap_hours: 430, cap_amount_ore: 47_300_000, start_date: '2026-09-01', end_date: '2026-12-31', date_precision: 'dag' });
@@ -538,6 +556,57 @@ describe('importera_leveranskontrakt', () => {
 // ---------------------------------------------------------------------------
 
 describe('baselineförslaget och godkännandet', () => {
+  it('återimport visar befintlig baseline och ändringen samt bevarar mänskligt beslutade leverabeldatum', async () => {
+    const projectId = await nyttUppdrag('Återimport efter Davids baselinebeslut');
+    const contractId = (await ok('skapa_uppdrag', {
+      project_id: projectId, name: 'Återimportens avtal', signed_date: '2026-09-07',
+    })).contract_id as string;
+    await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    const beslut = await koaOchGodkann('andra_baseline', {
+      contract_id: contractId, code: 'L1', valid_from: '2026-09-07',
+      start_date: '2026-09-10', end_date: '2026-09-11', date_precision: 'dag', change_reason: 'Davids egna leverabeldatum',
+    });
+    expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
+    const senareBeslut = await koaOchGodkann('andra_baseline', {
+      contract_id: contractId, code: 'L2', name: 'Davids andra leverans', valid_from: '2026-09-08',
+      parent_part_id: per(await delrader(contractId)).get('STEG2')!.id,
+      start_date: '2026-09-25', end_date: '2026-09-26', date_precision: 'dag', change_reason: 'Davids senare baselineversion',
+    });
+    expect(senareBeslut.status, JSON.stringify(senareBeslut.body)).toBe(200);
+    const fore = await delrader(contractId);
+    const kontraktstext = TABELLKONTRAKT.replace(
+      'Första steget ur texten | 2026-08-31 | 2026-09-13',
+      'Ändrat första steg | 2026-08-31 | 2026-09-20',
+    );
+    const forslag = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext });
+    expect(await delrader(contractId)).toEqual(fore);
+    const kort = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
+      { contract_id: contractId, kontraktstext }, `/app/c/${companyId}`));
+    expect(kort.change!.from).toContain('STEG1 2026-08-31 till 2026-09-13 — Första steget ur texten');
+    expect(kort.change!.to).toContain('STEG1 2026-08-31 till 2026-09-20 — Ändrat första steg');
+    for (const sida of [kort.change!.from, kort.change!.to]) {
+      expect(sida).toContain('L1 under STEG1 eget datum: 2026-09-10 till 2026-09-11');
+      expect(sida).toContain('Oförändrade versioner: L2 under STEG2 eget datum: 2026-09-25 till 2026-09-26');
+      expect(sida).toContain('från 2026-09-08');
+    }
+    expect(kort.change!.to).toContain('L2 under STEG2 ärver stegets intervall');
+    expect(kort.change!.from).not.toContain('ingen baseline');
+    expect(kort.why).not.toContain('baseline v1');
+    expect(kort.why).not.toContain('Leverablerna ärver');
+    expect(kort.why).toContain('Tidigare beslutade egna datum bevaras för L1');
+    expect(kort.source!.href).toBe(`/app/c/${companyId}/projects/${projectId}/kontraktet`);
+    const godkant = await api.post(`${co()}/approvals/${forslag.approval_id}/approve`).set(auth()).send({});
+    expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
+    const efter = per(await delrader(contractId));
+    expect(efter.get('STEG1')).toMatchObject({ name: 'Ändrat första steg', end_date: '2026-09-20' });
+    expect(efter.get('L1')).toMatchObject({ start_date: '2026-09-10', end_date: '2026-09-11', date_precision: 'dag' });
+    expect((await delrader(contractId)).filter((r) => r.valid_from === '2026-09-08'))
+      .toEqual(fore.filter((r) => r.valid_from === '2026-09-08'));
+    const oforandrat = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
+      { contract_id: contractId, kontraktstext }, `/app/c/${companyId}`));
+    expect(oforandrat.change!.from).toBe(oforandrat.change!.to);
+  });
+
   it('hela tabellformen: befintligt projekt → ett förslag → baseline v1 med ärvda leverabelintervall', async () => {
     const projektId = await nyttUppdrag('Tabellformens uppdrag');
     const contractId = (await ok('skapa_uppdrag', {

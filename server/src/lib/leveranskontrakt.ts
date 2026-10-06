@@ -196,7 +196,9 @@ function faltkarta(avsnitten: Avsnitt[]): Map<string, string> {
     }
     for (const rad of a.rader) {
       if (rad.includes('|')) continue;
-      for (const led of rad.split('·')) {
+      // Mittpunkter hör också till fritext. Bara ett nytt, uttryckligt
+      // markdown-fältpar får bryta raden; resten tillhör föregående värde.
+      for (const led of rad.split(/\s*·\s*(?=\*\*[^:*]{1,44}:\*\*\s*)/)) {
         const par = /^\s*(?:[-*]\s+)?([^:]{1,44}?)\s*:\s*(.*?)\s*$/.exec(led);
         if (par) satt(par[1]!.replace(/\*/g, ''), par[2]!.replace(/\*/g, '').trim());
       }

@@ -1642,7 +1642,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   }),
   def({
     name: 'satt_baseline',
-    title: 'Sätt baseline v1 ur det frysta leveranskontraktet',
+    title: 'Sätt baseline ur det frysta leveranskontraktet',
     sensitivity: 'sensitive',
     inputSchema: z.object({ contract_id: UuidSchema, kontraktstext: safeText(200_000) }).strict(),
     handler: (ctx, i) => sattBaseline(ctx.client, ctx.companyId, ctx.userId, i as never),

@@ -134,9 +134,49 @@ interface Delrad {
   cap_amount_ore: number | null;
   start_date: string | null;
   end_date: string | null;
-  date_precision: string | null;
+  date_precision: Datumprecision | null;
   sort_order: number;
   change_reason: string | null;
+  valid_from: string;
+}
+
+interface BaselineDel extends Omit<Onskad, 'parent_part_id'> {
+  parent_code: string | null;
+}
+
+/** Samma delar och NULL-regler för skrivningen och godkännandets före/efter. */
+function planeraDelar(k: Leveranskontrakt, avtalsnamn: string): BaselineDel[] {
+  return [
+    { code: ROTKOD, name: avtalsnamn, parent_code: null, ...k.ram, sort_order: 0 },
+    ...k.strommar.map((s, i) => ({
+      code: s.kod, name: s.namn ?? s.kod, parent_code: ROTKOD,
+      cap_hours: null, cap_amount_ore: null, start_date: s.start_date,
+      end_date: s.end_date, date_precision: s.date_precision, sort_order: i + 1,
+    })),
+    ...k.leverabler.map((l, i) => ({
+      code: l.kod, name: l.namn ?? l.kod, parent_code: l.strom_kod ?? ROTKOD,
+      cap_hours: l.cap_hours, cap_amount_ore: null, start_date: null,
+      end_date: null, date_precision: null, sort_order: i + 1,
+    })),
+    ...(k.styrning ? [{
+      code: k.styrning.kod, name: k.styrning.namn ?? k.styrning.kod, parent_code: ROTKOD,
+      cap_hours: k.styrning.cap_hours, cap_amount_ore: null, start_date: null,
+      end_date: null, date_precision: null, sort_order: 99,
+    }] : []),
+  ];
+}
+
+function bevaraSaknadeFalt<T extends Pick<Onskad, 'cap_hours' | 'cap_amount_ore' | 'start_date' | 'end_date' | 'date_precision'>>(
+  onskad: T, befintlig: Delrad | undefined,
+): T {
+  return {
+    ...onskad,
+    cap_hours: onskad.cap_hours ?? befintlig?.cap_hours ?? null,
+    cap_amount_ore: onskad.cap_amount_ore ?? befintlig?.cap_amount_ore ?? null,
+    start_date: onskad.start_date ?? befintlig?.start_date ?? null,
+    end_date: onskad.end_date ?? befintlig?.end_date ?? null,
+    date_precision: onskad.date_precision ?? befintlig?.date_precision ?? null,
+  };
 }
 
 /**
@@ -156,17 +196,56 @@ function lika(befintlig: Delrad, onskad: Onskad): boolean {
     && befintlig.change_reason === IMPORTORSAK;
 }
 
+async function hamtaDelrader(
+  client: PoolClient, companyId: string, contractId: string, validFrom: string | null,
+): Promise<Delrad[]> {
+  const res = await client.query<Delrad>(
+    `SELECT id, code, name, parent_part_id, cap_hours::float8 AS cap_hours, cap_amount_ore,
+            start_date::text, end_date::text, date_precision, sort_order, change_reason, valid_from::text
+       FROM contract_parts
+      WHERE company_id = $1 AND contract_id = $2 AND ($3::date IS NULL OR valid_from = $3)
+      ORDER BY valid_from, sort_order, code`,
+    [companyId, contractId, validFrom],
+  );
+  return res.rows;
+}
+
 async function delarVid(
   client: PoolClient, companyId: string, contractId: string, validFrom: string,
 ): Promise<Map<string, Delrad>> {
-  const res = await client.query<Delrad>(
-    `SELECT id, code, name, parent_part_id, cap_hours::float8 AS cap_hours, cap_amount_ore,
-            start_date::text, end_date::text, date_precision, sort_order, change_reason
-       FROM contract_parts
-      WHERE company_id = $1 AND contract_id = $2 AND valid_from = $3`,
-    [companyId, contractId, validFrom],
-  );
-  return new Map(res.rows.map((r) => [r.code, r]));
+  return new Map((await hamtaDelrader(client, companyId, contractId, validFrom)).map((r) => [r.code, r]));
+}
+
+/** Läser exakt den version importen skriver, även efter tidigare människobeslut. */
+export async function lasBaselineandring(
+  client: PoolClient, companyId: string, contractId: string, kontrakt: Leveranskontrakt,
+): Promise<{
+  fore: BaselineDel[]; efter: BaselineDel[]; finnsBaseline: boolean; valid_from: string | null;
+  andraVersioner: Array<BaselineDel & { valid_from: string }>;
+}> {
+  const avtal = await hamtaAvtal(client, companyId, contractId);
+  const alla = await hamtaDelrader(client, companyId, contractId, null);
+  const befintliga = new Map(alla.filter((r) => r.valid_from === avtal.signed_date).map((r) => [r.code, r]));
+  const koder = new Map(alla.map((r) => [r.id, r.code]));
+  const tillDel = (r: Delrad): BaselineDel => ({
+    code: r.code, name: r.name, parent_code: r.parent_part_id ? koder.get(r.parent_part_id) ?? r.parent_part_id : null,
+    cap_hours: r.cap_hours, cap_amount_ore: r.cap_amount_ore, start_date: r.start_date,
+    end_date: r.end_date, date_precision: r.date_precision, sort_order: r.sort_order,
+  });
+  const fore = [...befintliga.values()].map(tillDel);
+  const andraVersioner = alla.filter((r) => r.valid_from !== avtal.signed_date)
+    .map((r) => ({ ...tillDel(r), valid_from: r.valid_from }));
+  const efter = new Map(fore.map((r) => [r.code, r]));
+  for (const del of planeraDelar(kontrakt, avtal.name)) {
+    efter.set(del.code, {
+      ...bevaraSaknadeFalt(del, befintliga.get(del.code)),
+      parent_code: del.parent_code ?? efter.get(del.code)?.parent_code ?? null,
+    });
+  }
+  const finnsBaseline = alla.some((r) => r.code !== ROTKOD
+    || r.change_reason !== null || r.start_date !== null || r.end_date !== null
+    || r.cap_hours !== null || r.cap_amount_ore !== null);
+  return { fore, efter: [...efter.values()], finnsBaseline, valid_from: avtal.signed_date, andraVersioner };
 }
 
 async function delId(
@@ -192,7 +271,7 @@ async function skrivDel(
   client: PoolClient, companyId: string, userId: string,
   contractId: string, validFrom: string, onskad: Onskad, befintlig: Delrad | undefined,
 ): Promise<{ id: string; skriven: boolean }> {
-  if (befintlig && lika(befintlig, onskad)) return { id: befintlig.id, skriven: false };
+  if (befintlig && lika(befintlig, bevaraSaknadeFalt(onskad, befintlig))) return { id: befintlig.id, skriven: false };
   await upsertContractPart(client, companyId, userId, {
     contract_id: contractId,
     code: onskad.code,
@@ -295,75 +374,23 @@ export async function sattBaseline(
     return utfall.id;
   };
 
-  // (a) Rotdelen: uppdragets ram. Namnet är avtalets — rotdelen ÄR uppdraget.
-  const rotId = rakna(await skriv({
-    code: ROTKOD,
-    name: avtal.name,
-    parent_part_id: null,
-    cap_hours: kontrakt.ram.cap_hours,
-    cap_amount_ore: kontrakt.ram.cap_amount_ore,
-    start_date: kontrakt.ram.start_date,
-    end_date: kontrakt.ram.end_date,
-    date_precision: kontrakt.ram.date_precision,
-    sort_order: 0,
-  }));
-
-  // (b) Strömmarna: Bilaga 1:s faser som förälderdelar under UPPDRAG.
-  const stromId = new Map<string, string>();
-  for (const [i, strom] of kontrakt.strommar.entries()) {
-    stromId.set(strom.kod, rakna(await skriv({
-      code: strom.kod,
-      name: strom.namn ?? strom.kod,
-      parent_part_id: rotId,
-      cap_hours: null,
-      cap_amount_ore: null,
-      start_date: strom.start_date,
-      end_date: strom.end_date,
-      date_precision: strom.date_precision,
-      sort_order: i + 1,
-    })));
-  }
-
-  // (c) Leverablerna under sin ström. Intervallet ÄRVS (NULL) — strömmens
-  // period gäller, och en kopia av den hade blivit ett eget åtagande att hålla
-  // synkat. En leverabel utan angiven ström hänger under roten; den försvinner
-  // aldrig ur trädet.
-  for (const [i, leverabel] of kontrakt.leverabler.entries()) {
-    const foralder = leverabel.strom_kod === null ? rotId : stromId.get(leverabel.strom_kod);
-    if (!foralder) {
+  // (a)–(d): samma plan som godkännandekortet, i föräldraordning.
+  // Leverabler får inga egna datum; NULL lämnar tidigare beslutade datum kvar.
+  const delIds = new Map<string, string>();
+  const stromkoder = new Set(kontrakt.strommar.map((s) => s.kod));
+  for (const del of planeraDelar(kontrakt, avtal.name)) {
+    const leverabel = kontrakt.leverabler.find((l) => l.kod === del.code);
+    if (leverabel?.strom_kod !== null && leverabel?.strom_kod !== undefined
+      && !stromkoder.has(leverabel.strom_kod)) {
       throw new BadRequestError(
         'unknown_parent_code',
-        `leverabeln ${leverabel.kod} pekar på strömmen ${leverabel.strom_kod} som inte finns i kontraktstexten`,
+        `leverabeln ${del.code} pekar på strömmen ${del.parent_code} som inte finns i kontraktstexten`,
       );
     }
-    rakna(await skriv({
-      code: leverabel.kod,
-      name: leverabel.namn ?? leverabel.kod,
-      parent_part_id: foralder,
-      cap_hours: leverabel.cap_hours,
-      cap_amount_ore: null,
-      start_date: null,
-      end_date: null,
-      date_precision: null,
-      sort_order: i + 1,
-    }));
-  }
-
-  // (d) Styrningen: en avtalsdel under roten, UTAN rad i leverabelregistret.
-  // Den levereras inte, den bedrivs — ett register som blandar in den räknar
-  // sex leveranser som sju.
-  if (kontrakt.styrning) {
-    rakna(await skriv({
-      code: kontrakt.styrning.kod,
-      name: kontrakt.styrning.namn ?? kontrakt.styrning.kod,
-      parent_part_id: rotId,
-      cap_hours: kontrakt.styrning.cap_hours,
-      cap_amount_ore: null,
-      start_date: null,
-      end_date: null,
-      date_precision: null,
-      sort_order: 99,
-    }));
+    const { parent_code, ...onskad } = del;
+    delIds.set(del.code, rakna(await skriv({
+      ...onskad, parent_part_id: parent_code === null ? null : delIds.get(parent_code)!,
+    })));
   }
 
   // (e) Leverabelregistret. UNIQUE (contract_id, kod) bär idempotensen: en rad
