@@ -12,6 +12,8 @@
 // aldrig gissas fram. Provet hänger på just den luckan.
 export const LEVERANSKONTRAKT_NVR001 = `# Leveranskontrakt NVR-001 — FRYST v1 (2026-09-03)
 
+kontrakt_tillstand: fryst
+
 Parter: Locollabs AB (leverantör) och Nordic Vision Retail AB (beställare).
 
 ## 1. Uppdragets ram

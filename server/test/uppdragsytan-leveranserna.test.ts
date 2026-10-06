@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { LEVERABELLAGEN } from '../src/services/uppdragLage.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -144,7 +145,7 @@ beforeAll(async () => {
   avtalId = (await ok('skapa_uppdrag', {
     project_id: projektId, name: 'Leveranskontrakt NVR-001', signed_date: SIGNERAT,
   }) as { contract_id: string }).contract_id;
-  await ok('importera_leveranskontrakt', { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   // Fyra av fem lägen bemannas. `godkand` lämnas MED FLIT tomt: en tom kolumn
   // ska stå kvar i brädan, annars byter kolumnerna ordning mellan två avtal.

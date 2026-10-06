@@ -21,6 +21,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const OKANT_ID = '00000000-0000-4000-8000-000000000000';
@@ -121,7 +122,7 @@ beforeAll(async () => {
   const avtal = (await ok('skapa_uppdrag', {
     project_id: projekt, name: 'Leveranskontrakt NVR-001', signed_date: '2026-09-03',
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
   const avtalet = await ok('get_contract_usage', { contract_id: avtal });
   const delar = avtalet.parts as unknown as Array<{ part_id: string; code: string }>;
   const del = (code: string): string => {

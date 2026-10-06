@@ -22,6 +22,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, app, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 import { readFileSync } from 'node:fs';
 
@@ -197,7 +198,7 @@ beforeAll(async () => {
   const avtalId = (await ok('skapa_uppdrag', {
     project_id: projektId, name: 'Leveranskontrakt NVR-001', signed_date: '2026-09-03',
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   // En köpost som LÄMNAS i kön (202, godkänns aldrig). Utan den står Lägets
   // band tomt — och då finns bandets rader inte i markupen att prova.

@@ -30,6 +30,7 @@ import {
   korUppdragssvep, lasSvepvarden, type SvepIndata, type Svepsvar,
 } from '../src/services/uppdragSvep.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const KALLA = new URL('../src/services/uppdragSvep.ts', import.meta.url);
@@ -163,7 +164,7 @@ beforeAll(async () => {
 
   const uppdrag = await nyttUppdrag('NVR-001');
   avtal = uppdrag.contractId;
-  await ok('importera_leveranskontrakt', { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtal, kontraktstext: LEVERANSKONTRAKT_NVR001 });
   const alla = await delar(avtal);
   delRot = del(alla, 'UPPDRAG');
   delS1 = del(alla, 'S1');
@@ -455,7 +456,7 @@ describe('KRAV-3: ett avslutat uppdrag rörs inte', () => {
     // bolagets svep med ett rått databasfel, och gjort om det vid varje nytt
     // svep så länge köposten stod kvar.
     const sent = await nyttUppdrag('NVR-Stangt-Efter-Ko');
-    await ok('importera_leveranskontrakt', { contract_id: sent.contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    await importeraOchGodkann(companyId, auth(), { contract_id: sent.contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
     const post = (await svep({})).arbetslista.drive_ko.find((k) => k.contract_id === sent.contractId);
     expect(post, 'registerkopian saknas i kön').toBeDefined();
 

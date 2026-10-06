@@ -10,6 +10,8 @@
 // utelämnas den — sammanfattningen får aldrig hindra att kön visas.
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
+import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
+import { lasBaselineandring } from './uppdragImport.js';
 
 const SEP = ' · ';
 
@@ -153,6 +155,47 @@ export async function explainApproval(
   client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, base: string,
 ): Promise<ApprovalExplanation> {
   const none: ApprovalExplanation = { change: null, why: null, source: null };
+
+  if (action === 'satt_baseline') {
+    const contractId = asUuid(input.contract_id);
+    if (!contractId || typeof input.kontraktstext !== 'string') return none;
+    const avtal = await one<{ name: string; project_id: string }>(client,
+      'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
+    if (!avtal) return none;
+    const kontrakt = parseLeveranskontrakt(input.kontraktstext);
+    const intervall = (start: string | null, slut: string | null): string => `${start ?? 'datum saknas'} till ${slut ?? 'datum saknas'}`;
+    let andring: Awaited<ReturnType<typeof lasBaselineandring>>;
+    try {
+      andring = await lasBaselineandring(client, companyId, contractId, kontrakt);
+    } catch {
+      return none;
+    }
+    const beskriv = (delar: typeof andring.efter): string => delar.map((d) => {
+      const leverabel = /^L[1-9]\d?$/.test(d.code);
+      const placering = d.parent_code ? ` under ${d.parent_code}` : '';
+      const datum = leverabel && d.start_date === null && d.end_date === null
+        ? 'ärver stegets intervall' : `${leverabel ? 'eget datum: ' : ''}${intervall(d.start_date, d.end_date)}`;
+      return `${d.code}${leverabel ? placering : ''} ${datum} — ${d.name}`
+        + `${d.date_precision ? ` (${d.date_precision})` : ''}`
+        + `${d.cap_hours !== null ? `; tak ${d.cap_hours} h` : ''}`
+        + `${d.cap_amount_ore !== null ? `; tak ${kr(d.cap_amount_ore)}` : ''}`;
+    }).join(SEP);
+    const andraVersioner = andring.andraVersioner.length > 0
+      ? `${SEP}Oförändrade versioner: ${andring.andraVersioner.map((d) => `${beskriv([d])} från ${d.valid_from}`).join(SEP)}` : '';
+    const egnaDatum = [...new Set([...andring.efter, ...andring.andraVersioner].filter((d) => /^L[1-9]\d?$/.test(d.code)
+      && (d.start_date !== null || d.end_date !== null)).map((d) => d.code))];
+    return {
+      change: {
+        from: andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet',
+        to: beskriv(andring.efter) + andraVersioner,
+      },
+      why: `${andring.finnsBaseline ? `Återimporten uppdaterar avtalsdelarnas version från ${andring.valid_from}.` : 'Avtalets datum blir baseline v1.'} `
+        + (egnaDatum.length > 0
+          ? `Tidigare beslutade egna datum bevaras för ${egnaDatum.join(', ')}. Leverabler utan eget datum ärver sitt stegs intervall.`
+          : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.'),
+      source: { label: avtal.name, href: `${base}/projects/${avtal.project_id}/kontraktet` },
+    };
+  }
 
   const invoiceId = asUuid(input.invoice_id);
   if (invoiceId) {

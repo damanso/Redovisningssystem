@@ -29,6 +29,7 @@ import {
   familjenyckel, grupperaDokument, type Dokumentrad,
 } from '../src/services/uppdragDokument.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -201,7 +202,7 @@ beforeAll(async () => {
   const avtalId = (await ok('skapa_uppdrag', {
     project_id: projektId, name: 'Leveranskontrakt NVR-001', signed_date: '2026-09-03',
   })).contract_id as string;
-  await ok('importera_leveranskontrakt', { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtalId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
   gallringProjekt = (await ok('create_project', { name: 'NVR-001 gallring' })).id as string;
   olastProjekt = (await ok('create_project', { name: 'ILT utan förteckning' })).id as string;
