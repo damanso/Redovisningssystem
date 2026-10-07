@@ -377,9 +377,10 @@ describe('KRAV-2: ett svep i taget per bolag', () => {
     slappForsta();
     expect((await forsta).lage).toBe('svep_kort');
 
-    // Det avstådda svepet skrev ingenting; det som fick låset skrev sin prognos.
+    // Det avstådda svepet skrev ingenting; det som fick låset skrev prognosen
+    // och täckningen, vars steg går över varje öppet avtal (B-3, Story 1.6).
     const efter = await cache();
-    expect(efter.map((r) => r.nyckel)).toEqual(['prognos', 'troskellarm']);
+    expect(efter.map((r) => r.nyckel)).toEqual(['prognos', 'tackning', 'troskellarm']);
     expect(efter).not.toEqual(fore);
   });
 

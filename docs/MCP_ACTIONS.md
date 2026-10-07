@@ -1277,12 +1277,22 @@ inget omdöme att fråga om, och då binder svepet kostnaden självt.
 
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
 `referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
-`hoppade_kopior[]` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
+`hoppade_kopior[]`, `tackning[]` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
 `status`, `senast_verifierad`) och `drive_ko` ur `hamta_drive_ko`. En **köad**
 kopia står bara i kön, aldrig bland referenserna: dess `extern_id` är ännu
 platshållaren, och en verifiering av den hade rapporterat "borta" om en fil som
 aldrig skrivits. En okänd referens eller ett avtal i ett annat bolag ger **404
 `not_found`** och hela svepet rullas tillbaka — ingen halvskriven cache.
+
+**Täckningssteget (Story 1.6, B-3)** körs sist och läser bara egna tabeller.
+Det går över alla öppna avtal (projektstatus `active`), även dem som inte står
+i Hermes indata. Cachenyckeln `tackning` bär `godkannandekon`, `ovrigt`,
+`kostnader` och `baselineforslag`, vardera `{ lage: 'last' | 'fel', saknas: id[] }`.
+Källa och lästid finns i radens `kalla` och `last_nar`. Svarets `tackning[]` har
+fyra poster per öppet avtal: `{ contract_id, kalla, lage, saknas }`.
+`upsertSvepvarden` skiljer omfången `svep` och `tackning`: uppdragsstegen kan
+aldrig skriva eller radera täckningsnyckeln, och täckningssteget rör bara den.
+Ett avstått svep skriver ingen täckning. Indatat är oförändrat.
 
 ### Statusbytet med transmittal (S3.2, våg 4)
 
@@ -1588,3 +1598,64 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
 ändra står FÖRE knappen. Posten går genom `executeAction` (actor `human`, lärdom
 5) och landar tillbaka på Läget med raden synlig; en tom rad kommer tillbaka som
 `?fel=` i sidans notis. Ingen ny CSS-klass, ingen JS.
+
+
+### Undantagsvyns läsväg (Story 1.6, B-3)
+
+- `las_undantag` (read, ingen `kravManniska`) — utan indatafält; schemat är
+  strikt tomt. REST, MCP och den kommande vyn använder samma `lasUndantag`.
+- Svaret bär `utfall`, `poster[]`, `tackning[]`, `ofullstandig_tackning[]`,
+  `aldsta_tackning`, `hoppade[]` och `last_nar`. Posterna bär `slag`, `id`,
+  `identitet`, `atgard`, `foreslagen_av`, `skapad_nar`, `uppdrag`, `val`,
+  `varfor_mandat`, `forslag`, `skal`, `kallor` och `ja_registrerar`.
+- Den stängda listan har fyra postslag. `baselineandring` kommer ur väntande
+  `satt_baseline`, `andra_baseline`, `upsert_contract_part` eller
+  `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`; `avslut`
+  ur väntande `avsluta_uppdrag`; `scopeavgorande` ur en tänd signal utan
+  avgörande. Rutin, drift, tröskellarm och referensfel blir inga poster.
+- Kön läses utan `LIMIT`, i ordningen `created_at, id`. Signalposterna står
+  därefter i `tand_nar, id`. Inget belopp filtrerar, inget tak eller urval kan
+  skickas in. `listApprovals` behåller Att göras fönster.
+- `Lasvarde<T>` är `{ varde, kalla, last_nar, lage }`. Lägena är `last`,
+  `olast` (källan kunde inte läsas) och `saknas` (värdet finns inte i
+  underlaget). De två senare har `varde: null`. Postens lästa fält är
+  `uppdrag`, `forslag`, `skal` och `kallor`; täckningspostens är `tackning`.
+  Skäl och referenser ur cache behåller cacheradens källa och lästid.
+- När ett baselineförslag byter kund, avtalshandling eller föräldradel har
+  `forslag.varde.mal` respektive `customer_id`, `source_file_id` eller
+  `parent_part_id` som `Lasvarde`. Värdet identifierar kunden (id, kundnummer,
+  namn, organisationsnummer), filen (id, originalnamn, SHA-256, byteantal)
+  eller delen (id, kod, namn, versionsdatum). Uppslag sker bara i bolaget;
+  en föräldradel måste också höra till samma avtal. Saknat mål har
+  `lage: 'saknas', varde: null`. Texten beskriver det föreslagna målet;
+  kundens sida och den föreslagna handlingens nedladdning finns i `kallor`.
+- Versionsförslag beskriver alla angivna verksamhetsfält, även `description`,
+  `billable`, `active` och `sort_order`, med särskiljande värden. Datumprecision
+  skrivs på svenska och angiven start/slut visas var för sig.
+  `ja_registrerar` skiljer en ren `upsert_contract_part`-takbekräftelse på
+  **befintlig version** från en **ny version**. Effektivt versionsdatum är
+  explicit `valid_from`, annars avtalets lästa `signed_date`; saknas båda
+  anges datum som saknat, utan att härledas ur kötid eller klocka.
+- `tackning[]` är alla öppna avtal gånger de fyra mandatkällorna. Varje rad
+  namnger avtal, projekt och källa, med `tackning`, `farsk` och `orsak`.
+  Saknad cacherad ger `saknas`; oläsbar källa ger `olast`; regelbrott ger
+  `fel`; en rad äldre än **60 minuter** ger `gammal`. Gränsen är inkluderande
+  och prövas med samma Postgres-klocka som skrev cachen.
+- `verifierat_tomt` kräver noll poster och färsk täckning för varje källa i
+  varje öppet avtal. `aldsta_tackning` är äldsta cachetid, eller null om
+  någon tid saknas (också null om inga avtal är öppna; då finns `last_nar`).
+  Annars ger läsvägen `poster` eller `ofullstandigt`. **Ofullständigt vinner
+  över poster**, som ändå returneras i sin helhet tillsammans med
+  `ofullstandig_tackning`, läsvägens egen delmängd av täckningen.
+- En nyupptäckt Övrigt-rad utanför avtalet, utan färdigt köbundet förslag
+  eller mottaget beslut, gör `ovrigt` ofullständig redan efter första svepet.
+  Ingen ny fråga eller kvittering skapas för den här.
+- `hoppade[]` redovisar köposter och signaler som lästs men inte blivit
+  poster: `id`, `identitet`, `atgard`, `orsak` (`uppdrag_saknas` eller
+  `uppdrag_avslutat`). Där finns bara id:n och koder. Främmande id:n slås
+  aldrig upp över bolagsgränsen; ogiltiga uuid förgiftar ingen transaktion.
+- Läsvägen skriver inget och gör inga externa anrop; bara Postgres läses
+  genom anroparens tenant-transaktion. Källorna är appvägar under det egna
+  bolaget eller stabila `uppdrag_referens`-pekare, aldrig externa URL:er.
+
+Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
