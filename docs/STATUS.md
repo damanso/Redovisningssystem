@@ -153,6 +153,137 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 3.5, B-16 — en ärendekoppling kräver sin frysta nyckel):**
+  Ny migration `server/migrations/0078_arendenyckel.sql` prövar befintliga
+  tidposter före ett idempotent CHECK NOT VALID och validerar villkoret i
+  samma fil. Ärende-id kräver en satt nyckel och källa med minst ett tecken
+  som inte är blanktecken. Driftfelet bär bara antal och högst fem uuid.
+  Migrationer 0001–0077, särskilt 0060:s villkor, är oförändrade.
+  `server/src/services/projects.ts` väljer nu `arende_id`, `arende_nyckel`
+  och `arende_kalla` i listTimeEntries, utan uppslag. REST/MCP:s
+  list_time_entries och update_time_entry:s svar delar därmed läsbarheten.
+  `server/test/arende-projektkoppling.test.ts` utökas med P2–P8:
+  migrationen på 0077, fem kantfall, app-skrivningar, REST-avvisning,
+  schemagranskning med tre planterade FK, avbrottsstubbe och bolagsisolering.
+  Befintliga K-5/K-6-prov står kvar. `docs/MCP_ACTIONS.md` speglar lässvaret.
+  CRM-ingestkontraktet ändras inte. Befintlig tidpostvy och html.ts har
+  granskats: Public Sans, IBM Plex Mono, OKLCH och synligt tangentbordsfokus.
+  Berättelsens ändring ligger i läsvägen; det befintliga formspråket består.
+
+  Rött före koden: databasfri kontroll gav exit 1 för saknad 0078 och saknade
+  ärendefält. Typkontroll exit 0. Röd fasens npm test och riktat Vitest gav
+  EPERM före insamling, så databasbeteendet i röd fas är inte observerat.
+  Dokumentationskontrollen var röd före ändringen och grön efter.
+  Slutgrindarnas ordagranna utdata följer:
+
+  `npx --no-install vitest run test/arende-projektkoppling.test.ts (server/)`
+  ```text
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  filter: test/arende-projektkoppling.test.ts
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+  Exitkod: 1
+  ```
+
+  `npm run typecheck`
+  ```text
+
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  Exitkod: 0
+  ```
+
+  `npm run build`
+  ```text
+
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  Exitkod: 0
+  ```
+
+  `npm test`
+  ```text
+
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  Exitkod: 1
+  ```
+
+  `TSX_DISABLE_CACHE=1 DOTENV_CONFIG_PATH=/nonexistent node --import tsx (server/)`
+  ```text
+  P2: loadMigrations godtar kedjan: 78 filer; sist 0078_arendenyckel.sql
+  P2: CHECK NOT VALID, VALIDATE, RAISE före ADD, inga INSERT/UPDATE/action_approvals: OK
+  P7: arende_id, arende_nyckel och arende_kalla väljs; inga förbjudna nätverksanrop: OK
+  P3–P8 och regressioner: inte körda i sandlådan (EPERM 127.0.0.1:5433); kedjans npm test belägger dem
+  Exitkod: 0
+  ```
+
+  **Inte kört:** Vitest P2–P8 och regressionerna, inklusive tidpost-livscykel,
+  tidsforslag, tid-snabbregistrering, faktura-ur-tid, avtalsdelar,
+  uppdragsytan-laget och migrate. Anslutningen nekades i globalSetup.
+  vitest inte kört i sandlådan: Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined); kedjans npm test belägger provet.
+  Typecheck/build och de databasfria kontrollerna passerar; databasproven
+  kallas inte gröna. Berättelsens Dev Agent Record innehåller logg och
+  punktvis DoD med detta uttryckliga undantag. Ingen tjänst har startats,
+  ingen installation, commit, push eller driftsättning har gjorts.
+  Kantkontrollen körs mot driftdatan först vid kedjans driftsättning.
+
 - **2026-10-07 (Story 1.4, omtag AI-Review — verkställighetsfel utan fritext i driftloggen):**
   Granskarens High-fynd åtgärdat i `server/src/actions/execute.ts`: den gemensamma
   loggfunktionen skickar bara köpost-id, åtgärdskod och validerad felkod till
