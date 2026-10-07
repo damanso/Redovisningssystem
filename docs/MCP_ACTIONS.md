@@ -30,7 +30,7 @@ härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas
 | lista verktyg (`tools/list`) | `GET /api/companies/:companyId/actions` (manifest) |
 | anropa verktyg (`tools/call`) | `POST /api/companies/:companyId/actions/:action` |
 | godkännandekö | `GET /api/companies/:companyId/approvals` |
-| godkänn / avslå | `POST .../approvals/:id/approve` \| `.../reject` |
+| godkänn / avslå | `POST .../approvals/:id/approve` \| `.../reject` (`reason` blir skälet för en åtgärd med `tvafas`; 202 när beslutet är mottaget men inte verkställt) |
 | AI-OCR (förslag) | `POST .../ocr/receipt` |
 
 En MCP-server ansluter med ett **agent-token** (se nedan) och mappar

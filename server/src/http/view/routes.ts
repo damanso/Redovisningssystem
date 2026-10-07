@@ -9280,6 +9280,11 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                   <button class="btn btn--primary btn--sm" type="submit">✓ Godkänn &amp; utför</button>
                 </form>
                 <form method="post" action="/app/c/${companyId}/approvals/${a.id}/reject" style="margin:0">
+                  ${def?.tvafas
+                    ? html`<label class="field" style="margin:0"><span>Skäl till nej
+                        <span class="muted" style="font-weight:400">· sparas med beslutet</span></span>
+                        <textarea name="skal" rows="2" maxlength="300" required></textarea></label>`
+                    : ''}
                   <button class="btn btn--ghost btn--sm" type="submit">Avvisa</button>
                 </form>
                 ${a.forklaring.source
@@ -9300,7 +9305,9 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
         <ol class="kvitton">${decided.map((d) => html`<li class="kvitto">
           ${d.status === 'rejected'
             ? chip('Avvisad', 'muted', '×')
-            : d.status === 'failed' ? chip('Misslyckades', 'neg', '!') : chip('Utförd', 'ok', '✓')}
+            : d.status === 'approved' ? chip('Mottaget', 'info', '•')
+            : d.status === 'failed' ? chip('Misslyckades', 'neg', '!')
+            : d.status === 'executed' ? chip('Utförd', 'ok', '✓') : chip('Väntar', 'info', '•')}
           <span class="kvitto__vad">${getAction(d.action)?.title ?? d.action}${
             d.summary ? html` · <span class="muted">${d.summary}</span>` : ''
           }</span>
@@ -9396,8 +9403,13 @@ viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const approvalId = parseApprovalId(req.params.id);
+  const skal = safeText(300).optional().safeParse((req.body as { skal?: unknown } | undefined)?.skal || undefined);
+  if (!skal.success) {
+    res.redirect(`/app/c/${companyId}/approvals?fel=${encodeURIComponent('Skälet kunde inte läsas — högst 300 tecken, utan styrtecken.')}`);
+    return;
+  }
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
-    rejectApproval({ companyId, approverId: userId, approvalId }));
+    rejectApproval({ companyId, approverId: userId, approverActor: 'human', approvalId, skal: skal.data }));
 }));
 
 // Team & roller. Alla medlemmar ser rostern; ägare/admin ser hanteringskontroller.

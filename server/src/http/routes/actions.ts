@@ -61,17 +61,18 @@ actionsRouter.post('/approvals/:id/approve', async (req, res) => {
   z.object({}).strict().parse(req.body ?? {});
   const id = ID.parse(req.params.id);
   const outcome = await approveAction({ companyId, approverId, approverActor: getActor(req), approvalId: id });
-  res.json(outcome);
+  // Tvåfas: mottaget är inget påstående om en genomförd handling (B-2).
+  res.status(outcome.approval.status === 'approved' ? 202 : 200).json(outcome);
 });
 
 actionsRouter.post('/approvals/:id/reject', async (req, res) => {
   const approverId = getUserId(req);
   const companyId = req.companyId!;
   if (getActor(req) !== 'human') throw new ForbiddenError('human_approval_required', 'endast en människa kan avslå');
-  z.object({ reason: safeText(300).optional() }).strict().parse(req.body ?? {});
+  const { reason } = z.object({ reason: safeText(300).optional() }).strict().parse(req.body ?? {});
   const id = ID.parse(req.params.id);
-  const approval = await rejectApproval({ companyId, approverId, approvalId: id });
-  res.json({ approval });
+  const approval = await rejectApproval({ companyId, approverId, approverActor: getActor(req), approvalId: id, skal: reason });
+  res.status(approval.beslut_hash !== null && approval.result === null ? 202 : 200).json({ approval });
 });
 
 // AI-OCR: läser en kvittofil och returnerar ett FÖRSLAG (kräver mänsklig
