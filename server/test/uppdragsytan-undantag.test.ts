@@ -21,6 +21,7 @@ import {
 } from '../src/services/uppdragUndantag.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { provaScheman, provaAllaDelfalt, provaLasbaraFalt, provaMal, provaVerkan, provaDatum } from './undantagBeskrivningHelper.js';
 
 let user: TestUser;
 let granne: TestUser;
@@ -135,7 +136,7 @@ function importer(text: string) {
 
 beforeAll(async () => {
   user = await registerUser('undantag');
-  for (const namn of ['poster', 'ko', 'belopp', 'franvaro', 'skala', 'tackning', 'ovrigt', 'tomt', 'ofullst']) {
+  for (const namn of ['poster', 'ko', 'belopp', 'franvaro', 'skala', 'tackning', 'ovrigt', 'tomt', 'ofullst', 'beskrivning']) {
     const id = await createCompany(user.token, `Undantag ${namn}`);
     bolag[namn] = id;
     await createFiscalYear(id, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
@@ -468,7 +469,138 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
   finally { vi.unstubAllGlobals(); }
 });
 
+it('AI-Review: mål läses inom bolaget, främmande och ogiltiga mål blir saknat utan förgiftad transaktion', async () => {
+  const id = bolag.beskrivning!;
+  const u = await frisktUppdrag(id, 'Beslutsunderlag');
+  const annat = await frisktUppdrag(id, 'Annat avtal');
+  const fil = async (companyId: string, userId: string, namn: string, hash: string) => withAdmin(async (db) => {
+    const r = await db.query(`INSERT INTO files (company_id,original_name,stored_name,mime_type,size_bytes,sha256,uploaded_by)
+      VALUES ($1,$2,gen_random_uuid()::text || '.pdf','application/pdf',10,$3,$4) RETURNING id`, [companyId, namn, hash, userId]);
+    return r.rows[0]!.id as string;
+  });
+  const kunder: string[] = [], filer: string[] = [], delar: string[] = [];
+  for (const [nummer, kod] of [[1, 'L1'], [2, 'L2']] as const) {
+    kunder.push((await ok(id, 'create_customer', { name: `Målkund ${nummer}` })).id as string);
+    filer.push(await fil(id, user.userId, `Målhandling ${nummer}.pdf`, String(nummer).repeat(64)));
+    delar.push(await del(id, u.contractId, kod));
+  }
+  for (const [falt, action, mal] of [
+    ['customer_id', 'update_contract', kunder], ['source_file_id', 'update_contract', filer],
+    ['parent_part_id', 'andra_baseline', delar], ['parent_part_id', 'upsert_contract_part', delar],
+  ] as const) {
+    const svar: Undantagspost[] = [];
+    for (const target of mal) {
+      const input = action === 'update_contract' ? { contract_id: u.contractId, [falt]: target } : { ...andring(u.contractId), [falt]: target };
+      const q = await koa(id, action, input);
+      const p = (await undantag(id)).poster.find((p) => p.id === q)!;
+      const v = p.forslag.varde!.mal![falt]!;
+      arLasvarde(v); expect(v.lage).toBe('last'); expect(v.varde!.id).toBe(target);
+      expect(p.forslag.varde!.till).toContain(Reflect.get(v.varde!, falt === 'customer_id' ? 'name' : falt === 'source_file_id' ? 'original_name' : 'code'));
+      svar.push(p);
+      if (falt !== 'parent_part_id') expect(p.kallor.varde).toContainEqual(expect.objectContaining({ typ: 'yta', sokvag: falt === 'customer_id'
+        ? `/app/c/${id}/customers/${target}` : `/app/c/${id}/documents/${target}/download` }));
+    }
+    expect(svar[0]!.forslag).not.toEqual(svar[1]!.forslag);
+  }
+  const grannkund = (await ok(grannbolag, 'create_customer', { name: 'Hemlig målkund' }, auth(granne))).id as string;
+  const grannfil = await fil(grannbolag, granne.userId, 'Hemlig målhandling.pdf', 'f'.repeat(64));
+  // Egen användare tillhör flera bolag; uttryckligt company_id behövs även där RLS släpper igenom.
+  const egetAnnatBolagKund = (await ok(bolag.poster!, 'create_customer', { name: 'Mål i annat medlemsbolag' })).id as string;
+  const egetAnnatBolagFil = await fil(bolag.poster!, user.userId, 'Handling i annat medlemsbolag.pdf', 'e'.repeat(64));
+  const egetAnnatBolagDel = await del(bolag.poster!, a.contractId, 'L2');
+  for (const [falt, action, frammande] of [
+    ['customer_id', 'update_contract', [grannkund, egetAnnatBolagKund]],
+    ['source_file_id', 'update_contract', [grannfil, egetAnnatBolagFil]],
+    ['parent_part_id', 'andra_baseline', [egetAnnatBolagDel, await del(id, annat.contractId)]],
+    ['parent_part_id', 'upsert_contract_part', [egetAnnatBolagDel, await del(id, annat.contractId)]],
+  ] as const) for (const target of [...frammande, '11111111-1111-1111-1111-111111111111', '-'.repeat(36)]) {
+    const q = await plantera(id, action, { ...andring(u.contractId), [falt]: target });
+    const p = (await undantag(id)).poster.find((p) => p.id === q)!;
+    expect(p.forslag.varde!.mal![falt]).toMatchObject({ lage: 'saknas', varde: null });
+    expect(p.forslag.varde!.till).toContain('saknas i underlaget');
+    expect(JSON.stringify(p)).not.toMatch(/Hemlig mål|annat medlemsbolag/);
+  }
+});
+
+it('AI-Review: ja till ren bekräftelse ändrar bara takflaggan; ja till version skapar en rad', async () => {
+  const id = bolag.beskrivning!;
+  const u = await frisktUppdrag(id, 'Verkan');
+  const rader = () => withAdmin(async (db) => (await db.query(
+    `SELECT id,code,valid_from::text,cap_confirmed,name,description,billable,active,
+            cap_hours,cap_amount_ore,hourly_rate_ore,parent_part_id,sort_order,start_date::text,end_date::text,date_precision
+       FROM contract_parts WHERE company_id=$1 AND contract_id=$2 ORDER BY id`, [id, u.contractId],
+  )).rows);
+  for (const code of ['TAK-A', 'TAK-B']) {
+    const obekraftad = await koa(id, 'upsert_contract_part', { ...andring(u.contractId, code), cap_hours: 12, cap_confirmed: false });
+    await besluta(id, obekraftad, 'approve');
+    const fore = await rader();
+    const rad = fore.find((r) => r.code === code)!;
+    expect(rad.cap_confirmed).toBe(false);
+    const q = await koa(id, 'upsert_contract_part', { contract_id: u.contractId, code, valid_from: rad.valid_from, cap_confirmed: true });
+    const p = (await undantag(id)).poster.find((p) => p.id === q)!;
+    expect(p.ja_registrerar).toContain('befintlig version');
+    expect(p.ja_registrerar).toContain(rad.valid_from);
+    await besluta(id, q, 'approve');
+    expect(await rader()).toEqual(fore.map((r) => r.id === rad.id ? { ...r, cap_confirmed: true } : r));
+  }
+  for (const [index, action] of ['upsert_contract_part', 'andra_baseline'].entries()) {
+    const fore = await rader();
+    const code = `NY-${index}`;
+    const q = await koa(id, action, { ...andring(u.contractId, code), cap_confirmed: true, billable: false, active: false });
+    const p = (await undantag(id)).poster.find((p) => p.id === q)!;
+    expect(p.ja_registrerar).toContain('En ny version');
+    await besluta(id, q, 'approve');
+    const efter = await rader();
+    expect(efter.filter((r) => r.code !== code)).toEqual(fore);
+    expect(efter.filter((r) => r.code === code)).toEqual([expect.objectContaining({ cap_confirmed: true, billable: false, active: false, valid_from: '2026-10-01' })]);
+  }
+});
+
+it('AI-Review: utan valid_from visas och skrivs signed_date, explicit datum vinner och saknat förblir saknat', async () => {
+  const id = bolag.beskrivning!;
+  for (const signed_date of ['2026-09-03', '2027-01-12', undefined]) {
+    const projektId = (await ok(id, 'create_project', { name: `Datum ${signed_date ?? 'saknas'}` })).id as string;
+    // create_contract accepterar även osignerat utkast; skapa_uppdrag kräver datum.
+    const contractId = (await ok(id, 'create_contract', { project_id: projektId, name: 'Datumavtal', signed_date })).id as string;
+    const lagrade = () => withAdmin(async (db) => (await db.query(
+      'SELECT code,valid_from::text,cap_confirmed FROM contract_parts WHERE company_id=$1 AND contract_id=$2 ORDER BY code', [id, contractId],
+    )).rows);
+    for (const [code, valid_from] of [['ARVT', undefined], ['EXPLICIT', '2027-03-04']] as const) {
+      const q = await koa(id, 'upsert_contract_part', { ...andring(contractId, code), valid_from });
+      const p = (await undantag(id)).poster.find((p) => p.id === q)!;
+      const datum = valid_from ?? signed_date;
+      if (datum === undefined) {
+        expect(p.ja_registrerar).toContain('datum saknas');
+        expect(p.forslag.varde!.till).not.toMatch(/från \d{4}-\d{2}-\d{2}/);
+        await besluta(id, q, 'reject');
+        expect(await lagrade()).toEqual([]);
+        continue;
+      }
+      expect(p.ja_registrerar).toContain(`från ${datum}`);
+      expect(p.forslag.varde!.till).toContain(`från ${datum}`);
+      await besluta(id, q, 'approve');
+      expect((await lagrade()).find((r) => r.code === code)).toEqual({ code, valid_from: datum, cap_confirmed: false });
+      // Ett utkast får inte bekräftat tak. Datumprovet ändrar inte den spärren.
+      if (signed_date === undefined) continue;
+      const bekräftelse = await koa(id, 'upsert_contract_part', { contract_id: contractId, code, valid_from, cap_confirmed: true });
+      const b = (await undantag(id)).poster.find((p) => p.id === bekräftelse)!;
+      expect(b.ja_registrerar).toContain(`från ${datum}`);
+      expect(b.ja_registrerar).toContain('befintlig version');
+      await besluta(id, bekräftelse, 'approve');
+      expect((await lagrade()).find((r) => r.code === code)).toEqual({ code, valid_from: datum, cap_confirmed: true });
+    }
+  }
+});
+
 describe('Rena regler och beskrivningar utan klocka eller databas', () => {
+  it('AI-Review: effektivt giltighetsdatum visas för version och bekräftelse; saknat datum gissas aldrig', provaDatum);
+  it('AI-Review: verkan stämmer med skrivvägens bekräftelseklassificering för alla fält', provaVerkan);
+  it('AI-Review: identifierade mål skiljer förslag åt och saknade mål visas ärligt', provaMal);
+  it('AI-Review: alla precisioner och angivna intervallgränser beskriver det konkreta valet', provaLasbaraFalt);
+  it('AI-Review: varje giltigt verksamhetsfält särskiljer beslutsunderlaget på båda versionsvägarna', () => {
+    provaScheman();
+    provaAllaDelfalt();
+  });
   it('Lasvarde, sorterad täckning och gränsen 60 minuter inklusive', () => {
     expect(last(100, 'redovisning', '2026-10-07T12:00:00.000Z')).toEqual({ varde: 100, kalla: 'redovisning', last_nar: '2026-10-07T12:00:00.000Z', lage: 'last' });
     for (const f of [olast, saknas]) expect(f('redovisning', null).varde).toBeNull();

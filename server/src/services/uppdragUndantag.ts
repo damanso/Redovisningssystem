@@ -34,6 +34,12 @@ export type Kallreferens =
   | { typ: 'yta'; etikett: string; sokvag: string }
   | { typ: 'referens'; referens_id: string; sort: 'drive' | 'kalender' | 'mejl';
       extern_id: string; extern_kalla: string | null; titel: string | null };
+/** Föreslagna mål är lästa underlag, aldrig en etikett som döljer identiteten. */
+interface BaselineMal {
+  customer_id?: Lasvarde<{ id: string; customer_number: number; name: string; org_number: string | null }>;
+  source_file_id?: Lasvarde<{ id: string; original_name: string; sha256: string; size_bytes: number }>;
+  parent_part_id?: Lasvarde<{ id: string; code: string; name: string; valid_from: string }>;
+}
 export interface Undantagspost {
   slag: Postslag;
   id: string;
@@ -44,7 +50,7 @@ export interface Undantagspost {
   uppdrag: Lasvarde<Uppdragsref>;
   val: { kod: 'ja_nej' | 'innanfor_utanfor'; text: string };
   varfor_mandat: string;
-  forslag: Lasvarde<{ fran: string | null; till: string; belopp_ore: number | null }>;
+  forslag: Lasvarde<{ fran: string | null; till: string; belopp_ore: number | null; mal?: BaselineMal }>;
   skal: Lasvarde<string>;
   kallor: Lasvarde<Kallreferens[]>;
   ja_registrerar: string;
@@ -100,6 +106,7 @@ interface Uppslagsrad extends Uppdragsref {
   nyckel: string;
   del_code?: string;
   del_name?: string;
+  signed_date?: string | null;
 }
 
 /** Ett uppslag per nyckeltyp, i alla versioner och i det egna bolaget. */
@@ -108,7 +115,7 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
     .filter((q) => atgarder.includes(q.action)).map((q) => uuid(eget(q.input, falt)))
     .filter((id): id is string => id !== null))];
   const avtal = await client.query<Uppslagsrad>(
-    `SELECT c.id AS nyckel, c.id AS contract_id, c.name AS contract_name,
+    `SELECT c.id AS nyckel, c.id AS contract_id, c.name AS contract_name, c.signed_date::text AS signed_date,
             p.id AS project_id, p.number, p.name, p.status AS projektstatus
        FROM contracts c JOIN projects p ON p.company_id=c.company_id AND p.id=c.project_id
       WHERE c.company_id=$1 AND c.id=ANY($2::uuid[])`,
@@ -132,10 +139,26 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
         AND EXISTS (SELECT 1 FROM contracts c WHERE c.company_id=$1 AND c.project_id=p.id)`,
     [companyId, idn('project_id', KOBURNA_SLAG.avslut)],
   );
+  const kunder = await client.query<NonNullable<NonNullable<BaselineMal['customer_id']>['varde']>>(
+    'SELECT id,customer_number,name,org_number FROM customers WHERE company_id=$1 AND id=ANY($2::uuid[])',
+    [companyId, idn('customer_id', ['update_contract'])],
+  );
+  const filer = await client.query<NonNullable<NonNullable<BaselineMal['source_file_id']>['varde']>>(
+    'SELECT id,original_name,sha256,size_bytes FROM files WHERE company_id=$1 AND id=ANY($2::uuid[])',
+    [companyId, idn('source_file_id', ['update_contract'])],
+  );
+  const foraldrar = await client.query<NonNullable<NonNullable<BaselineMal['parent_part_id']>['varde']> & { contract_id: string }>(
+    `SELECT id,contract_id,code,name,valid_from::text FROM contract_parts
+      WHERE company_id=$1 AND id=ANY($2::uuid[])`,
+    [companyId, idn('parent_part_id', ['andra_baseline', 'upsert_contract_part'])],
+  );
   return {
     avtal: new Map(avtal.rows.map((r) => [r.nyckel, r])),
     delar: new Map(delar.rows.map((r) => [r.nyckel, r])),
     projekt: new Map(projekt.rows.map((r) => [r.nyckel, r])),
+    kunder: new Map(kunder.rows.map((r) => [r.id, r])),
+    filer: new Map(filer.rows.map((r) => [r.id, r])),
+    foraldrar: new Map(foraldrar.rows.map((r) => [r.id, r])),
   };
 }
 function uppdragsref(r: Uppdragsref): Uppdragsref {
@@ -145,6 +168,12 @@ function uppdragsref(r: Uppdragsref): Uppdragsref {
 
 type Beskrivningsko = Pick<Approval, 'id' | 'action' | 'input' | 'requested_actor' | 'created_at'>;
 interface Kounderlag { kopost: Beskrivningsko; uppdrag: Uppdragsref; referenser?: Kallreferens[] }
+interface Baselineunderlag extends Kounderlag {
+  forklaring?: ApprovalExplanation;
+  mal?: BaselineMal;
+  /** Effektivt datum enligt skrivvägen: valid_from, annars signed_date. */
+  giltigFran?: string | null;
+}
 function kopostbas(u: Kounderlag, slag: Postslag, lastNar: string): Pick<Undantagspost,
   'slag' | 'id' | 'identitet' | 'atgard' | 'foreslagen_av' | 'skapad_nar' | 'uppdrag'> {
   return { slag, id: u.kopost.id, identitet: 'kopost', atgard: u.kopost.action,
@@ -154,30 +183,52 @@ function kopostbas(u: Kounderlag, slag: Postslag, lastNar: string): Pick<Undanta
 
 // Fältlistorna är slutna. Fri text beskriver ändringen men kan aldrig välja
 // postslag, åtgärd eller uppslag. Pengarna formateras av husets enda hjälpare.
-const DELFALT = ['name', 'cap_hours', 'cap_amount_ore', 'start_date', 'end_date', 'date_precision', 'hourly_rate_ore', 'parent_part_id', 'cap_confirmed'] as const;
+const PRECISION: Readonly<Record<string, string>> = { ar: 'år', halvar: 'halvår', kvartal: 'kvartal', manad: 'månad', dag: 'dag' };
+// Provets schemajämförelse kräver ett särskiljande underlag för varje nytt
+// verksamhetsfält på båda versionsvägarna. En partiell lista duger inte.
+const DELFALT = ['name', 'description', 'billable', 'active', 'sort_order', 'cap_hours', 'cap_amount_ore', 'start_date', 'end_date', 'date_precision', 'hourly_rate_ore', 'parent_part_id', 'cap_confirmed'] as const;
 const AVTALSFALT = ['name', 'customer_id', 'signed_date', 'payment_terms_days', 'source_file_id', 'notes'] as const;
-function delandringar(input: Record<string, unknown>): string[] {
+// Läsmodulens importtillåtelselista stänger skrivtjänsten ute. Den slutna
+// verkanprövningen speglar contracts.arRenBekraftelse; provet jämför dem
+// för samtliga schemafält och både definierade/utelämnade värden.
+function renTakbekraftelse(q: Beskrivningsko): boolean {
+  const input = q.input;
+  return q.action === 'upsert_contract_part'
+    && typeof eget(input, 'contract_id') === 'string' && typeof eget(input, 'code') === 'string'
+    && eget(input, 'cap_confirmed') === true
+    && Object.keys(input).every((k) => input[k] === undefined
+      || ['contract_id', 'code', 'valid_from', 'cap_confirmed'].includes(k));
+}
+function delandringar(input: Record<string, unknown>, mal: BaselineMal): string[] {
   const varden: string[] = [];
   for (const k of DELFALT) {
-    if (!Object.hasOwn(input, k)) continue;
+    if (!Object.hasOwn(input, k) || input[k] === undefined) continue;
     const v = input[k];
-    if (k === 'start_date' || k === 'end_date') {
-      if (k === 'start_date' || !Object.hasOwn(input, 'start_date')) {
-        varden.push(`${text(eget(input, 'start_date')) ?? 'datum saknas'} till ${text(eget(input, 'end_date')) ?? 'datum saknas'}`);
-      }
-    } else if (k === 'cap_hours' && typeof v === 'number') varden.push(`tak ${v} h`);
+    if (k === 'start_date' || k === 'end_date') varden.push(`${k === 'start_date' ? 'start' : 'slut'}: ${text(v) ?? 'datum saknas'}`);
+    else if (k === 'cap_hours' && typeof v === 'number') varden.push(`tak ${v} h`);
     else if (k === 'cap_amount_ore' && typeof v === 'number' && Number.isSafeInteger(v)) varden.push(`tak ${formatOre(v, { currency: true })}`);
     else if (k === 'hourly_rate_ore' && typeof v === 'number' && Number.isSafeInteger(v)) varden.push(`taxa ${formatOre(v, { currency: true })}/h`);
-    else if (k === 'parent_part_id') varden.push('ny förälder');
+    else if (k === 'parent_part_id') {
+      const p = mal.parent_part_id?.varde;
+      varden.push(`förälder: ${p ? `${p.code} · ${p.name} från ${p.valid_from}` : 'saknas i underlaget'}`);
+    }
     else if (k === 'cap_confirmed') varden.push(v === true ? 'taket bekräftas' : 'taket är obekräftat');
-    else if ((k === 'name' || k === 'date_precision') && text(v)) varden.push(text(v)!);
+    else if (k === 'billable') varden.push(v === true ? 'debiterbar' : 'ej debiterbar');
+    else if (k === 'active') varden.push(v === true ? 'aktiv' : 'inaktiv');
+    else if (k === 'sort_order' && typeof v === 'number') varden.push(`ordning: ${v}`);
+    else if (k === 'description') varden.push(`beskrivning: ${text(v) ?? 'saknas'}`);
+    else if (k === 'date_precision') varden.push(`precision: ${typeof v === 'string' && Object.hasOwn(PRECISION, v) ? PRECISION[v] : 'saknas'}`);
+    else if (k === 'name' && text(v)) varden.push(`namn: ${text(v)}`);
   }
   return varden;
 }
-function avtalsandringar(input: Record<string, unknown>): string[] {
-  return AVTALSFALT.filter((k) => Object.hasOwn(input, k)).map((k) => {
-    if (k === 'customer_id') return 'kund';
-    if (k === 'source_file_id') return 'avtalshandling';
+function avtalsandringar(input: Record<string, unknown>, mal: BaselineMal): string[] {
+  return AVTALSFALT.filter((k) => Object.hasOwn(input, k) && input[k] !== undefined).map((k) => {
+    if (k === 'customer_id') {
+      const kund = mal.customer_id?.varde;
+      return `kund: ${kund ? `${kund.customer_number} · ${kund.name}${kund.org_number ? ` (${kund.org_number})` : ''}` : 'saknas i underlaget'}`;
+    }
+    if (k === 'source_file_id') return `avtalshandling: ${mal.source_file_id?.varde?.original_name ?? 'saknas i underlaget'}`;
     if (k === 'notes') return `anteckning: ${text(input[k]) ?? 'saknas'}`;
     if (k === 'signed_date') return `signerat ${text(input[k]) ?? 'datum saknas'}`;
     if (k === 'payment_terms_days') return `betalningsvillkor ${String(input[k])} dagar`;
@@ -187,13 +238,27 @@ function avtalsandringar(input: Record<string, unknown>): string[] {
 
 /** Ren: beskriver bara det underlag tjänsten redan läst. */
 export function beskrivBaselineandring(
-  u: Kounderlag & { forklaring?: ApprovalExplanation }, bas: string, lastNar: string,
+  u: Baselineunderlag, bas: string, lastNar: string,
 ): Undantagspost {
   const { kopost: q } = u;
   const input = q.input;
+  const renBekraftelse = renTakbekraftelse(q);
+  // Bara mål som faktiskt anges i den här åtgärden förs vidare. Ett saknat
+  // uppslag är saknas vid värdet, även om andra delar av förslaget är lästa.
+  const mal: BaselineMal = {};
+  if (q.action === 'update_contract') {
+    if (eget(input, 'customer_id') !== undefined) mal.customer_id = u.mal?.customer_id ?? saknas(KALLA_REDOVISNING, lastNar);
+    if (eget(input, 'source_file_id') !== undefined) mal.source_file_id = u.mal?.source_file_id ?? saknas(KALLA_REDOVISNING, lastNar);
+  } else if (q.action === 'andra_baseline' || q.action === 'upsert_contract_part') {
+    if (eget(input, 'parent_part_id') !== undefined) mal.parent_part_id = u.mal?.parent_part_id ?? saknas(KALLA_REDOVISNING, lastNar);
+  }
   let forslag: Undantagspost['forslag'] = saknas(KALLA_REDOVISNING, lastNar);
   let skal = saknas<string>(KALLA_REDOVISNING, lastNar);
   let referenser = [yta(bas, u.uppdrag, 'kontraktet'), ...u.referenser ?? []];
+  if (mal.customer_id?.varde) referenser.push({ typ: 'yta', etikett: `Föreslagen kund: ${mal.customer_id.varde.name}`,
+    sokvag: `${bas}/customers/${mal.customer_id.varde.id}` });
+  if (mal.source_file_id?.varde) referenser.push({ typ: 'yta', etikett: `Föreslagen avtalshandling: ${mal.source_file_id.varde.original_name}`,
+    sokvag: `${bas}/documents/${mal.source_file_id.varde.id}/download` });
   let jaRegistrerar: string;
   if (q.action === 'satt_baseline') {
     const e = u.forklaring;
@@ -202,21 +267,27 @@ export function beskrivBaselineandring(
     if (e?.source) referenser = [{ typ: 'yta', etikett: e.source.label, sokvag: e.source.href }];
     jaRegistrerar = 'Baseline version 1 skrivs ur det frysta kontraktet.';
   } else if (q.action === 'update_contract') {
-    const falt = avtalsandringar(input);
-    if (falt.length > 0) forslag = last({ fran: null, till: falt.join(' · '), belopp_ore: null }, KALLA_REDOVISNING, lastNar);
+    const falt = avtalsandringar(input, mal);
+    if (falt.length > 0) forslag = last({ fran: null, till: falt.join(' · '), belopp_ore: null,
+      ...(Object.keys(mal).length ? { mal } : {}) }, KALLA_REDOVISNING, lastNar);
     jaRegistrerar = falt.length > 0 ? `Avtalets fält ändras: ${falt.join(' · ')}.` : 'Inga fält ändras.';
   } else {
     const kod = text(eget(input, 'code'));
-    const datum = text(eget(input, 'valid_from'));
-    const delar = [kod, datum ? `från ${datum}` : null, ...delandringar(input)].filter((v): v is string => v !== null);
+    const datum = u.giltigFran ?? text(eget(input, 'valid_from'));
+    const delar = [kod, datum ? `från ${datum}` : null, ...delandringar(input, mal)].filter((v): v is string => v !== null);
     if (delar.length > 0) forslag = last({ fran: null, till: delar.join(' · '),
-      belopp_ore: typeof eget(input, 'cap_amount_ore') === 'number' ? input.cap_amount_ore as number : null }, KALLA_REDOVISNING, lastNar);
+      belopp_ore: typeof eget(input, 'cap_amount_ore') === 'number' ? input.cap_amount_ore as number : null,
+      ...(Object.keys(mal).length ? { mal } : {}) }, KALLA_REDOVISNING, lastNar);
     skal = lastText(eget(input, 'change_reason'), lastNar);
-    jaRegistrerar = `En ny version av ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'}. Tidigare versioner står kvar.`;
+    jaRegistrerar = renBekraftelse
+      ? `Taket för ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'} bekräftas på befintlig version.`
+      : `En ny version av ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'}. Tidigare versioner står kvar.`;
   }
   return { ...kopostbas(u, 'baselineandring', lastNar),
     val: { kod: 'ja_nej', text: 'Godkänn ändringen, eller säg nej med skäl.' },
-    varfor_mandat: 'Ändringen flyttar det avtalade. Den gäller först när du godkänt den, oavsett belopp.',
+    varfor_mandat: renBekraftelse
+      ? 'Bekräftelsen fastställer det avtalade taket och kräver ditt godkännande, oavsett belopp.'
+      : 'Ändringen flyttar det avtalade. Den gäller först när du godkänt den, oavsett belopp.',
     forslag, skal, kallor: kallor(referenser, lastNar), ja_registrerar: jaRegistrerar };
 }
 
@@ -396,6 +467,17 @@ async function koburnaPoster(client: PoolClient, companyId: string, koposter: Ap
     }
     const underlag = { kopost: q, uppdrag: uppdragsref(r) };
     if (arBaseline) {
+      const mal: BaselineMal = {};
+      const kund = per.kunder.get(uuid(eget(q.input, 'customer_id')) ?? '');
+      const fil = per.filer.get(uuid(eget(q.input, 'source_file_id')) ?? '');
+      const foralder = per.foraldrar.get(uuid(eget(q.input, 'parent_part_id')) ?? '');
+      if (kund) mal.customer_id = last(kund, KALLA_REDOVISNING, lastNar);
+      if (fil) mal.source_file_id = last(fil, KALLA_REDOVISNING, lastNar);
+      // Föräldern måste finnas i samma avtal, som vid versionsskrivningen.
+      if (foralder?.contract_id === r.contract_id) {
+        const { contract_id: _contractId, ...identitet } = foralder;
+        mal.parent_part_id = last(identitet, KALLA_REDOVISNING, lastNar);
+      }
       // Bara prövade, relevanta fält går till de återanvända beskrivarna.
       const forklaring = q.action === 'satt_baseline' ? await explainApproval(client, companyId, q.action,
         { contract_id: r.contract_id, kontraktstext: eget(q.input, 'kontraktstext') }, bas) : undefined;
@@ -403,7 +485,8 @@ async function koburnaPoster(client: PoolClient, companyId: string, koposter: Ap
       const signal = signalId ? (await client.query<{ underlag_ref_id: string | null }>(
         'SELECT underlag_ref_id FROM uppdrag_scopesignal WHERE company_id=$1 AND id=$2', [companyId, signalId],
       )).rows[0] : undefined;
-      poster.push(beskrivBaselineandring({ ...underlag, forklaring,
+      const giltigFran = text(eget(q.input, 'valid_from')) ?? r.signed_date ?? null;
+      poster.push(beskrivBaselineandring({ ...underlag, forklaring, mal, giltigFran,
         referenser: await referens(client, companyId, signal?.underlag_ref_id) }, bas, lastNar));
     } else if (arKostnad) {
       const receiptId = uuid(eget(q.input, 'receipt_id'));

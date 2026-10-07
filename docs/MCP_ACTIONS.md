@@ -1621,6 +1621,21 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   underlaget). De två senare har `varde: null`. Postens lästa fält är
   `uppdrag`, `forslag`, `skal` och `kallor`; täckningspostens är `tackning`.
   Skäl och referenser ur cache behåller cacheradens källa och lästid.
+- När ett baselineförslag byter kund, avtalshandling eller föräldradel har
+  `forslag.varde.mal` respektive `customer_id`, `source_file_id` eller
+  `parent_part_id` som `Lasvarde`. Värdet identifierar kunden (id, kundnummer,
+  namn, organisationsnummer), filen (id, originalnamn, SHA-256, byteantal)
+  eller delen (id, kod, namn, versionsdatum). Uppslag sker bara i bolaget;
+  en föräldradel måste också höra till samma avtal. Saknat mål har
+  `lage: 'saknas', varde: null`. Texten beskriver det föreslagna målet;
+  kundens sida och den föreslagna handlingens nedladdning finns i `kallor`.
+- Versionsförslag beskriver alla angivna verksamhetsfält, även `description`,
+  `billable`, `active` och `sort_order`, med särskiljande värden. Datumprecision
+  skrivs på svenska och angiven start/slut visas var för sig.
+  `ja_registrerar` skiljer en ren `upsert_contract_part`-takbekräftelse på
+  **befintlig version** från en **ny version**. Effektivt versionsdatum är
+  explicit `valid_from`, annars avtalets lästa `signed_date`; saknas båda
+  anges datum som saknat, utan att härledas ur kötid eller klocka.
 - `tackning[]` är alla öppna avtal gånger de fyra mandatkällorna. Varje rad
   namnger avtal, projekt och källa, med `tackning`, `farsk` och `orsak`.
   Saknad cacherad ger `saknas`; oläsbar källa ger `olast`; regelbrott ger

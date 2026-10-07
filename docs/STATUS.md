@@ -153,6 +153,82 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 1.6, omtag — fem High-granskningsfynd rättade):**
+  Baselineförslagen beskriver samtliga angivna verksamhetsfält, även beskrivning,
+  debiterbar/ej debiterbar, aktiv/inaktiv och sorteringsordning. Precision har
+  svenska etiketter; start och slut beskrivs var för sig. Schemajämförelsen kräver
+  prov för varje verksamhetsfält på update_contract och båda versionsvägarna.
+  Kund, avtalshandling och föräldraversion läses i klump inom bolaget och bär
+  identifierande Lasvarde i forslag.mal. Saknat/främmande/ogiltigt mål anges som
+  saknat; förälder kräver samma avtal. Befintliga kund- och dokumentytor länkas.
+  Ren upsert-takbekräftelse beskriver befintlig version, andra ändringar ny version.
+  Effektivt datum följer skrivvägen: explicit valid_from, annars läst signed_date.
+  Saknas båda visas datum saknas. Inga nya beroenden, skrivvägar, migrationer eller
+  UI-ytor. Befintliga Public Sans/IBM Plex Mono och OKLCH-tokens bevarar formspråket;
+  berättelsen levererar läsunderlag, själva undantagsvyn hör till Story 1.11.
+  MCP_ACTIONS och berättelsens uppföljningar/Dev Agent Record/File List/Change Log
+  uppdaterade. CRM/ingestkontraktet och arkitekturens principer är oförändrade.
+
+  Rött först per felklass: rena assertions föll för precision: år, description
+  (1 !== 2), målidentitet, ren takbekräftelse och ärvt datum. Efter respektive kod
+  passerade samma assertions. Alla scalarfält har flera värden inklusive false/noll;
+  mål med lika namn behåller skilda identiteter. Klassificeringen jämförs med
+  skrivvägens arRenBekraftelse för varje schemafält med definierat/utelämnat värde.
+  Integrationsprov läser olika egna/främmande/saknade mål och godkänner både
+  takbekräftelser och versioner samt jämför lagrade rader/datum med beskriven verkan.
+  Typecheck exit 0 i slutgrinden (ett testtypfel under R3 korrigerades). Build exit 0.
+  Rena slutprov, exit 0:
+  ```text
+  R1–R5 rena prov och fullständig schemajämförelse: OK
+  Rena P2/P6/P11/P13: fyra beskrivare, Lasvarde, täckning, färskhetsgräns och tre utfall OK
+  P2/P13/P16: ensamma deklarationer, importtillåtelselista och negativ importkontroll OK
+  ```
+  Riktad Vitest och föreskriven P17-grupp försöktes från server/, exit 1 före
+  insamling. npm test försöktes före/efter varje rättning och i slutgrinden.
+  Inga databasfall är körda eller observerat gröna. Uppdragets uttryckliga EPERM-
+  undantag används; kedjans hela npm test måste belägga dem efter denna överlämning.
+  Slutligt npm test, exit 1, ordagrann utdata:
+
+  ```text
+
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  ```
+
+
 - **2026-10-07 (Story 1.6, B-3 — undantagsvyns läsväg och svepets täckning):**
   `lib/lasvarde.ts` bär källa, lästid och last/olast/saknas. `services/uppdragUndantag.ts`
   samlar fyra mandatpostslag, med rena beskrivare och täckningsregler. `las_undantag`
