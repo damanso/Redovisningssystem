@@ -123,7 +123,7 @@ async function riggatUppdrag(namn: string): Promise<{ projektId: string; avtalId
   const a = (await ok('create_contract', {
     project_id: p, name: `Leveranskontrakt ${namn}`, signed_date: '2026-01-01', hourly_rate_ore: 120_000,
   })).id as string;
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
     contract_id: a, code: 'S1', name: 'Fas 1', valid_from: '2026-01-01',
     cap_hours: 10, cap_amount_ore: 1_200_000, cap_confirmed: true,
   });

@@ -1,3 +1,4 @@
+import { baselineburnaFalt } from '../lib/baselinekolumner.js';
 import type { PoolClient } from 'pg';
 import { fetchMembership, withTenantTransaction, type CompanyRole } from '../db/tx.js';
 import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
@@ -58,6 +59,16 @@ export async function executeAction(params: {
   // inte i transportlagret: alla tre ingångarna går genom executeAction.
   if (action.kravManniska && params.actor !== 'human') {
     throw new ForbiddenError('human_required', 'åtgärden kräver en människa');
+  }
+
+  // B-7: avvisa baselinefält före varje transaktion. Ingen köpost, auditrad
+  // eller domänskrivning får uppstå; ändringen kräver en ny avtalsdelsversion.
+  const baselinefalt = action.kraverNyVersion
+    ? baselineburnaFalt(input as Record<string, unknown>, action.kraverNyVersion)
+    : [];
+  if (baselinefalt.length > 0) {
+    throw new ConflictError('kraver_ny_version',
+      `${baselinefalt.join(', ')} bär baselinen och ändras bara med en ny version av avtalsdelen`);
   }
 
   if (action.sensitivity === 'sensitive') {

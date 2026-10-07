@@ -156,7 +156,7 @@ async function enkeltUppdrag(
   const contractId = (await ok('create_contract', {
     project_id: projectId, name: `Avtal ${namn}`, signed_date: SIGNERAT,
   })).id as string;
-  await okKoad('upsert_contract_part', { contract_id: contractId, code: 'UPPDRAG', name: 'Uppdraget', ...tak });
+  await okKoad('upsert_contract_part', { change_reason: 'avtal', contract_id: contractId, code: 'UPPDRAG', name: 'Uppdraget', ...tak });
   return { projectId, contractId };
 }
 
@@ -184,11 +184,9 @@ beforeAll(async () => {
   })).contract_id as string;
   await importeraOchGodkann(companyId, auth(), { contract_id: avtalA, kontraktstext: LEVERANSKONTRAKT_NVR001 });
 
-  // Rotdelens tak BEKRÄFTAS. `valid_from` utelämnad = avtalets signeringsdatum,
-  // alltså samma rad importen skrev: en ÄNDRING av den gällande versionen, inte
-  // ett tillägg (som hade krävt sitt `change_reason`).
-  await okKoad('upsert_contract_part', {
-    contract_id: avtalA, code: 'UPPDRAG', name: 'Uppdraget',
+  // Den ändrade ramen lagras som ny version från nästa dag, med orsak.
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
+    contract_id: avtalA, code: 'UPPDRAG', name: 'Uppdraget', valid_from: dag(-29),
     cap_hours: TAK_TIMMAR, cap_amount_ore: TAK_ORE, cap_confirmed: true,
   });
   rotA = ((await ok('get_contract_usage', { contract_id: avtalA }))
@@ -223,7 +221,7 @@ beforeAll(async () => {
 
   // L4 stängs av: då finns inget LÖV att föreslå för Axis-handlingen, och svepet
   // binder automatiskt till strömmen/rotdelen med `oplanerad = true` (S6.1).
-  await okKoad('upsert_contract_part', { contract_id: avtalA, code: 'L4', active: false });
+  await okKoad('upsert_contract_part', { change_reason: 'avtal', contract_id: avtalA, code: 'L4', name: 'L4', valid_from: dag(-29), active: false });
   const referens = await withTenantTransaction(user.userId, companyId, (c) => skapaReferens(c, companyId, {
     contract_id: avtalA,
     sort: 'drive',

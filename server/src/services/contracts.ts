@@ -22,6 +22,7 @@
 //     ett tilläggsavtal nollställt historiken i tysthet.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import { baselineburnaFalt } from '../lib/baselinekolumner.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
 import { timeEntryAmountOre } from './projects.js';
@@ -51,8 +52,8 @@ export interface AvtalsdelRad {
   cap_confirmed: boolean;
   valid_from: string;
   /**
-   * Varför just DEN HÄR versionen skrevs (0068). NULL på den första versionen
-   * av en kod — den ändrar ingenting och behöver inget skäl. Läses av
+   * Varför just DEN HÄR versionen skrevs (0068). B-7 kräver orsak också på
+   * första förslaget; äldre rader och första inläsningen ur utkast kan ha NULL. Läses av
    * kontraktsytan (S10.6): ett tillägg utan sitt skäl är en ändring utan
    * avsändare.
    */
@@ -107,7 +108,7 @@ export interface Takversion {
   cap_hours: number | null;
   cap_amount_ore: number | null;
   cap_confirmed: boolean;
-  /** Skälet till just den här versionen (0068). NULL på den första. */
+  /** Skälet till versionen; äldre rader och första inläsningen ur utkast kan ha NULL. */
   change_reason: string | null;
   manually_edited: boolean;
   active: boolean;
@@ -531,7 +532,6 @@ const CONTRACT_UPDATE: Readonly<Record<string, string>> = {
   customer_id: 'customer_id',
   signed_date: 'signed_date',
   payment_terms_days: 'payment_terms_days',
-  hourly_rate_ore: 'hourly_rate_ore',
   source_file_id: 'source_file_id',
   notes: 'notes',
 };
@@ -551,6 +551,11 @@ export async function updateContract(
   client: PoolClient, companyId: string, userId: string, input: UpdateContractInput,
 ): Promise<Record<string, unknown>> {
   const { contract_id: contractId, ...falt } = input;
+  const baselinefalt = baselineburnaFalt(falt);
+  if (baselinefalt.length > 0) {
+    throw new ConflictError('kraver_ny_version',
+      `${baselinefalt.join(', ')} bär baselinen — ändra dem med en ny version av avtalsdelen (andra_baseline)`);
+  }
   const update = buildAllowlistedUpdate(CONTRACT_UPDATE, falt);
   if (!update) throw new BadRequestError('no_fields', 'inget att uppdatera');
   const res = await client.query(
@@ -592,54 +597,70 @@ export interface UpsertContractPartInput {
   date_precision?: 'ar' | 'halvar' | 'kvartal' | 'manad' | 'dag';
 }
 
-/** Kolumnerna upsert_contract_part får röra på en befintlig version. */
-const CONTRACT_PART_UPDATE: Readonly<Record<string, string>> = {
-  name: 'name',
-  description: 'description',
-  parent_part_id: 'parent_part_id',
-  billable: 'billable',
-  hourly_rate_ore: 'hourly_rate_ore',
-  cap_hours: 'cap_hours',
-  cap_amount_ore: 'cap_amount_ore',
-  cap_confirmed: 'cap_confirmed',
-  change_reason: 'change_reason',
-  start_date: 'start_date',
-  end_date: 'end_date',
-  date_precision: 'date_precision',
-  sort_order: 'sort_order',
-  active: 'active',
-  manually_edited: 'manually_edited',
-};
+/** Ren bekräftelse har bara nyckelfälten och cap_confirmed: true (B-7). */
+export function arRenBekraftelse(indata: Record<string, unknown>): boolean {
+  return typeof indata.contract_id === 'string' && typeof indata.code === 'string'
+    && indata.cap_confirmed === true
+    && Object.keys(indata).every((k) => indata[k] === undefined
+      || ['contract_id', 'code', 'valid_from', 'cap_confirmed'].includes(k));
+}
 
-/**
- * Skapar eller ändrar EN version av en avtalsdel. Nyckeln är
- * (avtal, kod, valid_from): samma `valid_from` ändrar den befintliga raden, ett
- * senare `valid_from` lägger en ny version bredvid den gamla.
- *
- * `manually_edited` sätts vid ÄNDRING, inte vid skapande: flaggan finns för att
- * skydda en människas rättelse mot den automatiska extraktionen ur avtalsfilen
- * (story 6) — samma regel som CRM:ets ursprungsmärkning.
- */
+/** Ny version eller ren bekräftelse; en lagrad rads innehåll ändras aldrig. */
 export async function upsertContractPart(
   client: PoolClient, companyId: string, userId: string, input: UpsertContractPartInput,
 ): Promise<Record<string, unknown>> {
+  return arRenBekraftelse({ ...input })
+    ? bekraftaTak(client, companyId, userId, input)
+    : skrivBaselineversion(client, companyId, userId, input);
+}
+
+/** Avtalets början används bara när den faktiskt finns; datum gissas aldrig. */
+async function baselineDatum(
+  client: PoolClient, companyId: string, input: { contract_id: string; valid_from?: string },
+): Promise<string> {
   const avtal = await client.query<{ signed_date: string | null }>(
     'SELECT signed_date::text FROM contracts WHERE id = $1 AND company_id = $2',
     [input.contract_id, companyId],
   );
-  const avtalsrad = avtal.rows[0];
-  if (!avtalsrad) throw new NotFoundError('contract');
+  const rad = avtal.rows[0];
+  if (!rad) throw new NotFoundError('contract');
+  const datum = input.valid_from ?? rad.signed_date;
+  if (!datum) throw new BadRequestError('valid_from_required',
+    'avtalet saknar undertecknandedatum — ange valid_from för avtalsdelen');
+  return datum;
+}
 
-  // Utelämnad `valid_from` betyder "från avtalets början". Finns inget
-  // undertecknandedatum finns inget att härleda den ur, och då frågar systemet
-  // hellre än gissar: ett felaktigt startdatum flyttar tyst ett tak i tiden.
-  const validFrom = input.valid_from ?? avtalsrad.signed_date;
-  if (!validFrom) {
-    throw new BadRequestError(
-      'valid_from_required',
-      'avtalet saknar undertecknandedatum — ange valid_from för avtalsdelen',
-    );
+/** Bekräftelsen går bara framåt och auditeras exakt när den ändras. */
+export async function bekraftaTak(
+  client: PoolClient, companyId: string, userId: string,
+  input: { contract_id: string; code: string; valid_from?: string },
+): Promise<Record<string, unknown>> {
+  const validFrom = await baselineDatum(client, companyId, input);
+  const res = await client.query<{ id: string; cap_confirmed: boolean }>(
+    `SELECT id, cap_confirmed FROM contract_parts
+      WHERE company_id = $1 AND contract_id = $2 AND code = $3 AND valid_from = $4 FOR UPDATE`,
+    [companyId, input.contract_id, input.code, validFrom],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('contract_part');
+  if (!rad.cap_confirmed) {
+    // Fast kolumnlista: inget kolumnnamn kommer ur indata.
+    await client.query('UPDATE contract_parts SET cap_confirmed = true WHERE id = $1 AND company_id = $2 AND cap_confirmed = false',
+      [rad.id, companyId]);
+    await writeAudit(client, {
+      companyId, userId, action: 'contract_part.confirmed', entityType: 'contract_part', entityId: rad.id,
+      details: { contract_id: input.contract_id, code: input.code, valid_from: validFrom },
+    });
   }
+  return getContractUsage(client, companyId, input.contract_id);
+}
+
+/** Enda INSERT-vägen: varje lagrad version står kvar som den skrevs (B-7). */
+export async function skrivBaselineversion(
+  client: PoolClient, companyId: string, userId: string, input: UpsertContractPartInput,
+  flaggor: { manuelltRedigerad?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const validFrom = await baselineDatum(client, companyId, input);
 
   if (input.parent_part_id) {
     const f = await client.query<{ contract_id: string }>(
@@ -659,36 +680,9 @@ export async function upsertContractPart(
     [companyId, input.contract_id, input.code, validFrom],
   );
 
-  const befintligRad = befintlig.rows[0];
-  if (befintligRad) {
-    const update = buildAllowlistedUpdate(CONTRACT_PART_UPDATE, {
-      name: input.name,
-      description: input.description,
-      parent_part_id: input.parent_part_id,
-      billable: input.billable,
-      hourly_rate_ore: input.hourly_rate_ore,
-      cap_hours: input.cap_hours,
-      cap_amount_ore: input.cap_amount_ore,
-      cap_confirmed: input.cap_confirmed,
-      change_reason: input.change_reason,
-      start_date: input.start_date,
-      end_date: input.end_date,
-      date_precision: input.date_precision,
-      sort_order: input.sort_order,
-      active: input.active,
-      manually_edited: true,
-    });
-    const id = befintligRad.id;
-    await client.query(
-      `UPDATE contract_parts SET ${update!.setSql}
-        WHERE id = $${update!.values.length + 1} AND company_id = $${update!.values.length + 2}`,
-      [...update!.values, id, companyId],
-    );
-    await writeAudit(client, {
-      companyId, userId, action: 'contract_part.updated', entityType: 'contract_part', entityId: id,
-      details: { contract_id: input.contract_id, code: input.code, valid_from: validFrom },
-    });
-    return getContractUsage(client, companyId, input.contract_id);
+  if (befintlig.rows[0]) {
+    throw new ConflictError('version_finns',
+      `avtalsdelen ${input.code} har redan en lagrad version från ${validFrom} — en ändring blir en ny version med eget valid_from och orsak`);
   }
 
   if (!input.name) {
@@ -697,17 +691,16 @@ export async function upsertContractPart(
   const row = await client.query<{ id: string }>(
     `INSERT INTO contract_parts (company_id, contract_id, parent_part_id, code, name, description, billable,
                                  hourly_rate_ore, cap_hours, cap_amount_ore, cap_confirmed, valid_from,
-                                 sort_order, active, change_reason, start_date, end_date, date_precision)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+                                 sort_order, active, change_reason, start_date, end_date, date_precision, manually_edited)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
     [companyId, input.contract_id, input.parent_part_id ?? null, input.code, input.name,
       input.description ?? null, input.billable ?? true, input.hourly_rate_ore ?? null,
       input.cap_hours ?? null, input.cap_amount_ore ?? null, input.cap_confirmed ?? false, validFrom,
       input.sort_order ?? 0, input.active ?? true,
-      // Utelämnat fält = NULL. Den FÖRSTA versionen av en kod behöver inget
-      // skäl — det finns ingenting den ändrar; triggern kräver det först när
-      // en annan version av samma (contract_id, code) redan finns.
+      // Hitta aldrig på en orsak. Registret kräver den för nya förslag;
+      // ett nytt avtal ur utkast får fortfarande sin första rad direkt.
       input.change_reason ?? null, input.start_date ?? null, input.end_date ?? null,
-      input.date_precision ?? null],
+      input.date_precision ?? null, flaggor.manuelltRedigerad ?? false],
   );
   await writeAudit(client, {
     companyId, userId, action: 'contract_part.created', entityType: 'contract_part', entityId: row.rows[0]!.id,

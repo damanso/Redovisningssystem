@@ -1,4 +1,4 @@
-// Uppdragsytan våg 1 (migration 0068): de fyra spärrarna i schemat.
+// Uppdragsytan: 0068:s spärrar med 0079:s frysning av varje lagrad version.
 //
 // Varför de prövas mot en riktig Postgres och inte mot tjänstelagret: spärrarna
 // FINNS i Postgres just därför att tre skrivvägar (API, MCP, vy) plus all
@@ -196,59 +196,47 @@ describe('kraver_orsak_vid_ny_version — UPDATE av en bekräftad rad', () => {
   for (const [namn, sats, varden] of RAM) {
     it(`${namn} går inte att ändra in-place`, async () => {
       await expect(sqlPaDel(delId, sats, varden))
-        .rejects.toThrow(/bekräftad baseline för avtalsdel B1 ändras inte in-place/);
+        .rejects.toThrow(/lagrad baselineversion av avtalsdel B1 ändras inte på plats/);
     });
   }
 
   it('parent_part_id går inte att ändra in-place', async () => {
     const annan = await laggDel(avtal, { code: 'B2', name: 'Förälder' });
     await expect(sqlPaDel(delId, 'parent_part_id = $2', [annan]))
-      .rejects.toThrow(/ändras inte in-place/);
+      .rejects.toThrow(/ändras inte på plats/);
   });
 
   it('avbekräftelse fälls — annars vore frysningen en kryssruta man klickar bort', async () => {
     await expect(sqlPaDel(delId, 'cap_confirmed = false'))
-      .rejects.toThrow(/ändras inte in-place/);
+      .rejects.toThrow(/bekräftelsen av avtalsdel .* tas aldrig tillbaka/);
   });
 
-  it('etiketterna får alltid ändras: ett stavfel är inte en ändrad överenskommelse', async () => {
-    await expect(sqlPaDel(
-      delId, "name = $2, description = $3, sort_order = $4, active = $5",
-      ['Bekräftad (rättat namn)', 'Ny beskrivning', 7, false],
-    )).resolves.toBeUndefined();
-    const rad = await withAdmin(async (c) => (await c.query(
-      'SELECT name, sort_order, active FROM contract_parts WHERE id = $1', [delId],
-    )).rows[0]);
-    expect(rad).toMatchObject({ name: 'Bekräftad (rättat namn)', sort_order: 7, active: false });
+  it('också etiketter och sortering kräver en ny version', async () => {
+    const fore = await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [delId])).rows[0]);
+    await expect(sqlPaDel(delId, 'name = $2, description = $3, sort_order = $4, active = $5',
+      ['Bekräftad (rättat namn)', 'Ny beskrivning', 7, false])).rejects.toMatchObject({ code: 'P0001' });
+    expect(await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [delId])).rows[0])).toEqual(fore);
   });
 });
 
-describe('en OBEKRÄFTAD rad får ändras fritt — upsert_contract_part överlever', () => {
-  it('upsert_contract_part uppdaterar den befintliga versionen in-place som förut', async () => {
-    // Exakt flödet i services/contracts.ts rad 627–653: samma (avtal, kod,
-    // valid_from) → UPDATE på den befintliga raden.
-    const projekt = await nyttUppdrag('Utkastarbete');
-    const avtal = await nyttAvtal(projekt, 'Avtal under arbete');
-    const skapad = await okKoad('upsert_contract_part', {
-      contract_id: avtal, code: 'U1', name: 'Fas U1', cap_hours: 10, valid_from: '2026-01-01',
-    });
+describe('också en OBEKRÄFTAD lagrad version är fryst', () => {
+  it('samma nyckel ger version_finns och oförändrad rad', async () => {
+    const avtal = await nyttAvtal(await nyttUppdrag('Utkastarbete'), 'Avtal under arbete');
+    const skapad = await okKoad('upsert_contract_part', { contract_id: avtal, code: 'U1', name: 'Fas U1', cap_hours: 10, valid_from: '2026-01-01', change_reason: 'avtal' });
     const partId = del(skapad, 'U1').part_id;
-
-    const rattad = await okKoad('upsert_contract_part', {
-      contract_id: avtal, code: 'U1', cap_hours: 12, hourly_rate_ore: 95_000,
-      valid_from: '2026-01-01',
-    });
-    const efter = del(rattad, 'U1');
-    expect(efter.part_id).toBe(partId); // samma rad, inte en ny version
-    expect((rattad.parts as unknown as { code: string; cap_hours: number }[])
-      .find((d) => d.code === 'U1')!.cap_hours).toBe(12);
+    const fore = await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [partId])).rows[0]);
+    const rattad = await koaOchGodkann('upsert_contract_part', { contract_id: avtal, code: 'U1', cap_hours: 12, hourly_rate_ore: 95_000, valid_from: '2026-01-01', change_reason: 'rättat avtal' });
+    expect(rattad.status).toBe(409); expect(rattad.body.error).toBe('version_finns');
+    expect(del(await ok('get_contract_usage', { contract_id: avtal }), 'U1').part_id).toBe(partId);
+    expect(await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [partId])).rows[0])).toEqual(fore);
   });
-
-  it('även perioden och taket får ändras när raden inte är bekräftad', async () => {
+  it('direkt SQL kan inte ändra period eller obekräftat tak', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Obekräftad ram'), 'Avtal utan bekräftat tak');
     const delId = await laggDel(avtal, { code: 'U2', cap_hours: 5 });
+    const fore = await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [delId])).rows[0]);
     await expect(sqlPaDel(delId, "cap_hours = 9, end_date = DATE '2026-12-31', date_precision = 'manad'"))
-      .resolves.toBeUndefined();
+      .rejects.toMatchObject({ code: 'P0001' });
+    expect(await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [delId])).rows[0])).toEqual(fore);
   });
 });
 
@@ -332,10 +320,10 @@ describe('vagrar_skrivning_pa_avslutat', () => {
     // avslutet, inte innan.
     stangtProjekt = await nyttUppdrag('Avslutat uppdrag');
     stangtAvtal = await nyttAvtal(stangtProjekt, 'Avtal på avslutat uppdrag');
-    await okKoad('upsert_contract_part', {
+    await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: stangtAvtal, code: 'S1', name: 'Fas S1', valid_from: '2026-01-01',
     });
-    const stangda = await okKoad('upsert_contract_part', {
+    const stangda = await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: stangtAvtal, code: 'S1b', name: 'Fas S1b', valid_from: '2026-01-01',
     });
     stangdDel = del(stangda, 'S1').part_id;
@@ -343,10 +331,10 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
     oppetProjekt = await nyttUppdrag('Pågående uppdrag');
     oppetAvtal = await nyttAvtal(oppetProjekt, 'Avtal på pågående uppdrag');
-    await okKoad('upsert_contract_part', {
+    await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: oppetAvtal, code: 'O1', name: 'Fas O1', valid_from: '2026-01-01',
     });
-    const oppna = await okKoad('upsert_contract_part', {
+    const oppna = await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: oppetAvtal, code: 'O1b', name: 'Fas O1b', valid_from: '2026-01-01',
     });
     oppenDel = del(oppna, 'O1').part_id;
@@ -441,7 +429,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
   // (ii) contract_parts
   it('contract_parts: en ny avtalsdel på ett avslutat uppdrag fälls', async () => {
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: stangtAvtal, code: 'S2', name: 'Fas S2', valid_from: '2026-02-01',
     });
     expect(res.status).toBe(409);
@@ -530,22 +518,20 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 // stället för till en egen åtgärd. Kvar som spärr står bara det som ÄR en
 // spärr: ett skäl som saknas, och ett utkast som ingen undertecknat.
 //
-// Regelbrottet syns som 409 `rule_violation` (errorHandler mappar triggerns
-// P0001 dit) — triggerns text når aldrig användaren. S0.1 flyttade tidpunkten,
-// inte utfallet: `upsert_contract_part` är känslig, så skrivningen (och därmed
-// triggerns 409) sker vid GODKÄNNANDET i kön, inte vid begäran.
+// B-7: saknad orsak ger 400 före kön; databasens P0001 ger fortfarande
+// 409 rule_violation vid godkännandet, utan triggertext i svaret.
 
 describe('vad 0068 stängde, och vad S1.2/S1.3 öppnade (pinnat, inte glömt)', () => {
   it('en ANDRA version av en kod UTAN skäl fälls fortfarande', async () => {
     const avtal = await nyttAvtal(await nyttUppdrag('Tilläggsavtal via action'), 'Ramavtal');
-    await okKoad('upsert_contract_part', {
+    await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 10, valid_from: '2026-01-01',
     });
-    const andra = await koaOchGodkann('upsert_contract_part', {
+    const andra = await act('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 40, valid_from: '2026-06-01',
     });
-    expect(andra.status).toBe(409);
-    expect(andra.body.error).toBe('rule_violation');
+    expect(andra.status).toBe(400);
+    expect(andra.body.error).toBe('validation_error');
     // Med skäl går samma anrop igenom — S1.3:s väg in för tilläggsavtalet.
     const medSkal = await koaOchGodkann('upsert_contract_part', {
       contract_id: avtal, code: 'T1', name: 'Fas T1', cap_hours: 40, valid_from: '2026-06-01',
@@ -558,7 +544,7 @@ describe('vad 0068 stängde, och vad S1.2/S1.3 öppnade (pinnat, inte glömt)', 
     // Vägen 0068 stängde: avtalet skapas med `signed_date` och är därmed fryst
     // redan när det föds — ingen handpåläggning, ingen egen frys-åtgärd.
     const avtal = await nyttAvtal(await nyttUppdrag('Bekräftat tak via action'), 'Ramavtal 2');
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: avtal, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });
@@ -567,7 +553,7 @@ describe('vad 0068 stängde, och vad S1.2/S1.3 öppnade (pinnat, inte glömt)', 
 
   it('...men fortfarande INTE på ett avtal som ingen undertecknat', async () => {
     const utkast = await nyttUtkastavtal(await nyttUppdrag('Bekräftat tak i utkast'), 'Utkastavtal 3');
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: utkast, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
     });

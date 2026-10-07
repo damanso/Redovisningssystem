@@ -1,3 +1,4 @@
+import { BASELINEKOLUMNER } from '../lib/baselinekolumner.js';
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -34,7 +35,7 @@ import {
   removeTimeEntryLink, setProjectStatus, updateTimeEntry, TIME_ENTRY_STATUSES,
 } from '../services/projects.js';
 import {
-  assignContractPart, createContract, getContractUsage, listContracts, updateContract, upsertContractPart,
+  arRenBekraftelse, assignContractPart, createContract, getContractUsage, listContracts, skrivBaselineversion, updateContract, upsertContractPart,
 } from '../services/contracts.js';
 import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
@@ -136,6 +137,9 @@ export interface ActionDef<I = unknown> {
   // `sensitive`, som köar för godkännande, och från transportlagrets
   // requireHuman — två mekanismer på två lager ska inte heta samma sak.
   kravManniska?: boolean;
+  // B-7: baselinefält avvisas med 409 kraver_ny_version före kön och utan
+  // mutation. Deklarativt som kravManniska; den gemensamma listan står i lib/.
+  kraverNyVersion?: readonly string[];
   // För sensitive: committa människans beslut före verkställigheten så att
   // ett tekniskt fel aldrig kräver en ny kvittens (B-2, FR-41 punkt 4).
   tvafas?: boolean;
@@ -190,7 +194,7 @@ const DatePrecisionSchema = z.enum(['ar', 'halvar', 'kvartal', 'manad', 'dag']);
 const AvtalsdelFalt = {
   contract_id: UuidSchema,
   code: safeText(40),
-  // Krävs bara när delen skapas; en ändring behåller det som står.
+  // Varje ny version behöver namn; ren bekräftelse använder bara nyckeln.
   name: safeText(200).optional(),
   description: safeText(2000).optional(),
   parent_part_id: UuidSchema.optional(),
@@ -1519,6 +1523,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // betalningsvillkor är vad kunden har lovats — ändras de utan att någon läst
     // ändringen är baselinespärren en dörr med gångjärn på utsidan.
     sensitivity: 'sensitive',
+    kraverNyVersion: BASELINEKOLUMNER,
     inputSchema: z
       .object({
         contract_id: UuidSchema,
@@ -1540,16 +1545,15 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // att flytta HÄR utan att någon godkänt — och en spärr som har en väg runt
     // sig är ingen spärr. Nu köas båda vägarna till baselinen.
     sensitivity: 'sensitive',
-    // Nyckeln är (avtal, kod, valid_from): samma valid_from ändrar den
-    // befintliga raden, ett SENARE valid_from lägger en ny version bredvid den
-    // gamla. Ett tilläggsavtal skriver aldrig över det tak som gällde före —
-    // taket i juli ska gå att läsa i oktober.
-    //
-    // `change_reason` är valfri HÄR: den första versionen av en kod ändrar
-    // ingenting och behöver inget skäl. Krävs den (en andra version av samma
-    // kod) och saknas den, fäller triggern i 0068 skrivningen och klienten får
-    // 409 `rule_violation` genom befintliga errorHandler — ingen egen fångst.
-    inputSchema: z.object(AvtalsdelFalt).strict(),
+    // B-7/FR-2: samma nyckel ger version_finns vid godkännandet. Allt utom
+    // ren bekräftelse är en ny version med orsak, också den första av en kod.
+    inputSchema: z.object(AvtalsdelFalt).strict().superRefine((v, ctx) => {
+      if (arRenBekraftelse(v)) return;
+      if (!OrsakSchema.safeParse(v.change_reason ?? '').success) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['change_reason'],
+          message: 'ange varför baselinen ändras (minst fem tecken)' });
+      }
+    }),
     handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   def({
@@ -1563,8 +1567,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Skillnaden mot `upsert_contract_part` är enbart vad som KRÄVS: orsaken
     // och startdatumet. En "ny version" utan eget `valid_from` vore en
     // överskrivning av den befintliga raden, och en utan skäl vore en tyst
-    // sådan. Handlern går rakt på tjänstefunktionen — samma skrivväg, samma
-    // audit, samma triggrar.
+    // sådan. Handlern använder samma tjänstefunktion som upsert_contract_part
+    // använder för en ny version, med samma audit och triggrar.
     sensitivity: 'sensitive',
     inputSchema: z
       .object({
@@ -1582,7 +1586,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // BÅDA i `approveAction`:s enda transaktion. Länkningen ligger i tjänsten
     // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
     handler: async (ctx, i) => {
-      const utfall = await upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never);
+      const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;
     },

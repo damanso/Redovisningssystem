@@ -3,17 +3,17 @@
 //
 // Två grepp, båda engångs:
 //
-//   1. `skapaUppdrag` föder avtalet med sin ROTDEL (`UPPDRAG`). Allt annat i
-//      avtalet hänger under den, så att `get_contract_usage` alltid har en nod
-//      som bär hela uppdragets tak — 0064:s föräldertak över barnens summa.
+//   1. `skapaUppdrag` föder bara avtalet. Rotdelen (`UPPDRAG`) föds med
+//      baseline version 1 efter godkännandet. Uppsättningens utkast är
+//      köposten (B-7), och ett nej lämnar inga avtalsdelar.
 //   2. `importeraLeveranskontrakt` förhandsvisar texten och köar `satt_baseline`
 //      när den är fryst. `sattBaseline` skriver först efter godkännandet.
 //
 // Tre regler som filen inte får bryta:
 //
 //   * **Ingen egen skrivväg till avtalsdelarna.** Varje del skrivs genom
-//     `upsertContractPart` (services/contracts.ts) — samma allowlist, samma
-//     audit, samma triggrar ur 0068. Två vägar in till samma tabell betyder två
+//     `skrivBaselineversion` (services/contracts.ts) — bara INSERT, samma
+//     audit och den sista spärren i 0079. Två vägar in till samma tabell betyder två
 //     uppsättningar regler, och då är minst en fel utan att någon vet vilken.
 //   * **Importen läser aldrig en fil.** Texten kommer som indata (ADR-4/NFR-1);
 //     tolkningen sker i den rena parsern `lib/leveranskontrakt.ts`.
@@ -30,7 +30,7 @@ import {
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
-import { createContract, getContractUsage, upsertContractPart } from './contracts.js';
+import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
 
 /** Skälet varje importerad version bär. `kraver_orsak_vid_ny_version()` (0068) läser det. */
@@ -69,31 +69,21 @@ export interface SkapaUppdragInput {
 }
 
 /**
- * Skapar avtalet på ett BEFINTLIGT uppdrag och alltid rotdelen `UPPDRAG`.
- *
- * Med `signed_date` föds avtalet FRYST — 0069:s trigger härleder tillståndet ur
- * datumet, och att signera ÄR att frysa. Utan datum är avtalet ett utkast, och
- * då finns ingenting att härleda rotdelens `valid_from` ur: `upsertContractPart`
- * svarar 400 `valid_from_required` i stället för att gissa ett startdatum, för
- * ett gissat sådant flyttar tyst ett tak i tiden.
+ * Skapar bara avtalet på ett befintligt uppdrag. Uppsättningens utkast är
+ * köposten: rotdelen föds med baseline version 1 först efter godkännandet.
+ * Ett startdatum krävs före första skrivningen; datum gissas aldrig (B-7).
  */
 export async function skapaUppdrag(
   client: PoolClient, companyId: string, userId: string, input: SkapaUppdragInput,
 ): Promise<Record<string, unknown>> {
+  if (!input.signed_date) throw new BadRequestError('valid_from_required',
+    'avtalet saknar undertecknandedatum — baselinen kan inte tidsättas');
   const avtal = await createContract(client, companyId, userId, {
     project_id: input.project_id,
     name: input.name,
     signed_date: input.signed_date,
   });
   const contractId = avtal.id as string;
-
-  await upsertContractPart(client, companyId, userId, {
-    contract_id: contractId,
-    code: ROTKOD,
-    name: input.name,
-    valid_from: input.signed_date,
-    sort_order: 0,
-  });
 
   const rad = await hamtaAvtal(client, companyId, contractId);
   return {
@@ -179,11 +169,7 @@ function bevaraSaknadeFalt<T extends Pick<Onskad, 'cap_hours' | 'cap_amount_ore'
   };
 }
 
-/**
- * Raden är redan som importen vill ha den. Då skrivs den INTE om: en
- * omskrivning hade satt `manually_edited` och lagt en `contract_part.updated`
- * i auditloggen — ett ändringsspår efter en körning som inte ändrade något.
- */
+/** Identisk import skriver ingenting; en avvikande lagrad rad fryses av B-7. */
 function lika(befintlig: Delrad, onskad: Onskad): boolean {
   return befintlig.name === onskad.name
     && befintlig.parent_part_id === onskad.parent_part_id
@@ -262,17 +248,16 @@ async function delId(
 }
 
 /**
- * Skriver delen om den saknas eller avviker, och lämnar den orörd annars.
- * Fält som parsern inte hittade skickas inte alls (`undefined`): en ny rad får
- * NULL i kolumnen, och en befintlig rad behåller det som står. Importen suddar
- * aldrig ett värde som någon annan skrivit.
+ * Identisk import lämnas orörd. En avvikande lagrad rad ger version_finns
+ * genom skrivBaselineversion; hela godkännandet rullas tillbaka (B-7).
+ * Parserns saknade fält suddar aldrig ett värde ur planen.
  */
 async function skrivDel(
   client: PoolClient, companyId: string, userId: string,
   contractId: string, validFrom: string, onskad: Onskad, befintlig: Delrad | undefined,
 ): Promise<{ id: string; skriven: boolean }> {
   if (befintlig && lika(befintlig, bevaraSaknadeFalt(onskad, befintlig))) return { id: befintlig.id, skriven: false };
-  await upsertContractPart(client, companyId, userId, {
+  await skrivBaselineversion(client, companyId, userId, {
     contract_id: contractId,
     code: onskad.code,
     name: onskad.name,
@@ -287,7 +272,7 @@ async function skrivDel(
     change_reason: IMPORTORSAK,
   });
   return {
-    id: befintlig?.id ?? await delId(client, companyId, contractId, onskad.code, validFrom),
+    id: await delId(client, companyId, contractId, onskad.code, validFrom),
     skriven: true,
   };
 }

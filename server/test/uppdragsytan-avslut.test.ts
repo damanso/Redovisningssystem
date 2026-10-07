@@ -349,13 +349,14 @@ describe('avslutet låser uppdraget (0068:s fyra räckvidder)', () => {
   beforeAll(async () => {
     stangt = await nyttUppdrag('Låst efter avslut', { S1: 'pagar' });
 
+    await okKoad('upsert_contract_part', { contract_id: stangt.avtalId, code: 'UPPDRAG', name: 'Uppdraget', valid_from: '2026-01-01', change_reason: 'avtal' });
     const avtalet = await ok('get_contract_usage', { contract_id: stangt.avtalId });
     const delar = avtalet.parts as unknown as Array<{ part_id: string; code: string }>;
     rotdel = delar.find((d) => d.code === 'UPPDRAG')!.part_id;
 
     // En andra del att peka om tiden TILL — en ompekning till samma del är
     // ingen ändring av kolumnen och hade inte prövat triggern.
-    await okKoad('upsert_contract_part', {
+    await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: stangt.avtalId, code: 'S2', name: 'Fas S2', valid_from: '2026-01-01',
     });
     const efter = await ok('get_contract_usage', { contract_id: stangt.avtalId });

@@ -488,17 +488,24 @@ Tre regler bär hela funktionen:
   `customer_id` (utelämnad = uppdragets kund), `signed_date`,
   `payment_terms_days`, `hourly_rate_ore`, `source_file_id` (avtalshandlingen)
   och `notes`.
-- `update_contract` (write) — `contract_id` + samma fält.
-- `upsert_contract_part` (write) — `contract_id`, `code` (t.ex. `2A`), `name`
-  (krävs bara när delen skapas), valfria `description`, `parent_part_id`,
-  `billable`, `hourly_rate_ore`, `cap_hours`, `cap_amount_ore`,
-  `cap_confirmed` (default **false**), `valid_from` (utelämnad = avtalets
-  `signed_date`; saknas det: 400 `valid_from_required`), `sort_order`,
-  `active`. Nyckeln är (avtal, kod, `valid_from`): samma `valid_from` ändrar
-  raden och sätter `manually_edited = true`, ett senare lägger en ny version
-  bredvid den gamla. **Fyra fält till sedan migration 0068**
-  (`change_reason`, `start_date`, `end_date`, `date_precision`) — se
-  *Uppdragsytan* längst ned.
+- `update_contract` (sensitive) — `contract_id` + samma fält. Köas för mänskligt
+  godkännande. Baselineburna fält, bland annat `hourly_rate_ore`, ger **409
+  `kraver_ny_version` före kön**, utan mutation. Gamla köposter prövas igen vid
+  godkännandet. Namn, anteckning, kund och betalningsvillkor ändras som förut.
+- `upsert_contract_part` (sensitive) — `contract_id`, `code` (t.ex. `2A`), `name`
+  (krävs för varje ny version), valfria `description`, `parent_part_id`,
+  `billable`, `hourly_rate_ore`, `cap_hours`, `cap_amount_ore`, `cap_confirmed`
+  (default **false**), `valid_from` (utelämnad = avtalets `signed_date`; saknas
+  det: 400 `valid_from_required`), `sort_order`, `active`, `change_reason`,
+  `start_date`, `end_date`, `date_precision`. En ny rad skrivs genom
+  `skrivBaselineversion`; samma (avtal, kod, `valid_from`) som en lagrad rad
+  ger **409 `version_finns` vid godkännandet**. `change_reason` krävs med minst
+  fem tecken efter trimning, också för en ny kod: annars **400
+  `validation_error` före kön**. Undantaget är ren bekräftelse: bara
+  `contract_id`, `code`, valfritt `valid_from` och `cap_confirmed: true`.
+  `bekraftaTak` ändrar då bara bekräftelsen framåt och skriver
+  `contract_part.confirmed`; redan bekräftat är en tyst no-op utan auditrad.
+  `manually_edited` sätts vid INSERT, aldrig efteråt.
 - `list_contracts` (read) — filter `project_id`, `contract_id`. Varje avtal bär
   `parts` med förbrukning per del.
 - `get_contract_usage` (read) — `contract_id`. Per del: `billable_minutes` och
@@ -576,7 +583,7 @@ första LÄSER och skapar ingenting, den andra skriver.
   `hourly_rate_ore`, `notes`, `parts[]` (`code`, `name`, valfria `description`,
   `parent_code`, `cap_hours`, `cap_amount_ore`, `cap_confirmed`) och `draft`
   (utkastet ovan). Avtalet och SAMTLIGA avtalsdelar skapas i **en** transaktion
-  via `createContract`/`upsertContractPart`; faller en del skapas ingenting.
+  via `createContract`/`skrivBaselineversion`; faller en del skapas ingenting.
   - `parent_code` slås upp mot koderna i samma anrop (föräldern skapas först);
     en kod utan motsvarighet ger 400 `unknown_parent_code`. Samma kod två gånger
     ger 400 `duplicate_part_code`.
@@ -585,9 +592,9 @@ första LÄSER och skapar ingenting, den andra skriver.
   - **`manually_edited = true` sätts på exakt de delar där det inskickade värdet
     avviker från utkastet** (namn, beskrivning, förälder, de två taken). En del
     utan motsvarighet i utkastet — eller ett formulär utan utkast alls — räknas
-    som ändrad. Flaggan sätts genom contracts.ts egen semantik ("vid ändring,
-    inte vid skapande"), så auditloggen visar både `contract_part.created` och
-    `contract_part.updated`.
+    som ändrad. Flaggan sätts redan i den enda INSERT-satsen, eftersom en
+    lagrad rad aldrig ändras. `contract_part.created` är delens auditrad och
+    `contract.created_from_draft` räknar upp de manuellt ändrade koderna.
   - `cap_confirmed` är fortsatt default **false**: ett tak AI:n läst men ingen
     människa bekräftat varnar aldrig.
 - **Vyn:** "Läs in avtal" på uppdragssidan
@@ -774,12 +781,12 @@ David med rätt skäl i huvudet. Ett tilläggsavtal fanns det ingen väg in för
 och ett tak som inte går att skriva in kan aldrig varna. Det är samma mening
 som PRD §1 rad 6, ett varv senare.
 
-**Fyra nya fält på `upsert_contract_part`** (S0.1 nedan höjde åtgärden till
-`sensitive`), alla **valfria** så att varje befintligt anrop beter sig exakt
-som förut — utelämnat fält skrivs som NULL:
+**Fyra fält på `upsert_contract_part`** (åtgärden är `sensitive`). B-7 kräver
+orsak för varje ny version, också en ny kod; periodfälten är valfria och blir
+NULL när de inte skickas. Ren bekräftelse kräver ingen orsak:
 
-- `change_reason` (text, ≤ 2000) — varför just DEN HÄR versionen skrevs. Den
-  FÖRSTA versionen av en kod behöver inget skäl: den ändrar ingenting.
+- `change_reason` (text, ≤ 2000, minst fem tecken efter trimning) — varför
+  just DEN HÄR versionen skrevs. Saknat skäl ger 400 före kön.
 - `start_date` / `end_date` (ISO-datum) — avtalets period för delen.
 - `date_precision` — `ar` | `halvar` | `kvartal` | `manad` | `dag`, exakt
   CHECK-villkorets värden i 0068. Avtalstexten skriver "hösten 2026" lika ofta
@@ -791,8 +798,9 @@ som förut — utelämnat fält skrivs som NULL:
 orsak. Köas för godkännande." Samma fält som `upsert_contract_part`, men
 `change_reason` (minst fem tecken efter trimning) och `valid_from` är
 **obligatoriska**. Åtgärden går genom samma tjänstefunktion
-(`upsertContractPart`) som den vanliga skrivvägen — samma audit, samma
-triggrar, ingen egen SQL.
+(`skrivBaselineversion`) som `upsert_contract_part` använder för en ny version
+— samma audit, samma triggrar, ingen egen SQL. En befintlig nyckel ger 409
+`version_finns` före skrivningen; den gamla raden står alltid kvar.
 
 - **Känslig av samma skäl som `book_invoice`:** en ändrad baseline flyttar vad
   kunden har lovats. Ett agentanrop svarar därför 202 `pending_approval` och
@@ -814,16 +822,15 @@ triggrar, ingen egen SQL.
   tillbaka — avtalsdelen skrivs då inte heller. Utelämnat fält = tillägget kom
   inte ur en fras någon sa, och ingenting länkas.
 
-**Triggerfelen har ingen egen felkod.** Faller skrivningen på
-`kraver_orsak_vid_ny_version()` når P0001 klienten som **409 `rule_violation`**
-via befintliga `errorHandler` — utan triggerns text (meddelandet stannar i
-serverloggen) och aldrig som ett 500. Schemat är primärkontrollen, triggern
-backstoppet. De två fall det gäller:
-
-- ny version av en kod **utan** `change_reason` (även blanktext), och
-- **in-place**-ändring av `cap_hours`/`cap_amount_ore`/`valid_from`/perioden/
-  `parent_part_id`/`hourly_rate_ore` på en rad med `cap_confirmed = true` — en
-  bekräftad baseline skrivs inte om, den versioneras.
+**Triggerfelen har ingen egen felkod.** P0001 ur
+`kraver_orsak_vid_ny_version()` når klienten som **409 `rule_violation`** via
+`errorHandler`, utan triggertext. Migration 0079 fryser innehåll och orsak
+på varje lagrad rad, också obekräftade, och fäller varje DELETE. Bara
+`cap_confirmed` från false till true och husets `updated_at` får ändras.
+Tillåtelselistan fryser också framtida kolumner. INSERT av en andra version
+utan orsak fälls som i 0068; action-schemat avvisar saknad orsak redan före
+kön med 400 `validation_error`. Avtal utan projekt behåller 0068-regeln;
+`contracts.project_id NOT NULL` gör den mängden tom i drift.
 
 ### Bakvägarna stängda (S0.1, våg 2)
 
@@ -836,9 +843,9 @@ spärr. Tre rader i registret, inget annat:
   svarar nu 202 `pending_approval`; raden skrivs först vid godkännandet i **Att
   göra**. Kön (`action_approvals`) och auditraden `action.approval_requested`
   skrivs FÖRE godkännandet — det är spåret av att någon bad om ändringen, inte
-  ändringen. Faller skrivningen på en trigger (0068) kommer 409
-  `rule_violation` nu från **godkännandet**, transaktionen rullas tillbaka och
-  köposten står kvar som `pending`.
+  ändringen. Vid godkännandet kan 409 `version_finns`, `kraver_ny_version`
+  eller triggerns `rule_violation` fälla skrivningen. Transaktionen rullas
+  tillbaka och köposten står kvar som `pending`.
 - **`update_contract` → `sensitive`.** Samma skäl: avtalets timtaxa och
   betalningsvillkor är vad kunden har lovats.
 - **`set_project_status` → `kravManniska: true`** (känsligheten är oförändrad
@@ -870,28 +877,28 @@ ett nyskapat avtal — om avtalet är undertecknat.** Är det ett utkast fälls 
 som förut, och det är hela ADR-8: en baseline på ett arbetsmaterial är en
 anteckning.
 
-**`skapa_uppdrag` (write, engångs)** — "Skapa uppdrag: avtal på ett befintligt
-projekt, med rotdelen UPPDRAG". Indata `project_id`, `name`, `signed_date`
-(valfri). Delegerar till `createContract` och skapar ALLTID rotdelen
-`code = 'UPPDRAG'` (utan förälder) som allt annat hänger under, så att
-`get_contract_usage` alltid har en nod som bär hela uppdragets tak. Svarar
-`contract_id`, `kontrakt_tillstand` och avtalet.
+**`skapa_uppdrag` (write, engångs)** — avtal på ett befintligt projekt.
+Indata `project_id`, `name`, `signed_date` (valfri i schemat). Skapar bara
+avtalet genom `createContract`. Rotdelen `UPPDRAG` föds med baseline version 1
+först vid godkännandet av `satt_baseline`. Uppsättningens utkast är köposten;
+ett nej lämnar inga avtalsdelar. Svaret har `contract_id`,
+`kontrakt_tillstand` och avtalet med `parts: []`.
 
-- **Utan `signed_date` finns inget att härleda rotdelens `valid_from` ur**, och
-  då svarar åtgärden **400 `valid_from_required`** i stället för att gissa ett
-  startdatum (`upsertContractPart`s egen regel). Hela anropet rullas tillbaka —
-  inget halvskapat avtal blir kvar.
+- **Utan `signed_date`** ges **400 `valid_from_required` före skrivningen**.
+  Inget halvskapat avtal blir kvar och inget startdatum gissas.
 
 **`importera_leveranskontrakt` (write, engångs)** — "Importera det frysta
 leveranskontraktet som baseline". Indata `contract_id` + `kontraktstext`
 (markdown). **Åtgärden läser aldrig Drive eller en fil själv** (ADR-4/NFR-1):
 den som har texten skickar in den. Tolkningen sker i den rena parsern
 `server/src/lib/leveranskontrakt.ts` (ingen databas, ingen I/O), och skrivningen
-går genom `upsertContractPart` — ingen parallell väg in till avtalsdelarna.
+går efter mänskligt godkännande genom `skrivBaselineversion` — ingen
+parallell väg in till avtalsdelarna.
 
-Ur texten skrivs, allt i samma transaktion:
+Importen köar `satt_baseline`. Ur texten skrivs efter godkännandet, allt i
+samma transaktion:
 
-- rotdelen `UPPDRAG` med ramens `cap_hours`/`cap_amount_ore` och
+- rotdelen `UPPDRAG` som ny rad med ramens `cap_hours`/`cap_amount_ore` och
   `valid_from = signed_date`,
 - strömmarna (Bilaga 1:s faser) som förälderdelar under `UPPDRAG` med
   `start_date`/`end_date` och `date_precision` läst ur datumets form
@@ -906,22 +913,23 @@ Ur texten skrivs, allt i samma transaktion:
 - **Saknat fält blir NULL, aldrig en gissning.** Ett värde parsern inte hittar
   skrivs inte, och redovisas i svarets `saknade_falt` — saknat ska synas som
   saknat.
-- **Importen sätter ALDRIG `cap_confirmed`.** Det gör David (kryssrutan eller
-  `upsert_contract_part` via kön), och det kräver ett fryst kontrakt. Ett tak
+- **Importen sätter ALDRIG `cap_confirmed`.** David gör en ren bekräftelse
+  genom `upsert_contract_part` via kön (bara nyckelfält och
+  `cap_confirmed: true`), och det kräver ett fryst kontrakt. Ett tak
   som en maskin bekräftat åt en människa är just det olästa tak som aldrig
   varnar.
 - **Idempotent.** Delarna matchas på `code`, registret bärs av
   `UNIQUE (contract_id, kod)` och scopelinjerna läses innan de skrivs. En rad
-  som redan står som importen vill ha den skrivs INTE om — annars hade en andra
-  körning satt `manually_edited` och lagt ett ändringsspår i auditloggen efter
-  en körning som inte ändrade något. Svaret säger `oforandrad: true`.
+  som redan står som importen vill ha den skrivs INTE om. Svaret säger
+  `oforandrad: true`, `avtalsdelar_skrivna: 0`. En lagrad rad som skiljer sig
+  ger **409 `version_finns`**: hela godkännandet rullas tillbaka, också register
+  och scopelinjer. En rättelse efter lagring kräver en ny version med orsak.
 - **Varje skriven del bär `change_reason = 'import ur leveranskontraktet v1'`**,
   och auditraden `uppdrag.leveranskontrakt_importerat` skrivs alltid: den är
   spåret av att importen kördes, inte av en ändring.
-- Båda åtgärderna är `write` (1E Del 4, Davids svar 6/9) fastän
-  `upsert_contract_part` är `sensitive`: de FÖDER baselinen. Ett redan bekräftat
-  tak går inte att röra härifrån heller — 0068:s trigger fäller varje
-  in-place-ändring av en bekräftad rad.
+- Uppsättning och import är `write`, men importen skriver planen först genom
+  den känsliga köposten `satt_baseline`. Ingen lagrad version går att skriva
+  över, bekräftad eller obekräftad: 0079 är sista försvarslinjen.
 
 ### Bedömningen (S4.1, våg 2)
 
@@ -1438,7 +1446,7 @@ som varje annat förslag.
   tillbaka.
 - **Stängningen delegeras till tjänstefunktionen** `setProjectStatus(…,
   'closed')` — aldrig till `executeAction('set_project_status')`. Samma regel som
-  `andra_baseline` följer mot `upsertContractPart`: `set_project_status` behåller
+  `andra_baseline` följer mot `skrivBaselineversion`: `set_project_status` behåller
   sin `kravManniska` orörd, och `project.set_status`-auditraden skrivs som
   vanligt av tjänsten. Efter avslutet fäller triggern alla fyra räckvidderna
   (modultabellerna, `contract_parts`, `receipts.contract_part_id`,

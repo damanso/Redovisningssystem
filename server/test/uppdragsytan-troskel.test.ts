@@ -438,7 +438,7 @@ beforeAll(async () => {
 
   // Rotdelen med ett BEKRÄFTAT tak: 10 h och 11 000 kr. Ett obekräftat tak
   // larmar aldrig, och då hade provet mätt tystnad mot tystnad.
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtal, code: 'UPPDRAG', name: 'Uppdraget', valid_from: '2026-09-03',
     cap_hours: 10, cap_amount_ore: 1_100_000, cap_confirmed: true,
   });
@@ -447,13 +447,13 @@ beforeAll(async () => {
 
   // Strömmen bär perioden, leverabeln under den bär ingen alls: dagslarmet ska
   // komma ur det ÄRVDA intervallet, hela vägen genom stacken.
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtal, code: 'S1', name: 'Förstudie', valid_from: '2026-09-03',
     parent_part_id: rot, start_date: '2026-01-01', end_date: '2026-01-31', date_precision: 'dag',
   });
   const s1 = ((await ok('get_contract_usage', { contract_id: avtal }))
     .parts as Array<{ part_id: string; code: string }>).find((p) => p.code === 'S1')!.part_id;
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtal, code: 'L1', name: 'Nulägesrapport', valid_from: '2026-09-03',
     parent_part_id: s1,
   });

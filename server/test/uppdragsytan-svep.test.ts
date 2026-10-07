@@ -752,9 +752,10 @@ describe('S7.4: prognosen läser rotramen, den registrerade tiden och taxan', ()
 
     // Taket BEKRÄFTAS — annars svarar båda ramarna med sitt villkor. 20 h och
     // 33 000 kr, samma tal som den rena sviten fryser.
-    await okKoad('upsert_contract_part', {
+    await okKoad('upsert_contract_part', { change_reason: 'avtal',
       contract_id: ramavtal,
       code: 'UPPDRAG',
+      name: 'Uppdraget',
       valid_from: '2026-09-03',
       cap_hours: 20,
       cap_amount_ore: 3_300_000,
