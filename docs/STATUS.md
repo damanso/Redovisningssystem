@@ -153,6 +153,103 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 1.6, B-3 — undantagsvyns läsväg och svepets täckning):**
+  `lib/lasvarde.ts` bär källa, lästid och last/olast/saknas. `services/uppdragUndantag.ts`
+  samlar fyra mandatpostslag, med rena beskrivare och täckningsregler. `las_undantag`
+  är read utan människospärr, via samma register för REST/MCP. Kön hämtas utan LIMIT
+  genom `listaVantandeKoposter`; `listApprovals` är orörd. `upsertSvepvarden` har
+  omfången svep/tackning, och svepets sista steg skriver tackning för alla öppna
+  avtal, även utanför indatat. Inga nya beroenden, migrationer eller vyer.
+  MCP_ACTIONS och arkitekturdokumentets beskrivning följer fastställda B-3;
+  CRM/ingestkontraktet är oförändrat. Ingen tjänststart eller driftsättning.
+
+  `uppdragsytan-undantag.test.ts`: P2–P4 läsvärden/ingångar/urval, P5 230 poster,
+  P6 underlag och saknat, P7 belopp, P8 tio frånvarofall med kontrollvakt, P9 skala,
+  P10–P12 täckning och tretton regler/Övrigt, P13–P14 färskhet och sju ofullständiga
+  lägen, P15 bolagsgränsen och ogiltiga uuid, P16 inga anrop ut. P17 omfattar de
+  befintliga regressionssviterna. I svepprovet är endast kommentaren och nyckellistan
+  (tidigare rader 380/382) ändrade till att ta med tackning; inga assertioner försvagade.
+
+  Rött först: typecheck exit 2 med saknade importer/exporter före koden.
+  Vitest och npm test nekades databasen i både röd och grön fas; inga databasfall
+  har körts eller observerats gröna. Berättelsens uttryckliga databasundantag används:
+  kedjans npm test belägger dem. Rena kontroller körda med tsx utan dotenv-fil:
+  `Rena P2/P6/P11/P13: Lasvarde, fyra beskrivningar, kalltackning, 60 min färskt / 60 min 1 s gammalt, bedomUndantag OK` (exit 0).
+  Omfångsvakterna och registrets read/schema/manifestkontroll passerar också (exit 0).
+  P2(a): deklarationssökningen rättad efter ett observerat falskt rött från en
+  typimport (exit 1 före, exit 0 efter). Ensam ålderskonstant och tillåtna importer
+  prövade utan databas, exit 0. Slutlig typecheck efter provrättningen exit 0;
+  npm test åter försökt och stoppat av samma EPERM.
+  Slutgrindarnas ordagranna utdata:
+
+  npm run typecheck (exit 0):
+  ```text
+
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  ```
+
+  npm run build (exit 0):
+  ```text
+
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  ```
+
+  npm test (exit 1):
+  ```text
+
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  ```
+
+  Riktad Vitest och P17: exit 1, samma EPERM före insamling; full utdata i berättelsens
+  Debug Log. Befintliga ytor lästa: Public Sans, IBM Plex Mono, OKLCH och synligt
+  fokus behålls för samma läsrytm. Själva undantagsvyn hör till Story 1.11.
+  Efter driftsättningen saknas täckningen fram till första svepet. Avtal med
+  markerade Övrigt-rader är ofullständiga tills Story 1.14 och 1.17 finns.
+
 - **2026-10-07 (Story 1.5, omtag — tvetydig SQL-sortering):**
   Task 9:s SELECT * plus textkast gav dubbla kolumnnamn och tvetydig
   ORDER BY valid_from. Samma felklass hittades och rättades i

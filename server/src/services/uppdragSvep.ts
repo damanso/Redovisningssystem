@@ -9,7 +9,11 @@
 // upsertSvepvarden med sina härledda värden. Skrivningen här uppe är den enda
 // vägen in i tabellen — ingen härledning, inga externa anrop (ADR-4:
 // redovisningen ringer aldrig ut).
+// Täckningssteget (B-3, Story 1.6) läser bara egna tabeller och går därför
+// över alla öppna avtal, även dem Hermes inte lämnat observationer för.
 import type { PoolClient } from 'pg';
+import { KALLA_REDOVISNING } from '../lib/lasvarde.js';
+import { beraknaTackning, MANDATKALLOR, TACKNINGSNYCKEL, type Mandatkalla } from './uppdragUndantag.js';
 import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
@@ -43,17 +47,23 @@ export interface Svepvarde {
  * (company_id, contract_id, nyckel) — 0068:s uppdrag_svepvarde_uk. Två
  * körningar på samma indata ger exakt samma rader (last_nar undantaget:
  * den säger NÄR värdet lästes, inte VAD det är). Nycklar som inte längre
- * finns i indata tas bort: cachen speglar det senaste svepet, inget annat.
- * Tom lista tömmer uppdragets cache. Sorteras på nyckel så att skrivordningen
- * är deterministisk oavsett anroparens ordning.
+ * finns i indata tas bort inom samma omfång. Standardomfånget 'svep' rör
+ * aldrig täckningsnyckeln; 'tackning' skriver bara den nyckeln. Stegen kan
+ * därför inte radera varandras cache. Tom lista tömmer bara eget omfång.
+ * Sorteras på nyckel så skrivordningen är deterministisk.
  */
 export async function upsertSvepvarden(
   client: PoolClient, companyId: string, contractId: string, varden: Svepvarde[],
+  omfang: 'svep' | 'tackning' = 'svep',
 ): Promise<{ skrivna: number; borttagna: number }> {
   const sorterade = [...varden].sort((a, b) => a.nyckel.localeCompare(b.nyckel, 'sv'));
   const nycklar = sorterade.map((v) => v.nyckel);
   if (new Set(nycklar).size !== nycklar.length) {
     throw new Error('upsertSvepvarden: samma nyckel två gånger i ett svep');
+  }
+  const egen = omfang === 'tackning';
+  if (sorterade.some((v) => (v.nyckel === TACKNINGSNYCKEL) !== egen)) {
+    throw new Error(`upsertSvepvarden: nyckeln ${TACKNINGSNYCKEL} skrivs bara av täckningssteget`);
   }
   for (const v of sorterade) {
     await client.query(
@@ -66,8 +76,9 @@ export async function upsertSvepvarden(
   }
   const borttagna = await client.query(
     `DELETE FROM uppdrag_svepvarde
-      WHERE company_id = $1 AND contract_id = $2 AND NOT (nyckel = ANY($3::text[]))`,
-    [companyId, contractId, nycklar],
+      WHERE company_id = $1 AND contract_id = $2 AND NOT (nyckel = ANY($3::text[]))
+        AND (nyckel = $4) = $5`,
+    [companyId, contractId, nycklar, TACKNINGSNYCKEL, egen],
   );
   return { skrivna: sorterade.length, borttagna: borttagna.rowCount ?? 0 };
 }
@@ -247,6 +258,10 @@ function hoppat(rad: Uppdragsrad): Hoppat {
   return { contract_id: rad.contract_id, project_id: rad.project_id, projektstatus: rad.projektstatus };
 }
 
+export interface SvepTackning {
+  contract_id: string; kalla: Mandatkalla; lage: 'last' | 'fel'; saknas: string[];
+}
+
 export type Svepsvar =
   | { lage: 'svep_avstod' }
   | {
@@ -255,6 +270,7 @@ export type Svepsvar =
     hoppade: Hoppat[];
     /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
     hoppade_kopior: Array<Hoppat & { referens_id: string }>;
+    tackning: SvepTackning[];
     arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[] };
   };
 
@@ -754,6 +770,8 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * med `kalla` och `last_nar`;
  * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
  * (S7.2) och bindningssteget (S6.1) — alla tre genom sina befintliga tjänster.
+ * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
+ * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  */
 export async function korUppdragssvep(
   client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata,
@@ -827,6 +845,17 @@ export async function korUppdragssvep(
     uppdrag.push(await svepEttUppdrag(client, companyId, userId, actor, rad, obs));
   }
 
+  // B-3: alla öppna avtal, inte bara indatats. Reglerna läser enbart egna
+  // tabeller, efter att körningens förslag och bindningar har skrivits.
+  const tackningar = await beraknaTackning(client, companyId, oppna);
+  const tackning: SvepTackning[] = [];
+  for (const contractId of oppna) {
+    const varde = tackningar.get(contractId)!;
+    await upsertSvepvarden(client, companyId, contractId,
+      [{ nyckel: TACKNINGSNYCKEL, kalla: KALLA_REDOVISNING, varde }], 'tackning');
+    for (const kalla of MANDATKALLOR) tackning.push({ contract_id: contractId, kalla, ...varde[kalla] });
+  }
+
   // Nästa arbetslista. Köade kopior utelämnas: deras `extern_id` är ännu bara
   // platshållaren (S7.2), och en verifiering av den hade svarat "borta" om en
   // fil som aldrig skrivits. De ligger i Drive-kön i stället.
@@ -846,6 +875,7 @@ export async function korUppdragssvep(
     uppdrag,
     hoppade,
     hoppade_kopior: hoppadeKopior,
+    tackning,
     arbetslista: { referenser: attVerifiera.rows, drive_ko: ko },
   };
 }

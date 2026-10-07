@@ -45,6 +45,7 @@ import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js'
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
+import { lasUndantag } from '../services/uppdragUndantag.js';
 import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
@@ -2051,6 +2052,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ project_id: UuidSchema }).strict(),
     handler: (ctx, i) => lasUppdragslage(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Uppdragsytan Story 1.6 (B-3): en läsväg för mandatfrågor över uppdragen.
+  // REST, MCP och den kommande vyn läser samma svar (FR-23, FR-40).
+  // -------------------------------------------------------------------------
+  def({
+    name: 'las_undantag',
+    title: 'Det som kräver Davids mandat över uppdragen, med täckning och färskhet',
+    // Läsningen beslutar ingenting. Agentnyckeln får läsa samma underlag;
+    // det tomma schemat tillåter inget beloppsfilter eller tak (FR-4).
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => lasUndantag(ctx.client, ctx.companyId),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan, överlämning #268: anteckningsloggen under Övrigt på Läget.

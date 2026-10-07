@@ -69,6 +69,22 @@ export async function listApprovals(
 }
 
 /**
+ * Väntande köposter för en åtgärdslista utan LIMIT (B-3, FR-40). Mandatfrågor
+ * får aldrig tappa den 201:a posten. listApprovals behåller Att göras fönster.
+ */
+export async function listaVantandeKoposter(
+  client: PoolClient, companyId: string, atgarder: readonly string[],
+): Promise<Approval[]> {
+  const result = await client.query<Approval>(
+    `SELECT ${APPROVAL_COLUMNS} FROM action_approvals
+      WHERE company_id = $1 AND status = 'pending' AND action = ANY($2::text[])
+      ORDER BY created_at, id`,
+    [companyId, [...atgarder]],
+  );
+  return result.rows;
+}
+
+/**
  * De senast AVGJORDA förslagen — kvittot.
  *
  * Ett godkännande som utförts försvinner i dag spårlöst ur kön: man klickar,
