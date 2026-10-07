@@ -153,6 +153,107 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 1.4, B-2 — godkännandevägen bevarar ett mottaget beslut):**
+  Godkännandekärnan får valfria `approvalId`, `tvafas` och `vidAvslag` i
+  `server/src/actions/registry.ts`. `services/approvals.ts` delar kolumnlistan,
+  härleder sorterad sha256 och tar emot nej med skäl via `avvisaGodkannande`.
+  `actions/execute.ts` bevarar tvåfasbeslut före separat verkställighet,
+  håller radlås och isolerar återförsök med savepoint per köpost.
+  **Migration 0077** lägger till nullbara beslutsfält, CHECK-villkor och
+  oföränderlighetstrigger. Ingen produktionsåtgärd har `tvafas` ännu (Story 1.7).
+  REST:s reason sparas för tvåfas och 202 skiljer mottaget från verkställt.
+  Att göra har ett märkt obligatoriskt skälfält och chipet Mottaget.
+  Befintliga field/textarea/btn/chip-klasser, tokens och fokusregler används;
+  naturlig fokusordning, tomläge och felnotis följer samma JS-fria SSR-yta.
+  `server/test/uppdragsytan-godkannandevag.test.ts` innehåller P2–P12 med
+  ja/nej, krascher före/efter mottagandet, idempotens, samtidighet, savepoint
+  vid SQL-fel, agentspärr, RLS/bolagsisolering, book_invoice och källkontroll.
+  `docs/ARKITEKTUR.md` speglar B-2:s additiva ändring och `docs/MCP_ACTIONS.md`
+  beskriver reason/202. CRM-ingestkontraktet är oförändrat.
+  Rött först: typkontrollen gav exit 2 på de saknade fälten/funktionerna.
+  Efter uppgifterna: följande ordagranna utdata från slutgrindarna:
+
+  `npm run typecheck`
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  Exitkod: 0
+  ```
+
+  `npm run build`
+  ```text
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  Exitkod: 0
+  ```
+
+  `npm test`
+  ```text
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  Exitkod: 1
+  ```
+
+  `npx vitest run test/uppdragsytan-godkannandevag.test.ts` (server/): exit 1
+  före insamling med `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+  **Inte kört:** Vitest P2–P12 och befintliga tester, eftersom sandlådan nekar
+  testdatabasen. Kedjans npm test belägger proven; inget databasprov kallas grönt.
+  Databasfri hashkontroll via `TSX_DISABLE_CACHE=1 node --import tsx`:
+  ```text
+  true
+  false
+  Exitkod: 0
+  ```
+  Samma rena P12-funktion körd utan databas:
+  ```text
+  P12, riktig källa: []
+  P12, planterad källa: ["services/planterad.ts: UPDATE action_approvals"]
+  Exitkod: 0
+  ```
+  Ingen tjänst startad, ingen installation, commit, push eller driftsättning utförd.
+
+
 - **2026-10-06 (Story 1.2, KRAV-13 — det frysta v3-kontraktet ordagrant i repot):**
   `server/test/fixtures/leveranskontrakt-nvr-001-v3.ts` bär NVR-001:s frysta
   leveranskontrakt v3 (2026-09-07) tecken för tecken, framställt mekaniskt ur

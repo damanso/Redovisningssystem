@@ -1,15 +1,18 @@
-import { withTenantTransaction, type CompanyRole } from '../db/tx.js';
-import { ForbiddenError, NotFoundError } from '../lib/errors.js';
+import type { PoolClient } from 'pg';
+import { fetchMembership, withTenantTransaction, type CompanyRole } from '../db/tx.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
 import {
   createApproval,
-  getApproval,
   lockPendingApproval,
+  avvisaGodkannande,
+  beslutHash,
+  APPROVAL_COLUMNS,
   type Approval,
 } from '../services/approvals.js';
 import { checkApprovalDependency, type ApprovalDependency } from './dependencies.js';
-import { getAction } from './registry.js';
+import { getAction, type ActionContext } from './registry.js';
 
 export type ActionResult =
   | { status: 'ok'; action: string; result: unknown }
@@ -104,13 +107,11 @@ export async function executeAction(params: {
 }
 
 /**
- * Godkänner och kör en pending action i EN transaktion: lås (FOR UPDATE) →
- * omvalidera det lagrade indatat mot actionens schema → kör → markera executed.
- *
- * Allt-eller-inget: misslyckas körningen rullas hela transaktionen tillbaka och
- * godkännandet förblir 'pending' (omkörbart) — inget kan fastna i ett halvkört
- * mellanläge. Godkännaren MÅSTE vara en människa (kontrolleras både i routen och
- * här som andra försvarslinje).
+ * Godkänner en pending action med radlås och omvaliderat indata.
+ * Utan tvafas körs allt i EN transaktion; ett fel lämnar förslaget pending.
+ * Med tvafas committas människans beslut först. Verkställigheten sker därefter
+ * i en egen transaktion, så ett tekniskt fel aldrig tappar mandatet eller
+ * kräver en ny kvittens (B-2, FR-41 punkt 4, NFR-3). Human krävs också här.
  */
 export async function approveAction(params: {
   companyId: string;
@@ -121,7 +122,7 @@ export async function approveAction(params: {
   if (params.approverActor !== 'human') {
     throw new ForbiddenError('human_approval_required', 'endast en människa kan godkänna');
   }
-  return withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
+  const forsta = await withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
     assertActionAllowed(role);
     const appr = await lockPendingApproval(client, params.companyId, params.approvalId);
     const action = getAction(appr.action);
@@ -129,18 +130,31 @@ export async function approveAction(params: {
     // Omvalidera det lagrade indatat — stänger fönstret där ett schema skärpts
     // medan godkännandet legat i kö.
     const input = action.inputSchema.parse(appr.input);
+    if (action.tvafas) {
+      const mottaget = await client.query<Approval>(
+        `UPDATE action_approvals
+            SET status = 'approved', decided_by = $1, decided_at = now(), beslut_hash = $2
+          WHERE id = $3 AND company_id = $4 RETURNING ${APPROVAL_COLUMNS}`,
+        [params.approverId, beslutHash(appr.input), params.approvalId, params.companyId],
+      );
+      await writeAudit(client, {
+        companyId: params.companyId, userId: params.approverId, action: 'action.approved',
+        entityType: 'approval', entityId: params.approvalId,
+        details: { action: appr.action, requested_by: appr.requested_by },
+      });
+      return { tvafas: true, approval: mottaget.rows[0]!, result: null };
+    }
     // actor är 'human' här även när AI:t begärde åtgärden: en människa har läst
     // det lagrade indatat och godkänt exakt det. Beslutet är hennes, och det som
     // skrivs är därmed ett människobeslut — inte en gissning.
     const result = await action.handler(
-      { client, companyId: params.companyId, userId: params.approverId, role, actor: 'human' },
+      { client, companyId: params.companyId, userId: params.approverId, role, actor: 'human', approvalId: params.approvalId },
       input as never,
     );
     const updated = await client.query<Approval>(
       `UPDATE action_approvals SET status = 'executed', decided_by = $1, decided_at = now(), result = $2
-       WHERE id = $3 RETURNING id, action, input, status, requested_by, requested_actor,
-             decided_by, decided_at, result, error, created_at`,
-      [params.approverId, JSON.stringify(result ?? null), params.approvalId],
+       WHERE id = $3 AND company_id = $4 RETURNING ${APPROVAL_COLUMNS}`,
+      [params.approverId, JSON.stringify(result ?? null), params.approvalId, params.companyId],
     );
     await writeAudit(client, {
       companyId: params.companyId,
@@ -150,31 +164,140 @@ export async function approveAction(params: {
       entityId: params.approvalId,
       details: { action: appr.action, requested_by: appr.requested_by },
     });
-    return { approval: updated.rows[0]!, result };
+    return { tvafas: false, approval: updated.rows[0]!, result };
   });
+  if (!forsta.tvafas) return { approval: forsta.approval, result: forsta.result };
+  try {
+    const v = await withTenantTransaction(params.approverId, params.companyId,
+      (client) => verkstallBeslut(client, params.companyId, params.approvalId));
+    return { approval: v.approval, result: v.result };
+  } catch (err) {
+    loggaVerkstallighetsfel(params.approvalId, forsta.approval.action, err);
+    return { approval: forsta.approval, result: null };
+  }
 }
 
+/** Tar emot människans nej; endast tvafas verkställer avslaget efter commit. */
 export async function rejectApproval(params: {
   companyId: string;
   approverId: string;
+  approverActor: Actor;
   approvalId: string;
+  skal?: string;
 }): Promise<Approval> {
-  return withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
+  if (params.approverActor !== 'human') {
+    throw new ForbiddenError('human_approval_required', 'endast en människa kan avslå');
+  }
+  const forsta = await withTenantTransaction(params.approverId, params.companyId, async (client, role) => {
     assertActionAllowed(role);
-    await lockPendingApproval(client, params.companyId, params.approvalId);
-    await client.query(
-      "UPDATE action_approvals SET status = 'rejected', decided_by = $1, decided_at = now() WHERE id = $2",
-      [params.approverId, params.approvalId],
-    );
-    await writeAudit(client, {
-      companyId: params.companyId,
-      userId: params.approverId,
-      action: 'action.rejected',
-      entityType: 'approval',
-      entityId: params.approvalId,
-    });
-    return getApproval(client, params.companyId, params.approvalId);
+    // Låset först: not_pending gäller före skälkravet på ett upprepat nej.
+    const appr = await lockPendingApproval(client, params.companyId, params.approvalId);
+    const tvafas = getAction(appr.action)?.tvafas === true;
+    if (tvafas && !params.skal?.trim()) {
+      throw new BadRequestError('skal_kravs', 'ange skälet till ditt nej — det sparas med beslutet');
+    }
+    const approval = await avvisaGodkannande(client, params.companyId, params.approverId,
+      params.approvalId, tvafas ? params.skal : undefined);
+    return { tvafas, approval };
   });
+  if (!forsta.tvafas) return forsta.approval;
+  try {
+    return (await withTenantTransaction(params.approverId, params.companyId,
+      (client) => verkstallBeslut(client, params.companyId, params.approvalId))).approval;
+  } catch (err) {
+    loggaVerkstallighetsfel(params.approvalId, forsta.approval.action, err);
+    return forsta.approval;
+  }
+}
+
+/**
+ * Verkställer bara redan mottagna beslut, aldrig ett väntande förslag eller
+ * ett äldre/tekniskt avslag. Radlåset serialiserar direkta försök och återförsök.
+ * Anroparen håller tenanttransaktionen; beslutsfattaren förblir decided_by.
+ */
+export async function verkstallBeslut(
+  client: PoolClient, companyId: string, approvalId: string,
+  verkstallare: 'direkt' | 'aterforsok' = 'direkt',
+): Promise<{ approval: Approval; result: unknown; verkstalld: boolean }> {
+  const r = await client.query<Approval & { result_saknas: boolean }>(
+    `SELECT ${APPROVAL_COLUMNS}, result IS NULL AS result_saknas FROM action_approvals
+      WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [approvalId, companyId],
+  );
+  const rad = r.rows[0];
+  if (!rad) throw new NotFoundError('approval');
+  const { result_saknas, ...approval } = rad;
+  const action = getAction(rad.action);
+  if (!action?.tvafas || rad.beslut_hash === null || rad.decided_by === null
+    || !(rad.status === 'approved' || (rad.status === 'rejected' && result_saknas))) {
+    return { approval, result: rad.result, verkstalld: false };
+  }
+  const medlem = await fetchMembership(client, rad.decided_by, companyId);
+  if (!medlem) throw new ConflictError('beslutsfattare_saknas', 'beslutsfattaren är inte längre medlem i bolaget');
+  assertActionAllowed(medlem.role);
+  const input = action.inputSchema.parse(rad.input);
+  const ctx: ActionContext = {
+    client, companyId, userId: rad.decided_by, role: medlem.role, actor: 'human', approvalId,
+  };
+  let result: unknown;
+  let uppdaterat;
+  if (rad.status === 'approved') {
+    result = await action.handler(ctx, input as never);
+    uppdaterat = await client.query<Approval>(
+      `UPDATE action_approvals SET status = 'executed', result = $1
+        WHERE id = $2 AND company_id = $3 RETURNING ${APPROVAL_COLUMNS}`,
+      [JSON.stringify(result ?? null), approvalId, companyId],
+    );
+  } else {
+    result = action.vidAvslag ? await action.vidAvslag(ctx, input as never, rad.beslut_skal!) : null;
+    // Ett objekt skiljer ett verkställt nej från SQL NULL även utan vidAvslag.
+    uppdaterat = await client.query<Approval>(
+      `UPDATE action_approvals SET result = $1
+        WHERE id = $2 AND company_id = $3 RETURNING ${APPROVAL_COLUMNS}`,
+      [JSON.stringify({ vid_avslag: result ?? null }), approvalId, companyId],
+    );
+  }
+  await writeAudit(client, {
+    companyId, userId: rad.decided_by,
+    action: rad.status === 'approved' ? 'action.approved_executed' : 'action.rejected_executed',
+    entityType: 'approval', entityId: approvalId,
+    details: { action: rad.action, requested_by: rad.requested_by, verkstallare },
+  });
+  return { approval: uppdaterat.rows[0]!, result: result ?? null, verkstalld: true };
+}
+
+/** Återtar mottagna mandat utan ny kvittens; ett fel får inte ta nästa post med sig. */
+export async function verkstallMottagnaBeslut(
+  client: PoolClient, companyId: string,
+): Promise<{ verkstallda: string[]; kvar: string[] }> {
+  const r = await client.query<{ id: string }>(
+    `SELECT id FROM action_approvals
+      WHERE company_id = $1 AND beslut_hash IS NOT NULL AND decided_by IS NOT NULL
+        AND (status = 'approved' OR (status = 'rejected' AND result IS NULL))
+      ORDER BY decided_at, id`,
+    [companyId],
+  );
+  const verkstallda: string[] = [];
+  const kvar: string[] = [];
+  for (const { id } of r.rows) {
+    // Ett databasfel förgiftar annars hela transaktionen (25P02, lärdom 2).
+    await client.query('SAVEPOINT verkstall_beslut');
+    try {
+      const v = await verkstallBeslut(client, companyId, id, 'aterforsok');
+      await client.query('RELEASE SAVEPOINT verkstall_beslut');
+      if (v.verkstalld) verkstallda.push(id);
+    } catch (err) {
+      await client.query('ROLLBACK TO SAVEPOINT verkstall_beslut');
+      await client.query('RELEASE SAVEPOINT verkstall_beslut');
+      loggaVerkstallighetsfel(id, null, err);
+      kvar.push(id);
+    }
+  }
+  return { verkstallda, kvar };
+}
+
+function loggaVerkstallighetsfel(approvalId: string, action: string | null, err: unknown): void {
+  console.error('[verkställighet] mottaget beslut ej verkställt — köpost', approvalId, action ?? '', err);
 }
 
 // ForbiddenError re-exporteras för routelagret (agent får inte godkänna).

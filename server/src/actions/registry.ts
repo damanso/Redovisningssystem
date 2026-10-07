@@ -115,6 +115,9 @@ export interface ActionContext {
   // (den sitter i medlemskapet) utan sanningsanspråket — ett fält som AI:t satt
   // är en gissning, ett fält en människa satt är ett beslut. Se crmProvenance.
   actor: Actor;
+  // Köpostens id när ett godkänt förslag verkställs. Valfritt så att
+  // befintliga handlers är opåverkade; beslutsspåret kan knytas till mandatet.
+  approvalId?: string;
 }
 
 // read      = ingen mutation. write = skapar utkast/register (ej pengaflyttande).
@@ -133,6 +136,12 @@ export interface ActionDef<I = unknown> {
   // `sensitive`, som köar för godkännande, och från transportlagrets
   // requireHuman — två mekanismer på två lager ska inte heta samma sak.
   kravManniska?: boolean;
+  // För sensitive: committa människans beslut före verkställigheten så att
+  // ett tekniskt fel aldrig kräver en ny kvittens (B-2, FR-41 punkt 4).
+  tvafas?: boolean;
+  // Verkställer ett mottaget nej i en egen transaktion, med människans
+  // sparade skäl. Anropas aldrig för ett obesvarat eller tekniskt avslut.
+  vidAvslag?: (ctx: ActionContext, input: I, skal: string) => Promise<unknown>;
 }
 
 function def<I>(d: ActionDef<I>): ActionDef<I> {
