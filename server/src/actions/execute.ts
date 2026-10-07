@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { fetchMembership, withTenantTransaction, type CompanyRole } from '../db/tx.js';
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
 import {
@@ -297,7 +297,14 @@ export async function verkstallMottagnaBeslut(
 }
 
 function loggaVerkstallighetsfel(approvalId: string, action: string | null, err: unknown): void {
-  console.error('[verkställighet] mottaget beslut ej verkställt — köpost', approvalId, action ?? '', err);
+  // pg-fel kan bära hela raden i detail och verksamhetsfel fritext i message.
+  // Driftloggen får bara id och koder (lärdom 10), aldrig själva felobjektet.
+  const code = err !== null && typeof err === 'object' && Object.hasOwn(err, 'code')
+    ? (err as { code: unknown }).code : undefined;
+  const felkod = typeof code === 'string'
+    && (/^[0-9A-Z]{5}$/.test(code) || (err instanceof AppError && /^[a-z][a-z0-9_]{0,63}$/.test(code)))
+    ? code : 'okant_fel';
+  console.error('[verkställighet] mottaget beslut ej verkställt — köpost', approvalId, action ?? '', felkod);
 }
 
 // ForbiddenError re-exporteras för routelagret (agent får inte godkänna).

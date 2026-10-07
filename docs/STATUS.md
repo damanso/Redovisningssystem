@@ -153,6 +153,90 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 1.4, omtag AI-Review — verkställighetsfel utan fritext i driftloggen):**
+  Granskarens High-fynd åtgärdat i `server/src/actions/execute.ts`: den gemensamma
+  loggfunktionen skickar bara köpost-id, åtgärdskod och validerad felkod till
+  console.error, aldrig felobjekt, message, detail, stack eller andra feldata.
+  `server/test/uppdragsytan-godkannandevag.test.ts` har regression för direkt
+  ja/nej och återförsök, med sju felvärden, exakt logginnehåll och bevarat beslut.
+  Rött först: den faktiska loggfunktionen föll databasfritt (exit 1).
+  Efter ändringen passerade samma funktion 14 kontroller (exit 0).
+  Migration 0077, opt-in tvåfas och befintligt gränssnitt berörs inte av omtaget;
+  ingen produktionsåtgärd har tvafas ännu. Husets tokens, typografi, fält,
+  knappar, statuschip och fokusregler bär fortsatt Att göra. Inget CRM-kontrakt
+  ändras. Berättelsens Dev Agent Record har full utdata och punktvis DoD.
+
+  `npm run typecheck`
+  ```text
+
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  Exitkod: 0
+  ```
+
+  `npm run build`
+  ```text
+
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  Exitkod: 0
+  ```
+
+  `npm test`
+  ```text
+
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  Exitkod: 1
+  ```
+
+  Rött fasens npm test och det riktade Vitest-anropet gav också exit 1 före
+  insamling, med samma EPERM. **Inte kört:** databasproven och regressionerna;
+  kedjans npm test belägger dem enligt berättelsens uttryckliga undantag.
+  `git diff --check`: exit 0. Ingen tjänst startad, ingen installation,
+  commit, push eller driftsättning utförd.
+
 - **2026-10-07 (Story 1.4, B-2 — godkännandevägen bevarar ett mottaget beslut):**
   Godkännandekärnan får valfria `approvalId`, `tvafas` och `vidAvslag` i
   `server/src/actions/registry.ts`. `services/approvals.ts` delar kolumnlistan,

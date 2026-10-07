@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ActionDef } from '../src/actions/registry.js';
 import { approveAction, rejectApproval, verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
 import { withTenantTransaction } from '../src/db/tx.js';
+import { BadRequestError } from '../src/lib/errors.js';
 import { beslutHash } from '../src/services/approvals.js';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
@@ -306,6 +307,54 @@ describe('Story 1.4 — mottagandet före verkställigheten', () => {
       expect((await kundnamn()).filter((n) => n === 'Avslag Krasch nej')).toHaveLength(1);
       expect((await auditFor(id)).map((a) => a.action)).toEqual(['action.approval_requested', 'action.rejected', 'action.rejected_executed']);
     } finally { krok.fel.vidAvslag = 0; logg.mockRestore(); }
+  });
+
+  it('AI-Review: direkt ja/nej och återförsök loggar bara id och felkoder, aldrig feldata', async () => {
+    const hemligt = 'Känsligt kundnamn och avslagsskäl';
+    const fallen = [
+      { fel: Object.assign(new Error(hemligt), {
+        code: 'P0001', detail: hemligt, hint: hemligt, where: hemligt,
+        query: hemligt, parameters: [hemligt], cause: new Error(hemligt),
+      }), kod: 'P0001' },
+      { fel: new BadRequestError('skal_kravs', hemligt, { skal: hemligt }), kod: 'skal_kravs' },
+      { fel: new Error(hemligt), kod: 'okant_fel' },
+      { fel: hemligt, kod: 'okant_fel' },
+      { fel: null, kod: 'okant_fel' },
+      { fel: { code: hemligt, message: hemligt, detail: hemligt }, kod: 'okant_fel' },
+      { fel: new BadRequestError(hemligt, hemligt), kod: 'okant_fel' },
+    ];
+    const def = krok.atgarder.get('test_tvafas')!;
+    const handler = def.handler;
+    const vidAvslag = def.vidAvslag;
+    const logg = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const [index, { fel, kod }] of fallen.entries()) {
+        for (const val of ['approve', 'reject'] as const) {
+          const id = await koa('test_tvafas', { name: `Loggprov ${index} ${val}` });
+          if (val === 'approve') def.handler = async () => { throw fel; };
+          else def.vidAvslag = async () => { throw fel; };
+          logg.mockClear();
+          const r = await beslut(id, val, val === 'reject' ? { reason: hemligt } : {});
+          expect(r.status, JSON.stringify(r.body)).toBe(202);
+          const mottaget = await kopost(id);
+          expect(await verkstallAlla()).toEqual({ verkstallda: [], kvar: [id] });
+          expect(await kopost(id)).toEqual(mottaget);
+          expect(logg.mock.calls).toEqual([
+            ['[verkställighet] mottaget beslut ej verkställt — köpost', id, 'test_tvafas', kod],
+            ['[verkställighet] mottaget beslut ej verkställt — köpost', id, '', kod],
+          ]);
+          // Exakt jämförelse ovan skyddar också mot stack, cause och nya pg-fält.
+          expect(JSON.stringify(logg.mock.calls)).not.toContain(hemligt);
+          def.handler = handler;
+          def.vidAvslag = vidAvslag;
+          expect(await verkstallAlla()).toEqual({ verkstallda: [id], kvar: [] });
+        }
+      }
+    } finally {
+      def.handler = handler;
+      def.vidAvslag = vidAvslag;
+      logg.mockRestore();
+    }
   });
 
   it('P4/P7: även ett nej utan vidAvslag får ett slutresultat och verkställs bara en gång', async () => {
