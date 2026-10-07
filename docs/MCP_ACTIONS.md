@@ -407,7 +407,11 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
   `actor` (aktören som utförde arbetet); returnerar bl.a. `minutes`,
   `billable_minutes`, `status`, `source`, `source_ref`, `invoice_id`,
   `duration_hhmm`/`billable_duration_hhmm` (samma tal i hh:mm) och `links[]`
-  (underlagslänkarna, se story 5 nedan).
+  (underlagslänkarna, se story 5 nedan), samt ärendekopplingen `arende_id`,
+  `arende_nyckel` (fryst läsbar nyckel, t.ex. `LOC-316`) och `arende_kalla`.
+  Kopplingen läses ur posten utan uppslag i ärendeplattformen (FR-24).
+  Sedan 0078 kräver schemat nyckel och källa när ett ärende-id finns;
+  båda måste vara satta och innehålla minst ett tecken som inte är blanktecken.
 - `invoice_appendix_from_time_entries` väljer nu **godkänd/justerad tid utan
   faktura** (`SELECT … FOR UPDATE`), skriver bilagan med de DEBITERBARA
   minuterna och låser posterna till fakturan (`invoice_id` + `fakturerad`) i

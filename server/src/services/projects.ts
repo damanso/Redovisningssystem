@@ -565,6 +565,9 @@ export async function listTimeEntries(
     `SELECT t.id, t.project_id, p.number AS project_number, p.name AS project_name,
             t.work_date::text, t.description, t.minutes, t.billable_minutes, t.status,
             t.source, t.source_ref, t.invoice_id, t.adjustment_reason, t.contract_part_id,
+            -- Ärendekopplingen (0060, 0078): fryst nyckel och källa läses ur
+            -- posten utan uppslag, också när ärendeplattformen är nere (FR-24, NFR-5).
+            t.arende_id, t.arende_nyckel, t.arende_kalla,
             -- Förslagets tre fält (0066). De står här och inte i en egen fråga
             -- för kön: en andra läsning av samma tabell hade blivit ett andra
             -- svar på "vad står på posten?".
