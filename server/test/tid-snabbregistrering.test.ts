@@ -108,7 +108,7 @@ beforeAll(async () => {
   ));
   // Taket är BEKRÄFTAT och litet: en timme räcker för att passera 80 %-gränsen,
   // så varningen går att pröva utan att provet blir en tidsserie.
-  const del = await godkannAction('upsert_contract_part', {
+  const del = await godkannAction('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtal.body.result.id, code: '2A', name: 'Fas 2A', cap_hours: 1, cap_confirmed: true,
     valid_from: `${AR}-01-02`,
   });

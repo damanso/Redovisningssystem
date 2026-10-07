@@ -292,25 +292,33 @@ function normalisera(v: string): string {
  * `alla` är samma läsning ofiltrerad — bindningssteget (S6.1) slår upp
  * leverabelns lövdel där, och får då exakt samma versionsregel utan en andra
  * fråga som kan hinna svara något annat.
+ * B-7: välj version FÖRE active-filtret, annars återkommer den gamla aktiva
+ * raden när en ny version stänger av delen. Förälderns kod läses genom den
+ * lagrade länken: barnen står kvar även när roten får en ny version.
  */
 async function bindningsmal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<{ rot: Delrad | null; strommar: Delrad[]; alla: Delrad[] }> {
-  const res = await client.query<Delrad & { sort_order: number }>(
-    `SELECT DISTINCT ON (code)
-            id AS part_id, code, parent_part_id, start_date::text, end_date::text, sort_order
-       FROM contract_parts
-      WHERE company_id = $1 AND contract_id = $2 AND active
-      ORDER BY code, valid_from DESC, created_at DESC, id DESC`,
+  const res = await client.query<Delrad & { sort_order: number; active: boolean; parent_code: string | null }>(
+    `SELECT DISTINCT ON (cp.code)
+            cp.id AS part_id, cp.code, cp.parent_part_id, cp.start_date::text,
+            cp.end_date::text, cp.sort_order, cp.active, parent.code AS parent_code
+       FROM contract_parts cp
+       LEFT JOIN contract_parts parent
+         ON parent.id = cp.parent_part_id AND parent.company_id = cp.company_id
+        AND parent.contract_id = cp.contract_id
+      WHERE cp.company_id = $1 AND cp.contract_id = $2
+      ORDER BY cp.code, cp.valid_from DESC, cp.created_at DESC, cp.id DESC`,
     [companyId, contractId],
   );
-  const rot = res.rows.find((r) => r.code === ROTKOD && r.parent_part_id === null) ?? null;
-  const strommar = rot === null ? [] : res.rows
-    .filter((r) => r.parent_part_id === rot.part_id)
+  const aktiva = res.rows.filter((r) => r.active);
+  const rot = aktiva.find((r) => r.code === ROTKOD && r.parent_part_id === null) ?? null;
+  const strommar = rot === null ? [] : aktiva
+    .filter((r) => r.parent_code === rot.code)
     // Ordningen är avtalets egen (sort_order), inte databasens — två strömmar
     // vars intervall överlappar ska ge samma förslag vid varje körning.
     .sort((a, b) => a.sort_order - b.sort_order || a.code.localeCompare(b.code, 'sv'));
-  return { rot, strommar, alla: res.rows };
+  return { rot, strommar, alla: aktiva };
 }
 
 /** Bokförda kvitton UTAN avtalsdel. Ett bundet kvitto flyttas aldrig av ett svep. */

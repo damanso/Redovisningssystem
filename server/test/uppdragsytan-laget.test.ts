@@ -146,7 +146,7 @@ beforeAll(async () => {
 
   // Två köposter som LÄMNAS i kön: en som namnger avtalet, en som namnger
   // uppdraget. Båda ska hamna i bandet och i det femte kortet.
-  await koa('upsert_contract_part', {
+  await koa('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtalId, code: 'S9', name: 'Extra analysvecka', valid_from: '2026-09-10',
   });
   await koa('avsluta_uppdrag', { project_id: projektId });

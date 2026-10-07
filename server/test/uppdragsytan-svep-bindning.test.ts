@@ -125,14 +125,19 @@ async function bindningskon(): Promise<Kopost[]> {
 
 /** Samma form som bindningssteget får ur svepets `bindningsmal`. */
 async function bindningsdelar(contractId: string): Promise<Bindningsdelar> {
+  const usage = await ok('get_contract_usage', { contract_id: contractId });
+  const aktiva = (usage.parts as Array<{ part_id: string; parent_code: string | null; active: boolean }>)
+    .filter((d) => d.active);
   const rader = await withAdmin(async (c) => (await c.query<Bindningsdel>(
     `SELECT id AS part_id, code, parent_part_id, start_date::text, end_date::text
-       FROM contract_parts WHERE contract_id = $1 AND active ORDER BY sort_order, code`,
-    [contractId],
+       FROM contract_parts WHERE contract_id = $1 AND company_id = $2
+        AND id = ANY($3::uuid[]) ORDER BY sort_order, code`,
+    [contractId, companyId, aktiva.map((d) => d.part_id)],
   )).rows);
   const rot = rader.find((r) => r.code === 'UPPDRAG' && r.parent_part_id === null)!;
   expect(rot, 'rotdelen UPPDRAG saknas').toBeDefined();
-  return { rot, strommar: rader.filter((r) => r.parent_part_id === rot.part_id), alla: rader };
+  const stromIds = new Set(aktiva.filter((d) => d.parent_code === rot.code).map((d) => d.part_id));
+  return { rot, strommar: rader.filter((r) => stromIds.has(r.part_id)), alla: rader };
 }
 
 async function nyttUppdrag(namn: string): Promise<string> {
@@ -267,7 +272,7 @@ describe('gren 2: utan löv binder svepet till strömmen, annars rotdelen', () =
     // Leverabeln finns kvar i registret men har ingen AKTIV avtalsdel: då finns
     // inget löv att föreslå, och det är gren 2 som gäller. (Samma versionsregel
     // som `bindningsmal` — en inaktiv version är inte ett bindningsmål.)
-    await okKoad('upsert_contract_part', { contract_id: avtalB, code: 'L4', active: false });
+    await okKoad('upsert_contract_part', { change_reason: 'avtal', contract_id: avtalB, code: 'L4', name: 'L4', valid_from: '2026-09-04', active: false });
     const koFore = await bindningskon();
 
     const utfall = await svep(indata(avtalB, refB, 'L4'));
@@ -354,5 +359,76 @@ describe('det svepet aldrig rör', () => {
     expect(() => kravAutomatmal(delar, lov.part_id)).toThrow(/löv/);
     expect(() => kravAutomatmal(delar, delar.rot.part_id)).not.toThrow();
     expect(() => kravAutomatmal(delar, delar.strommar[0]!.part_id)).not.toThrow();
+  });
+});
+
+// B-7: när inaktivering blir en NY version får läsningen inte återuppliva
+// äldre aktiva rader. Prova hela trädet, och därefter en aktiv tredje version.
+describe('bindningsmål efter nya baselineversioner', () => {
+  it.each(['L1', 'L4', 'S2', 'UPPDRAG'])('%s: senaste versionens active gäller, historiken står kvar', async (kod) => {
+    const avtal = await nyttUppdrag(`Versioner ${kod}`);
+    const ursprungliga = await bindningsdelar(avtal);
+    const del = ursprungliga.alla.find((d) => d.code === kod)!;
+    const strom = ursprungliga.strommar.find((d) => d.code === 'S2')!;
+    const fore = await withAdmin(async (c) => (await c.query(
+      'SELECT * FROM contract_parts WHERE contract_id = $1 ORDER BY id', [avtal],
+    )).rows);
+    // Utan ett aktivt löv ska ström/rot avgöra automatmålet även när det är
+    // just strömmen eller roten som har fått en inaktiv version.
+    if (kod === 'S2' || kod === 'UPPDRAG') {
+      await okKoad('upsert_contract_part', {
+        contract_id: avtal, code: 'L4', name: 'L4', valid_from: '2026-09-04',
+        change_reason: 'Leverabeln utgår ur avtalet', active: false,
+      });
+    }
+    await okKoad('upsert_contract_part', {
+      contract_id: avtal, code: kod, name: kod, valid_from: '2026-09-04',
+      change_reason: 'Avtalsdelen utgår ur avtalet', active: false,
+    });
+    const leverantor = `Versionsleverantören ${kod}`;
+    const supplierId = (await ok('create_supplier', { name: leverantor })).id as string;
+    const ref = await referens(avtal, '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456', `Offert ${leverantor}`);
+    const kvitto = await bokatKvitto('2026-11-20', supplierId, 'Versionsprov');
+    const leverabel = kod.startsWith('L') ? kod : 'L4';
+    const koFore = await bindningskon();
+    const utfall = await svep(indata(avtal, ref, leverabel));
+    expect(utfall.bindningar.koade).toEqual([]);
+    const mal = kod === 'UPPDRAG' ? null : kod === 'S2' ? ursprungliga.rot : strom;
+    expect(utfall.bindningar.automatiska).toEqual(mal === null ? [] : [{
+      receipt_id: kvitto, contract_part_id: mal.part_id, kod: mal.code,
+    }]);
+    expect((await kvitton()).get(kvitto)).toMatchObject({
+      contract_part_id: mal?.part_id ?? null, oplanerad: mal !== null,
+    });
+    expect(await bindningskon()).toEqual(koFore);
+
+    // En ny aktiv version får användas. Barnens lagrade föräldralänkar pekar
+    // fortfarande på den äldre versionen; de får inte behöva skrivas om.
+    const ny = await okKoad('upsert_contract_part', {
+      contract_id: avtal, code: kod, name: kod, valid_from: '2026-09-05',
+      change_reason: 'Avtalsdelen återinförs i avtalet', active: true,
+      ...(del.parent_part_id === null ? {} : { parent_part_id: del.parent_part_id }),
+      ...(del.start_date === null ? {} : { start_date: del.start_date }),
+      ...(del.end_date === null ? {} : { end_date: del.end_date }),
+    });
+    const nyId = (ny.parts as Array<{ code: string; part_id: string }>).find((d) => d.code === kod)!.part_id;
+    const kvitto2 = await bokatKvitto('2026-11-20', supplierId, 'Aktiv tredje version');
+    const aktivtUtfall = await svep(indata(avtal, ref, leverabel));
+    if (kod.startsWith('L')) {
+      expect(aktivtUtfall.bindningar.koade).toEqual([{
+        receipt_id: kvitto2, contract_part_id: nyId, approval_id: expect.any(String),
+      }]);
+      expect(aktivtUtfall.bindningar.automatiska).toEqual([]);
+    } else {
+      const malId = kod === 'S2' ? nyId : strom.part_id;
+      // Efter inaktiv rot är även första kvittot fortfarande obundet.
+      expect(aktivtUtfall.bindningar.automatiska.map((b) => b.receipt_id).sort())
+        .toEqual((kod === 'UPPDRAG' ? [kvitto, kvitto2] : [kvitto2]).sort());
+      expect(aktivtUtfall.bindningar.automatiska.every((b) => b.contract_part_id === malId && b.kod === 'S2')).toBe(true);
+      expect(aktivtUtfall.bindningar.koade).toEqual([]);
+    }
+    expect(await withAdmin(async (c) => (await c.query(
+      'SELECT * FROM contract_parts WHERE id = ANY($1::uuid[]) ORDER BY id', [fore.map((r) => r.id)],
+    )).rows)).toEqual(fore);
   });
 });

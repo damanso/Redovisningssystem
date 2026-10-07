@@ -1,23 +1,9 @@
 // Uppdragsytan S1.3, våg 1: orsakens skrivväg och `andra_baseline`.
 //
-// Bakgrunden står i STATUS.md under 0068: migrationens trigger
-// `kraver_orsak_vid_ny_version()` kräver `change_reason` vid varje ny version
-// av samma (contract_id, code), men `upsert_contract_part` hade inget sådant
-// fält. Följden var att INGEN ny version gick att skapa — inte ens av David,
-// inte ens med rätt skäl i huvudet. Ett tilläggsavtal fanns det alltså ingen
-// väg in för, och ett tak som inte går att skriva in kan aldrig varna.
-//
-// Sex fall, (a)–(f) ur kravspecen:
-//  (a) `andra_baseline` som agent → köas, körs först vid mänskligt godkännande.
-//  (b) `upsert_contract_part` med skäl + nytt `valid_from` → version 2.
-//  (c) samma anrop UTAN skäl → 409 rule_violation (triggern som backstop).
-//  (d) in-place-ändring av ett bekräftat tak → 409 rule_violation.
-//  (e) ogiltig `date_precision` → 400 validation_error (zod, husets 400).
-//  (f) anrop utan de fyra nya fälten → exakt som före bygget.
-//
-// (c) och (d) körs genom hela HTTP-stacken med flit: poängen med KRAV-4 är att
-// P0001 ur triggern når klienten som 409 `rule_violation` via befintliga
-// errorHandler — utan en enda ny felkod, och aldrig som ett 500.
+// B-7/0079 fryser varje lagrad rad. Orsak krävs före kön (400), samma
+// nyckel ger version_finns (409). Den rena bekräftelsen är enda UPDATE-vägen.
+// (a) agentförslag, (b) ny version, (c) orsakskrav, (d) fryst innehåll,
+// (e) datumprecision och (f) äldre inläsning genom samma tjänstelager.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
@@ -98,12 +84,11 @@ interface Delrad {
   manually_edited: boolean;
 }
 
-/** Raderna i tabellen, förbi hela applikationslagret. */
+/** Hela rader; sortera på tabellen eftersom textkasten dubblerar kolumnnamn. */
 async function delrader(contractId: string): Promise<Delrad[]> {
   return withAdmin(async (c) => (await c.query<Delrad>(
-    `SELECT id, code, valid_from::text, change_reason, start_date::text, end_date::text,
-            date_precision, cap_hours::text, manually_edited
-       FROM contract_parts WHERE contract_id = $1 ORDER BY valid_from`,
+    `SELECT p.*, p.valid_from::text, p.start_date::text, p.end_date::text, p.cap_hours::text
+       FROM contract_parts p WHERE p.contract_id = $1 ORDER BY p.valid_from, p.code, p.id`,
     [contractId],
   )).rows);
 }
@@ -130,10 +115,10 @@ async function frys(contractId: string): Promise<void> {
 }
 
 /** Ett fryst avtal med en BEKRÄFTAD baseline på koden `2A` — utgångsläget. */
-async function avtalMedBekraftatTak(namn: string): Promise<string> {
+async function avtalMedBekraftatTak(namn: string, orsak = 'avtal'): Promise<string> {
   const contractId = await nyttAvtal(namn);
   await frys(contractId);
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: orsak,
     contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 32,
     cap_amount_ore: 3_520_000, cap_confirmed: true, valid_from: '2026-01-01',
   });
@@ -152,13 +137,50 @@ beforeAll(async () => {
   agentToken = tok.body.token;
 });
 
+// Fullständiga ögonblicksbilder med textkonverterade kolumner ska gå att
+// sortera även när flera koder delar datum och versionerna skrivs i annan ordning.
+describe('lagrade versioners ögonblicksbilder', () => {
+  it.each([null, 8.5])('bevarar hela historiken och datumordningen med tak %s', async (tak) => {
+    const contractId = await avtalMedBekraftatTak('Sortering');
+    const fore = await delrader(contractId);
+    for (const [code, valid_from] of [
+      ['Z1', '2026-06-01'], ['2A', '2026-06-01'], ['A1', '2026-04-01'],
+    ] as const) {
+      const svar = await koaOchGodkann('upsert_contract_part', {
+        contract_id: contractId, code, name: `Del ${code}`, valid_from,
+        ...(tak === null ? {} : { cap_hours: tak }),
+        change_reason: 'Avtal med nytt datum och tak',
+      });
+      expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    }
+
+    const rader = await delrader(contractId);
+    expect(rader.map((r) => [r.valid_from, r.code])).toEqual([
+      ['2026-01-01', '2A'], ['2026-04-01', 'A1'],
+      ['2026-06-01', '2A'], ['2026-06-01', 'Z1'],
+    ]);
+    expect(rader.slice(0, 1)).toEqual(fore);
+    expect(rader.slice(1).map((r) => r.cap_hours)).toEqual(
+      Array(3).fill(tak === null ? null : '8.50'),
+    );
+    for (const rad of rader) {
+      // Fält utanför den smala Delrad-typen måste också finnas i ögonblicksbilden.
+      expect(rad).toEqual(expect.objectContaining({
+        company_id: companyId, contract_id: contractId, updated_at: expect.any(Date),
+      }));
+    }
+    expect(await delrader(contractId)).toEqual(rader);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // (a) KRAV-6: andra_baseline är känslig — AI:t föreslår, människan skriver
 // ---------------------------------------------------------------------------
 
 describe('(a) andra_baseline köas och skriver först vid godkännandet', () => {
-  it('agentens anrop skapar INGEN rad — bara ett förslag i kön', async () => {
-    const contractId = await avtalMedBekraftatTak('Ramavtal A');
+  it.each(['avtal', 'Ursprungligt ramavtal'])('agentförslaget bevarar första versionens %s tills och efter ja', async (orsak) => {
+    const contractId = await avtalMedBekraftatTak('Ramavtal A', orsak);
+    const baselineFore = await delrader(contractId);
 
     const res = await act('andra_baseline', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 48,
@@ -172,22 +194,25 @@ describe('(a) andra_baseline köas och skriver först vid godkännandet', () => 
 
     // Ingen ny version i tabellen: baselinen står orörd tills en människa sagt ja.
     expect(await delrader(contractId)).toHaveLength(1);
+    expect(await delrader(contractId)).toEqual(baselineFore);
     expect((await usage(contractId, '2A')).cap_hours).toBe(32);
 
     // Exakt EN post i kön, och den bär hela indatat.
     const ko = await api.get(`${co()}/approvals?status=pending`).set(auth());
     const poster = (ko.body.approvals as { id: string; action: string; input: Record<string, unknown> }[])
       .filter((a) => a.action === 'andra_baseline');
-    expect(poster).toHaveLength(1);
-    expect(poster[0]!.input.change_reason).toMatch(/Tilläggsavtal 1/);
+    const egnaPoster = poster.filter((p) => p.input.contract_id === contractId);
+    expect(egnaPoster).toHaveLength(1);
+    expect(egnaPoster[0]!.input.change_reason).toMatch(/Tilläggsavtal 1/);
 
     // Människan godkänner → nu, och först nu, skrivs version 2.
-    const godkant = await api.post(`${co()}/approvals/${poster[0]!.id}/approve`).set(auth()).send({});
+    const godkant = await api.post(`${co()}/approvals/${egnaPoster[0]!.id}/approve`).set(auth()).send({});
     expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
 
     const rader = await delrader(contractId);
     expect(rader).toHaveLength(2);
-    expect(rader[0]!.change_reason).toBeNull(); // första versionen ändrade ingenting
+    expect(rader.slice(0, 1)).toEqual(baselineFore);
+    expect(rader[0]!.change_reason).toBe(orsak); // också version 1 bär sin lagrade orsak
     expect(rader[1]!.valid_from).toBe('2026-06-01');
     expect(rader[1]!.change_reason).toMatch(/Tilläggsavtal 1: utökad omfattning/);
     expect(rader[1]!.start_date).toBe('2026-06-01');
@@ -270,31 +295,30 @@ describe('(b) upsert_contract_part med change_reason skapar en ny version', () =
 // (c) KRAV-8: triggern som backstop — 409 rule_violation genom hela stacken
 // ---------------------------------------------------------------------------
 
-describe('(c) ny version utan change_reason fälls av triggern', () => {
-  it('svarar 409 rule_violation — aldrig 500, och utan triggerns text', async () => {
+describe('(c) ny version utan change_reason fälls före kön', () => {
+  it('svarar 400 validation_error före köbildningen', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal C');
 
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await act('upsert_contract_part', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 56,
       cap_confirmed: true, valid_from: '2026-06-01',
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
-    // Meddelandet stannar i serverloggen: klienten får koden, inte SQL-texten.
-    expect(JSON.stringify(res.body)).not.toMatch(/change_reason/);
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+    expect(res.body.error).toBe('validation_error');
 
     // Och ingenting halvskrivet blev kvar.
     expect(await delrader(contractId)).toHaveLength(1);
   });
 
-  it('blanktext räknas som ingen orsak — samma 409', async () => {
+  it('blanktext räknas som ingen orsak — samma 400', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal C2');
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await act('upsert_contract_part', {
       contract_id: contractId, code: '2A', name: 'Fas 2A', cap_hours: 56,
       valid_from: '2026-06-01', change_reason: '     ',
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
     expect(await delrader(contractId)).toHaveLength(1);
   });
 });
@@ -304,15 +328,18 @@ describe('(c) ny version utan change_reason fälls av triggern', () => {
 // ---------------------------------------------------------------------------
 
 describe('(d) in-place-ändring av ett bekräftat tak', () => {
-  it('svarar 409 rule_violation och lämnar taket orört', async () => {
+  it('utan orsak ges 400; med orsak ges version_finns och taket är orört', async () => {
     const contractId = await avtalMedBekraftatTak('Ramavtal D');
 
-    const res = await koaOchGodkann('upsert_contract_part', {
+    const res = await act('upsert_contract_part', {
       contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01',
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('validation_error');
 
+    const medOrsak = await koaOchGodkann('upsert_contract_part', { contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01', change_reason: 'nytt avtal' });
+    expect(medOrsak.status).toBe(409);
+    expect(medOrsak.body.error).toBe('version_finns');
     const rader = await delrader(contractId);
     expect(rader).toHaveLength(1);
     expect(rader[0]!.cap_hours).toBe('32.00');
@@ -339,7 +366,7 @@ describe('(e) date_precision utanför avtalets fem värden', () => {
   it('de fem tillåtna värdena går igenom och landar i kolumnen', async () => {
     const contractId = await nyttAvtal('Ramavtal E2');
     for (const [i, precision] of ['ar', 'halvar', 'kvartal', 'manad', 'dag'].entries()) {
-      const res = await koaOchGodkann('upsert_contract_part', {
+      const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
         contract_id: contractId, code: `E${i}`, name: `Fas E${i}`, valid_from: '2026-01-01',
         start_date: '2026-01-01', end_date: '2026-12-31', date_precision: precision,
       });
@@ -354,39 +381,41 @@ describe('(e) date_precision utanför avtalets fem värden', () => {
 // (f) KRAV-11: regressionsskyddet för Davids skarpa flöde
 // ---------------------------------------------------------------------------
 
-describe('(f) anrop utan de fyra fälten beter sig exakt som före bygget', () => {
-  it('skapar och ändrar en obekräftad rad, med de fyra kolumnerna NULL', async () => {
+describe('(f) första versionen har orsak och lagrat innehåll står kvar', () => {
+  it('skapar obekräftad rad men avvisar ändring på samma nyckel', async () => {
     const contractId = await nyttAvtal('Ramavtal F');
 
-    const skapad = await koaOchGodkann('upsert_contract_part', {
+    const skapad = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: contractId, code: '1', name: 'Fas 1', cap_hours: 10, valid_from: '2026-01-01',
     });
     expect(skapad.status, JSON.stringify(skapad.body)).toBe(200);
 
     const efterSkapande = await delrader(contractId);
     expect(efterSkapande).toHaveLength(1);
-    expect(efterSkapande[0]!.change_reason).toBeNull();
+    expect(efterSkapande[0]!.change_reason).toBe('avtal');
     expect(efterSkapande[0]!.start_date).toBeNull();
     expect(efterSkapande[0]!.end_date).toBeNull();
     expect(efterSkapande[0]!.date_precision).toBeNull();
-    // Flaggan sätts vid ÄNDRING, inte vid skapande (contracts.ts egen semantik).
+    // Flaggan sätts vid INSERT; bekräftelse ändrar den aldrig.
     expect(efterSkapande[0]!.manually_edited).toBe(false);
 
-    // Samma valid_from = in-place-ändring, precis som förut.
-    const andrad = await koaOchGodkann('upsert_contract_part', {
+    // Samma nyckel får aldrig skrivas över.
+    const andrad = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: contractId, code: '1', cap_hours: 12, valid_from: '2026-01-01',
     });
-    expect(andrad.status, JSON.stringify(andrad.body)).toBe(200);
+    expect(andrad.status, JSON.stringify(andrad.body)).toBe(409);
+    expect(andrad.body.error).toBe('version_finns');
 
     const efterAndring = await delrader(contractId);
     expect(efterAndring).toHaveLength(1);
-    expect(efterAndring[0]!.cap_hours).toBe('12.00');
-    expect(efterAndring[0]!.manually_edited).toBe(true);
-    expect(efterAndring[0]!.change_reason).toBeNull();
+    expect(efterAndring).toEqual(efterSkapande);
+    expect(efterAndring[0]!.cap_hours).toBe('10.00');
+    expect(efterAndring[0]!.manually_edited).toBe(false);
+    expect(efterAndring[0]!.change_reason).toBe('avtal');
     expect(efterAndring[0]!.date_precision).toBeNull();
 
     const del = await usage(contractId, '1');
-    expect(del.cap_hours).toBe(12);
+    expect(del.cap_hours).toBe(10);
     expect(del.cap_status).toBe('vet_ej'); // obekräftat tak varnar aldrig
     expect(del.versions).toHaveLength(1);
   });

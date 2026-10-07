@@ -153,6 +153,313 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-07 (Story 1.5, omtag — tvetydig SQL-sortering):**
+  Task 9:s SELECT * plus textkast gav dubbla kolumnnamn och tvetydig
+  ORDER BY valid_from. Samma felklass hittades och rättades i
+  server/test/uppdragsytan-baseline.test.ts och -tillagg.test.ts:
+  sorteringen använder nu p.valid_from, p.code och p.id. Hela lagrade
+  rader och textkonverteringar bevaras. Fyra nya prov skrevs före
+  rättningen: flera datum/koder, saknat/decimalt tak, oförändrad hel
+  ursprungsrad och upprepad läsning.
+
+  Röd fas: npm run typecheck exit 0; npm test exit 1 med EPERM före
+  insamling. Kedjans ORDER BY-fel belägger det röda SQL-beteendet;
+  inga nya databastester observerat röda eller gröna i sandlådan.
+  Efter rättningen gav grindarna följande ordagranna utdata:
+
+  npm run typecheck (exit 0):
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  ```
+
+  npm run build (exit 0):
+  ```text
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  ```
+
+  npm test (exit 1):
+  ```text
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  ```
+
+  Riktad Vitest för baselineversion, baseline och tillägg: samma EPERM,
+  exit 1 före insamling. Databasfri P9 exit 0:
+  `P9: ["cap_hours","cap_amount_ore","cap_confirmed","valid_from","hourly_rate_ore"] [true,false,false,false] OK`.
+  git diff --check exit 0. Kedjan belägger databastesterna enligt undantaget.
+  Migration 0079 och produktionskoden ändras inte i omtaget. Inget nytt
+  beroende, ändrat CRM-kontrakt, tjänstestart eller driftsättning.
+  Befintliga ytor lästa; Public Sans, IBM Plex Mono, OKLCH och synligt
+  fokus ger samma läsrytm och formspråk. Inga vyfiler ändras.
+
+
+- **2026-10-07 (Story 1.5, omtag — versionsurval och lagrad orsak):**
+  Kedjans regressioner kom av att svepet filtrerade active före versionsvalet:
+  äldre aktiva rader återkom efter inaktivering med en ny baselineversion.
+  `server/src/services/uppdragSvep.ts` väljer nu senaste version först och
+  prövar sedan active. Förälderns kod läses via den lagrade länken, så
+  strömmar fortfarande hittas efter en ny rotversion utan att barnrader skrivs
+  om. Kommentaren i uppdragKostnad.ts följer regeln.
+  Första versionens NULL-förväntan rättad även i baselineprovet, utöver
+  tilläggsprovet; båda använder två olika orsaker och jämför hela den lagrade
+  raden före/efter ja. Svep-bindningsprovet täcker L1, L4, S2 och UPPDRAG med
+  inaktiv andra och aktiv tredje version. Provhjälparen hämtar aktuella id:n
+  via get_contract_usage. Pengarnas befintliga regressionsprov behålls.
+
+  Omtaget hör till Task 9; migration 0079 och skrivmekanismen är oförändrade.
+  Orsakskravet gäller också första förslaget, medan NULL fortfarande tillåts
+  på äldre rader och första direkta inläsningen ur utkast. Ingen ny migration,
+  inget beroende, ingen tjänstestart eller driftsättning. Inget ändrat
+  CRM/API-kontrakt. Husets Public Sans, IBM Plex Mono, OKLCH-tokens och
+  synliga fokus behålls för samma läsrytm; inga vyfiler ändras.
+
+  Utökade prov före rättningen; npm test gav EPERM innan insamling även då.
+  Slutgrindarnas faktiska utdata:
+
+  `npm run typecheck` (exit 0):
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  ```
+
+  `npm run build` (exit 0):
+  ```text
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+  ```
+
+  `npm test` (exit 1):
+  ```text
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  ```
+
+  Riktad Vitest för baselineversion, baseline, tillägg, svep-bindning och
+  pengarna gav samma EPERM och exit 1 före insamling. Inga tester observerat
+  gröna; kedjan belägger dem enligt berättelsens databasundantag.
+  `git diff --check` exit 0. File List och DoD uppdaterade inför review.
+
+
+- **2026-10-07 (Story 1.5, B-7 — en lagrad baselineversion skrivs aldrig över):**
+  Migration `server/migrations/0079_baselineversion.sql` fryser hela lagrade
+  baselineversioner, även obekräftade, och fäller DELETE. Bara bekräftelse
+  framåt och updated_at får skilja. `services/contracts.ts` delar INSERT
+  (`skrivBaselineversion`) från bekräftelse (`bekraftaTak`); befintlig nyckel
+  ger 409 version_finns. Gemensam lista i `lib/baselinekolumner.ts` och
+  `ActionDef.kraverNyVersion` avvisar baselinefält före kön och vid godkännande
+  av gamla köposter. Registret kräver orsak för varje nytt förslag.
+  `skapa_uppdrag` lagrar ingen rotdel: utkastet är köposten och baseline v1
+  föds efter ja. Importen skriver aldrig över. `contractExtraction.ts` sätter
+  redigeringsflaggan redan vid INSERT. Arkitektur och MCP_ACTIONS är speglade;
+  CRM-ingestkontraktet berörs inte.
+
+  Nytt prov `uppdragsytan-baselineversion.test.ts` täcker P2–P14 med
+  kontrollvakt, fullständiga ögonblicksbilder, båda databasrollerna, köutkast,
+  orsakskrav, bekräftelse/audit och bolagsisolering. Omskrivna sviter:
+  avtalsdelar, bakvag, tid-rapporter, tid-snabbregistrering, tidsforslag samt
+  uppdragsytan-avslut, -baseline, -bedomning, -import, -kontraktsyta, -laget,
+  -pengarna, -rapporterna, -sparrar, -svep-bindning, -svep, -tillagg och -troskel.
+  Förslag har orsak, rättelser blir nya versioner och direkt SQL kräver
+  P0001 med oförändrade rader. Befintliga vyer granskade: Public Sans,
+  IBM Plex Mono, OKLCH och synligt fokus. Berättelsen ändrar inga vyfiler.
+
+  Rött först: saknade exporter i typecheck (exit 2), orsaksschemat accepterade
+  saknat skäl och databasfria köspärrprovet gav EPERM i stället för
+  kraver_ny_version (exit 1). De rena kontrollerna passerar efter ändringen
+  (exit 0); P9 skriver ut listan och true/false/false/false. Migrationsläsaren
+  godtar 79 filer, sist 0079_baselineversion.sql (exit 0).
+  Slutgrindarnas ordagranna utdata:
+
+  `npx --no-install vitest run test/uppdragsytan-baselineversion.test.ts (server/)`
+  ```text
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  filter: test/uppdragsytan-baselineversion.test.ts
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+
+  Exitkod: 1
+  ```
+
+  `npm run typecheck`
+  ```text
+
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+
+
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+
+
+  Exitkod: 0
+  ```
+
+  `npm run build`
+  ```text
+
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+
+
+  > server@0.1.0 build
+  > tsc
+
+  Exitkod: 0
+  ```
+
+  `npm test`
+  ```text
+
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+
+
+  > server@0.1.0 test
+  > vitest run
+
+
+   RUN  v3.2.7 /opt/redovisning/server
+
+  No test files found, exiting with code 1
+
+  include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+  exclude:  **/node_modules/**, **/dist/**, **/cypress/**, **/.{idea,git,cache,output,temp}/**, **/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*
+
+
+  ⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+   ❯ internalConnect node:net:1110:16
+   ❯ defaultTriggerAsyncIdScope node:internal/async_hooks:472:18
+   ❯ node:net:1356:9
+   ❯ process.processTicksAndRejections node:internal/process/task_queues:84:11
+
+  ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+
+
+
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+
+  Exitkod: 1
+  ```
+
+  **Inte kört:** Vitest P2–P14 och regressionerna: globalSetup nekades
+  anslutningen före insamling. vitest inte kört i sandlådan: Error: connect
+  EPERM 127.0.0.1:5433 - Local (undefined:undefined); kedjans npm test belägger
+  provet. Dessa prov kallas inte gröna. Ett riktat anrop från fel katalog
+  stoppades av listen EPERM före HTTP-anropet; arbetskatalogen rättades.
+  Ett typfel i planjämförelsens provhjälpare rättades före slutgrinden.
+  git diff --check exit 0. Inga nya beroenden, inga körda migrationer ändrade.
+  Ingen tjänst har startats och ingen driftsättning gjorts.
+
 - **2026-10-07 (Story 3.5, B-16 — en ärendekoppling kräver sin frysta nyckel):**
   Ny migration `server/migrations/0078_arendenyckel.sql` prövar befintliga
   tidposter före ett idempotent CHECK NOT VALID och validerar villkoret i

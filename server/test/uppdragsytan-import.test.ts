@@ -134,7 +134,7 @@ async function delrader(contractId: string): Promise<Delrad[]> {
     `SELECT id, code, name, parent_part_id, cap_hours::float8 AS cap_hours, cap_amount_ore,
             cap_confirmed, valid_from::text, start_date::text, end_date::text, date_precision,
             change_reason, sort_order
-       FROM contract_parts WHERE contract_id = $1 ORDER BY code`,
+       FROM contract_parts WHERE contract_id = $1 ORDER BY code, valid_from, id`,
     [contractId],
   )).rows);
 }
@@ -379,7 +379,7 @@ Klausul: 2.1
 // ---------------------------------------------------------------------------
 
 describe('skapa_uppdrag', () => {
-  it('skapar avtalet FRYST med rotdelen UPPDRAG som förälder till allt', async () => {
+  it('skapar bara avtalet FRYST; baselineutkastet finns i kön', async () => {
     const projekt = await nyttUppdrag('NVR-001 Fas 2');
     const svar = await ok('skapa_uppdrag', {
       project_id: projekt, name: 'Leveranskontrakt NVR-001', signed_date: SIGNERAT,
@@ -387,12 +387,9 @@ describe('skapa_uppdrag', () => {
     const contractId = svar.contract_id as string;
     expect(svar.kontrakt_tillstand).toBe('fryst');
 
-    const rader = await delrader(contractId);
-    expect(rader).toHaveLength(1);
-    expect(rader[0]).toMatchObject({
-      code: 'UPPDRAG', name: 'Leveranskontrakt NVR-001', parent_part_id: null,
-      cap_hours: null, cap_amount_ore: null, cap_confirmed: false, valid_from: SIGNERAT,
-    });
+    expect(await delrader(contractId)).toEqual([]);
+    const usage = await ok('get_contract_usage', { contract_id: contractId });
+    expect(usage.parts).toEqual([]);
   });
 
   it('utan undertecknandedatum gissas inget datum — 400 och inget halvskapat avtal', async () => {
@@ -556,14 +553,15 @@ describe('importera_leveranskontrakt', () => {
 // ---------------------------------------------------------------------------
 
 describe('baselineförslaget och godkännandet', () => {
-  it('återimport visar befintlig baseline och ändringen samt bevarar mänskligt beslutade leverabeldatum', async () => {
+  it('återimport visar ändringen men avvisar överskrivningen och bevarar alla versioner', async () => {
     const projectId = await nyttUppdrag('Återimport efter Davids baselinebeslut');
     const contractId = (await ok('skapa_uppdrag', {
       project_id: projectId, name: 'Återimportens avtal', signed_date: '2026-09-07',
     })).contract_id as string;
     await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
     const beslut = await koaOchGodkann('andra_baseline', {
-      contract_id: contractId, code: 'L1', valid_from: '2026-09-07',
+      contract_id: contractId, code: 'L1', name: 'Davids första leverans', valid_from: '2026-09-08',
+      parent_part_id: per(await delrader(contractId)).get('STEG1')!.id,
       start_date: '2026-09-10', end_date: '2026-09-11', date_precision: 'dag', change_reason: 'Davids egna leverabeldatum',
     });
     expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
@@ -586,25 +584,23 @@ describe('baselineförslaget och godkännandet', () => {
     expect(kort.change!.to).toContain('STEG1 2026-08-31 till 2026-09-20 — Ändrat första steg');
     for (const sida of [kort.change!.from, kort.change!.to]) {
       expect(sida).toContain('L1 under STEG1 eget datum: 2026-09-10 till 2026-09-11');
-      expect(sida).toContain('Oförändrade versioner: L2 under STEG2 eget datum: 2026-09-25 till 2026-09-26');
+      expect(sida).toContain('Oförändrade versioner: L1 under STEG1 eget datum: 2026-09-10 till 2026-09-11');
+      expect(sida).toContain('L2 under STEG2 eget datum: 2026-09-25 till 2026-09-26');
       expect(sida).toContain('från 2026-09-08');
     }
     expect(kort.change!.to).toContain('L2 under STEG2 ärver stegets intervall');
     expect(kort.change!.from).not.toContain('ingen baseline');
     expect(kort.why).not.toContain('baseline v1');
-    expect(kort.why).not.toContain('Leverablerna ärver');
-    expect(kort.why).toContain('Tidigare beslutade egna datum bevaras för L1');
+    expect(kort.why).toContain('Tidigare beslutade egna datum bevaras för L1, L2');
     expect(kort.source!.href).toBe(`/app/c/${companyId}/projects/${projectId}/kontraktet`);
     const godkant = await api.post(`${co()}/approvals/${forslag.approval_id}/approve`).set(auth()).send({});
-    expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
-    const efter = per(await delrader(contractId));
-    expect(efter.get('STEG1')).toMatchObject({ name: 'Ändrat första steg', end_date: '2026-09-20' });
-    expect(efter.get('L1')).toMatchObject({ start_date: '2026-09-10', end_date: '2026-09-11', date_precision: 'dag' });
-    expect((await delrader(contractId)).filter((r) => r.valid_from === '2026-09-08'))
-      .toEqual(fore.filter((r) => r.valid_from === '2026-09-08'));
+    expect(godkant.status, JSON.stringify(godkant.body)).toBe(409);
+    expect(godkant.body.error).toBe('version_finns');
+    expect(await delrader(contractId)).toEqual(fore);
     const oforandrat = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
       { contract_id: contractId, kontraktstext }, `/app/c/${companyId}`));
-    expect(oforandrat.change!.from).toBe(oforandrat.change!.to);
+    expect(oforandrat.change!.from).toBe(kort.change!.from);
+    expect(oforandrat.change!.to).toBe(kort.change!.to);
   });
 
   it('hela tabellformen: befintligt projekt → ett förslag → baseline v1 med ärvda leverabelintervall', async () => {
@@ -666,7 +662,7 @@ describe('baselineförslaget och godkännandet', () => {
 
     const agentBeslut = await api.post(`${co()}/approvals/${approvalId}/approve`).set(agentAuth).send({});
     expect(agentBeslut.status).toBe(403);
-    expect(await delrader(contractId)).toHaveLength(1);
+    expect(await delrader(contractId)).toHaveLength(0);
     const godkant = await api.post(`${co()}/approvals/${approvalId}/approve`).set(auth()).send({});
     expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
     expect(godkant.body.approval.status).toBe('executed');
@@ -703,7 +699,7 @@ describe('baselineförslaget och godkännandet', () => {
     // med flit egna leverabelfält; varken importen eller satt_baseline läser dem.
     for (const atgard of ['upsert_contract_part', 'andra_baseline']) {
       const datum = atgard === 'upsert_contract_part' ? '2026-09-10' : '2026-09-11';
-      const begaran = await act(atgard, { contract_id: contractId, code: 'L1', valid_from: '2026-09-07', start_date: datum, end_date: datum, date_precision: 'dag', change_reason: 'Davids datumbeslut' });
+      const begaran = await act(atgard, { contract_id: contractId, code: 'L1', name: 'Första leveransen', parent_part_id: delar.get('STEG1')!.id, valid_from: datum, start_date: datum, end_date: datum, date_precision: 'dag', change_reason: 'Davids datumbeslut' });
       expect(begaran.status).toBe(202);
       const foreBeslut = per(await delrader(contractId)).get('L1')!;
       expect(foreBeslut.start_date).toBe(atgard === 'upsert_contract_part' ? null : '2026-09-10');
@@ -711,7 +707,10 @@ describe('baselineförslaget och godkännandet', () => {
       expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
       expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: datum, end_date: datum });
     }
-    await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    const foreAterimport = await delrader(contractId);
+    const identisk = await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(identisk).toMatchObject({ oforandrad: true, avtalsdelar_skrivna: 0 });
+    expect(await delrader(contractId)).toEqual(foreAterimport);
     expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: '2026-09-11', end_date: '2026-09-11' });
   });
 
@@ -797,7 +796,7 @@ describe('0069: signeringen är frysningen', () => {
     const utkast = await ok('create_contract', {
       project_id: await nyttUppdrag('Bekräftat tak i utkast'), name: 'Utkast med tak',
     });
-    const falld = await koaOchGodkann('upsert_contract_part', {
+    const falld = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: utkast.id, code: 'K1', name: 'Fas K1', cap_hours: 32,
       cap_confirmed: true, valid_from: '2026-01-01',
     });
@@ -808,7 +807,7 @@ describe('0069: signeringen är frysningen', () => {
     const signerat = await ok('skapa_uppdrag', {
       project_id: await nyttUppdrag('Bekräftat tak i signerat'), name: 'Signerat med tak', signed_date: SIGNERAT,
     });
-    const godkand = await koaOchGodkann('upsert_contract_part', {
+    const godkand = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: signerat.contract_id, code: 'K1', name: 'Fas K1', cap_hours: 32,
       cap_confirmed: true, valid_from: SIGNERAT,
     });

@@ -120,8 +120,8 @@ export async function bindSvepetsForslag(
 ): Promise<Bindningsutfall> {
   const utfall = tomtBindningsutfall();
   for (const f of forslag) {
-    // Lövet enligt SAMMA versionsregel som bindningsmålen: senaste aktiva
-    // versionen av koden. En avslutad (inaktiv) leverabel har ingen del att
+    // Lövet enligt SAMMA versionsregel som bindningsmålen: senaste versionen
+    // av koden, om den är aktiv. En avslutad (inaktiv) leverabel har ingen del att
     // föreslå, och då är det gren 2 som gäller — inte en gissning.
     const lov = f.leverabel_kod === undefined
       ? undefined

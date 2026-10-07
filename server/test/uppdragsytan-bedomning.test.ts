@@ -434,7 +434,7 @@ async function riggatUppdrag(namn: string, taxaOre: number): Promise<{
   })).id as string;
   // Taket är bekräftat — ett oläst tak ger varken andel eller status
   // 'bekraftat', och då hade rapporten inte haft något att visa.
-  await okKoad('upsert_contract_part', {
+  await okKoad('upsert_contract_part', { change_reason: 'avtal',
     contract_id: avtalId, code: 'S1', name: 'Fas 1', valid_from: '2026-01-01',
     cap_hours: 10, cap_amount_ore: 1_200_000, cap_confirmed: true,
   });

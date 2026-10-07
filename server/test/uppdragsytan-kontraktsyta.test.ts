@@ -131,7 +131,7 @@ beforeAll(async () => {
   })).id as string;
   // En del i utkastet, med eget `valid_from` (avtalet har inget datum att ärva).
   // Taket lämnas obekräftat: 0068 vägrar en bekräftad baseline i ett utkast.
-  await koaOchGodkann('upsert_contract_part', {
+  await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
     contract_id: utkastAvtalId, code: 'F1', name: 'Fas 1: förstudie',
     valid_from: '2026-08-01', cap_hours: 20,
   });

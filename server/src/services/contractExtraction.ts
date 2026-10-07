@@ -31,7 +31,7 @@ import { config } from '../config.js';
 import { BadRequestError, ConflictError } from '../lib/errors.js';
 import { anthropicVisionClient, type VisionClient } from './aiOcr.js';
 import { writeAudit } from './auditService.js';
-import { createContract, getContractUsage, upsertContractPart } from './contracts.js';
+import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
 import { MAX_DOCUMENT_BYTES } from './documents.js';
 import { removeStoredFile, validateUpload, writeStoredFile } from './fileStorage.js';
 
@@ -386,15 +386,13 @@ function ordnaEfterForalder(parts: ContractPartInput[]): ContractPartInput[] {
 
 /**
  * Skapar avtalet och SAMTLIGA avtalsdelar via de befintliga tjänsterna
- * (`createContract`/`upsertContractPart`) i EN transaktion. Faller en del finns
+ * (`createContract`/`skrivBaselineversion`) i EN transaktion. Faller en del finns
  * varken avtal eller delar kvar — ett halvskapat avtal är värre än inget: taket
  * som saknas är det som aldrig varnar.
  *
- * `manually_edited` sätts på exakt de delar där det inskickade värdet avviker
- * från utkastet. Flaggan sätts genom en andra `upsertContractPart` på samma
- * (avtal, kod, valid_from) — alltså genom contracts.ts egen semantik "flaggan
- * sätts vid ÄNDRING, inte vid skapande". Det ger också det ärliga spåret i
- * auditloggen: utkastet skapade raden, människan ändrade den.
+ * `manually_edited` sätts på exakt de delar där indatan avviker från
+ * utkastet, redan i den enda INSERT-satsen. En lagrad version ändras aldrig
+ * (B-7); contract.created_from_draft bär de manuellt ändrade koderna.
  */
 export async function createContractFromDraft(
   client: PoolClient, companyId: string, userId: string, input: CreateContractFromDraftInput,
@@ -439,7 +437,8 @@ export async function createContractFromDraft(
   for (let i = 0; i < ordnade.length; i += 1) {
     const del = ordnade[i]!;
     const forald = del.parent_code ? idPerKod.get(del.parent_code) : undefined;
-    const usage = await upsertContractPart(client, companyId, userId, {
+    const manuellt = avvikerFranUtkast(del, utkastdel(input.draft, del.code));
+    const usage = await skrivBaselineversion(client, companyId, userId, {
       contract_id: contractId,
       code: del.code,
       name: del.name,
@@ -450,16 +449,11 @@ export async function createContractFromDraft(
       cap_confirmed: del.cap_confirmed ?? false,
       valid_from: input.signed_date!,
       sort_order: i,
-    });
+    }, { manuelltRedigerad: manuellt });
     const skapad = (usage.parts as { part_id: string; code: string }[]).find((d) => d.code === del.code);
     if (skapad) idPerKod.set(del.code, skapad.part_id);
 
-    if (avvikerFranUtkast(del, utkastdel(input.draft, del.code))) {
-      await upsertContractPart(client, companyId, userId, {
-        contract_id: contractId, code: del.code, valid_from: input.signed_date!,
-      });
-      redigerade.push(del.code);
-    }
+    if (manuellt) redigerade.push(del.code);
   }
 
   await writeAudit(client, {

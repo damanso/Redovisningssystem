@@ -88,11 +88,11 @@ interface Delrad {
   change_reason: string | null;
 }
 
-/** Avtalsdelarna som de STÅR i tabellen, förbi hela applikationslagret. */
+/** Hela rader; sortera på tabellen eftersom textkasten dubblerar kolumnnamn. */
 async function delrader(contractId: string): Promise<Delrad[]> {
   return withAdmin(async (c) => (await c.query<Delrad>(
-    `SELECT id, code, valid_from::text, cap_hours::text, change_reason
-       FROM contract_parts WHERE contract_id = $1 ORDER BY valid_from, code`,
+    `SELECT p.*, p.valid_from::text, p.cap_hours::text
+       FROM contract_parts p WHERE p.contract_id = $1 ORDER BY p.valid_from, p.code, p.id`,
     [contractId],
   )).rows);
 }
@@ -112,12 +112,12 @@ async function auditrader(): Promise<string[]> {
 }
 
 /** Ett uppdrag med avtal och en FÖRSTA baselineversion på koden `2A`. */
-async function nyttUppdrag(namn: string): Promise<{ projektId: string; avtalId: string }> {
+async function nyttUppdrag(namn: string, orsak = 'avtal'): Promise<{ projektId: string; avtalId: string }> {
   const projektId = (await ok('create_project', { name: `Uppdrag ${namn}` })).id as string;
   const avtalId = (await ok('create_contract', {
     project_id: projektId, name: namn, signed_date: '2026-01-01',
   })).id as string;
-  const skapad = await koaOchGodkann('upsert_contract_part', {
+  const skapad = await koaOchGodkann('upsert_contract_part', { change_reason: orsak,
     contract_id: avtalId, code: '2A', name: 'Fas 2A', cap_hours: 32,
     cap_confirmed: true, valid_from: '2026-01-01',
   });
@@ -150,6 +150,42 @@ beforeAll(async () => {
 
   grannen = await registerUser('tillagg-granne');
   grannbolag = await createCompany(grannen.token, 'Grannbolaget AB');
+});
+
+// Fullständiga ögonblicksbilder med textkonverterade kolumner ska gå att
+// sortera även när flera koder delar datum och versionerna skrivs i annan ordning.
+describe('lagrade versioners ögonblicksbilder', () => {
+  it.each([null, 8.5])('bevarar hela historiken och datumordningen med tak %s', async (tak) => {
+    const { avtalId: contractId } = await nyttUppdrag('Sortering');
+    const fore = await delrader(contractId);
+    for (const [code, valid_from] of [
+      ['Z1', '2026-06-01'], ['2A', '2026-06-01'], ['A1', '2026-04-01'],
+    ] as const) {
+      const svar = await koaOchGodkann('upsert_contract_part', {
+        contract_id: contractId, code, name: `Del ${code}`, valid_from,
+        ...(tak === null ? {} : { cap_hours: tak }),
+        change_reason: 'Avtal med nytt datum och tak',
+      });
+      expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    }
+
+    const rader = await delrader(contractId);
+    expect(rader.map((r) => [r.valid_from, r.code])).toEqual([
+      ['2026-01-01', '2A'], ['2026-04-01', 'A1'],
+      ['2026-06-01', '2A'], ['2026-06-01', 'Z1'],
+    ]);
+    expect(rader.slice(0, 1)).toEqual(fore);
+    expect(rader.slice(1).map((r) => r.cap_hours)).toEqual(
+      Array(3).fill(tak === null ? null : '8.50'),
+    );
+    for (const rad of rader) {
+      // Fält utanför den smala Delrad-typen måste också finnas i ögonblicksbilden.
+      expect(rad).toEqual(expect.objectContaining({
+        company_id: companyId, contract_id: contractId, updated_at: expect.any(Date),
+      }));
+    }
+    expect(await delrader(contractId)).toEqual(rader);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -250,8 +286,9 @@ describe('(a) avgör "utanför" med tillägg', () => {
 // ---------------------------------------------------------------------------
 
 describe('(b) godkännandet', () => {
-  it('skriver den nya versionen, sätter länken, och den gamla står kvar läsbar', async () => {
-    const { avtalId } = await nyttUppdrag('Godkant');
+  it.each(['avtal', 'Ursprungligt ramavtal'])('skriver ny version med länk och bevarar första versionens %s', async (orsak) => {
+    const { avtalId } = await nyttUppdrag('Godkant', orsak);
+    const baselineFore = await delrader(avtalId);
     const signalId = await tandSignal(avtalId);
     const fore = await kon('pending');
     await ok('avgor_scopesignal', {
@@ -267,11 +304,12 @@ describe('(b) godkännandet', () => {
 
     const rader = await delrader(avtalId);
     expect(rader).toHaveLength(2);
+    expect(rader.slice(0, 1)).toEqual(baselineFore);
     // Acceptansen ordagrant: den tidigare versionen förblir läsbar. Taket i
     // januari går fortfarande att läsa efter tilläggsavtalet i juni.
     expect(rader[0]!.valid_from).toBe('2026-01-01');
     expect(rader[0]!.cap_hours).toBe('32.00');
-    expect(rader[0]!.change_reason).toBeNull();
+    expect(rader[0]!.change_reason).toBe(orsak);
     expect(rader[1]!.valid_from).toBe('2026-06-01');
     expect(rader[1]!.cap_hours).toBe('8.00');
     expect(rader[1]!.change_reason).toMatch(/Utanför scope enligt 5.4/);
@@ -283,6 +321,7 @@ describe('(b) godkännandet', () => {
 
   it('en ny kod (2B) blir en egen del, och signalen pekar på den', async () => {
     const { avtalId } = await nyttUppdrag('Ny kod');
+    const baselineFore = await delrader(avtalId);
     const signalId = await tandSignal(avtalId, 'medan ni ändå är inne i systemet');
     const fore = await kon('pending');
     await ok('avgor_scopesignal', {
@@ -293,6 +332,7 @@ describe('(b) godkännandet', () => {
     expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
 
     const rader = await delrader(avtalId);
+    expect(rader.slice(0, 1)).toEqual(baselineFore);
     const ny = rader.find((r) => r.code === '2B')!;
     expect(ny).toBeTruthy();
     expect((await signalrad(signalId)).ledde_till_part_id).toBe(ny.id);

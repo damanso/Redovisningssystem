@@ -171,7 +171,7 @@ describe('KRAV-5: agentens väg till baselinen går genom kön — eller ingenst
   it('upsert_contract_part som agent köas, auditloggas och skriver INGEN rad', async () => {
     const foreKo = await koposter();
 
-    const res = await act('upsert_contract_part', {
+    const res = await act('upsert_contract_part', { change_reason: 'avtal',
       contract_id: avtalId, code: 'AGENT', name: 'Fas som agenten föreslog',
       cap_hours: 8, valid_from: '2026-01-01',
     }, agent());
@@ -225,7 +225,7 @@ describe('KRAV-5: agentens väg till baselinen går genom kön — eller ingenst
 
 describe('KRAV-6: godkännandet är det som skriver', () => {
   it('människans takändring köas och skrivs först när den godkänts', async () => {
-    const begaran = await act('upsert_contract_part', {
+    const begaran = await act('upsert_contract_part', { change_reason: 'avtal',
       contract_id: avtalId, code: '2A', name: 'Fas 2A — Commercial Cockpit',
       cap_hours: 32, valid_from: '2026-01-01',
     });
