@@ -1,3 +1,4 @@
+import { provaMottagetFel } from './uppdragImportHelper.js';
 // Uppdragsytan S5.2, våg 4: signalen som blir tillägg (PRD FR-2/FR-4).
 //
 // Storyns Then är en KEDJA, och varje länk kan gå av tyst:
@@ -363,9 +364,12 @@ describe('(c) avslaget', () => {
     });
     const kopost = await nyKopost(fore);
 
-    const avslag = await api.post(`${co()}/approvals/${kopost.id}/reject`).set(auth()).send({});
+    const avslag = await api.post(`${co()}/approvals/${kopost.id}/reject`).set(auth()).send({ reason: 'Provets nej' });
     expect(avslag.status, JSON.stringify(avslag.body)).toBe(200);
     expect((avslag.body.approval as { status: string }).status).toBe('rejected');
+    expect(avslag.body.approval.status).toBe('rejected');
+    expect(avslag.body.approval.beslut_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(avslag.body.approval.result.vid_avslag.beslut_id).toEqual(expect.any(String));
 
     expect(await delrader(avtalId)).toHaveLength(1);
     const rad = await signalrad(signalId);
@@ -394,10 +398,7 @@ describe('(d) signalen hör till ett annat avtal', () => {
     });
     expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
 
-    const svar = await api.post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
-      .set(auth()).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(400);
-    expect(svar.body.error).toBe('signal_annat_avtal');
+    await provaMottagetFel(companyId, auth(), (begaran.body.approval as { id: string }).id, 'signal_annat_avtal');
 
     // Allt-eller-inget: versionen på avtal B skrevs inte heller.
     expect(await delrader(b.avtalId)).toHaveLength(1);
@@ -412,9 +413,7 @@ describe('(d) signalen hör till ett annat avtal', () => {
       signal_id: '00000000-0000-4000-8000-000000000000',
     });
     expect(begaran.status).toBe(202);
-    const svar = await api.post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
-      .set(auth()).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(companyId, auth(), (begaran.body.approval as { id: string }).id, 'not_found');
     expect(await delrader(avtalId)).toHaveLength(1);
   });
 });
@@ -449,10 +448,7 @@ describe('(e) grannbolagets signal', () => {
       });
     expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
 
-    const svar = await api.post(`/api/companies/${grannbolag}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
-      .set(grannauth).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
-    expect(svar.body.error).toBe('not_found');
+    await provaMottagetFel(grannbolag, grannauth, (begaran.body.approval as { id: string }).id, 'not_found');
 
     expect((await signalrad(signalId)).ledde_till_part_id).toBeNull();
     // Och grannens egen avtalsdel skrevs inte: allt-eller-inget.

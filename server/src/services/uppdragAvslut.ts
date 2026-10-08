@@ -10,7 +10,7 @@
 //
 //   * **Listan fryses FÖRE stängningen, i samma transaktion.** Ordningen är inte
 //     kosmetik: `avsluta_uppdrag` är `sensitive` och körs därför inuti
-//     `approveAction`:s enda transaktion (execute.ts), och triggern får aldrig
+//     verkställighetens transaktion efter mottaget ja (execute.ts), och triggern får aldrig
 //     hinna se ett stängt uppdrag före kolumnifyllnaden. Faller något rullas
 //     hela avslutet tillbaka — ett stängt uppdrag utan lista vore precis det
 //     tysta avslut FR-8 finns för att hindra.

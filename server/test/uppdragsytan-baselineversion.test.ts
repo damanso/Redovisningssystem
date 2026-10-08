@@ -8,7 +8,7 @@ import { withTenantTransaction } from '../src/db/tx.js';
 import { createApproval } from '../src/services/approvals.js';
 import { IMPORTORSAK } from '../src/services/uppdragImport.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { importeraOchGodkann, provaMottagetFel } from './uppdragImportHelper.js';
 import { BASELINEKOLUMNER, baselineburnaFalt } from '../src/lib/baselinekolumner.js';
 import { arRenBekraftelse } from '../src/services/contracts.js';
 
@@ -28,7 +28,7 @@ async function koa(namn: string, indata: Rad): Promise<string> {
   return r.body.approval.id;
 }
 const godkann = (id: string) => api.post(`${bas()}/approvals/${id}/approve`).set(human()).send({});
-const avvisa = (id: string) => api.post(`${bas()}/approvals/${id}/reject`).set(human()).send({});
+const avvisa = (id: string) => api.post(`${bas()}/approvals/${id}/reject`).set(human()).send({ reason: 'Provets nej' });
 const delrader = (id = contractId): Promise<Rad[]> => withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE contract_id = $1 ORDER BY id', [id])).rows);
 const avtalsrad = (id = contractId): Promise<Rad> => withAdmin(async (c) => (await c.query('SELECT * FROM contracts WHERE id = $1', [id])).rows[0]);
 const antalKoposter = () => withAdmin(async (c) => Number((await c.query('SELECT count(*) FROM action_approvals WHERE company_id = $1', [bolag])).rows[0].count));
@@ -55,10 +55,8 @@ async function importeradKo(id: string, text: string): Promise<string> {
 }
 async function falledKo(namn: string, indata: Rad) {
   const fore = await delrader(), audit = await antalAudit('contract_part.%');
-  const id = await koa(namn, indata), r = await godkann(id);
-  expect(r.status, JSON.stringify(r.body)).toBe(409);
-  expect(r.body.error).toBe('version_finns');
-  await pending(id);
+  const id = await koa(namn, indata);
+  await provaMottagetFel(bolag, human(), id, 'version_finns');
   expect(await delrader()).toEqual(fore);
   expect(await antalAudit('contract_part.%')).toBe(audit);
 }
@@ -169,8 +167,7 @@ describe('B-7: varje lagrad version är fryst', () => {
     }
     expect(await antalKoposter()).toBe(ko); expect(await antalAudit()).toBe(audit); expect(await avtalsrad()).toEqual(fore);
     const gammal = await somApp((c) => createApproval(c, bolag, user.userId, 'human', 'update_contract', { contract_id: contractId, hourly_rate_ore: 1 }));
-    const r = await godkann(gammal.id); expect(r.status).toBe(409); expect(r.body.error).toBe('kraver_ny_version');
-    await pending(gammal.id); expect(await avtalsrad()).toEqual(fore);
+    await provaMottagetFel(bolag, human(), gammal.id, 'kraver_ny_version'); expect(await avtalsrad()).toEqual(fore);
     const kund = await act('create_customer', { name: 'Ny kund' }); expect(kund.status, JSON.stringify(kund.body)).toBe(200);
     for (const [falt, varde] of [['name', 'Nytt avtal'], ['notes', 'Anteckning'], ['payment_terms_days', 42], ['customer_id', kund.body.result.id]] as [string, unknown][]) {
       const r = await godkann(await koa('update_contract', { contract_id: contractId, [falt]: varde }));
@@ -218,15 +215,15 @@ describe('B-7: varje lagrad version är fryst', () => {
       return { ...innehall, parent_code: rader.find((p) => p.id === parent_part_id)?.code ?? null };
     }).sort((a, b) => String(a.code).localeCompare(String(b.code)));
     expect(plan(fore)).toEqual(plan(baselineV1).map((r) => r.code === 'L1' ? { ...r, cap_hours: '41.00' } : r));
-    const ko2 = await importeradKo(id, LEVERANSKONTRAKT_NVR001), fel = await godkann(ko2);
-    expect(fel.status).toBe(409); expect(fel.body.error).toBe('version_finns'); await pending(ko2); expect(await delrader(id)).toEqual(fore);
+    const ko2 = await importeradKo(id, LEVERANSKONTRAKT_NVR001);
+    await provaMottagetFel(bolag, human(), ko2, 'version_finns'); expect(await delrader(id)).toEqual(fore);
   });
 
   it('P12: varje skrivväg mot bekräftad och obekräftad rad lämnar ögonblicksbilden intakt', async () => {
     const fore = await delrader(), avtal = await avtalsrad();
     for (const [gammal, ny] of [['430', '431'], ['40', '41']]) {
       const id = await importeradKo(contractId, LEVERANSKONTRAKT_NVR001.replace(`| Takvolym | ${gammal} h |`, `| Takvolym | ${ny} h |`));
-      const r = await godkann(id); expect(r.status).toBe(409); expect(r.body.error).toBe('version_finns'); await pending(id); korda.p12++;
+      await provaMottagetFel(bolag, human(), id, 'version_finns'); korda.p12++;
       expect(await delrader()).toEqual(fore); expect(await avtalsrad()).toEqual(avtal);
     }
     for (const namn of ['andra_baseline', 'upsert_contract_part']) for (const code of ['UPPDRAG', 'L1']) {
@@ -268,13 +265,12 @@ describe('B-7: varje lagrad version är fryst', () => {
     expect(details.entity_id).toBe(rad.id); expect(details.details).toEqual({ contract_id: contractId, code, valid_from: SIGNERAT });
     const nu = await delrader(); const igen = await godkann(await koa('upsert_contract_part', { contract_id: contractId, code, cap_confirmed: true }));
     expect(igen.status).toBe(200); expect(await delrader()).toEqual(nu); expect(await antalAudit('contract_part.confirmed')).toBe(audit + 1);
-    const saknad = await godkann(await koa('upsert_contract_part', { contract_id: contractId, code: 'SAKNAS', cap_confirmed: true }));
-    expect(saknad.status).toBe(404); expect(saknad.body.error).toBe('not_found');
+    const saknad = await koa('upsert_contract_part', { contract_id: contractId, code: 'SAKNAS', cap_confirmed: true });
+    await provaMottagetFel(bolag, human(), saknad, 'not_found');
     const auth = { Authorization: `Bearer ${granne.token}` }, bas2 = `/api/companies/${grannbolag}`;
     const grannKo = await api.post(`${bas2}/actions/upsert_contract_part`).set(auth).send({ contract_id: contractId, code, cap_confirmed: true });
     expect(grannKo.status).toBe(202);
-    const grannJa = await api.post(`${bas2}/approvals/${grannKo.body.approval.id}/approve`).set(auth).send({});
-    expect(grannJa.status).toBe(404); expect(grannJa.body.error).toBe('not_found');
+    await provaMottagetFel(grannbolag, auth, grannKo.body.approval.id, 'not_found');
     const osynlig = await withTenantTransaction(granne.userId, grannbolag, async (c) =>
       (await c.query('SELECT id FROM contract_parts WHERE id = $1', [rad.id])).rows);
     expect(osynlig).toEqual([]); expect(await delrader()).toEqual(nu);

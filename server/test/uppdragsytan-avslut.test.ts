@@ -1,3 +1,4 @@
+import { provaMottagetFel } from './uppdragImportHelper.js';
 // Uppdragsytan S8.1, våg 4: avslutet med öppna leverabler (PRD FR-8).
 //
 // Ett uppdrag ska gå att avsluta trots att något står ogodkänt — men avslutet
@@ -161,8 +162,7 @@ describe('registret', () => {
   });
 
   it('okänt uppdrag ger 404 vid godkännandet — och stänger ingenting', async () => {
-    const svar = await godkann(await begar('avsluta_uppdrag', { project_id: OKANT_ID }));
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(companyId, auth(), await begar('avsluta_uppdrag', { project_id: OKANT_ID }), 'not_found');
     expect(await projektstatus(huvud.projektId)).toBe('active');
   });
 });
@@ -184,7 +184,7 @@ describe('(a)+(b) förslaget och godkännandet', () => {
     const somAgent = await api.post(`${co()}/approvals/${id}/approve`).set(agentAuth()).send({});
     expect(somAgent.status, JSON.stringify(somAgent.body)).toBe(403);
 
-    await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({});
+    expect((await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({ reason: 'Provets nej' })).status).toBe(200);
   });
 
   it('en människas begäran lämnar också projektet öppet och kolumnen NULL', async () => {
@@ -280,16 +280,14 @@ describe('(e) andra avslutet', () => {
     // finns för att hindra — och statusarna går inte ens att flytta längre
     // (0068:s trigger), så en omräkning hade dessutom aldrig kunnat bli sann.
     const koad = await begar('avsluta_uppdrag', { project_id: huvud.projektId });
-    const svar = await godkann(koad);
-    expect(svar.status, JSON.stringify(svar.body)).toBe(409);
-    expect(svar.body.error).toBe('uppdrag_redan_avslutat');
+    await provaMottagetFel(companyId, auth(), koad, 'uppdrag_redan_avslutat');
 
     expect(await frystLista(huvud.avtalId)).toEqual(['L2', 'L4']);
 
-    // Godkännandet rullades tillbaka i sin helhet — posten står kvar obesvarad.
+    // Domänskrivningen rullades tillbaka; mandatet är mottaget.
     const kon = await api.get(`${co()}/approvals?status=pending`).set(auth());
     expect(kon.status).toBe(200);
-    expect((kon.body.approvals as { id: string }[]).map((a) => a.id)).toContain(koad);
+    expect((kon.body.approvals as { id: string }[]).map((a) => a.id)).not.toContain(koad);
   });
 });
 

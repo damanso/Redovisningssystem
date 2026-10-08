@@ -1,3 +1,4 @@
+import { provaMottagetFel } from './uppdragImportHelper.js';
 // Uppdragsytan S1.3, våg 1: orsakens skrivväg och `andra_baseline`.
 //
 // B-7/0079 fryser varje lagrad rad. Orsak krävs före kön (400), samma
@@ -35,9 +36,10 @@ async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<
  * sker vid GODKÄNNANDET. Svaret från godkännandet returneras orört; zod-felen
  * (400) kommer däremot fortfarande på BEGÄRAN, före kön, och prövas med `act`.
  */
-async function koaOchGodkann(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+async function koaOchGodkann(namn: string, kropp: Record<string, unknown>, felkod?: string): Promise<Svar> {
   const begaran = await act(namn, kropp);
   expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  if (felkod) return await provaMottagetFel(companyId, auth(), (begaran.body.approval as { id: string }).id, felkod) as unknown as Svar;
   const svar = await api
     .post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
     .set(auth()).send({});
@@ -337,9 +339,9 @@ describe('(d) in-place-ändring av ett bekräftat tak', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(res.body.error).toBe('validation_error');
 
-    const medOrsak = await koaOchGodkann('upsert_contract_part', { contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01', change_reason: 'nytt avtal' });
-    expect(medOrsak.status).toBe(409);
-    expect(medOrsak.body.error).toBe('version_finns');
+    const medOrsak = await koaOchGodkann('upsert_contract_part', { contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01', change_reason: 'nytt avtal' }, 'version_finns');
+    expect(medOrsak.status).toBe(202);
+    expect(medOrsak.body.result).toBeNull();
     const rader = await delrader(contractId);
     expect(rader).toHaveLength(1);
     expect(rader[0]!.cap_hours).toBe('32.00');
@@ -402,9 +404,9 @@ describe('(f) första versionen har orsak och lagrat innehåll står kvar', () =
     // Samma nyckel får aldrig skrivas över.
     const andrad = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: contractId, code: '1', cap_hours: 12, valid_from: '2026-01-01',
-    });
-    expect(andrad.status, JSON.stringify(andrad.body)).toBe(409);
-    expect(andrad.body.error).toBe('version_finns');
+    }, 'version_finns');
+    expect(andrad.status, JSON.stringify(andrad.body)).toBe(202);
+    expect(andrad.body.result).toBeNull();
 
     const efterAndring = await delrader(contractId);
     expect(efterAndring).toHaveLength(1);

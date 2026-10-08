@@ -153,6 +153,135 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-08 (Story 1.7 — P8-omtag, uttryckliga taxekällor):**
+  Rättat `server/test/uppdragsytan-agandegrans-cache.test.ts`: P8 antog en
+  taxa från kontraktsfixturens text trots att importen inte lagrar någon taxa.
+  Provuppsättningen sätter nu avtalets/projektets verkliga källvärden före
+  frysningen. Fyra egna bolag prövar avtalstaxa, projekttaxa, uttrycklig
+  nolltaxa och saknad taxa genom hela frys–ändra–töm–bygg–jämför. Taxor och
+  första timmens förbrukning kontrolleras före beslutet; alla fall kräver
+  sedan 120 minuter/240000 öre med avtalstaxan 120000. Kontrollvakten kräver
+  samtliga fyra fall. Historik, dokument, negativa kontroller och status- och
+  täckningsjämförelser är kvar. Samma felklass sökt i övriga ändrade prov;
+  deras taxor/kvittobelopp är uttryckligt satta. Dev Agent Record och
+  Change Log uppdaterade. Inget kontrakt ändrat.
+
+  Körd utdata före/efter rättningen, från roten:
+  ```text
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  [npm run typecheck exit 0; ingen diagnostik]
+  > tsc
+  [npm run build exit 0; ingen diagnostik]
+  RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+  [npm test exit 1 före insamling, före och efter rättningen]
+  ```
+  Åtta rena befintliga P1/P8-helperprov exit 0 (inklusive båda
+  dokumentjämförelserna); `git diff --check` exit 0. DB-förloppen **inte körda**
+  i sandlådan; kedjans fulla svit måste belägga dem enligt användarens
+  uttryckliga undantag. Kedjans röda belägg före rättningen: 1 failed/148
+  passed filer, 2 failed/1944 passed tester; första felet var belopp 0 i
+  stället för 110000, följdfelet var omrakning=false. Inget DB-prov kallas grönt.
+
+  Stilvalet för Läget är fortsatt husets panel/log/chip, samma tokens,
+  typografi och synliga fokus; det håller beslutshistoriken samman med
+  Övrigt. Omtaget bygger ingen ny yta. Hermes och produktion är inte rörda;
+  svepsvaret är fortsatt additivt. Tvåfasvägen och svepets återförsök var
+  15:e minut gäller som förut, med Mottaget/loggrad vid affärsfel i väntan
+  på Davids beslut. Migration 0080 och action_approvals_id_company_uk är
+  oförändrade (Story 1.15 kan använda nyckeln). Externa Hermes-prov/synk av
+  åtgärdstabellen och driftkontroller är inte körda här. Inget kallat klart
+  utan körd utdata.
+
+- **2026-10-08 (Story 1.7 — omtag efter kedjans röda kontroller):**
+  Rättat provmekanismen i `server/test/uppdragsytan-beslut.test.ts`: varje
+  CHECK-uttryck prövas ur schemat, även när en rad bryter flera villkor;
+  falltabellen täcker exakt alla nio CHECK. Fler ogiltiga utfall/källtyper
+  prövas. P5d jämför hela avslutshandlingen (`uppdrag_avslutat`) och dess
+  källa (`avslut`), med och utan importerad baseline; båda kontrollvakterna
+  kvar. `uppdragsytan-agandegrans-cache.test.ts` och
+  `beslutsunderlagHelper.ts` jämför dokumentens källidentitet och hela innehåll
+  efter tömning, med senaste/tidigare version i Drive och valv. Endast
+  dokumentens cache-id och lästid undantas; beslutets historiska identiteter
+  jämförs fortfarande exakt. 32 dokumentfältsändringar och 10 ändringar av
+  rot/gruppering fäller den gemensamma jämförelsen.
+
+  Körd utdata (fulla typecheck/build/test från roten före/efter rättningarna):
+  ```text
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  [exit 0; inga diagnostikmeddelanden]
+  > tsc
+  [exit 0; inga diagnostikmeddelanden]
+  RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+  [npm test exit 1 före insamling]
+  ```
+  Rent rött före dokumenträttningen: `AssertionError [ERR_ASSERTION]`,
+  skillnader för nya cache-id:n på alla fyra dokumentplatser, exit 1.
+  Rent grönt efter: `provaDokumentcache: OK`, `provaDokumentinnehall: OK`
+  och de sex P1-proven OK, exit 0. `git diff --check` exit 0.
+  Vitest/DB-förloppen **inte körda i sandlådan**; kedjans npm test belägger
+  dem enligt det uttryckliga undantaget. Kedjans röda P2/P5-fynd är bevarade
+  som utgångspunkt i Dev Agent Record; omtagets DB-utfall kallas inte gröna.
+  Inga kontrakt, migrationer, beroenden eller produktionskod ändrade i omtaget.
+  Befintlig panel/log/chip med Public Sans/IBM Plex Mono och fokusregler
+  behålls för att Beslut ska följa Lägets formspråk. CRM/Hermes orörda;
+  tidigare noterade Hermes-kontroller återstår hos kedjan. Berättelsens status
+  är review efter förnyad DoD-prövning enligt det uttryckliga DB-undantaget. Inget kallat klart utan
+  körd utdata.
+
+- **2026-10-08 (Story 1.7 — beslut med fryst underlag och källorna kvar):**
+  0080 inför append-only `uppdrag_beslut` med sammansatta FK, RLS, nio CHECK
+  och en rad per köpost. `lib/beslutsunderlag.ts` bär hashregeln utan lästid;
+  `services/uppdragBeslut.ts` fryser underlaget före domänskrivningen och skriver
+  beslutsraden efter den, med beslutsfattare och exakt SQL-tid ur köposten.
+  Registrets sex mandatåtgärder har tvåfas/avslagsfunktion. Nej med skäl går
+  genom `avboj_beslutsforslag` och kärnans befintliga rejectApproval.
+  Svepet tar om mottagna beslut först med savepoint per post och additiva
+  `mottagna_beslut`. Läget visar registrerade och mottagna beslut; upprepade
+  svar leder till beslutets plats. Registrerad Övrigt-källa täcker sin rad.
+  Ändrat i services/actions/view, migrationen, P1–P8 och befintliga regressioner
+  i server/test. ARKITEKTUR och MCP_ACTIONS uppdaterade; CRM-kontraktet berörs
+  inte. Panelen följer Övrigts panel/log/chip, Public Sans/IBM Plex Mono och
+  befintliga tokens/fokusregler. Tomt, mottaget och registrerat samt escaping
+  och färskhet verifierade genom panelens rena rendering; ingen ny CSS.
+
+  Slutgrindarnas ordagranna utdata:
+  ```text
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  [exit 0; inga diagnostikmeddelanden]
+  > tsc
+  [exit 0; inga diagnostikmeddelanden]
+  RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+  [npm test exit 1 före insamling]
+  ```
+  Samtliga riktade Vitest-grindar och hela sviten försöktes. Databasprov,
+  inklusive P8:s faktiska UPDATE/ALTER/tömning och migrationskedjan, **inte
+  körda** eftersom globalSetup nekas nätverket till den stående testdatabasen.
+  Berättelsens uttryckliga undantag lämnar dem till kedjans npm test.
+  Rena P1, P3, P4a, P12 och panelrenderingen exit 0; P8:s faktiska rena
+  jämförelse/kategoriregel upptäcker ändrad historia respektive taxekolumn.
+  Under slutkontrollen rättades proven efter REST-kontraktet: approve tar {},
+  reject svarar med result under approval. Inget databasutfall kallas grönt.
+
+  I drift går befintliga väntande poster för de sex mandatåtgärderna genom
+  tvåfasvägen. Äldre rejected utan beslut_hash återspelas aldrig. Hermes är
+  inte rörd; dess befintliga svep var 15:e minut tar om mottagna mandat genom
+  redovisningen. Ett ja som inte kan utföras av affärsskäl (t.ex. version_finns)
+  står kvar som **Mottaget** med driftlogg tills Davids beslut om det beteendet
+  finns. Svepets svar är additivt. 0080 lägger den unika nyckeln
+  `action_approvals_id_company_uk`; Story 1.15:s ersatt_av kan använda den.
+  Ingen migration, tjänstestart eller driftsättning utförd här.
+  **Inget kallat klart utan körd utdata.** Berättelsen lämnas till review enligt
+  det dokumenterade DB-undantaget; kedjan kör typecheck och hela testsviten.
+
 - **2026-10-07 (Story 1.6, omtag — fem High-granskningsfynd rättade):**
   Baselineförslagen beskriver samtliga angivna verksamhetsfält, även beskrivning,
   debiterbar/ej debiterbar, aktiv/inaktiv och sorteringsordning. Precision har

@@ -18,7 +18,7 @@ zod-schema och en känslighetsnivå:
 En action kan dessutom ha det valfria fältet `kravManniska: true`, som betyder att
 bara en människa får köra den: ett agent-anrop avvisas i `executeAction` med
 `403 human_required` innan något skrivs (till skillnad från `sensitive`, som köar
-begäran för godkännande). Ingen action sätter fältet i dag.
+begäran för godkännande). Bland annat uppdragets manuella avgöranden och `avboj_beslutsforslag` har fältet.
 
 Alla actions kör mot kärnans tjänster med samma serverpåtvingade regler: tenant
 härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas.
@@ -1537,7 +1537,12 @@ ingen ny CSS och inga nya komponenter.
   signalerna ur `listaSignaler` och kön ur `listApprovals`. Tröskeln HÄMTAS ur
   `uppdrag_svepvarde` — att utvärdera FR-3:s dubbelvillkor en andra gång hade
   gett två svar på "larmar det?".
-- **Färskhet per källa, aldrig en sidstämpel (FR-35).** De fem direktlästa
+- **Beslut (Story 1.7).** `beslut.registrerade` visar fryst underlag, val/skäl,
+  faktisk handling, källans typ/id, referenser, beslutsfattare och ISO-tid.
+  `beslut.mottagna` visar bara `approval_id`, `atgard`, `utfall` och
+  `beslutad_nar`; mandatet utförs utan ett nytt svar. Panelen Beslut på Läget
+  har en egen `farskhet.beslut`. Ett upprepat svar på Att göra leder dit.
+- **Färskhet per källa, aldrig en sidstämpel (FR-35).** De sex direktlästa
   delarna bär `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
   `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
@@ -1659,3 +1664,25 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   bolaget eller stabila `uppdrag_referens`-pekare, aldrig externa URL:er.
 
 Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
+
+### Beslutsraden och nej med skäl (Story 1.7, B-1)
+
+`avboj_beslutsforslag` är **write + `kravManniska: true`**. Indata är
+`{ approval_id, skal }`: UUID och obligatoriskt skäl på 1–300 tecken. Svaret är
+`{ approval_id, status: 'rejected', verkstalld }`; `verkstalld` visar om nej-raden
+har skrivits. Felen är 400 `validation_error`/`skal_kravs`, 403 `human_required`,
+404 `not_found`, 409 `not_pending` och 409 `inte_mandatforslag`.
+
+`MANDATATGARDER` i `services/uppdragBeslut.ts` är `satt_baseline`,
+`andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad` och
+`avsluta_uppdrag`. Alla har `tvafas`: svaret bevaras före verkställigheten.
+Även `/approvals/:id/reject` kräver `{ reason }` för dessa åtgärder.
+`uppdrag_beslut` sparar förslaget, källornas typ och id, beslutsfattare och tid,
+skäl vid nej och faktisk handling vid ja. Tabellen är append-only; misslyckad
+verkställighet lämnar mandatet mottaget för återförsök utan nytt ja eller nej.
+
+Svepets första steg tar om mottagna beslut innan avtalen läses. `svep_kort`
+har det additiva fältet `mottagna_beslut: { verkstallda: number, kvar: number }`.
+Ett fel isoleras med savepoint; nästa köpost och resten av svepet fortsätter.
+`svep_avstod` är oförändrat. Beslutsfattaren är fortfarande människan på
+köposten; kärnans audit anger `verkstallare: 'svep'`.

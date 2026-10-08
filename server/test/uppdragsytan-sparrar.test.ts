@@ -1,3 +1,4 @@
+import { provaMottagetFel } from './uppdragImportHelper.js';
 // Uppdragsytan: 0068:s spärrar med 0079:s frysning av varje lagrad version.
 //
 // Varför de prövas mot en riktig Postgres och inte mot tjänstelagret: spärrarna
@@ -45,11 +46,12 @@ async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<
  * känsliga): begär (202) och godkänn som människa. Svaret från GODKÄNNANDET
  * returneras orört — det är där triggerns 409 numera dyker upp, eftersom
  * skrivningen sker först vid godkännandet. Faller den rullas transaktionen
- * tillbaka och köposten står kvar som `pending`.
+ * tillbaka och mandatet står kvar som mottaget (`approved`).
  */
-async function koaOchGodkann(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+async function koaOchGodkann(namn: string, kropp: Record<string, unknown>, felkod?: string): Promise<Svar> {
   const begaran = await act(namn, kropp);
   expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  if (felkod) return await provaMottagetFel(companyId, auth(), (begaran.body.approval as { id: string }).id, felkod) as unknown as Svar;
   const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
   return svar as unknown as Svar;
 }
@@ -225,8 +227,8 @@ describe('också en OBEKRÄFTAD lagrad version är fryst', () => {
     const skapad = await okKoad('upsert_contract_part', { contract_id: avtal, code: 'U1', name: 'Fas U1', cap_hours: 10, valid_from: '2026-01-01', change_reason: 'avtal' });
     const partId = del(skapad, 'U1').part_id;
     const fore = await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [partId])).rows[0]);
-    const rattad = await koaOchGodkann('upsert_contract_part', { contract_id: avtal, code: 'U1', cap_hours: 12, hourly_rate_ore: 95_000, valid_from: '2026-01-01', change_reason: 'rättat avtal' });
-    expect(rattad.status).toBe(409); expect(rattad.body.error).toBe('version_finns');
+    const rattad = await koaOchGodkann('upsert_contract_part', { contract_id: avtal, code: 'U1', cap_hours: 12, hourly_rate_ore: 95_000, valid_from: '2026-01-01', change_reason: 'rättat avtal' }, 'version_finns');
+    expect(rattad.status).toBe(202); expect(rattad.body.result).toBeNull();
     expect(del(await ok('get_contract_usage', { contract_id: avtal }), 'U1').part_id).toBe(partId);
     expect(await withAdmin(async (c) => (await c.query('SELECT * FROM contract_parts WHERE id = $1', [partId])).rows[0])).toEqual(fore);
   });
@@ -431,9 +433,9 @@ describe('vagrar_skrivning_pa_avslutat', () => {
   it('contract_parts: en ny avtalsdel på ett avslutat uppdrag fälls', async () => {
     const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: stangtAvtal, code: 'S2', name: 'Fas S2', valid_from: '2026-02-01',
-    });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
+    }, 'P0001');
+    expect(res.status).toBe(202);
+    expect(res.body.result).toBeNull();
     await expect(laggDel(stangtAvtal, { code: 'S3' })).rejects.toThrow(/uppdraget är avslutat/);
     // Samma sats mot det öppna uppdraget går igenom.
     await expect(laggDel(oppetAvtal, { code: 'O2' })).resolves.toBeTruthy();
@@ -556,8 +558,8 @@ describe('vad 0068 stängde, och vad S1.2/S1.3 öppnade (pinnat, inte glömt)', 
     const res = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: utkast, code: 'K1', name: 'Fas K1', cap_hours: 32, cap_confirmed: true,
       valid_from: '2026-01-01',
-    });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe('rule_violation');
+    }, 'P0001');
+    expect(res.status).toBe(202);
+    expect(res.body.result).toBeNull();
   });
 });

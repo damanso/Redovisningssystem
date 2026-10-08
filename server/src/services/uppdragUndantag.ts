@@ -10,6 +10,8 @@ import { KALLA_REDOVISNING, last, olast, saknas, type Lasvarde } from '../lib/la
 import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 
+export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
+
 export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande'] as const;
 export type Postslag = (typeof POSTSLAG)[number];
 
@@ -288,7 +290,7 @@ export function beskrivBaselineandring(
     varfor_mandat: renBekraftelse
       ? 'Bekräftelsen fastställer det avtalade taket och kräver ditt godkännande, oavsett belopp.'
       : 'Ändringen flyttar det avtalade. Den gäller först när du godkänt den, oavsett belopp.',
-    forslag, skal, kallor: kallor(referenser, lastNar), ja_registrerar: jaRegistrerar };
+    forslag, skal, kallor: kallor(referenser, lastNar), ja_registrerar: `${jaRegistrerar} ${BESLUTSRADEN}` };
 }
 
 interface Kostnadsunderlag extends Kounderlag {
@@ -309,7 +311,7 @@ export function beskrivKostnadsbindning(u: Kostnadsunderlag, bas: string, lastNa
     skal: cacheKod && cacheTid ? last(`Svepet kopplade kvittot till ${cacheKod} genom handlingens titel.`, cacheKalla, cacheTid) : saknas(KALLA_REDOVISNING, lastNar),
     kallor: kallor([{ typ: 'yta', etikett: u.sammanfattning ?? 'Kvitton', sokvag: `${bas}/receipts` }, ...u.referenser ?? []],
       u.referenser?.length && cacheTid ? cacheTid : lastNar, u.referenser?.length && cacheTid ? cacheKalla : KALLA_REDOVISNING),
-    ja_registrerar: `Kvittot binds till ${u.del.code}. Beloppet läses ur redovisningen och kopieras inte.` };
+    ja_registrerar: `Kvittot binds till ${u.del.code}. Beloppet läses ur redovisningen och kopieras inte. ${BESLUTSRADEN}` };
 }
 
 /** Ren: avslutets öppna leverabler kommer ur tjänstens läsning, per avtal. */
@@ -322,7 +324,7 @@ export function beskrivAvslut(
     forslag: last({ fran: null, till: `Uppdraget avslutas. ${u.oppnaLeverabler.length > 0
       ? u.oppnaLeverabler.map((l) => `${l.contract_name}: ${l.code}`).join(' · ') : 'Alla leverabler är godkända.'}`, belopp_ore: null }, KALLA_REDOVISNING, lastNar),
     skal: saknas(KALLA_REDOVISNING, lastNar), kallor: kallor([yta(bas, u.uppdrag, 'laget')], lastNar),
-    ja_registrerar: 'Uppdraget stängs. Listan över öppna leverabler fryses, och historiken blir skrivskyddad.' };
+    ja_registrerar: `Uppdraget stängs. Listan över öppna leverabler fryses, och historiken blir skrivskyddad. ${BESLUTSRADEN}` };
 }
 interface Signalsunderlag {
   signal: { id: string; fras: string; klausul: string | null; tand_av: string | null; tand_nar: Date };
@@ -357,6 +359,7 @@ export async function beraknaTackning(
   const saknade = new Map(contractIds.map((id) => [id, {
     godkannandekon: [] as string[], ovrigt: [] as string[], kostnader: [] as string[], baselineforslag: [] as string[],
   }]));
+  // Övrigt täcks av väntande förslag, mottaget mandat eller registrerat beslut.
   const ovrigt = await client.query<{ contract_id: string; id: string }>(
     `SELECT a.contract_id, a.id::text AS id FROM uppdrag_anteckning a
       WHERE a.company_id=$1 AND a.contract_id=ANY($2::uuid[]) AND a.utanfor_avtal
@@ -364,6 +367,8 @@ export async function beraknaTackning(
           WHERE q.company_id=a.company_id AND q.action=ANY($3::text[])
             AND q.input->'kalla'->>'typ'='anteckning' AND q.input->'kalla'->>'id'=a.id::text
             AND (q.status='pending' OR q.beslut_hash IS NOT NULL))
+        AND NOT EXISTS (SELECT 1 FROM uppdrag_beslut b
+          WHERE b.company_id=a.company_id AND b.kalla_typ='anteckning' AND b.kalla_id=a.id)
       ORDER BY a.contract_id,a.created_at,a.id`,
     [companyId, contractIds, UNDANTAG_ATGARDER],
   );
@@ -450,7 +455,7 @@ async function referens(client: PoolClient, companyId: string, id: unknown): Pro
   );
   return r.rows.map((ref) => ({ ...ref, typ: 'referens' }));
 }
-async function koburnaPoster(client: PoolClient, companyId: string, koposter: Approval[], lastNar: string) {
+export async function koburnaPoster(client: PoolClient, companyId: string, koposter: Approval[], lastNar: string) {
   const per = await uppslag(client, companyId, koposter);
   const poster: Undantagspost[] = [];
   const hoppade: Undantag['hoppade'] = [];

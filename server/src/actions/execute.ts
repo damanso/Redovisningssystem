@@ -10,6 +10,7 @@ import {
   avvisaGodkannande,
   beslutHash,
   APPROVAL_COLUMNS,
+  MOTTAGET_EJ_VERKSTALLT,
   type Approval,
 } from '../services/approvals.js';
 import { checkApprovalDependency, type ApprovalDependency } from './dependencies.js';
@@ -228,7 +229,7 @@ export async function rejectApproval(params: {
  */
 export async function verkstallBeslut(
   client: PoolClient, companyId: string, approvalId: string,
-  verkstallare: 'direkt' | 'aterforsok' = 'direkt',
+  verkstallare: 'direkt' | 'aterforsok' | 'svep' = 'direkt',
 ): Promise<{ approval: Approval; result: unknown; verkstalld: boolean }> {
   const r = await client.query<Approval & { result_saknas: boolean }>(
     `SELECT ${APPROVAL_COLUMNS}, result IS NULL AS result_saknas FROM action_approvals
@@ -279,12 +280,11 @@ export async function verkstallBeslut(
 
 /** Återtar mottagna mandat utan ny kvittens; ett fel får inte ta nästa post med sig. */
 export async function verkstallMottagnaBeslut(
-  client: PoolClient, companyId: string,
+  client: PoolClient, companyId: string, verkstallare: 'aterforsok' | 'svep' = 'aterforsok',
 ): Promise<{ verkstallda: string[]; kvar: string[] }> {
   const r = await client.query<{ id: string }>(
     `SELECT id FROM action_approvals
-      WHERE company_id = $1 AND beslut_hash IS NOT NULL AND decided_by IS NOT NULL
-        AND (status = 'approved' OR (status = 'rejected' AND result IS NULL))
+      WHERE company_id = $1 AND ${MOTTAGET_EJ_VERKSTALLT}
       ORDER BY decided_at, id`,
     [companyId],
   );
@@ -294,7 +294,7 @@ export async function verkstallMottagnaBeslut(
     // Ett databasfel förgiftar annars hela transaktionen (25P02, lärdom 2).
     await client.query('SAVEPOINT verkstall_beslut');
     try {
-      const v = await verkstallBeslut(client, companyId, id, 'aterforsok');
+      const v = await verkstallBeslut(client, companyId, id, verkstallare);
       await client.query('RELEASE SAVEPOINT verkstall_beslut');
       if (v.verkstalld) verkstallda.push(id);
     } catch (err) {

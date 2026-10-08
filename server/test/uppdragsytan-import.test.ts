@@ -21,7 +21,7 @@ import { IMPORTORSAK } from '../src/services/uppdragImport.js';
 import { explainApproval } from '../src/services/approvalSummary.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { importeraOchGodkann, provaMottagetFel } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SIGNERAT = '2026-09-03';
@@ -102,9 +102,10 @@ async function ok(namn: string, kropp: Record<string, unknown>): Promise<Record<
 }
 
 /** Känslig action (S0.1): begär (202) och godkänn som människa. */
-async function koaOchGodkann(namn: string, kropp: Record<string, unknown>): Promise<Svar> {
+async function koaOchGodkann(namn: string, kropp: Record<string, unknown>, felkod?: string): Promise<Svar> {
   const begaran = await act(namn, kropp);
   expect(begaran.status, `${namn}: ${JSON.stringify(begaran.body)}`).toBe(202);
+  if (felkod) return await provaMottagetFel(companyId, auth(), (begaran.body.approval as { id: string }).id, felkod) as unknown as Svar;
   const svar = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
   return svar as unknown as Svar;
 }
@@ -593,9 +594,7 @@ describe('baselineförslaget och godkännandet', () => {
     expect(kort.why).not.toContain('baseline v1');
     expect(kort.why).toContain('Tidigare beslutade egna datum bevaras för L1, L2');
     expect(kort.source!.href).toBe(`/app/c/${companyId}/projects/${projectId}/kontraktet`);
-    const godkant = await api.post(`${co()}/approvals/${forslag.approval_id}/approve`).set(auth()).send({});
-    expect(godkant.status, JSON.stringify(godkant.body)).toBe(409);
-    expect(godkant.body.error).toBe('version_finns');
+    await provaMottagetFel(companyId, auth(), forslag.approval_id as string, 'version_finns');
     expect(await delrader(contractId)).toEqual(fore);
     const oforandrat = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
       { contract_id: contractId, kontraktstext }, `/app/c/${companyId}`));
@@ -746,9 +745,9 @@ describe('baselineförslaget och godkännandet', () => {
   it('satt_baseline vägrar utkast också när åtgärden begärts direkt', async () => {
     const contractId = (await ok('skapa_uppdrag', { project_id: await nyttUppdrag('Direkt baselineutkast'), name: 'Avtal', signed_date: SIGNERAT })).contract_id as string;
     const fore = await delrader(contractId);
-    const svar = await koaOchGodkann('satt_baseline', { contract_id: contractId, kontraktstext: TABELLKONTRAKT.replace('kontrakt_tillstand: fryst', 'kontrakt_tillstand: utkast') });
-    expect(svar.status).toBe(400);
-    expect(svar.body.error).toBe('kontrakt_not_frozen');
+    const svar = await koaOchGodkann('satt_baseline', { contract_id: contractId, kontraktstext: TABELLKONTRAKT.replace('kontrakt_tillstand: fryst', 'kontrakt_tillstand: utkast') }, 'kontrakt_not_frozen');
+    expect(svar.status).toBe(202);
+    expect(svar.body.result).toBeNull();
     expect(await delrader(contractId)).toEqual(fore);
     const register = await ok('las_leverabelregister', { contract_id: contractId });
     expect(register).toEqual([]);
@@ -799,9 +798,9 @@ describe('0069: signeringen är frysningen', () => {
     const falld = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: utkast.id, code: 'K1', name: 'Fas K1', cap_hours: 32,
       cap_confirmed: true, valid_from: '2026-01-01',
-    });
-    expect(falld.status).toBe(409);
-    expect(falld.body.error).toBe('rule_violation');
+    }, 'P0001');
+    expect(falld.status).toBe(202);
+    expect(falld.body.result).toBeNull();
 
     // Det signerade avtalet: samma anrop går igenom, utan en enda handpåläggning.
     const signerat = await ok('skapa_uppdrag', {

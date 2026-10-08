@@ -9,6 +9,7 @@
 // upsertSvepvarden med sina härledda värden. Skrivningen här uppe är den enda
 // vägen in i tabellen — ingen härledning, inga externa anrop (ADR-4:
 // redovisningen ringer aldrig ut).
+// Mottagna beslut verkställs först genom kärnans injicerade steg (B-2, Story 1.7).
 // Täckningssteget (B-3, Story 1.6) läser bara egna tabeller och går därför
 // över alla öppna avtal, även dem Hermes inte lämnat observationer för.
 import type { PoolClient } from 'pg';
@@ -271,6 +272,7 @@ export type Svepsvar =
     /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
     hoppade_kopior: Array<Hoppat & { referens_id: string }>;
     tackning: SvepTackning[];
+    mottagna_beslut: { verkstallda: number; kvar: number };
     arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[] };
   };
 
@@ -773,8 +775,11 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  */
+export type MottagnaBeslutssteg = (client: PoolClient) => Promise<{ verkstallda: string[]; kvar: string[] }>;
+
+/** Mottagna beslut först, efter låset och före varje läsning av avtalen. */
 export async function korUppdragssvep(
-  client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata,
+  client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata, verkstallMottagna?: MottagnaBeslutssteg,
 ): Promise<Svepsvar> {
   const data = SvepIndataSchema.parse(indata);
 
@@ -786,6 +791,9 @@ export async function korUppdragssvep(
     [companyId],
   );
   if (las.rows[0]?.tog !== true) return { lage: 'svep_avstod' };
+
+  // Kärnan isolerar varje köpost med savepoint. Resten läser mandatets utfall.
+  const mottagna = verkstallMottagna ? await verkstallMottagna(client) : { verkstallda: [], kvar: [] };
 
   const alla = await client.query<Uppdragsrad>(
     `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus,
@@ -872,6 +880,7 @@ export async function korUppdragssvep(
 
   return {
     lage: 'svep_kort',
+    mottagna_beslut: { verkstallda: mottagna.verkstallda.length, kvar: mottagna.kvar.length },
     uppdrag,
     hoppade,
     hoppade_kopior: hoppadeKopior,

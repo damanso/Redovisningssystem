@@ -38,6 +38,7 @@ import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdr
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
 import {
@@ -586,7 +587,7 @@ viewRouter.get('/account', page(async (req, res) => {
   res.type('html').send(layout({ title: 'Konto', body: accountBody(profile, notice) }).value);
 }));
 
-function accountRedirect(res: import('express').Response, okMsg: string, run: () => Promise<unknown>): Promise<void> {
+function accountRedirect(res: import('express').Response, okMsg: string, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   return run().then(() => { res.redirect(`/app/account?ok=${encodeURIComponent(okMsg)}`); }, (err) => {
     if (err instanceof BadRequestError || err instanceof ConflictError) {
       res.redirect(`/app/account?ok=${encodeURIComponent(err.message)}`); return;
@@ -1344,7 +1345,7 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
   res.type('html').send(layout({ title: 'Årsredovisning', companyId, companyName: name, active: 'annual', body }).value);
 }));
 
-function bokslutRedirect(companyId: string, fy: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+function bokslutRedirect(companyId: string, fy: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   return run().then(() => { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); }, (err) => {
     if (err instanceof ConflictError || err instanceof BadRequestError) { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); return; }
     throw err;
@@ -4175,6 +4176,41 @@ function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Antec
   </section>`;
 }
 
+/** Frysta beslut och mottagna mandat, i samma läsbara logg som Övrigt. */
+function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const etiketter: Record<string, string> = { kvitto: 'Kvittot', scopesignal: 'Scopesignalen',
+    baselineforslag: 'Kontraktets baselineförslag', avslut: 'Avslutsförslaget', koforslag: 'Förslaget i kön', anteckning: 'Övrigt-raden' };
+  const tomt = l.beslut.registrerade.length === 0 && l.beslut.mottagna.length === 0;
+  return html`<section class="panel" id="beslut" aria-labelledby="kort-beslut" style="margin-top:16px">
+    <div class="panel__head"><h2 id="kort-beslut">Beslut</h2></div>
+    <div class="panel__body" style="padding:0">
+      ${tomt ? html`<p style="margin:0;padding:12px 16px;font-size:14px">Inga beslut är registrerade i uppdraget.
+        Förslag som väntar på ditt svar står i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>`
+      : html`<div class="log" style="border:0;border-radius:0;box-shadow:none">
+          ${l.beslut.mottagna.map((r) => html`<div class="log-row" id="beslut-${r.approval_id}" style="align-items:start">
+            <div class="log-when">${r.beslutad_nar.replace('T', ' ').slice(0, 16)}</div>
+            <div><div class="log-what">${chip('Mottaget', 'info', '…')} ${getAction(r.atgard)?.title ?? r.atgard}</div>
+              <p style="margin:6px 0 0;font-size:14px">${r.utfall === 'ja'
+                ? 'Ditt ja är mottaget och utförs utan att du behöver svara igen.'
+                : 'Ditt nej är mottaget och utförs utan att du behöver svara igen.'}</p></div>
+          </div>`)}
+          ${l.beslut.registrerade.map((r) => html`<div class="log-row" id="beslut-${r.approval_id}" style="align-items:start">
+            <div class="log-when">${r.beslutad_nar.replace('T', ' ').slice(0, 16)}</div>
+            <div><div class="log-what">${r.utfall === 'ja' ? chip('Ja', 'ok', '✓') : chip('Nej', 'muted', '✕')}
+                ${getAction(r.atgard)?.title ?? r.atgard} <span class="muted" style="font-size:12.5px">${r.beslutad_av_namn}</span></div>
+              <p style="margin:6px 0 0;font-size:14px">${typeof r.underlag.forslagstext === 'string'
+                ? r.underlag.forslagstext : 'Förslaget saknas i underlaget'}</p>
+              ${r.utfall === 'nej' ? html`<p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${r.skal}</p>`
+                : html`<p style="margin:6px 0 0;font-size:14px">${beskrivHandling(r.handling)}</p>`}
+              <p style="margin:6px 0 0;font-size:13px">Källa: ${etiketter[r.kalla.typ] ?? 'Källan'}${r.referenser.map((ref) => html` · ${ref.titel ?? ref.extern_id} (${ref.sort})`)}</p>
+            </div>
+          </div>`)}
+        </div>`}
+      ${farskhetsrad([direktFarskhet(l.farskhet.beslut, idag)])}
+    </div>
+  </section>`;
+}
+
 function lagessida(
   req: Request, companyId: string, l: Uppdragslage, forslag: Statusforslagskort[],
   anteckningar: readonly Anteckningsrad[], idag: string,
@@ -4199,7 +4235,8 @@ function lagessida(
       ${kortSignaler(companyId, l, idag)}
       ${kortKoposter(companyId, l, idag)}
     </div>
-    ${ovrigtpanelen(companyId, l, anteckningar)}`;
+    ${ovrigtpanelen(companyId, l, anteckningar)}
+    ${beslutspanelen(companyId, l, idag)}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {
@@ -9372,7 +9409,7 @@ function assertSameOrigin(req: Request): void {
 // i stället för en naken felsida — förslaget ligger kvar och kan avvisas.
 // NotFoundError (t.ex. en icke-medlem, RLS döljer raden) sväljs INTE — det ska
 // förbli ett 404 så åtkomstgränsen syns.
-async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   try {
     await run();
   } catch (err) {
@@ -9385,6 +9422,8 @@ async function decideApproval(redirectTo: string, res: import('express').Respons
       return;
     }
     if (!(err instanceof ConflictError)) throw err;
+    res.redirect((await redanAvgjord?.()) ?? redirectTo);
+    return;
   }
   res.redirect(redirectTo);
 }
@@ -9395,7 +9434,8 @@ viewRouter.post('/c/:companyId/approvals/:id/approve', page(async (req, res) => 
   const companyId = parseCompanyId(req.params.companyId);
   const approvalId = parseApprovalId(req.params.id);
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
-    approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId }));
+    approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId }),
+    () => withTenantTransaction(userId, companyId, (c) => beslutsplats(c, companyId, approvalId)));
 }));
 
 viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
@@ -9409,7 +9449,8 @@ viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
     return;
   }
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
-    rejectApproval({ companyId, approverId: userId, approverActor: 'human', approvalId, skal: skal.data }));
+    rejectApproval({ companyId, approverId: userId, approverActor: 'human', approvalId, skal: skal.data }),
+    () => withTenantTransaction(userId, companyId, (c) => beslutsplats(c, companyId, approvalId)));
 }));
 
 // Team & roller. Alla medlemmar ser rostern; ägare/admin ser hanteringskontroller.
@@ -9461,7 +9502,7 @@ viewRouter.get('/c/:companyId/team', page(async (req, res) => {
 }));
 
 const TeamActionSchema = z.object({ user_id: UuidSchema, role: z.enum(['admin', 'member', 'contractor']).optional() });
-function teamRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+function teamRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   // Konflikter (sista ägaren, redan medlem) är begripliga tillstånd → tillbaka till
   // teamsidan snarare än felsida. Behörighetsfel (403/404) bubblar upp.
   return run().then(() => { res.redirect(`/app/c/${companyId}/team`); }, (err) => {
@@ -9632,7 +9673,7 @@ viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client
     }`;
 }));
 
-function importRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+function importRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   return run().then(() => { res.redirect(`/app/c/${companyId}/import`); }, (err) => {
     if (err instanceof BadRequestError || err instanceof ConflictError) { res.redirect(`/app/c/${companyId}/import`); return; }
     throw err;

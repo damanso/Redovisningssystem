@@ -52,10 +52,15 @@ async function koa(id: string, namn: string, kropp: Record<string, unknown>) {
   expect(res.status, JSON.stringify(res.body)).toBe(202);
   return res.body.approval.id as string;
 }
-async function besluta(id: string, approvalId: string, beslut: 'approve' | 'reject') {
-  const res = await api.post(`${co(id)}/approvals/${approvalId}/${beslut}`).set(auth()).send({});
+async function besluta(id: string, approvalId: string, beslut: 'approve' | 'reject', reason?: string) {
+  const res = await api.post(`${co(id)}/approvals/${approvalId}/${beslut}`).set(auth()).send(reason ? { reason } : {});
   expect(res.status, JSON.stringify(res.body)).toBe(200);
   return res.body;
+}
+async function aldreAvslag(id: string, approvalId: string) {
+  await withAdmin((db) => db.query(
+    `UPDATE action_approvals SET status='rejected', decided_by=$3, decided_at=now() WHERE company_id=$1 AND id=$2`,
+    [id, approvalId, user.userId]));
 }
 async function undantag(id: string, headers = auth()): Promise<Undantag> {
   return await ok(id, 'las_undantag', {}, headers) as unknown as Undantag;
@@ -206,12 +211,14 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     const ja = await koa(bolag.poster!, 'andra_baseline', andring(a.contractId, 'JA'));
     await besluta(bolag.poster!, ja, 'approve');
     const nej = await koa(bolag.poster!, 'andra_baseline', andring(a.contractId, 'NEJ'));
-    await besluta(bolag.poster!, nej, 'reject');
-    await mottaget(bolag.poster!, andring(a.contractId, 'MOTTAGET'));
+    await aldreAvslag(bolag.poster!, nej);
+    const mottagetId = await mottaget(bolag.poster!, andring(a.contractId, 'MOTTAGET'));
     expect((await undantag(bolag.poster!)).poster).toHaveLength(7);
     const fore = await antal(bolag.poster!);
     for (let i = 0; i < 3; i++) await undantag(bolag.poster!);
     expect(await antal(bolag.poster!)).toEqual(fore);
+    expect((await svep(bolag.poster!)).mottagna_beslut).toEqual({ verkstallda: 1, kvar: 0 });
+    expect(await withAdmin(async (db) => (await db.query('SELECT utfall FROM uppdrag_beslut WHERE approval_id=$1', [mottagetId])).rows)).toEqual([{ utfall: 'ja' }]);
   });
   it('P6: varje slag beskriver mandatet och saknat blir aldrig utfyllnad', async () => {
     const svar = await undantag(bolag.poster!);
@@ -374,7 +381,7 @@ it('P10/P11: alla öppna avtal, två skrivomfång och tretton täckningsfall', a
   await kontroll(u.contractId, 'kostnader', 'fel', [receiptId]);
   const bindning = await koa(id, 'binda_kostnad', { receipt_id: receiptId, contract_part_id: await del(id, u.contractId) });
   await kontroll(u.contractId, 'kostnader', 'last');
-  await besluta(id, bindning, 'reject');
+  await aldreAvslag(id, bindning);
   await kontroll(u.contractId, 'kostnader', 'last');
   await kontroll(utanBaseline.contractId, 'baselineforslag', 'fel', [utanBaseline.contractId]);
   await ok(id, 'importera_leveranskontrakt', { contract_id: utanBaseline.contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
@@ -385,8 +392,10 @@ it('P10/P11: alla öppna avtal, två skrivomfång och tretton täckningsfall', a
   const input = { ...andring(u.contractId, 'OVRIGT'), kalla: { typ: 'anteckning', id: rad } };
   const ko = await plantera(id, 'andra_baseline', input);
   await kontroll(u.contractId, 'ovrigt', 'last');
-  await besluta(id, ko, 'reject'); await kontroll(u.contractId, 'ovrigt', 'fel', [rad]);
-  await mottaget(id, input); await kontroll(u.contractId, 'ovrigt', 'last');
+  await aldreAvslag(id, ko); await kontroll(u.contractId, 'ovrigt', 'fel', [rad]);
+  const mottagetId = await mottaget(id, input); await kontroll(u.contractId, 'ovrigt', 'last');
+  expect((await svep(id)).mottagna_beslut).toEqual({ verkstallda: 0, kvar: 1 });
+  expect(await withAdmin(async (db) => (await db.query('SELECT status,result FROM action_approvals WHERE id=$1', [mottagetId])).rows)).toEqual([{ status: 'approved', result: null }]);
   await ok(id, 'skriv_uppdragsanteckning', { contract_id: u.contractId, text: 'En vanlig anteckning', utanfor_avtal: false });
   await kontroll(u.contractId, 'ovrigt', 'last');
 });
@@ -572,7 +581,7 @@ it('AI-Review: utan valid_from visas och skrivs signed_date, explicit datum vinn
       if (datum === undefined) {
         expect(p.ja_registrerar).toContain('datum saknas');
         expect(p.forslag.varde!.till).not.toMatch(/från \d{4}-\d{2}-\d{2}/);
-        await besluta(id, q, 'reject');
+        await besluta(id, q, 'reject', 'Datum saknas');
         expect(await lagrade()).toEqual([]);
         continue;
       }

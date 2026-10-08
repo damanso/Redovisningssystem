@@ -246,7 +246,7 @@ describe('(a) de fem innehållsdelarna', () => {
 
   it('färskheten står per innehållsdel — och tröskeln bär svepets, inte sidans', async () => {
     const l = await lage(projektId);
-    for (const del of ['forbrukning', 'leverabler', 'bedomning', 'signaler', 'koposter'] as const) {
+    for (const del of ['forbrukning', 'leverabler', 'bedomning', 'signaler', 'koposter', 'beslut'] as const) {
       expect(l.farskhet[del].kalla, del).toBe('redovisning');
       expect(new Date(l.farskhet[del].last_nar).getTime(), del).toBeGreaterThan(0);
     }
@@ -395,8 +395,9 @@ describe('(e) Läget som yta', () => {
   it('fem kort med var sin farskhetsrad, och tröskeln daterad av svepet', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${projektId}/laget`);
     for (const id of KORTEN) expect(kort(html, id)).toContain('class="farskhet"');
-    // Exakt fem `.farskhet`-rader: en per kort, aldrig en sidstämpel.
-    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(5);
+    // En per innehållsdel: fem kort och panelen Beslut, aldrig en sidstämpel.
+    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(6);
+    expect(html.match(/<section class="panel" id="beslut"[\s\S]*?<\/section>/)?.[0].match(/class="farskhet"/g)).toHaveLength(1);
 
     const ram = kort(html, 'kort-ram');
     expect(ram).toContain('läst ur redovisningen');
