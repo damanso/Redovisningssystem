@@ -106,6 +106,28 @@ export interface UpdateTimeEntryInput {
   status?: TimeEntryStatus;
   adjustment_reason?: string;
   contract_part_id?: string;
+  /**
+   * Story 10.5: de fyra värden anroparen LÄSTE på posten. Skiljer sig något
+   * från den låsta raden blir svaret 409 time_entry_changed, och ingenting
+   * skrivs. Utelämnat = ingen jämförelse (dagens beteende).
+   */
+  expected?: ForvantadTidpost;
+}
+
+/**
+ * Fälten som jämförs mot expected — exakt de fält en komplettering skriver
+ * (Story 10.2). Fler fält hade inte gett mer skydd åt den som skickar dem,
+ * färre hade lämnat ett skrivet fält ojämfört.
+ */
+export const JAMFORDA_FALT = ['minutes', 'billable_minutes', 'adjustment_reason', 'status'] as const;
+export type JamfordFalt = (typeof JAMFORDA_FALT)[number];
+
+/** Postens värden så som anroparen läste dem. null är ett eget värde. */
+export interface ForvantadTidpost {
+  minutes: number;
+  billable_minutes: number;
+  adjustment_reason: string | null;
+  status: TimeEntryStatus;
 }
 
 export interface ListTimeEntriesFilter {
@@ -425,6 +447,15 @@ interface TimeEntryRow {
 }
 
 /**
+ * Vilka av de jämförda fälten som skiljer sig mellan den låsta raden och det
+ * anroparen läste, i listans ordning. Tom lista = posten står som den lästes.
+ * Ren funktion: !== på tal, text och null — null är lika bara med null.
+ */
+export function avvikandeFalt(rad: ForvantadTidpost, expected: ForvantadTidpost): JamfordFalt[] {
+  return JAMFORDA_FALT.filter((falt) => rad[falt] !== expected[falt]);
+}
+
+/**
  * Ändrar en tidpost som INTE är fakturerad: siffrorna, texten och statusen.
  *
  * Två regler bär hela funktionen:
@@ -451,6 +482,20 @@ export async function updateTimeEntry(
       'time_entry_locked',
       'posten ligger på en faktura och är låst — en fakturerad tidpost rättas med kreditering',
     );
+  }
+
+  // Story 10.5: en anropare som skickar det den LÄSTE får skriva bara om posten
+  // fortfarande står så. Jämförelsen görs på den låsta raden, efter låset och
+  // före varje annan regel — en ändrad post rapporteras alltid som ändrad, och
+  // ingenting skrivs (transaktionen i executeAction rullas tillbaka).
+  if (input.expected !== undefined) {
+    const avviker = avvikandeFalt(rad, input.expected);
+    if (avviker.length > 0) {
+      throw new ConflictError(
+        'time_entry_changed',
+        `tidposten har ändrats sedan den lästes (${avviker.join(', ')}) — läs om den och försök igen`,
+      );
+    }
   }
 
   const nyStatus = input.status ?? rad.status;

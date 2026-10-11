@@ -295,6 +295,24 @@ kvittot. `overlaps_manual` räknar de förslag där det redan fanns manuellt
 registrerad tid samma dag på samma uppdrag; kön frågar då "redan registrerad?"
 i stället för att lägga en tyst andra rad.
 
+### Komplettering av ett obeslutat tidsförslag
+
+Hermes komplettering använder `update_time_entry` (Story 10.2) med det
+valfria `expected` (Story 10.5): postens listade
+`{minutes, billable_minutes, adjustment_reason, status}`. Alla fyra nycklar
+krävs och inga andra får finnas (400 `validation_error`). Minuterna är heltal
+0–1440, skälet högst 300 tecken eller `null`, och statusen en giltig tidstatus.
+`null` jämförs som ett eget värde.
+
+Tjänsten låser raden med `SELECT … FOR UPDATE` och prövar först fakturerad
+tid (409 `time_entry_locked`), sedan de fyra värdena (409
+`time_entry_changed` vid skillnad), sedan statusbytet och övriga regler.
+Vid `time_entry_changed` skrivs varken posten eller någon auditrad. REST och
+MCP får `{ "error": "time_entry_changed" }`; det svenska meddelandet stannar
+på servern. Utan `expected` är beteendet oförändrat. `work_date`, `duration`,
+`description` och `contract_part_id` jämförs inte. Vyn skickar inte fältet.
+Batchens `propose_time_entries` ändras inte: en dubblett där skriver ingenting.
+
 ## Gallring
 
 `set_crm_retention` / `get_crm_retention` sätter och läser perioden i månader;

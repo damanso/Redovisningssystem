@@ -403,6 +403,19 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
   `billable_minutes` skickas lämnas de debiterbara orörda, och skiljer de sig
   därefter måste posten uttryckligen sättas till `justerad` med skäl (400
   `adjustment_required`).
+  - **Skydd vid komplettering:** valfritt `expected` bär postens fyra lästa
+    värden: `{minutes, billable_minutes, adjustment_reason, status}`. Alla fyra
+    krävs och inga andra nycklar får finnas (400 `validation_error`). Minuterna
+    är heltal 0–1440, skälet text högst 300 tecken eller `null`, och statusen en
+    av statusarna ovan. `adjustment_reason: null` är ett eget värde.
+    Ordningen är först 409 `time_entry_locked` för fakturerad tid, sedan 409
+    `time_entry_changed` om något värde skiljer sig från raden låst med
+    `SELECT … FOR UPDATE`, sedan `invalid_status_transition` och övriga regler.
+    Vid `time_entry_changed` skrivs ingenting, inte heller någon auditrad.
+    Utan `expected` görs ingen jämförelse. `work_date`, `duration`,
+    `description` och `contract_part_id` jämförs inte. Vyn skickar aldrig
+    fältet; Hermes komplettering av obeslutade tidsförslag skickar postens
+    listade värden (Story 10.2).
 - `list_time_entries` (read) — filter `project_id`, `status`, `from`, `to`,
   `actor` (aktören som utförde arbetet); returnerar bl.a. `minutes`,
   `billable_minutes`, `status`, `source`, `source_ref`, `invoice_id`,
