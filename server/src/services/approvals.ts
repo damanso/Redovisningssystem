@@ -1,11 +1,16 @@
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
+import { sorteradJson } from '../lib/beslutsunderlag.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from './auditService.js';
 
 export const APPROVAL_COLUMNS = `id, action, input, status, requested_by, requested_actor,
   decided_by, decided_at, result, error, created_at, beslut_hash, beslut_skal`;
+
+/** Mottaget mandat som kärnan ännu inte verkställt (B-2); delas av återförsök och Läget. */
+export const MOTTAGET_EJ_VERKSTALLT = `beslut_hash IS NOT NULL AND decided_by IS NOT NULL
+  AND (status = 'approved' OR (status = 'rejected' AND result IS NULL))`;
 
 export interface Approval {
   id: string;
@@ -21,16 +26,6 @@ export interface Approval {
   error: string | null;
   beslut_hash: string | null;
   beslut_skal: string | null;
-}
-
-// Sortera objektnycklar på varje nivå; listornas ordning bär indatats innebörd.
-function sorteradJson(varde: unknown): string {
-  if (Array.isArray(varde)) return `[${varde.map(sorteradJson).join(',')}]`;
-  if (varde !== null && typeof varde === 'object') {
-    const post = varde as Record<string, unknown>;
-    return `{${Object.keys(post).sort().map((k) => `${JSON.stringify(k)}:${sorteradJson(post[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(varde);
 }
 
 /** Låser mandatets lagrade JSON vid en stabil summa, oberoende av jsonb:s nyckelordning. */
@@ -79,6 +74,19 @@ export async function listaVantandeKoposter(
     `SELECT ${APPROVAL_COLUMNS} FROM action_approvals
       WHERE company_id = $1 AND status = 'pending' AND action = ANY($2::text[])
       ORDER BY created_at, id`,
+    [companyId, [...atgarder]],
+  );
+  return result.rows;
+}
+
+/** Mottagna mandat utan LIMIT: samma urval som kärnans återförsök. */
+export async function listaMottagnaBeslut(
+  client: PoolClient, companyId: string, atgarder: readonly string[],
+): Promise<Approval[]> {
+  const result = await client.query<Approval>(
+    `SELECT ${APPROVAL_COLUMNS} FROM action_approvals
+      WHERE company_id = $1 AND action = ANY($2::text[]) AND ${MOTTAGET_EJ_VERKSTALLT}
+      ORDER BY decided_at, id`,
     [companyId, [...atgarder]],
   );
   return result.rows;

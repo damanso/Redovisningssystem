@@ -25,9 +25,12 @@
 // åtgärden — alla fyra räckvidder mot just det uppdraget, med SELECT som
 // fortsätter gå igenom (historiken ska vara läsbar, inte borta).
 import supertest from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { provaMottagetFel } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const PASSWORD = 'mycket-hemligt-losen-123';
 const OKANT_ID = '00000000-0000-4000-8000-000000000000';
 
@@ -162,7 +165,7 @@ describe('registret', () => {
 
   it('okänt uppdrag ger 404 vid godkännandet — och stänger ingenting', async () => {
     const svar = await godkann(await begar('avsluta_uppdrag', { project_id: OKANT_ID }));
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(svar, companyId, user, 'not_found', verkstallLogg);
     expect(await projektstatus(huvud.projektId)).toBe('active');
   });
 });
@@ -184,7 +187,8 @@ describe('(a)+(b) förslaget och godkännandet', () => {
     const somAgent = await api.post(`${co()}/approvals/${id}/approve`).set(agentAuth()).send({});
     expect(somAgent.status, JSON.stringify(somAgent.body)).toBe(403);
 
-    await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({});
+    const nej = await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({ reason: 'Provets nej' });
+    expect(nej.status, JSON.stringify(nej.body)).toBe(200);
   });
 
   it('en människas begäran lämnar också projektet öppet och kolumnen NULL', async () => {
@@ -274,22 +278,39 @@ describe('(d) uppdrag utan något öppet', () => {
 // ---------------------------------------------------------------------------
 
 describe('(e) andra avslutet', () => {
-  it('409 `uppdrag_redan_avslutat`, listan orörd och köposten kvar', async () => {
+  for (const tomt of [false, true]) it(`andra avslutet med ${tomt ? 'tom' : 'öppen'} lista lämnar jat mottaget och listan orörd`, async () => {
+    const u = tomt ? await nyttUppdrag('Andra rent avslut', { A1: 'godkand' }) : huvud;
+    if (tomt) await okKoad('avsluta_uppdrag', { project_id: u.projektId });
+    const fore = await frystLista(u.avtalId);
     // Ett andra avslut hade räknat om listan mot dagens statusar och skrivit
     // över det som stod öppet VID det första avslutet. Det är precis vad frysen
     // finns för att hindra — och statusarna går inte ens att flytta längre
     // (0068:s trigger), så en omräkning hade dessutom aldrig kunnat bli sann.
-    const koad = await begar('avsluta_uppdrag', { project_id: huvud.projektId });
+    const koad = await begar('avsluta_uppdrag', { project_id: u.projektId });
     const svar = await godkann(koad);
-    expect(svar.status, JSON.stringify(svar.body)).toBe(409);
-    expect(svar.body.error).toBe('uppdrag_redan_avslutat');
+    await provaMottagetFel(svar, companyId, user, 'uppdrag_redan_avslutat', verkstallLogg);
 
-    expect(await frystLista(huvud.avtalId)).toEqual(['L2', 'L4']);
+    expect(await frystLista(u.avtalId)).toEqual(fore);
+    expect(fore).toEqual(tomt ? [] : ['L2', 'L4']);
+    expect(await projektstatus(u.projektId)).toBe('closed');
 
-    // Godkännandet rullades tillbaka i sin helhet — posten står kvar obesvarad.
+    // Jat är beständigt mottaget; bara verkställigheten rullades tillbaka.
+    // Ingen ny mandatfråga och inget nytt ja eller nej ska kunna avgöra posten.
     const kon = await api.get(`${co()}/approvals?status=pending`).set(auth());
-    expect(kon.status).toBe(200);
-    expect((kon.body.approvals as { id: string }[]).map((a) => a.id)).toContain(koad);
+    expect(kon.status, JSON.stringify(kon.body)).toBe(200);
+    expect((kon.body.approvals as { id: string }[]).map((a) => a.id)).not.toContain(koad);
+    const mottaget = await withAdmin(async (c) => (await c.query(
+      'SELECT row_to_json(q) AS rad FROM action_approvals q WHERE company_id=$1 AND id=$2', [companyId, koad],
+    )).rows[0]!.rad);
+    for (const beslut of ['approve', 'reject']) {
+      const igen = await api.post(`${co()}/approvals/${koad}/${beslut}`).set(auth()).send(beslut === 'approve' ? {} : { reason: 'Nytt svar' });
+      expect(igen.status, JSON.stringify(igen.body)).toBe(409);
+      expect(igen.body.error).toBe('not_pending');
+    }
+    expect(await withAdmin(async (c) => (await c.query(
+      'SELECT row_to_json(q) AS rad FROM action_approvals q WHERE company_id=$1 AND id=$2', [companyId, koad],
+    )).rows[0]!.rad)).toEqual(mottaget);
+    expect(await frystLista(u.avtalId)).toEqual(fore);
   });
 });
 

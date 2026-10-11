@@ -18,12 +18,14 @@
 //   (d) `oplanerad` rörs aldrig: märkningen säger att kostnaden inte fanns i
 //       baselinen, och det blir inte osant för att någon flyttar den;
 //   (e) okänt kvitto, okänd del och grannbolagets rader svarar "finns inte".
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { importeraOchGodkann, provaMottagetFel } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const OKANT_ID = '00000000-0000-4000-8000-000000000000';
 
 let user: TestUser;
@@ -216,7 +218,10 @@ describe('sensitive-flödet: köposten skriver inte, godkännandet gör det', ()
     // Kvittot står kvar där det stod: agentens begäran skrev ingenting.
     expect((await kvittoraden()).contract_part_id).toBe(delS2);
 
-    const avvisad = await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({});
+    const avvisad = await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({ reason: 'Provets nej' });
+    expect(avvisad.body.approval.status).toBe('rejected');
+    expect(avvisad.body.approval.beslut_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(avvisad.body.approval.result.vid_avslag.beslut_id).toEqual(expect.any(String));
     expect(avvisad.status, JSON.stringify(avvisad.body)).toBe(200);
     expect((await kvittoraden()).contract_part_id).toBe(delS2);
   });
@@ -253,23 +258,24 @@ describe('flytten: kön är vägen från ström till leverabel', () => {
 // ---------------------------------------------------------------------------
 
 describe('okända rader och grannbolaget', () => {
-  it('okänt kvitto fälls vid godkännandet — och köposten står kvar obesvarad', async () => {
+  it('okänt kvitto fälls vid godkännandet — och jat står kvar som mottaget', async () => {
     const id = await begar('binda_kostnad', { receipt_id: OKANT_ID, contract_part_id: delS2 });
     const svar = await godkann(id);
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
-    expect(svar.body.error).toBe('not_found');
-    // Allt-eller-inget: godkännandet rullades tillbaka och posten är omkörbar.
-    expect((await kon('pending')).map((p) => p.id)).toContain(id);
-    await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({});
+    await provaMottagetFel(svar, companyId, user, 'not_found', verkstallLogg);
+    // Sakläget är orört; jat är mottaget och verkställigheten kan tas om.
+    expect((await kon('pending')).map((p) => p.id)).not.toContain(id);
+    const igen = await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({ reason: 'Provets nej' });
+    expect(igen.status).toBe(409); expect(igen.body.error).toBe('not_pending');
   });
 
   it('okänd avtalsdel fälls likaså — och kvittot står orört', async () => {
     const fore = await kvittoraden();
     const id = await begar('binda_kostnad', { receipt_id: kvitto, contract_part_id: OKANT_ID });
     const svar = await godkann(id);
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(svar, companyId, user, 'not_found', verkstallLogg);
     expect(await kvittoraden()).toEqual(fore);
-    await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({});
+    const igen = await api.post(`${co()}/approvals/${id}/reject`).set(auth()).send({ reason: 'Provets nej' });
+    expect(igen.status).toBe(409); expect(igen.body.error).toBe('not_pending');
   });
 
   it('grannbolagets avtalsdel finns inte för oss — och tvärtom', async () => {
@@ -279,7 +285,7 @@ describe('okända rader och grannbolaget', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     const id = (res.body.approval as { id: string }).id;
     const svar = await api.post(`${co(grannbolag)}/approvals/${id}/approve`).set(grannauth).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(svar, grannbolag, granne, 'not_found', verkstallLogg);
     // Vårt kvitto ligger kvar på sin del: RLS döljer det, och uppslaget svarar
     // "finns inte" i stället för att låta främmande nyckel avgöra saken.
     expect((await kvittoraden()).contract_part_id).toBe(delRot);

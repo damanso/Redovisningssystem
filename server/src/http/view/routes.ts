@@ -38,6 +38,7 @@ import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdr
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
 import {
@@ -4175,6 +4176,43 @@ function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Antec
   </section>`;
 }
 
+/** Samma logg som Övrigt: beslutets spår är läsning, med panelens egen färskhet. */
+function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
+  const etiketter: Record<string, string> = {
+    anteckning: 'Övrigt-raden', kvitto: 'Kvittot', scopesignal: 'Scopesignalen',
+    baselineforslag: 'Kontraktets baselineförslag', avslut: 'Avslutsförslaget', koforslag: 'Förslaget i kön',
+  };
+  const { registrerade, mottagna } = l.beslut;
+  return html`<section class="panel" id="beslut" aria-labelledby="kort-beslut" style="margin-top:16px">
+    <div class="panel__head"><h2 id="kort-beslut">Beslut</h2></div>
+    <div class="panel__body" style="padding:0">
+      ${registrerade.length === 0 && mottagna.length === 0
+        ? html`<p style="margin:0;padding:12px 16px;font-size:14px">Inga beslut är registrerade i uppdraget.
+            Förslag som väntar på ditt svar står i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>`
+        : html`<div class="log" style="border:0;border-radius:0;box-shadow:none">
+          ${mottagna.map((b) => html`<div class="log-row" id="beslut-${b.approval_id}" style="align-items:start">
+            <div class="log-when">${b.beslutad_nar.replace('T', ' ').slice(0, 16)}</div>
+            <div><div class="log-what">${chip('Mottaget', 'info', '…')} ${getAction(b.atgard)?.title ?? b.atgard}</div>
+              <p style="margin:6px 0 0;font-size:14px">${b.utfall === 'ja'
+                ? 'Ditt ja är mottaget och utförs utan att du behöver svara igen.'
+                : 'Ditt nej är mottaget och utförs utan att du behöver svara igen.'}</p></div>
+          </div>`)}
+          ${registrerade.map((b) => html`<div class="log-row" id="beslut-${b.approval_id}" style="align-items:start">
+            <div class="log-when">${b.beslutad_nar.replace('T', ' ').slice(0, 16)}</div>
+            <div><div class="log-what">${b.utfall === 'ja' ? chip('Ja', 'ok', '✓') : chip('Nej', 'muted', '✕')}
+              ${getAction(b.atgard)?.title ?? b.atgard} <span class="muted" style="font-size:12.5px">${b.beslutad_av_namn}</span></div>
+              <p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${typeof b.underlag.forslagstext === 'string' ? b.underlag.forslagstext : 'Förslaget saknas i underlaget'}</p>
+              ${b.utfall === 'nej' ? html`<p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${b.skal}</p>`
+                : html`<p style="margin:6px 0 0;font-size:14px">${beskrivHandling(b.handling)}</p>`}
+              <p style="margin:6px 0 0;font-size:12.5px">${etiketter[b.kalla.typ] ?? b.kalla.typ}${b.referenser.map((r) => html` · ${r.titel ?? r.extern_id} (${r.sort})`)}</p>
+            </div>
+          </div>`)}
+        </div>`}
+      ${farskhetsrad([direktFarskhet(l.farskhet.beslut, idag)])}
+    </div>
+  </section>`;
+}
+
 function lagessida(
   req: Request, companyId: string, l: Uppdragslage, forslag: Statusforslagskort[],
   anteckningar: readonly Anteckningsrad[], idag: string,
@@ -4199,7 +4237,8 @@ function lagessida(
       ${kortSignaler(companyId, l, idag)}
       ${kortKoposter(companyId, l, idag)}
     </div>
-    ${ovrigtpanelen(companyId, l, anteckningar)}`;
+    ${ovrigtpanelen(companyId, l, anteckningar)}
+    ${beslutspanelen(companyId, l, idag)}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {
@@ -9372,7 +9411,7 @@ function assertSameOrigin(req: Request): void {
 // i stället för en naken felsida — förslaget ligger kvar och kan avvisas.
 // NotFoundError (t.ex. en icke-medlem, RLS döljer raden) sväljs INTE — det ska
 // förbli ett 404 så åtkomstgränsen syns.
-async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
+async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
   try {
     await run();
   } catch (err) {
@@ -9385,6 +9424,8 @@ async function decideApproval(redirectTo: string, res: import('express').Respons
       return;
     }
     if (!(err instanceof ConflictError)) throw err;
+    res.redirect((await redanAvgjord?.()) ?? redirectTo);
+    return;
   }
   res.redirect(redirectTo);
 }
@@ -9395,7 +9436,8 @@ viewRouter.post('/c/:companyId/approvals/:id/approve', page(async (req, res) => 
   const companyId = parseCompanyId(req.params.companyId);
   const approvalId = parseApprovalId(req.params.id);
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
-    approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId }));
+    approveAction({ companyId, approverId: userId, approverActor: 'human', approvalId }),
+    () => withTenantTransaction(userId, companyId, (c) => beslutsplats(c, companyId, approvalId)));
 }));
 
 viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
@@ -9409,7 +9451,8 @@ viewRouter.post('/c/:companyId/approvals/:id/reject', page(async (req, res) => {
     return;
   }
   await decideApproval(`/app/c/${companyId}/approvals`, res, () =>
-    rejectApproval({ companyId, approverId: userId, approverActor: 'human', approvalId, skal: skal.data }));
+    rejectApproval({ companyId, approverId: userId, approverActor: 'human', approvalId, skal: skal.data }),
+    () => withTenantTransaction(userId, companyId, (c) => beslutsplats(c, companyId, approvalId)));
 }));
 
 // Team & roller. Alla medlemmar ser rostern; ägare/admin ser hanteringskontroller.
