@@ -12,8 +12,10 @@ import { api, createCompany, createFiscalYear, registerUser, withAdmin, type Tes
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
 import { appendixFromTimeEntries } from '../src/services/invoiceAppendix.js';
+import { actionManifest } from '../src/actions/registry.js';
 import {
   arFakturerad, arGodkannande, arIgnorerad, speglingar, TIME_ENTRY_STATUSES, type TimeEntryStatus,
+  JAMFORDA_FALT, type ForvantadTidpost, avvikandeFalt, updateTimeEntry,
 } from '../src/services/projects.js';
 
 let user: TestUser;
@@ -431,5 +433,263 @@ describe('två samtidiga faktureringar av samma period', () => {
     }
     const bilagaB = await act('get_invoice_appendix', { invoice_id: fakturaB });
     expect(bilagaB.body.result.rows).toEqual([]);
+  });
+});
+
+// Story 10.5: en komplettering får aldrig skriva över det människan hann spara.
+describe('update_time_entry med expected — posten skrivs bara om den står som den lästes (Story 10.5)', () => {
+  let projekt = '';
+  // Kompletteringens kropp ur Story 10.2, utan expected.
+  const KOMPLETTERING = {
+    status: 'forslag', minutes: 90, billable_minutes: 90,
+    adjustment_reason: 'Källan kompletterad: 30 → 90 min',
+  } as const;
+
+  beforeAll(async () => {
+    const p = await act('create_project', { name: 'Fas 10.5', customer_id: customerId, hourly_rate_ore: 110_000 });
+    expect(p.status, JSON.stringify(p.body)).toBe(200);
+    projekt = p.body.result.id as string;
+  });
+
+  /** Ett agentförslag på 30/30 min med skäl — posten som Hermes kompletterar. */
+  async function nyttForslag(): Promise<string> {
+    const res = await act('log_time', {
+      project_id: projekt, work_date: '2026-11-03', minutes: 30,
+      description: 'Sessionslogg', adjustment_reason: 'Ur sessionsloggen',
+    }, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.status).toBe('forslag');
+    return res.body.result.id as string;
+  }
+
+  /** De fyra värden anroparen läste — exakt de nycklar expected bär. */
+  function forvantat(r: Record<string, unknown>): ForvantadTidpost {
+    return {
+      minutes: r.minutes as number, billable_minutes: r.billable_minutes as number,
+      adjustment_reason: (r.adjustment_reason ?? null) as string | null, status: r.status as TimeEntryStatus,
+    };
+  }
+
+  /** Alla skrivbara kolumner plus fakturakoppling och triggerns ändringstid. */
+  async function ogonblick(id: string): Promise<Record<string, unknown>> {
+    const r = await withAdmin((c) => c.query(
+      `SELECT minutes, billable_minutes, adjustment_reason, status, description, work_date::text,
+              contract_part_id, approved_by, approved_at::text, billable, invoiced, invoice_id,
+              updated_at::text
+         FROM time_entries WHERE id = $1`, [id]));
+    return r.rows[0]!;
+  }
+
+  /** Alla bolagets auditrader. Också rad() skriver action.executed: läs före räkningen. */
+  async function auditAntal(): Promise<number> {
+    const r = await withAdmin((c) => c.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1', [companyId]));
+    return r.rows[0]!.n;
+  }
+
+  /** Details på postens rader time_entry.updated. */
+  async function uppdateringar(id: string): Promise<unknown[]> {
+    const r = await withAdmin((c) => c.query<{ details: unknown }>(
+      `SELECT details FROM audit_log
+        WHERE company_id = $1 AND action = 'time_entry.updated' AND entity_id = $2`, [companyId, id]));
+    return r.rows.map((x) => x.details);
+  }
+
+  it('P1: lika expected ger samma svar och auditrad som utan expected', async () => {
+    const a = await nyttForslag();
+    const b = await nyttForslag();
+    const listat = await rad(b);
+    const svarA = await act('update_time_entry', { time_entry_id: a, ...KOMPLETTERING });
+    const svarB = await act('update_time_entry', {
+      time_entry_id: b, ...KOMPLETTERING, expected: forvantat(listat),
+    });
+    expect(svarA.status, JSON.stringify(svarA.body)).toBe(200);
+    expect(svarB.status, JSON.stringify(svarB.body)).toBe(200);
+    expect({ ...svarB.body.result, id: 'x' }).toEqual({ ...svarA.body.result, id: 'x' });
+    expect(await rad(b)).toMatchObject(KOMPLETTERING);
+    const auditA = await uppdateringar(a);
+    const auditB = await uppdateringar(b);
+    expect(auditA).toHaveLength(1);
+    expect(auditB).toHaveLength(1);
+    expect(auditB).toEqual(auditA);
+  });
+
+  it.each([
+    ['P2', 'minutes', 45],
+    ['P3', 'billable_minutes', 45],
+    ['P4', 'adjustment_reason', null],
+  ] as const)('%s: olika %s ger 409 utan någon skrivning', async (_fall, falt, varde) => {
+    const id = await nyttForslag();
+    const listat = await rad(id);
+    const expected = { ...forvantat(listat), [falt]: varde };
+    const fore = await ogonblick(id);
+    const antal = await auditAntal();
+    const res = await act('update_time_entry', { time_entry_id: id, ...KOMPLETTERING, expected }, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toEqual({ error: 'time_entry_changed' });
+    expect(await ogonblick(id)).toEqual(fore);
+    expect(await auditAntal()).toBe(antal);
+    expect(avvikandeFalt(forvantat(listat), expected)).toEqual([falt]);
+  });
+
+  it('P5: människans godkännande efter listningen ger changed före invalid_status_transition', async () => {
+    const id = await nyttForslag();
+    const listat = await rad(id);
+    const resGodkand = await act('update_time_entry', { time_entry_id: id, status: 'godkand' });
+    expect(resGodkand.status, JSON.stringify(resGodkand.body)).toBe(200);
+    const godkand = forvantat(await rad(id));
+    expect(godkand).toMatchObject({ status: 'godkand', minutes: 30, billable_minutes: 30 });
+    const fore = await ogonblick(id);
+    const antal = await auditAntal();
+    const res = await act('update_time_entry', {
+      time_entry_id: id, ...KOMPLETTERING, expected: forvantat(listat),
+    }, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toEqual({ error: 'time_entry_changed' });
+    expect(await ogonblick(id)).toEqual(fore);
+    expect(await auditAntal()).toBe(antal);
+    expect(avvikandeFalt(godkand, forvantat(listat))).toEqual(['status']);
+  });
+
+  it('jämförelsen är ren: lika värden, null som eget värde och fast fältordning', () => {
+    const expected: ForvantadTidpost = {
+      minutes: 30, billable_minutes: 30, adjustment_reason: null, status: 'forslag',
+    };
+    const text = { ...expected, adjustment_reason: 'Ur sessionsloggen' };
+    expect(avvikandeFalt(expected, { ...expected })).toEqual([]);
+    expect(avvikandeFalt(text, expected)).toEqual(['adjustment_reason']);
+    expect(avvikandeFalt(expected, text)).toEqual(['adjustment_reason']);
+    expect(avvikandeFalt({ ...text, minutes: 45, billable_minutes: 45, status: 'godkand' }, expected))
+      .toEqual(['minutes', 'billable_minutes', 'adjustment_reason', 'status']);
+    expect(expected).toEqual({ minutes: 30, billable_minutes: 30, adjustment_reason: null, status: 'forslag' });
+    expect(text).toEqual({ ...expected, adjustment_reason: 'Ur sessionsloggen' });
+  });
+
+  it('P6: faktureringslåset kommer före expected, både olika och lika värden', async () => {
+    const p = await act('create_project', {
+      name: 'Fas 10.5 fakturerad', customer_id: customerId, hourly_rate_ore: 110_000,
+    });
+    expect(p.status, JSON.stringify(p.body)).toBe(200);
+    const tid = await act('log_time', {
+      project_id: p.body.result.id, work_date: '2026-11-02', minutes: 60, description: 'Fakturerbar tid',
+    });
+    expect(tid.status, JSON.stringify(tid.body)).toBe(200);
+    const id = tid.body.result.id as string;
+    const listat = await rad(id);
+    expect(listat.status).toBe('godkand');
+    const fakturerat = await act('invoice_appendix_from_time_entries', {
+      invoice_id: await nyFaktura(), project_id: p.body.result.id,
+      from: '2026-11-01', to: '2026-11-30',
+    });
+    expect(fakturerat.status, JSON.stringify(fakturerat.body)).toBe(200);
+    const last = forvantat(await rad(id));
+    expect(last.status).toBe('fakturerad');
+    const fore = await ogonblick(id);
+    const antal = await auditAntal();
+    for (const expected of [forvantat(listat), last]) {
+      const res = await act('update_time_entry', { time_entry_id: id, description: 'omskrivet', expected });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error).toBe('time_entry_locked');
+      expect(await ogonblick(id)).toEqual(fore);
+      expect(await auditAntal()).toBe(antal);
+    }
+  });
+
+  it('P7: manifestet binder expected till exakt fyra obligatoriska fält; fel form skriver inget', async () => {
+    expect(JAMFORDA_FALT).toEqual(['minutes', 'billable_minutes', 'adjustment_reason', 'status']);
+    const schema = actionManifest().find((a) => a.name === 'update_time_entry')!.input_schema as {
+      properties: Record<string, { additionalProperties?: boolean; required?: string[] }>;
+      required?: string[];
+    };
+    const expectedSchema = schema.properties.expected;
+    expect(expectedSchema).toBeDefined();
+    expect(expectedSchema!.additionalProperties).toBe(false);
+    expect([...(expectedSchema!.required ?? [])].sort()).toEqual([...JAMFORDA_FALT].sort());
+    expect(schema.required ?? []).not.toContain('expected');
+
+    const id = await nyttForslag();
+    const listat = await rad(id);
+    const expected = forvantat(listat);
+    const { adjustment_reason: _skal, ...utanSkal } = expected;
+    const fore = await ogonblick(id);
+    const antal = await auditAntal();
+    for (const ogiltigt of [{ ...expected, description: 'x' }, utanSkal]) {
+      const res = await act('update_time_entry', {
+        time_entry_id: id, ...KOMPLETTERING, expected: ogiltigt,
+      }, agent());
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toBe('validation_error');
+      expect(await ogonblick(id)).toEqual(fore);
+      expect(await auditAntal()).toBe(antal);
+    }
+  });
+
+  /** Väntar på just B:s backend: provet ska belägga kapplöpningen, inte bara ordningen. */
+  async function vantaPaRadlaset(admin: pg.Client, pid: number): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      const r = await admin.query<{ w: string | null }>(
+        'SELECT wait_event_type AS w FROM pg_stat_activity WHERE pid = $1', [pid]);
+      if (r.rows[0]?.w === 'Lock') return;
+      await new Promise((klar) => setTimeout(klar, 25));
+    }
+    throw new Error('anropet med expected väntade aldrig på radlåset — kapplöpningen uppstod aldrig');
+  }
+
+  it('P8: anropet väntar på människans radlås och jämför med hennes committade post', async () => {
+    const id = await nyttForslag();
+    const expected = forvantat(await rad(id));
+    expect(await uppdateringar(id)).toHaveLength(0);
+    const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
+    await admin.connect();
+    const a = await pool.connect();
+    const b = await pool.connect();
+    let bUtfall: Promise<unknown> = Promise.resolve(null);
+    try {
+      const pid = await b.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      const bPid = pid.rows[0]!.pid;
+      await a.query('BEGIN');
+      await setTenantContext(a, user.userId, companyId);
+      await updateTimeEntry(a, companyId, user.userId, {
+        time_entry_id: id, minutes: 45, billable_minutes: 45,
+      });
+      await b.query('BEGIN');
+      await setTenantContext(b, user.userId, companyId);
+      bUtfall = updateTimeEntry(b, companyId, user.userId, {
+        time_entry_id: id, ...KOMPLETTERING, expected,
+      }).then(() => null, (err: unknown) => err);
+      await vantaPaRadlaset(admin, bPid);
+      await a.query('COMMIT');
+
+      const fel = await bUtfall as { status?: number; code?: string; message?: string } | null;
+      expect(fel, 'agentens anrop lyckades — människans 45 min skrevs över').toBeTruthy();
+      expect(fel!.status).toBe(409);
+      expect(fel!.code).toBe('time_entry_changed');
+      expect(fel!.message).toBe(
+        'tidposten har ändrats sedan den lästes (minutes, billable_minutes) — läs om den och försök igen',
+      );
+    } finally {
+      // Släpp A:s lås, invänta B och rulla tillbaka innan anslutningarna återlämnas.
+      await a.query('ROLLBACK').catch(() => undefined);
+      await bUtfall.catch(() => undefined);
+      await b.query('ROLLBACK').catch(() => undefined);
+      a.release();
+      b.release();
+      await admin.end();
+    }
+    expect(await rad(id)).toMatchObject({
+      minutes: 45, billable_minutes: 45, status: 'forslag', adjustment_reason: 'Ur sessionsloggen',
+    });
+    expect(await uppdateringar(id)).toHaveLength(1);
+  });
+
+  it('P9: agenttoken kompletterar ett oförändrat förslag med expected', async () => {
+    const id = await nyttForslag();
+    const listat = await rad(id);
+    const res = await act('update_time_entry', {
+      time_entry_id: id, ...KOMPLETTERING, expected: forvantat(listat),
+    }, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await rad(id)).toMatchObject(KOMPLETTERING);
+    expect(await uppdateringar(id)).toHaveLength(1);
   });
 });

@@ -1363,6 +1363,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         status: z.enum(TIME_ENTRY_STATUSES).optional(),
         adjustment_reason: safeText(300).optional(),
         contract_part_id: UuidSchema.optional(),
+        // Story 10.5: de fyra värden anroparen LÄSTE på posten. Skiljer sig
+        // något från den låsta raden svarar tjänsten 409 time_entry_changed och
+        // skriver ingenting. Alla fyra krävs, inga andra; null är ett eget värde.
+        // minutes 0–1440: ett förslag kan stå på 0 minuter (0066).
+        expected: z
+          .object({
+            minutes: z.number().int().min(0).max(1440),
+            billable_minutes: z.number().int().min(0).max(1440),
+            adjustment_reason: safeText(300).nullable(),
+            status: z.enum(TIME_ENTRY_STATUSES),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),

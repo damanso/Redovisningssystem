@@ -153,6 +153,74 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-11 (Story 10.5 — en tidpost ändras bara om den står som anroparen läste den):**
+  `update_time_entry` tar valfritt strict `expected` med exakt minutes,
+  billable_minutes, adjustment_reason och status. Den rena `avvikandeFalt`
+  jämför med posten under befintligt FOR UPDATE, efter faktureringsspärren
+  och före övriga regler. Avvikelse ger 409 time_entry_changed före UPDATE
+  och audit; utan expected fortsätter samma väg. Inga nya beroenden,
+  migrationer, tjänster eller arkitekturmönster.
+  Provfilen tidpost-livscykel har ett nytt block: P1 samma svar/audit som
+  tvilling utan expected, P2–P5 en skillnad i taget utan skrivning, P6 lås
+  före jämförelse, P7 strict/required/manifest, P8 faktisk låsväntan på B:s
+  backend och människans commit, P9 agenttoken. Renhetsprovet täcker lika
+  värden, null i båda riktningar och fältordning. Befintliga block är orörda.
+  MCP_ACTIONS och API_KONTRAKT:s tidsförslagsdel beskriver kompletteringen;
+  ingest/propose_time_entries ändras inte. Berättelsen och sprinten dokumenteras.
+  Befintliga ytor granskade i html.ts och routes.ts: Public Sans, IBM Plex
+  Mono, OKLCH-tokens och synligt fokus bevarar husets läsrytm. Berättelsen
+  förbjuder vyändring; inga nya interaktiva element eller tillstånd införs.
+
+  Rött först per uppgift: typecheck exit 2 för saknade JAMFORDA_FALT/
+  ForvantadTidpost (Task 1) respektive avvikandeFalt (Task 2). Den rena
+  negativa kontrollen i Task 2 gav TypeError: avvikandeFalt is not a function,
+  exit 1. Riktad Vitest och npm test försöktes i varje röd/grön fas,
+  exit 1 före insamling på grund av EPERM. Inga databasfall observerat gröna.
+  Databasfria kontroller efter kod, exit 0:
+  ```text
+  P7 schema/manifest: exakt fyra obligatoriska fält, optional, null, 0/1440 och ogiltiga värden OK
+  P2–P5 ren jämförelse: lika värden, varje fält, null i båda riktningar, fast ordning och frysta indata OK
+  ```
+  Grindarna efter Task 2:
+  `npm run typecheck`, exit 0:
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  ```
+  `npm run build`, exit 0:
+  ```text
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+  > server@0.1.0 build
+  > tsc
+  ```
+  `npm test`, exit 1:
+  ```text
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+  > server@0.1.0 test
+  > vitest run
+  RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  Serialized Error: { errno: -1, code: 'EPERM', syscall: 'connect', address: '127.0.0.1', port: 5433 }
+  npm error Lifecycle script `test` failed with error:
+  npm error code 1
+  npm error path /opt/redovisning/server
+  npm error workspace server@0.1.0
+  npm error location /opt/redovisning/server
+  npm error command failed
+  npm error command sh -c vitest run
+  ```
+  **Inte kört:** Vitest P1–P9, renhetsprovet i Vitest och befintliga regressioner:
+  globalSetup nekades databasen före insamling. vitest inte kört i sandlådan:
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined);
+  kedjans npm test belägger provet enligt uppdragets uttryckliga undantag.
+  `git diff --check` exit 0. Ingen tjänststart eller driftsättning.
+
+
 - **2026-10-07 (Story 1.6, omtag — fem High-granskningsfynd rättade):**
   Baselineförslagen beskriver samtliga angivna verksamhetsfält, även beskrivning,
   debiterbar/ej debiterbar, aktiv/inaktiv och sorteringsordning. Precision har
