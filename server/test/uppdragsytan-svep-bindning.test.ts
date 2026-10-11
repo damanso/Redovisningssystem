@@ -1,27 +1,12 @@
-// Uppdragsytan S6.1, våg 4: svepets BINDNINGSSTEG (PRD FR-33).
-//
-// Storyn har två grenar och en tystnad, och alla tre kan gå sönder utan att
-// någonting ser fel ut:
-//
-//   * **Gren 1 — förslaget bär ett löv.** Vilket löv en kostnad hör till är ett
-//     omdöme. Svepet KÖAR `binda_kostnad` och skriver ingenting; idempotent per
-//     kvitto, annars föder varje nattligt svep en ny post om samma kvitto tills
-//     kön är oläslig.
-//   * **Gren 2 — inget löv kan föreslås.** Då finns inget att fråga om: svepet
-//     binder till strömmen vars intervall täcker datumet, annars rotdelen
-//     `UPPDRAG`, märker kostnaden `oplanerad` — och köar INGENTING. En köpost
-//     här hade varit det femte återkommande handgreppet.
-//   * **Tystnaden.** Ett kvitto utan kostnadsförslag är en allmän bolagskostnad.
-//     Det ska stå obundet efter svepet, för alltid, tills någon säger annat.
-//
-// Dessutom lövvakten (KRAV-6, `bakvag.py`:s fjärde kontroll): automatbindningen
-// får ALDRIG landa på ett löv. Vakten sitter i skrivvägen, inte bara i valet
-// ovanför den, och prövas därför både direkt och i utfallet.
+// Story 1.8, B-6: varje kostnadsförslag går genom kön, aldrig en direktbindning.
+// Idempotensen gäller alla statusar. Ingen lövvakt behövs när inget mål skrivs
+// automatiskt; K0 i kostnadsspärrsprovet prövar valet av löv, ström och rot.
+// Kvitton utan förslag och redan bundna kvitton rörs aldrig av svepet.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { withTenantTransaction } from '../src/db/tx.js';
 import {
-  bindSvepetsForslag, kravAutomatmal, type Bindningsdel, type Bindningsdelar,
+  type Bindningsdel, type Bindningsdelar,
 } from '../src/services/uppdragKostnad.js';
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import type { SvepIndata, Svepsvar, Uppdragsutfall } from '../src/services/uppdragSvep.js';
@@ -242,7 +227,7 @@ describe('gren 1: lövet är ett omdöme och går genom kön', () => {
     const rader = await audit('action.approval_requested');
     const bindningar = rader.filter((r) => r.details.action === 'binda_kostnad');
     expect(bindningar).toHaveLength(2);
-    expect(bindningar[0]!.details).toMatchObject({ action: 'binda_kostnad', actor: 'human', leverabel_kod: 'L3' });
+    expect(bindningar[0]!.details).toMatchObject({ action: 'binda_kostnad', actor: 'agent', leverabel_kod: 'L3' });
     // Raden pekar på köposten, inte på kvittot: det är spåret av att någon BAD
     // om bindningen, inte av bindningen.
     expect((await bindningskon()).map((p) => p.id).sort())
@@ -264,64 +249,48 @@ describe('gren 1: lövet är ett omdöme och går genom kön', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gren 2: inget löv kan föreslås → automatbindning, ingen köpost
+// Utan aktivt löv köas samma godkännande till strömmen eller roten.
 // ---------------------------------------------------------------------------
 
-describe('gren 2: utan löv binder svepet till strömmen, annars rotdelen', () => {
-  it('svepet binder per datum, märker oplanerad — och köar ingenting', async () => {
-    // Leverabeln finns kvar i registret men har ingen AKTIV avtalsdel: då finns
-    // inget löv att föreslå, och det är gren 2 som gäller. (Samma versionsregel
-    // som `bindningsmal` — en inaktiv version är inte ett bindningsmål.)
+describe('utan löv köar svepet till strömmen, annars rotdelen', () => {
+  it('svepet föreslår per datum, utan bindning eller märkning', async () => {
     await okKoad('upsert_contract_part', { change_reason: 'avtal', contract_id: avtalB, code: 'L4', name: 'L4', valid_from: '2026-09-04', active: false });
     const koFore = await bindningskon();
-
     const utfall = await svep(indata(avtalB, refB, 'L4'));
-
-    expect(utfall.bindningar.koade).toEqual([]);
+    expect(utfall.bindningar.koade).toHaveLength(2);
+    expect(utfall.bindningar.automatiska).toEqual([]);
     expect(utfall.bindningar.redan_koade).toEqual([]);
-    const per = new Map(utfall.bindningar.automatiska.map((a) => [a.receipt_id, a]));
-    // 2026-11-20 täcks av S2; 2026-03-05 av ingen ström → rotdelen UPPDRAG.
-    expect(per.get(teliaSen)).toEqual({ receipt_id: teliaSen, contract_part_id: stromS2B, kod: 'S2' });
-    expect(per.get(teliaTidig)).toEqual({ receipt_id: teliaTidig, contract_part_id: rotB, kod: 'UPPDRAG' });
-
-    const rader = await kvitton();
-    expect(rader.get(teliaSen)).toMatchObject({ contract_part_id: stromS2B, code: 'S2', oplanerad: true });
-    expect(rader.get(teliaTidig)).toMatchObject({ contract_part_id: rotB, code: 'UPPDRAG', oplanerad: true });
-
-    // Kön är orörd: automatbindningen är inget beslut att fatta.
-    expect(await bindningskon()).toEqual(koFore);
-  });
-
-  it('auditraden säger att ingen människa svarade: `bindning: automatisk`', async () => {
-    const rader = await audit('receipt.contract_part_assigned');
-    expect(rader.map((r) => r.entity_id).sort()).toEqual([teliaSen, teliaTidig].sort());
-    for (const rad of rader) {
-      expect(rad.details).toMatchObject({
-        fran_contract_part_id: null, bindning: 'automatisk', oplanerad: true,
-      });
+    for (const [receipt, del] of [[teliaSen, stromS2B], [teliaTidig, rotB]]) {
+      expect(utfall.bindningar.koade).toContainEqual({ receipt_id: receipt, contract_part_id: del, approval_id: expect.any(String) });
+      expect((await kvitton()).get(receipt!)).toMatchObject({ contract_part_id: null, oplanerad: false });
+      const post = (await bindningskon()).find((p) => p.input.receipt_id === receipt)!;
+      expect(post.input).toEqual({ receipt_id: receipt, contract_part_id: del });
+      expect(post).toMatchObject({ requested_actor: 'agent' });
     }
+    expect(await bindningskon()).toHaveLength(koFore.length + 2);
   });
-
-  it('aldrig till ett löv: varje automatbindning landade på rotdelen eller en ström', async () => {
+  it('bara köningen auditloggas, med agentens aktör', async () => {
+    expect(await audit('receipt.contract_part_assigned')).toEqual([]);
+    const rader = (await audit('action.approval_requested')).filter((r) => r.details.action === 'binda_kostnad' && r.details.leverabel_kod === 'L4');
+    expect(rader).toHaveLength(2);
+    for (const r of rader) expect(r.details).toMatchObject({ actor: 'agent', leverabel_kod: 'L4' });
+    expect(rader.map((r) => r.entity_id).sort()).toEqual((await bindningskon()).filter((p) => [teliaSen, teliaTidig].includes(p.input.receipt_id as string)).map((p) => p.id).sort());
+  });
+  it('köposternas mål är rotdelen eller en ström', async () => {
     const delar = await bindningsdelar(avtalB);
-    const tillatna = new Set([delar.rot.part_id, ...delar.strommar.map((s) => s.part_id)]);
-    const rader = await kvitton();
-    for (const id of [teliaSen, teliaTidig]) {
-      expect(tillatna.has(rader.get(id)!.contract_part_id!)).toBe(true);
+    const tillatna = new Set([delar.rot.part_id, ...delar.strommar.map((r) => r.part_id)]);
+    for (const q of (await bindningskon()).filter((p) => [teliaSen, teliaTidig].includes(p.input.receipt_id as string))) {
+      expect(tillatna.has(q.input.contract_part_id as string)).toBe(true);
     }
   });
-
-  it('vyn märker de bundna kvittona som oplanerade', async () => {
+  it('kvittolistan visar ingen Oplanerad-märkning', async () => {
     const res = await ua.get(`/app/c/${companyId}/receipts`);
-    expect(res.status).toBe(200);
-    expect(res.text).toContain('Oplanerad');
-    // Märkningen bär sitt eget svar — en chip ingen kan tyda är ingen märkning.
-    expect(res.text).toContain('fanns inte i uppdragets avtalade omfattning');
+    expect(res.status, res.text).toBe(200); expect(res.text).not.toContain('Oplanerad');
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tystnaden, flyttspärren och lövvakten
+// Tystnaden och redan bundna kvitton
 // ---------------------------------------------------------------------------
 
 describe('det svepet aldrig rör', () => {
@@ -333,32 +302,16 @@ describe('det svepet aldrig rör', () => {
     expect((await kvitton()).get(allmant)).toMatchObject({ contract_part_id: null, oplanerad: false });
   });
 
-  it('automatbindningen är aldrig en flytt: ett bundet kvitto skrivs inte om', async () => {
-    // Ett riggat förslag utan löv om ett kvitto som REDAN är bundet — precis
-    // det fallet `WHERE contract_part_id IS NULL` finns för. Svepets egen väg
-    // kommer inte hit (bundna kvitton får inget förslag), och därför prövas
-    // spärren där den sitter.
-    const fore = await audit('receipt.contract_part_assigned');
-    const delar = await bindningsdelar(avtalB);
-    const utfall = await withTenantTransaction(user.userId, companyId, (c) => bindSvepetsForslag(
-      c, companyId, user.userId, 'human',
-      [{ receipt_id: teliaSen, datum: '2026-03-05' }], delar,
-    ));
-    expect(utfall.automatiska).toEqual([]);
-    expect((await kvitton()).get(teliaSen)).toMatchObject({ contract_part_id: stromS2B, code: 'S2' });
-    expect(await audit('receipt.contract_part_assigned')).toEqual(fore);
-  });
-
-  it('lövvakten fäller varje automatmål som inte är rotdelen eller en ström', async () => {
-    const delar = await bindningsdelar(avtalB);
-    const lov = delar.alla.find((d) => d.code === 'L1')!;
-    expect(lov, 'leverabeln L1 saknas').toBeDefined();
-    // Vakten är den sista raden före skrivningen, inte valet ovanför den: den
-    // ska fälla ett löv även den dag valet ändras. Det är `bakvag.py`:s fjärde
-    // kontroll, i vitest-form.
-    expect(() => kravAutomatmal(delar, lov.part_id)).toThrow(/löv/);
-    expect(() => kravAutomatmal(delar, delar.rot.part_id)).not.toThrow();
-    expect(() => kravAutomatmal(delar, delar.strommar[0]!.part_id)).not.toThrow();
+  it('ett bundet kvitto får inget förslag och skrivs inte om', async () => {
+    const post = (await bindningskon()).find((p) => p.input.receipt_id === teliaTidig)!;
+    const ja = await api.post(`${co()}/approvals/${post.id}/approve`).set(auth()).send({});
+    expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+    await svep(indata(avtalB, refB, 'L4'));
+    expect((await kvitton()).get(teliaTidig)).toMatchObject({ contract_part_id: rotB, code: 'UPPDRAG' });
+    const ko = await withAdmin(async (c) => (await c.query("SELECT id FROM action_approvals WHERE company_id=$1 AND action='binda_kostnad' AND input->>'receipt_id'=$2", [companyId, teliaTidig])).rows);
+    expect(ko).toHaveLength(1);
+    const rader = (await audit('receipt.contract_part_assigned')).filter((r) => r.entity_id === teliaTidig);
+    expect(rader).toHaveLength(1); expect(rader[0]!.details).not.toHaveProperty('bindning');
   });
 });
 
@@ -373,7 +326,7 @@ describe('bindningsmål efter nya baselineversioner', () => {
     const fore = await withAdmin(async (c) => (await c.query(
       'SELECT * FROM contract_parts WHERE contract_id = $1 ORDER BY id', [avtal],
     )).rows);
-    // Utan ett aktivt löv ska ström/rot avgöra automatmålet även när det är
+    // Utan ett aktivt löv ska ström/rot avgöra förslagets mål även när det är
     // just strömmen eller roten som har fått en inaktiv version.
     if (kod === 'S2' || kod === 'UPPDRAG') {
       await okKoad('upsert_contract_part', {
@@ -392,15 +345,13 @@ describe('bindningsmål efter nya baselineversioner', () => {
     const leverabel = kod.startsWith('L') ? kod : 'L4';
     const koFore = await bindningskon();
     const utfall = await svep(indata(avtal, ref, leverabel));
-    expect(utfall.bindningar.koade).toEqual([]);
     const mal = kod === 'UPPDRAG' ? null : kod === 'S2' ? ursprungliga.rot : strom;
-    expect(utfall.bindningar.automatiska).toEqual(mal === null ? [] : [{
-      receipt_id: kvitto, contract_part_id: mal.part_id, kod: mal.code,
+    expect(utfall.bindningar.koade).toEqual(mal === null ? [] : [{
+      receipt_id: kvitto, contract_part_id: mal.part_id, approval_id: expect.any(String),
     }]);
-    expect((await kvitton()).get(kvitto)).toMatchObject({
-      contract_part_id: mal?.part_id ?? null, oplanerad: mal !== null,
-    });
-    expect(await bindningskon()).toEqual(koFore);
+    expect(utfall.bindningar.automatiska).toEqual([]);
+    expect((await kvitton()).get(kvitto)).toMatchObject({ contract_part_id: null, oplanerad: false });
+    expect(await bindningskon()).toHaveLength(koFore.length + (mal === null ? 0 : 1));
 
     // En ny aktiv version får användas. Barnens lagrade föräldralänkar pekar
     // fortfarande på den äldre versionen; de får inte behöva skrivas om.
@@ -414,19 +365,12 @@ describe('bindningsmål efter nya baselineversioner', () => {
     const nyId = (ny.parts as Array<{ code: string; part_id: string }>).find((d) => d.code === kod)!.part_id;
     const kvitto2 = await bokatKvitto('2026-11-20', supplierId, 'Aktiv tredje version');
     const aktivtUtfall = await svep(indata(avtal, ref, leverabel));
-    if (kod.startsWith('L')) {
-      expect(aktivtUtfall.bindningar.koade).toEqual([{
-        receipt_id: kvitto2, contract_part_id: nyId, approval_id: expect.any(String),
-      }]);
-      expect(aktivtUtfall.bindningar.automatiska).toEqual([]);
-    } else {
-      const malId = kod === 'S2' ? nyId : strom.part_id;
-      // Efter inaktiv rot är även första kvittot fortfarande obundet.
-      expect(aktivtUtfall.bindningar.automatiska.map((b) => b.receipt_id).sort())
-        .toEqual((kod === 'UPPDRAG' ? [kvitto, kvitto2] : [kvitto2]).sort());
-      expect(aktivtUtfall.bindningar.automatiska.every((b) => b.contract_part_id === malId && b.kod === 'S2')).toBe(true);
-      expect(aktivtUtfall.bindningar.koade).toEqual([]);
-    }
+    const malId = kod.startsWith('L') || kod === 'S2' ? nyId : strom.part_id;
+    expect(aktivtUtfall.bindningar.koade).toEqual((kod === 'UPPDRAG' ? [kvitto, kvitto2] : [kvitto2]).map((receipt_id) => ({
+      receipt_id, contract_part_id: malId, approval_id: expect.any(String),
+    })));
+    expect(aktivtUtfall.bindningar.redan_koade).toEqual(kod === 'UPPDRAG' ? [] : [kvitto]);
+    expect(aktivtUtfall.bindningar.automatiska).toEqual([]);
     expect(await withAdmin(async (c) => (await c.query(
       'SELECT * FROM contract_parts WHERE id = ANY($1::uuid[]) ORDER BY id', [fore.map((r) => r.id)],
     )).rows)).toEqual(fore);

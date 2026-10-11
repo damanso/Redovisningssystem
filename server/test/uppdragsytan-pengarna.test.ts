@@ -33,7 +33,7 @@ import { FORBRUKANDE_STATUSAR, lasUppdragspengar, type Uppdragspengar } from '..
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
-import { api, app, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const OKANT = '00000000-0000-4000-8000-000000000000';
@@ -204,8 +204,8 @@ beforeAll(async () => {
     description: 'Integrationsarbete', contract_part_id: rotA,
   });
 
-  // Kostnaderna. Axis-kvittot binds av SVEPET (gren 2) och blir därmed märkt
-  // `oplanerad`; Kontorsgigantens binds genom kön och står obokfört.
+  // Kostnaderna. Axis-kvittot köas av svepet och binds genom människans ja.
+  // Kontorsgigantens binds genom samma kö och står obokfört.
   const axis = (await ok('create_supplier', { name: 'Axis Communications AB' })).id as string;
   const kontor = (await ok('create_supplier', { name: 'Kontorsgiganten AB' })).id as string;
   axisKvitto = (await ok('create_receipt', {
@@ -219,8 +219,8 @@ beforeAll(async () => {
   })).id as string;
   await okKoad('binda_kostnad', { receipt_id: obokfortKvitto, contract_part_id: rotA });
 
-  // L4 stängs av: då finns inget LÖV att föreslå för Axis-handlingen, och svepet
-  // binder automatiskt till strömmen/rotdelen med `oplanerad = true` (S6.1).
+  // L4 stängs av: svepet föreslår strömmen/rotdelen genom kön (Story 1.8).
+  // Även den grövre nivån kräver människans ja.
   await okKoad('upsert_contract_part', { change_reason: 'avtal', contract_id: avtalA, code: 'L4', name: 'L4', valid_from: dag(-29), active: false });
   const referens = await withTenantTransaction(user.userId, companyId, (c) => skapaReferens(c, companyId, {
     contract_id: avtalA,
@@ -241,6 +241,16 @@ beforeAll(async () => {
       kalenderhandelser: [{ datum: dag(7), minuter: 320 }, { datum: dag(21), minuter: 400 }],
     }],
   });
+
+  const ko = await api.get(`${co()}/approvals?status=pending`).set(auth());
+  expect(ko.status, JSON.stringify(ko.body)).toBe(200);
+  const post = (ko.body.approvals as Array<{ id: string; action: string; input: { receipt_id?: string } }>)
+    .find((q) => q.action === 'binda_kostnad' && q.input.receipt_id === axisKvitto);
+  expect(post).toBeDefined();
+  const ja = await api.post(`${co()}/approvals/${post!.id}/approve`).set(auth()).send({});
+  expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+  // Story 5.1:s förifyllning sätter märkningen; här planteras den för chipprovet.
+  await withAdmin((c) => c.query('UPDATE receipts SET oplanerad=true WHERE id=$1 AND company_id=$2', [axisKvitto, companyId]));
 
   // ---- Uppdrag B: ett tak som ingen bekräftat. Ett oläst tak varnar aldrig.
   const b = await enkeltUppdrag('ILT-002 förstudie',
@@ -498,7 +508,7 @@ describe('(e) kostnaderna', () => {
   it('utan bunden kostnad står en förklaring — bindningen görs aldrig här', async () => {
     const main = huvud(await pengasidan(projektD));
     expect(main).toContain('Ingen kostnad är bunden till avtalet');
-    expect(main).toContain('Bindningen görs av svepet');
+    expect(main).toContain('Bindningen görs genom kön');
     expect(main).not.toContain('class="pengarad"');
   });
 });

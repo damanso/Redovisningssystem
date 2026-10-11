@@ -21,8 +21,9 @@
 //     väntar sig är svaret `null` — "inget värde läst", aldrig ett tomt värde,
 //     för de två betyder olika saker för den som läser (mönstret
 //     `troskelutfall` i `uppdragLage.ts`).
-//   * **Kostnaderna är bundna, aldrig hittade.** Bindningen kvitto → avtalsdel
-//     ägs av svepet och kön (S6.1). Här läses den, med `oplanerad` som den står.
+//   * **Kostnaderna är bundna eller föreslagna, aldrig hittade här.** Bindningen
+//     kvitto → avtalsdel görs bara genom kön (S6.1, Story 1.8). Här läses den,
+//     med `oplanerad` som den står, och ett föreslaget men obundet kvitto som obundet.
 //   * **Utan avtal finns inget uppdrag att läsa.** Ett okänt eller främmande
 //     `project_id`, och ett projekt utan ett enda avtal, ger 404 — aldrig en tom
 //     yta, som hade sett ut som "uppdraget är tomt" i stället för "det här är
@@ -31,6 +32,7 @@
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
+import { last, type Lasvarde } from '../lib/lasvarde.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import { gallandeTaxa, listContracts, type Delforbrukning } from './contracts.js';
@@ -106,6 +108,20 @@ export interface Kostnadsrad {
   oplanerad: boolean;
 }
 
+/**
+ * Ett kvitto som föreslagits för avtalet men inte är bundet (FR-33, Story 1.8).
+ * Det ingår i uppdragets kostnader som obundet, före godkännandet och efter ett
+ * nej. Ingen avtalsdel står här: modulen påstår inte att förslaget är beslutat.
+ */
+export interface ObundenKostnad {
+  receipt_id: string;
+  datum: string;
+  /** Kvitton utan leverantör finns (`supplier_id` är nullbar). Då står null. */
+  leverantor: string | null;
+  total_ore: number;
+  status: string;
+}
+
 export interface Avtalspengar {
   contract_id: string;
   contract_name: string;
@@ -117,6 +133,11 @@ export interface Avtalspengar {
   /** S6.2:s redan härledda larm ur cachen. null = samma sak. */
   troskellarm: Svepvarde<Troskelutfall> | null;
   kostnader: Kostnadsrad[];
+  /**
+   * Föreslagna men obundna kvitton (Story 1.8), med källa och lästid (B-12).
+   * Det senaste förslaget avgör avtalet.
+   */
+  obundna_kostnader: Lasvarde<ObundenKostnad[]>;
 }
 
 export interface Uppdragspengar {
@@ -386,8 +407,52 @@ async function kostnaderForAvtal(
 }
 
 /**
+ * De föreslagna men obundna kvittona, i datumordning (FR-33, Story 1.8).
+ *
+ * Ett kvitto hör till avtalet när dess SENASTE `binda_kostnad`-köpost, i
+ * vilken status som helst, pekar på en avtalsdel i avtalet och kvittot ännu
+ * saknar avtalsdel. Det senaste förslaget avgör, så ett kvitto står hos högst
+ * ett avtal. Ett bundet kvitto står bland de bundna. id jämförs som text i
+ * gemener, så att en felformad köpost aldrig fäller läsningen på en
+ * uuid-kastning och en köpost med versaler räknas till sitt kvitto.
+ */
+async function obundnaForAvtal(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<ObundenKostnad[]> {
+  const res = await client.query<{
+    receipt_id: string; datum: string; leverantor: string | null; total_ore: string; status: string;
+  }>(
+    `WITH senaste AS (
+       SELECT DISTINCT ON (lower(q.input->>'receipt_id'))
+              lower(q.input->>'receipt_id') AS receipt_id, lower(q.input->>'contract_part_id') AS del
+         FROM action_approvals q
+        WHERE q.company_id = $1 AND q.action = 'binda_kostnad'
+        ORDER BY lower(q.input->>'receipt_id'), q.created_at DESC, q.id DESC
+     )
+     SELECT r.id AS receipt_id, r.receipt_date::text AS datum, s.name AS leverantor,
+            r.total_ore::text AS total_ore, r.status
+       FROM senaste k
+       JOIN receipts r ON r.company_id = $1 AND r.id::text = k.receipt_id
+       JOIN contract_parts cp ON cp.company_id = $1 AND cp.id::text = k.del
+       LEFT JOIN suppliers s ON s.id = r.supplier_id AND s.company_id = r.company_id
+      WHERE r.contract_part_id IS NULL AND cp.contract_id = $2
+      ORDER BY r.receipt_date, r.receipt_number`,
+    [companyId, contractId],
+  );
+  return res.rows.map((rad) => ({
+    receipt_id: rad.receipt_id,
+    datum: rad.datum,
+    leverantor: rad.leverantor,
+    // bigint kommer ur pg som sträng — ören är heltal hela vägen, aldrig float.
+    total_ore: Number(rad.total_ore),
+    status: rad.status,
+  }));
+}
+
+/**
  * Pengarna för ETT uppdrag: serien, ramen, de två cachade svepvärdena och de
- * bundna kostnaderna — per avtal, allt läst och inget räknat om.
+ * bundna och de föreslagna men obundna kostnaderna — per avtal, allt läst
+ * och inget räknat om.
  */
 export async function lasUppdragspengar(
   client: PoolClient, companyId: string, input: LasUppdragspengarInput,
@@ -399,6 +464,7 @@ export async function lasUppdragspengar(
   if (avtalsrader.length === 0) throw new NotFoundError('project');
 
   const avtal: Avtalspengar[] = [];
+  const lastNar = new Date().toISOString();
   for (const rad of avtalsrader) {
     const contractId = rad.id as string;
     // `listContracts` bär redan husets enda takberäkning per avtal
@@ -420,6 +486,7 @@ export async function lasUppdragspengar(
       prognos: svept(cache.find((v) => v.nyckel === 'prognos'), prognosramar),
       troskellarm: svept(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall),
       kostnader: await kostnaderForAvtal(client, companyId, contractId),
+      obundna_kostnader: last(await obundnaForAvtal(client, companyId, contractId), KALLA_REDOVISNING, lastNar),
     });
   }
 

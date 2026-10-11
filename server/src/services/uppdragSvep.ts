@@ -18,6 +18,7 @@ import { beraknaTackning, MANDATKALLOR, TACKNINGSNYCKEL, type Mandatkalla } from
 import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
+import { valjBindningsmal } from '../lib/bindningsmal.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import { harledTroskellarm, type Plandel, type Trosklar } from '../lib/troskel.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
@@ -125,13 +126,10 @@ export async function lasSvepvarden(
 //     skrivvägarna: uppdragen i indatat och Drive-rapporterna, vars köposter
 //     delades ut medan uppdraget ännu var öppet.
 //   * **Förslagen är cache, inget annat.** `statusforslag:`/`kostnadsforslag:`
-//     skrivs i `uppdrag_svepvarde` och rör aldrig `uppdrag_leverabel`. Ett
-//     förslag är inte ett beslut: S3.2 bekräftar statusbytet och S6.1 köar
-//     kostnadsbindningen mot en leverabel, båda med en människa i vägen.
-//     Undantaget är bindningssteget (S6.1, `uppdragKostnad.ts`): saknar
-//     förslaget ett löv finns inget omdöme att fråga om, och kostnaden binds
-//     till strömmen/rotdelen direkt — bara när `contract_part_id` är NULL,
-//     aldrig som en flytt, och aldrig till ett löv.
+//     skrivs i `uppdrag_svepvarde` och rör aldrig `uppdrag_leverabel` eller
+//     `receipts`. Ett förslag är inte ett beslut: S3.2 bekräftar statusbytet,
+//     och bindningssteget (S6.1, Story 1.8) köar varje kostnadsbindning, till
+//     leverabel, ström eller rotdel, för en människas godkännande.
 
 /**
  * Vad anroparen SÅG om en referens. `lage` går rakt in i `verifieraReferens`
@@ -510,7 +508,7 @@ function idagsdatum(): string {
  * `upsertSvepvarden` — cachen ska aldrig kunna stå halvskriven mellan två steg.
  */
 async function svepEttUppdrag(
-  client: PoolClient, companyId: string, userId: string, actor: Actor,
+  client: PoolClient, companyId: string, userId: string,
   rad: Uppdragsrad, obs: Uppdragsobservation,
 ): Promise<Uppdragsutfall> {
   // (1) Referenserna. `verifieraReferens` äger jämförelsen mot baslinjen och
@@ -705,12 +703,11 @@ async function svepEttUppdrag(
         if (namn.length < 3) continue;
         const traff = medTitel.find((v) => normalisera(v.utfall.referens.titel_vid_lankning!).includes(namn));
         if (traff === undefined) continue;
-        // FR-33: strömmen vars intervall TÄCKER datumet, annars rotdelen. Aldrig
-        // en leverabel (den ligger under strömmen), och aldrig en flytt — kvittot
-        // rörs inte, förslaget ligger i cachen tills en människa tar det.
-        const strom = strommar.find((s) => s.start_date !== null && s.end_date !== null
-          && s.start_date <= kvitto.receipt_date && kvitto.receipt_date <= s.end_date);
-        const mal = strom ?? rot;
+        // Cachens förslag är den grövre nivån: strömmen vars intervall täcker
+        // datumet, annars rotdelen. Samma regel som bindningssteget använder när
+        // ingen leverabel kan föreslås (`valjBindningsmal` utan leverabel).
+        // Kvittot rörs inte.
+        const mal = valjBindningsmal({ rot, strommar, alla }, { datum: kvitto.receipt_date });
         varden.push({
           nyckel: `kostnadsforslag:${kvitto.receipt_id}`,
           kalla: 'redovisning',
@@ -736,13 +733,13 @@ async function svepEttUppdrag(
 
   const skrivning = await upsertSvepvarden(client, companyId, rad.contract_id, varden);
 
-  // (6) Bindningssteget (S6.1, FR-33). Efter förslagshärledningen, i SAMMA
-  // transaktion: köar det som är ett omdöme (ett löv) och binder det som inte är
-  // det (ström/rot). Faller något rullas hela svepet tillbaka — en köad bindning
-  // utan sin cache hade pekat på ett förslag som inte fanns.
+  // (6) Bindningssteget (S6.1, FR-33, Story 1.8). Efter förslagshärledningen, i
+  // SAMMA transaktion: varje förslag köas som `binda_kostnad` med actor
+  // 'agent', och inget kvitto skrivs. Faller något rullas hela svepet tillbaka —
+  // en köad bindning utan sin cache hade pekat på ett förslag som inte fanns.
   const bindningar = bindningsdelar === null || kostnadsforslag.length === 0
     ? tomtBindningsutfall()
-    : await bindSvepetsForslag(client, companyId, userId, actor, kostnadsforslag, bindningsdelar);
+    : await bindSvepetsForslag(client, companyId, userId, kostnadsforslag, bindningsdelar);
 
   return {
     contract_id: rad.contract_id,
@@ -775,9 +772,11 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * ur kalendern och uppdragets rotram (S7.4). Allt lagras i `uppdrag_svepvarde`
  * med `kalla` och `last_nar`;
  * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
- * (S7.2) och bindningssteget (S6.1) — alla tre genom sina befintliga tjänster.
+ * (S7.2) och bindningsstegets köposter (S6.1, Story 1.8) — alla tre genom sina befintliga tjänster.
  * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
+ * `actor` är anroparens aktör. Den styr inte svepets förslag: kostnadsbindningarna
+ * köas alltid med actor `agent` (architecture.md, Kommunikationsmönster).
  */
 export async function korUppdragssvep(
   client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata, verkstallMottagna?: MottagnaBeslutssteg,
@@ -851,7 +850,7 @@ export async function korUppdragssvep(
       hoppade.push(hoppat(rad));
       continue;
     }
-    uppdrag.push(await svepEttUppdrag(client, companyId, userId, actor, rad, obs));
+    uppdrag.push(await svepEttUppdrag(client, companyId, userId, rad, obs));
   }
 
   // B-3: alla öppna avtal, inte bara indatats. Reglerna läser enbart egna

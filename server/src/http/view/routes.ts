@@ -4763,8 +4763,11 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
 //  5. **Färskhet per källa (FR-35).** Prognosen och tröskeln är SVEPTA värden
 //     och bär svepets lästidpunkt, inte sidans. Har svepet aldrig kört säger
 //     raden DET — ett tomt larm ser annars ut som lugn.
-//  6. **Kostnaden är bunden, aldrig hittad.** Bindningen kvitto → avtalsdel görs
-//     av svepet och kön (S6.1); här läses den. `Oplanerad` är samma chip och
+//  6. **Kostnaden är bunden eller föreslagen, aldrig hittad här.** Bindningen
+//     kvitto → avtalsdel görs bara genom kön (S6.1, Story 1.8); här läses den.
+//     Ett föreslaget men obundet kvitto står som Obunden utan avtalsdel,
+//     eftersom sidan aldrig påstår att ett förslag är beslutat.
+//     `Oplanerad` är samma chip och
 //     samma förklaringsrad som kvittolistan bär — en märkning som ser olika ut
 //     på två sidor är två märkningar.
 //  7. **Ren läsvy.** Inget formulär, ingen knapp, inget skript: allt som ändrar
@@ -4916,34 +4919,44 @@ function troskelpanel(a: Avtalspengar, idag: string): Raw {
 }
 
 /**
- * De bundna kostnaderna.
+ * Kostnaderna: de bundna och de föreslagna men obundna (Story 1.8).
  *
- * Beloppet är redovisningens eget (`amount`), och ett OBOKFÖRT kvitto står med
- * *ej bokförd* i stället för ett tal: kostnaden finns som handling men inte i
- * bokföringen, och en siffra där hade varit ett påstående om pengar som ännu
- * inte flyttat sig.
+ * Beloppet är redovisningens eget (`amount`); ett obokfört kvitto står som
+ * ej bokförd i stället för ett tal. Ett förslag visar aldrig en beslutad del.
  */
-function kostnadspanel(companyId: string, a: Avtalspengar): Raw {
-  if (a.kostnader.length === 0) {
-    return html`<div class="empty" style="margin-top:14px"><div class="big">Ingen kostnad är bunden till avtalet</div>
-      En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs av svepet, och
-      när den kräver ett omdöme av kön — aldrig på den här sidan.
-      <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</div>`;
+function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
+  const obundna = a.obundna_kostnader.varde ?? [];
+  if (a.kostnader.length === 0 && obundna.length === 0) {
+    return html`<p style="margin:14px 0 0;font-size:14px"><strong>Ingen kostnad är bunden till avtalet.</strong>
+      En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, efter ditt godkännande — aldrig på den här sidan.
+      <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</p>`;
   }
+  const belopp = (k: { status: string; total_ore: number }): Raw => k.status === 'booked'
+    ? amount(k.total_ore)
+    : html`<span class="muted">ej bokförd</span>`;
   return html`<div class="table-wrap" style="margin-top:14px"><table>
       <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th></tr></thead>
       <tbody>${a.kostnader.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
         <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
         <td><span class="code">${k.kod}</span>${k.oplanerad ? html` ${chip('Oplanerad', 'warn', '!')}` : ''}</td>
-        <td class="num">${k.status === 'booked'
-          ? amount(k.total_ore)
-          : html`<span class="muted">ej bokförd</span>`}</td></tr>`)}
+        <td class="num">${belopp(k)}</td></tr>`)}
+      ${obundna.map((k) => html`<tr class="pengarad">
+        <td class="code">${k.datum}</td>
+        <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
+        <td>${chip('Obunden', 'muted', '○')}</td>
+        <td class="num">${belopp(k)}</td></tr>`)}
       </tbody></table></div>
     ${a.kostnader.some((k) => k.oplanerad)
       // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
       // märkning, och två olika förklaringar vore två olika märkningar.
       ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
+      : ''}
+    ${obundna.length > 0
+      ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Obunden = kostnaden är föreslagen för uppdraget, men ingen bindning till en avtalsdel är godkänd. Den ingår i uppdragets kostnader utan avtalsdel.</p>
+        ${farskhetsrad([a.obundna_kostnader.last_nar === null
+          ? 'obundna kostnader: lästid saknas'
+          : `obundna kostnader ${direktFarskhet({ kalla: a.obundna_kostnader.kalla, last_nar: a.obundna_kostnader.last_nar }, idag)}`])}`
       : ''}`;
 }
 
@@ -4964,7 +4977,7 @@ function pengasida(companyId: string, u: Uppdragspengar, idag: string): Raw {
     ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.contract_name}</h2>` : ''}
       ${rampanel(a, idag)}
       ${troskelpanel(a, idag)}
-      ${kostnadspanel(companyId, a)}`)}`;
+      ${kostnadspanel(companyId, a, idag)}`)}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/pengarna', pageFor('projects', 'Pengarna',
