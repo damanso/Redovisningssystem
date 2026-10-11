@@ -599,10 +599,8 @@ describe('KRAV-9: samma indata två gånger, och ägandegränsen', () => {
     expect(andra.uppdrag[0]!.borttagna).toBe(0);
   });
 
-  // S6.1 gav svepet ETT skrivfall mot `receipts`: ett kostnadsförslag UTAN löv
-  // binds automatiskt till strömmen/rotdelen (se uppdragsytan-bindning-svep).
-  // Här bär varje förslag sitt löv (L3), och då är kvittot fortfarande orört —
-  // lövet är ett omdöme, och det ligger i kön tills en människa svarat.
+  // Story 1.8: svepet skriver aldrig i receipts, oavsett förslagets nivå.
+  // Varje bindning väntar i kön tills en människa svarat.
   it('svepet skriver aldrig i uppdrag_leverabel, och inte i receipts när förslaget bär ett löv', async () => {
     const las = async () => withAdmin(async (c) => ({
       leverabler: (await c.query(

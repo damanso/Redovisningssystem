@@ -302,13 +302,21 @@ interface Kostnadsunderlag extends Kounderlag {
 /** Ren: cacheradens ursprung bevaras vid skälet och dess referens. */
 export function beskrivKostnadsbindning(u: Kostnadsunderlag, bas: string, lastNar: string): Undantagspost {
   const cacheKod = text(eget(u.cache?.varde, 'leverabel_kod'));
+  const cacheForslag = text(eget(u.cache?.varde, 'forslag_kod'));
+  const cacheDatum = text(eget(u.cache?.varde, 'datum'));
   const cacheTid = u.cache?.last_nar.toISOString();
   const cacheKalla = u.cache?.kalla ?? KALLA_REDOVISNING;
+  // B-6 (Story 1.8): den grövre nivån förklaras bara när köpostens mål är
+  // just cachens förslag. Skälet bär fortfarande cacheradens källa och lästid.
+  const grovre = cacheKod !== null && cacheForslag !== null
+    && u.del.code === cacheForslag && u.del.code !== cacheKod
+    ? ` En leverabel föreslås bara när den har en aktiv avtalsdel, och därför gäller förslaget ${u.del.code}: strömmen vars intervall täcker kvittots datum ${cacheDatum ?? 'datum saknas'}, annars uppdraget.`
+    : '';
   return { ...kopostbas(u, 'kostnadsbindning', lastNar),
     val: { kod: 'ja_nej', text: 'Godkänn bindningen, eller säg nej med skäl.' },
     varfor_mandat: 'Bindningen avgör vilken del av avtalet kostnaden belastar. Den kräver ditt godkännande, oavsett belopp.',
     forslag: u.kvitto ? last({ fran: u.kvitto.nuvarande_del ?? 'obunden', till: `${u.del.code} · ${u.del.name}`, belopp_ore: u.kvitto.total_ore }, KALLA_REDOVISNING, lastNar) : saknas(KALLA_REDOVISNING, lastNar),
-    skal: cacheKod && cacheTid ? last(`Svepet kopplade kvittot till ${cacheKod} genom handlingens titel.`, cacheKalla, cacheTid) : saknas(KALLA_REDOVISNING, lastNar),
+    skal: cacheKod && cacheTid ? last(`Svepet kopplade kvittot till ${cacheKod} genom handlingens titel.${grovre}`, cacheKalla, cacheTid) : saknas(KALLA_REDOVISNING, lastNar),
     kallor: kallor([{ typ: 'yta', etikett: u.sammanfattning ?? 'Kvitton', sokvag: `${bas}/receipts` }, ...u.referenser ?? []],
       u.referenser?.length && cacheTid ? cacheTid : lastNar, u.referenser?.length && cacheTid ? cacheKalla : KALLA_REDOVISNING),
     ja_registrerar: `Kvittot binds till ${u.del.code}. Beloppet läses ur redovisningen och kopieras inte. ${BESLUTSRADEN}` };

@@ -1872,9 +1872,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Schemat bor i tjänsten (prejudikat: `DriveRapportSchema`) — det är samma
     // strikta form som funktionen parsar, och två kopior hinner divergera.
     inputSchema: SvepIndataSchema,
-    // `userId`/`actor` följer med: bindningssteget (S6.1) köar `binda_kostnad`
-    // inuti svepets egen transaktion, och kön ska visa vem som bad om
-    // bindningen — precis som varje annan köpost.
+    // `userId` följer med: bindningssteget (S6.1, Story 1.8) köar `binda_kostnad`
+    // inuti svepets egen transaktion med anroparen som `requested_by`. Aktören på
+    // köposten är alltid 'agent', eftersom förslaget är svepets.
     handler: async (ctx, i) => {
       const { verkstallMottagnaBeslut } = await import('./execute.js');
       return korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never,
@@ -1909,10 +1909,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     handler: (ctx, i) => lasDokumentforteckning(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
-  // Uppdragsytan S6.1, våg 4: kostnaden binds till avtalsdelen (FR-33). Svepet
-  // köar den här åtgärden när det kunde peka ut en leverabel — vilket löv en
-  // kostnad hör till är ett omdöme. Kunde det inte, binder svepet självt till
-  // strömmen eller rotdelen, utan köpost (`services/uppdragKostnad.ts`).
+  // Uppdragsytan S6.1 och Story 1.8 (B-6): kostnaden binds till avtalsdelen
+  // (FR-33). Svepet köar den här åtgärden för varje kostnadsförslag — till
+  // leverabeln när den har en aktiv avtalsdel, annars till strömmen eller
+  // rotdelen. Ingen kodväg binder utan ett mottaget ja (`services/uppdragKostnad.ts`).
   // -------------------------------------------------------------------------
   def({
     name: 'binda_kostnad',

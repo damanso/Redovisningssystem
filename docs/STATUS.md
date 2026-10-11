@@ -153,6 +153,81 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-11 (Story 1.8, spärren mot direktbindning av kostnader):**
+  `server/src/lib/bindningsmal.ts` samlar den rena målregeln för löv, ström
+  och uppdrag; `uppdragSvep.ts` använder den också för cachens grövre nivå.
+  `uppdragKostnad.ts` köar varje förslag med actor `agent`, med en
+  listfråga per körning för idempotens i alla statusar och uuid-versaler.
+  Gren 2 och dess vakt är borttagna; bara verkställigheten av ett mottaget
+  mänskligt ja skriver kvittots avtalsdel. Registrets kommentarer följer med.
+  `uppdragUndantag.ts`: samma beskrivare ger skälet till ström/rot i läsvyn
+  och fryst beslutsunderlag. `uppdragPengar.ts` läser obundna kvitton efter
+  senaste bindningsköposten, med Lasvarde/källa/lästid. Pengar-delen av
+  `routes.ts` visar Obunden utan föreslagen kod, med färskhetsrad och tomläge.
+  Husets tabell, typografi och tokens följs; länken får befintlig focus-visible.
+  Tomt, laddat, saknad leverantör, obokfört och escaping prövades isolerat.
+  Serverrenderingens sidbyte och befintliga felhantering används.
+  Ingen browserkörning eller databasverifiering påstås utförd.
+
+  Nya K0–K7 ligger i `server/test/uppdragsytan-kostnadssparr.test.ts` och
+  `kostnadssparrHelper.ts`. K1–K4 prövar köning/audit/människospärr/statusar/
+  avslag/belopp; K5 skälet och frysta källor; K6/K7 ja/nej, obundna kostnader,
+  senaste avtal, tenant och markup. Svep-bindning, bindning, svep och pengarna
+  följer det ändrade beteendet. Pengarnas chipmärkning planteras efter ja,
+  eftersom svepet inte längre sätter oplanerad. Dokumentationen uppdaterad i
+  `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md`; CRM-kontraktet berörs inte.
+
+  Röda belägg före respektive implementation:
+  ```text
+  test/kostnadssparrHelper.ts(3,34): error TS2307: Cannot find module '../src/lib/bindningsmal.js' or its corresponding type declarations.
+  test/uppdragsytan-kostnadssparr.test.ts(271,89): error TS2554: Expected 6 arguments, but got 5.
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  +   varde: 'Svepet kopplade kvittot till L4 genom handlingens titel.'
+  -   varde: 'Svepet kopplade kvittot till L4 genom handlingens titel. En leverabel föreslås bara när den har en aktiv avtalsdel, och därför gäller förslaget S2: strömmen vars intervall täcker kvittots datum 2026-11-20, annars uppdraget.'
+  test/uppdragsytan-kostnadssparr.test.ts(367,12): error TS2339: Property 'obundna_kostnader' does not exist on type 'Avtalspengar'.
+  ```
+  Typecheck exit 2 för Task 1/2/4, ren K5 exit 1 för Task 3.
+  Gröna lokala grindar efter varje uppgift och vid slutet:
+  ```text
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  exit 0
+  > tsc
+  exit 0
+  grön: provaAnnatMal
+  grön: provaCachemal
+  grön: provaDatumSaknas
+  grön: provaLov
+  grön: provaLovskal
+  grön: provaOverlapp
+  grön: provaRot
+  grön: provaRotskal
+  grön: provaSaknatSkal
+  grön: provaStrom
+  grön: provaStromskal
+  grön: isolerad kostnadspanel, tom/laddad/saknad leverantör/obokförd/escaping/färskhet
+  exit 0
+  > vitest run
+  RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  exit 1 före insamling
+  ```
+  Vitest inte kört i sandlådan: anslutningen nekas. Riktade sviter, modulsviten
+  och hela sviten försöktes; kedjans `npm test` belägger integration/regression
+  enligt berättelsens uttryckliga undantag. Inget DB-prov kallas grönt.
+  Ingen migration, tjänstestart eller driftsättning utförd.
+
+  Driftnotiser:
+  1. Kostnader som gren 2 bundit före bygget står kvar bundna med
+     `oplanerad = true` och `bindning: automatisk`. David avgör eventuell
+     efterhandsprövning; inga historiska kvitton ändras här.
+  2. `hermes/prov/bakvag.py`:s fjärde kontroll mäter nu bara historiska rader.
+     En Hermes-berättelse kan byta den mot ”ingen ny automatbindning efter
+     driftsättningen”. Hermes är orörd.
+  3. `bindningar.automatiska` är alltid tom och står kvar för att
+     svepkontraktet bara växer.
+
+
 - **2026-10-11 (Story 1.7, omtag 2: CHECK-regler och mottaget avslut):**
   Rättat två provmekanismer i `server/test/uppdragsytan-beslut.test.ts`,
   `beslutsunderlagHelper.ts` och `uppdragsytan-avslut.test.ts`.
