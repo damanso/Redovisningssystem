@@ -18,7 +18,7 @@ zod-schema och en känslighetsnivå:
 En action kan dessutom ha det valfria fältet `kravManniska: true`, som betyder att
 bara en människa får köra den: ett agent-anrop avvisas i `executeAction` med
 `403 human_required` innan något skrivs (till skillnad från `sensitive`, som köar
-begäran för godkännande). Ingen action sätter fältet i dag.
+begäran för godkännande). Uppdragsytans mänskliga beslut och bedömningar använder fältet.
 
 Alla actions kör mot kärnans tjänster med samma serverpåtvingade regler: tenant
 härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas.
@@ -1196,7 +1196,9 @@ egna databasen kommer in som validerad indata:
   `rapportera_drive_kopia` och genom **samma** tjänstefunktion. Utan den halvan
   hade svaret lämnat tillbaka en kö som redan var tömd.
 
-**Ordningen är kravet:** (1) verifiera referenserna via S7.1, (2) kontrollera
+**Mottagna beslut först (Story 1.7, B-2):** efter bolagslåset verkställs redan mottagna mandat med en savepoint per köpost, före läsningen av öppna avtal. Svaret `svep_kort` får `mottagna_beslut: { verkstallda, kvar }` som antal; inga id eller fel förs ut. Auditraden anger verkställaren `svep`, medan beslutsfattaren förblir människan. `svep_avstod` är oförändrat.
+
+**Ordningen efter beslutssteget är kravet:** (1) verifiera referenserna via S7.1, (2) kontrollera
 spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändelserna
 — och därefter förslagen. Svarets `nycklar` står i **härledningsordning** (inte
 sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
@@ -1539,7 +1541,7 @@ ingen ny CSS och inga nya komponenter.
   i skalans ordning med antal — uppräknade tillstånd, aldrig procent),
   **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren) och
   **`oppna_signaler`/`avgjorda_signaler`**, samt uppdragets **`koposter`** och
-  **`farskhet`** (en post per innehållsdel). Okänt eller främmande `project_id` —
+  **`beslut`** (Story 1.7: `registrerade` med val, fryst underlag, handling, källreferenser och beslutsfattare/tid; `mottagna` med bara `approval_id`, `atgard`, `utfall`, `beslutad_nar`) och **`farskhet`** (en post per innehållsdel, även `beslut`). Lägets panel **Beslut** visar mottagna mandat utan ny kvittens och registrerade beslut med skäl, källa och handling. Ett upprepat svar på Att göra leder till beslutets ankare; vanliga lyckade svar leder tillbaka till Att göra. Okänt eller främmande `project_id` —
   och ett projekt UTAN avtal — ger **404 `not_found`**: ett projekt utan avtal är
   ett projekt, inte ett uppdrag, och en tom yta hade sagt att uppdraget saknade
   sina delar i stället för att det saknades.
@@ -1672,3 +1674,10 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   bolaget eller stabila `uppdrag_referens`-pekare, aldrig externa URL:er.
 
 Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
+
+
+### Beslutsraden och nej med skäl (Story 1.7, B-1)
+
+`avboj_beslutsforslag` är write med **`kravManniska: true`**. Indata är `approval_id` (uuid) och `skal` (1–300 tecken). Svaret är `{ approval_id, status, verkstalld }`. Skälet får inte bestå av blanksteg. Fel: 400 `validation_error`/`skal_kravs`, 403 `human_required`, 404 för saknad köpost i bolaget, 409 `not_pending` eller `inte_mandatforslag`.
+
+`MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad` och `avsluta_uppdrag`. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`.

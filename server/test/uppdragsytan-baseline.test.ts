@@ -4,7 +4,8 @@
 // nyckel ger version_finns (409). Den rena bekräftelsen är enda UPDATE-vägen.
 // (a) agentförslag, (b) ny version, (c) orsakskrav, (d) fryst innehåll,
 // (e) datumprecision och (f) äldre inläsning genom samma tjänstelager.
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { provaMottagetFel } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 let user: TestUser;
@@ -12,6 +13,8 @@ let companyId: string;
 let customerId: string;
 let agentToken: string;
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const agent = () => ({ Authorization: `Bearer ${agentToken}` });
 const co = () => `/api/companies/${companyId}`;
@@ -338,8 +341,7 @@ describe('(d) in-place-ändring av ett bekräftat tak', () => {
     expect(res.body.error).toBe('validation_error');
 
     const medOrsak = await koaOchGodkann('upsert_contract_part', { contract_id: contractId, code: '2A', cap_hours: 64, valid_from: '2026-01-01', change_reason: 'nytt avtal' });
-    expect(medOrsak.status).toBe(409);
-    expect(medOrsak.body.error).toBe('version_finns');
+    await provaMottagetFel(medOrsak, companyId, user, 'version_finns', verkstallLogg);
     const rader = await delrader(contractId);
     expect(rader).toHaveLength(1);
     expect(rader[0]!.cap_hours).toBe('32.00');
@@ -403,8 +405,7 @@ describe('(f) första versionen har orsak och lagrat innehåll står kvar', () =
     const andrad = await koaOchGodkann('upsert_contract_part', { change_reason: 'avtal',
       contract_id: contractId, code: '1', cap_hours: 12, valid_from: '2026-01-01',
     });
-    expect(andrad.status, JSON.stringify(andrad.body)).toBe(409);
-    expect(andrad.body.error).toBe('version_finns');
+    await provaMottagetFel(andrad, companyId, user, 'version_finns', verkstallLogg);
 
     const efterAndring = await delrader(contractId);
     expect(efterAndring).toHaveLength(1);

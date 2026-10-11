@@ -45,6 +45,7 @@ import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js'
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
+import { registreraJa, registreraNej, avbojForslag } from '../services/uppdragBeslut.js';
 import { lasUndantag } from '../services/uppdragUndantag.js';
 import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
 import {
@@ -1550,7 +1551,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         notes: safeText(2000).optional(),
       })
       .strict(),
-    handler: (ctx, i) => updateContract(ctx.client, ctx.companyId, ctx.userId, i as never),
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'update_contract', i,
+      () => updateContract(ctx.client, ctx.companyId, ctx.userId, i as never)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'update_contract', i, skal),
   }),
   def({
     name: 'upsert_contract_part',
@@ -1568,7 +1572,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
           message: 'ange varför baselinen ändras (minst fem tecken)' });
       }
     }),
-    handler: (ctx, i) => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never),
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'upsert_contract_part', i,
+      () => upsertContractPart(ctx.client, ctx.companyId, ctx.userId, i as never)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'upsert_contract_part', i, skal),
   }),
   def({
     name: 'andra_baseline',
@@ -1597,13 +1604,15 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
-    // BÅDA i `approveAction`:s enda transaktion. Länkningen ligger i tjänsten
+    // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
     // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
-    handler: async (ctx, i) => {
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
       const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;
-    },
+    }),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, skal),
   }),
   def({
     name: 'list_contracts',
@@ -1672,7 +1681,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Sätt baseline ur det frysta leveranskontraktet',
     sensitivity: 'sensitive',
     inputSchema: z.object({ contract_id: UuidSchema, kontraktstext: safeText(200_000) }).strict(),
-    handler: (ctx, i) => sattBaseline(ctx.client, ctx.companyId, ctx.userId, i as never),
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'satt_baseline', i,
+      () => sattBaseline(ctx.client, ctx.companyId, ctx.userId, i as never)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'satt_baseline', i, skal),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S4.1: bedömningen. Uppdragets enda subjektiva tal — och det
@@ -1863,7 +1875,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // `userId`/`actor` följer med: bindningssteget (S6.1) köar `binda_kostnad`
     // inuti svepets egen transaktion, och kön ska visa vem som bad om
     // bindningen — precis som varje annan köpost.
-    handler: (ctx, i) => korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+    handler: async (ctx, i) => {
+      const { verkstallMottagnaBeslut } = await import('./execute.js');
+      return korUppdragssvep(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never,
+        (client) => verkstallMottagnaBeslut(client, ctx.companyId, 'svep'));
+    },
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S10.10: dokumentförteckningen (FR-43, beslut #189). Samma
@@ -1911,7 +1927,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // delen är kvittots enda bindning till uppdraget. En kostnad binds aldrig
     // "till uppdraget" i största allmänhet.
     inputSchema: z.object({ receipt_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
-    handler: (ctx, i) => bindaKostnad(ctx.client, ctx.companyId, ctx.userId, i as never),
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'binda_kostnad', i,
+      () => bindaKostnad(ctx.client, ctx.companyId, ctx.userId, i as never)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'binda_kostnad', i, skal),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.2, våg 4: statusbytet med transmittal. Svepet FÖRESLÅR
@@ -2020,7 +2039,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Avsluta uppdraget och frys listan över det som stod öppet',
     // `sensitive` utan `kravManniska` (1E Del 4): förslaget får köas av vem som
     // helst, men bara en människa godkänner — och listan räknas då i
-    // GODKÄNNANDETRANSAKTIONEN (`approveAction`), inte när förslaget lades. En
+    // VERKSTÄLLIGHETSTRANSAKTIONEN efter mottagandet, inte när förslaget lades. En
     // leverabel som hinner bli godkänd däremellan står alltså inte i listan.
     sensitivity: 'sensitive',
     inputSchema: z.object({ project_id: UuidSchema }).strict(),
@@ -2028,8 +2047,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // 'set_project_status')`. Samma regel som `andra_baseline`:
     // `set_project_status` behåller sin `kravManniska` orörd, och stängningen
     // sker genom `setProjectStatus` inuti den här enda transaktionen.
-    handler: (ctx, i: { project_id: string }) =>
-      avslutaUppdrag(ctx.client, ctx.companyId, ctx.userId, i.project_id),
+    tvafas: true,
+    handler: (ctx, i: { project_id: string }) => registreraJa(ctx.client, ctx.companyId, ctx, 'avsluta_uppdrag', i,
+      () => avslutaUppdrag(ctx.client, ctx.companyId, ctx.userId, i.project_id)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'avsluta_uppdrag', i, skal),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S10.6, våg 5: kontraktsytan läses (FR-38). Var ligger
@@ -2078,6 +2099,20 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({}).strict(),
     handler: (ctx) => lasUndantag(ctx.client, ctx.companyId),
+  }),
+  // -------------------------------------------------------------------------
+  // Story 1.7: mänskligt nej genom kärnans enda mottagande och verkställighet.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'avboj_beslutsforslag',
+    title: 'Säg nej till ett beslutsförslag i uppdraget',
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z.object({ approval_id: UuidSchema, skal: safeText(300) }).strict(),
+    handler: async (ctx, i) => {
+      const { rejectApproval } = await import('./execute.js');
+      return avbojForslag(ctx.client, ctx.companyId, ctx, i, rejectApproval);
+    },
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan, överlämning #268: anteckningsloggen under Övrigt på Läget.

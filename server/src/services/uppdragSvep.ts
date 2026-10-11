@@ -5,6 +5,7 @@
 // som helst. Den här hjälparen är den enda vägen in i tabellen, och
 // agandegrans-cache-provet fryser ett indata, tömmer, skriver om och jämför.
 //
+// Mottagna beslut verkställs först genom kärnans injicerade återförsökssteg.
 // Svepet självt (kor_uppdragssvep, S7.3) ligger längst ned i filen och anropar
 // upsertSvepvarden med sina härledda värden. Skrivningen här uppe är den enda
 // vägen in i tabellen — ingen härledning, inga externa anrop (ADR-4:
@@ -262,10 +263,14 @@ export interface SvepTackning {
   contract_id: string; kalla: Mandatkalla; lage: 'last' | 'fel'; saknas: string[];
 }
 
+/** Kärnans återförsök för mottagna beslut, som åtgärden skickar in (B-2). */
+export type MottagnaBeslutssteg = (client: PoolClient) => Promise<{ verkstallda: string[]; kvar: string[] }>;
+
 export type Svepsvar =
   | { lage: 'svep_avstod' }
   | {
     lage: 'svep_kort';
+    mottagna_beslut: { verkstallda: number; kvar: number };
     uppdrag: Uppdragsutfall[];
     hoppade: Hoppat[];
     /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
@@ -764,6 +769,7 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
 /**
  * Kör bolagets uppdragssvep.
  *
+ * Mottagna beslut verkställs efter låset, innan något annat läses.
  * Ordningen är låst av KRAV-4 och av verkligheten: verifieringen bestämmer vad
  * referenserna ÄR, spärrmappen prövas på samma kedjor, och prognosen räknas sist
  * ur kalendern och uppdragets rotram (S7.4). Allt lagras i `uppdrag_svepvarde`
@@ -774,7 +780,7 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  */
 export async function korUppdragssvep(
-  client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata,
+  client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata, verkstallMottagna?: MottagnaBeslutssteg,
 ): Promise<Svepsvar> {
   const data = SvepIndataSchema.parse(indata);
 
@@ -786,6 +792,9 @@ export async function korUppdragssvep(
     [companyId],
   );
   if (las.rows[0]?.tog !== true) return { lage: 'svep_avstod' };
+
+  // B-2: mandatet är redan mottaget. Savepoint per köpost skyddar resten av svepet.
+  const mottagna = verkstallMottagna ? await verkstallMottagna(client) : { verkstallda: [], kvar: [] };
 
   const alla = await client.query<Uppdragsrad>(
     `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus,
@@ -872,6 +881,7 @@ export async function korUppdragssvep(
 
   return {
     lage: 'svep_kort',
+    mottagna_beslut: { verkstallda: mottagna.verkstallda.length, kvar: mottagna.kvar.length },
     uppdrag,
     hoppade,
     hoppade_kopior: hoppadeKopior,

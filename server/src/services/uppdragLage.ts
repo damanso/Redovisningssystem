@@ -37,9 +37,10 @@ import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.j
 import { lasLeverabelregister } from './uppdragRegister.js';
 import { listaBedomningar, type Bedomningsrad } from './uppdragBedomning.js';
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
-import { listApprovals } from './approvals.js';
+import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import type { Troskelutfall } from '../lib/troskel.js';
+import { MANDATATGARDER } from './uppdragBeslut.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 
 export interface LasUppdragslageInput {
@@ -133,7 +134,19 @@ export interface Lagesfarskhet {
   bedomning: Farskhet;
   signaler: Farskhet;
   koposter: Farskhet;
+  beslut: Farskhet;
 }
+
+export interface Beslutsrad {
+  id: string; approval_id: string; contract_id: string | null; atgard: string;
+  utfall: 'ja' | 'nej'; alternativ: string | null; skal: string | null;
+  kalla: { typ: string; id: string };
+  underlag: Record<string, unknown>; handling: Record<string, unknown> | null;
+  referenser: Array<{ referens_id: string; sort: string; extern_id: string; extern_kalla: string | null; titel: string | null }>;
+  beslutad_av: string; beslutad_av_namn: string; beslutad_nar: string; forslag_hash: string;
+}
+export interface Mottagetbeslut { approval_id: string; atgard: string; utfall: 'ja' | 'nej'; beslutad_nar: string }
+export interface Beslutslage { registrerade: Beslutsrad[]; mottagna: Mottagetbeslut[] }
 
 export interface Uppdragslage {
   uppdrag: {
@@ -146,6 +159,7 @@ export interface Uppdragslage {
   };
   avtal: Avtalslage[];
   koposter: Kopostrad[];
+  beslut: Beslutslage;
   farskhet: Lagesfarskhet;
 }
 
@@ -359,6 +373,15 @@ export async function lasUppdragslage(
     });
   }
 
+  const horHit = await uppdragsfilter(client, companyId, input.project_id,
+    new Set(avtal.map((a) => a.contract_id)), partIds);
+  const mottagna = (await listaMottagnaBeslut(client, companyId, MANDATATGARDER)).filter(horHit);
+  const beslut: Beslutslage = {
+    registrerade: await registreradeBeslut(client, companyId, avtal.map((a) => a.contract_id), input.project_id),
+    mottagna: mottagna.map((q) => ({ approval_id: q.id, atgard: q.action,
+      utfall: q.status === 'approved' ? 'ja' : 'nej', beslutad_nar: q.decided_at!.toISOString() })),
+  };
+
   return {
     uppdrag: {
       project_id: uppdrag.id,
@@ -369,10 +392,10 @@ export async function lasUppdragslage(
       customer_name: uppdrag.customer_name,
     },
     avtal,
-    koposter: await koposterForUppdraget(
-      client, companyId, input.project_id,
-      new Set(avtal.map((a) => a.contract_id)), partIds,
-    ),
+    koposter: (await listApprovals(client, companyId, 'pending')).filter(horHit).map((a) => ({
+      id: a.id, action: a.action, requested_actor: a.requested_actor, created_at: a.created_at.toISOString(),
+    })),
+    beslut,
     farskhet: {
       forbrukning: direkt,
       troskel: troskelfarskhet,
@@ -380,6 +403,7 @@ export async function lasUppdragslage(
       bedomning: direkt,
       signaler: direkt,
       koposter: direkt,
+      beslut: direkt,
     },
   };
 }
@@ -394,10 +418,10 @@ export async function lasUppdragslage(
  * (`contract_part_id`, vägen `binda_kostnad` tar). En post som namnger inget av
  * dem är inte uppdragets — och gissas aldrig hit.
  */
-async function koposterForUppdraget(
+async function uppdragsfilter(
   client: PoolClient, companyId: string, projectId: string,
   contractIds: Set<string>, partIds: Set<string>,
-): Promise<Kopostrad[]> {
+): Promise<(a: Approval) => boolean> {
   // Delarnas ALLA versioner, inte bara de gällande: en köad kostnadsbindning
   // kan peka på den version som gällde när förslaget skrevs. (Listan är aldrig
   // tom här — ett uppdrag utan avtal har redan gett 404 ovanför.)
@@ -413,19 +437,42 @@ async function koposterForUppdraget(
     return typeof v === 'string' ? v : null;
   };
 
-  return (await listApprovals(client, companyId, 'pending'))
-    .filter((a) => {
-      const p = falt(a.input, 'project_id');
-      const c = falt(a.input, 'contract_id');
-      const d = falt(a.input, 'contract_part_id');
-      return (p !== null && p === projectId)
-        || (c !== null && contractIds.has(c))
-        || (d !== null && delar.has(d));
-    })
-    .map((a): Kopostrad => ({
-      id: a.id,
-      action: a.action,
-      requested_actor: a.requested_actor,
-      created_at: a.created_at.toISOString(),
-    }));
+  return (a) => {
+    const p = falt(a.input, 'project_id');
+    const c = falt(a.input, 'contract_id');
+    const d = falt(a.input, 'contract_part_id');
+    return (p !== null && p === projectId)
+      || (c !== null && contractIds.has(c))
+      || (d !== null && delar.has(d));
+  };
+}
+
+/** Fryst historik läses som den står; externa källor slås upp i en enda tenantfråga. */
+async function registreradeBeslut(client: PoolClient, companyId: string, contractIds: string[], projectId: string): Promise<Beslutsrad[]> {
+  type Lagrad = Omit<Beslutsrad, 'kalla' | 'referenser' | 'beslutad_nar'> & { kalla_typ: string; kalla_id: string; beslutad_nar: Date };
+  const r = await client.query<Lagrad>(
+    `SELECT b.*, b.underlag->>'atgard' AS atgard, COALESCE(NULLIF(btrim(u.name), ''), u.email) AS beslutad_av_namn
+      FROM uppdrag_beslut b JOIN users u ON u.id=b.beslutad_av
+      WHERE b.company_id=$1 AND (b.contract_id=ANY($2::uuid[]) OR (b.kalla_typ='avslut' AND b.kalla_id=$3))
+      ORDER BY b.beslutad_nar,b.id`, [companyId, contractIds, projectId],
+  );
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const refIdn = (b: Lagrad): string[] => Array.isArray(b.underlag.kallor) ? b.underlag.kallor.flatMap((k: unknown) => {
+    if (typeof k !== 'object' || k === null) return [];
+    const ref = k as { typ?: unknown; id?: unknown };
+    return ref.typ === 'referens' && typeof ref.id === 'string' && uuid.test(ref.id) ? [ref.id.toLowerCase()] : [];
+  }) : [];
+  const idn = [...new Set(r.rows.flatMap(refIdn))];
+  const refs = await client.query<Beslutsrad['referenser'][number]>(
+    `SELECT id AS referens_id, sort, extern_id, extern_kalla, titel_vid_lankning AS titel
+      FROM uppdrag_referens WHERE company_id=$1 AND id=ANY($2::uuid[])`, [companyId, idn],
+  );
+  const perRef = new Map(refs.rows.map((ref) => [ref.referens_id, ref]));
+  return r.rows.map((b) => ({ id: b.id, approval_id: b.approval_id, contract_id: b.contract_id,
+    atgard: b.atgard, utfall: b.utfall, alternativ: b.alternativ, skal: b.skal,
+    kalla: { typ: b.kalla_typ, id: b.kalla_id }, underlag: b.underlag, handling: b.handling,
+    referenser: refIdn(b).flatMap((id) => { const ref = perRef.get(id); return ref ? [ref] : []; }),
+    beslutad_av: b.beslutad_av, beslutad_av_namn: b.beslutad_av_namn,
+    beslutad_nar: b.beslutad_nar.toISOString(), forslag_hash: b.forslag_hash,
+  }));
 }

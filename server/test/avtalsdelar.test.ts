@@ -6,9 +6,12 @@
 // hämtas i rätt ordning, taket varnar vid 80 % utan att någonsin spärra
 // registreringen, och spärren ligger där pengarna flyttar sig — i
 // faktureringen, forcerbar med ett uttalat ja.
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { provaMottagetFel } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const PROJEKTTAXA = 110_000; // 1 100,00 kr/h — Locollabs konsulttaxa
 const AVTALSTAXA = 100_000;
 const DELTAXA = 90_000;
@@ -468,7 +471,7 @@ describe('tilläggsavtal: en ny rad med senare valid_from, historiken består', 
     const ko = await act('upsert_contract_part', { contract_id: avtal, code: '4A', cap_hours: 12, cap_confirmed: true, valid_from: '2020-01-01', change_reason: 'rättat avtal' });
     expect(ko.status).toBe(202);
     const falld = await api.post(`${co()}/approvals/${ko.body.approval!.id}/approve`).set(auth()).send({});
-    expect(falld.status).toBe(409); expect(falld.body.error).toBe('version_finns');
+    await provaMottagetFel(falld, companyId, user, 'version_finns', verkstallLogg);
     const rattad = await godkannAction('upsert_contract_part', { contract_id: avtal, code: '4A', name: 'Fas 4A', cap_hours: 12, cap_confirmed: true, valid_from: '2020-01-02', change_reason: 'rättat avtal' });
     const efter = del(rattad, '4A');
     expect(efter.versions).toHaveLength(2);

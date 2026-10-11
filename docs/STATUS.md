@@ -153,6 +153,170 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-11 (Story 1.7, omtag 2: CHECK-regler och mottaget avslut):**
+  Rättat två provmekanismer i `server/test/uppdragsytan-beslut.test.ts`,
+  `beslutsunderlagHelper.ts` och `uppdragsytan-avslut.test.ts`.
+  P2 utvärderar alla verkliga CHECK-uttryck mot samma rad som INSERT och
+  kräver att den namngivna regeln fäller raden. INSERT:s 23514 får rapportera
+  vilken faktiskt bruten regel som helst. Nio regler, 15 fall inklusive
+  kanske/JA/tomt utfall, båda riktningarna och negativa kontroller täcks.
+  Kontrollvakten höjs 21 → 23; 20/21 var följdfelet efter första assertionen.
+  Andra avslutet prövas med tom och öppen fryst lista: jat bevaras mottaget,
+  saknas i pending och nya ja/nej ger not_pending utan ändrad köpost/lista.
+  Sökning i berättelsens övriga prov fann inga fler felaktiga pending- eller
+  CHECK-assertioner av samma slag. Produktionskod, migration och kontrakt
+  är orörda i detta omtag; inget nytt beroende. Lägets befintliga panel/logg,
+  typsnitt och tokens behålls för samma läsrytm och fokus som resten av ytan.
+
+  Rött före rättning, ren CHECK-kontroll, exit 1:
+  ```text
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + 'uppdrag_beslut_skal_vid_nej'
+  - 'uppdrag_beslut_utfall'
+  ```
+  Avslutsprovets röda belägg är kedjans `expected [] to include <köpostens id>`;
+  lokal DB-körning nekades även efter att provet utökats före rättningen.
+  Slutgrindar från roten:
+  ```text
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  exit 0
+  > tsc
+  exit 0
+  > vitest run
+  RUN v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  exit 1 före insamling
+  Slutprov: 10 rena kontroller gröna utan DB, inklusive CHECK-felklassens negativa kontroller
+  exit 0
+  git diff --check
+  exit 0
+  ```
+  Typecheck/build och rena kontroller passerar. Vitest inte kört i sandlådan;
+  kedjans `npm test` belägger integration och regression enligt berättelsens
+  uttryckliga undantag. Inget DB-prov påstås grönt. DoD prövas före review.
+  Hermes är orörd; svepets svar är fortfarande additivt. Ett affärsfel efter
+  mottagandet lämnar mandatet mottaget med driftlogg och återförsök i svepet,
+  enligt den befintliga regeln. Ingen tjänst, migration eller driftåtgärd körd.
+
+- **2026-10-11 (Story 1.7, omtag efter röda kontroller):**
+  Rättat provmekanismerna i `server/test/beslutsunderlagHelper.ts`,
+  `uppdragsytan-mandat.test.ts` och `uppdragsytan-beslut.test.ts`.
+  Takbekräftelsen tillåter exakt målradens flagga och ändringstid, och
+  prövar varje övrig lagrad kolumn, oförändrat radantal och övrigt sakläge.
+  Två delar, explicit/härlett datum och upprepad bekräftelse täcks.
+  Scopeunderlagen härleds ur den befintliga tillåtelselistan, typade som
+  Signalunderlag: mejl och kalender prövas genom verkliga lager för människa
+  och agent. Drive är fortsatt otillåtet som scopehändelse.
+  HTML-kontrollen följer hela div-raden; negativa kontroller vid flera djup
+  ser även sena knappar, formulär och fel. Mottaget ja och nej prövas.
+  Kontrollvakterna behålls. Produktionskod, beroenden och kontrakt orörda
+  i omtaget. Lägets panel/logg, Public Sans/IBM Plex Mono, OKLCH-tokens och
+  fokusregler bevarar formspråket; inget nytt interaktivt element.
+
+  Rött först: ren takkontroll exit 1 (den gamla likhetskontrollen fäller
+  tillåten flagga/tid), rent HTML-prov exit 1 (datum i stället för hela
+  raden), typat underlagsprov exit 2 (`TS2322`, drive är inte mejl/kalender).
+  Rena gröna slutprov, exit 0:
+  ```text
+  Slutprov: nio rena kontroller gröna utan DB
+  Slutprov utan DB: P1 6/6 + tre klasskontroller + verklig Beslut-rendering för mottaget ja/nej och tomläge gröna
+  ```
+  P9-B från roten:
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  exit 0
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+  > server@0.1.0 build
+  > tsc
+  exit 0
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+  > server@0.1.0 test
+  > vitest run
+  RUN v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  exit 1 före insamling
+  ```
+  Vitest inte kört i sandlådan; kedjans `npm test` belägger provet enligt
+  berättelsens uttryckliga undantag. DB-sviten kallas inte grön.
+  `git diff --check`, exit 0; berättelsens tillåtna områden kontrollerade.
+  Dev Agent Record/Change Log och 26 DoD-punkter uppdaterade, Status review.
+  Ingen migration, tjänstestart eller driftsättning. Inget kallat klart
+  utan körd utdata.
+
+- **2026-10-11 (Story 1.7 — ja och nej blir fryst beslutshistorik):**
+  `0080_uppdrag_beslut.sql` skapar append-only FRYST HISTORIK med RLS,
+  sammansatta tenant-FK, CHECK och två unika nycklar. `uppdragBeslut.ts`
+  fryser samma underlag som undantagsvyn före domänhandlingen och skriver
+  beslut och audit i verkställighetens transaktion. Beslutsfattare och tid
+  läses i INSERT SELECT ur kön, utan millisekundavkortning. Hashregeln finns
+  i `lib/beslutsunderlag.ts`. De sex mandaten i registret har tvåfas och
+  avslagsregistrering; `avboj_beslutsforslag` kräver människa och skäl.
+  `execute.ts` och `uppdragSvep.ts` tar om mottagna beslut först, med delat
+  urval och verkställaren `svep`. `uppdragLage.ts` och `view/routes.ts`
+  visar mottagna och registrerade beslut i panelen Beslut. Övrigts täckning
+  läser även beslutsraden. MCP_ACTIONS och ARKITEKTUR beskriver kontraktet.
+
+  P1–P8 är skrivna i `server/test/uppdragsytan-mandat.test.ts`,
+  `uppdragsytan-beslut.test.ts`, `beslutsunderlagHelper.ts` och
+  `uppdragsytan-agandegrans-cache.test.ts`. Befintliga regressioner prövar
+  mottaget ja med hash, orört sakläge, ingen beslutsrad, exakt loggkod och
+  återförsökets kvar-lista vid verkställighetsfel. Inga saklägesassertioner
+  har tagits bort. Detaljer, radnummer och full File List står i berättelsen.
+  Panelen återanvänder husets panel/logg, typografi, chips, färskhetsrad och
+  fokusregler; inga nya CSS-regler. Tomt, mottaget och registrerat läge samt
+  saknat underlag har egna texter. Verklig HTML-rendering, escaping och
+  färskhet har prövats utan DB. Browserkontroll inte körd: browsern stängdes
+  vid launch (`browserType.launch: Target page, context or browser has been closed`).
+
+  Slutgrindarna P9-B från roten:
+  ```text
+  > redovisningssystem@0.1.0 typecheck
+  > npm run typecheck -w server
+  > server@0.1.0 typecheck
+  > tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+  exit 0
+  > redovisningssystem@0.1.0 build
+  > npm run build -w server
+  > server@0.1.0 build
+  > tsc
+  exit 0
+  > redovisningssystem@0.1.0 test
+  > npm run test -w server
+  > server@0.1.0 test
+  > vitest run
+   RUN  v3.2.7 /opt/redovisning/server
+  No test files found, exiting with code 1
+  Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)
+  exit 1 före provkörning
+  ```
+  Vitest/P9-A/P9-B och P8:s negativa DB-kontroller **inte körda** i sandlådan:
+  anslutningen nekas före insamling. Kedjans `npm test` belägger dem enligt
+  berättelsens uttryckliga undantag. Databasproven kallas inte gröna.
+  Databasfria slutkontroller, exit 0:
+  ```text
+  P1 6/6; P3 källfrysning/schema/handling; registerkontrakt och sex rena regressionsprov: gröna utan DB
+  Beslutspanel: verklig HTML-rendering för tomt, mottaget och registrerat nej, escaping och färskhet gröna utan DB
+  Arkitekturgrind: ingen parallell verkställighet, ingen catch, inga externa anrop, svepets stegordning OK
+  ```
+  Migrationen är jämförd ordagrant med berättelsen; bara tillåtna
+  berättelsefält är ändrade. DoD prövas punkt för punkt i Dev Agent Record.
+  Inget kallat klart utan körd utdata.
+
+  Efter kedjans godkända code-review och driftsättning går även redan väntande
+  köposter för de sex mandaten genom tvåfasvägen. Svepet tar om mottagna beslut
+  var 15:e minut. Ett mottaget ja som inte kan verkställas av affärsskäl
+  (`version_finns` eller avslutat uppdrag) står kvar som Mottaget med loggrad
+  tills Davids svar på frågan sist i berättelsen finns. Hermes är inte rörd;
+  svepets svar är additivt. 0080 lägger `action_approvals_id_company_uk` på
+  `(id, company_id)`; Story 1.15:s `ersatt_av` kan använda den.
+
 - **2026-10-11 (Story 10.5 — en tidpost ändras bara om den står som anroparen läste den):**
   `update_time_entry` tar valfritt strict `expected` med exakt minutes,
   billable_minutes, adjustment_reason och status. Den rena `avvikandeFalt`

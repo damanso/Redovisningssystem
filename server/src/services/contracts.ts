@@ -615,7 +615,7 @@ export async function upsertContractPart(
 }
 
 /** Avtalets början används bara när den faktiskt finns; datum gissas aldrig. */
-async function baselineDatum(
+export async function baselineDatum(
   client: PoolClient, companyId: string, input: { contract_id: string; valid_from?: string },
 ): Promise<string> {
   const avtal = await client.query<{ signed_date: string | null }>(

@@ -17,10 +17,13 @@
 // mening: att handgreppen fortfarande är fyra (inget nytt i registret), att
 // vyns utanför-väg går genom samma action-lager (lärdom 5), och tenantgränsen.
 import supertest from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { provaMottagetFel } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { ACTIONS } from '../src/actions/registry.js';
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const PASSWORD = 'mycket-hemligt-losen-123';
 
 let user: TestUser;
@@ -363,9 +366,11 @@ describe('(c) avslaget', () => {
     });
     const kopost = await nyKopost(fore);
 
-    const avslag = await api.post(`${co()}/approvals/${kopost.id}/reject`).set(auth()).send({});
+    const avslag = await api.post(`${co()}/approvals/${kopost.id}/reject`).set(auth()).send({ reason: 'Provets nej' });
     expect(avslag.status, JSON.stringify(avslag.body)).toBe(200);
     expect((avslag.body.approval as { status: string }).status).toBe('rejected');
+    expect(avslag.body.approval.beslut_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(avslag.body.approval.result.vid_avslag.beslut_id).toEqual(expect.any(String));
 
     expect(await delrader(avtalId)).toHaveLength(1);
     const rad = await signalrad(signalId);
@@ -396,8 +401,7 @@ describe('(d) signalen hör till ett annat avtal', () => {
 
     const svar = await api.post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
       .set(auth()).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(400);
-    expect(svar.body.error).toBe('signal_annat_avtal');
+    await provaMottagetFel(svar, companyId, user, 'signal_annat_avtal', verkstallLogg);
 
     // Allt-eller-inget: versionen på avtal B skrevs inte heller.
     expect(await delrader(b.avtalId)).toHaveLength(1);
@@ -414,7 +418,7 @@ describe('(d) signalen hör till ett annat avtal', () => {
     expect(begaran.status).toBe(202);
     const svar = await api.post(`${co()}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
       .set(auth()).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    await provaMottagetFel(svar, companyId, user, 'not_found', verkstallLogg);
     expect(await delrader(avtalId)).toHaveLength(1);
   });
 });
@@ -451,8 +455,7 @@ describe('(e) grannbolagets signal', () => {
 
     const svar = await api.post(`/api/companies/${grannbolag}/approvals/${(begaran.body.approval as { id: string }).id}/approve`)
       .set(grannauth).send({});
-    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
-    expect(svar.body.error).toBe('not_found');
+    await provaMottagetFel(svar, grannbolag, grannen, 'not_found', verkstallLogg);
 
     expect((await signalrad(signalId)).ledde_till_part_id).toBeNull();
     // Och grannens egen avtalsdel skrevs inte: allt-eller-inget.

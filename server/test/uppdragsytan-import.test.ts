@@ -12,7 +12,7 @@
 //   * **0069:s trigger**: att signera ÄR att frysa. Vägen som 0068 stängde
 //     (bekräftat tak på ett nyskapat avtal) är öppen igen för ett SIGNERAT
 //     avtal, och stängd som förut för ett utkast.
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import supertest from 'supertest';
 import {
   datumvarde, lasvag, oren, parseLeveranskontrakt, periodvarde, timmar,
@@ -21,9 +21,11 @@ import { IMPORTORSAK } from '../src/services/uppdragImport.js';
 import { explainApproval } from '../src/services/approvalSummary.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { importeraOchGodkann, provaMottagetFel } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
+const verkstallLogg = vi.spyOn(console, 'error');
+afterAll(() => verkstallLogg.mockRestore());
 const SIGNERAT = '2026-09-03';
 
 // Syntetiskt formprov, inte Drive-originalet. Namnen ska hämtas ur texten.
@@ -594,8 +596,7 @@ describe('baselineförslaget och godkännandet', () => {
     expect(kort.why).toContain('Tidigare beslutade egna datum bevaras för L1, L2');
     expect(kort.source!.href).toBe(`/app/c/${companyId}/projects/${projectId}/kontraktet`);
     const godkant = await api.post(`${co()}/approvals/${forslag.approval_id}/approve`).set(auth()).send({});
-    expect(godkant.status, JSON.stringify(godkant.body)).toBe(409);
-    expect(godkant.body.error).toBe('version_finns');
+    await provaMottagetFel(godkant, companyId, user, 'version_finns', verkstallLogg);
     expect(await delrader(contractId)).toEqual(fore);
     const oforandrat = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
       { contract_id: contractId, kontraktstext }, `/app/c/${companyId}`));
@@ -747,8 +748,7 @@ describe('baselineförslaget och godkännandet', () => {
     const contractId = (await ok('skapa_uppdrag', { project_id: await nyttUppdrag('Direkt baselineutkast'), name: 'Avtal', signed_date: SIGNERAT })).contract_id as string;
     const fore = await delrader(contractId);
     const svar = await koaOchGodkann('satt_baseline', { contract_id: contractId, kontraktstext: TABELLKONTRAKT.replace('kontrakt_tillstand: fryst', 'kontrakt_tillstand: utkast') });
-    expect(svar.status).toBe(400);
-    expect(svar.body.error).toBe('kontrakt_not_frozen');
+    await provaMottagetFel(svar, companyId, user, 'kontrakt_not_frozen', verkstallLogg);
     expect(await delrader(contractId)).toEqual(fore);
     const register = await ok('las_leverabelregister', { contract_id: contractId });
     expect(register).toEqual([]);
@@ -800,8 +800,7 @@ describe('0069: signeringen är frysningen', () => {
       contract_id: utkast.id, code: 'K1', name: 'Fas K1', cap_hours: 32,
       cap_confirmed: true, valid_from: '2026-01-01',
     });
-    expect(falld.status).toBe(409);
-    expect(falld.body.error).toBe('rule_violation');
+    await provaMottagetFel(falld, companyId, user, 'P0001', verkstallLogg);
 
     // Det signerade avtalet: samma anrop går igenom, utan en enda handpåläggning.
     const signerat = await ok('skapa_uppdrag', {
