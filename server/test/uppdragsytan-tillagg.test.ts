@@ -100,9 +100,13 @@ async function delrader(contractId: string): Promise<Delrad[]> {
   )).rows);
 }
 
+/** Sedan Story 1.9 är `avgjord` senaste raden i `uppdrag_scopeavgorande`. */
 async function signalrad(signalId: string): Promise<{ avgjord: string | null; ledde_till_part_id: string | null }> {
   return withAdmin(async (c) => (await c.query<{ avgjord: string | null; ledde_till_part_id: string | null }>(
-    'SELECT avgjord, ledde_till_part_id FROM uppdrag_scopesignal WHERE id = $1',
+    `SELECT (SELECT a.avgorande FROM uppdrag_scopeavgorande a
+              WHERE a.signal_id = s.id ORDER BY a.lopnummer DESC LIMIT 1) AS avgjord,
+            s.ledde_till_part_id
+       FROM uppdrag_scopesignal s WHERE s.id = $1`,
     [signalId],
   )).rows[0]!);
 }

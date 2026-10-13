@@ -1,4 +1,5 @@
 import { BASELINEKOLUMNER } from '../lib/baselinekolumner.js';
+import { TILLAGGSORSAK_MAX } from '../lib/scopeavgorande.js';
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -227,6 +228,16 @@ const AvtalsdelFalt = {
  * någon kan läsa i oktober.
  */
 const OrsakSchema = safeText(2000).refine((v) => v.trim().length >= 5, {
+  message: 'ange varför baselinen ändras (minst fem tecken)',
+});
+
+/**
+ * Orsaken till ett tillägg ur ett scopeavgörande (Story 1.9). Tjänsten lägger
+ * prefixet `Tillägg: ` framför (`tillaggsorsak`), och gränsen är så satt att
+ * summan alltid ryms i `OrsakSchema` — också när köposten valideras om vid
+ * godkännandet.
+ */
+const TillaggsorsakSchema = safeText(TILLAGGSORSAK_MAX).refine((v) => v.trim().length >= 5, {
   message: 'ange varför baselinen ändras (minst fem tecken)',
 });
 
@@ -1601,8 +1612,22 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // Bär posten den, fylls signalens `ledde_till_part_id` vid
         // godkännandet: spåret från sagd fras till avtalad del blir helt.
         signal_id: UuidSchema.optional(),
+        // Story 1.9: förslagets källreferens (architecture.md, åtgärdstabellen
+        // och källreferensen). `avgor_scopesignal` sätter den tillsammans med
+        // `signal_id`. Typen `anteckning` tillkommer med ILT-kedjan (Story 1.14).
+        kalla: z.object({ typ: z.literal('scopesignal'), id: UuidSchema }).strict().optional(),
       })
-      .strict(),
+      .strict()
+      // Två fält som säger olika saker om samma källa vore ett spår åt två håll.
+      .superRefine((v, ctx) => {
+        if (v.kalla && (!v.signal_id || v.kalla.id.toLowerCase() !== v.signal_id.toLowerCase())) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'kalla med typen scopesignal kräver samma signal_id',
+            path: ['kalla'],
+          });
+        }
+      }),
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
     // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
@@ -1801,8 +1826,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // indata, och köposten valideras om mot just det schemat vid
         // godkännandet. Valfritt: alla utanför-signaler blir inte tillägg, och
         // ett gissat tak vore ett fabricerat förslag.
+        // Story 1.9: orsaken får prefixet `Tillägg: ` i tjänsten, och därför
+        // är gränsen här 2000 minus prefixet.
         tillagg: z
-          .object({ ...AvtalsdelFalt, change_reason: OrsakSchema, valid_from: IsoDateSchema })
+          .object({ ...AvtalsdelFalt, change_reason: TillaggsorsakSchema, valid_from: IsoDateSchema })
           .strict()
           .optional(),
       })

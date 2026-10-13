@@ -834,6 +834,10 @@ orsak. Köas för godkännande." Samma fält som `upsert_contract_part`, men
   **400 `signal_annat_avtal`**). Faller någon av dem rullas hela godkännandet
   tillbaka — avtalsdelen skrivs då inte heller. Utelämnat fält = tillägget kom
   inte ur en fras någon sa, och ingenting länkas.
+- **`kalla` (valfritt, Story 1.9)** — förslagets källreferens
+  `{ typ: 'scopesignal', id }`. Med `kalla` krävs samma `signal_id`, annars
+  **400 `validation_error`**. `avgor_scopesignal` sätter båda. Typen
+  `anteckning` tillkommer med ILT-kedjan.
 
 **Triggerfelen har ingen egen felkod.** P0001 ur
 `kraver_orsak_vid_ny_version()` når klienten som **409 `rule_violation`** via
@@ -1065,21 +1069,37 @@ idempotent, ingen backfill.
 - **`tand_av` är INTE ett indatafält.** Det härleds ur den inloggade användaren
   (profilnamn, annars e-post) — samma regel som `satt_av_manniska`: ett fält
   anroparen fyller i om sig själv är ett påstående, inte ett spår.
-- `avgjord` föds **NULL**. Tystnad blir aldrig ett ja.
+- Signalen föds utan avgörande: svaret har `avgjord: null` och `avgoranden: []`.
+  Tystnad blir aldrig ett ja.
 
 **`avgor_scopesignal`** — "Avgör en tänd scopesignal: innanför eller utanför
 uppdraget". Indata `signal_id` + `avgjord` (`innanfor` | `utanfor`, exakt
-CHECK-villkorets värden i 0068). Ett tredje värde ger 400 `validation_error`
+CHECK-villkorets värden). Ett tredje värde ger 400 `validation_error`
 (zod, före databasen) och fälls av villkoret om det ändå nådde fram. En okänd
-signal — inklusive grannbolagets — ger **404 `not_found`**; ett tyst noll
-uppdaterade rader hade sett ut som ett lyckat avgörande. Ingen spärr mot att
-avgöra om: det är en rättelse, och signalen är ett ärende med ett svar, inte en
-oföränderlig bedömning.
+signal — inklusive grannbolagets — ger **404 `not_found`**, som förut.
+
+- **Varje avgörande är en ny rad (Story 1.9, B-8)** i `uppdrag_scopeavgorande`
+  (migration 0081, append-only) med löpnummer per signal, vem (`avgjort_av`)
+  och när (`avgjort_nar`), och signalens underlag (`underlag_ref_id`). Ett
+  avgörande skriver aldrig över det förra. Ett annat val är en rättelse som
+  läggs till. Samma val på samma underlag ger **409 `redan_avgjord`** utan ny
+  rad eller köpost. Ett avslutat uppdrag ger **409 `rule_violation`**.
+  Auditraden `uppdrag.scope_avgjort` bär id och koder (`signal_id`,
+  `avgorande`, `lopnummer`, `tillagg_approval_id`, `tillagg_redan_koad`),
+  aldrig fras eller namn.
+- **Svaret** är signalen med `avgjord` (senaste avgörandet) och `avgoranden`
+  (alla, i löpnummerordning), plus `avgorande` (raden som skrevs) och vid
+  tillägg `tillagg_godkannande` med `redan_koad`.
 
 - **`tillagg` (valfritt objekt, S5.2, våg 4)** — tillägget som följde av ett
   "utanför". **Samma fält och samma krav som `andra_baseline`** (obligatoriska
   `change_reason` ≥ 5 tecken och `valid_from`) — det ÄR den åtgärdens indata,
-  och köposten valideras om mot just det schemat vid godkännandet. Tillsammans
+  och köposten valideras om mot just det schemat vid godkännandet.
+  `change_reason` får högst 1 991 tecken, och köpostens orsak blir
+  `Tillägg: <texten>`. Köposten bär `signal_id` och `kalla`. Finns redan en
+  `andra_baseline` för signalen, i någon status, köas ingen ny: avgörandet
+  skrivs ändå, och svaret säger `redan_koad: true` med den befintliga
+  köpostens id och status. Tillsammans
   med `innanfor` ger det **400 `validation_error`**: låg frasen innanför
   uppdraget finns det inget att lägga till avtalet. Valfritt med flit — alla
   utanför-signaler blir inte tilläggsavtal, och ett förifyllt tak vore ett
@@ -1524,7 +1544,10 @@ ingen ny CSS och inga nya komponenter.
   svepets cache, `null` = svepet har inte kört), **`leverabler`** (alla fem lägen
   i skalans ordning med antal — uppräknade tillstånd, aldrig procent),
   **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren) och
-  **`oppna_signaler`/`avgjorda_signaler`**, samt uppdragets **`koposter`** och
+  **`oppna_signaler`/`signalhistorik`/`avgjorda_signaler`** (`signalhistorik`
+  är de avgjorda signalerna med alla sina avgöranden, Story 1.9; tilläggets
+  version nås genom avgörandets `tillagg_approval_id` och
+  `beslut.registrerade[].approval_id`), samt uppdragets **`koposter`** och
   **`beslut`** (Story 1.7: `registrerade` med val, fryst underlag, handling, källreferenser och beslutsfattare/tid; `mottagna` med bara `approval_id`, `atgard`, `utfall`, `beslutad_nar`) och **`farskhet`** (en post per innehållsdel, även `beslut`). Lägets panel **Beslut** visar mottagna mandat utan ny kvittens och registrerade beslut med skäl, källa och handling. Ett upprepat svar på Att göra leder till beslutets ankare; vanliga lyckade svar leder tillbaka till Att göra. Okänt eller främmande `project_id` —
   och ett projekt UTAN avtal — ger **404 `not_found`**: ett projekt utan avtal är
   ett projekt, inte ett uppdrag, och en tom yta hade sagt att uppdraget saknade
@@ -1611,7 +1634,7 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   `satt_baseline`, `andra_baseline`, `upsert_contract_part` eller
   `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`; `avslut`
   ur väntande `avsluta_uppdrag`; `scopeavgorande` ur en tänd signal utan
-  avgörande. Rutin, drift, tröskellarm och referensfel blir inga poster.
+  rad i `uppdrag_scopeavgorande`. Rutin, drift, tröskellarm och referensfel blir inga poster.
 - Kön läses utan `LIMIT`, i ordningen `created_at, id`. Signalposterna står
   därefter i `tand_nar, id`. Inget belopp filtrerar, inget tak eller urval kan
   skickas in. `listApprovals` behåller Att göras fönster.

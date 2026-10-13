@@ -63,12 +63,17 @@ interface Signalrad {
   eskalerad_nar: string | null;
 }
 
-/** Raderna som de STÅR i tabellen, förbi hela applikationslagret. */
+/**
+ * Raderna som de STÅR i tabellerna, förbi hela applikationslagret. Sedan
+ * Story 1.9 är `avgjord` senaste raden i `uppdrag_scopeavgorande`, inte kolumnen.
+ */
 async function signaler(contractId: string): Promise<Signalrad[]> {
   return withAdmin(async (c) => (await c.query<Signalrad>(
-    `SELECT id, contract_id, fras, klausul, tand_av, avgjord, underlag_ref_id,
-            eskalerad_nar::text
-       FROM uppdrag_scopesignal WHERE contract_id = $1 ORDER BY tand_nar, created_at`,
+    `SELECT s.id, s.contract_id, s.fras, s.klausul, s.tand_av,
+            (SELECT a.avgorande FROM uppdrag_scopeavgorande a
+              WHERE a.signal_id = s.id ORDER BY a.lopnummer DESC LIMIT 1) AS avgjord,
+            s.underlag_ref_id, s.eskalerad_nar::text
+       FROM uppdrag_scopesignal s WHERE s.contract_id = $1 ORDER BY s.tand_nar, s.created_at`,
     [contractId],
   )).rows);
 }
@@ -364,9 +369,13 @@ describe('avgörandets två värden', () => {
     expect((await signaler(contractId))[0]!.avgjord).toBeNull();
 
     // Databasen är backstoppet: regeln finns på båda ställena, och gäller även
-    // för en framtida skrivväg som inte går genom schemat.
+    // för en framtida skrivväg som inte går genom schemat. Sedan Story 1.9 står
+    // avgörandet i `uppdrag_scopeavgorande`, och sista försvarslinjen prövas där.
     await expect(withTenantTransaction(user.userId, companyId, (client) => client.query(
-      "UPDATE uppdrag_scopesignal SET avgjord = 'kanske' WHERE id = $1", [signalId],
+      `INSERT INTO uppdrag_scopeavgorande
+         (company_id, contract_id, signal_id, lopnummer, avgorande, avgjort_av, avgjort_nar)
+       VALUES ($1, $2, $3, 1, 'kanske', $4, now())`,
+      [companyId, contractId, signalId, user.userId],
     ))).rejects.toThrow(/violates check constraint/);
     expect((await signaler(contractId))[0]!.avgjord).toBeNull();
   });

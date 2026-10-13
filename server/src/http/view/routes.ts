@@ -33,7 +33,8 @@ import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
   type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
   type Scopelinje } from '../../services/uppdragBedomning.js';
-import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
+import { listaScopefraser, listaSignaler, type Scopeavgorandrad, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
+import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -2933,6 +2934,15 @@ const signalChip = (rad: Signalrad): Raw => {
   return a ? chip(a.etikett, a.kind, a.ikon) : chip('Öppen', 'warn', '◔');
 };
 
+/**
+ * Vem och när för ett avgörande (Story 1.9). En överförd rad saknar båda i
+ * underlaget, och sidan säger det i stället för att visa en tom cell som ser ut
+ * som ett fel — eller en gissning som ser ut som ett spår.
+ */
+const avgjortAvOchNar = (a: Scopeavgorandrad): string => (a.overford
+  ? 'Överfört ur den äldre kolumnen — vem och när saknas i underlaget'
+  : `${a.avgjort_av_namn ?? '—'} ${(a.avgjort_nar ?? '').slice(0, 16)}`);
+
 interface Signalunderlagsvy {
   projekt: { id: string; number: number; name: string };
   avtal: { id: string; name: string }[];
@@ -2996,7 +3006,9 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
       ${f('tillagg_code', 'Kod', '0 1 108px', html`type="text" maxlength="40" placeholder="2B"`)}
       ${f('tillagg_name', 'Namn', '2 1 230px', html`type="text" maxlength="200" placeholder="Fas 2B: extra workshop"`)}
       ${f('tillagg_valid_from', 'Gäller från', '0 1 158px', html`type="date"`)}
-      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="2000" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
+      ${/* Story 1.9: köpostens orsak blir ”Tillägg: ” + texten, så fältet tar
+            emot exakt så mycket som schemat godtar — inte 2000 som sedan fälls. */ ''}
+      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="${String(TILLAGGSORSAK_MAX)}" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
       ${/* Taket är valfritt HÄR med flit: ett tak som ingen läst i avtals-
             handlingen varnar aldrig och spärrar aldrig — det redovisas som
             'vet ej'. Ett gissat tal hade sett ut som ett åtagande. */ ''}
@@ -3135,17 +3147,27 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
       avgjorda.length === 0
         ? html`<p class="muted">Ingen signal är avgjord ännu.</p>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Underlag</th><th>Tänd</th></tr></thead>
-            <tbody>${avgjorda.map((s) => html`<tr>
+            <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Av och när</th><th>Underlag</th><th>Tänd</th></tr></thead>
+            <tbody>${avgjorda.map((s) => {
+              // Senaste avgörandet står först; de tidigare under det, närmast
+              // föregående överst — samma riktning som tabellens ”nyast först”.
+              const senaste = s.avgoranden[s.avgoranden.length - 1];
+              const tidigare = s.avgoranden.slice(0, -1).reverse();
+              return html`<tr>
               <td>”${s.fras}”${s.eskalerad_nar ? html` ${chip('Eskalerad', 'neg', '↑')}` : ''}</td>
               ${flera ? html`<td>${s.avtalsnamn}</td>` : ''}
               <td class="code">${s.klausul ?? '—'}</td>
-              <td>${signalChip(s)}</td>
+              <td>${signalChip(s)}${tidigare.map((a) => html`
+                <div class="muted" style="font-size:12.5px">Tidigare: ${AVGORANDE[a.avgorande]?.etikett ?? '—'} · ${avgjortAvOchNar(a)}</div>`)}</td>
+              ${senaste?.overford
+                ? html`<td class="muted" style="font-size:12.5px">${avgjortAvOchNar(senaste)}</td>`
+                : html`<td class="code">${senaste ? avgjortAvOchNar(senaste) : '—'}</td>`}
               <td class="code">${(s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined) ?? '—'}</td>
-              <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`)}
+              <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`;
+            })}
             </tbody></table></div>
-          <p class="muted" style="margin-top:8px;font-size:12.5px">Nyast först. Ett avgörande går att göra om —
-            det är en rättelse, och den syns här som det nya svaret.</p>`
+          <p class="muted" style="margin-top:8px;font-size:12.5px">Nyast först. Varje avgörande är en egen rad: ett nytt
+            avgörande läggs till och skriver aldrig över det förra, och de tidigare står kvar under det senaste.</p>`
     }`;
 }
 
