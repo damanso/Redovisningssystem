@@ -153,6 +153,39 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.9, omtag efter andra granskningen i drift):**
+  Task 8: tillägget hör till signalens avtal.
+  1. `avgorSignal` (`server/src/services/uppdragSignal.ts`) prövar
+     `tillagg.contract_id` i gemener mot den låsta signalradens avtal, efter
+     409-prövningen (`arUpprepatAvgorande`) och före köningen. Skiljer de sig
+     blir svaret 400 `signal_annat_avtal`, utan rad, köpost eller auditrad.
+     Ett upprepat knapptryck ger alltså 409 `redan_avgjord` också med ett
+     annat avtal (AC 7).
+  2. `koaTillagget` tar den låsta raden (`signal: { id, contract_id }`) och
+     sätter `contract_id: signal.contract_id` efter `...tillagg`, så indatats
+     avtal förs aldrig vidare till köposten.
+  3. Kommentaren vid det dolda fältet `tillagg_contract_id` i signalsidans POST
+     (`routes.ts`) säger nu var avtalet kommer ifrån och att tjänsten prövar
+     det. Ingen markup eller logik ändrad.
+  4. Prov: K5 (j) 1–6 i `uppdragsytan-scopeavgorande.test.ts` (annat avtal,
+     okänt avtal, versaler, signalen efteråt, vyn med ändrat dolt fält,
+     upprepat knapptryck med annat avtal), räknaren `k5avtal` och
+     `expect(korda.k5avtal).toBe(4)` i kontrollvakten.
+  5. `MCP_ACTIONS.md`: ny punkt ”Tilläggets avtal” under `avgor_scopesignal`,
+     och köposten bär ”signalens avtal”.
+
+  **Inte kört i sessionen:** vitest, `npm run typecheck`, `npm run build` och
+  `npm test`. Sandlådan svarade `This command requires approval` på
+  `npm run typecheck` och på `npx vitest run test/uppdragsytan-scopeavgorande.test.ts`.
+  Förutsagt, inte observerat: mot koden före ändringen fälls K5 (j) i del 1
+  (200 i stället för 400) och kontrollvakten (`k5avtal` 0); med ändringen är
+  K5 (j) 1–6 och kontrollvakten gröna. Kedjan kör typecheck och test efter
+  sessionen, och deployen bygger före bytet.
+
+  **Driftnotis:** ingen migration. Bygget rättar ingen köpost som redan står
+  i drift på ett annat avtal än sin signal; efter bygget kan avgörandet inte
+  skapa fler.
+
 - **2026-10-13 (Story 1.9, omtag efter code-review, fem fynd):**
   1. Signalsidan kastade `tillagg_godkannande.redan_koad` tyst. `runViewAction`
      tar nu en valfri `avvikelse`, som läser ett lyckat svar och ger notistext

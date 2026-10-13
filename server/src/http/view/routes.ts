@@ -3238,8 +3238,10 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
     const tillagg: Record<string, unknown> = tillaggsfalten.some((v) => v !== '')
       ? {
           tillagg: {
-            // Avtalet kommer ur signalens egen rad, aldrig ur ett fält på
-            // sidan: tillägget hör till DET avtal frasen stod i.
+            // Avtalet står i ett dolt fält med signalens eget avtal (`s.contract_id`),
+            // eftersom `tillagg` är `andra_baseline`:s indata och kräver det. Tjänsten
+            // prövar det mot den låsta signalraden (400 `signal_annat_avtal` om det
+            // skiljer sig), och köposten bär alltid signalens avtal (Story 1.9).
             contract_id: falt(kropp.tillagg_contract_id),
             code: falt(kropp.tillagg_code),
             valid_from: falt(kropp.tillagg_valid_from),
