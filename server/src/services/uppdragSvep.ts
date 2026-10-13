@@ -30,6 +30,10 @@ import {
 } from './uppdragKostnad.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import {
+  OvrigtForslagSchema, koaOvrigtForslag, listaOvrigtKandidater, tomtOvrigtutfall,
+  type Ovrigtkandidat, type Ovrigtutfall,
+} from './uppdragOvrigt.js';
+import {
   DriveRapportSchema, REFERENSSORTER, ReferenslageSchema, hamtaDriveKo, rapporteraDriveKopia,
   tillhorSparrmapp, verifieraReferens,
   type Kopost, type Referenssort, type Verifieringsutfall,
@@ -192,6 +196,12 @@ export const SvepIndataSchema = z.object({
    * hade svaret nedan lämnat tillbaka en kö som redan var tömd.
    */
   drive_kopior: z.array(DriveRapportSchema).max(200).optional(),
+  /**
+   * Hermes formulering per Övrigt-kandidat (B-4 punkt 2, Story 1.14).
+   * Servern prövar varje förslag mot egna tabeller och räknar själv taxa,
+   * förbrukning och belopp; ett avvisat förslag redovisas och fäller inte svepet.
+   */
+  ovrigt_forslag: z.array(OvrigtForslagSchema).max(200).optional(),
 }).strict();
 
 export type SvepIndata = z.input<typeof SvepIndataSchema>;
@@ -274,7 +284,10 @@ export type Svepsvar =
     /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
     hoppade_kopior: Array<Hoppat & { referens_id: string }>;
     tackning: SvepTackning[];
-    arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[] };
+    /** Vad förslagssteget gjorde med körningens Övrigt-förslag (Story 1.14, B-4). */
+    ovrigt: Ovrigtutfall;
+    /** `ovrigt_kandidater`: markerade Övrigt-rader utan köpost och beslutsrad (Story 1.14, B-4). */
+    arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[]; ovrigt_kandidater: Ovrigtkandidat[] };
   };
 
 /** Observationen och vad verifieringen gav — parat, så härledningen slipper slå upp. */
@@ -773,6 +786,9 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * med `kalla` och `last_nar`;
  * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
  * (S7.2) och bindningsstegets köposter (S6.1, Story 1.8) — alla tre genom sina befintliga tjänster.
+ * Efter uppdragen prövas Övrigt-förslagen och läses därefter Övrigt-kandidaterna
+ * (B-4, Story 1.14) över alla öppna avtal, före täckningen. Ett avstått svep
+ * prövar inga förslag; Hermes tar om dem nästa körning.
  * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  * `actor` är anroparens aktör. Den styr inte svepets förslag: kostnadsbindningarna
@@ -853,6 +869,14 @@ export async function korUppdragssvep(
     uppdrag.push(await svepEttUppdrag(client, companyId, userId, rad, obs));
   }
 
+  // B-4 (Story 1.14): Övrigt-steget efter uppdragen och före täckningen —
+  // förslagen först, sedan kandidaterna över alla öppna avtal. En rad som just
+  // köats står då inte kvar i arbetslistan, och täckningen ser köposten.
+  // Steget skriver ingen cache.
+  const forslagen = data.ovrigt_forslag ?? [];
+  const ovrigt = forslagen.length === 0 ? tomtOvrigtutfall() : await koaOvrigtForslag(client, companyId, userId, forslagen);
+  const ovrigtKandidater = await listaOvrigtKandidater(client, companyId, oppna);
+
   // B-3: alla öppna avtal, inte bara indatats. Reglerna läser enbart egna
   // tabeller, efter att körningens förslag och bindningar har skrivits.
   const tackningar = await beraknaTackning(client, companyId, oppna);
@@ -885,6 +909,7 @@ export async function korUppdragssvep(
     hoppade,
     hoppade_kopior: hoppadeKopior,
     tackning,
-    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko },
+    ovrigt,
+    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko, ovrigt_kandidater: ovrigtKandidater },
   };
 }

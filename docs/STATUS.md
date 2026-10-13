@@ -153,6 +153,71 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.14, Övrigt-raden blir en fråga med färdig beräkning):**
+  En markerad Övrigt-rad kommer nu tillbaka som en fråga i undantagsvyn, med
+  avtalsdelar, taxa, förbrukning och belopp uträknade. Ingen migration, inget
+  nytt paket och ingen ny env.
+  1. `server/src/lib/beslutsunderlag.ts`: de rena reglerna — `beraknaOvrigt`
+     (timmar × taxa i ören med `roundOre`, saknat som null), `nyttTakTimmar`,
+     `forstaLedigaDatum`, `ovrigtorsak`, `tidtext`, `forslagstextOvrigt`,
+     `OvrigtUnderlagSchema`, `byggOvrigtUnderlag`, `byggTillaggsindata` och
+     `byggRymsindata`. `sorteradJson`, `utanLastNar` och `forslagHash` oförändrade.
+  2. `server/src/services/uppdragOvrigt.ts` (ny): `listaOvrigtKandidater`,
+     förslagens schema, `OVRIGT_ATGARD`, `AVVISNINGSORSAKER`, `koaOvrigtForslag`
+     (prövning mot egna tabeller, köpost med actor `agent` och auditrad) och
+     `registreraRyms` (ryms ändrar ingen avtalsdel).
+  3. `server/src/services/uppdragSvep.ts`: valfritt `ovrigt_forslag[]` i
+     indatat, förslagssteget och kandidatsteget efter uppdragen och före
+     täckningen, och svaret får `ovrigt` och `arbetslista.ovrigt_kandidater`.
+  4. `server/src/services/uppdragUndantag.ts`: postslaget `ovrigt_beslut`
+     (`POSTSLAG`, `KOBURNA_SLAG`, `koburetSlag`, `beskrivOvrigtBeslut`, fältet
+     `ovrigt`), de delade predikaten `KOPOST_FOR_ANTECKNING` och
+     `BESLUT_FOR_ANTECKNING`, och täckningen jämför id:t i gemener.
+  5. `server/src/services/uppdragBeslut.ts`: `MANDATATGARDER` har
+     `registrera_uppdragsbeslut` (på en rad), `KALLA`/`AVTAL`/`HANDLING` för
+     den, `alternativFor`, och beslutsraden skriver `alternativ`.
+  6. `server/src/actions/registry.ts`: `andra_baseline` godtar källan
+     `anteckning` och `beslutsunderlag`; ny åtgärd `registrera_uppdragsbeslut`
+     (sensitive, tvafas, ingen `kravManniska`).
+  7. `server/src/services/uppdragSignal.ts`: `underlagsreferens` exporterad,
+     kroppen oförändrad.
+  8. `server/src/http/view/undantagsvyn.ts`: etiketten och formuläret för
+     slaget, och blocket med förfrågan och beräkning i posten (inga nya klasser).
+  9. `server/src/http/view/routes.ts`: bara bockens ledtext i Övrigt-panelen.
+  10. `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md`: svepkontraktet, det nya
+      avsnittet, sex postslag och tabellens rad `ovrigt_beslut`.
+
+  **Prov:** `uppdragsytan-ovrigt.test.ts` (ny: U, K, T, A och F),
+  `ovrigtHelper.ts` (de rena fallen och fixturbyggarna, körbara utan databas),
+  `ovrigtRigg.ts` (riggen). Ändrade: `uppdragsytan-undantag.test.ts` (P2–P4,
+  P8 med tre nya vakter, `utanLastid` och P16:s importlista),
+  `uppdragsytan-mandat.test.ts` (raden `registrera_uppdragsbeslut`),
+  `undantagBeskrivningHelper.ts`, `undantagsvynHelper.ts` (POSTID, `post()` och
+  R7), `uppdragsytan-undantagsvyn.test.ts` (R7, V8),
+  `uppdragsytan-undantagsvyn-mobil.test.ts` (B (1)–(2) med Övrigt-fråga, B (9)
+  och (10)) och `uppdragsytan-anteckning.test.ts` (D3).
+
+  **Inte kört i sessionen:** vitest, `npm run typecheck`, `npm run build` och
+  `npm test`. Sandlådan nekade varje körande kommando (`This command requires
+  approval`), också den databasfria körningen av de rena fallen. Rött och grönt
+  står som förutsagt, inte observerat, i berättelsens Debug Log. Kedjans
+  typecheck och `npm test` är belägget.
+
+  **Svepkontraktet och Hermes:** `hermes/skills/uppdragssvep.py` är inte ändrat.
+  Ändringen är additiv; Story 1.17 för in `ovrigt_forslag` i Hermes skript.
+
+  **Driftnotiser:**
+  1. Tills Hermes formulerar förslagen (Story 1.17) står varje markerad
+     Övrigt-rad som kandidat, `ovrigt` som `fel` och undantagsvyn som
+     ofullständig för sitt avtal, och `uppdragstackning.py` är rött för det
+     avtalet — som före bygget.
+  2. `MANDATATGARDER` har `registrera_uppdragsbeslut`, och
+     `beslutsverkstallning.py` läser listan ur releasen.
+  3. Ingen migration. En återställning till föregående release efter att
+     Övrigt-köposter skapats lämnar dem väntande, och ett ja på en
+     `registrera_uppdragsbeslut` ger då 404 för en okänd åtgärd tills bygget är
+     tillbaka. Inget skrivs.
+
 - **2026-10-13 (Story 1.11, undantagsvyn som ingång):**
   Uppdragsytans ingång är nu undantagsvyn, på dator och mobil.
   1. `server/src/http/view/html.ts`: `layout()` har valet `markering?: 'page'`.

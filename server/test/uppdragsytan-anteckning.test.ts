@@ -401,6 +401,15 @@ describe('(d) panelen Övrigt på Läget', () => {
     expect(markup).not.toContain('onclick');
   });
 
+  // Story 1.14 (D3): bockens ledtext säger vad markeringen leder till — en
+  // fråga med beräkningen under Uppdrag när Hermes formulerat ett förslag.
+  it('D3 ledtexten säger att raden blir en fråga under Uppdrag, aldrig ett tillägg utan ditt ja', async () => {
+    const markup = panelen(await sida(lagetsVag(tomtProjekt)));
+    expect(markup).toContain('När Hermes formulerat ett förslag blir raden en fråga till dig under Uppdrag');
+    expect(markup).toContain('Den blir aldrig ett tillägg utan ditt ja.');
+    expect(markup).not.toContain('ett tillägg skrivs där tillägg skrivs');
+  });
+
   it('ett uppdrag med två avtal frågar VILKET avtal raden hör till', async () => {
     expect(panelen(await sida(lagetsVag(fleraProjekt)))).toContain('<select name="contract_id"');
     // Med ett enda avtal finns inget att välja — då står avtalet som dolt fält.

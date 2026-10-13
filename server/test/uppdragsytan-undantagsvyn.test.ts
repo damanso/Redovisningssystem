@@ -28,6 +28,7 @@ import {
   artikel, avgoranden, bedomningar, beslutsrader, bokfortKvitto, del, femSlag, frisktUppdrag, koa, kopost, koposter, notis, nyttBolag, ok,
   plantera, posta, rest, sida, svep, vy,
 } from './undantagsvynRigg.js';
+import { allaDelar, beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -518,6 +519,92 @@ describe('V6 den begärda bedömningen', () => {
 // ---------------------------------------------------------------------------
 // V7: träffytan 44 px i vyns innehåll (Task 7; webbläsaren mäter i -mobil)
 // ---------------------------------------------------------------------------
+
+describe('R7 Övrigt-frågan med beräkningen (rena)', () => {
+  it('(a) blockets fält, escapad text, delarna och beloppet', () => rena.provaOvrigtFalten());
+  it('(b) utan timmar räknas inget belopp', () => rena.provaOvrigtUtanTimmar());
+  it('(c) utan taxa räknas inget belopp', () => rena.provaOvrigtUtanTaxa());
+  it('(d) ett överskridet tak i ord', () => rena.provaOvrigtOverskridet());
+  it('(e) scopelinjerna', () => rena.provaOvrigtScopelinjer());
+  it('(f) Davids egen anteckning som källa', () => rena.provaOvrigtKallor());
+  it('(g) märkningen och underlagets lästid', () => rena.provaOvrigtMarkning());
+  it('(h) saknat underlag, och inget block i andra slag', () => rena.provaOvrigtSaknat());
+});
+
+describe('V8 Övrigt-frågan genom rutten', () => {
+  let b: Bolag;
+  let ilt: Ilt;
+  let tillagg: { anteckningId: string; approvalId: string };
+  let ryms: { anteckningId: string; approvalId: string };
+  let rymsNej: { anteckningId: string; approvalId: string };
+
+  beforeAll(async () => {
+    b = await nyttBolag('Undantagsvyn övrigt');
+    ilt = await iltUppdrag(b);
+    tillagg = await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
+    ryms = await ovrigtFraga(b, ilt);
+    rymsNej = await ovrigtFraga(b, ilt);
+  }, 120_000);
+
+  it('(a) posten är en fråga med blocket och formulären Ja och Nej med skäl', async () => {
+    const a = artikel(await sida(b, vy(b)), tillagg.approvalId);
+    expect(a, 'posten saknas').not.toBeNull();
+    expect(a!).toMatch(/^<article[^>]*data-postslag="ovrigt_beslut"/);
+    for (const falt of ['forfragan', 'avtalsdelar', 'berakning', 'aterstaende']) expect(a!).toContain(`data-falt="${falt}"`);
+    expect(a!).toContain('name="handling" value="ja"');
+    expect(a!).toContain('name="handling" value="nej"');
+    expect(a!).toContain('<textarea name="skal" rows="2" maxlength="300" required>');
+  });
+
+  it('(b) ja på ett tillägg ger en ny version med det nya taket och en beslutsrad', async () => {
+    const fore = await delversioner(b.id, ilt.contractId, '2B');
+    const res = await posta(b, { handling: 'ja', approval_id: tillagg.approvalId });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    expect(res.headers.location).toBe(beslutetsPlats(b, ilt.projektId, tillagg.approvalId));
+    const efter = await delversioner(b.id, ilt.contractId, '2B');
+    expect(efter).toHaveLength(fore.length + 1);
+    expect(efter.find((v) => !fore.some((f) => f.id === v.id))!.cap_hours).toBe(20);
+    const rader = await beslutsraderFor(tillagg.approvalId);
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ utfall: 'ja', alternativ: 'tillagg', kalla_typ: 'anteckning', kalla_id: tillagg.anteckningId });
+    expect(await sida(b, vy(b))).not.toContain(`id="post-${tillagg.approvalId}"`);
+  });
+
+  it('(c) ja på ryms registrerar beslutet och ändrar ingen avtalsdel', async () => {
+    const fore = await allaDelar(b.id, ilt.contractId);
+    const res = await posta(b, { handling: 'ja', approval_id: ryms.approvalId });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    expect(res.headers.location).toBe(beslutetsPlats(b, ilt.projektId, ryms.approvalId));
+    expect(await beslutsraderFor(ryms.approvalId)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'ryms' })]);
+    expect(await allaDelar(b.id, ilt.contractId)).toEqual(fore);
+  });
+
+  it('(d) nej med skäl på ryms skriver nej-raden med skälet och ändrar ingen avtalsdel', async () => {
+    const fore = await allaDelar(b.id, ilt.contractId);
+    const skal = 'Det här ingår inte, vi tar det i nästa avtal';
+    const res = await posta(b, { handling: 'nej', approval_id: rymsNej.approvalId, skal });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    const q = await kopost(rymsNej.approvalId);
+    expect(q.status).toBe('rejected');
+    expect(q.beslut_skal).toBe(skal);
+    expect(await beslutsraderFor(rymsNej.approvalId)).toEqual([expect.objectContaining({ utfall: 'nej', skal, alternativ: 'ryms' })]);
+    expect(await allaDelar(b.id, ilt.contractId)).toEqual(fore);
+  });
+
+  it('(e) ett upprepat ja ger 409 not_pending, och agenten får 403 på ja och nej', async () => {
+    const igen = await rest(b, `approvals/${tillagg.approvalId}/approve`);
+    expect(igen.status, JSON.stringify(igen.body)).toBe(409);
+    expect(igen.body.error).toBe('not_pending');
+    const ny = await ovrigtFraga(b, ilt);
+    const ja = await rest(b, `approvals/${ny.approvalId}/approve`, {}, b.agent);
+    expect(ja.status, JSON.stringify(ja.body)).toBe(403);
+    expect(ja.body.error).toBe('human_approval_required');
+    const nej = await rest(b, 'actions/avboj_beslutsforslag', { approval_id: ny.approvalId, skal: 'Agentens nej' }, b.agent);
+    expect(nej.status, JSON.stringify(nej.body)).toBe(403);
+    expect(nej.body.error).toBe('human_required');
+    expect((await kopost(ny.approvalId)).status).toBe('pending');
+  });
+});
 
 describe('V7 träffytan', () => {
   it('(a) vyn och listan bär data-traffyta, och kanon bär regeln med var(--traff)', async () => {

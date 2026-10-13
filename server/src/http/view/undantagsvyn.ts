@@ -19,10 +19,11 @@
  * Ur `services/` importeras bara typer och konstanter; vyn anropar ingen
  * funktion därifrån.
  */
-import { aiMarkning, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, type Raw } from './html.js';
+import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
+import { DAVIDS_ANTECKNING, tidtext, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
 import type {
-  Begardbedomning, Kallreferens, Mandatkalla, Postslag, Tackningspost, Undantag, Undantagspost,
+  Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
 } from '../../services/uppdragUndantag.js';
 import { BEDOMNINGSLAGEN, type Bedomningslage } from '../../services/uppdragBedomning.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
@@ -38,6 +39,7 @@ export const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt 
 export const POSTSLAGSETIKETT: Record<Postslag, string> = {
   baselineandring: 'Baselineändring',
   kostnadsbindning: 'Kostnadsbindning',
+  ovrigt_beslut: 'Förfrågan utanför avtalet',
   avslut: 'Avslut',
   scopeavgorande: 'Scopeavgörande',
   ny_bedomning: 'Ny bedömning',
@@ -123,7 +125,8 @@ function faltet(etikett: string, namn: string, innehall: Raw | string): Raw {
  */
 function postensFarskhet(p: Undantagspost, idag: string): Raw | '' {
   const varden: Lasvarde<unknown>[] = [p.uppdrag, p.forslag, p.skal, p.kallor,
-    ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : [])];
+    ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : []),
+    ...(p.ovrigt ? [p.ovrigt.forfragan, p.ovrigt.underlag] : [])];
   const par: Farskhet[] = [];
   for (const v of varden) {
     if (v.lage === 'olast' || v.last_nar === null) continue;
@@ -138,6 +141,53 @@ function senasteBedomning(b: Begardbedomning, idag: string): Raw | string {
   if (b.senaste.lage === 'saknas') return 'Ingen bedömning är satt ännu';
   return lasvardetext(b.senaste, idag, (s) => html`<span data-ikon aria-hidden="true">${BEDOMNINGSVAL[s.lage].symbol}</span> ${
     BEDOMNINGSVAL[s.lage].ord} för ${s.period_start} – ${s.period_slut}, satt ${s.satt_nar.slice(0, 10)} av ${s.satt_av_namn ?? 'en människa'}`);
+}
+
+/** En lista i fältet, med samma form som Källorna. */
+const lista = (rader: ReadonlyArray<Raw | string>): Raw =>
+  html`<ul style="margin:0;padding-left:18px">${rader.map((r) => html`<li>${r}</li>`)}</ul>`;
+
+/** Återstående utrymme före och efter arbetet, i ord och aldrig som kvot (NFR-11). */
+function aterstaende(u: OvrigtUnderlag): Raw {
+  const fore = u.kvar_fore_minuter;
+  const efter = u.kvar_efter_minuter;
+  return lista([
+    fore === null ? 'Delen saknar tak'
+      : fore >= 0 ? `Före arbetet: ${tidtext(fore)}` : `Före arbetet: taket är redan överskridet med ${tidtext(-fore)}`,
+    ...(u.alternativ === 'tillagg' && u.nytt_tak_minuter !== null ? [`Nytt tak ${tidtext(u.nytt_tak_minuter)} från ${u.giltig_fran}`] : []),
+    efter !== null
+      ? efter >= 0 ? `Efter arbetet: ${tidtext(efter)}` : `Efter arbetet: taket överskrids med ${tidtext(-efter)}`
+      : u.minuter === null ? 'Efter arbetet: kan inte räknas, eftersom timmarna saknas'
+        : u.alternativ === 'tillagg' ? `Efter arbetet: kan inte räknas, eftersom ${u.avtalsdel_kod} saknar eget tak`
+          : 'Efter arbetet: kan inte räknas, eftersom delen saknar tak',
+  ]);
+}
+
+/**
+ * Övrigt-frågans underlag (Story 1.14, FR-41 punkt 2): förfrågan med Davids
+ * egna ord, avtalsdelarna, taxan, förbrukningen och beräkningen färdig. Ett
+ * saknat värde säger att det saknas och visas aldrig som 0 kr (FR-22). Fälten
+ * följer postens övriga i samma `<dl>`, och inga nya klasser tillkommer.
+ */
+function ovrigtdel(o: Ovrigtpost, idag: string): Raw {
+  const u = (visa: (d: OvrigtUnderlag) => Raw | string) => lasvardetext(o.underlag, idag, visa);
+  return html`${faltet('Förfrågan', 'forfragan', lasvardetext(o.forfragan, idag, (f) =>
+    html`<span style="white-space:pre-wrap">${f.text}</span> <span class="muted" style="font-size:12.5px">· ${DAVIDS_ANTECKNING}, ${f.datum}</span>`))}
+    ${faltet('Avtalsdelarna', 'avtalsdelar', u((d) => lista(d.avtalsdelar.map((del) => `${del.kod} ${del.namn}: tak ${
+      del.tak_minuter === null ? 'saknas' : `${tidtext(del.tak_minuter)}${del.tak_bekraftat ? '' : ' (obekräftat)'}`
+    }, förbrukat ${tidtext(del.forbrukade_minuter)}`))))}
+    ${faltet('Timpris', 'timpris', u((d) => d.taxa_ore === null ? 'Avtalet saknar timpris' : html`${amount(d.taxa_ore)}/h`))}
+    ${faltet('Förbrukning', 'forbrukning', u((d) => d.tak_minuter === null
+      ? `${tidtext(d.forbrukade_minuter)}, och delen saknar tak` : `${tidtext(d.forbrukade_minuter)} av ${tidtext(d.tak_minuter)}`))}
+    ${faltet('Timmar', 'timmar', u((d) => d.minuter === null ? 'Timmar saknas i förslaget' : tidtext(d.minuter)))}
+    ${faltet('Beräkning', 'berakning', u((d) => d.minuter === null ? 'Inget belopp räknas: timmar saknas.'
+      : d.taxa_ore === null || d.belopp_ore === null ? 'Inget belopp räknas: avtalet saknar timpris.'
+        : html`${tidtext(d.minuter)} × ${amount(d.taxa_ore)}/h = ${amount(d.belopp_ore)}`))}
+    ${faltet('Återstående utrymme', 'aterstaende', u(aterstaende))}
+    ${faltet('Scopelinjer', 'scopelinjer', u((d) => d.scopelinjer_innanfor.length === 0 && d.scopelinjer_utanfor.length === 0
+      ? 'Avtalet har inga scopelinjer.'
+      : html`<span>Innanför:</span>${lista(d.scopelinjer_innanfor.length ? d.scopelinjer_innanfor : ['inga'])}<span>Utanför:</span>${
+        lista(d.scopelinjer_utanfor.length ? d.scopelinjer_utanfor : ['inga'])}`))}`;
 }
 
 /**
@@ -205,6 +255,7 @@ function bedomningsformular(companyId: string, p: Undantagspost): Raw {
 export const FORMULAR: Record<Postslag, (companyId: string, p: Undantagspost) => Raw> = {
   baselineandring: koburetFormular,
   kostnadsbindning: koburetFormular,
+  ovrigt_beslut: koburetFormular,
   avslut: koburetFormular,
   scopeavgorande: scopeformular,
   ny_bedomning: bedomningsformular,
@@ -228,6 +279,7 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
         ${faltet('Ditt svar registrerar', 'ja_registrerar', p.ja_registrerar)}
         ${p.bedomning ? html`${faltet('Senaste bedömning', 'senaste', senasteBedomning(p.bedomning, idag))}${
           faltet('Perioden', 'period', `${p.bedomning.period.start} – ${p.bedomning.period.slut}`)}` : ''}
+        ${p.ovrigt ? ovrigtdel(p.ovrigt, idag) : ''}
       </dl>
       ${FORMULAR[p.slag](companyId, p)}
       ${postensFarskhet(p, idag)}

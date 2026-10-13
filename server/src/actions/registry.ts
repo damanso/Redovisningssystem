@@ -1,5 +1,7 @@
 import { BASELINEKOLUMNER } from '../lib/baselinekolumner.js';
 import { TILLAGGSORSAK_MAX } from '../lib/scopeavgorande.js';
+import { OvrigtUnderlagSchema } from '../lib/beslutsunderlag.js';
+import { registreraRyms } from '../services/uppdragOvrigt.js';
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -1612,20 +1614,34 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // Bär posten den, fylls signalens `ledde_till_part_id` vid
         // godkännandet: spåret från sagd fras till avtalad del blir helt.
         signal_id: UuidSchema.optional(),
-        // Story 1.9: förslagets källreferens (architecture.md, åtgärdstabellen
-        // och källreferensen). `avgor_scopesignal` sätter den tillsammans med
-        // `signal_id`. Typen `anteckning` tillkommer med ILT-kedjan (Story 1.14).
-        kalla: z.object({ typ: z.literal('scopesignal'), id: UuidSchema }).strict().optional(),
+        // Förslagets källreferens (architecture.md, åtgärdstabellen och
+        // källreferensen): signalen (Story 1.9), som `avgor_scopesignal` sätter
+        // tillsammans med `signal_id`, eller Övrigt-raden (Story 1.14), som
+        // svepet sätter tillsammans med `beslutsunderlag`, det frysta förslaget.
+        kalla: z.discriminatedUnion('typ', [
+          z.object({ typ: z.literal('scopesignal'), id: UuidSchema }).strict(),
+          z.object({ typ: z.literal('anteckning'), id: UuidSchema }).strict(),
+        ]).optional(),
+        beslutsunderlag: OvrigtUnderlagSchema.optional(),
       })
       .strict()
       // Två fält som säger olika saker om samma källa vore ett spår åt två håll.
       .superRefine((v, ctx) => {
-        if (v.kalla && (!v.signal_id || v.kalla.id.toLowerCase() !== v.signal_id.toLowerCase())) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'kalla med typen scopesignal kräver samma signal_id',
-            path: ['kalla'],
-          });
+        const fel = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: [path] });
+        if (v.kalla?.typ === 'scopesignal' && (!v.signal_id || v.kalla.id.toLowerCase() !== v.signal_id.toLowerCase())) {
+          fel('kalla', 'kalla med typen scopesignal kräver samma signal_id');
+        }
+        if (v.kalla?.typ === 'anteckning') {
+          if (v.signal_id) fel('signal_id', 'en Övrigt-rad och en signal kan inte båda vara källan');
+          if (!v.beslutsunderlag) fel('beslutsunderlag', 'ett tillägg ur en Övrigt-rad bär sitt frysta underlag');
+          else if (v.beslutsunderlag.alternativ !== 'tillagg'
+            || v.beslutsunderlag.anteckning_id.toLowerCase() !== v.kalla.id.toLowerCase()
+            || v.beslutsunderlag.avtalsdel_kod !== v.code
+            || v.beslutsunderlag.giltig_fran !== v.valid_from) {
+            fel('beslutsunderlag', 'underlaget gäller inte det här tillägget: alternativ, Övrigt-rad, avtalsdel och datum ska stämma');
+          }
+        } else if (v.beslutsunderlag) {
+          fel('beslutsunderlag', 'underlaget hör bara till ett tillägg ur en Övrigt-rad');
         }
       }),
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
@@ -1638,6 +1654,31 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       return utfall;
     }),
     vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, skal),
+  }),
+  def({
+    name: 'registrera_uppdragsbeslut',
+    title: 'Registrera att en förfrågan ur Övrigt ryms i avtalet',
+    // `sensitive` (architecture.md, åtgärdstabellen): ett ja är Davids mandat.
+    // Svepet köar förslaget med actor 'agent' och prövat underlag (Story 1.14);
+    // verkställigheten registrerar beslutet och ändrar ingen avtalsdel.
+    sensitivity: 'sensitive',
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        kalla: z.object({ typ: z.literal('anteckning'), id: UuidSchema }).strict(),
+        beslutsunderlag: OvrigtUnderlagSchema,
+      })
+      .strict()
+      .superRefine((v, ctx) => {
+        if (v.beslutsunderlag.alternativ !== 'ryms' || v.beslutsunderlag.anteckning_id.toLowerCase() !== v.kalla.id.toLowerCase()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['beslutsunderlag'],
+            message: 'underlaget gäller inte den här förfrågan: alternativet ska vara ryms och Övrigt-raden densamma' });
+        }
+      }),
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i,
+      () => registreraRyms(ctx.client, ctx.companyId, i)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i, skal),
   }),
   def({
     name: 'list_contracts',

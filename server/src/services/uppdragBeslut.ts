@@ -17,7 +17,7 @@ import { koburnaPoster, type Kallreferens } from './uppdragUndantag.js';
 /** Vem som verkställer och vilken köpost, från åtgärdens kontext. */
 export interface Beslutskontext { userId: string; actor: Actor; approvalId?: string }
 /** Listan är sluten: ett tillägg kräver registerkontrakt och parameteriserat prov. */
-export const MANDATATGARDER = ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract', 'binda_kostnad', 'avsluta_uppdrag'] as const;
+export const MANDATATGARDER = ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract', 'binda_kostnad', 'avsluta_uppdrag', 'registrera_uppdragsbeslut'] as const;
 export type Mandatatgard = (typeof MANDATATGARDER)[number];
 export const KALLTYPER = ['anteckning', 'kvitto', 'scopesignal', 'baselineforslag', 'avslut', 'koforslag'] as const;
 export type Kalltyp = (typeof KALLTYPER)[number];
@@ -32,15 +32,17 @@ const objekt = (v: unknown): Record<string, unknown> => v !== null && typeof v =
 
 export const KALLA: Record<Mandatatgard, (i: Indata, approvalId: string) => Kalla> = {
   satt_baseline: (i) => ({ typ: 'baselineforslag', id: id(i, 'contract_id') }),
-  andra_baseline: (i, q) => i.signal_id ? { typ: 'scopesignal', id: id(i, 'signal_id') } : { typ: 'koforslag', id: q },
+  andra_baseline: (i, q) => i.signal_id ? { typ: 'scopesignal', id: id(i, 'signal_id') }
+    : objekt(i.kalla).typ === 'anteckning' ? { typ: 'anteckning', id: id(objekt(i.kalla), 'id') } : { typ: 'koforslag', id: q },
   upsert_contract_part: (_i, q) => ({ typ: 'koforslag', id: q }),
   update_contract: (_i, q) => ({ typ: 'koforslag', id: q }),
   binda_kostnad: (i) => ({ typ: 'kvitto', id: id(i, 'receipt_id') }),
   avsluta_uppdrag: (i) => ({ typ: 'avslut', id: id(i, 'project_id') }),
+  registrera_uppdragsbeslut: (i) => ({ typ: 'anteckning', id: id(objekt(i.kalla), 'id') }),
 };
 const avtal = async (_c: PoolClient, _co: string, i: Indata) => id(i, 'contract_id');
 export const AVTAL: Record<Mandatatgard, (c: PoolClient, co: string, i: Indata) => Promise<string | null>> = {
-  satt_baseline: avtal, andra_baseline: avtal, upsert_contract_part: avtal, update_contract: avtal,
+  satt_baseline: avtal, andra_baseline: avtal, upsert_contract_part: avtal, update_contract: avtal, registrera_uppdragsbeslut: avtal,
   avsluta_uppdrag: async () => null,
   binda_kostnad: async (c, co, i) => {
     const r = await c.query<{ contract_id: string }>('SELECT contract_id FROM contract_parts WHERE company_id=$1 AND id=$2', [co, id(i, 'contract_part_id')]);
@@ -73,7 +75,18 @@ export const HANDLING: Record<Mandatatgard, (c: PoolClient, co: string, i: Indat
     const v = objekt(r); return { typ: 'uppdrag_avslutat', project_id: v.project_id, status: v.status,
       avtal: Array.isArray(v.avtal) ? v.avtal.map((a: unknown) => ({ contract_id: objekt(a).contract_id, oppna: objekt(a).oppna })) : [] };
   },
+  // Story 1.14: ryms ändrar ingen avtalsdel; handlingen är beslutet och koden.
+  registrera_uppdragsbeslut: async (_c, _co, _i, r) => {
+    const v = objekt(r); return { typ: 'ryms', anteckning_id: v.anteckning_id, avtalsdel_kod: v.avtalsdel_kod };
+  },
 };
+
+/** Övrigt-frågans alternativ på beslutsraden (0080), ur åtgärden och källan; annars null. */
+export function alternativFor(atgard: Mandatatgard, input: Record<string, unknown>): 'tillagg' | 'ryms' | null {
+  if (atgard === 'registrera_uppdragsbeslut') return 'ryms';
+  if (atgard === 'andra_baseline' && objekt(input.kalla).typ === 'anteckning') return 'tillagg';
+  return null;
+}
 
 /** Släpp navigering och bevara endast prövade domän- och referens-id. */
 export function frysKallor(kalla: Kalla, kallor?: Lasvarde<Kallreferens[]>) {
@@ -117,11 +130,12 @@ async function mottagen(client: PoolClient, companyId: string, beslut: Beslutsko
 async function skrivBeslut(client: PoolClient, companyId: string, beslut: Beslutskontext, q: Approval, atgard: Mandatatgard, input: Indata,
   rad: { kalla: Kalla; utfall: 'ja' | 'nej'; underlag: Record<string, unknown>; skal: string | null; handling: Handling | null }) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash)
-     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9
+    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash,alternativ)
+     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9,$11
        FROM action_approvals q WHERE q.id=$10 AND q.company_id=$1 RETURNING id`,
     [companyId, await AVTAL[atgard](client, companyId, input), rad.kalla.typ, rad.kalla.id, rad.utfall,
-      JSON.stringify(rad.underlag), rad.skal, rad.handling === null ? null : JSON.stringify(rad.handling), forslagHash(rad.underlag), q.id],
+      JSON.stringify(rad.underlag), rad.skal, rad.handling === null ? null : JSON.stringify(rad.handling), forslagHash(rad.underlag), q.id,
+      alternativFor(atgard, q.input)],
   );
   const id = r.rows[0]?.id;
   if (!id) throw new ConflictError('beslut_ej_mottaget', 'beslutet är inte mottaget');
@@ -155,6 +169,7 @@ export function beskrivHandling(handling: unknown): string {
   if (h.typ === 'avtal_andrat' && Array.isArray(h.falt) && h.falt.every((f) => typeof f === 'string')) return `Avtalets fält ändrade: ${h.falt.join(', ')}`;
   if (h.typ === 'baseline_satt' && typeof h.avtalsdelar_skrivna === 'number') return `Baseline satt: ${h.avtalsdelar_skrivna} avtalsdelar`;
   if (h.typ === 'uppdrag_avslutat') return 'Uppdraget avslutat';
+  if (h.typ === 'ryms' && typeof h.avtalsdel_kod === 'string') return `Ryms i ${h.avtalsdel_kod}: ingen ändring av avtalet`;
   return 'Handlingen saknas i underlaget';
 }
 
