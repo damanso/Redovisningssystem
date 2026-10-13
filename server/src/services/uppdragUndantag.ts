@@ -108,8 +108,12 @@ export interface Undantag {
   tackning: Tackningspost[];
   ofullstandig_tackning: Tackningspost[];
   aldsta_tackning: string | null;
+  /**
+   * `redan_fragad` (Story 1.14): en köpost med en Övrigt-rad som källa när
+   * raden redan har en tidigare köpost eller ett beslut. Raden är en fråga, en gång.
+   */
   hoppade: Array<{ id: string; identitet: 'kopost' | 'signal' | 'begaran'; atgard: string | null;
-    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' }>;
+    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' | 'redan_fragad' }>;
   last_nar: string;
 }
 
@@ -205,11 +209,15 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
       WHERE company_id=$1 AND id=ANY($2::uuid[])`,
     [companyId, idn('parent_part_id', ['andra_baseline', 'upsert_contract_part'])],
   );
-  // Story 1.14: Övrigt-raderna som köposterna av slaget `ovrigt_beslut` har som källa.
+  // Story 1.14: Övrigt-raderna som köposterna av slaget `ovrigt_beslut` har som
+  // källa, med radens första köpost (i alla statusar) och om den har ett beslut.
+  // Samma predikat som kandidaten och svepets prövning.
   const anteckningsidn = [...new Set(koposter.filter((q) => koburetSlag(q) === 'ovrigt_beslut')
     .map((q) => uuid(eget(eget(q.input, 'kalla'), 'id'))).filter((id): id is string => id !== null))];
-  const anteckningar = await client.query<Forfragan & { contract_id: string }>(
-    `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal, a.created_at::date::text AS datum
+  const anteckningar = await client.query<Forfragan & { contract_id: string; forsta_kopost: string | null; har_beslut: boolean }>(
+    `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal, a.created_at::date::text AS datum,
+            (SELECT q.id::text FROM action_approvals q WHERE ${KOPOST_FOR_ANTECKNING} ORDER BY q.created_at, q.id LIMIT 1) AS forsta_kopost,
+            EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING}) AS har_beslut
        FROM uppdrag_anteckning a WHERE a.company_id = $1 AND a.id = ANY($2::uuid[])`,
     [companyId, anteckningsidn],
   );
@@ -615,12 +623,20 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
     }
     const underlag = { kopost: q, uppdrag: uppdragsref(r) };
     if (slag === 'ovrigt_beslut') {
+      const rad = per.anteckningar.get(uuid(eget(eget(q.input, 'kalla'), 'id')) ?? '');
+      const egenRad = rad && rad.contract_id === r.contract_id ? rad : undefined;
+      // En fråga per rad (B-4): bara radens första köpost, och bara så länge
+      // raden saknar beslut. En köpost som köats förbi svepet för en rad som
+      // redan frågats blir ingen andra fråga.
+      if (egenRad && (egenRad.har_beslut || egenRad.forsta_kopost !== q.id)) {
+        hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: 'redan_fragad' });
+        continue;
+      }
       // Underlaget tolkas utan att kasta; raden hör till posten bara i samma avtal.
       const tolkat = OvrigtUnderlagSchema.safeParse(eget(q.input, 'beslutsunderlag'));
       const ovrigtUnderlag = tolkat.success ? tolkat.data : null;
-      const rad = per.anteckningar.get(uuid(eget(eget(q.input, 'kalla'), 'id')) ?? '');
-      const anteckning = rad && rad.contract_id === r.contract_id
-        ? { id: rad.id, text: rad.text, datum: rad.datum, utanfor_avtal: rad.utanfor_avtal } : null;
+      const anteckning = egenRad
+        ? { id: egenRad.id, text: egenRad.text, datum: egenRad.datum, utanfor_avtal: egenRad.utanfor_avtal } : null;
       const referenser: Kallreferens[] = [];
       for (const k of ovrigtUnderlag?.kallor ?? []) if (k.typ === 'referens') referenser.push(...await referens(client, companyId, k.id));
       poster.push(beskrivOvrigtBeslut({ ...underlag, underlag: ovrigtUnderlag, anteckning, referenser }, bas, lastNar));

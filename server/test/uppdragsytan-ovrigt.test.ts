@@ -11,7 +11,7 @@ import { withAdmin } from './helpers.js';
 import {
   FIXTURDATUM, FIXTURRAD, fixturgallande, fixturunderlag,
   provaU1, provaU2, provaU3, provaU4, provaU5, provaU6, provaU7, provaU8, provaU9, provaU10, provaU11, provaU12, provaU13,
-  provaU14, provaU15, provaU16, provaU17, provaU18,
+  provaU14, provaU15, provaU16, provaU17, provaU18, provaU19,
 } from './ovrigtHelper.js';
 import {
   PLANTLAGEN, RADTEXT, SKAL, act, allaDelar, antalRader, anteckning, anteckningsdatum, anteckningsrader, auditFor, beslutsraderFor,
@@ -79,6 +79,7 @@ describe('U de rena reglerna', () => {
   it('U16 underlagets gränser: negativa tider, taket och avtalsvärden som inte ryms', provaU16);
   it('U17 en källa står en gång', provaU17);
   it('U18 åtgärd och indata hör alltid ihop', provaU18);
+  it('U19 ett tillägg stämmer bara som exakt det indata som byggs ur grunden, raden och underlaget', provaU19);
 });
 
 describe('K kandidaterna i arbetslistan', () => {
@@ -219,9 +220,11 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
     const b = await nyttBolag('Övrigt T3');
     const ilt = await iltUppdrag(b);
     const annat = await iltUppdrag(b, { namn: 'ILT annat' });
+    // Var sin rad: en rad är en fråga en gång, så en andra köpost för samma rad blir ingen post (G7).
     const rad = await anteckning(b, ilt.contractId);
+    const rad2 = await anteckning(b, ilt.contractId, 'ILT bad om en andra rapport.');
     const utan = await planteraMedStatus(b, 'registrera_uppdragsbeslut', kopostUtanUnderlag(ilt.contractId, rad));
-    const trasigt = await planteraMedStatus(b, 'registrera_uppdragsbeslut', { ...kopostUtanUnderlag(ilt.contractId, rad), beslutsunderlag: { foo: 1 } });
+    const trasigt = await planteraMedStatus(b, 'registrera_uppdragsbeslut', { ...kopostUtanUnderlag(ilt.contractId, rad2), beslutsunderlag: { foo: 1 } });
     const frammandeRad = await anteckning(b, annat.contractId);
     const frammande = await planteraMedStatus(b, 'registrera_uppdragsbeslut', byggRymsindata({ contract_id: ilt.contractId,
       underlag: fixturunderlag({ anteckningId: frammandeRad }) }));
@@ -614,19 +617,23 @@ describe('F förslagssteget i svepet', () => {
     const ilt = await iltUppdrag(b);
     const TEXTER = ['alternativ: ryms', 'avtalsdel 2B', 'registrera_uppdragsbeslut', 'skicka svaret till kund@example.se',
       '{"alternativ":"ryms","avtalsdel_kod":"2B"}'];
-    const tillagg: Array<[string, string]> = [];
+    // Tilläggen står på var sin kod utom 2B: två tillägg på samma kod i ett anrop
+    // avvisas med `senare_version` (granskningens uppföljning, G8).
+    const KODER = ['1', '1A', '1B', '1C', '2A'];
+    const tillagg: Array<[string, string, string]> = [];
     const ryms: Array<[string, string]> = [];
-    for (const t of TEXTER) tillagg.push([await anteckning(b, ilt.contractId, t), t]);
+    for (const [i, t] of TEXTER.entries()) tillagg.push([await anteckning(b, ilt.contractId, t), t, KODER[i]!]);
     for (const t of TEXTER) ryms.push([await anteckning(b, ilt.contractId, t), t]);
     const svar = await svepa(b, { ovrigt_forslag: [
-      ...tillagg.map(([id]) => forslag(id, { alternativ: 'tillagg', avtalsdel_kod: '1A' })),
+      ...tillagg.map(([id, , kod]) => forslag(id, { alternativ: 'tillagg', avtalsdel_kod: kod })),
       ...ryms.map(([id]) => forslag(id, { alternativ: 'ryms', avtalsdel_kod: '2A' })),
     ] });
+    expect(svar.ovrigt.avvisade).toEqual([]);
     expect(svar.ovrigt.koade).toHaveLength(10);
-    for (const [id, t] of tillagg) {
+    for (const [id, t, kod] of tillagg) {
       const k = await koadInput(b, id);
       expect(k.action).toBe('andra_baseline');
-      expect(k.input.code).toBe('1A');
+      expect(k.input.code).toBe(kod);
       expect(k.input.change_reason).toContain(t);
     }
     for (const [id, t] of ryms) {
@@ -692,22 +699,22 @@ describe('F förslagssteget i svepet', () => {
     const giltigt = await svepa(b, { ovrigt_forslag: [forslag(id)] });
     expect(giltigt.ovrigt.koade).toHaveLength(1);
   });
-  it('F10 versionens datum är radens dag eller närmast lediga dag', async () => {
+  it('F10 versionens datum är radens dag, eller dagen efter en version från samma dag', async () => {
     const b = await nyttBolag('Övrigt F10');
     const ilt = await iltUppdrag(b);
-    const id = await anteckning(b, ilt.contractId);
-    const D = await anteckningsdatum(id);
+    // Radens dag är ledig: versionen gäller från den.
+    const forsta = await anteckning(b, ilt.contractId, 'Första');
+    const D = await anteckningsdatum(forsta);
+    await svepa(b, { ovrigt_forslag: [forslag(forsta, { alternativ: 'tillagg', avtalsdel_kod: '2A' })] });
+    expect((await koadInput(b, forsta)).input.valid_from).toBe(D);
+    // En lagrad version från radens dag: tillägget dateras dagen efter.
     await godkann(b, await koa(b, 'upsert_contract_part', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B', valid_from: D,
-      change_reason: 'En version från radens dag (syntetiskt prov)', cap_hours: 12, cap_confirmed: true }));
-    await koa(b, 'andra_baseline', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B', valid_from: dagEfter(D),
-      change_reason: 'En väntande version dagen efter (syntetiskt prov)' });
+      change_reason: 'En version från radens dag (syntetiskt prov)', cap_hours: 12, cap_confirmed: true, sort_order: 50 }));
+    const id = await anteckning(b, ilt.contractId);
     await svepa(b, { ovrigt_forslag: [forslag(id, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
-    expect((await koadInput(b, id)).input.valid_from).toBe(dagEfter(D, 2));
-    const x = await anteckning(b, ilt.contractId, 'X');
-    const y = await anteckning(b, ilt.contractId, 'Y');
-    await svepa(b, { ovrigt_forslag: [forslag(x, { alternativ: 'tillagg', avtalsdel_kod: '2B' }), forslag(y, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
-    const [vx, vy] = [(await koadInput(b, x)).input.valid_from as string, (await koadInput(b, y)).input.valid_from as string];
-    expect(vy).toBe(dagEfter(vx));
+    const k = await koadInput(b, id);
+    expect(k.input.valid_from).toBe(dagEfter(D));
+    expect(k.input.beslutsunderlag.giltig_fran).toBe(dagEfter(D));
   });
   it('F11 två samtidiga svep ger högst en köpost för raden', async () => {
     const b = await nyttBolag('Övrigt F11');
@@ -805,33 +812,50 @@ describe('G granskningens uppföljning: felklasserna, inte bara exemplen', () =>
     expect((await kopostRad(riktig.id as string)).status).toBe('executed');
   });
 
-  it('G2 tilläggets version bygger på den senaste versionen och dateras efter den, så att det nya taket gäller', async () => {
+  it('G2 en schemalagd senare version avvisar tillägget; utan den bygger tillägget på den gällande versionen och blir den som gäller', async () => {
     const b = await nyttBolag('Övrigt G2');
     const ilt = await iltUppdrag(b);
     const id = await anteckning(b, ilt.contractId);
     const D = await anteckningsdatum(id);
-    // En senare version av 2B än radens dag, med ett annat tak.
-    await godkann(b, await koa(b, 'upsert_contract_part', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B', valid_from: dagEfter(D, 3),
-      change_reason: 'En senare version (syntetiskt prov)', cap_hours: 16, cap_confirmed: true, sort_order: 50 }));
-    await svepa(b, { ovrigt_forslag: [forslag(id, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
-    const k = await koadInput(b, id);
-    expect(k.input.valid_from).toBe(dagEfter(D, 4));
-    expect(k.input.cap_hours).toBe(24);
-    expect(k.input.beslutsunderlag).toMatchObject({ giltig_fran: dagEfter(D, 4), nytt_tak_minuter: 1440 });
+    // Granskarens fall: 2B har en schemalagd version som avvecklar delen. Ett
+    // tillägg byggt på den hade blivit en inaktiv del med höjt tak, och ett
+    // byggt på den gällande hade aldrig gällt.
+    for (const [kod, over] of [['2B', { active: false }], ['1A', { name: 'Del 1A ny' }], ['1B', { hourly_rate_ore: 1 }]] as const) {
+      await godkann(b, await koa(b, 'upsert_contract_part', { contract_id: ilt.contractId, code: kod, name: `Del ${kod}`, valid_from: dagEfter(D, 3),
+        change_reason: 'En schemalagd senare version (syntetiskt prov)', ...over }));
+    }
+    const rader = { '2B': id, '1A': await anteckning(b, ilt.contractId, 'På 1A'), '1B': await anteckning(b, ilt.contractId, 'På 1B') };
+    await svepa(b);
+    const fore = await antalRader(b.id);
+    const versionerFore = await allaDelar(b.id, ilt.contractId);
+    const svar = await svepa(b, { ovrigt_forslag: Object.entries(rader).map(([kod, rad]) => forslag(rad, { alternativ: 'tillagg', avtalsdel_kod: kod })) });
+    expect(svar.ovrigt.avvisade).toEqual(Object.values(rader).map((rad) => ({ anteckning_id: rad, orsak: 'senare_version' })));
+    expect(await antalRader(b.id)).toEqual(fore);
+    expect(await allaDelar(b.id, ilt.contractId)).toEqual(versionerFore);
+    for (const rad of Object.values(rader)) expect(kandidatIdn(svar)).toContain(rad);
+    expect(ovrigtTackning(svar, ilt.contractId)).toMatchObject({ lage: 'fel' });
+    // Ryms ändrar inget avtal och köas också på en kod med en senare version.
+    expect((await svepa(b, { ovrigt_forslag: [forslag(id, { avtalsdel_kod: '2B' })] })).ovrigt.koade).toHaveLength(1);
+    // Utan senare version: grunden är den gällande, och den nya versionen gäller efter ja.
+    const pa2A = await anteckning(b, ilt.contractId, 'På 2A');
+    await svepa(b, { ovrigt_forslag: [forslag(pa2A, { alternativ: 'tillagg', avtalsdel_kod: '2A' })] });
+    const k = await koadInput(b, pa2A);
+    expect(k.input).toMatchObject({ valid_from: D, cap_hours: 40, active: true, name: 'Del 2A' });
     await godkann(b, k.id);
-    const versioner = await delversioner(b.id, ilt.contractId, '2B');
-    expect(versioner.at(-1)).toMatchObject({ valid_from: dagEfter(D, 4), cap_hours: 24 });
-    for (const v of versioner.slice(0, -1)) expect(String(v.valid_from) < dagEfter(D, 4)).toBe(true);
+    expect((await delversioner(b.id, ilt.contractId, '2A')).at(-1)).toMatchObject({ valid_from: D, cap_hours: 40, active: true });
   });
 
   it('G3 en ny kronram står i underlaget, i förslaget och i vad ett ja registrerar, och ja skriver just den', async () => {
     const b = await nyttBolag('Övrigt G3');
     const ilt = await iltUppdrag(b);
-    await godkann(b, await koa(b, 'upsert_contract_part', { contract_id: ilt.contractId, code: 'KR', name: 'Del med kronram', valid_from: '2026-05-04',
-      change_reason: 'Ur konsultavtalet (syntetiskt prov)', cap_hours: 10, cap_amount_ore: 1_000_000, cap_confirmed: true }));
+    // Två delar med samma kronram: ett tillägg per kod och anrop (G8).
+    for (const kod of ['KR', 'KS']) {
+      await godkann(b, await koa(b, 'upsert_contract_part', { contract_id: ilt.contractId, code: kod, name: 'Del med kronram', valid_from: '2026-05-04',
+        change_reason: 'Ur konsultavtalet (syntetiskt prov)', cap_hours: 10, cap_amount_ore: 1_000_000, cap_confirmed: true }));
+    }
     const med = await anteckning(b, ilt.contractId, 'Med timmar');
     const utan = await anteckning(b, ilt.contractId, 'Utan timmar');
-    const utanTimmar = forslag(utan, { alternativ: 'tillagg', avtalsdel_kod: 'KR' }); delete utanTimmar.timmar;
+    const utanTimmar = forslag(utan, { alternativ: 'tillagg', avtalsdel_kod: 'KS' }); delete utanTimmar.timmar;
     await svepa(b, { ovrigt_forslag: [forslag(med, { alternativ: 'tillagg', avtalsdel_kod: 'KR' }), utanTimmar] });
     const k = await koadInput(b, med);
     expect(k.input.cap_amount_ore).toBe(1_800_000);
@@ -886,5 +910,146 @@ describe('G granskningens uppföljning: felklasserna, inte bara exemplen', () =>
     expect(kallor.map((x) => x.id)).toEqual([id, refs.find((r) => r.sort === 'mejl')!.id, refs.find((r) => r.sort === 'kalender')!.id]);
     const p = (await undantag(b)).poster.find((x) => x.id === k.id)!;
     expect(p.kallor.varde!.filter((x) => x.typ === 'referens')).toHaveLength(2);
+  });
+
+  it('G6 ett ja på ett tillägg ur en Övrigt-rad skriver bara det som byggs ur grunden och underlaget: varje annat fält och en ändrad grund ger inget', async () => {
+    const b = await nyttBolag('Övrigt G6');
+    const ilt = await iltUppdrag(b);
+    const byggt = async (rad: string, timmar: number | null = 8) => {
+      const datum = await anteckningsdatum(rad);
+      return byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B', anteckning: { text: RADTEXT, datum },
+        gallande: await gallandeFor(b.id, ilt.contractId, '2B'),
+        underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', anteckningId: rad, datum, timmar }) });
+    };
+    // Var sin markerad rad och ett tillägg som schemat godtar, ändrat förbi svepet i ett eller flera fält.
+    const ANDRINGAR: Array<[string, Record<string, unknown>, number | null]> = [
+      ['granskarens fall: inaktiv, taxan 1 öre och taket 0 när underlaget saknar timmar', { active: false, hourly_rate_ore: 1, cap_hours: 0 }, null],
+      ['annat namn', { name: 'Del 2B omdöpt' }, 8],
+      ['en beskrivning', { description: 'Tillagd förbi svepet' }, 8],
+      ['ej debiterbar', { billable: false }, 8],
+      ['annan ordning', { sort_order: 1 }, 8],
+      ['obekräftat tak', { cap_confirmed: false }, 8],
+      ['en annan orsak', { change_reason: 'Tillägg: en annan orsak än radens' }, 8],
+      ['ett slutdatum', { end_date: '2026-12-31', date_precision: 'dag' }, 8],
+      ['en kronram som underlaget inte har', { cap_amount_ore: 5_000_000 }, 8],
+    ];
+    const delarFore = await allaDelar(b.id, ilt.contractId);
+    for (const [namn, over, timmar] of ANDRINGAR) {
+      const rad = await anteckning(b, ilt.contractId);
+      const q = await agentKoar(b, 'andra_baseline', { ...(await byggt(rad, timmar)), ...over });
+      const svar = await rest(b, `approvals/${q}/approve`);
+      expect(svar.status, `${namn}: ${JSON.stringify(svar.body)}`).toBe(202);
+      expect((await kopostRad(q)).status, namn).toBe('approved');
+      expect(await beslutsraderFor(q), namn).toEqual([]);
+    }
+    expect(await allaDelar(b.id, ilt.contractId)).toEqual(delarFore);
+    // En ändrad grund: svepet köar tillägget T på 2A, och en annan version av 2A godkänns före T.
+    const t = await anteckning(b, ilt.contractId);
+    const Dt = await anteckningsdatum(t);
+    await svepa(b, { ovrigt_forslag: [forslag(t, { alternativ: 'tillagg', avtalsdel_kod: '2A' })] });
+    const T = await koadInput(b, t);
+    await godkann(b, await koa(b, 'andra_baseline', { contract_id: ilt.contractId, code: '2A', name: 'Del 2A ny', valid_from: dagEfter(Dt),
+      change_reason: 'En annan ändring som godkänns först (syntetiskt prov)', cap_hours: 32, cap_confirmed: true }));
+    const versioner2A = await delversioner(b.id, ilt.contractId, '2A');
+    const svarT = await rest(b, `approvals/${T.id}/approve`);
+    expect(svarT.status, JSON.stringify(svarT.body)).toBe(202);
+    expect(await beslutsraderFor(T.id)).toEqual([]);
+    expect(await delversioner(b.id, ilt.contractId, '2A')).toEqual(versioner2A);
+    // Kontrollen: samma byggda tillägg utan ändring verkställs, så prövningen fäller inte allt.
+    const ratt = await anteckning(b, ilt.contractId);
+    const q = await agentKoar(b, 'andra_baseline', await byggt(ratt));
+    await godkann(b, q);
+    expect((await kopostRad(q)).status).toBe('executed');
+    const ny = (await delversioner(b.id, ilt.contractId, '2B')).at(-1)!;
+    const { id: _i, valid_from: _v, cap_hours: _t, change_reason: _o, ...ovrigaNya } = ny;
+    const { id: _i2, valid_from: _v2, cap_hours: _t2, change_reason: _o2, ...ovrigaGrund } = (await delversioner(b.id, ilt.contractId, '2B')).at(-2)!;
+    expect(ny.cap_hours).toBe(20);
+    expect(ovrigaNya).toEqual(ovrigaGrund);
+  });
+
+  it('G7 en rad är en fråga en gång: en andra köpost för raden blir ingen post, och ett andra ja skriver inget andra beslut', async () => {
+    const b = await nyttBolag('Övrigt G7');
+    const ilt = await iltUppdrag(b);
+    const tillaggFor = async (rad: string) => {
+      const datum = await anteckningsdatum(rad);
+      return byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B', anteckning: { text: RADTEXT, datum },
+        gallande: await gallandeFor(b.id, ilt.contractId, '2B'), underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', anteckningId: rad, datum }) });
+    };
+    const rymsFor = async (rad: string) => byggRymsindata({ contract_id: ilt.contractId,
+      underlag: fixturunderlag({ anteckningId: rad, datum: await anteckningsdatum(rad) }) });
+    const beslutFor = (rad: string) => withAdmin(async (c) => (await c.query(
+      "SELECT utfall, alternativ FROM uppdrag_beslut WHERE company_id=$1 AND kalla_typ='anteckning' AND kalla_id=$2", [b.id, rad])).rows);
+    const svepetsKopost = async (rad: string) => (await svepa(b, { ovrigt_forslag: [forslag(rad)] })).ovrigt.koade[0]!.approval_id;
+    // (a) Svepet köar ryms för X, och agenten köar sedan ett tillägg och en ryms till för X förbi svepet.
+    const x = await anteckning(b, ilt.contractId);
+    const forsta = await svepetsKopost(x);
+    const xTillagg = await agentKoar(b, 'andra_baseline', await tillaggFor(x));
+    const xRyms = await agentKoar(b, 'registrera_uppdragsbeslut', await rymsFor(x));
+    const u = await undantag(b);
+    expect(u.poster.filter((p) => p.slag === 'ovrigt_beslut').map((p) => p.id)).toEqual([forsta]);
+    expect(u.hoppade).toContainEqual({ id: xTillagg, identitet: 'kopost', atgard: 'andra_baseline', orsak: 'redan_fragad' });
+    expect(u.hoppade).toContainEqual({ id: xRyms, identitet: 'kopost', atgard: 'registrera_uppdragsbeslut', orsak: 'redan_fragad' });
+    // Ja på den första registrerar beslutet. Ja på de andra: 202, inget beslut och ingen ny version.
+    await godkann(b, forsta);
+    const versioner = await delversioner(b.id, ilt.contractId, '2B');
+    for (const q of [xTillagg, xRyms]) {
+      const svar = await rest(b, `approvals/${q}/approve`);
+      expect(svar.status, JSON.stringify(svar.body)).toBe(202);
+      expect(await beslutsraderFor(q)).toEqual([]);
+    }
+    expect(await delversioner(b.id, ilt.contractId, '2B')).toEqual(versioner);
+    expect(await beslutFor(x)).toEqual([{ utfall: 'ja', alternativ: 'ryms' }]);
+    // (b) Omvänd ordning: ett ja på den andra köposten först. Då är det beslutet, och den första verkställs aldrig.
+    const y = await anteckning(b, ilt.contractId);
+    const yForsta = await svepetsKopost(y);
+    const yTillagg = await agentKoar(b, 'andra_baseline', await tillaggFor(y));
+    expect((await undantag(b)).poster.map((p) => p.id)).not.toContain(yTillagg);
+    await godkann(b, yTillagg);
+    const svarY = await rest(b, `approvals/${yForsta}/approve`);
+    expect(svarY.status, JSON.stringify(svarY.body)).toBe(202);
+    expect(await beslutsraderFor(yForsta)).toEqual([]);
+    expect(await beslutFor(y)).toEqual([{ utfall: 'ja', alternativ: 'tillagg' }]);
+    // (c) Två samtidiga ja på två köposter för samma rad ger ett beslut.
+    const z = await anteckning(b, ilt.contractId);
+    const zForsta = await svepetsKopost(z);
+    const zAndra = await agentKoar(b, 'registrera_uppdragsbeslut', await rymsFor(z));
+    const samtidiga = await Promise.all([zForsta, zAndra].map((q) => rest(b, `approvals/${q}/approve`)));
+    expect(samtidiga.map((s) => s.status).sort()).toEqual([200, 202]);
+    expect(await beslutFor(z)).toHaveLength(1);
+  });
+
+  it('G8 ett väntande eller mottaget versionsförslag för koden avvisar tillägget, också ett annat tillägg i samma anrop', async () => {
+    const b = await nyttBolag('Övrigt G8');
+    const ilt = await iltUppdrag(b);
+    const rader = { '2B': await anteckning(b, ilt.contractId), '1A': await anteckning(b, ilt.contractId, 'På 1A'), '1B': await anteckning(b, ilt.contractId, 'På 1B') };
+    const forstaPa2A = await anteckning(b, ilt.contractId, 'Första på 2A');
+    const andraPa2A = await anteckning(b, ilt.contractId, 'Andra på 2A');
+    const D = await anteckningsdatum(rader['2B']);
+    // Granskarens fall: en väntande andra_baseline för 2B som byter namn och taxa från D + 1.
+    await koa(b, 'andra_baseline', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B ny', hourly_rate_ore: 90_000, valid_from: dagEfter(D),
+      change_reason: 'En väntande ändring (syntetiskt prov)' });
+    // Ett mottaget men inte verkställt förslag för 1A: datumet är upptaget, så det står kvar mottaget efter varje svep.
+    await planteraMedStatus(b, 'andra_baseline', { contract_id: ilt.contractId, code: '1A', name: 'Del 1A', valid_from: '2026-05-04',
+      change_reason: 'Ett mottaget förslag (syntetiskt prov)' }, 'approved');
+    // En väntande upsert_contract_part för 1B, med avtalets id i versaler.
+    await planteraMedStatus(b, 'upsert_contract_part', { contract_id: ilt.contractId.toUpperCase(), code: '1B', name: 'Del 1B',
+      valid_from: dagEfter(D, 2), change_reason: 'En väntande version (syntetiskt prov)' });
+    await svepa(b);
+    const fore = await antalRader(b.id);
+    const delarFore = await allaDelar(b.id, ilt.contractId);
+    const svar = await svepa(b, { ovrigt_forslag: [
+      ...Object.entries(rader).map(([kod, rad]) => forslag(rad, { alternativ: 'tillagg', avtalsdel_kod: kod })),
+      forslag(forstaPa2A, { alternativ: 'tillagg', avtalsdel_kod: '2A' }),
+      forslag(andraPa2A, { alternativ: 'tillagg', avtalsdel_kod: '2A' }),
+    ] });
+    const avvisade = [...Object.values(rader), andraPa2A];
+    expect(svar.ovrigt.avvisade).toEqual(avvisade.map((rad) => ({ anteckning_id: rad, orsak: 'senare_version' })));
+    expect(svar.ovrigt.koade.map((k) => k.anteckning_id)).toEqual([forstaPa2A]);
+    expect(await antalRader(b.id)).toEqual({ ko: fore.ko + 1, referenser: fore.referenser, audit: fore.audit + 1 });
+    expect(await allaDelar(b.id, ilt.contractId)).toEqual(delarFore);
+    for (const rad of avvisade) expect(kandidatIdn(svar)).toContain(rad);
+    expect(ovrigtTackning(svar, ilt.contractId)).toMatchObject({ lage: 'fel' });
+    // Ryms bygger inte på någon version och köas på samma kod.
+    expect((await svepa(b, { ovrigt_forslag: [forslag(rader['2B'], { avtalsdel_kod: '2B' })] })).ovrigt.koade).toHaveLength(1);
   });
 });

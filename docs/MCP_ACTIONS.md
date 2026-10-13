@@ -1369,8 +1369,8 @@ körning. Svaret `svep_kort` får två fält, och inga gamla fält tappas:
   inget förslag kom. `koade[]` är `{ anteckning_id, approval_id, atgard }`,
   `redan_koade[]` radernas id och `avvisade[]` `{ anteckning_id, orsak }` med
   orsaken ur den slutna listan `anteckning_saknas`, `inte_utanfor_avtal`,
-  `uppdraget_stangt`, `avtalsdel_saknas`, `kallreferens_ogiltig` och
-  `underlag_ogiltigt`.
+  `uppdraget_stangt`, `avtalsdel_saknas`, `kallreferens_ogiltig`,
+  `underlag_ogiltigt` och `senare_version`.
 - `arbetslista.ovrigt_kandidater[]` — `{ id, contract_id, text, datum }` för
   varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
   status) och beslutsrad på radens eget avtal, också när avtalet inte står i
@@ -1699,7 +1699,13 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   egna värden ryms i underlagets gränser (`underlag_ogiltigt`: till exempel ett
   nytt tak över 999 999,99 h, en kronram eller ett belopp utanför säkra heltal,
   fler än 200 scopelinjer per sort, ett namn över 200 tecken eller fler än 500
-  delar — en sådan köpost hade aldrig kunnat godkännas). Allt prövas före varje
+  delar — en sådan köpost hade aldrig kunnat godkännas). Ett tillägg avvisas
+  dessutom med `senare_version` när koden har en schemalagd version efter den
+  gällande, eller ett väntande eller mottaget versionsförslag (`andra_baseline`
+  eller `upsert_contract_part`, också ett annat tillägg i samma anrop): ett
+  tillägg bygger på den gällande versionen, och ett ja på båda hade skrivit över
+  den andra ändringen utan att posten sa det. Ryms bygger inte på någon version
+  och avvisas aldrig av det skälet. Allt prövas före varje
   skrivning; ett avvisat förslag skriver ingenting. Avtalet tas ur den lästa
   raden, aldrig ur förslagets stavning, och **radens text väljer aldrig
   åtgärd, avtalsdel eller alternativ**.
@@ -1731,14 +1737,14 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   `action.approval_requested` (`details`: `action`, `actor`, `anteckning_id`,
   `alternativ`). Åtgärden väljs ur den slutna tabellen `OVRIGT_ATGARD`:
   - `tillagg` → **`andra_baseline`**: en hel ny version av delen, byggd på
-    den **senaste** lagrade versionen av koden. `cap_hours` = versionens eget
+    den gällande versionen, som också är den senaste lagrade (annars
+    `senare_version`). `cap_hours` = versionens eget
     tak + timmarna (oförändrat när timmarna eller det egna taket saknas),
     `cap_amount_ore` = underlagets `ny_kronram_ore` (oförändrat när den är
-    `null`), `valid_from` = radens datum, men alltid **efter** varje lagrad
-    version och varje väntande eller mottaget versionsförslag för koden — en
-    version som dateras före en senare version gäller aldrig —
+    `null`), `valid_from` = radens datum, men alltid **efter** den gällande
+    versionen — en version som dateras före en senare version gäller aldrig —
     `change_reason` = `Tillägg: <radens text> (Övrigt-raden <datum>)`, `kalla`
-    och `beslutsunderlag`.
+    och `beslutsunderlag`. Övriga fält kopieras ur versionen.
   - `ryms` → **`registrera_uppdragsbeslut`**: `{ contract_id, kalla, beslutsunderlag }`.
 - **`registrera_uppdragsbeslut` (sensitive, `tvafas`)** — "Registrera att en
   förfrågan ur Övrigt ryms i avtalet". Indata `{ contract_id, kalla: { typ:
@@ -1747,7 +1753,9 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   (`alternativ = 'ryms'`, handlingen `{ typ: 'ryms', anteckning_id,
   avtalsdel_kod }`) och **ändrar ingen avtalsdel**; verkställigheten prövar att
   raden finns i bolaget, hör till avtalet och är markerad (annars 409
-  `kalla_annat_avtal`, och köposten står kvar mottagen). Nej med skäl går genom
+  `kalla_annat_avtal`) och att raden ännu inte har något beslut (annars 409
+  `redan_beslutad`). I båda fallen står köposten kvar mottagen och skriver
+  ingenting. Nej med skäl går genom
   `avboj_beslutsforslag`. Fel: 400
   `validation_error`, 403 `human_approval_required` (agent på ja) och
   `human_required` (agent på nej), 409 `not_pending`. Ingen `kravManniska`.
@@ -1758,12 +1766,24 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   `giltig_fran = valid_from`; har underlaget ett nytt tak eller en ny kronram
   ska `cap_hours` respektive `cap_amount_ore` vara just det värdet. Före
   skrivningen prövar verkställigheten Övrigt-raden som för ryms (409
-  `kalla_annat_avtal`): ingen version skrivs med en rad i ett annat avtal, en
-  omarkerad rad eller ett annat bolags rad som källa.
-- **En köpost per rad**: en köpost i någon status eller en beslutsrad ger
-  `redan_koade`, också inom samma anrop och vid samtidiga svep. Köposten och
-  beslutsraden räknas bara på **radens eget avtal** (`contract_id`): en köpost
-  eller ett nej på ett annat avtal med raden som källa stänger aldrig radens fråga.
+  `kalla_annat_avtal` eller `redan_beslutad`): ingen version skrivs med en rad i
+  ett annat avtal, en omarkerad rad, ett annat bolags rad eller en redan
+  besvarad rad som källa. Därtill måste indatat vara **exakt** det tillägg som
+  byggs ur kodens senaste lagrade version, raden och underlaget, daterat efter
+  den versionen (annars 409 `tillagg_inaktuellt`). Ett ja skriver alltså bara
+  det posten beskriver: versionens fält, radens orsak och underlagets tak och
+  kronram. Ett indata som köats förbi svepet med ett annat fält, och ett tillägg
+  vars grund ändrats sedan förslaget (en annan version godkänd före), skriver
+  ingenting.
+- **En köpost per rad, ett beslut per rad**: en köpost i någon status eller en
+  beslutsrad ger `redan_koade`, också inom samma anrop och vid samtidiga svep.
+  Köposten och beslutsraden räknas bara på **radens eget avtal**
+  (`contract_id`): en köpost eller ett nej på ett annat avtal med raden som
+  källa stänger aldrig radens fråga. En köpost som REST eller MCP köat förbi
+  svepet för en rad som redan har en köpost eller ett beslut blir ingen andra
+  fråga i läsvägen (`hoppade[]` med `orsak: 'redan_fragad'`), och ett ja på den
+  ger 409 `redan_beslutad` när raden redan har ett beslut. Två samtidiga ja för
+  samma rad väntar på varandra (ett lås per rad), så det andra ser det första.
 - **Täckningen** räknar raden som täckt när en väntande eller mottagen köpost
   för någon av undantagsvyns åtgärder (`UNDANTAG_ATGARDER`: baselineåtgärderna,
   `binda_kostnad`, `registrera_uppdragsbeslut` och `avsluta_uppdrag`) har raden
@@ -1838,7 +1858,9 @@ nej-utkastet (Story 1.16) och Hermes formulering i `uppdragssvep.py` (Story 1.17
   Ingen ny fråga eller kvittering skapas för den här.
 - `hoppade[]` redovisar köposter, signaler och begäranden som lästs men inte
   blivit poster: `id`, `identitet` (`kopost`, `signal` eller `begaran`),
-  `atgard`, `orsak` (`uppdrag_saknas` eller `uppdrag_avslutat`). Där finns bara id:n och koder. Främmande id:n slås
+  `atgard`, `orsak` (`uppdrag_saknas`, `uppdrag_avslutat` eller, för en
+  Övrigt-köpost vars rad redan har en tidigare köpost eller ett beslut,
+  `redan_fragad`). Där finns bara id:n och koder. Främmande id:n slås
   aldrig upp över bolagsgränsen; ogiltiga uuid förgiftar ingen transaktion.
 - Läsvägen skriver inget och gör inga externa anrop; bara Postgres läses
   genom anroparens tenant-transaktion. Källorna är appvägar under det egna

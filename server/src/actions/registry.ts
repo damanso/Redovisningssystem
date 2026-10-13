@@ -1657,7 +1657,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
     // (`uppdragSignal.ts`), inte här: registret bär ingen SQL. Före skrivningen
     // prövas en Övrigt-rad som källa på samma sätt som för ryms (Story 1.14):
-    // raden hör till avtalet och är markerad, annars skrivs ingen version.
+    // raden hör till avtalet, är markerad och har inget beslut, och indatat är
+    // exakt det tillägg som byggs ur kodens senaste version och underlaget.
+    // Annars skrivs ingen version (409, `kravTillaggetsKalla`).
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
       await kravTillaggetsKalla(ctx.client, ctx.companyId, i as never);

@@ -410,6 +410,25 @@ export function byggTillaggsindata(i: {
   return ut;
 }
 
+/**
+ * Är indatat exakt det tillägg som byggs ur grunden, Övrigt-raden och
+ * underlaget? Verkställigheten av ett tillägg ur en Övrigt-rad skriver bara
+ * det: varje fält i den nya versionen är grundens, radens orsak eller
+ * underlagets tak och kronram, och posten beskriver just de två. Ett fält som
+ * REST eller MCP lagt till, ändrat eller tagit bort, en grund som ändrats sedan
+ * förslaget och ett underlag som inte är räknat mot grunden ger alla `false`.
+ */
+export function stammerTillagget(i: Parameters<typeof byggTillaggsindata>[0] & { indata: Record<string, unknown> }): boolean {
+  let vantat: Record<string, unknown>;
+  try {
+    vantat = byggTillaggsindata(i);
+  } catch {
+    return false;
+  }
+  const form = (v: unknown) => sorteradJson(JSON.parse(JSON.stringify(v)));
+  return form(vantat) === form(i.indata);
+}
+
 /** Rymsens indata till `registrera_uppdragsbeslut`: avtalet, källan och underlaget. */
 export function byggRymsindata(i: { contract_id: string; underlag: OvrigtUnderlag }) {
   if (i.underlag.alternativ !== 'ryms') throw new Error('rymsens indata byggs bara ur ett underlag för ryms');

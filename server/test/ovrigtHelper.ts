@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   ALTERNATIV, DAVIDS_ANTECKNING, MAX_TAK_MINUTER, OvrigtUnderlagSchema, TimmarSchema, beraknaOvrigt, byggOvrigtUnderlag,
   byggRymsindata, byggTillaggsindata, forslagHash, forstaLedigaDatum, nyttTakTimmar, ovrigtorsak, provaOvrigtUnderlag,
-  tidtext, tillaggetsDatum,
+  stammerTillagget, tidtext, tillaggetsDatum,
   type Alternativ, type Gallandeversion, type OvrigtUnderlag, type OvrigtUnderlagIndata,
 } from '../src/lib/beslutsunderlag.js';
 import { safeText } from '../src/lib/validation.js';
@@ -442,4 +442,57 @@ export function provaU18() {
   assert.throws(() => byggRymsindata({ contract_id: avtal, underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B' }) }), /ryms/);
   assert.throws(() => byggTillaggsindata({ contract_id: avtal, kod: '2A', anteckning: { text: 'Text', datum: FIXTURDATUM },
     gallande: fixturgallande(), underlag: fixturunderlag() }), /tillägg/);
+}
+
+// U19: ett tillägg ur en Övrigt-rad verkställs bara som exakt det indata som
+// byggs ur grunden, raden och underlaget. Felklassen är ”indatat ändrar något
+// posten inte beskriver”, så varje fält i `andra_baseline`:s schema prövas:
+// ändrat, tillagt och borttaget, och därtill en grund som ändrats sedan förslaget.
+export function provaU19() {
+  const avtal = 'dddd1111-1111-4222-8333-444455556666';
+  const text = 'ILT bad om en extra rapport över fakturorna.';
+  const grund = fixturgallande({ cap_amount_ore: 1_200_000 });
+  const fullGrund = fixturgallande({ description: 'Beskrivning', parent_part_id: 'cccc1111-1111-4222-8333-444455556666',
+    hourly_rate_ore: 90_000, start_date: '2026-05-04', end_date: '2026-12-31', date_precision: 'dag' });
+  const fall = (g: typeof grund, underlag: OvrigtUnderlag) => {
+    const bas = { contract_id: avtal, kod: '2B', anteckning: { text, datum: FIXTURDATUM }, gallande: g, underlag };
+    return { bas, indata: byggTillaggsindata(bas) };
+  };
+  const medKronram = fall(grund, fixturunderlag({ alternativ: 'tillagg', kod: '2B', egen_kronram_ore: 1_200_000 }));
+  const allaFalt = fall(fullGrund, fixturunderlag({ alternativ: 'tillagg', kod: '2B' }));
+  const utanTimmar = fall(grund, fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: null, egen_kronram_ore: 1_200_000 }));
+  for (const [namn, f] of [['med kronram', medKronram], ['alla fält', allaFalt], ['utan timmar', utanTimmar]] as const) {
+    assert.ok(stammerTillagget({ ...f.bas, indata: f.indata }), `${namn}: det byggda indatat stämmer`);
+    // Samma indata efter en JSON-rundresa, som köposten lagras.
+    assert.ok(stammerTillagget({ ...f.bas, indata: JSON.parse(JSON.stringify(f.indata)) }), `${namn}: efter jsonb`);
+  }
+  // Varje fält ändrat: också granskarens fall (inaktiv, annan taxa, taket 0 när underlaget inte ändrar taket).
+  const andrat: Record<string, unknown> = {
+    contract_id: 'eeee1111-1111-4222-8333-444455556666', code: '2A', name: 'Annat namn', description: 'Annan beskrivning',
+    parent_part_id: 'ffff1111-1111-4222-8333-444455556666', billable: false, hourly_rate_ore: 1, cap_hours: 0,
+    cap_amount_ore: 1, cap_confirmed: false, valid_from: '2027-01-01', sort_order: 1, active: false,
+    change_reason: 'Tillägg: en annan orsak', start_date: '2026-01-01', end_date: '2027-12-31', date_precision: 'ar',
+    kalla: { typ: 'anteckning', id: 'aaaa1111-1111-4222-8333-444455556666' },
+    beslutsunderlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: 4 }),
+    signal_id: 'abab1111-1111-4222-8333-444455556666',
+  };
+  for (const [namn, f] of [['med kronram', medKronram], ['alla fält', allaFalt], ['utan timmar', utanTimmar]] as const) {
+    for (const [k, v] of Object.entries(andrat)) {
+      assert.ok(!stammerTillagget({ ...f.bas, indata: { ...f.indata, [k]: v } }), `${namn}: ${k} ändrat eller tillagt`);
+    }
+    for (const k of Object.keys(f.indata)) {
+      const { [k]: _bort, ...utan } = f.indata;
+      assert.ok(!stammerTillagget({ ...f.bas, indata: utan }), `${namn}: ${k} borttaget`);
+    }
+  }
+  // Grunden har ändrats sedan förslaget (en annan version är nu den senaste).
+  for (const [namn, g] of [
+    ['annat namn', { ...grund, name: 'Del 2B ny' }], ['inaktiv', { ...grund, active: false }],
+    ['annan taxa', { ...grund, hourly_rate_ore: 1 }], ['annat tak', { ...grund, cap_hours: 16 }],
+    ['annan kronram', { ...grund, cap_amount_ore: 2_000_000 }],
+  ] as const) assert.ok(!stammerTillagget({ ...medKronram.bas, gallande: g, indata: medKronram.indata }), namn);
+  // Raden: orsaken byggs ur radens text och datum, inte ur indatat.
+  assert.ok(!stammerTillagget({ ...medKronram.bas, anteckning: { text: 'En annan text', datum: FIXTURDATUM }, indata: medKronram.indata }));
+  // Ett underlag för ryms ger aldrig ett tillägg.
+  assert.ok(!stammerTillagget({ ...medKronram.bas, underlag: fixturunderlag(), indata: medKronram.indata }));
 }

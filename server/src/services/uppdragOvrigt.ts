@@ -24,7 +24,7 @@ import { z } from 'zod';
 import { ConflictError } from '../lib/errors.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
 import {
-  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, provaOvrigtUnderlag, tillaggetsDatum,
+  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, provaOvrigtUnderlag, stammerTillagget, tillaggetsDatum,
   type Alternativ, type Gallandeversion, type OvrigtUnderlag, type OvrigtUnderlagIndata,
 } from '../lib/beslutsunderlag.js';
 import { createApproval } from './approvals.js';
@@ -97,8 +97,13 @@ export const OVRIGT_ATGARD = { tillagg: 'andra_baseline', ryms: 'registrera_uppd
  * `underlag_ogiltigt`: avtalets egna värden ryms inte i underlagets gränser
  * (till exempel ett nytt tak över 999 999,99 h eller fler än 200 scopelinjer),
  * så köposten hade aldrig kunnat godkännas.
+ * `senare_version`: bara vid tillägg. Avtalsdelen har en version efter den
+ * gällande (schemalagd) eller ett väntande eller mottaget versionsförslag
+ * (`andra_baseline` eller `upsert_contract_part`, också ett annat tillägg).
+ * Ett tillägg bygger på den gällande versionen, och ett ja på båda hade skrivit
+ * över den andra ändringen utan att posten sa det.
  */
-export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'kallreferens_ogiltig', 'underlag_ogiltigt'] as const;
+export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'kallreferens_ogiltig', 'underlag_ogiltigt', 'senare_version'] as const;
 export type Avvisningsorsak = (typeof AVVISNINGSORSAKER)[number];
 
 export interface Ovrigtutfall {
@@ -177,13 +182,15 @@ export async function koaOvrigtForslag(
       extern_id: k.extern_id, extern_nyckel: k.extern_nyckel, extern_kalla: k.extern_kalla }).success)) {
       avvisa('kallreferens_ogiltig'); continue;
     }
+    // Vid tillägg: den version tillägget bygger på och den nya versionens datum,
+    // eller ingen grund när en senare version finns eller väntar.
+    const tillagg = f.alternativ === 'tillagg' ? await tillaggetsGrund(client, companyId, rad, vald) : null;
+    if (f.alternativ === 'tillagg' && tillagg === null) { avvisa('senare_version'); continue; }
     const linjer = await client.query<{ sort: 'innanfor' | 'utanfor'; text: string }>(
       `SELECT sort, "text" AS text FROM uppdrag_scopelinje
         WHERE company_id = $1 AND contract_id = $2 AND sort IN ('innanfor', 'utanfor') ORDER BY ordning, created_at, id`,
       [companyId, rad.contract_id],
     );
-    // Vid tillägg: den version tillägget bygger på och den nya versionens datum.
-    const tillagg = f.alternativ === 'tillagg' ? await tillaggetsGrund(client, companyId, rad, vald) : null;
     const indataFor = (referenser: OvrigtUnderlagIndata['referenser']): OvrigtUnderlagIndata => ({
       anteckning: { id: rad.id, datum: rad.datum },
       avtal: { namn: rad.avtal_namn, signerat: rad.signerat, taxa_ore: rad.taxa_ore },
@@ -228,71 +235,107 @@ export async function koaOvrigtForslag(
   return utfall;
 }
 
+/** Den senaste lagrade versionen av en kod: den ett tillägg bygger på och ersätter. */
+interface Grundversion extends Gallandeversion { id: string; valid_from: string }
+
 /**
- * Tilläggets grund: den senaste lagrade versionen av koden, alltså den
- * version den nya ersätter, och den nya versionens datum. Datumet ligger efter
- * varje lagrad version och varje väntande eller mottaget versionsförslag för
- * koden (`tillaggetsDatum`): en version som dateras före en senare version
- * gäller aldrig, och ett upptaget datum hade gett 409 version_finns efter ett ja.
+ * Tilläggets grund läses bara här, både när förslaget köas och när ett ja
+ * verkställs, så att de två alltid jämför samma rad i samma form.
  */
-async function tillaggetsGrund(
-  client: PoolClient, companyId: string, rad: Ovrigtrad, vald: Delforbrukning,
-): Promise<{ grund: Gallandeversion; giltigFran: string }> {
-  const senaste = vald.versions.reduce<Delforbrukning['versions'][number] | null>(
-    (s, v) => (s === null || v.valid_from > s.valid_from ? v : s), null);
-  const g = senaste === null ? undefined : (await client.query<Omit<Gallandeversion, 'cap_hours'> & { cap_hours: string | null }>(
-    `SELECT name, description, parent_part_id, billable, hourly_rate_ore, cap_hours::text AS cap_hours, cap_amount_ore,
-            cap_confirmed, sort_order, active, start_date::text AS start_date, end_date::text AS end_date, date_precision
-       FROM contract_parts WHERE company_id = $1 AND id = $2`,
-    [companyId, senaste.id],
-  )).rows[0];
-  if (!g) throw new Error(`avtalsdelen ${vald.code} saknar en lagrad version`);
-  const upptagna = await client.query<{ datum: string }>(
-    `SELECT cp.valid_from::text AS datum FROM contract_parts cp
-      WHERE cp.company_id = $1 AND cp.contract_id = $2::uuid AND cp.code = $3
-     UNION
-     SELECT q.input->>'valid_from' AS datum FROM action_approvals q
-      WHERE q.company_id = $1 AND q.action = ANY($4::text[])
-        AND lower(q.input->>'contract_id') = $2::uuid::text AND q.input->>'code' = $3
-        AND q.input->>'valid_from' IS NOT NULL
-        AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))`,
-    [companyId, rad.contract_id, vald.code, ['andra_baseline', 'upsert_contract_part']],
+async function lasGrund(client: PoolClient, companyId: string, contractId: string, kod: string): Promise<Grundversion | null> {
+  const r = await client.query<Omit<Grundversion, 'cap_hours'> & { cap_hours: string | null }>(
+    `SELECT id::text AS id, valid_from::text AS valid_from, name, description, parent_part_id, billable, hourly_rate_ore,
+            cap_hours::text AS cap_hours, cap_amount_ore, cap_confirmed, sort_order, active,
+            start_date::text AS start_date, end_date::text AS end_date, date_precision
+       FROM contract_parts WHERE company_id = $1 AND contract_id = $2::uuid AND code = $3
+      ORDER BY valid_from DESC, id DESC LIMIT 1`,
+    [companyId, contractId, kod],
   );
-  return {
-    grund: { ...g, cap_hours: g.cap_hours === null ? null : Number(g.cap_hours) },
-    giltigFran: tillaggetsDatum(rad.datum, upptagna.rows.map((r) => r.datum)),
-  };
+  const g = r.rows[0];
+  return g ? { ...g, cap_hours: g.cap_hours === null ? null : Number(g.cap_hours) } : null;
 }
 
 /**
- * Den enda prövningen av Övrigt-raden när ett beslut verkställs, för båda
+ * Tilläggets grund och den nya versionens datum, eller `null` (`senare_version`).
+ * Grunden är den gällande versionen, och den är också den senaste lagrade:
+ * finns en schemalagd senare version, eller ett väntande eller mottaget
+ * versionsförslag för koden, byggs inget tillägg. Då beskriver prövningen,
+ * underlaget, posten och indatat alltid samma version, och ett ja kan inte
+ * tyst skriva över en annan ändring. Datumet ligger efter grunden
+ * (`tillaggetsDatum`), så att den nya versionen blir den som gäller.
+ */
+async function tillaggetsGrund(
+  client: PoolClient, companyId: string, rad: Ovrigtrad, vald: Delforbrukning,
+): Promise<{ grund: Grundversion; giltigFran: string } | null> {
+  const grund = await lasGrund(client, companyId, rad.contract_id, vald.code);
+  if (!grund) throw new Error(`avtalsdelen ${vald.code} saknar en lagrad version`);
+  if (grund.id !== vald.part_id) return null;
+  const vantar = await client.query(
+    `SELECT 1 FROM action_approvals q
+      WHERE q.company_id = $1 AND q.action = ANY($4::text[])
+        AND lower(q.input->>'contract_id') = $2::uuid::text AND q.input->>'code' = $3
+        AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))
+      LIMIT 1`,
+    [companyId, rad.contract_id, vald.code, ['andra_baseline', 'upsert_contract_part']],
+  );
+  if ((vantar.rowCount ?? 0) > 0) return null;
+  return { grund, giltigFran: tillaggetsDatum(rad.datum, [grund.valid_from]) };
+}
+
+/**
+ * Den enda prövningen av Övrigt-raden när ett ja verkställs, för båda
  * åtgärderna med raden som källa (`registrera_uppdragsbeslut` och
- * `andra_baseline`): raden finns i bolaget, hör till förslagets avtal och är
- * markerad. Samma avtal avgörs på raden i databasen, aldrig på indatats
- * stavning. En köpost som REST eller MCP köat med en annan rad som källa
- * verkställs därför aldrig, och ingen beslutsrad stänger den andra radens fråga.
+ * `andra_baseline`): raden finns i bolaget, hör till förslagets avtal, är
+ * markerad och har ännu inget beslut. Samma avtal avgörs på raden i databasen,
+ * aldrig på indatats stavning. En köpost som REST eller MCP köat med en annan
+ * rad som källa verkställs därför aldrig, och en andra köpost för samma rad
+ * ger aldrig ett andra beslut (B-4: ett beslut, en gång). Låset per rad gör att
+ * två samtidiga ja väntar på varandra, så att det andra ser det första beslutet.
  */
 export async function kravOvrigtrad(
   client: PoolClient, companyId: string, contractId: string, anteckningId: string,
-): Promise<string> {
-  const r = await client.query<{ id: string }>(
-    `SELECT a.id::text AS id FROM uppdrag_anteckning a
+): Promise<{ id: string; text: string; datum: string }> {
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))', [`ovrigt:${anteckningId.toLowerCase()}`]);
+  const r = await client.query<{ id: string; text: string; datum: string; har_beslut: boolean }>(
+    `SELECT a.id::text AS id, a."text" AS text, a.created_at::date::text AS datum,
+            EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING}) AS har_beslut
+       FROM uppdrag_anteckning a
       WHERE a.company_id = $1 AND a.id = $2::uuid AND a.contract_id = $3::uuid AND a.utanfor_avtal`,
     [companyId, anteckningId, contractId],
   );
   const rad = r.rows[0];
   if (!rad) throw new ConflictError('kalla_annat_avtal', 'Övrigt-raden hör inte till avtalet i förslaget.');
-  return rad.id;
+  if (rad.har_beslut) throw new ConflictError('redan_beslutad', 'Förfrågan i Övrigt-raden är redan besvarad. Ett beslut registreras en gång.');
+  return { id: rad.id, text: rad.text, datum: rad.datum };
 }
 
 /**
- * Prövningen före ett tillägg skrivs (`andra_baseline`): har köposten
- * Övrigt-raden som källa prövas raden som för ryms. Andra källor prövas där de hör hemma.
+ * Prövningen före ett tillägg skrivs (`andra_baseline`). Har köposten
+ * Övrigt-raden som källa prövas raden som för ryms, och indatat måste vara
+ * exakt det tillägg som byggs ur kodens senaste lagrade version, raden och
+ * underlaget (`stammerTillagget`), daterat efter den versionen. Så skriver ett
+ * ja bara det posten beskriver: grundens fält, radens orsak och underlagets tak
+ * och kronram. Ett indata som köats förbi svepet med andra fält, och ett
+ * tillägg vars grund ändrats sedan förslaget, ger 409 och skriver ingenting.
+ * Andra källor prövas där de hör hemma.
  */
 export async function kravTillaggetsKalla(
-  client: PoolClient, companyId: string, input: { contract_id: string; kalla?: { typ: string; id: string } },
+  client: PoolClient, companyId: string,
+  input: Record<string, unknown> & {
+    contract_id: string; code: string; valid_from: string;
+    kalla?: { typ: string; id: string }; beslutsunderlag?: OvrigtUnderlag;
+  },
 ): Promise<void> {
-  if (input.kalla?.typ === 'anteckning') await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
+  if (input.kalla?.typ !== 'anteckning') return;
+  const rad = await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
+  const grund = await lasGrund(client, companyId, input.contract_id, input.code);
+  const stammer = grund !== null && input.beslutsunderlag !== undefined && input.valid_from > grund.valid_from
+    && stammerTillagget({ contract_id: input.contract_id, kod: input.code, anteckning: { text: rad.text, datum: rad.datum },
+      gallande: grund, underlag: input.beslutsunderlag, indata: input });
+  if (!stammer) {
+    throw new ConflictError('tillagg_inaktuellt',
+      'Tillägget stämmer inte med avtalsdelens senaste version, Övrigt-raden och underlaget, så inget skrivs.');
+  }
 }
 
 /**
@@ -304,6 +347,6 @@ export async function registreraRyms(
   client: PoolClient, companyId: string,
   input: { contract_id: string; kalla: { id: string }; beslutsunderlag: OvrigtUnderlag },
 ): Promise<{ anteckning_id: string; contract_id: string; avtalsdel_kod: string }> {
-  const id = await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
-  return { anteckning_id: id, contract_id: input.contract_id, avtalsdel_kod: input.beslutsunderlag.avtalsdel_kod };
+  const rad = await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
+  return { anteckning_id: rad.id, contract_id: input.contract_id, avtalsdel_kod: input.beslutsunderlag.avtalsdel_kod };
 }

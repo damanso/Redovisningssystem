@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.14, andra omtaget efter code-review: fyra fynd):**
+  Granskningen godkände inte. Två av fynden var samma felklasser som förra
+  varvets (ett ja skriver mer än posten säger; tillägget bygger på en annan
+  version än den som gäller), så mekanismen byttes i stället för att ett fall
+  till lades på. Ingen migration, inget nytt paket, ingen ny env.
+  1. **En väg in för tillägget** (HIGH): förra varvet band bara taket och
+     kronramen i schemat. Nu verkställs ett tillägg ur en Övrigt-rad bara när
+     indatat är *exakt* det som byggs ur kodens senaste lagrade version, raden
+     och underlaget (`stammerTillagget` i `lib/beslutsunderlag.ts`, anropad av
+     `kravTillaggetsKalla`), daterat efter den versionen. Annars 409
+     `tillagg_inaktuellt` och ingenting skrivs. Det täcker också en grund som
+     ändrats sedan förslaget (en annan version godkänd före tillägget).
+  2. **Ett beslut per rad** (MEDIUM): `kravOvrigtrad` vägrar ett ja när raden
+     redan har en beslutsrad (409 `redan_beslutad`), under ett transaktionslås
+     per rad så att två samtidiga ja ger ett beslut. Läsvägen visar bara radens
+     första köpost som fråga; övriga köposter för raden står i `hoppade` med
+     den nya orsaken `redan_fragad`. Ett nej spärras inte: det ändrar inget
+     avtal, och en köpost som köats förbi svepet ska gå att avböja.
+  3. **Tillägget bygger alltid på den gällande versionen** (MEDIUM och LOW):
+     förslagssteget avvisar ett tillägg med den nya orsaken `senare_version`
+     när koden har en schemalagd version efter den gällande, eller ett väntande
+     eller mottaget versionsförslag (`andra_baseline`/`upsert_contract_part`,
+     också ett annat tillägg i samma anrop). Grunden läses av en enda funktion
+     (`lasGrund`) både vid köandet och vid verkställigheten.
+  4. `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md` beskriver prövningarna, de
+     nya orsakerna och `redan_fragad`; punkt 3 i förra omtagets post nedan
+     påstod mer än koden gjorde och är rättad.
+
+  **Prov:** nya U19 (ren: varje fält i indatat ändrat, tillagt och borttaget,
+  och en ändrad grund), G6 (nio indata förbi svepet med andra fält, och en grund
+  som ändrats före ja), G7 (två köposter för samma rad i båda ordningarna och
+  två samtidiga ja) och G8 (väntande, mottaget och samma anrop ger
+  `senare_version`). Ändrade av samma skäl: F7 (tilläggen på fem olika koder),
+  F10 (datumet utan väntande förslag), G2 (schemalagd senare version), G3 (två
+  koder) och T3 (två rader).
+  **Inte kört i sessionen:** sandlådan nekade `npm run typecheck`
+  (`This command requires approval`); `npm run build` och `npm test` körs av
+  kedjan. Förutsagt, inte observerat.
+
 - **2026-10-13 (Story 1.14, omtag efter code-review: elva fynd):**
   Granskningen godkände inte. Varje fynd lagades som en felklass, med prov som
   fäller flera fall av klassen. Ingen migration, inget nytt paket, ingen ny env.
@@ -168,7 +207,8 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
      versionen efter varje lagrad och väntande version av koden, och tillägget
      bygger på den senaste lagrade versionen. Ett tillägg dateras alltså aldrig
      före en version som skulle gälla i stället.
-  3. **Allt ett ja ändrar står i underlaget och texten:** underlaget har
+  3. **Taket och kronramen ett ja ändrar står i underlaget och texten** (de
+     övriga fälten i indatat var fortfarande fria; rättat i omtaget ovan): underlaget har
      `ny_kronram_ore`; förslagstexten, ”Ditt svar registrerar” och fältet
      Återstående utrymme säger den nya kronramen; `byggTillaggsindata` tar taket
      och kronramen ur underlaget och kastar om version och underlag inte hör
