@@ -1,5 +1,6 @@
 import { formatOre, type Ore } from '../../domain/money.js';
 import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
+import type { Farskhet } from '../../services/uppdragLage.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -95,6 +96,31 @@ export function aiMarkning(): Raw {
       '<span class="ai-markning__i" aria-hidden="true">\u2726</span>AI-genererat förslag</span>',
   );
 }
+
+/**
+ * Lästidpunkten som den ska läsas: klockslaget när värdet lästes i dag, och
+ * DATUMET framför när det inte gjorde det. Ett svep från i förrgår som bara
+ * visar "08:30" ser färskt ut — och det är hela felet FR-35 finns för att
+ * hindra.
+ *
+ * Story 1.11: de tre färskhetshjälparna bor i kanon, så att Läget, listan,
+ * Pengarna, Dokumenten och undantagsvyn skriver färskheten på ett ställe.
+ */
+export function farskhetstid(iso: string, idag: string): string {
+  const d = new Date(iso);
+  const datum = d.toLocaleDateString('sv-SE');
+  const tid = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  return datum === idag ? tid : `${datum} ${tid}`;
+}
+
+/** `.farskhet`-raden: källa + lästidpunkt, sist i kortet. Aldrig en sidstämpel. */
+export function farskhetsrad(delar: readonly string[]): Raw {
+  return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
+}
+
+/** "läst ur redovisningen <tid>" för ett värde läst direkt ur en källa. */
+export const direktFarskhet = (f: Farskhet, idag: string): string =>
+  `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
 
 /** En liten versal etikett (kolumnhuvud-känsla). */
 export function eyebrow(text: string): Raw {
@@ -1185,6 +1211,12 @@ a.today__who:hover { color: var(--accent-ink); }
   .today__who, .sok__t { display: inline-flex; align-items: center; min-height: var(--traff); }
 }
 
+/* Uppdragsytan (Story 1.11, NFR-8): träffytan 44 px på varje länk och knapp i
+   en yta som bär data-traffyta. Samma form som table[data-staplas]: sidan säger
+   vad den behöver, och kanon bär regeln. */
+[data-traffyta] a, [data-traffyta] button { min-height: var(--traff); min-width: var(--traff); }
+[data-traffyta] a { display: inline-flex; align-items: center; }
+
 /* Rättningsformuläret: hopfällt tills man behöver det. details/summary, ingen JS. */
 .rattaform > summary { font-size: 12.5px; color: var(--ink-3); cursor: pointer; padding: 2px 0; }
 .rattaform > summary:hover { color: var(--ink-2); }
@@ -1220,6 +1252,14 @@ a.today__who:hover { color: var(--accent-ink); }
 /* Tomt tillstånd */
 .empty { text-align: center; padding: 40px 20px; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: var(--radius); background: var(--surface); }
 .empty .big { font-size: 15px; color: var(--ink-2); font-weight: 550; margin-bottom: 4px; }
+
+/* Tomhetens grammatik i uppdragsytan (FR-22, designkontraktet; Story 1.11).
+   Verifierat tomt och ofullständigt underlag är två olika besked och får var
+   sitt block — aldrig .muted och aldrig .empty. Deklarationerna är desamma som
+   i Hermes kopia av kontraktet. */
+.tomt { display: block; padding: 1.5rem 1.2rem; background: var(--surface); border: 1px dashed var(--line-2); border-radius: var(--radius); color: var(--ink-3); font-size: 14px; line-height: 1.6; }
+.tomt b { display: block; color: var(--ink); font-weight: 600; font-size: 14.5px; margin-bottom: .3rem; }
+.tomt a { color: var(--accent-ink); }
 
 /* Login */
 .auth-wrap { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
@@ -1597,8 +1637,14 @@ export function layout(opts: {
   /** Namnet pa objektet nar sidan ar en UNDERDESTINATION (en faktura, ett
    *  projekt, en flik) i stallet for destinationssidan sjalv. Satt det och
    *  menyposten markeras som "location", inte "page", och brodsmulan far ett
-   *  sista led. Astras matchningsregel 6. */
+   *  sista led. Astras matchningsregel 6. Uppdragsytans sidor satter dessutom
+   *  `markering`, sa att helmenyn och snabbraden har exakt en "page" var
+   *  aven nar sidan visar ett objekt (designkontraktets menygrammatik). */
   objekt?: string;
+  /** Uppdragsytan (Story 1.11, B-3, NFR-8): markera den aktiva posten med
+   *  `page` också när sidan visar ett objekt. Utan valet blir den `location`
+   *  (Astras matchningsregel 6), och så renderas övriga produkter som förut. */
+  markering?: 'page';
   unread?: number;
   body: Raw;
 }): Raw {
@@ -1656,10 +1702,12 @@ export function layout(opts: {
       : omradet.items.slice(0, 6)
     : [];
   const inQuick = aktivDest !== null && snabbrad.some((p) => p.id === aktivDest.id);
+  // Kanons enda kalla till aria-current="location": en sida med objekt, som
+  // inte valt `markering: 'page'`. Uppdragsytans sidor valjer det (Story 1.11).
   const link = (p: Post, cls: string) =>
     html`<a class="${cls}" href="${p.href ?? '#'}"${
       aktivDest && p.id === aktivDest.id
-        ? raw(opts.objekt ? ' aria-current="location"' : ' aria-current="page"')
+        ? raw(opts.objekt && opts.markering !== 'page' ? ' aria-current="location"' : ' aria-current="page"')
         : ''
     } data-destination-id="${p.id}">${p.label}</a>`;
 

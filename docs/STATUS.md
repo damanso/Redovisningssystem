@@ -153,6 +153,83 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.11, undantagsvyn som ingång):**
+  Uppdragsytans ingång är nu undantagsvyn, på dator och mobil.
+  1. `server/src/http/view/html.ts`: `layout()` har valet `markering?: 'page'`.
+     `link()` skriver `location` bara när sidan har `objekt` och inte valt
+     `page`. Kanon fick `.tomt` (designkontraktets tomhetsgrammatik) och
+     `[data-traffyta] a, [data-traffyta] button` (44 px via `--traff`).
+     `farskhetstid`, `farskhetsrad` och `direktFarskhet` flyttade oförändrade
+     hit från `routes.ts`.
+  2. `server/src/http/view/routes.ts`: `pageFor` har fjärde parametern
+     `sidan` (`objekt`, `markering`). `uppdragsmarkering(medUndermeny)` sätter
+     valet på de tretton sidorna med `.subnav` (nio `layout()`, fyra `pageFor`).
+     `GET /uppdrag` är undantagsvyn, och listan ligger på `/uppdrag/lista`
+     (oförändrad i sak, nu i `<div data-traffyta>`). `INGANGEN` läses ur
+     kontraktets ägare till `GET /c/:companyId/uppdrag`. En ny `POST /uppdrag`
+     väljer gren ur `UNDANTAGSHANDLINGAR` (`ja` → `approveAction`, `nej` →
+     `avboj_beslutsforslag`, `scope` → `avgor_scopesignal`, `bedomning` →
+     `satt_bedomning` med `begaran_id`). `decideApproval` och `runViewAction`
+     fick den valfria parametern `lyckat`. Lägets "← Uppdragen" leder till
+     `/uppdrag/lista`.
+  3. `server/src/http/view/undantagsvyn.ts` (ny): vyn som ren funktion av
+     `lasUndantag`-svaret: regeln, de tre utfallen, posterna med fält, källor
+     (Drive-länk ur file-id), `--ai`-märkning och färskhet per värde, och
+     `FORMULAR` per postslag.
+  4. `server/src/http/view/kontrakt.ts`: typen har `routes`, och den nya
+     exporten `ruttensAgare` läser ruttägarskapet. `modell()` är oförändrad.
+  5. `server/src/http/view/auth.ts`: agentens GET-läsväg omfattar också exakt
+     `/c/<bolag>/uppdrag` och `/c/<bolag>/uppdrag/lista`.
+  6. `docs/ARKITEKTUR.md`: ingången, valet `markering` och tabellen över
+     postslag (B-3).
+
+  **Prov:** `uppdragsytan-markering.test.ts` (M0–M4, ny),
+  `uppdragsytan-undantagsvyn.test.ts` (R2–R6 och V2–V7, ny),
+  `uppdragsytan-undantagsvyn-mobil.test.ts` (B (1)–(8), playwright, ny),
+  `undantagsvynHelper.ts` (de rena fallen, körbara utan databas) och
+  `undantagsvynRigg.ts` (den delade riggen). I `uppdragsytan-menyn.test.ts`
+  kom N0 (`kontraktsbrister`), N0 (k1)–(k8) (`generatorsForm`), N1 och N2,
+  som ersätter kravet på `location` på Läget. `uppdragsytan-laget.test.ts`
+  öppnar listan på `/uppdrag/lista`.
+
+  **Inte kört i sessionen:** vitest, `npm run typecheck`, `npm run build` och
+  `npm test`. Sandlådan nekade varje körande kommando (`This command requires
+  approval`). Rött och grönt per uppgift står som förutsagt, inte observerat, i
+  berättelsens Debug Log. Kedjans typecheck och `npm test` är belägget.
+
+  **Omtag (kedjans typecheck röd):** `uppdragsytan-undantagsvyn-mobil.test.ts`
+  rad 358, TS2339. En spridning av `Record<string, string>` med en känd nyckel
+  i en objektliteral tappar indexsignaturen, så `handling` fanns inte på
+  typen. `form` har nu typen `Record<string, string>` uttryckligen. Ingen
+  produktionskod ändrad. Inte kört i sessionen (sandlådan nekade).
+
+  **Kontraktets läge i kopian:** *före synken*. Ingen destination har mallen
+  `/app/c/:companyId/uppdrag`, och `projects_list` äger `GET /c/:companyId/uppdrag`.
+  Undantagsvyn och listan markerar därför "Projekt". Filen
+  `server/kontrakt/navigation.v1.json` är generatorns och rördes inte.
+
+  **Driftnotiser:**
+  1. `adresskontraktet.py` står rött tills Hermes egen kopia av kontraktet
+     (`~/.hermes/kontrakt/navigation.v1.json`) har synkats med generatorn (Story 1.12).
+  2. **Utanför repot, står rött tills det synkas:** generatorn i Davids valv
+     ska köras med K-a–K-e (berättelse 1.11, Dev Notes → "Navigationskontraktet:
+     två tillåtna lägen"): destinationen "Uppdrag" (mallen
+     `/app/c/:companyId/uppdrag`, `active_match` subtree, rekommendation
+     `group_id: projects`, `order: 60`) sist i både `accounting_quick_yes` och
+     `accounting_quick_pending_or_no`, mallen borttagen ur `projects_list`, och
+     de tre rutterna `GET /c/:companyId/uppdrag`, `GET /c/:companyId/uppdrag/lista`
+     och `POST /c/:companyId/uppdrag` med den som ägare. Därefter sprids
+     kontraktet till repot. Till dess står `adresskontraktet.py` rött för K2
+     (`GET /c/:companyId/uppdrag/lista` och `POST /c/:companyId/uppdrag`), och
+     menyn har ingen post "Uppdrag". Undantagsvyn nås på `/uppdrag` och
+     markerar "Projekt". Efter synken följer markeringen med utan kodändring,
+     och N0 i `uppdragsytan-menyn.test.ts` prövar då läget *genererat*.
+  3. Modulens objektsidor markerar nu menyn med `page` i stället för
+     `location`; `designparitet.py` godtar redan båda värdena.
+  4. Hermes saknar mätpunkten för undantagsvyn och `kontrollytan.py` (Story 1.12).
+  5. Ingen migration. En återställning till föregående release ger tillbaka
+     listan på `/uppdrag`.
+
 - **2026-10-13 (Story 1.10, omtag efter andra granskningen i drift):**
   Task 8: avtalets id tas ur låsraden.
   1. `lasAvtalet` (`server/src/services/uppdragBedomning.ts`) läser avtalets

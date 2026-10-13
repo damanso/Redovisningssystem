@@ -9,7 +9,8 @@
  * bevakad.
  *
  * Modulen svarar på EN fråga: vilken adress hör till ett destinations-id, och
- * går den att skriva ut utan att veta bolaget? Renderaren får aldrig lägga
+ * går den att skriva ut utan att veta bolaget? — och, för markeringen, vilken
+ * destination som äger en rutt (Story 1.11). Renderaren får aldrig lägga
  * `:companyId` eller ett antaget bolags-id i en länk.
  */
 import { readFileSync } from 'node:fs';
@@ -45,6 +46,7 @@ type Kontrakt = {
   groups: Grupp[];
   destinations: Destination[];
   surfaces: Record<string, string[]>;
+  routes: { service: string; method: string; router_pattern: string; owner_id: string }[];
 };
 
 // dist/http/view -> server/ ; i containern /app/dist/http/view -> /app/.
@@ -111,6 +113,21 @@ export function destinationsAdress(d: Destination, companyId: string | null): st
 /** `?destination=<id>` att hänga på en adress, eller tom sträng. */
 export function destinationsFraga(d: Destination | undefined): string {
   return d ? `?destination=${encodeURIComponent(d.id)}` : '';
+}
+
+/**
+ * Destinationen som kontraktet anger som ägare till en av redovisningens
+ * rutter (`routes[].owner_id`, samma ägarskap som adresskontraktet.py K2–K3
+ * prövar), eller `undefined`. Story 1.11 (FR-21, NFR-8): undantagsvyn och
+ * listan markerar menyn med ägaren till GET /c/:companyId/uppdrag. Då följer
+ * markeringen kontraktet både före och efter generatorns synk, och ingen
+ * kortform står i koden.
+ */
+export function ruttensAgare(metod: 'GET' | 'POST', routerPattern: string): Destination | undefined {
+  const rad = las().rat.routes.find(
+    (r) => r.service === 'redovisning' && r.method === metod && r.router_pattern === routerPattern,
+  );
+  return rad ? las().per_id.get(rad.owner_id) : undefined;
 }
 
 /**

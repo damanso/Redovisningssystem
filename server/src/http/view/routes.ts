@@ -50,6 +50,7 @@ import {
 } from '../../services/uppdragDokument.js';
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
+import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
@@ -71,7 +72,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { aiMarkning, amount, chip, entityLink, esc, eyebrow, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, direktFarskhet, entityLink, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -95,7 +96,8 @@ import { k10Computation, generateK10Sru, type K10Result } from '../../services/k
 import { k10Prefill } from '../../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
 import { createFiscalYear } from '../../services/accounting/fiscalYears.js';
-import { destination, destinationsAdress, destinationsFraga } from './kontrakt.js';
+import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
+import { undantagssida } from './undantagsvyn.js';
 
 export const viewRouter = Router();
 viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
@@ -699,6 +701,10 @@ function parseCompanyId(value: unknown): string {
  * `avvikelse` (valfri) läser ett lyckat svar och ger en text när utfallet inte
  * blev det formuläret lovade. Texten står då i sidans notis, så att svaret
  * inte kastas tyst (Story 1.9, "Inga tysta utfall").
+ *
+ * `lyckat` (valfri, Story 1.11) läser ett lyckat svar och ger platsen dit
+ * redirecten leder, när den inte är `backTo` — undantagsvyn leder till
+ * beslutets plats på Läget, och felen tillbaka till vyn.
  */
 const FORM_FEL = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
 
@@ -710,6 +716,7 @@ async function runViewAction(
   input: Record<string, unknown>,
   backTo: string,
   avvikelse?: (result: ActionResult) => string | undefined,
+  lyckat?: (result: Extract<ActionResult, { status: 'ok' }>) => Promise<string>,
 ): Promise<void> {
   const userId = getUserId(req);
   let result;
@@ -733,6 +740,10 @@ async function runViewAction(
   const text = avvikelse?.(result);
   if (text) {
     res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(text)}`);
+    return;
+  }
+  if (lyckat && result.status === 'ok') {
+    res.redirect(await lyckat(result));
     return;
   }
   res.redirect(result.status === 'pending_approval' ? `/app/c/${companyId}/approvals` : backTo);
@@ -784,7 +795,16 @@ async function hasFiscalYear(client: PoolClient, companyId: string): Promise<boo
   return (r.rowCount ?? 0) > 0;
 }
 
-function pageFor(active: string, title: string, render: (client: PoolClient, companyId: string, req: Request) => Promise<Raw>) {
+/**
+ * `sidan` (valfri) bär sidans objekt och kanons markeringsval till `layout()`.
+ * Story 1.11: uppdragsytans sidor sätter `markering: 'page'` här.
+ */
+function pageFor(
+  active: string,
+  title: string,
+  render: (client: PoolClient, companyId: string, req: Request) => Promise<Raw>,
+  sidan: { objekt?: string; markering?: 'page' } = {},
+) {
   return page(async (req, res) => {
     const userId = getUserId(req);
     const companyId = parseCompanyId(req.params.companyId);
@@ -792,7 +812,7 @@ function pageFor(active: string, title: string, render: (client: PoolClient, com
       const company = await loadCompany(client, companyId);
       return { name: company.name, body: await render(client, companyId, req) };
     });
-    res.type('html').send(layout({ title, companyId, companyName: name, active, body }).value);
+    res.type('html').send(layout({ title, companyId, companyName: name, active, ...sidan, body }).value);
   });
 }
 
@@ -1800,7 +1820,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
-  const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, objekt: objektnamn, harUppdrag, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const p = await getProject(client, companyId, projectId) as {
       id: string; number: number; name: string; status: string;
@@ -1918,9 +1938,12 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
                 <td><a href="/app/c/${companyId}/tid/${e.id}">${e.invoiced ? 'Visa' : 'Ändra'}</a></td></tr>`)}
               </tbody></table></div>${fakturalankSaknas()}`
       }`;
-    return { name: company.name, objekt: p.name, body: b };
+    return { name: company.name, objekt: p.name, harUppdrag, body: b };
   });
-  res.type('html').send(layout({ title: name, companyId, companyName: name, active: 'projects', objekt: objektnamn, body }).value);
+  res.type('html').send(layout({
+    title: name, companyId, companyName: name, active: 'projects', objekt: objektnamn,
+    ...uppdragsmarkering(harUppdrag), body,
+  }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -2293,17 +2316,21 @@ viewRouter.get('/c/:companyId/projects/:projectId/avtal', page(async (req, res) 
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
-  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, harUppdrag, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const { projekt, kunder, harUppdrag } = await avtalsunderlag(client, companyId, projectId);
     return {
       name: company.name,
+      harUppdrag,
       body: avtalsinlasningSida(req, companyId, projekt, kunder, tommaAvtalsvarden(projekt.customer_name), {
         aiAv: !config.ANTHROPIC_API_KEY, harUppdrag,
       }),
     };
   });
-  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
+  res.type('html').send(layout({
+    title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal',
+    ...uppdragsmarkering(harUppdrag), body,
+  }).value);
 }));
 
 // Multer-fel (för stor fil, trasig multipart) → vänlig notis (samma mönster som
@@ -2396,7 +2423,10 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/las-in', avtalUpload, p
       throw err;
     }
   })();
-  res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
+  res.type('html').send(layout({
+    title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal',
+    ...uppdragsmarkering(bas.harUppdrag), body,
+  }).value);
 }));
 
 /** Formulärets rader → avtalsdelar. Tomma rader och "Utelämna" faller bort. */
@@ -2453,17 +2483,21 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req
   // Rätta i formuläret, inte i minnet: ett fel efter tio ifyllda fält får
   // aldrig kosta de tio fälten.
   const visaIgen = async (fel: string): Promise<void> => {
-    const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+    const { name, harUppdrag, body } = await withTenantTransaction(userId, companyId, async (client) => {
       const company = await loadCompany(client, companyId);
       const { projekt, kunder, harUppdrag } = await avtalsunderlag(client, companyId, projectId);
       return {
         name: company.name,
+        harUppdrag,
         body: avtalsinlasningSida(req, companyId, projekt, kunder, varden, {
           aiAv: !config.ANTHROPIC_API_KEY, fel, harUppdrag,
         }),
       };
     });
-    res.type('html').send(layout({ title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal', body }).value);
+    res.type('html').send(layout({
+      title: 'Läs in avtal', companyId, companyName: name, active: 'projects', objekt: 'Läs in avtal',
+      ...uppdragsmarkering(harUppdrag), body,
+    }).value);
   };
 
   if (radfel) { await visaIgen(radfel); return; }
@@ -2871,11 +2905,16 @@ viewRouter.get('/c/:companyId/projects/:projectId/bedomning', page(async (req, r
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
-  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, medUndermeny, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    return { name: company.name, body: bedomningsSida(req, companyId, await bedomningsunderlag(client, companyId, projectId)) };
+    const u = await bedomningsunderlag(client, companyId, projectId);
+    // Samma villkor som undermenyn i bedomningsSida.
+    return { name: company.name, medUndermeny: u.avtal.length > 0, body: bedomningsSida(req, companyId, u) };
   });
-  res.type('html').send(layout({ title: 'Bedömning', companyId, companyName: name, active: 'projects', objekt: 'Bedömning', body }).value);
+  res.type('html').send(layout({
+    title: 'Bedömning', companyId, companyName: name, active: 'projects', objekt: 'Bedömning',
+    ...uppdragsmarkering(medUndermeny), body,
+  }).value);
 }));
 
 viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, res) => {
@@ -3215,11 +3254,16 @@ viewRouter.get('/c/:companyId/projects/:projectId/signaler', page(async (req, re
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
-  const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
+  const { name, medUndermeny, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    return { name: company.name, body: signalsida(req, companyId, await signalunderlag(client, companyId, projectId, userId)) };
+    const u = await signalunderlag(client, companyId, projectId, userId);
+    // Samma villkor som undermenyn i signalsida.
+    return { name: company.name, medUndermeny: u.avtal.length > 0, body: signalsida(req, companyId, u) };
   });
-  res.type('html').send(layout({ title: 'Signaler', companyId, companyName: name, active: 'projects', objekt: 'Signaler', body }).value);
+  res.type('html').send(layout({
+    title: 'Signaler', companyId, companyName: name, active: 'projects', objekt: 'Signaler',
+    ...uppdragsmarkering(medUndermeny), body,
+  }).value);
 }));
 
 viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, res) => {
@@ -3479,7 +3523,10 @@ viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res)
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag)) };
   });
-  res.type('html').send(layout({ title: 'Planen', companyId, companyName: name, active: 'projects', objekt: 'Planen', body }).value);
+  res.type('html').send(layout({
+    title: 'Planen', companyId, companyName: name, active: 'projects', objekt: 'Planen',
+    ...uppdragsmarkering(true), body,
+  }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -3740,7 +3787,10 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
     const company = await loadCompany(client, companyId);
     return { name: company.name, body: kontraktssida(companyId, await kontraktsunderlag(client, companyId, projectId)) };
   });
-  res.type('html').send(layout({ title: 'Kontraktet', companyId, companyName: name, active: 'projects', objekt: 'Kontraktet', body }).value);
+  res.type('html').send(layout({
+    title: 'Kontraktet', companyId, companyName: name, active: 'projects', objekt: 'Kontraktet',
+    ...uppdragsmarkering(true), body,
+  }).value);
 }));
 
 // ---------------------------------------------------------------------------
@@ -3822,25 +3872,12 @@ function subnav(companyId: string, projectId: string, aktuell: string): Raw {
 }
 
 /**
- * Lästidpunkten som den ska läsas: klockslaget när värdet lästes i dag, och
- * DATUMET framför när det inte gjorde det. Ett svep från i förrgår som bara
- * visar "08:30" ser färskt ut — och det är hela felet FR-35 finns för att
- * hindra.
+ * Story 1.11 (NFR-8, B-3): en sida som bär uppdragets `.subnav` är en av
+ * uppdragsytans sidor och markerar menyn med `page`. Villkoret är undermenyns
+ * eget — en sida utan undermeny är Projekt-produktens och renderas som förut.
  */
-function farskhetstid(iso: string, idag: string): string {
-  const d = new Date(iso);
-  const datum = d.toLocaleDateString('sv-SE');
-  const tid = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
-  return datum === idag ? tid : `${datum} ${tid}`;
-}
-
-/** `.farskhet`-raden: källa + lästidpunkt, sist i kortet. Aldrig en sidstämpel. */
-function farskhetsrad(delar: readonly string[]): Raw {
-  return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
-}
-
-const direktFarskhet = (f: Farskhet, idag: string): string =>
-  `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
+const uppdragsmarkering = (medUndermeny: boolean): { markering?: 'page' } =>
+  (medUndermeny ? { markering: 'page' } : {});
 
 /**
  * Tomhetens grammatik i kortformat (FR-22): vad tomheten betyder, plus en väg
@@ -4336,7 +4373,7 @@ function lagessida(
         p.customer_name ? html` · ${entityLink(companyId, 'customer', p.customer_id, p.customer_name)}` : ''}.
         Var står vi — utan att någon behöver fråga.</p></div>
       <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
-        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag">← Uppdragen</a></div></div>
+        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag/lista">← Uppdragen</a></div></div>
     ${subnav(companyId, p.project_id, 'laget')}
     ${felNotis(req)}
     ${handgreppsband(companyId, l, forslag)}
@@ -4373,7 +4410,10 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
     );
     return { name: company.name, body: lagessida(req, companyId, lage, forslag, anteckningar, idag) };
   });
-  res.type('html').send(layout({ title: 'Läget', companyId, companyName: name, active: 'projects', objekt: 'Läget', body }).value);
+  res.type('html').send(layout({
+    title: 'Läget', companyId, companyName: name, active: 'projects', objekt: 'Läget',
+    ...uppdragsmarkering(true), body,
+  }).value);
 }));
 
 /**
@@ -4478,10 +4518,165 @@ async function uppdragslista(client: PoolClient, companyId: string): Promise<Upp
   return rader.sort((a, b) => a.namn.localeCompare(b.namn, 'sv'));
 }
 
-viewRouter.get('/c/:companyId/uppdrag', pageFor('projects', 'Uppdrag', async (client, companyId) => {
+// --- Undantagsvyn: modulens ingång (Story 1.11) ---------------------------
+
+/**
+ * Story 1.11 (FR-21, NFR-8): kortformen för den destination som kontraktet
+ * anger som ägare till GET /c/:companyId/uppdrag. Undantagsvyn och listan
+ * markerar den i menyn. Före generatorns synk är det projects_list
+ * ('projects'), efter den ingångens egen destination ('uppdrag', K-a, K-e).
+ * Ingen kortform skrivs in här: menyn och ägarskapet kommer ur kontraktet.
+ * Saknas ägaren är kontraktet trasigt, och då faller tjänsten hellre än att
+ * visa en meny utan markering (samma skäl som las() i kontrakt.ts).
+ */
+function ingangen(): string {
+  const u = ruttensAgare('GET', '/c/:companyId/uppdrag')?.canonical_url;
+  const bas = '/app/c/:companyId/';
+  if (u?.kind !== 'company' || !u.template.startsWith(bas)) {
+    throw new Error('navigationskontraktet saknar en ägare med bolagsadress till GET /c/:companyId/uppdrag — kör generatorn');
+  }
+  return u.template.slice(bas.length);
+}
+const INGANGEN = ingangen();
+
+// Undantagsvyn ur läsvägen, orörd: ingen egen SQL och inget eget filter (B-3).
+// Sidan saknar objekt och får `page` också utan valet; valet står här för att
+// uppdragsytans sidor sätter det (AC 2).
+viewRouter.get('/c/:companyId/uppdrag', pageFor(INGANGEN, 'Uppdrag', async (client, companyId, req) =>
+  undantagssida(companyId, await lasUndantag(client, companyId), {
+    notis: felNotis(req), idag: new Date().toLocaleDateString('sv-SE') }), { markering: 'page' }));
+
+/** Det en gren i undantagsvyns POST får: begäran, svaret, vem, bolaget, formuläret och vägen tillbaka. */
+interface Undantagssvar {
+  req: Request;
+  res: import('express').Response;
+  userId: string;
+  companyId: string;
+  kropp: Record<string, unknown>;
+  tillbaka: string;
+}
+
+/** `?fel=<text>` på undantagsvyn. */
+const undantagsfel = (tillbaka: string, text: string): string => `${tillbaka}?fel=${encodeURIComponent(text)}`;
+
+/**
+ * Köpostens id och dess plats på Läget. Rutten verkställer bara köposter som
+ * `beslutsplats` känner som mandatförslag: en annan köpost (en bokföring, ett
+ * bokslut) avgörs aldrig härifrån, och då anropas ingenting.
+ */
+async function mandatforslag(s: Undantagssvar): Promise<{ approvalId: string; plats: string } | null> {
+  const approvalId = parseApprovalId(s.kropp.approval_id);
+  const plats = await withTenantTransaction(s.userId, s.companyId, (c) => beslutsplats(c, s.companyId, approvalId));
+  if (plats === null) {
+    s.res.redirect(undantagsfel(s.tillbaka, 'Förslaget hör inte till uppdragens mandatfrågor.'));
+    return null;
+  }
+  return { approvalId, plats };
+}
+
+/**
+ * Platsen på Läget för ett avgörande på ett avtal: projektet slås upp ur
+ * avtalet, och ankaret är kortet där avgörandet syns. Hittas inget avtal leder
+ * svaret tillbaka till vyn.
+ */
+async function lagetsPlats(userId: string, companyId: string, contractId: string, ankare: string): Promise<string> {
+  const avtal = await withTenantTransaction(userId, companyId, async (c) =>
+    (await listContracts(c, companyId, { contract_id: contractId }))[0]);
+  return avtal ? `/app/c/${companyId}/projects/${avtal.project_id as string}/laget#${ankare}` : `/app/c/${companyId}/uppdrag`;
+}
+
+/** Ett valfritt formulärfält som sträng, eller tomt. Schemat prövar värdet. */
+const formfalt = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+/**
+ * Undantagsvyns tillåtelselista (B-3:s tabell): `handling` väljer en gren här
+ * och bara här. Text i posten styr aldrig vilken åtgärd som körs, och nyckeln
+ * prövas med `Object.hasOwn` (lärdom 9).
+ */
+const UNDANTAGSHANDLINGAR = {
+  // Ja: den befintliga godkännandevägen, samma kärna som Att göra-sidans
+  // godkänn. Ett upprepat ja (not_pending) leder tyst till beslutets plats.
+  ja: async (s: Undantagssvar): Promise<void> => {
+    const forslag = await mandatforslag(s);
+    if (forslag === null) return;
+    const { approvalId, plats } = forslag;
+    await decideApproval(s.tillbaka, s.res, () =>
+      approveAction({ companyId: s.companyId, approverId: s.userId, approverActor: 'human', approvalId }),
+    async () => plats, plats);
+  },
+  // Nej: skälet prövas FÖRE varje anrop, så att ett tomt skäl aldrig rör
+  // databasen. Därefter `avboj_beslutsforslag` (Story 1.7), genom
+  // `decideApproval` så att ett upprepat nej leder till beslutets plats.
+  nej: async (s: Undantagssvar): Promise<void> => {
+    parseApprovalId(s.kropp.approval_id);
+    const skal = typeof s.kropp.skal === 'string' ? s.kropp.skal.trim() : '';
+    if (skal === '') {
+      s.res.redirect(undantagsfel(s.tillbaka, 'Skriv skälet till ditt nej — det sparas med beslutet.'));
+      return;
+    }
+    if (!safeText(300).safeParse(skal).success) {
+      s.res.redirect(undantagsfel(s.tillbaka, 'Skälet kunde inte läsas — högst 300 tecken, utan styrtecken.'));
+      return;
+    }
+    const forslag = await mandatforslag(s);
+    if (forslag === null) return;
+    const { approvalId, plats } = forslag;
+    await decideApproval(s.tillbaka, s.res, () => executeAction({
+      companyId: s.companyId, userId: s.userId, actor: 'human', actionName: 'avboj_beslutsforslag',
+      input: { approval_id: approvalId, skal },
+    }), async () => plats, plats);
+  },
+  // Scope: `avgor_scopesignal` med signalens id (Story 1.9). Ingen köpost och
+  // inget tillägg härifrån; ett fel eller en konflikt blir ?fel= på vyn.
+  scope: async (s: Undantagssvar): Promise<void> => {
+    await runViewAction(s.req, s.res, s.companyId, 'avgor_scopesignal', {
+      signal_id: formfalt(s.kropp.signal_id), avgjord: formfalt(s.kropp.avgjord),
+    }, s.tillbaka, undefined, async (r) =>
+      lagetsPlats(s.userId, s.companyId, (r.result as AvgorSignalSvar).contract_id, 'kort-signaler'));
+  },
+  // Bedömning: `satt_bedomning` med begärans id (Story 1.10), så att just den
+  // begäran besvaras. En tom kommentar utelämnas i stället för att skickas som "".
+  bedomning: async (s: Undantagssvar): Promise<void> => {
+    const kommentar = formfalt(s.kropp.kommentar).trim();
+    await runViewAction(s.req, s.res, s.companyId, 'satt_bedomning', {
+      contract_id: formfalt(s.kropp.contract_id),
+      period_start: formfalt(s.kropp.period_start),
+      period_slut: formfalt(s.kropp.period_slut),
+      lage: formfalt(s.kropp.lage),
+      begaran_id: formfalt(s.kropp.begaran_id),
+      ...(kommentar ? { kommentar } : {}),
+    }, s.tillbaka, undefined, async (r) =>
+      lagetsPlats(s.userId, s.companyId, (r.result as Bedomningsrad).contract_id, 'kort-bedomning'));
+  },
+};
+
+/**
+ * Undantagsvyns enda POST (Story 1.11, FR-23). Ordningen är spärrarnas:
+ * ursprunget, medlemskapet och sedan grenen ur tillåtelselistan. Varje gren går
+ * till sin åtgärd som människa, och svaret leder till beslutets plats på Läget.
+ */
+viewRouter.post('/c/:companyId/uppdrag', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  // Medlemskapet först: ett grannbolag får 404 vad formuläret än innehåller.
+  await withTenantTransaction(userId, companyId, (c) => loadCompany(c, companyId));
+  const kropp = (req.body ?? {}) as Record<string, unknown>;
+  const tillbaka = `/app/c/${companyId}/uppdrag`;
+  const handling = typeof kropp.handling === 'string' && Object.hasOwn(UNDANTAGSHANDLINGAR, kropp.handling)
+    ? UNDANTAGSHANDLINGAR[kropp.handling as keyof typeof UNDANTAGSHANDLINGAR] : null;
+  if (handling === null) {
+    res.redirect(undantagsfel(tillbaka, 'Valet gick inte att läsa. Ladda om sidan och försök igen.'));
+    return;
+  }
+  await handling({ req, res, userId, companyId, kropp, tillbaka });
+}));
+
+viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läge', async (client, companyId) => {
   const rader = await uppdragslista(client, companyId);
   const idag = new Date().toLocaleDateString('sv-SE');
-  return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Uppdragen</h1>
+  // Story 1.11: `data-traffyta` ger listans länkar och knappar 44 px (NFR-8).
+  return html`<div data-traffyta><div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Uppdragen</h1>
       <p class="lede">Ett uppdrag är ett projekt med minst ett avtal. Läget kommer ur den senaste
         bedömningen — en människas omdöme, aldrig en uträkning.</p></div></div>
     ${
@@ -4510,8 +4705,8 @@ viewRouter.get('/c/:companyId/uppdrag', pageFor('projects', 'Uppdrag', async (cl
               <td><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/projects/${r.projectId}/laget">Läget</a></td>
             </tr>`)}
             </tbody></table></div>`
-    }`;
-}));
+    }</div>`;
+}, { objekt: 'Uppdragens läge', markering: 'page' }));
 
 // ---------------------------------------------------------------------------
 // Uppdragsytan S10.3, våg 6: LEVERANSERNA — brädan och tabellen (FR-12, FR-37,
@@ -4874,7 +5069,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
     // default-läget, aldrig i en tom sida.
     const tabell = req.query.lage === 'tabell';
     return leveransersida(companyId, await leveransunderlag(client, companyId, projectId), tabell);
-  }));
+  }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
 // Uppdragsytan S10.4, våg 6: PENGARNA (FR-3, FR-5, FR-33, NFR-11)
@@ -5123,7 +5318,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/pengarna', pageFor('projects',
     const projectId = parseApprovalId(req.params.projectId);
     const idag = new Date().toLocaleDateString('sv-SE');
     return pengasida(companyId, await lasUppdragspengar(client, companyId, { project_id: projectId }), idag);
-  }));
+  }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
 // Uppdragsytan S10.5, våg 7: RAPPORTERNA (FR-17, FR-20; 1E Del 5)
@@ -5212,7 +5407,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/rapporterna', pageFor('project
   async (client, companyId, req) => {
     const projectId = parseApprovalId(req.params.projectId);
     return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId));
-  }));
+  }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
 // Uppdragsytan S10.10, beslut #189: DOKUMENTEN (FR-43, FR-22, FR-23, FR-35)
@@ -5367,7 +5562,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/dokumenten', pageFor('projects
     // bara när lästidpunkten INTE är i dag (FR-35).
     const idag = new Date().toLocaleDateString('sv-SE');
     return dokumentsida(companyId, await dokumentunderlag(client, companyId, projectId), idag);
-  }));
+  }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
 // Tid (PRD_TIDSRAPPORTERING story 4): ofakturerad godkänd tid, stillastående
@@ -9562,7 +9757,9 @@ function assertSameOrigin(req: Request): void {
 // i stället för en naken felsida — förslaget ligger kvar och kan avvisas.
 // NotFoundError (t.ex. en icke-medlem, RLS döljer raden) sväljs INTE — det ska
 // förbli ett 404 så åtkomstgränsen syns.
-async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>): Promise<void> {
+// `lyckat` (valfri, Story 1.11): vart ett lyckat beslut leder, när det inte är
+// samma plats som felen — undantagsvyn leder till beslutets plats på Läget.
+async function decideApproval(redirectTo: string, res: import('express').Response, run: () => Promise<unknown>, redanAvgjord?: () => Promise<string | null>, lyckat?: string): Promise<void> {
   try {
     await run();
   } catch (err) {
@@ -9578,7 +9775,7 @@ async function decideApproval(redirectTo: string, res: import('express').Respons
     res.redirect((await redanAvgjord?.()) ?? redirectTo);
     return;
   }
-  res.redirect(redirectTo);
+  res.redirect(lyckat ?? redirectTo);
 }
 
 viewRouter.post('/c/:companyId/approvals/:id/approve', page(async (req, res) => {

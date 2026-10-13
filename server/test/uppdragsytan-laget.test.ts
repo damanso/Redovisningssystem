@@ -350,7 +350,7 @@ describe('(c) tomfallet', () => {
 
 describe('(d) uppdragslistan', () => {
   it('tom lista förklarar vad tomheten betyder och pekar vidare', async () => {
-    const html = await sida(`/app/c/${tomtBolag}/uppdrag`);
+    const html = await sida(`/app/c/${tomtBolag}/uppdrag/lista`);
     expect(html).toContain('Inga uppdrag ännu');
     expect(html).toContain('blir ett uppdrag när det får ett avtal');
     expect(html).toContain(`/app/c/${tomtBolag}/projects`);
@@ -358,7 +358,7 @@ describe('(d) uppdragslistan', () => {
   });
 
   it('en rad per uppdrag, med läge, färskhet och väg till Läget', async () => {
-    const html = await sida(`/app/c/${companyId}/uppdrag`);
+    const html = await sida(`/app/c/${companyId}/uppdrag/lista`);
     // Uppdrag = projekt med minst ETT avtal. Projektet utan avtal står inte här.
     expect(html).toContain('NVR-001 Fas 2');
     expect(html).toContain('ILT-002 förstudie');

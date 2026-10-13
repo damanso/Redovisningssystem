@@ -36,25 +36,29 @@ const KOMPONENTKLASSER = [
   'handgrepp', 'stapel--baseline', 'milstolpe', 'brada', 'brada__kol', 'leverabelkort', 'harledning',
 ] as const;
 
-/** Snabbradens poster i sin ordning: de fem befintliga, och uppdragsytan sist. */
+/** Snabbradens poster ur kontraktet: dagens, och efter generatorns synk uppdragsytan sist (Story 1.11). */
 // Snabbraden star i kontraktet, inte har. Den handskrivna listan var en
 // kopia av renderarens lista: tva listor som ska vara lika och som ingen
 // jamfor ar en lista for mycket. Raden foljer dessutom beslut #157, och ett
 // prov som kodar in ett av utfallen skulle falla nar beslutet andras --
 // oavsett om produkten gjorde ratt eller fel.
-const KONTRAKT = JSON.parse(
-  readFileSync(new URL('../kontrakt/navigation.v1.json', import.meta.url), 'utf8'),
-) as {
+type Kontraktet = {
   decision_157: string;
   groups: { id: string; label: string; order: number; entry_id: string | null }[];
   destinations: {
     id: string;
+    label: string;
     group_id: string;
     order: number;
     canonical_url: { kind: string; template?: string };
+    active_match: { pathname: string; mode: string; query: unknown }[];
   }[];
   surfaces: Record<string, string[]>;
+  routes: { service: string; method: string; router_pattern: string; owner_id: string }[];
 };
+const KONTRAKT = JSON.parse(
+  readFileSync(new URL('../kontrakt/navigation.v1.json', import.meta.url), 'utf8'),
+) as Kontraktet;
 const SNABBRAD: string[] = KONTRAKT.surfaces[
   KONTRAKT.decision_157 === 'yes' ? 'accounting_quick_yes' : 'accounting_quick_pending_or_no'
 ]!.map((id) => {
@@ -62,6 +66,158 @@ const SNABBRAD: string[] = KONTRAKT.surfaces[
   const rest = (u.template ?? '').slice('/app/c/:companyId'.length);
   return rest.startsWith('/') ? rest.slice(1) : '';
 });
+
+// --- Story 1.11: kontraktets två tillåtna lägen -------------------------------
+//
+// Kopian av navigationskontraktet är generatorns utdata och redigeras aldrig
+// här. Den står i ett av två lägen: FÖRE SYNKEN (ingen destination har mallen
+// för undantagsvyn, och projects_list äger rutten) eller GENERERAT (generatorn
+// har lagt in ingången enligt K-a–K-e). Ett tredje läge — en halv
+// handredigering — fälls av reglerna nedan. Varianterna i kontrollerna byggs i
+// minnet och skrivs aldrig till fil.
+
+/** Undantagsvyns mall: det enda som avgör kontraktets läge. */
+const INGANGSMALL = '/app/c/:companyId/uppdrag';
+
+/** Redovisningens snabbytor i dag, i dagens ordning ("befintliga platser oflyttade"). */
+const DAGENS_SNABBRAD = {
+  yes: ['accounting_overview', 'invoices', 'receipts', 'projects_list'],
+  pending_or_no: ['accounting_overview', 'crm_today', 'approvals', 'invoices', 'receipts', 'projects_list'],
+} as const;
+const SNABBYTORNA = [
+  ['accounting_quick_yes', DAGENS_SNABBRAD.yes],
+  ['accounting_quick_pending_or_no', DAGENS_SNABBRAD.pending_or_no],
+] as const;
+
+/** Kontraktets rader för en av redovisningens rutter. */
+const rutter = (k: Kontraktet, metod: string, monster: string) =>
+  k.routes.filter((r) => r.service === 'redovisning' && r.method === metod && r.router_pattern === monster);
+
+/**
+ * Bristerna i kontraktet mot reglerna (g1)–(g3), (f1) och K-a–K-e, en rad per
+ * brist. Varje rad namnger sin regel. Läget avgörs av en enda fråga: har någon
+ * destination undantagsvyns mall?
+ */
+function kontraktsbrister(k: Kontraktet): string[] {
+  const brister: string[] = [];
+  const ingangar = k.destinations.filter(
+    (d) => d.canonical_url.kind === 'company' && d.canonical_url.template === INGANGSMALL,
+  );
+  const genererat = ingangar.length > 0;
+
+  // (g1) Exakt en ägare till GET /c/:companyId/uppdrag, med bolagsadress.
+  const g1 = rutter(k, 'GET', '/c/:companyId/uppdrag');
+  let agare: Kontraktet['destinations'][number] | undefined;
+  if (g1.length !== 1) {
+    brister.push(`(g1) routes har ${g1.length} rader för GET /c/:companyId/uppdrag, inte exakt en`);
+  } else {
+    agare = k.destinations.find((d) => d.id === g1[0]!.owner_id);
+    if (!agare || agare.canonical_url.kind !== 'company'
+      || !(agare.canonical_url.template ?? '').startsWith('/app/c/:companyId/')) {
+      brister.push(`(g1) ägaren ${g1[0]!.owner_id} är ingen destination med bolagsadress`);
+      agare = undefined;
+    }
+  }
+
+  // (g2) Ägaren står i sitt områdes snabbrad — annars får snabbraden ingen markering.
+  if (agare) {
+    const ja = k.decision_157 === 'yes';
+    if (agare.group_id === 'accounting') {
+      const snabb = k.surfaces[ja ? 'accounting_quick_yes' : 'accounting_quick_pending_or_no'] ?? [];
+      if (!snabb.includes(agare.id)) brister.push(`(g2) ${agare.id} står inte i redovisningens snabbyta`);
+    } else {
+      const grupp = k.groups.find((g) => g.id === agare!.group_id);
+      const dolda: string[] = ja ? ['crm_today', 'approvals'] : [];
+      const rad = k.destinations
+        .filter((d) => d.group_id === agare!.group_id && d.id !== grupp?.entry_id && !dolda.includes(d.id))
+        .sort((a, b) => a.order - b.order)
+        .slice(0, 6)
+        .map((d) => d.id);
+      if (!grupp || !rad.includes(agare.id)) {
+        brister.push(`(g2) ${agare.id} står inte bland de sex första i gruppen ${agare.group_id}`);
+      }
+    }
+  }
+
+  // (g3) Snabbytorna börjar med dagens poster i dagens ordning.
+  for (const [yta, dagens] of SNABBYTORNA) {
+    const faktisk = k.surfaces[yta] ?? [];
+    if (JSON.stringify(faktisk.slice(0, dagens.length)) !== JSON.stringify(dagens)) {
+      brister.push(`(g3) ${yta} börjar inte med dagens poster i dagens ordning: ${faktisk.join(', ')}`);
+    }
+  }
+
+  if (!genererat) {
+    // (f1) Före synken: snabbytorna är exakt dagens, utan något efter dem.
+    for (const [yta, dagens] of SNABBYTORNA) {
+      const faktisk = k.surfaces[yta] ?? [];
+      if (faktisk.length !== dagens.length) {
+        brister.push(`(f1) ${yta} har ${faktisk.length} poster före synken, inte dagens ${dagens.length}`);
+      }
+    }
+    return brister;
+  }
+
+  // K-a: exakt en ingång, med etiketten Uppdrag.
+  if (ingangar.length !== 1) brister.push(`(K-a) ${ingangar.length} destinationer har mallen ${INGANGSMALL}, inte exakt en`);
+  const ing = ingangar[0]!;
+  if (ing.label !== 'Uppdrag') brister.push(`(K-a) ingångens etikett är "${ing.label}", inte "Uppdrag"`);
+
+  // K-b: ingången sist i båda snabbytorna, dagens poster före den.
+  for (const [yta, dagens] of SNABBYTORNA) {
+    const faktisk = k.surfaces[yta] ?? [];
+    if (faktisk.length !== dagens.length + 1 || faktisk[faktisk.length - 1] !== ing.id) {
+      brister.push(`(K-b) ${ing.id} står inte sist efter dagens poster i ${yta}: ${faktisk.join(', ')}`);
+    }
+  }
+
+  // K-d: ingångens active_match täcker mallen, och ingen annan destination gör det.
+  if (!ing.active_match.some((m) => m.pathname === INGANGSMALL)) {
+    brister.push(`(K-d) ingångens active_match täcker inte ${INGANGSMALL}`);
+  }
+  for (const d of k.destinations) {
+    if (d.id !== ing.id && d.active_match.some((m) => m.pathname === INGANGSMALL)) {
+      brister.push(`(K-d) ${d.id} matchar också ${INGANGSMALL}`);
+    }
+  }
+
+  // K-e: de tre rutterna, alla med ingången som ägare. (K-c prövas av (g2).)
+  for (const [metod, monster] of [
+    ['GET', '/c/:companyId/uppdrag'], ['GET', '/c/:companyId/uppdrag/lista'], ['POST', '/c/:companyId/uppdrag'],
+  ] as const) {
+    const rader = rutter(k, metod, monster);
+    if (rader.length !== 1 || rader[0]!.owner_id !== ing.id) {
+      brister.push(`(K-e) ${metod} ${monster} har inte ${ing.id} som enda ägare (${rader.map((r) => r.owner_id).join(', ')})`);
+    }
+  }
+  return brister;
+}
+
+/**
+ * Generatorns form, gjord i minnet på ett kontrakt FÖRE synken, med
+ * rekommendationerna i K-a–K-e. Skrivs aldrig till fil och renderas aldrig.
+ */
+function generatorsForm(k: Kontraktet): Kontraktet {
+  const g = structuredClone(k);
+  for (const d of g.destinations) d.active_match = d.active_match.filter((m) => m.pathname !== INGANGSMALL);
+  g.destinations.push({
+    id: 'uppdrag', label: 'Uppdrag', group_id: 'projects', order: 60,
+    canonical_url: { kind: 'company', template: INGANGSMALL },
+    active_match: [{ pathname: INGANGSMALL, mode: 'subtree', query: null }],
+  });
+  for (const [yta] of SNABBYTORNA) g.surfaces[yta] = [...(g.surfaces[yta] ?? []), 'uppdrag'];
+  for (const r of rutter(g, 'GET', '/c/:companyId/uppdrag')) r.owner_id = 'uppdrag';
+  g.routes.push(
+    { service: 'redovisning', method: 'GET', router_pattern: '/c/:companyId/uppdrag/lista', owner_id: 'uppdrag' },
+    { service: 'redovisning', method: 'POST', router_pattern: '/c/:companyId/uppdrag', owner_id: 'uppdrag' },
+  );
+  return g;
+}
+
+const KOPIANS_LAGE = KONTRAKT.destinations.some(
+  (d) => d.canonical_url.kind === 'company' && d.canonical_url.template === INGANGSMALL,
+) ? 'genererat' : 'före synken';
+const GENERERAT: Kontraktet = KOPIANS_LAGE === 'genererat' ? KONTRAKT : generatorsForm(KONTRAKT);
 
 /** Undermenyns S10-sidor (1E Del 5). De tre övriga posterna står kvar bredvid. */
 const S10_SIDOR = [
@@ -229,6 +385,72 @@ beforeAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe('(a) navigationen', () => {
+  // N0 (k1)–(k8): kontrollerna körs i varje körning, oavsett kopians läge. De
+  // visar att kontraktsbrister godtar generatorns form, där ingången står sist,
+  // och fäller varje planterat fel i den.
+  it('N0 (k1) generatorns form, med ingången sist, godtas', () => {
+    expect(kontraktsbrister(GENERERAT)).toEqual([]);
+  });
+
+  /** Ett planterat fel i en kopia av generatorns form. */
+  const planterat = (fel: (k: Kontraktet) => void): string[] => {
+    const k = structuredClone(GENERERAT);
+    fel(k);
+    return kontraktsbrister(k);
+  };
+  const ingangsId = (k: Kontraktet): string =>
+    k.destinations.find((d) => d.canonical_url.template === INGANGSMALL)!.id;
+
+  it.each([
+    { fall: '(k2) ingången först i accounting_quick_yes', regel: '(K-b)', fel: (k: Kontraktet) => {
+      const id = ingangsId(k);
+      k.surfaces.accounting_quick_yes = [id, ...k.surfaces.accounting_quick_yes!.filter((x) => x !== id)];
+    } },
+    { fall: '(k3) invoices och receipts bytta i accounting_quick_pending_or_no', regel: '(g3)', fel: (k: Kontraktet) => {
+      k.surfaces.accounting_quick_pending_or_no = k.surfaces.accounting_quick_pending_or_no!
+        .map((x) => (x === 'invoices' ? 'receipts' : x === 'receipts' ? 'invoices' : x));
+    } },
+    { fall: '(k4) POST /c/:companyId/uppdrag borttagen', regel: '(K-e)', fel: (k: Kontraktet) => {
+      k.routes = k.routes.filter((r) => !(r.service === 'redovisning' && r.method === 'POST'
+        && r.router_pattern === '/c/:companyId/uppdrag'));
+    } },
+    { fall: '(k5) mallen åter i projects_list.active_match', regel: '(K-d)', fel: (k: Kontraktet) => {
+      k.destinations.find((d) => d.id === 'projects_list')!.active_match
+        .push({ pathname: INGANGSMALL, mode: 'exact', query: null });
+    } },
+    { fall: '(k6) etiketten Uppdragen', regel: '(K-a)', fel: (k: Kontraktet) => {
+      k.destinations.find((d) => d.canonical_url.template === INGANGSMALL)!.label = 'Uppdragen';
+    } },
+    { fall: '(k7) destinationen borttagen men id:t kvar i snabbytorna', regel: '(f1)', fel: (k: Kontraktet) => {
+      k.destinations = k.destinations.filter((d) => d.canonical_url.template !== INGANGSMALL);
+    } },
+    { fall: '(k8) projects_list kvar som ägare till GET /uppdrag', regel: '(K-e)', fel: (k: Kontraktet) => {
+      for (const r of rutter(k, 'GET', '/c/:companyId/uppdrag')) r.owner_id = 'projects_list';
+    } },
+  ])('N0 $fall fälls av $regel', ({ regel, fel }) => {
+    const brister = planterat(fel);
+    expect(brister.length).toBeGreaterThan(0);
+    expect(brister.some((b) => b.startsWith(regel)), brister.join(' | ')).toBe(true);
+  });
+
+  it(`N0 kopians kontrakt står i ett tillåtet läge (${KOPIANS_LAGE})`, () => {
+    const brister = kontraktsbrister(KONTRAKT);
+    expect(brister, KOPIANS_LAGE === 'genererat'
+      ? `kopian står i läget genererat men bryter mot K-a–K-e: ${brister.join(' | ')}. Rätta generatorns indata — aldrig filen.`
+      : `kopian står i läget före synken men är inte dagens kontrakt: ${brister.join(' | ')}. Filen är generatorns och redigeras aldrig för hand.`,
+    ).toEqual([]);
+  });
+
+  it('N1 snabbraden på /receipts är exakt kontraktets snabbyta, i kontraktets ordning', async () => {
+    const quick = meny(await sida(`/app/c/${companyId}/receipts`), '<div class="nav__quick">');
+    expect(poster(quick)).toEqual(SNABBRAD);
+    const ytan = KONTRAKT.surfaces[
+      KONTRAKT.decision_157 === 'yes' ? 'accounting_quick_yes' : 'accounting_quick_pending_or_no'
+    ]!;
+    expect([...quick.matchAll(/data-destination-id="([^"]+)"/g)].map((m) => m[1])).toEqual(ytan);
+    expect(quick).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+  });
+
   it('snabbraden bär OMRÅDETS sidor — på ett uppdrag är det projektens', async () => {
     // David 2026-09-10: menyn bredvid "de delar av sidorna som är vanligast"
     // för den del man står i. På en projektsida är det projektgruppens poster,
@@ -253,10 +475,11 @@ describe('(a) navigationen', () => {
   it('snabbraden markerar EXAKT en post — uppdragsytan när man står på den', async () => {
     const quick = meny(await sida(lagetsVag()), '<div class="nav__quick">');
     expect(antalAktuella(quick)).toBe(1);
-    // UNDERDESTINATION: sidan man star pa ar projektets Laget, inte
-    // projektlistan. Menyns agare markeras darfor "location" — pastar den
-    // "page" sager sidan att man star pa en lista man inte star pa.
-    expect(quick).toContain(`href="/app/c/${companyId}/projects" aria-current="location"`);
+    // Story 1.11 (NFR-8, B-3): uppdragsytans sidor sätter kanons val
+    // `markering: 'page'`, också objektsidorna som Läget. Helmenyn och
+    // snabbraden har då exakt en page var, och ingen location (N2).
+    expect(quick).toContain(`href="/app/c/${companyId}/projects" aria-current="page"`);
+    expect(quick).not.toContain('aria-current="location"');
 
     // …och på en sida utanför uppdragsytan är det den sidan som är aktuell —
     // dar ar den EXAKT, och da ar det "page".
