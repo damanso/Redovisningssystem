@@ -977,8 +977,10 @@ Svaret är den skrivna raden.
   det är meningen.
 - **Begäran besvaras (Story 1.10).** Med `begaran_id` besvarar raden den
   begäran, som måste gälla samma avtal (annars **409 `begaran_annat_avtal`**;
-  okänd eller främmande ger 404 `not_found`). En redan besvarad begäran ger
-  **409 `begaran_besvarad`**. Utan `begaran_id` besvarar raden avtalets öppna
+  okänd eller främmande ger 404 `not_found`). Samma avtal avgörs på id:t, inte
+  på skiftläget: `contract_id` och `begaran_id` får skrivas med versaler, och
+  svaret och auditraden bär id:na som databasen skriver dem (gemener). En redan
+  besvarad begäran ger **409 `begaran_besvarad`**. Utan `begaran_id` besvarar raden avtalets öppna
   begäran, om det finns en, och svaret visar det i `begaran_id`. Raden bär
   `satt_av` (den inloggade användaren, aldrig indata) och svaret `satt_av_namn`.
   Auditraden `uppdrag.bedomning_satt` bär `contract_id`, `lage` och
@@ -1732,8 +1734,9 @@ bedömning av ett avtal". Ett handgrepp: åtgärden körs direkt, den köas inte
   `befintlig` är `false`.
 - **Auditraden** `uppdrag.bedomning_begard` skrivs bara när en rad skrivs, med
   `entity_type = 'uppdrag_bedomningsbegaran'`, radens id och `details`
-  `{ contract_id, kommentar_finns }` — ingen fritext. `action.executed` skrivs
-  av `executeAction` som förut.
+  `{ contract_id, kommentar_finns }` — ingen fritext. `contract_id` är avtalets
+  id som databasen skriver det, också när indatat har versaler.
+  `action.executed` skrivs av `executeAction` som förut.
 - **Fel:** 400 `validation_error`, **403 `human_required`** för en agent (före
   varje skrivning; MCP går samma REST-väg), 404 `not_found` för ett okänt eller
   främmande avtal och **409 `rule_violation`** på ett avslutat uppdrag (triggern

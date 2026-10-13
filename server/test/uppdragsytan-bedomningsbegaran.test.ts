@@ -1,7 +1,7 @@
 // Story 1.10 (B-3, FR-40, FR-15, FR-16, FR-14): en ny bedömning som David
 // begär når honom färdig att sätta.
 //
-// Provet täcker sju risker, i REST, MCP:s väg (agentnyckeln), vyn och SQL:
+// Provet täcker åtta risker, i REST, MCP:s väg (agentnyckeln), vyn och SQL:
 //   * att två begäranden för samma avtal blir två frågor (K3 b–c);
 //   * att en begäran besvaras två gånger (K1 j, K4 b–c);
 //   * att någon annan än en människa begär eller sätter en bedömning (K3 e,
@@ -11,7 +11,9 @@
 //     (K0 d–h, K5 d);
 //   * att en regel skapar poster av sig själv (K5 g, och P8 i
 //     `uppdragsytan-undantag.test.ts`);
-//   * att ett avslutat uppdrag tar emot en begäran (K1 h, K3 g, K4 k, K5 h, K6 g).
+//   * att ett avslutat uppdrag tar emot en begäran (K1 h, K3 g, K4 k, K5 h, K6 g);
+//   * att ett id med versaler fäller en giltig begäran eller hamnar i auditraden
+//     (K3 k, K4 l).
 // De rena reglerna ligger i `bedomningsbegaranHelper.ts` och går att köra utan
 // databas. Migrationen som migration prövas i `uppdragsytan-migration-0082.test.ts`.
 import supertest from 'supertest';
@@ -60,6 +62,9 @@ describe('K0 de rena reglerna', () => {
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const NOLL = '00000000-0000-4000-8000-000000000000';
+const versaler = (id: string) => id.toUpperCase();
+/** Första bokstaven a–f blir versal, resten står kvar i gemener. */
+const blandat = (id: string) => id.replace(/[a-f]/, (c) => c.toUpperCase());
 const PERIOD = { period_start: '2026-10-01', period_slut: '2026-10-31' };
 
 interface Bolag { id: string; user: TestUser; agent: Record<string, string>; ua: ReturnType<typeof supertest.agent> }
@@ -74,7 +79,7 @@ interface Auditrad { entity_type: string | null; entity_id: string | null; detai
 const auth = (b: Bolag) => ({ Authorization: `Bearer ${b.user.token}` });
 const co = (b: Bolag) => `/api/companies/${b.id}`;
 const fel = <T>(p: Promise<T>) => p.then(() => null, (e: unknown) => e);
-const korda = { k1f: 0, k1j: 0, k4i: 0, k5e: 0 };
+const korda = { k1f: 0, k1j: 0, k4i: 0, k5e: 0, skiftlage: 0 };
 
 let schema: Bolag; let begaran: Bolag; let satt: Bolag; let las: Bolag; let stangt: Bolag; let vy: Bolag;
 let grannen: Bolag;
@@ -529,6 +534,21 @@ describe('K3 begäran', () => {
     expect(ny.id).not.toBe(forsta.id);
     expect(await begaranRader(u.contractId)).toHaveLength(2);
   });
+
+  it('k avtalets id i versaler: samma begäran, och auditraden bär id:t ur raden', async () => {
+    const u8 = (await riggatUppdrag(begaran, 'K3 k')).contractId;
+    // Ett id utan bokstäver hade gjort fallet grönt utan att pröva något.
+    expect(versaler(u8)).not.toBe(u8);
+    const svar = await begar(begaran, versaler(u8), 'Versaler');
+    expect(svar).toMatchObject({ contract_id: u8, befintlig: false });
+    expect(await begaranRader(u8)).toHaveLength(1);
+    expect((await begardFor(begaran, svar.id)).map((r) => r.details)).toEqual([
+      { contract_id: u8, kommentar_finns: true },
+    ]);
+    const igen = await begar(begaran, u8);
+    expect(igen).toMatchObject({ id: svar.id, befintlig: true });
+    korda.skiftlage++;
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -676,6 +696,63 @@ describe('K4 bedömningen besvarar begäran', () => {
     expect(res.body.error).toBe('rule_violation');
     expect(await bedomningsrader(x.contractId)).toEqual([]);
     expect(await obesvarade(x.contractId)).toEqual([bx]);
+  });
+
+  it('l avtalets id i versaler eller blandat skiftläge: samma avtal, och ett annat avtal fälls fortfarande', async () => {
+    // 1) Granskningens fall: avtalets id i versaler, begäran i gemener.
+    const w10 = (await riggatUppdrag(satt, 'K4 l 1')).contractId;
+    const b10 = (await begar(satt, w10)).id as string;
+    expect(versaler(w10)).not.toBe(w10);
+    const r1 = await satta(satt, versaler(w10), 'risk', { begaran_id: b10 });
+    expect(r1.status, JSON.stringify(r1.body)).toBe(200);
+    expect(r1.body.status).toBe('ok');
+    expect(r1.body.result).toMatchObject({ contract_id: w10, begaran_id: b10 });
+    const rader1 = await bedomningsrader(w10);
+    expect(rader1).toHaveLength(1);
+    expect(rader1[0]!.begaran_id).toBe(b10);
+    expect(await obesvarade(w10)).toEqual([]);
+    expect((await sattFor(satt, r1.body.result.id)).map((r) => r.details)).toEqual([
+      { contract_id: w10, lage: 'risk', begaran_id: b10 },
+    ]);
+    korda.skiftlage++;
+
+    // 2) Blandat skiftläge i avtalets id och begäran i versaler.
+    const w11 = (await riggatUppdrag(satt, 'K4 l 2')).contractId;
+    const b11 = (await begar(satt, w11)).id as string;
+    expect(blandat(w11)).not.toBe(w11);
+    expect(versaler(b11)).not.toBe(b11);
+    const r2 = await satta(satt, blandat(w11), 'pa_spar', { begaran_id: versaler(b11) });
+    expect(r2.status, JSON.stringify(r2.body)).toBe(200);
+    expect(r2.body.result).toMatchObject({ contract_id: w11, begaran_id: b11 });
+    expect((await bedomningsrader(w11)).map((r) => r.begaran_id)).toEqual([b11]);
+    expect((await sattFor(satt, r2.body.result.id)).map((r) => r.details)).toEqual([
+      { contract_id: w11, lage: 'pa_spar', begaran_id: b11 },
+    ]);
+    korda.skiftlage++;
+
+    // 3) Utan begaran_id: avtalets öppna begäran väljs, och auditraden bär id:t ur raden.
+    const w12 = (await riggatUppdrag(satt, 'K4 l 3')).contractId;
+    const b12 = (await begar(satt, w12)).id as string;
+    expect(versaler(w12)).not.toBe(w12);
+    const r3 = await satta(satt, versaler(w12), 'ur_spar');
+    expect(r3.status, JSON.stringify(r3.body)).toBe(200);
+    expect(r3.body.result.begaran_id).toBe(b12);
+    expect((await sattFor(satt, r3.body.result.id)).map((r) => r.details)).toEqual([
+      { contract_id: w12, lage: 'ur_spar', begaran_id: b12 },
+    ]);
+    korda.skiftlage++;
+
+    // 4) Negativ kontroll: ett annat avtal i versaler fälls fortfarande.
+    const w13 = (await riggatUppdrag(satt, 'K4 l 4 begäran')).contractId;
+    const w14 = (await riggatUppdrag(satt, 'K4 l 4 bedömning')).contractId;
+    const b13 = (await begar(satt, w13)).id as string;
+    expect(versaler(w14)).not.toBe(w14);
+    const r4 = await satta(satt, versaler(w14), 'risk', { begaran_id: b13 });
+    expect(r4.status, JSON.stringify(r4.body)).toBe(409);
+    expect(r4.body.error).toBe('begaran_annat_avtal');
+    expect(await bedomningsrader(w14)).toEqual([]);
+    expect(await obesvarade(w13)).toEqual([b13]);
+    korda.skiftlage++;
   });
 });
 
@@ -1028,4 +1105,5 @@ it('kontrollvakt: de negativa fallen kördes', () => {
   expect(korda.k1j).toBe(5);
   expect(korda.k4i).toBe(6);
   expect(korda.k5e).toBe(3);
+  expect(korda.skiftlage).toBe(5);
 });
