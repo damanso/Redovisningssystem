@@ -1101,9 +1101,13 @@ signal — inklusive grannbolagets — ger **404 `not_found`**, som förut.
   lägga till avtalet. Valfritt med flit — alla utanför-signaler blir inte
   tilläggsavtal, och ett förifyllt tak vore ett förslag ingen läst i
   avtalshandlingen.
+- **Tilläggets avtal (Story 1.9).** `tillagg.contract_id` ska vara signalens
+  avtal. Annars ger anropet **400 `signal_annat_avtal`** före varje skrivning,
+  utan rad, köpost eller auditrad. Köposten bär alltid signalens avtal ur
+  signalraden.
 - **Fältet skriver ingen avtalsdel.** Om ingen köpost för signalen finns skapar
-  det en `andra_baseline`-post i **Att göra** (med `signal_id` och
-  `kalla: { typ: 'scopesignal', id }` ifyllda) plus auditraden
+  det en `andra_baseline`-post i **Att göra** (med signalens avtal, `signal_id`
+  och `kalla: { typ: 'scopesignal', id }` ifyllda) plus auditraden
   `action.approval_requested`, i samma transaktion som avgörandet — aldrig via
   ett nytt `executeAction`-anrop. Svaret bär `tillagg_godkannande` med köpostens
   id och status och `redan_koad: false`. Först vid godkännandet föds versionen

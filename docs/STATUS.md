@@ -153,6 +153,41 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.9, omtag efter andra granskningen i drift):**
+  Ändrat: `avgorSignal` prövar `tillagg.contract_id` (i gemener) mot den låsta
+  signalradens avtal direkt efter radlåset och ger 400 `signal_annat_avtal`
+  före varje skrivning. `koaTillagget` tar den låsta raden och sätter
+  `contract_id: signal.contract_id` efter spridningen `...tillagg`, så
+  köposten bär alltid signalens avtal. Kommentaren vid det dolda fältet
+  `tillagg_contract_id` i `routes.ts` beskriver nu vad som faktiskt sker.
+  Nytt prov K5 (j) 1–5 (annat avtal, okänt avtal, versaler som verkställs,
+  signalen efteråt, vyn med ändrat dolt fält) och `k5avtal` i kontrollvakten.
+  `docs/MCP_ACTIONS.md` har punkten om tilläggets avtal.
+
+  **Rött och grönt: förutsagt, inte observerat.** Sandlådan nekade varje
+  körande kommando:
+  ```text
+  $ npx vitest run test/uppdragsytan-scopeavgorande.test.ts --root /opt/redovisning/server
+  This command requires approval
+  $ npm run typecheck
+  This command requires approval
+  $ npm run build
+  This command requires approval
+  $ npm test
+  This command requires approval
+  ```
+  Förutsagt rött mot koden i drift: K5 (j) fälls i del 1 (200 i stället för
+  400), och kontrollvakten fälls på `k5avtal` = 0.
+
+  **Byggrinden: `npm run build` inte kört: This command requires approval.**
+  Bygget är alltså inte prövat före merge; deployens bygge är det första.
+  **Inte kört:** vitest, typecheck, build och test. Kedjans `npm run typecheck`
+  och `npm test` belägger prov och typer, aldrig bygget.
+
+  Driftnotis: ingen migration. Bygget rättar ingen köpost som redan står på
+  ett annat avtal än sin signal i drift; efter bygget kan avgörandet inte
+  skapa fler.
+
 - **2026-10-13 (Story 1.9, omtag efter code-review, fem fynd):**
   1. Signalsidan kastade `tillagg_godkannande.redan_koad` tyst. `runViewAction`
      tar nu en valfri `avvikelse`, som läser ett lyckat svar och ger notistext
