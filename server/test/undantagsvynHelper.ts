@@ -441,8 +441,9 @@ const utanHart = (s: string): string => s.replace(/ /g, ' ');
 
 /** En Övrigt-post som läsvägen beskriver den: köpost av agenten, raden från 2026-10-12. */
 function ovrigtpost(underlag: OvrigtUnderlag | null = fixturunderlag()): Undantagspost {
+  const action = underlag?.alternativ === 'tillagg' ? 'andra_baseline' : 'registrera_uppdragsbeslut';
   return beskrivOvrigtBeslut({
-    kopost: { id: POSTID.ovrigt_beslut, action: 'registrera_uppdragsbeslut', input: {}, requested_actor: 'agent', created_at: new Date(TID) },
+    kopost: { id: POSTID.ovrigt_beslut, action, input: {}, requested_actor: 'agent', created_at: new Date(TID) },
     uppdrag: uppdragsref(), underlag,
     anteckning: { id: FIXTURRAD, text: '<b>Extra</b> rapport', datum: '2026-10-12', utanfor_avtal: true },
     referenser: [],
@@ -513,4 +514,22 @@ export function provaOvrigtSaknat() {
   }
   const annan = enPost(post('avslut'));
   for (const namn of OVRIGTFALT) assert.ok(!annan.includes(`data-falt="${namn}"`), `${namn} i en annan post`);
+}
+
+// R7 (i), granskningens uppföljning: allt ett ja på ett tillägg ändrar syns i
+// posten — taket och kronramen står i förslaget, i vad ditt svar registrerar
+// och i utrymmet. Utan ny kronram nämns ingen.
+export function provaOvrigtKronram() {
+  const a = enPost(ovrigtpost(fixturunderlag({ alternativ: 'tillagg', kod: '2B', egen_kronram_ore: 1_200_000 })));
+  for (const namn of ['forslag', 'ja_registrerar'] as const) {
+    const f = utanHart(falt(a, namn));
+    assert.ok(f.includes('Kronramen höjs med beloppet till 20 000,00 kr.'), `${namn}: ${f}`);
+  }
+  assert.ok(utanHart(falt(a, 'ja_registrerar')).includes('med taket 20 h.'), falt(a, 'ja_registrerar'));
+  const u = utanHart(falt(a, 'aterstaende'));
+  assert.ok(u.includes('Nytt tak 20 h från 2026-10-12') && u.includes('Ny kronram') && u.includes('20 000,00'), u);
+  for (const underlag of [fixturunderlag({ alternativ: 'tillagg', kod: '2B' }), fixturunderlag({ egen_kronram_ore: 1_200_000 })]) {
+    const b = enPost(ovrigtpost(underlag));
+    for (const namn of ['forslag', 'ja_registrerar', 'aterstaende'] as const) assert.ok(!/[Kk]ronram/.test(falt(b, namn)), `${namn}: ${falt(b, namn)}`);
+  }
 }

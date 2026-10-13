@@ -1369,11 +1369,12 @@ körning. Svaret `svep_kort` får två fält, och inga gamla fält tappas:
   inget förslag kom. `koade[]` är `{ anteckning_id, approval_id, atgard }`,
   `redan_koade[]` radernas id och `avvisade[]` `{ anteckning_id, orsak }` med
   orsaken ur den slutna listan `anteckning_saknas`, `inte_utanfor_avtal`,
-  `uppdraget_stangt`, `avtalsdel_saknas` och `kallreferens_ogiltig`.
+  `uppdraget_stangt`, `avtalsdel_saknas`, `kallreferens_ogiltig` och
+  `underlag_ogiltigt`.
 - `arbetslista.ovrigt_kandidater[]` — `{ id, contract_id, text, datum }` för
   varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
-  status) och beslutsrad, också när avtalet inte står i indatat. `datum` är
-  radens kalenderdag i databasen.
+  status) och beslutsrad på radens eget avtal, också när avtalet inte står i
+  indatat. `datum` är radens kalenderdag i databasen.
 
 ### Statusbytet med transmittal (S3.2, våg 4)
 
@@ -1693,40 +1694,51 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   raden finns i bolaget (annars `anteckning_saknas`), har ingen köpost i någon
   status och ingen beslutsrad (annars `redan_koade`), är markerad
   (`inte_utanfor_avtal`), hör till ett öppet uppdrag (`uppdraget_stangt`),
-  koden är en aktiv del i **radens** avtal (`avtalsdel_saknas`) och varje
-  kallreferens håller referensens form (`kallreferens_ogiltig`). Allt prövas
-  före varje skrivning; ett avvisat förslag skriver ingenting. Avtalet tas ur
-  den lästa raden, aldrig ur förslagets stavning, och **radens text väljer
-  aldrig åtgärd, avtalsdel eller alternativ**.
+  koden är en aktiv del i **radens** avtal (`avtalsdel_saknas`), varje
+  kallreferens håller referensens form (`kallreferens_ogiltig`) och avtalets
+  egna värden ryms i underlagets gränser (`underlag_ogiltigt`: till exempel ett
+  nytt tak över 999 999,99 h, en kronram eller ett belopp utanför säkra heltal,
+  fler än 200 scopelinjer per sort, ett namn över 200 tecken eller fler än 500
+  delar — en sådan köpost hade aldrig kunnat godkännas). Allt prövas före varje
+  skrivning; ett avvisat förslag skriver ingenting. Avtalet tas ur den lästa
+  raden, aldrig ur förslagets stavning, och **radens text väljer aldrig
+  åtgärd, avtalsdel eller alternativ**.
 - **Beräkningen** står i `lib/beslutsunderlag.ts` och läser bara egna tabeller:
   taxan ur `contracts.hourly_rate_ore`, förbrukningen och taket ur
   `getContractUsage` (den valda kodens gällande version, barnen upprullade).
   Beloppet är timmar × taxa i ören, räknat i hundradelar av timmar och avrundat
   med `roundOre`; tider i hela minuter. Saknas timmarna eller taxan räknas inget
   belopp, och fälten är `null`, aldrig 0. Återstående utrymme räknas mot delens
-  tak (ryms) eller det nya taket (tillägg), och får vara negativt.
+  tak (ryms) eller det nya taket (tillägg), och är de enda tiderna som får vara
+  negativa. Vid tillägg räknas också den nya kronramen (`ny_kronram_ore`) när
+  delen har en egen kronram och beloppet räknats.
 - **Det frysta underlaget** (`beslutsunderlag`, strikt) bär `anteckning_id`,
   `anteckning_datum`, `alternativ`, `avtal_namn`, `avtal_signerat`,
   `avtalsdel_kod`, `avtalsdel_namn`, `avtalsdelar[]` (`kod`, `namn`,
   `tak_minuter`, `forbrukade_minuter`, `tak_bekraftat`), `taxa_ore`,
   `tak_minuter`, `tak_bekraftat`, `forbrukade_minuter`, `timmar`, `minuter`,
-  `belopp_ore`, `nytt_tak_minuter`, `giltig_fran`, `kvar_fore_minuter`,
-  `kvar_efter_minuter`, `scopelinjer_innanfor`, `scopelinjer_utanfor`,
-  `forslagstext`, `skal`, `kallor` och `last_nar`. `kallor[0]` är alltid
-  `{ typ: 'anteckning', id }`, följd av en `{ typ: 'referens', id,
-  handelse_datum? }` per kallreferens. Kallreferensen blir en rad i
-  `uppdrag_referens` (en befintlig återanvänds); mejlets innehåll når aldrig
-  redovisningen. Radens text kopieras inte in i underlaget.
+  `belopp_ore`, `nytt_tak_minuter`, `ny_kronram_ore`, `giltig_fran`,
+  `kvar_fore_minuter`, `kvar_efter_minuter`, `scopelinjer_innanfor`,
+  `scopelinjer_utanfor`, `forslagstext`, `skal`, `kallor` och `last_nar`.
+  `kallor[0]` är alltid `{ typ: 'anteckning', id }`, följd av en `{ typ:
+  'referens', id, handelse_datum? }` per kallreferens; en källa står bara en
+  gång (samma referens två gånger i ett förslag blir en källa). Kallreferensen
+  blir en rad i `uppdrag_referens` (en befintlig återanvänds); mejlets innehåll
+  når aldrig redovisningen. Radens text kopieras inte in i underlaget.
+  Förslagstexten och postens ”Ditt svar registrerar” nämner det nya taket och
+  den nya kronramen när ett ja ändrar dem.
 - **Köposten**, med `createApproval` och aktören `agent` och auditraden
   `action.approval_requested` (`details`: `action`, `actor`, `anteckning_id`,
   `alternativ`). Åtgärden väljs ur den slutna tabellen `OVRIGT_ATGARD`:
-  - `tillagg` → **`andra_baseline`**: en hel ny version av den gällande delen,
-    `cap_hours` = eget tak + timmarna (oförändrat när timmarna eller det egna
-    taket saknas), `cap_amount_ore` ökat med beloppet när båda finns,
-    `valid_from` = radens datum eller närmast följande dag utan lagrad version
-    eller väntande versionsförslag för koden, `change_reason` =
-    `Tillägg: <radens text> (Övrigt-raden <datum>)`, `kalla` och
-    `beslutsunderlag`.
+  - `tillagg` → **`andra_baseline`**: en hel ny version av delen, byggd på
+    den **senaste** lagrade versionen av koden. `cap_hours` = versionens eget
+    tak + timmarna (oförändrat när timmarna eller det egna taket saknas),
+    `cap_amount_ore` = underlagets `ny_kronram_ore` (oförändrat när den är
+    `null`), `valid_from` = radens datum, men alltid **efter** varje lagrad
+    version och varje väntande eller mottaget versionsförslag för koden — en
+    version som dateras före en senare version gäller aldrig —
+    `change_reason` = `Tillägg: <radens text> (Övrigt-raden <datum>)`, `kalla`
+    och `beslutsunderlag`.
   - `ryms` → **`registrera_uppdragsbeslut`**: `{ contract_id, kalla, beslutsunderlag }`.
 - **`registrera_uppdragsbeslut` (sensitive, `tvafas`)** — "Registrera att en
   förfrågan ur Övrigt ryms i avtalet". Indata `{ contract_id, kalla: { typ:
@@ -1734,20 +1746,31 @@ ingen ny tabell: köposten är förslaget (ADR-6b).
   `alternativ: 'ryms'` och samma Övrigt-rad. Ett ja registrerar beslutsraden
   (`alternativ = 'ryms'`, handlingen `{ typ: 'ryms', anteckning_id,
   avtalsdel_kod }`) och **ändrar ingen avtalsdel**; verkställigheten prövar att
-  raden hör till avtalet (annars 409 `kalla_annat_avtal`, och köposten står kvar
-  mottagen). Nej med skäl går genom `avboj_beslutsforslag`. Fel: 400
+  raden finns i bolaget, hör till avtalet och är markerad (annars 409
+  `kalla_annat_avtal`, och köposten står kvar mottagen). Nej med skäl går genom
+  `avboj_beslutsforslag`. Fel: 400
   `validation_error`, 403 `human_approval_required` (agent på ja) och
   `human_required` (agent på nej), 409 `not_pending`. Ingen `kravManniska`.
 - **`andra_baseline`** godtar `kalla: { typ: 'anteckning', id }` och
   `beslutsunderlag`. Källan anteckning kräver underlaget och utesluter
   `signal_id`; underlaget kräver källan anteckning och ska ha
   `alternativ: 'tillagg'`, samma rad, `avtalsdel_kod = code` och
-  `giltig_fran = valid_from`.
+  `giltig_fran = valid_from`; har underlaget ett nytt tak eller en ny kronram
+  ska `cap_hours` respektive `cap_amount_ore` vara just det värdet. Före
+  skrivningen prövar verkställigheten Övrigt-raden som för ryms (409
+  `kalla_annat_avtal`): ingen version skrivs med en rad i ett annat avtal, en
+  omarkerad rad eller ett annat bolags rad som källa.
 - **En köpost per rad**: en köpost i någon status eller en beslutsrad ger
-  `redan_koade`, också inom samma anrop och vid samtidiga svep.
-- **Täckningen** räknar raden som täckt när en väntande eller mottagen
-  `registrera_uppdragsbeslut` eller `andra_baseline` har raden som källa (id:t
-  jämfört i gemener), eller när en beslutsrad finns. En kandidat utan köat
+  `redan_koade`, också inom samma anrop och vid samtidiga svep. Köposten och
+  beslutsraden räknas bara på **radens eget avtal** (`contract_id`): en köpost
+  eller ett nej på ett annat avtal med raden som källa stänger aldrig radens fråga.
+- **Täckningen** räknar raden som täckt när en väntande eller mottagen köpost
+  för någon av undantagsvyns åtgärder (`UNDANTAG_ATGARDER`: baselineåtgärderna,
+  `binda_kostnad`, `registrera_uppdragsbeslut` och `avsluta_uppdrag`) har raden
+  som källa på radens avtal (id:t jämfört i gemener), eller när en beslutsrad
+  med raden som källa finns på avtalet. I praktiken bär bara `andra_baseline`
+  och `registrera_uppdragsbeslut` fältet `kalla` med typen anteckning, eftersom
+  de andra åtgärdernas scheman är strikta utan det. En kandidat utan köat
   förslag, eller med ett avvisat, gör `ovrigt` till `fel` för avtalet, och
   undantagsvyn blir ofullständig utan påhittad fråga.
 

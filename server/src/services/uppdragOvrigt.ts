@@ -24,8 +24,8 @@ import { z } from 'zod';
 import { ConflictError } from '../lib/errors.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
 import {
-  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forstaLedigaDatum,
-  type Alternativ, type Gallandeversion, type OvrigtUnderlag,
+  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, provaOvrigtUnderlag, tillaggetsDatum,
+  type Alternativ, type Gallandeversion, type OvrigtUnderlag, type OvrigtUnderlagIndata,
 } from '../lib/beslutsunderlag.js';
 import { createApproval } from './approvals.js';
 import { writeAudit } from './auditService.js';
@@ -92,8 +92,13 @@ export type OvrigtForslag = z.output<typeof OvrigtForslagSchema>;
 /** Den slutna tabellen: alternativet väljer åtgärden, och ingen annan kod gör det. */
 export const OVRIGT_ATGARD = { tillagg: 'andra_baseline', ryms: 'registrera_uppdragsbeslut' } as const satisfies Record<Alternativ, string>;
 
-/** Varför ett förslag inte köades. Ett avvisat förslag fäller aldrig svepet. */
-export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'kallreferens_ogiltig'] as const;
+/**
+ * Varför ett förslag inte köades. Ett avvisat förslag fäller aldrig svepet.
+ * `underlag_ogiltigt`: avtalets egna värden ryms inte i underlagets gränser
+ * (till exempel ett nytt tak över 999 999,99 h eller fler än 200 scopelinjer),
+ * så köposten hade aldrig kunnat godkännas.
+ */
+export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'kallreferens_ogiltig', 'underlag_ogiltigt'] as const;
 export type Avvisningsorsak = (typeof AVVISNINGSORSAKER)[number];
 
 export interface Ovrigtutfall {
@@ -135,6 +140,16 @@ export async function koaOvrigtForslag(
 ): Promise<Ovrigtutfall> {
   const utfall = tomtOvrigtutfall();
   const lastNar = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu.toISOString();
+  // Förbrukningen per avtal läses en gång per anrop. Förslagssteget skriver
+  // ingen tid och ingen avtalsdel, så värdet ändras inte under slingan.
+  const forbrukning = new Map<string, Delforbrukning[]>();
+  const delarFor = async (contractId: string): Promise<Delforbrukning[]> => {
+    const kand = forbrukning.get(contractId);
+    if (kand) return kand;
+    const delar = (await getContractUsage(client, companyId, contractId)).parts as Delforbrukning[];
+    forbrukning.set(contractId, delar);
+    return delar;
+  };
   for (const f of forslag) {
     const avvisa = (orsak: Avvisningsorsak) => { utfall.avvisade.push({ anteckning_id: f.anteckning_id, orsak }); };
     const rad = (await client.query<Ovrigtrad>(
@@ -154,8 +169,7 @@ export async function koaOvrigtForslag(
     if (rad.har_kopost || rad.har_beslut) { utfall.redan_koade.push(rad.id); continue; }
     if (!rad.utanfor_avtal) { avvisa('inte_utanfor_avtal'); continue; }
     if (rad.projektstatus !== 'active') { avvisa('uppdraget_stangt'); continue; }
-    const usage = await getContractUsage(client, companyId, rad.contract_id);
-    const delar = usage.parts as Delforbrukning[];
+    const delar = await delarFor(rad.contract_id);
     const vald = delar.find((d) => d.code === f.avtalsdel_kod && d.active);
     if (!vald) { avvisa('avtalsdel_saknas'); continue; }
     const kallreferenser = f.kallreferenser ?? [];
@@ -163,60 +177,45 @@ export async function koaOvrigtForslag(
       extern_id: k.extern_id, extern_nyckel: k.extern_nyckel, extern_kalla: k.extern_kalla }).success)) {
       avvisa('kallreferens_ogiltig'); continue;
     }
-
-    // Allt har prövats; härifrån skrivs något.
-    const referenser: Array<{ id: string; handelse_datum?: string }> = [];
-    for (const k of kallreferenser) {
-      const id = await underlagsreferens(client, companyId, rad.contract_id,
-        { sort: k.sort, extern_id: k.extern_id, extern_nyckel: k.extern_nyckel, extern_kalla: k.extern_kalla });
-      referenser.push({ id, ...(k.handelse_datum ? { handelse_datum: k.handelse_datum } : {}) });
-    }
     const linjer = await client.query<{ sort: 'innanfor' | 'utanfor'; text: string }>(
       `SELECT sort, "text" AS text FROM uppdrag_scopelinje
         WHERE company_id = $1 AND contract_id = $2 AND sort IN ('innanfor', 'utanfor') ORDER BY ordning, created_at, id`,
       [companyId, rad.contract_id],
     );
-    let gallande: Gallandeversion | null = null;
-    let giltigFran: string | null = null;
-    if (f.alternativ === 'tillagg') {
-      const g = (await client.query<Omit<Gallandeversion, 'cap_hours'> & { cap_hours: string | null }>(
-        `SELECT name, description, parent_part_id, billable, hourly_rate_ore, cap_hours::text AS cap_hours, cap_amount_ore,
-                cap_confirmed, sort_order, active, start_date::text AS start_date, end_date::text AS end_date, date_precision
-           FROM contract_parts WHERE company_id = $1 AND id = $2`,
-        [companyId, vald.part_id],
-      )).rows[0]!;
-      gallande = { ...g, cap_hours: g.cap_hours === null ? null : Number(g.cap_hours) };
-      // Ett datum som redan har en version, eller ett väntande eller mottaget
-      // versionsförslag för koden, hade gett 409 version_finns efter ett ja.
-      const upptagna = await client.query<{ datum: string }>(
-        `SELECT cp.valid_from::text AS datum FROM contract_parts cp
-          WHERE cp.company_id = $1 AND cp.contract_id = $2::uuid AND cp.code = $3
-         UNION
-         SELECT q.input->>'valid_from' AS datum FROM action_approvals q
-          WHERE q.company_id = $1 AND q.action = ANY($4::text[])
-            AND lower(q.input->>'contract_id') = $2::uuid::text AND q.input->>'code' = $3
-            AND q.input->>'valid_from' IS NOT NULL
-            AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))`,
-        [companyId, rad.contract_id, vald.code, ['andra_baseline', 'upsert_contract_part']],
-      );
-      giltigFran = forstaLedigaDatum(rad.datum, upptagna.rows.map((r) => r.datum));
-    }
-    const underlag = byggOvrigtUnderlag({
+    // Vid tillägg: den version tillägget bygger på och den nya versionens datum.
+    const tillagg = f.alternativ === 'tillagg' ? await tillaggetsGrund(client, companyId, rad, vald) : null;
+    const indataFor = (referenser: OvrigtUnderlagIndata['referenser']): OvrigtUnderlagIndata => ({
       anteckning: { id: rad.id, datum: rad.datum },
       avtal: { namn: rad.avtal_namn, signerat: rad.signerat, taxa_ore: rad.taxa_ore },
       delar: delar.map((d) => ({ kod: d.code, namn: d.name, tak_minuter: d.cap_hours === null ? null : Math.round(d.cap_hours * 60),
         forbrukade_minuter: d.billable_minutes, tak_bekraftat: d.cap_status === 'bekraftat', aktiv: d.active })),
-      vald: { kod: vald.code, eget_tak_timmar: vald.versions.find((v) => v.id === vald.part_id)?.cap_hours ?? null },
+      vald: tillagg
+        ? { kod: vald.code, eget_tak_timmar: tillagg.grund.cap_hours, egen_kronram_ore: tillagg.grund.cap_amount_ore }
+        : { kod: vald.code, eget_tak_timmar: vald.versions.find((v) => v.id === vald.part_id)?.cap_hours ?? null, egen_kronram_ore: null },
       scopelinjer: { innanfor: linjer.rows.filter((l) => l.sort === 'innanfor').map((l) => l.text),
         utanfor: linjer.rows.filter((l) => l.sort === 'utanfor').map((l) => l.text) },
       forslag: { alternativ: f.alternativ, timmar: f.timmar ?? null, skal: f.skal },
       referenser,
-      giltig_fran: giltigFran,
+      giltig_fran: tillagg?.giltigFran ?? null,
       last_nar: lastNar,
     });
+    // Avtalets egna värden kan ligga utanför underlagets gränser. Det prövas
+    // före varje skrivning; referenserna påverkar inte utfallet.
+    if (!provaOvrigtUnderlag(indataFor([]))) { avvisa('underlag_ogiltigt'); continue; }
+
+    // Allt har prövats; härifrån skrivs något.
+    const referenser: OvrigtUnderlagIndata['referenser'] = [];
+    for (const k of kallreferenser) {
+      const id = await underlagsreferens(client, companyId, rad.contract_id,
+        { sort: k.sort, extern_id: k.extern_id, extern_nyckel: k.extern_nyckel, extern_kalla: k.extern_kalla });
+      referenser.push({ id, ...(k.handelse_datum ? { handelse_datum: k.handelse_datum } : {}) });
+    }
+    const underlag = byggOvrigtUnderlag(indataFor(referenser));
+    // Åtgärden och indatat väljs i samma gren ur samma alternativ, och
+    // byggarna kastar för ett underlag med det andra alternativet.
     const atgard = OVRIGT_ATGARD[f.alternativ];
-    const indata = f.alternativ === 'tillagg' && gallande !== null
-      ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande, underlag })
+    const indata = tillagg
+      ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande: tillagg.grund, underlag })
       : byggRymsindata({ contract_id: rad.contract_id, underlag });
     const koad = await createApproval(client, companyId, userId, 'agent', atgard, indata);
     // Samma auditrad som `executeAction` skriver för varje köad känslig åtgärd.
@@ -230,21 +229,81 @@ export async function koaOvrigtForslag(
 }
 
 /**
+ * Tilläggets grund: den senaste lagrade versionen av koden, alltså den
+ * version den nya ersätter, och den nya versionens datum. Datumet ligger efter
+ * varje lagrad version och varje väntande eller mottaget versionsförslag för
+ * koden (`tillaggetsDatum`): en version som dateras före en senare version
+ * gäller aldrig, och ett upptaget datum hade gett 409 version_finns efter ett ja.
+ */
+async function tillaggetsGrund(
+  client: PoolClient, companyId: string, rad: Ovrigtrad, vald: Delforbrukning,
+): Promise<{ grund: Gallandeversion; giltigFran: string }> {
+  const senaste = vald.versions.reduce<Delforbrukning['versions'][number] | null>(
+    (s, v) => (s === null || v.valid_from > s.valid_from ? v : s), null);
+  const g = senaste === null ? undefined : (await client.query<Omit<Gallandeversion, 'cap_hours'> & { cap_hours: string | null }>(
+    `SELECT name, description, parent_part_id, billable, hourly_rate_ore, cap_hours::text AS cap_hours, cap_amount_ore,
+            cap_confirmed, sort_order, active, start_date::text AS start_date, end_date::text AS end_date, date_precision
+       FROM contract_parts WHERE company_id = $1 AND id = $2`,
+    [companyId, senaste.id],
+  )).rows[0];
+  if (!g) throw new Error(`avtalsdelen ${vald.code} saknar en lagrad version`);
+  const upptagna = await client.query<{ datum: string }>(
+    `SELECT cp.valid_from::text AS datum FROM contract_parts cp
+      WHERE cp.company_id = $1 AND cp.contract_id = $2::uuid AND cp.code = $3
+     UNION
+     SELECT q.input->>'valid_from' AS datum FROM action_approvals q
+      WHERE q.company_id = $1 AND q.action = ANY($4::text[])
+        AND lower(q.input->>'contract_id') = $2::uuid::text AND q.input->>'code' = $3
+        AND q.input->>'valid_from' IS NOT NULL
+        AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))`,
+    [companyId, rad.contract_id, vald.code, ['andra_baseline', 'upsert_contract_part']],
+  );
+  return {
+    grund: { ...g, cap_hours: g.cap_hours === null ? null : Number(g.cap_hours) },
+    giltigFran: tillaggetsDatum(rad.datum, upptagna.rows.map((r) => r.datum)),
+  };
+}
+
+/**
+ * Den enda prövningen av Övrigt-raden när ett beslut verkställs, för båda
+ * åtgärderna med raden som källa (`registrera_uppdragsbeslut` och
+ * `andra_baseline`): raden finns i bolaget, hör till förslagets avtal och är
+ * markerad. Samma avtal avgörs på raden i databasen, aldrig på indatats
+ * stavning. En köpost som REST eller MCP köat med en annan rad som källa
+ * verkställs därför aldrig, och ingen beslutsrad stänger den andra radens fråga.
+ */
+export async function kravOvrigtrad(
+  client: PoolClient, companyId: string, contractId: string, anteckningId: string,
+): Promise<string> {
+  const r = await client.query<{ id: string }>(
+    `SELECT a.id::text AS id FROM uppdrag_anteckning a
+      WHERE a.company_id = $1 AND a.id = $2::uuid AND a.contract_id = $3::uuid AND a.utanfor_avtal`,
+    [companyId, anteckningId, contractId],
+  );
+  const rad = r.rows[0];
+  if (!rad) throw new ConflictError('kalla_annat_avtal', 'Övrigt-raden hör inte till avtalet i förslaget.');
+  return rad.id;
+}
+
+/**
+ * Prövningen före ett tillägg skrivs (`andra_baseline`): har köposten
+ * Övrigt-raden som källa prövas raden som för ryms. Andra källor prövas där de hör hemma.
+ */
+export async function kravTillaggetsKalla(
+  client: PoolClient, companyId: string, input: { contract_id: string; kalla?: { typ: string; id: string } },
+): Promise<void> {
+  if (input.kalla?.typ === 'anteckning') await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
+}
+
+/**
  * Domänsteget för ett ja på ryms (`registrera_uppdragsbeslut`, Beslutslogg
- * punkt 3). Raden prövas igen mot förslagets avtal — samma avtal avgörs på
- * raden i databasen, aldrig på indatats stavning — och inget skrivs: ingen
+ * punkt 3). Raden prövas igen mot förslagets avtal, och inget skrivs: ingen
  * avtalsdel ändras, och beslutsraden skriver `registreraJa`.
  */
 export async function registreraRyms(
   client: PoolClient, companyId: string,
   input: { contract_id: string; kalla: { id: string }; beslutsunderlag: OvrigtUnderlag },
 ): Promise<{ anteckning_id: string; contract_id: string; avtalsdel_kod: string }> {
-  const r = await client.query<{ id: string }>(
-    `SELECT a.id::text AS id FROM uppdrag_anteckning a
-      WHERE a.company_id = $1 AND a.id = $2::uuid AND a.contract_id = $3::uuid AND a.utanfor_avtal`,
-    [companyId, input.kalla.id, input.contract_id],
-  );
-  const rad = r.rows[0];
-  if (!rad) throw new ConflictError('kalla_annat_avtal', 'Övrigt-raden hör inte till avtalet i förslaget.');
-  return { anteckning_id: rad.id, contract_id: input.contract_id, avtalsdel_kod: input.beslutsunderlag.avtalsdel_kod };
+  const id = await kravOvrigtrad(client, companyId, input.contract_id, input.kalla.id);
+  return { anteckning_id: id, contract_id: input.contract_id, avtalsdel_kod: input.beslutsunderlag.avtalsdel_kod };
 }

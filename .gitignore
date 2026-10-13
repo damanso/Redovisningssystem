@@ -1,10 +1,13 @@
 # Dependencies
 node_modules/
 
-# Environment variables
+# Environment variables — varje env-fil och varje kopia av en (t.ex.
+# `.env.fore-losen-<datum>`) kan bära hemligheter. Bara mallen spåras.
 .env
 .env.local
 .env.*.local
+.env*
+!.env.example
 
 # Build outputs
 dist/

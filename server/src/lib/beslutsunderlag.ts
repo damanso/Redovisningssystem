@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { formatOre, roundOre } from '../domain/money.js';
-import { IsoDateSchema, IsoDateTimeSchema, UuidSchema, safeText } from './validation.js';
+import { IsoDateSchema, IsoDateTimeSchema, OreSchema, UuidSchema, safeText } from './validation.js';
 import { TILLAGGSORSAK_PREFIX } from './scopeavgorande.js';
 
 /** Sortera objektnycklar på varje nivå; listornas ordning bär indatats innebörd. */
@@ -48,7 +48,19 @@ export const DAVIDS_ANTECKNING = 'Davids egen anteckning';
 export const TimmarSchema = z.number().positive().max(999_999.99)
   .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, { message: 'timmar anges med högst två decimaler' });
 
-const MinuterSchema = z.number().int().safe();
+/**
+ * Tider i hela minuter. Bara utrymmet (`kvar_*`) får vara negativt; en tid,
+ * ett tak eller en förbrukning under noll är aldrig ett värde, och `tidtext`
+ * skriver bara tal ≥ 0.
+ */
+const MinuterSchema = z.number().int().nonnegative().safe();
+const UtrymmeSchema = z.number().int().safe();
+/**
+ * Det nya taket blir `cap_hours` i `andra_baseline`, som tar högst 999 999,99 h
+ * (registry.ts, `AvtalsdelFalt`). Ett större tak hade gett en köpost som
+ * omvalideringen vid godkännandet alltid fäller.
+ */
+export const MAX_TAK_MINUTER = Math.round(999_999.99 * 60);
 const AvtalsdelSchema = z.object({
   kod: safeText(40),
   namn: safeText(200),
@@ -83,10 +95,12 @@ export const OvrigtUnderlagSchema = z.object({
   timmar: TimmarSchema.nullable(),
   minuter: MinuterSchema.nullable(),
   belopp_ore: z.number().int().nonnegative().safe().nullable(),
-  nytt_tak_minuter: MinuterSchema.nullable(),
+  nytt_tak_minuter: MinuterSchema.max(MAX_TAK_MINUTER).nullable(),
+  /** Bara vid tillägg: kronramen efter ett ja, när delen har en och beloppet räknats. */
+  ny_kronram_ore: OreSchema.nullable(),
   giltig_fran: IsoDateSchema.nullable(),
-  kvar_fore_minuter: MinuterSchema.nullable(),
-  kvar_efter_minuter: MinuterSchema.nullable(),
+  kvar_fore_minuter: UtrymmeSchema.nullable(),
+  kvar_efter_minuter: UtrymmeSchema.nullable(),
   scopelinjer_innanfor: z.array(z.string()).max(200),
   scopelinjer_utanfor: z.array(z.string()).max(200),
   forslagstext: safeText(4000),
@@ -101,8 +115,15 @@ export const OvrigtUnderlagSchema = z.object({
   u.kallor.slice(1).forEach((k, i) => {
     if (k.typ !== 'referens') ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['kallor', i + 1], message: 'övriga källor är referenser' });
   });
-  if (u.alternativ === 'ryms' && (u.giltig_fran !== null || u.nytt_tak_minuter !== null)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['giltig_fran'], message: 'ryms ändrar inget avtal och har inget datum eller nytt tak' });
+  // En källa står en gång: annars syns den två gånger i posten och fryses två gånger i beslutsraden.
+  const sedda = new Set<string>();
+  u.kallor.forEach((k, i) => {
+    const id = k.id.toLowerCase();
+    if (sedda.has(id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['kallor', i], message: 'en källa står bara en gång' });
+    sedda.add(id);
+  });
+  if (u.alternativ === 'ryms' && (u.giltig_fran !== null || u.nytt_tak_minuter !== null || u.ny_kronram_ore !== null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['giltig_fran'], message: 'ryms ändrar inget avtal och har inget datum, nytt tak eller ny kronram' });
   }
   if (u.alternativ === 'tillagg' && u.giltig_fran === null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['giltig_fran'], message: 'ett tillägg är en ny version från ett datum' });
@@ -132,28 +153,40 @@ export interface Ovrigtberakning {
   minuter: number | null;
   belopp_ore: number | null;
   nytt_tak_minuter: number | null;
+  ny_kronram_ore: number | null;
   kvar_fore_minuter: number | null;
   kvar_efter_minuter: number | null;
+}
+
+/** Kronramen efter ett tillägg: den egna kronramen plus beloppet, bara när båda finns. */
+export function nyKronramOre(egenKronram: number | null, belopp: number | null): number | null {
+  return egenKronram === null || belopp === null ? null : egenKronram + belopp;
 }
 
 /**
  * Beloppet och utrymmet (FR-41 punkt 2). Timmar × taxa räknas i hundradelar
  * och avrundas med husets `roundOre`; tider i hela minuter. Ingen gren
- * ersätter `null` med 0, och en taxa på 0 öre ger beloppet 0.
+ * ersätter `null` med 0, och en taxa på 0 öre ger beloppet 0. Vid tillägg
+ * räknas här också allt ett ja ändrar i delen: taket och kronramen.
  */
 export function beraknaOvrigt(i: {
   alternativ: Alternativ; timmar: number | null; taxa_ore: number | null;
   tak_minuter: number | null; eget_tak_timmar: number | null; forbrukade_minuter: number;
+  /** Den egna kronramen i den version tillägget bygger på; saknas den ändras ingen kronram. */
+  egen_kronram_ore?: number | null;
 }): Ovrigtberakning {
   const hundradelar = i.timmar === null ? null : Math.round(i.timmar * 100);
   const minuter = hundradelar === null ? null : Math.round(hundradelar * 60 / 100);
   const belopp = hundradelar === null || i.taxa_ore === null ? null : roundOre(hundradelar * i.taxa_ore / 100);
-  const nyttTak = i.alternativ === 'tillagg' ? nyttTakTimmar(i.eget_tak_timmar, i.timmar) : null;
+  const tillagg = i.alternativ === 'tillagg';
+  const nyttTak = tillagg ? nyttTakTimmar(i.eget_tak_timmar, i.timmar) : null;
   const nyttTakMinuter = nyttTak === null ? null : Math.round(nyttTak * 60);
+  const nyKronram = tillagg ? nyKronramOre(i.egen_kronram_ore ?? null, belopp) : null;
   const kvarFore = i.tak_minuter === null ? null : i.tak_minuter - i.forbrukade_minuter;
   const takEfter = i.alternativ === 'ryms' ? i.tak_minuter : nyttTakMinuter;
   const kvarEfter = takEfter === null || minuter === null ? null : takEfter - i.forbrukade_minuter - minuter;
-  return { minuter, belopp_ore: belopp, nytt_tak_minuter: nyttTakMinuter, kvar_fore_minuter: kvarFore, kvar_efter_minuter: kvarEfter };
+  return { minuter, belopp_ore: belopp, nytt_tak_minuter: nyttTakMinuter, ny_kronram_ore: nyKronram,
+    kvar_fore_minuter: kvarFore, kvar_efter_minuter: kvarEfter };
 }
 
 const DYGN_MS = 86_400_000;
@@ -178,6 +211,19 @@ export function forstaLedigaDatum(fran: string, upptagna: readonly string[]): st
 }
 
 /**
+ * Den nya versionens `valid_from` vid ett tillägg: radens datum, men alltid
+ * efter varje lagrad version och varje väntande eller mottaget versionsförslag
+ * för koden. En version som dateras före en senare version gäller aldrig
+ * (`gallandeVersion` i `contracts.ts` väljer den senaste som trätt i kraft),
+ * så ett ja hade registrerat ett tak som aldrig används. Datumet är också
+ * ledigt, eftersom det ligger efter alla upptagna.
+ */
+export function tillaggetsDatum(radensDatum: string, upptagna: readonly string[]): string {
+  const senaste = upptagna.reduce((s, d) => (d > s ? d : s), '');
+  return senaste < radensDatum ? radensDatum : forstaLedigaDatum(senaste, [senaste]);
+}
+
+/**
  * Tilläggets orsak, förifylld ur Övrigt-radens text och datum (B-7 punkt 6),
  * med scopeavgörandets prefix. En lång text kapas på hela kodpunkter, så att
  * orsaken ryms i 2 000 enheter och ingen ensam surrogathalva fäller jsonb.
@@ -198,6 +244,14 @@ export function ovrigtorsak(text: string, datum: string): string {
 
 type Utan = Omit<OvrigtUnderlag, 'forslagstext' | 'last_nar'>;
 
+/**
+ * Meningen om kronramen, med inledande mellanslag, eller tom när ett ja inte
+ * ändrar den. Förslagstexten och posten säger samma sak ur samma fält.
+ */
+export function kronramtext(nyKronram: number | null): string {
+  return nyKronram === null ? '' : ` Kronramen höjs med beloppet till ${formatOre(nyKronram, { currency: true })}.`;
+}
+
 /** Förslaget i ord. Texten säger bara det beräkningen säger (lärdomen från Story 1.10). */
 export function forslagstextOvrigt(u: Utan): string {
   const kr = (x: number) => formatOre(x, { currency: true });
@@ -213,7 +267,7 @@ export function forslagstextOvrigt(u: Utan): string {
       : u.minuter === null
         ? 'Taket ändras inte, eftersom timmarna saknas.'
         : `Taket ändras inte, eftersom ${u.avtalsdel_kod} saknar eget tak.`;
-    return `Ta det som tillägg till ${del}: ${berakning}. ${tak}`;
+    return `Ta det som tillägg till ${del}: ${berakning}. ${tak}${kronramtext(u.ny_kronram_ore)}`;
   }
   const k = u.kvar_efter_minuter;
   const kvar = k !== null
@@ -228,7 +282,11 @@ export interface OvrigtUnderlagIndata {
   anteckning: { id: string; datum: string };
   avtal: { namn: string; signerat: string | null; taxa_ore: number | null };
   delar: Array<{ kod: string; namn: string; tak_minuter: number | null; forbrukade_minuter: number; tak_bekraftat: boolean; aktiv: boolean }>;
-  vald: { kod: string; eget_tak_timmar: number | null };
+  /**
+   * Den valda delen. Vid tillägg är det egna taket och den egna kronramen
+   * värdena i den version tillägget bygger på, samma rad som `byggTillaggsindata` får.
+   */
+  vald: { kod: string; eget_tak_timmar: number | null; egen_kronram_ore: number | null };
   scopelinjer: { innanfor: string[]; utanfor: string[] };
   forslag: { alternativ: Alternativ; timmar: number | null; skal: string };
   referenser: Array<{ id: string; handelse_datum?: string }>;
@@ -239,16 +297,41 @@ export interface OvrigtUnderlagIndata {
 /**
  * Underlaget byggs bara här. Den valda delen finns alltid bland de aktiva —
  * prövningen har redan avvisat allt annat — så en saknad del är ett
- * programfel, och ett underlag som inte går igenom schemat fäller svepet.
+ * programfel. Ett underlag som inte går igenom schemat är också ett
+ * programfel: svepet prövar först med `provaOvrigtUnderlag`, som aldrig kastar.
  */
 export function byggOvrigtUnderlag(i: OvrigtUnderlagIndata): OvrigtUnderlag {
+  return OvrigtUnderlagSchema.parse(underlagsutkast(i));
+}
+
+/**
+ * Håller underlaget för avtalets värden? Avtalets egna tabeller garanterar
+ * inte schemats gränser (till exempel fler än 200 scopelinjer, ett namn över
+ * 200 tecken eller ett nytt tak över 999 999,99 h), och ett sådant avtal ska
+ * avvisa förslaget för sig, aldrig fälla svepet (Beslutslogg 12). Ett värde
+ * som inte går att räkna — ett belopp utanför säkra heltal kastar i `roundOre`
+ * — ger också `false`. Referenserna påverkar inte utfallet: de är giltiga
+ * id:n och högst tio. Den valda delen har anroparen redan prövat.
+ */
+export function provaOvrigtUnderlag(i: OvrigtUnderlagIndata): boolean {
+  try {
+    return OvrigtUnderlagSchema.safeParse(underlagsutkast(i)).success;
+  } catch {
+    return false;
+  }
+}
+
+function underlagsutkast(i: OvrigtUnderlagIndata): Utan & { forslagstext: string; last_nar: string } {
   const aktiva = i.delar.filter((d) => d.aktiv);
   const vald = aktiva.find((d) => d.kod === i.vald.kod);
   if (!vald) throw new Error(`avtalsdelen ${i.vald.kod} finns inte bland de aktiva delarna`);
   const berakning = beraknaOvrigt({
     alternativ: i.forslag.alternativ, timmar: i.forslag.timmar, taxa_ore: i.avtal.taxa_ore,
     tak_minuter: vald.tak_minuter, eget_tak_timmar: i.vald.eget_tak_timmar, forbrukade_minuter: vald.forbrukade_minuter,
+    egen_kronram_ore: i.vald.egen_kronram_ore,
   });
+  // Samma referens två gånger i ett förslag blir en källa: den första står kvar.
+  const referenser = i.referenser.filter((r, n, alla) => alla.findIndex((x) => x.id.toLowerCase() === r.id.toLowerCase()) === n);
   const utan: Utan = {
     anteckning_id: i.anteckning.id,
     anteckning_datum: i.anteckning.datum,
@@ -270,9 +353,9 @@ export function byggOvrigtUnderlag(i: OvrigtUnderlagIndata): OvrigtUnderlag {
     scopelinjer_utanfor: i.scopelinjer.utanfor,
     skal: i.forslag.skal,
     kallor: [{ typ: 'anteckning', id: i.anteckning.id },
-      ...i.referenser.map((r) => ({ typ: 'referens' as const, id: r.id, ...(r.handelse_datum ? { handelse_datum: r.handelse_datum } : {}) }))],
+      ...referenser.map((r) => ({ typ: 'referens' as const, id: r.id, ...(r.handelse_datum ? { handelse_datum: r.handelse_datum } : {}) }))],
   };
-  return OvrigtUnderlagSchema.parse({ ...utan, forslagstext: forslagstextOvrigt(utan), last_nar: i.last_nar });
+  return { ...utan, forslagstext: forslagstextOvrigt(utan), last_nar: i.last_nar };
 }
 
 /** Den gällande versionens rad, med `cap_hours` som tal. */
@@ -295,30 +378,40 @@ const KOPIERADE = ['parent_part_id', 'billable', 'hourly_rate_ore', 'cap_confirm
   'start_date', 'end_date', 'date_precision'] as const;
 
 /**
- * Tilläggets indata till `andra_baseline`: en hel ny version av den gällande
- * delen. Taket höjs med timmarna och kronramen med beloppet, bara när båda
- * talen finns; annars står den gällande versionens värde kvar.
+ * Tilläggets indata till `andra_baseline`: en hel ny version av delen, byggd
+ * på den version underlaget räknades mot. Det enda ett ja ändrar är det
+ * underlaget säger: taket (`nytt_tak_minuter`) och kronramen (`ny_kronram_ore`),
+ * och båda bara när underlaget har ett nytt värde. Allt annat kopieras. Hör
+ * versionen och underlaget inte ihop är det ett programfel, och inget köas.
  */
 export function byggTillaggsindata(i: {
   contract_id: string; kod: string; anteckning: { text: string; datum: string }; gallande: Gallandeversion; underlag: OvrigtUnderlag;
 }): Record<string, unknown> {
   const g = i.gallande;
+  const u = i.underlag;
+  if (u.alternativ !== 'tillagg') throw new Error('tilläggets indata byggs bara ur ett underlag för tillägg');
+  const nyttTak = nyttTakTimmar(g.cap_hours, u.timmar);
+  if ((nyttTak === null ? null : Math.round(nyttTak * 60)) !== u.nytt_tak_minuter
+    || nyKronramOre(g.cap_amount_ore, u.belopp_ore) !== u.ny_kronram_ore) {
+    throw new Error('underlaget är inte räknat mot den version tillägget bygger på');
+  }
   const ut: Record<string, unknown> = {
-    contract_id: i.contract_id, code: i.kod, name: g.name, valid_from: i.underlag.giltig_fran,
+    contract_id: i.contract_id, code: i.kod, name: g.name, valid_from: u.giltig_fran,
     change_reason: ovrigtorsak(i.anteckning.text, i.anteckning.datum),
   };
   if (g.description !== null && g.description.trim() !== '') ut.description = g.description;
   for (const k of KOPIERADE) if (g[k] !== null) ut[k] = g[k];
-  const tak = nyttTakTimmar(g.cap_hours, i.underlag.timmar) ?? g.cap_hours;
+  const tak = nyttTak ?? g.cap_hours;
   if (tak !== null) ut.cap_hours = tak;
-  const kronram = g.cap_amount_ore !== null && i.underlag.belopp_ore !== null ? g.cap_amount_ore + i.underlag.belopp_ore : g.cap_amount_ore;
+  const kronram = u.ny_kronram_ore ?? g.cap_amount_ore;
   if (kronram !== null) ut.cap_amount_ore = kronram;
-  ut.kalla = { typ: 'anteckning', id: i.underlag.anteckning_id };
-  ut.beslutsunderlag = i.underlag;
+  ut.kalla = { typ: 'anteckning', id: u.anteckning_id };
+  ut.beslutsunderlag = u;
   return ut;
 }
 
 /** Rymsens indata till `registrera_uppdragsbeslut`: avtalet, källan och underlaget. */
 export function byggRymsindata(i: { contract_id: string; underlag: OvrigtUnderlag }) {
+  if (i.underlag.alternativ !== 'ryms') throw new Error('rymsens indata byggs bara ur ett underlag för ryms');
   return { contract_id: i.contract_id, kalla: { typ: 'anteckning' as const, id: i.underlag.anteckning_id }, beslutsunderlag: i.underlag };
 }

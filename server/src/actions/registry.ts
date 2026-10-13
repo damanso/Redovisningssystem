@@ -1,7 +1,7 @@
 import { BASELINEKOLUMNER } from '../lib/baselinekolumner.js';
 import { TILLAGGSORSAK_MAX } from '../lib/scopeavgorande.js';
 import { OvrigtUnderlagSchema } from '../lib/beslutsunderlag.js';
-import { registreraRyms } from '../services/uppdragOvrigt.js';
+import { kravTillaggetsKalla, registreraRyms } from '../services/uppdragOvrigt.js';
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -1640,15 +1640,27 @@ export const ACTIONS: readonly ActionDef<never>[] = [
             || v.beslutsunderlag.giltig_fran !== v.valid_from) {
             fel('beslutsunderlag', 'underlaget gäller inte det här tillägget: alternativ, Övrigt-rad, avtalsdel och datum ska stämma');
           }
+          // Det underlaget säger att ett ja ändrar är det indatat skriver: det nya
+          // taket och den nya kronramen. Posten beskriver ändringen ur underlaget.
+          const u = v.beslutsunderlag;
+          if (u && u.nytt_tak_minuter !== null && (v.cap_hours === undefined || Math.round(v.cap_hours * 60) !== u.nytt_tak_minuter)) {
+            fel('cap_hours', 'taket ska vara underlagets nya tak');
+          }
+          if (u && u.ny_kronram_ore !== null && v.cap_amount_ore !== u.ny_kronram_ore) {
+            fel('cap_amount_ore', 'kronramen ska vara underlagets nya kronram');
+          }
         } else if (v.beslutsunderlag) {
           fel('beslutsunderlag', 'underlaget hör bara till ett tillägg ur en Övrigt-rad');
         }
       }),
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
-    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
+    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL. Före skrivningen
+    // prövas en Övrigt-rad som källa på samma sätt som för ryms (Story 1.14):
+    // raden hör till avtalet och är markerad, annars skrivs ingen version.
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
+      await kravTillaggetsKalla(ctx.client, ctx.companyId, i as never);
       const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;

@@ -155,6 +155,8 @@ function aterstaende(u: OvrigtUnderlag): Raw {
     fore === null ? 'Delen saknar tak'
       : fore >= 0 ? `Före arbetet: ${tidtext(fore)}` : `Före arbetet: taket är redan överskridet med ${tidtext(-fore)}`,
     ...(u.alternativ === 'tillagg' && u.nytt_tak_minuter !== null ? [`Nytt tak ${tidtext(u.nytt_tak_minuter)} från ${u.giltig_fran}`] : []),
+    // Kronramen höjs bara vid tillägg; underlaget säger allt ett ja ändrar.
+    ...(u.ny_kronram_ore !== null ? [html`Ny kronram ${amount(u.ny_kronram_ore)} från ${u.giltig_fran}`] : []),
     efter !== null
       ? efter >= 0 ? `Efter arbetet: ${tidtext(efter)}` : `Efter arbetet: taket överskrids med ${tidtext(-efter)}`
       : u.minuter === null ? 'Efter arbetet: kan inte räknas, eftersom timmarna saknas'

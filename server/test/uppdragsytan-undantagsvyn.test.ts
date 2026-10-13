@@ -529,6 +529,7 @@ describe('R7 Övrigt-frågan med beräkningen (rena)', () => {
   it('(f) Davids egen anteckning som källa', () => rena.provaOvrigtKallor());
   it('(g) märkningen och underlagets lästid', () => rena.provaOvrigtMarkning());
   it('(h) saknat underlag, och inget block i andra slag', () => rena.provaOvrigtSaknat());
+  it('(i) en ny kronram syns i förslaget, i vad svaret registrerar och i utrymmet', () => rena.provaOvrigtKronram());
 });
 
 describe('V8 Övrigt-frågan genom rutten', () => {

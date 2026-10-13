@@ -153,6 +153,48 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.14, omtag efter code-review: elva fynd):**
+  Granskningen godkände inte. Varje fynd lagades som en felklass, med prov som
+  fäller flera fall av klassen. Ingen migration, inget nytt paket, ingen ny env.
+  1. **Övrigt-raden som källa prövas i båda verkställigheterna** (HIGH):
+     `kravOvrigtrad` i `services/uppdragOvrigt.ts` är den enda prövningen (raden
+     i bolaget, på avtalet, markerad; annars 409 `kalla_annat_avtal`) och
+     anropas av `registreraRyms` och, genom `kravTillaggetsKalla`, av
+     `andra_baseline`:s handler före `skrivBaselineversion`. Predikaten
+     `KOPOST_FOR_ANTECKNING` och `BESLUT_FOR_ANTECKNING` är bundna till radens
+     avtal, så en köpost eller ett nej på ett annat avtal stänger aldrig radens
+     fråga (kandidaten, prövningen och täckningen).
+  2. **Tilläggets datum och grund:** `tillaggetsDatum` (ren) daterar den nya
+     versionen efter varje lagrad och väntande version av koden, och tillägget
+     bygger på den senaste lagrade versionen. Ett tillägg dateras alltså aldrig
+     före en version som skulle gälla i stället.
+  3. **Allt ett ja ändrar står i underlaget och texten:** underlaget har
+     `ny_kronram_ore`; förslagstexten, ”Ditt svar registrerar” och fältet
+     Återstående utrymme säger den nya kronramen; `byggTillaggsindata` tar taket
+     och kronramen ur underlaget och kastar om version och underlag inte hör
+     ihop; `andra_baseline`:s schema kräver att `cap_hours`/`cap_amount_ore` är
+     underlagets nya värden när de finns.
+  4. **Åtgärd och indata hör ihop:** byggarna kastar för ett underlag med det
+     andra alternativet, och förslagssteget väljer båda i samma gren.
+  5. **En källa en gång:** dubbla referenser dedupliceras, och schemat fäller dubbletter.
+  6. **Avtalsvärden utanför underlagets gränser** (scopelinjer, namn, delar,
+     nytt tak över 999 999,99 h, belopp och kronram utanför säkra heltal)
+     avvisar förslaget med den nya orsaken `underlag_ogiltigt` före varje
+     skrivning (`provaOvrigtUnderlag`, kastar aldrig) i stället för att fälla svepet.
+  7. **Bara utrymmet får vara negativt** i underlaget; övriga tider är `nonnegative()`.
+  8. `getContractUsage` läses en gång per avtal och anrop.
+  9. `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md`: täckningens text rättad
+     (alla `UNDANTAG_ATGARDER` med källan på radens avtal), den nya orsaken,
+     datumregeln, kronramen och prövningen av källan.
+  10. `.gitignore`: `.env*` utom `.env.example`, så att en env-kopia i roten
+      inte kan committas. Själva filen är inte rörd eller läst.
+
+  **Prov:** nya U14–U18 (rena, `ovrigtHelper.ts`), G1–G5 (databas,
+  `uppdragsytan-ovrigt.test.ts`), R7 (i) (`undantagsvynHelper.ts`), två nya
+  fall i A2; U1, U2 och U13 följer det nya fältet.
+  **Inte kört i sessionen:** `npm run typecheck` och `npm test` nekades av
+  sandlådan (`This command requires approval`). Förutsagt, inte observerat.
+
 - **2026-10-13 (Story 1.14, Övrigt-raden blir en fråga med färdig beräkning):**
   En markerad Övrigt-rad kommer nu tillbaka som en fråga i undantagsvyn, med
   avtalsdelar, taxa, förbrukning och belopp uträknade. Ingen migration, inget
