@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.9, omtag efter code-review av Task 8, sju fynd):**
+  Granskningen fann att Task 8:s kod och prov inte fanns i grenens commit
+  `bdceb2c`. `uppdragSignal.ts` och `uppdragsytan-scopeavgorande.test.ts`
+  var ändrade men ocommittade i arbetskopian: ändringen blev kvar från
+  körningen på grenen `-9193`, som gick tillbaka till `main` utan commit, och
+  följde med när grenen `-9194` checkades ut. Commiten tog bara de filer som
+  ändrades under körningen (`MCP_ACTIONS.md`, `STATUS.md`, `routes.ts`).
+  Posten nedan beskrev alltså kod som grenen inte innehöll.
+  Ändrat nu: båda filerna är ändrade i den här körningen. Provets filhuvud
+  nämner den sjätte risken (K5 j), och tjänstens filhuvud nämner att köposten
+  bär signalens avtal. Git-läget vid överlämningen, ordagrant:
+  ```text
+  $ git status --short
+   M server/src/services/uppdragSignal.ts
+   M server/test/uppdragsytan-scopeavgorande.test.ts
+  ?? .env.fore-losen-20260921-123718
+  $ git diff --stat
+   server/src/services/uppdragSignal.ts            | 36 ++++++++---
+   server/test/uppdragsytan-scopeavgorande.test.ts | 80 ++++++++++++++++++++++++-
+  ```
+  (plus den här posten i `STATUS.md`). Utvecklaren får inte köra `git commit`,
+  så filerna är fortfarande ocommittade när körningen lämnar över. Kedjans
+  commit ska ta med båda; kontrollera med `git show --stat` på nästa commit.
+  **Inte kört:** `npm run typecheck` gav `This command requires approval`, så
+  varken vitest, typecheck, build eller test är körda i den här körningen.
+  **`npm run build` inte kört: This command requires approval.**
+
 - **2026-10-13 (Story 1.9, omtag efter andra granskningen i drift):**
   Ändrat: `avgorSignal` prövar `tillagg.contract_id` (i gemener) mot den låsta
   signalradens avtal direkt efter radlåset och ger 400 `signal_annat_avtal`
