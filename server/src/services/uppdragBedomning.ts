@@ -85,15 +85,22 @@ const KOLUMNER = `b.id, b.contract_id, b.period_start::text, b.period_slut::text
  * besvara samma begäran. Låset sitter på avtalet, föräldern, eftersom
  * begäranstabellen är append-only och `FOR UPDATE` kräver UPDATE-rättighet.
  * Samma grepp som projektlåset i `uppdragAvslut.ts`.
+ *
+ * Id:t i svaret är avtalets id som databasen skriver det, och det är det värde
+ * som förs vidare efter låset. Indatats id kan ha versaler, eftersom
+ * `UuidSchema` inte gör om dem, och en jämförelse eller auditrad med indatats
+ * sträng hade skilt sig från radens.
  */
-async function lasAvtalet(client: PoolClient, companyId: string, contractId: string): Promise<string> {
-  const res = await client.query<{ name: string }>(
-    'SELECT name FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE',
+async function lasAvtalet(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<{ id: string; name: string }> {
+  const res = await client.query<{ id: string; name: string }>(
+    'SELECT id, name FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE',
     [contractId, companyId],
   );
   const rad = res.rows[0];
   if (!rad) throw new NotFoundError('contract');
-  return rad.name;
+  return rad;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,8 +207,8 @@ async function lasBegaran(client: PoolClient, companyId: string, id: string): Pr
 export async function begarNyBedomning(
   client: PoolClient, companyId: string, userId: string, input: BegarNyBedomningInput,
 ): Promise<Begaransvar> {
-  await lasAvtalet(client, companyId, input.contract_id);
-  const oppen = (await listaObesvaradeBegaranden(client, companyId, [input.contract_id]))[0];
+  const avtal = await lasAvtalet(client, companyId, input.contract_id);
+  const oppen = (await listaObesvaradeBegaranden(client, companyId, [avtal.id]))[0];
   if (oppen) return { ...oppen, befintlig: true };
 
   const kommentar = input.kommentar?.trim() ?? null;
@@ -209,7 +216,7 @@ export async function begarNyBedomning(
   const res = await client.query<{ id: string }>(
     `INSERT INTO uppdrag_bedomningsbegaran (company_id, contract_id, begard_av, kommentar)
      VALUES ($1, $2, $3, $4) RETURNING id`,
-    [companyId, input.contract_id, userId, kommentar],
+    [companyId, avtal.id, userId, kommentar],
   );
   const id = res.rows[0]!.id;
   // Id och koder, ingen fritext: kommentaren står i raden (lärdom 10).
@@ -219,7 +226,7 @@ export async function begarNyBedomning(
     action: 'uppdrag.bedomning_begard',
     entityType: 'uppdrag_bedomningsbegaran',
     entityId: id,
-    details: { contract_id: input.contract_id, kommentar_finns: kommentar !== null },
+    details: { contract_id: avtal.id, kommentar_finns: kommentar !== null },
   });
   return { ...(await lasBegaran(client, companyId, id)), befintlig: false };
 }
@@ -404,12 +411,17 @@ export async function lasScopelinjer(
  * (409 `begaran_annat_avtal`) och vara obesvarad (409 `begaran_besvarad`).
  * Utan `begaranId` väljs avtalets obesvarade begäran, om det finns en —
  * låset gör att det finns högst en.
+ *
+ * `avtalId` är avtalets id ur låsraden, som databasen skriver det. Jämförelsen
+ * står därför mellan två värden ur databasen, och de är lika om och endast om
+ * de är samma uuid, i vilket skiftläge indatat än skrevs. Svaret är begärans
+ * id ur raden, inte indatats.
  */
 async function besvaradBegaran(
-  client: PoolClient, companyId: string, contractId: string, begaranId: string | undefined,
+  client: PoolClient, companyId: string, avtalId: string, begaranId: string | undefined,
 ): Promise<string | null> {
   if (begaranId === undefined) {
-    return (await listaObesvaradeBegaranden(client, companyId, [contractId]))[0]?.id ?? null;
+    return (await listaObesvaradeBegaranden(client, companyId, [avtalId]))[0]?.id ?? null;
   }
   const res = await client.query<{ id: string; contract_id: string; obesvarad: boolean }>(
     `SELECT r.id, r.contract_id, ${OBESVARAD} AS obesvarad
@@ -419,7 +431,7 @@ async function besvaradBegaran(
   );
   const rad = res.rows[0];
   if (!rad) throw new NotFoundError('uppdrag_bedomningsbegaran');
-  if (rad.contract_id !== contractId) {
+  if (rad.contract_id !== avtalId) {
     throw new ConflictError('begaran_annat_avtal', 'Begäran gäller ett annat avtal än bedömningen.');
   }
   if (!rad.obesvarad) {
@@ -449,10 +461,10 @@ async function besvaradBegaran(
 export async function sattBedomning(
   client: PoolClient, companyId: string, userId: string, input: SattBedomningInput,
 ): Promise<Bedomningsrad & { contract_name: string }> {
-  const contractName = await lasAvtalet(client, companyId, input.contract_id);
-  const begaranId = await besvaradBegaran(client, companyId, input.contract_id, input.begaran_id);
+  const avtal = await lasAvtalet(client, companyId, input.contract_id);
+  const begaranId = await besvaradBegaran(client, companyId, avtal.id, input.begaran_id);
   const underlag = await byggRapportunderlag(
-    client, companyId, input.contract_id, input.period_start, input.period_slut,
+    client, companyId, avtal.id, input.period_start, input.period_slut,
   );
   const res = await client.query<{ id: string }>(
     `INSERT INTO uppdrag_bedomning
@@ -460,7 +472,7 @@ export async function sattBedomning(
         frysta_siffror, handelse_ref_ids, satt_av, begaran_id)
      VALUES ($1, $2, $3, $4, $5, true, $6, $7::jsonb, $8::uuid[], $9::uuid, $10::uuid)
      RETURNING id`,
-    [companyId, input.contract_id, input.period_start, input.period_slut, input.lage,
+    [companyId, avtal.id, input.period_start, input.period_slut, input.lage,
       input.kommentar ?? null, JSON.stringify(underlag.frysta), underlag.handelse_ref_ids,
       userId, begaranId],
   );
@@ -472,7 +484,7 @@ export async function sattBedomning(
     action: 'uppdrag.bedomning_satt',
     entityType: 'uppdrag_bedomning',
     entityId: id,
-    details: { contract_id: input.contract_id, lage: input.lage, begaran_id: begaranId },
+    details: { contract_id: avtal.id, lage: input.lage, begaran_id: begaranId },
   });
   const rad = await client.query<Bedomningsrad>(
     `SELECT ${KOLUMNER}
@@ -481,7 +493,7 @@ export async function sattBedomning(
       WHERE b.company_id = $1 AND b.id = $2`,
     [companyId, id],
   );
-  return { ...rad.rows[0]!, contract_name: contractName };
+  return { ...rad.rows[0]!, contract_name: avtal.name };
 }
 
 /**

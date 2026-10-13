@@ -153,6 +153,43 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.10, omtag efter andra granskningen i drift):**
+  Task 8: avtalets id tas ur låsraden.
+  1. `lasAvtalet` (`server/src/services/uppdragBedomning.ts`) läser avtalets
+     `id` och `name` ur den låsta raden. `begarNyBedomning` och `sattBedomning`
+     för det id:t vidare efter låset: till de öppna begärandena, prövningen av
+     begäran, underlaget, INSERT:en och auditraden. Indatats avtal står bara
+     som argument till `lasAvtalet`.
+  2. Jämförelsen i `besvaradBegaran` (parametern heter nu `avtalId`) och
+     `details.contract_id` i auditraderna `uppdrag.bedomning_begard` och
+     `uppdrag.bedomning_satt` använder samma id. Ett `contract_id` med versaler
+     på samma avtal gav förut 409 `begaran_annat_avtal`; nu 200 och en rad.
+  3. `MCP_ACTIONS.md`: en mening under `satt_bedomning` (samma avtal avgörs på
+     id:t, inte skiftläget) och en under `begar_ny_bedomning` (auditradens
+     `contract_id` är databasens).
+  4. Prov: K3 (k) och K4 (l) 1–4 i `uppdragsytan-bedomningsbegaran.test.ts`
+     (versaler och blandat skiftläge i `contract_id`, versaler i `begaran_id`,
+     vägen utan `begaran_id`, ett annat avtal i versaler), räknaren
+     `skiftlage` och `expect(korda.skiftlage).toBe(5)` i kontrollvakten.
+
+  **Inte kört i sessionen:** vitest, `npm run typecheck`, `npm run build` och
+  `npm test`. Sandlådan svarade `This command requires approval` på
+  `npx vitest run test/uppdragsytan-bedomningsbegaran.test.ts` (och
+  `This Bash command contains multiple operations. The following part requires
+  approval: …` på samma körning med `cd`). Förutsagt, inte observerat: mot
+  koden före ändringen fälls K3 (k) på auditradens `details` (versaler i
+  `contract_id`), K4 (l) i del 1 (409 `begaran_annat_avtal` i stället för 200)
+  och kontrollvakten (`skiftlage` 0 i stället för 5); med ändringen är K3 (k),
+  K4 (l) 1–4 och kontrollvakten gröna. Kedjan kör typecheck och test efter
+  sessionen, och deployen bygger före bytet.
+
+  **Driftnotis:** ingen migration. Auditrader som skrivits i drift före bygget
+  med versaler i `details.contract_id` står kvar, eftersom `audit_log` är
+  append-only. Efter bygget bär ingen auditrad som åtgärderna skriver ett id ur
+  indata: domänraderna tar avtalets id ur låsraden och begärans id ur
+  begäransraden, och `action.executed` bär bara `sensitivity` och `actor`
+  (`execute.ts` rad 108–115).
+
 - **2026-10-13 (Story 1.10, den begärda bedömningen):**
   David kan begära en ny bedömning av ett avtal, och frågan står i
   undantagsvyns läsväg med underlaget sammanställt tills en bedömning besvarar
