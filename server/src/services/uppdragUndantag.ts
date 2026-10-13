@@ -9,10 +9,14 @@ import { formatOre } from '../domain/money.js';
 import { KALLA_REDOVISNING, last, olast, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
+import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
+import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
 
-export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande'] as const;
+// Story 1.10: `ny_bedomning` bara när David själv begärt den (FR-40). Ingen
+// regel skapar posten; den byggs ur obesvarade rader i begäranstabellen.
+export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande', 'ny_bedomning'] as const;
 export type Postslag = (typeof POSTSLAG)[number];
 
 /** Tillåtelselistan är den enda vägen från kön till ett postslag. */
@@ -42,20 +46,33 @@ interface BaselineMal {
   source_file_id?: Lasvarde<{ id: string; original_name: string; sha256: string; size_bytes: number }>;
   parent_part_id?: Lasvarde<{ id: string; code: string; name: string; valid_from: string }>;
 }
+/**
+ * Underlaget för en begärd bedömning (Story 1.10). Senaste läget står här som
+ * historik, aldrig i `forslag`: då kan ingen läsa förslaget som ett förval.
+ */
+export interface Begardbedomning {
+  begaran: { id: string; begard_av_namn: string; begard_nar: string; kommentar: string | null };
+  senaste: Lasvarde<{ id: string; lage: Bedomningslage; period_start: string; period_slut: string;
+    satt_nar: string; satt_av_namn: string | null; kommentar: string | null }>;
+  andringar: Lasvarde<Andringsunderlag>;
+  period: { start: string; slut: string };
+}
 export interface Undantagspost {
   slag: Postslag;
   id: string;
-  identitet: 'kopost' | 'signal';
+  identitet: 'kopost' | 'signal' | 'begaran';
   atgard: string | null;
   foreslagen_av: Actor;
   skapad_nar: string;
   uppdrag: Lasvarde<Uppdragsref>;
-  val: { kod: 'ja_nej' | 'innanfor_utanfor'; text: string };
+  val: { kod: 'ja_nej' | 'innanfor_utanfor' | 'bedomningslage'; text: string };
   varfor_mandat: string;
   forslag: Lasvarde<{ fran: string | null; till: string; belopp_ore: number | null; mal?: BaselineMal }>;
   skal: Lasvarde<string>;
   kallor: Lasvarde<Kallreferens[]>;
   ja_registrerar: string;
+  /** Bara poster av slaget `ny_bedomning` bär fältet. */
+  bedomning?: Begardbedomning;
 }
 export interface Kalltackning { lage: 'last' | 'fel'; saknas: string[] }
 export interface Tackningspost {
@@ -71,7 +88,7 @@ export interface Undantag {
   tackning: Tackningspost[];
   ofullstandig_tackning: Tackningspost[];
   aldsta_tackning: string | null;
-  hoppade: Array<{ id: string; identitet: 'kopost' | 'signal'; atgard: string | null;
+  hoppade: Array<{ id: string; identitet: 'kopost' | 'signal' | 'begaran'; atgard: string | null;
     orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' }>;
   last_nar: string;
 }
@@ -98,8 +115,9 @@ function lastText(v: unknown, lastNar: string): Lasvarde<string> {
 function kallor(v: Kallreferens[], lastNar: string, kalla = KALLA_REDOVISNING): Lasvarde<Kallreferens[]> {
   return v.length === 0 ? saknas(kalla, lastNar) : last(v, kalla, lastNar);
 }
-function yta(bas: string, uppdrag: Uppdragsref, yta: 'kontraktet' | 'laget' | 'signaler'): Kallreferens {
-  return { typ: 'yta', etikett: yta === 'kontraktet' ? 'Kontraktet' : yta === 'laget' ? 'Läget' : 'Signaler',
+function yta(bas: string, uppdrag: Uppdragsref, yta: 'kontraktet' | 'laget' | 'signaler' | 'bedomning'): Kallreferens {
+  return { typ: 'yta',
+    etikett: yta === 'kontraktet' ? 'Kontraktet' : yta === 'laget' ? 'Läget' : yta === 'signaler' ? 'Signaler' : 'Bedömning',
     sokvag: `${bas}/projects/${uppdrag.project_id}/${yta}` };
 }
 
@@ -352,6 +370,40 @@ export function beskrivScopeavgorande(u: Signalsunderlag, bas: string, lastNar: 
     kallor: kallor([yta(bas, u.uppdrag, 'signaler'), ...u.referenser ?? []], lastNar),
     ja_registrerar: 'Avgörandet blir en ny rad i signalens historik, och tidigare avgöranden står kvar. Vid utanför med tillägg köas ett baselineförslag, som blir en egen post för ditt godkännande.' };
 }
+interface Begaransunderlag {
+  begaran: Begaransrad;
+  uppdrag: Uppdragsref;
+  /** Senaste mänskliga bedömning, eller null när ingen finns. */
+  senaste: Bedomningsrad | null;
+  andringar: Andringsunderlag;
+}
+/**
+ * Ren: ingen maskin föreslår ett läge (FR-15). Förslagsfältet bär bara det
+ * sammanställda underlaget, och `sammanfattaAndringar` får aldrig senaste läget.
+ * Ingen rad skrivs i `uppdrag_beslut`, så texten om beslutsraden står inte här.
+ */
+export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: string): Undantagspost {
+  const r = u.begaran;
+  const s = u.senaste;
+  return { slag: 'ny_bedomning', id: r.id, identitet: 'begaran', atgard: null,
+    foreslagen_av: 'human', skapad_nar: r.begard_nar,
+    uppdrag: last(uppdragsref(u.uppdrag), KALLA_REDOVISNING, lastNar),
+    val: { kod: 'bedomningslage', text: '● På spår, ▲ Risk eller ■ Ur spår. Inget läge är förvalt, och kommentaren är frivillig.' },
+    varfor_mandat: 'Bara du bedömer uppdraget. Ett bedömt läge sätts alltid av en människa, aldrig av en maskin (FR-15).',
+    forslag: last({ fran: null, till: sammanfattaAndringar(u.andringar), belopp_ore: null }, KALLA_REDOVISNING, lastNar),
+    skal: last(`${r.begard_av_namn} begärde en ny bedömning ${r.begard_nar.slice(0, 10)}${r.kommentar === null ? '.' : `: ${r.kommentar}`}`,
+      KALLA_REDOVISNING, lastNar),
+    kallor: kallor([yta(bas, u.uppdrag, 'laget'), yta(bas, u.uppdrag, 'bedomning')], lastNar),
+    ja_registrerar: 'Läget du väljer blir en ny rad i bedömningshistoriken, satt av dig och med periodens underlag fryst. Begäran räknas som besvarad, och tidigare bedömningar står kvar.',
+    bedomning: {
+      begaran: { id: r.id, begard_av_namn: r.begard_av_namn, begard_nar: r.begard_nar, kommentar: r.kommentar },
+      senaste: s === null ? saknas(KALLA_REDOVISNING, lastNar) : last({ id: s.id, lage: s.lage,
+        period_start: s.period_start, period_slut: s.period_slut, satt_nar: s.created_at,
+        satt_av_namn: s.satt_av_namn, kommentar: s.kommentar }, KALLA_REDOVISNING, lastNar),
+      andringar: last(u.andringar, KALLA_REDOVISNING, lastNar),
+      period: kalendermanad(lastNar.slice(0, 10)),
+    } };
+}
 
 /** Ren och deterministisk: driftens saknas-lista bär id:n, aldrig fritext. */
 export function kalltackning(saknade: string[]): Kalltackning {
@@ -548,6 +600,78 @@ async function signalposter(client: PoolClient, companyId: string, lastNar: stri
   return { poster, hoppade };
 }
 
+/**
+ * Vad som hänt på avtalet efter senaste mänskliga bedömning, ur egna tabeller
+ * (Story 1.10). `sedan` är bedömningsradens created_at som text, så att ingen
+ * precision tappas i en Date.
+ */
+async function andringarSedan(
+  client: PoolClient, companyId: string, contractId: string, sedan: string,
+): Promise<Pick<Andringsunderlag, 'leverabelrorelser' | 'signaler' | 'baselineandringar'>> {
+  const leverabelrorelser = await client.query<Andringsunderlag['leverabelrorelser'][number]>(
+    `SELECT l.kod,h.fran,h.till,h.created_at::text AS nar
+       FROM uppdrag_leverabel_handelse h JOIN uppdrag_leverabel l ON l.id=h.leverabel_id AND l.company_id=h.company_id
+      WHERE h.company_id=$1 AND h.contract_id=$2 AND h.created_at>$3::timestamptz
+      ORDER BY h.created_at,h.id`, [companyId, contractId, sedan],
+  );
+  // Samma predikat för en öppen signal som `signalposter`.
+  const signaler = await client.query<Andringsunderlag['signaler'][number]>(
+    `SELECT s.id,s.fras,s.klausul,s.tand_nar::text AS tand_nar,
+            NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande a WHERE a.company_id=s.company_id AND a.signal_id=s.id) AS oppen
+       FROM uppdrag_scopesignal s
+      WHERE s.company_id=$1 AND s.contract_id=$2 AND s.tand_nar>$3::timestamptz
+      ORDER BY s.tand_nar,s.id`, [companyId, contractId, sedan],
+  );
+  // Bara ja till en baselineåtgärd. Godkännanden från före beslutsraden (Story
+  // 1.7) har ingen rad och gissas inte fram.
+  const baselineandringar = await client.query<Andringsunderlag['baselineandringar'][number]>(
+    `SELECT b.id AS beslut_id,b.approval_id,b.underlag->>'atgard' AS atgard,
+            b.handling->'contract_part'->>'code' AS kod,b.beslutad_nar::text AS beslutad_nar
+       FROM uppdrag_beslut b
+      WHERE b.company_id=$1 AND b.contract_id=$2 AND b.utfall='ja'
+        AND b.underlag->>'atgard'=ANY($4::text[]) AND b.beslutad_nar>$3::timestamptz
+      ORDER BY b.beslutad_nar,b.id`, [companyId, contractId, sedan, KOBURNA_SLAG.baselineandring],
+  );
+  return { leverabelrorelser: leverabelrorelser.rows, signaler: signaler.rows, baselineandringar: baselineandringar.rows };
+}
+
+/**
+ * Posterna `ny_bedomning`, i formen av `signalposter`. Bara obesvarade rader i
+ * begäranstabellen blir poster; ingen regel upptäcker bedömningsbehov (FR-40,
+ * Story 14.3). Ett avtal har högst en obesvarad begäran, så läsningarna per
+ * begäran är en per avtal; `getContractUsage` har ingen listform.
+ */
+async function bedomningsposter(client: PoolClient, companyId: string, lastNar: string) {
+  const begaranden = await listaObesvaradeBegaranden(client, companyId, null);
+  const avtal = await client.query<Uppslagsrad>(
+    `SELECT c.id AS nyckel,c.id AS contract_id,c.name AS contract_name,
+            p.id AS project_id,p.number,p.name,p.status AS projektstatus
+       FROM contracts c JOIN projects p ON p.company_id=c.company_id AND p.id=c.project_id
+      WHERE c.company_id=$1 AND c.id=ANY($2::uuid[])`,
+    [companyId, [...new Set(begaranden.map((r) => r.contract_id))]],
+  );
+  const per = new Map(avtal.rows.map((r) => [r.nyckel, r]));
+  const poster: Undantagspost[] = [];
+  const hoppade: Undantag['hoppade'] = [];
+  for (const r of begaranden) {
+    const a = per.get(r.contract_id);
+    if (!a || a.projektstatus !== 'active') {
+      hoppade.push({ id: r.id, identitet: 'begaran', atgard: null, orsak: a ? 'uppdrag_avslutat' : 'uppdrag_saknas' });
+      continue;
+    }
+    // Senaste MÄNSKLIGA bedömning: samma lista och ordning som Läget läser.
+    const senaste = (await listaBedomningar(client, companyId, r.contract_id))
+      .filter((b) => b.satt_av_manniska).at(-1) ?? null;
+    const nu = await lasDelsiffror(client, companyId, r.contract_id);
+    const andringar: Andringsunderlag = senaste === null
+      ? { sedan: null, forbrukning: forbrukningsandringar(null, nu), leverabelrorelser: [], signaler: [], baselineandringar: [] }
+      : { sedan: senaste.created_at, forbrukning: forbrukningsandringar(senaste.frysta_siffror?.delar ?? null, nu),
+        ...await andringarSedan(client, companyId, r.contract_id, senaste.created_at) };
+    poster.push(beskrivNyBedomning({ begaran: r, uppdrag: uppdragsref(a), senaste, andringar }, `/app/c/${companyId}`, lastNar));
+  }
+  return { poster, hoppade };
+}
+
 /** En läsväg för REST, MCP och den kommande vyn, utan egen SQL i transporten. */
 export async function lasUndantag(client: PoolClient, companyId: string): Promise<Undantag> {
   const nu = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu;
@@ -560,6 +684,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   const koposter = await listaVantandeKoposter(client, companyId, UNDANTAG_ATGARDER);
   const koburna = await koburnaPoster(client, companyId, koposter, lastNar);
   const signaler = await signalposter(client, companyId, lastNar);
+  const bedomningar = await bedomningsposter(client, companyId, lastNar);
   const rader = await client.query<{ contract_id: string; varde: unknown; last_nar: Date }>(
     'SELECT contract_id,varde,last_nar FROM uppdrag_svepvarde WHERE company_id=$1 AND nyckel=$2 AND contract_id=ANY($3::uuid[])',
     [companyId, TACKNINGSNYCKEL, oppna.rows.map((a) => a.contract_id)],
@@ -567,7 +692,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   const per = new Map(rader.rows.map((r) => [r.contract_id, r]));
   const tackning = oppna.rows.flatMap((a) => MANDATKALLOR.map((k) => tackningspost(a, k, per.get(a.contract_id), nu)));
   // SQL-ordningen bevaras. Date tappar mikrosekunder och får inte sortera om.
-  const poster = [...koburna.poster, ...signaler.poster];
+  const poster = [...koburna.poster, ...signaler.poster, ...bedomningar.poster];
   return { ...bedomUndantag(poster, tackning), poster, tackning,
-    hoppade: [...koburna.hoppade, ...signaler.hoppade], last_nar: lastNar };
+    hoppade: [...koburna.hoppade, ...signaler.hoppade, ...bedomningar.hoppade], last_nar: lastNar };
 }

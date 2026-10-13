@@ -42,7 +42,7 @@ import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
-import { sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
+import { begarNyBedomning, sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
@@ -1737,9 +1737,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // Valfri: en bedömning utan motivering är fortfarande en bedömning, och
         // ett obligatoriskt fält hade lärt den som har bråttom att skriva ".".
         kommentar: safeText(2000).optional(),
+        // Story 1.10: begäran som bedömningen besvarar. En bedömning utan fältet
+        // besvarar avtalets öppna begäran, om det finns en — samma bedömning
+        // ska aldrig kräva två handlingar (FR-16).
+        begaran_id: UuidSchema.optional(),
       })
       .strict(),
-    // `satt_av_manniska` är INTE ett fält i schemat. Kolumnen är svaret på
+    // `satt_av_manniska` är INTE ett fält i schemat, och inte heller `satt_av`
+    // (0082): den härleds ur den inloggade användaren. Kolumnen är svaret på
     // "satte en människa den?" och sätts av tjänsten till true; ett indatafält
     // hade återinfört exakt den lögn kolumnen finns för att utesluta.
     //
@@ -1747,7 +1752,32 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // räknar om underlaget i insert-transaktionen och fryser det där. Ett
     // medskickat underlag fälls av `.strict()` — ett underlag som anroparen
     // skriver själv är inget underlag (FR-16/FR-26).
-    handler: (ctx, i) => sattBedomning(ctx.client, ctx.companyId, i as never),
+    handler: (ctx, i) => sattBedomning(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // Story 1.10 (B-3, FR-40): David begär en ny bedömning, och frågan står i
+  // undantagsvyn tills en mänsklig bedömning besvarar den.
+  def({
+    name: 'begar_ny_bedomning',
+    title: 'Begär en ny bedömning av ett avtal',
+    // `write` + `kravManniska` av samma skäl som `satt_bedomning`: människan som
+    // begär är den som sedan bedömer, och ett köat godkännande av hennes egen
+    // fråga vore ett handgrepp utan innehåll. Spärren är att ingen ANNAN kan
+    // begära: 403 `human_required` i executeAction, före varje skrivning (FR-15).
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        // Frivillig (FR-16). En kommentar av bara blanktecken fälls med 400,
+        // eftersom `min(1)` släpper igenom den (samma form som `OrsakSchema`).
+        // Den som inte vill skriva något utelämnar fältet.
+        kommentar: safeText(2000).refine((v) => v.trim().length > 0, { message: 'kommentaren är tom' }).optional(),
+      })
+      .strict(),
+    // `begard_av` är INTE ett fält: det härleds ur den inloggade användaren, av
+    // samma skäl som `tand_av` — ett indatafält hade gjort spåret till ett
+    // påstående anroparen skriver om sig själv.
+    handler: (ctx, i) => begarNyBedomning(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.1: leverabelregistret läses. Importen (S1.2) fyllde

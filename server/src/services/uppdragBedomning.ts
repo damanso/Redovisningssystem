@@ -21,11 +21,17 @@
 //     `satt_bedomning`:s schema — `.strict()` fäller dem — för samma skäl som
 //     `satt_av_manniska`: ett underlag som anroparen får skriva själv är inget
 //     underlag. NULL i kolumnerna betyder därmed entydigt "satt före S4.2".
+//   * **En begäran är obesvarad tills en bedömningsrad bär dess id (Story
+//     1.10, FR-40).** `satt_bedomning` besvarar avtalets öppna begäran också
+//     utan `begaran_id`, så att samma bedömning aldrig kräver två handlingar.
+//     `satt_av` läses ur den inloggade användaren, aldrig ur indata, av samma
+//     skäl som `satt_av_manniska`. NULL i `satt_av` betyder "satt före 0082".
 import type { PoolClient } from 'pg';
-import { NotFoundError } from '../lib/errors.js';
+import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 import { arGodkannande, arFakturerad, arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { listaReferenser, type Referensrad } from './uppdragReferens.js';
+import { writeAudit } from './auditService.js';
 
 /** Exakt CHECK-villkorets tre värden i 0068 — ordnade som skalan läses. */
 export const BEDOMNINGSLAGEN = ['pa_spar', 'risk', 'ur_spar'] as const;
@@ -37,6 +43,8 @@ export interface SattBedomningInput {
   period_slut: string;
   lage: Bedomningslage;
   kommentar?: string;
+  /** Begäran som bedömningen besvarar (Story 1.10). Utan fältet besvaras avtalets öppna begäran. */
+  begaran_id?: string;
 }
 
 export interface Bedomningsrad {
@@ -52,26 +60,168 @@ export interface Bedomningsrad {
   /** Pekare mot `uppdrag_referens` — aldrig kopior (FR-26). */
   handelse_ref_ids: string[] | null;
   created_at: string;
+  /** Människan som satte raden, ur den inloggade användaren. NULL = satt före 0082. */
+  satt_av: string | null;
+  /** Namnet på `satt_av`, eller NULL när raden saknar det. */
+  satt_av_namn: string | null;
+  /** Begäran som raden besvarade (Story 1.10). NULL = raden besvarade ingen begäran. */
+  begaran_id: string | null;
 }
 
-const KOLUMNER = `id, contract_id, period_start::text, period_slut::text, lage,
-                  satt_av_manniska, kommentar, frysta_siffror, handelse_ref_ids,
-                  created_at::text`;
+const KOLUMNER = `b.id, b.contract_id, b.period_start::text, b.period_slut::text, b.lage,
+                  b.satt_av_manniska, b.kommentar, b.frysta_siffror, b.handelse_ref_ids,
+                  b.created_at::text, b.satt_av,
+                  COALESCE(NULLIF(btrim(u.name), ''), u.email) AS satt_av_namn, b.begaran_id`;
 
 /**
- * Avtalet måste finnas i BOLAGET. Den sammansatta främmande nyckeln
- * (contract_id, company_id) i 0068 fäller ett främmande avtal ändå, men som ett
- * databasfel — och ett grannbolags avtal ska svara "finns inte", inte "något
- * gick fel". Samma uppslag som `uppdragImport.hamtaAvtal`.
+ * Avtalet måste finnas i BOLAGET, och raden låses. Den sammansatta främmande
+ * nyckeln (contract_id, company_id) i 0068 fäller ett främmande avtal ändå, men
+ * som ett databasfel — och ett grannbolags avtal ska svara "finns inte", inte
+ * "något gick fel". Samma uppslag som `uppdragImport.hamtaAvtal`.
+ *
+ * Låset (Story 1.10): begäran och bedömningen läser avtalets obesvarade
+ * begäranden och skriver sedan. Utan `FOR UPDATE` kunde två samtidiga
+ * begäranden båda läsa "ingen öppen" och båda skriva, och två bedömningar båda
+ * besvara samma begäran. Låset sitter på avtalet, föräldern, eftersom
+ * begäranstabellen är append-only och `FOR UPDATE` kräver UPDATE-rättighet.
+ * Samma grepp som projektlåset i `uppdragAvslut.ts`.
  */
-async function avtalsnamn(client: PoolClient, companyId: string, contractId: string): Promise<string> {
+async function lasAvtalet(client: PoolClient, companyId: string, contractId: string): Promise<string> {
   const res = await client.query<{ name: string }>(
-    'SELECT name FROM contracts WHERE id = $1 AND company_id = $2',
+    'SELECT name FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE',
     [contractId, companyId],
   );
   const rad = res.rows[0];
   if (!rad) throw new NotFoundError('contract');
   return rad.name;
+}
+
+// ---------------------------------------------------------------------------
+// Den begärda bedömningen (Story 1.10, B-3, FR-40, FR-15, FR-16)
+//
+// David begär en ny bedömning när han själv ser skäl till det, och frågan står
+// i undantagsvyn tills en mänsklig bedömning besvarar den. Ingen regel skapar
+// en begäran av sig själv: den enda INSERT:en i tabellen står här, och den nås
+// bara genom `begar_ny_bedomning`, som bär `kravManniska`.
+// ---------------------------------------------------------------------------
+
+/** En begäran om ny bedömning, med namnet på den som begärde den. */
+export interface Begaransrad {
+  id: string;
+  contract_id: string;
+  begard_av: string;
+  begard_av_namn: string;
+  /** ISO 8601 ur pg:s Date, samma form som undantagspostens skapad_nar. */
+  begard_nar: string;
+  kommentar: string | null;
+}
+
+/** Svaret på en begäran: `befintlig` säger om den skrevs nu eller redan väntade. */
+export interface Begaransvar extends Begaransrad {
+  befintlig: boolean;
+}
+
+export interface BegarNyBedomningInput {
+  contract_id: string;
+  kommentar?: string;
+}
+
+/**
+ * Den enda definitionen av "obesvarad": ingen bedömningsrad bär begärans id.
+ * Fragmentet förutsätter aliaset `r` för begäran. Svaret står i data, inte i en
+ * jämförelse av tidsstämplar, som hade blivit osäker när två transaktioner
+ * överlappar (now() är transaktionens start).
+ */
+export const OBESVARAD = `NOT EXISTS (SELECT 1 FROM uppdrag_bedomning b
+     WHERE b.company_id = r.company_id AND b.begaran_id = r.id)`;
+
+/** Begärans kolumner med namnet ur `users`, samma regel som `FALT` i `uppdragAnteckning.ts`. */
+const BEGARANSFALT = `r.id, r.contract_id, r.begard_av,
+       COALESCE(NULLIF(btrim(u.name), ''), u.email) AS begard_av_namn,
+       r.begard_nar, r.kommentar`;
+
+type Begaransdbrad = Omit<Begaransrad, 'begard_nar'> & { begard_nar: Date };
+
+const tillBegaransrad = (r: Begaransdbrad): Begaransrad => ({
+  id: r.id,
+  contract_id: r.contract_id,
+  begard_av: r.begard_av,
+  begard_av_namn: r.begard_av_namn,
+  // En tidpunkt med zon, inget kalenderdatum: ingen zon tolkas.
+  begard_nar: r.begard_nar.toISOString(),
+  kommentar: r.kommentar,
+});
+
+/**
+ * Obesvarade begäranden i bolaget, eller för de angivna avtalen (`null` = hela
+ * bolaget). Äldst först, med id sist så att listan inte byter ordning.
+ */
+export async function listaObesvaradeBegaranden(
+  client: PoolClient, companyId: string, contractIds: readonly string[] | null,
+): Promise<Begaransrad[]> {
+  const res = await client.query<Begaransdbrad>(
+    `SELECT ${BEGARANSFALT}
+       FROM uppdrag_bedomningsbegaran r
+       JOIN users u ON u.id = r.begard_av
+      WHERE r.company_id = $1
+        AND ${OBESVARAD}
+        AND ($2::uuid[] IS NULL OR r.contract_id = ANY($2::uuid[]))
+      ORDER BY r.begard_nar, r.id`,
+    [companyId, contractIds],
+  );
+  return res.rows.map(tillBegaransrad);
+}
+
+/** En begäran ur sitt id, för svaret efter INSERT:en. */
+async function lasBegaran(client: PoolClient, companyId: string, id: string): Promise<Begaransrad> {
+  const res = await client.query<Begaransdbrad>(
+    `SELECT ${BEGARANSFALT}
+       FROM uppdrag_bedomningsbegaran r
+       JOIN users u ON u.id = r.begard_av
+      WHERE r.company_id = $1 AND r.id = $2`,
+    [companyId, id],
+  );
+  return tillBegaransrad(res.rows[0]!);
+}
+
+/**
+ * Skriver en begäran om ny bedömning, eller pekar på den som redan väntar.
+ *
+ * En obesvarad begäran per avtal räcker: finns den returneras den med
+ * `befintlig: true`, och ingen rad och ingen auditrad skrivs. Det gäller också
+ * ett avslutat uppdrag där begäran var öppen före stängningen — ingen INSERT
+ * sker, så avslutstriggern körs inte. Annars fäller triggern
+ * `vagrar_skrivning_pa_avslutat` INSERT:en på ett avslutat uppdrag (P0001,
+ * 409 `rule_violation`); tjänsten gör ingen egen kontroll av projektets status.
+ *
+ * `begard_av` är den inloggade användaren, aldrig indata. Kommentaren lagras
+ * trimmad: schemat har redan fällt en kommentar av bara blanktecken med 400.
+ */
+export async function begarNyBedomning(
+  client: PoolClient, companyId: string, userId: string, input: BegarNyBedomningInput,
+): Promise<Begaransvar> {
+  await lasAvtalet(client, companyId, input.contract_id);
+  const oppen = (await listaObesvaradeBegaranden(client, companyId, [input.contract_id]))[0];
+  if (oppen) return { ...oppen, befintlig: true };
+
+  const kommentar = input.kommentar?.trim() ?? null;
+  // Inget try/catch: ett fångat fel förgiftar transaktionen (lärdom 2).
+  const res = await client.query<{ id: string }>(
+    `INSERT INTO uppdrag_bedomningsbegaran (company_id, contract_id, begard_av, kommentar)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [companyId, input.contract_id, userId, kommentar],
+  );
+  const id = res.rows[0]!.id;
+  // Id och koder, ingen fritext: kommentaren står i raden (lärdom 10).
+  await writeAudit(client, {
+    companyId,
+    userId,
+    action: 'uppdrag.bedomning_begard',
+    entityType: 'uppdrag_bedomningsbegaran',
+    entityId: id,
+    details: { contract_id: input.contract_id, kommentar_finns: kommentar !== null },
+  });
+  return { ...(await lasBegaran(client, companyId, id)), befintlig: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +306,30 @@ function handelserIPerioden(rader: Referensrad[], start: string, slut: string): 
 }
 
 /**
+ * Avtalsdelarna ur `getContractUsage` som de fryses. En mappning, två läsare:
+ * frysningen här och jämförelsen i undantagsvyns post (Story 1.10), så att
+ * "då" och "nu" alltid mappas av samma funktion.
+ */
+export function delsiffror(parts: readonly Delforbrukning[]): Delsiffra[] {
+  return parts.map((d): Delsiffra => ({
+    code: d.code,
+    name: d.name,
+    minuter: d.billable_minutes,
+    belopp_ore: d.amount_ore,
+    tak_timmar: d.cap_hours,
+    tak_ore: d.cap_amount_ore,
+    tak_status: d.cap_status,
+    andel: d.share,
+  }));
+}
+
+/** Avtalets delsiffror nu, ur husets enda takberäkning (FR-25). Ingenting räknas om här. */
+export async function lasDelsiffror(client: PoolClient, companyId: string, contractId: string): Promise<Delsiffra[]> {
+  const avtal = await getContractUsage(client, companyId, contractId) as unknown as { parts: Delforbrukning[] };
+  return delsiffror(avtal.parts);
+}
+
+/**
  * Rapportunderlaget för (avtal, period) — samma funktion bygger vyns förifyllda
  * rapport och de tal som fryses vid INSERT:en. Två byggare hade betytt att
  * sidan visade ett tal och raden bar ett annat.
@@ -199,16 +373,7 @@ export async function byggRapportunderlag(
       period_start: periodStart,
       period_slut: periodSlut,
       timmar,
-      delar: avtal.parts.map((d): Delsiffra => ({
-        code: d.code,
-        name: d.name,
-        minuter: d.billable_minutes,
-        belopp_ore: d.amount_ore,
-        tak_timmar: d.cap_hours,
-        tak_ore: d.cap_amount_ore,
-        tak_status: d.cap_status,
-        andel: d.share,
-      })),
+      delar: delsiffror(avtal.parts),
       leverabelrorelser: rorelser.rows,
       handelser: handelser.length,
     },
@@ -234,9 +399,47 @@ export async function lasScopelinjer(
 }
 
 /**
- * Sätter bedömningen för en period. Ingen userId-parameter: raden bär ingen
- * användarkolumn (0068), och auditraden `action.executed` skrivs av
- * `executeAction` i SAMMA transaktion som den här insertningen.
+ * Avgör vilken begäran bedömningen besvarar, under avtalslåset. Med
+ * `begaranId` måste begäran finnas i bolaget (annars 404), gälla samma avtal
+ * (409 `begaran_annat_avtal`) och vara obesvarad (409 `begaran_besvarad`).
+ * Utan `begaranId` väljs avtalets obesvarade begäran, om det finns en —
+ * låset gör att det finns högst en.
+ */
+async function besvaradBegaran(
+  client: PoolClient, companyId: string, contractId: string, begaranId: string | undefined,
+): Promise<string | null> {
+  if (begaranId === undefined) {
+    return (await listaObesvaradeBegaranden(client, companyId, [contractId]))[0]?.id ?? null;
+  }
+  const res = await client.query<{ id: string; contract_id: string; obesvarad: boolean }>(
+    `SELECT r.id, r.contract_id, ${OBESVARAD} AS obesvarad
+       FROM uppdrag_bedomningsbegaran r
+      WHERE r.company_id = $1 AND r.id = $2`,
+    [companyId, begaranId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('uppdrag_bedomningsbegaran');
+  if (rad.contract_id !== contractId) {
+    throw new ConflictError('begaran_annat_avtal', 'Begäran gäller ett annat avtal än bedömningen.');
+  }
+  if (!rad.obesvarad) {
+    throw new ConflictError('begaran_besvarad',
+      'Begäran är redan besvarad med en bedömning. Samma begäran besvaras bara en gång.');
+  }
+  return rad.id;
+}
+
+/**
+ * Sätter bedömningen för en period. `userId` kommer ur åtgärdskontexten och
+ * skrivs i `satt_av` (0082), aldrig ur indata. Auditraden
+ * `uppdrag.bedomning_satt` skrivs här och `action.executed` av
+ * `executeAction`, båda i SAMMA transaktion som den här insertningen.
+ *
+ * Bedömningen besvarar en begäran (Story 1.10): den angivna, eller utan
+ * `begaran_id` avtalets öppna begäran. Raden och svaret på begäran är samma
+ * INSERT — begäran är besvarad därför att raden bär dess id. Avtalslåset
+ * serialiserar två samtidiga svar, och `uppdrag_bedomning_en_per_begaran` är
+ * sista försvarslinjen, utan try/catch kring krocken (lärdom 2).
  *
  * Underlaget räknas om HÄR, i samma transaktion, och fryses med raden. En
  * period helt utan tid och händelser fryser nollor och en TOM händelselista
@@ -244,22 +447,41 @@ export async function lasScopelinjer(
  * giltigt svar spärras aldrig.
  */
 export async function sattBedomning(
-  client: PoolClient, companyId: string, input: SattBedomningInput,
+  client: PoolClient, companyId: string, userId: string, input: SattBedomningInput,
 ): Promise<Bedomningsrad & { contract_name: string }> {
-  const contractName = await avtalsnamn(client, companyId, input.contract_id);
+  const contractName = await lasAvtalet(client, companyId, input.contract_id);
+  const begaranId = await besvaradBegaran(client, companyId, input.contract_id, input.begaran_id);
   const underlag = await byggRapportunderlag(
     client, companyId, input.contract_id, input.period_start, input.period_slut,
   );
-  const res = await client.query<Bedomningsrad>(
+  const res = await client.query<{ id: string }>(
     `INSERT INTO uppdrag_bedomning
        (company_id, contract_id, period_start, period_slut, lage, satt_av_manniska, kommentar,
-        frysta_siffror, handelse_ref_ids)
-     VALUES ($1, $2, $3, $4, $5, true, $6, $7::jsonb, $8::uuid[])
-     RETURNING ${KOLUMNER}`,
+        frysta_siffror, handelse_ref_ids, satt_av, begaran_id)
+     VALUES ($1, $2, $3, $4, $5, true, $6, $7::jsonb, $8::uuid[], $9::uuid, $10::uuid)
+     RETURNING id`,
     [companyId, input.contract_id, input.period_start, input.period_slut, input.lage,
-      input.kommentar ?? null, JSON.stringify(underlag.frysta), underlag.handelse_ref_ids],
+      input.kommentar ?? null, JSON.stringify(underlag.frysta), underlag.handelse_ref_ids,
+      userId, begaranId],
   );
-  return { ...res.rows[0]!, contract_name: contractName };
+  const id = res.rows[0]!.id;
+  // Id och koder, ingen fritext: kommentaren står i raden (lärdom 10).
+  await writeAudit(client, {
+    companyId,
+    userId,
+    action: 'uppdrag.bedomning_satt',
+    entityType: 'uppdrag_bedomning',
+    entityId: id,
+    details: { contract_id: input.contract_id, lage: input.lage, begaran_id: begaranId },
+  });
+  const rad = await client.query<Bedomningsrad>(
+    `SELECT ${KOLUMNER}
+       FROM uppdrag_bedomning b
+       LEFT JOIN users u ON u.id = b.satt_av
+      WHERE b.company_id = $1 AND b.id = $2`,
+    [companyId, id],
+  );
+  return { ...rad.rows[0]!, contract_name: contractName };
 }
 
 /**
@@ -274,9 +496,10 @@ export async function listaBedomningar(
 ): Promise<Bedomningsrad[]> {
   const res = await client.query<Bedomningsrad>(
     `SELECT ${KOLUMNER}
-       FROM uppdrag_bedomning
-      WHERE company_id = $1 AND contract_id = $2
-      ORDER BY period_start, created_at`,
+       FROM uppdrag_bedomning b
+       LEFT JOIN users u ON u.id = b.satt_av
+      WHERE b.company_id = $1 AND b.contract_id = $2
+      ORDER BY b.period_start, b.created_at, b.id`,
     [companyId, contractId],
   );
   return res.rows;

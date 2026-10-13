@@ -35,7 +35,7 @@ import { NotFoundError } from '../lib/errors.js';
 import { listContracts, getContractUsage, type Delforbrukning } from './contracts.js';
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
-import { listaBedomningar, type Bedomningsrad } from './uppdragBedomning.js';
+import { listaBedomningar, listaObesvaradeBegaranden, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
@@ -116,6 +116,8 @@ export interface Avtalslage {
   leverabler: Leverabelrakning[];
   leverabler_totalt: number;
   bedomning: Senastebedomning | null;
+  /** Avtalets obesvarade begäran om ny bedömning (Story 1.10), eller null. */
+  oppen_begaran: Begaransrad | null;
   /** Öppna signaler, och de avgjorda både som historik och som ett antal. */
   oppna_signaler: Signalrad[];
   /**
@@ -325,6 +327,10 @@ export async function lasUppdragslage(
   const avtal: Avtalslage[] = [];
   const partIds = new Set<string>();
   let troskelfarskhet: Farskhet | null = null;
+  // Story 1.10: en läsning för alla avtal. Också på ett stängt uppdrag: en
+  // begäran som aldrig besvarades är fortfarande obesvarad. Läsvägen säger
+  // sanningen, och vyn avgör vad som visas.
+  const oppnaBegaranden = await listaObesvaradeBegaranden(client, companyId, avtalsrader.map((r) => r.id as string));
 
   for (const rad of avtalsrader) {
     const contractId = rad.id as string;
@@ -374,6 +380,7 @@ export async function lasUppdragslage(
       leverabler: LEVERABELLAGEN.map((lage) => ({ lage, antal: rakning.get(lage) ?? 0 })),
       leverabler_totalt: register.length,
       bedomning: senaste === null ? null : { ...senaste, forsta_meningen: forstaMeningen(senaste.kommentar) },
+      oppen_begaran: oppnaBegaranden.find((b) => b.contract_id === contractId) ?? null,
       oppna_signaler: signaler.filter((s) => s.avgjord === null),
       signalhistorik,
       avgjorda_signaler: signalhistorik.length,
