@@ -21,7 +21,7 @@
  */
 import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
-import { DAVIDS_ANTECKNING, tidtext, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
+import { DAVIDS_ANTECKNING, tidtext, timtext, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
 import type {
   Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
 } from '../../services/uppdragUndantag.js';
@@ -147,19 +147,34 @@ function senasteBedomning(b: Begardbedomning, idag: string): Raw | string {
 const lista = (rader: ReadonlyArray<Raw | string>): Raw =>
   html`<ul style="margin:0;padding-left:18px">${rader.map((r) => html`<li>${r}</li>`)}</ul>`;
 
-/** Beräkningen i ord: tid × timpris = belopp, eller varför inget belopp räknas. Aldrig 0 kr för saknat (FR-22). */
+/**
+ * Beräkningen i ord: timmar × timpris = belopp, eller varför inget belopp
+ * räknas. Aldrig 0 kr för saknat (FR-22). Ekvationen visar förslagets timmar,
+ * som beloppet räknas på, och aldrig de avrundade minuterna.
+ */
 function berakningstext(d: OvrigtUnderlag): Raw | string {
-  if (d.minuter === null) return 'Inget belopp räknas: timmar saknas.';
+  if (d.timmar === null) return 'Inget belopp räknas: timmar saknas.';
   if (d.taxa_ore === null || d.belopp_ore === null) return 'Inget belopp räknas: avtalet saknar timpris.';
-  return html`${tidtext(d.minuter)} × ${amount(d.taxa_ore)}/h = ${amount(d.belopp_ore)}`;
+  return html`${timtext(d.timmar)} × ${amount(d.taxa_ore)}/h = ${amount(d.belopp_ore)}`;
+}
+
+/**
+ * Förslagets timmar. När de inte är hela minuter står också minuterna som
+ * utrymmet räknas med, så att de två talen aldrig ser ut att säga olika saker.
+ */
+function timmartext(d: OvrigtUnderlag): string {
+  if (d.timmar === null) return 'Timmar saknas i förslaget';
+  const helaMinuter = Math.abs(d.timmar * 60 - Math.round(d.timmar * 60)) < 1e-6;
+  return helaMinuter || d.minuter === null ? timtext(d.timmar) : `${timtext(d.timmar)} · ${tidtext(d.minuter)} mot taket`;
 }
 
 /** Utrymmet före och efter arbetet. Ett överskridet tak sägs i ord, aldrig som ett negativt tal eller en kvot. */
 function aterstaende(d: OvrigtUnderlag): Raw {
   const fore = d.kvar_fore_minuter;
-  const rader = [fore === null ? 'Delen saknar tak'
+  const rader: Array<Raw | string> = [fore === null ? 'Delen saknar tak'
     : fore >= 0 ? `Före arbetet: ${tidtext(fore)}` : `Före arbetet: taket är redan överskridet med ${tidtext(-fore)}`];
   if (d.nytt_tak_minuter !== null) rader.push(`Nytt tak ${tidtext(d.nytt_tak_minuter)} från ${d.giltig_fran}`);
+  if (d.ny_kronram_ore !== null) rader.push(html`Ny kronram ${amount(d.ny_kronram_ore)} från ${d.giltig_fran}`);
   const efter = d.kvar_efter_minuter;
   if (efter !== null) rader.push(efter >= 0 ? `Efter arbetet: ${tidtext(efter)}` : `Efter arbetet: taket överskrids med ${tidtext(-efter)}`);
   else if (d.minuter === null) rader.push('Efter arbetet: kan inte räknas, eftersom timmarna saknas');
@@ -189,7 +204,7 @@ function ovrigtdel(o: Ovrigtpost, idag: string): Raw {
     ${faltet('Timpris', 'timpris', u((d) => d.taxa_ore === null ? 'Avtalet saknar timpris' : html`${amount(d.taxa_ore)}/h`))}
     ${faltet('Förbrukning', 'forbrukning', u((d) => d.tak_minuter === null
       ? `${tidtext(d.forbrukade_minuter)}, och delen saknar tak` : `${tidtext(d.forbrukade_minuter)} av ${tidtext(d.tak_minuter)}`))}
-    ${faltet('Timmar', 'timmar', u((d) => d.minuter === null ? 'Timmar saknas i förslaget' : tidtext(d.minuter)))}
+    ${faltet('Timmar', 'timmar', u(timmartext))}
     ${faltet('Beräkning', 'berakning', u(berakningstext))}
     ${faltet('Återstående utrymme', 'aterstaende', u(aterstaende))}
     ${faltet('Scopelinjer', 'scopelinjer', u(scopelinjer))}`;
@@ -266,7 +281,11 @@ export const FORMULAR: Record<Postslag, (companyId: string, p: Undantagspost) =>
   ny_bedomning: bedomningsformular,
 };
 
-/** En post. Varje post renderas här och bara här. */
+/**
+ * En post. Varje post renderas här och bara här. En Övrigt-fråga visar sitt
+ * belopp i förslagstexten och i Beräkningen, båda med ören; Förslaget lägger
+ * inte till samma belopp avrundat till kronor.
+ */
 function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
   return html`<article class="panel" id="post-${p.id}" data-postslag="${p.slag}" aria-labelledby="post-${p.id}-rubrik" style="margin-top:14px">
     <div class="panel__head"><h2 id="post-${p.id}-rubrik">${POSTSLAGSETIKETT[p.slag]}</h2>${formuleradAvHermes(p) ? aiMarkning() : ''}</div>
@@ -277,7 +296,7 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
         ${faltet('Valet', 'val', p.val.text)}
         ${faltet('Varför ditt mandat krävs', 'varfor', p.varfor_mandat)}
         ${faltet('Förslaget', 'forslag', lasvardetext(p.forslag, idag, (f) => html`${f.fran === null ? '' : html`${f.fran} → `}${f.till}${
-          f.belopp_ore === null ? '' : html` · ${kronor(f.belopp_ore)}`}`))}
+          f.belopp_ore === null || p.ovrigt ? '' : html` · ${kronor(f.belopp_ore)}`}`))}
         ${faltet('Skälen', 'skal', lasvardetext(p.skal, idag, (s) => s))}
         ${faltet('Källorna', 'kallor', lasvardetext(p.kallor, idag, (ks) => html`<ul style="margin:0;padding-left:18px">${
           ks.map((k) => html`<li>${kallrad(k)}</li>`)}</ul>`))}

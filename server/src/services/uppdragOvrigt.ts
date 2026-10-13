@@ -18,7 +18,7 @@
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import {
-  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forstaLedigaDatum,
+  ALTERNATIV, TimmarSchema, avvikandeFalt, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, tillaggetsDatum,
   type Alternativ, type Gallandeversion, type OvrigtUnderlag,
 } from '../lib/beslutsunderlag.js';
 import { ConflictError } from '../lib/errors.js';
@@ -62,8 +62,14 @@ export type OvrigtForslag = z.output<typeof OvrigtForslagSchema>;
 export const OVRIGT_ATGARD = { tillagg: 'andra_baseline', ryms: 'registrera_uppdragsbeslut' } as const satisfies Record<Alternativ, string>;
 export type Ovrigtatgard = (typeof OVRIGT_ATGARD)[Alternativ];
 
-/** Varför ett förslag inte köades. Listan är sluten, och inget avvisat förslag skriver något. */
-export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'kallreferens_ogiltig'] as const;
+/**
+ * Varför ett förslag inte köades. Listan är sluten, och inget avvisat förslag
+ * skriver något. `avtalsdel_vantar_andring`: ett tillägg på en kod som redan
+ * har en väntande eller mottagen versionsändring. Två tillägg räknade på samma
+ * version hade gett två versioner med samma tak, och det ena hade försvunnit;
+ * Hermes skickar förslaget igen, och det räknas på versionen som då gäller.
+ */
+export const AVVISNINGSORSAKER = ['anteckning_saknas', 'inte_utanfor_avtal', 'uppdraget_stangt', 'avtalsdel_saknas', 'avtalsdel_vantar_andring', 'kallreferens_ogiltig'] as const;
 export type Avvisningsorsak = (typeof AVVISNINGSORSAKER)[number];
 
 /** Vad förslagssteget gjorde med körningens förslag. Varje förslag står i exakt en lista. */
@@ -109,35 +115,38 @@ interface Forslagsrad {
   har_kopost: boolean; har_beslut: boolean;
 }
 
-/** Den gällande versionens rad, som tillägget kopierar. `cap_hours` är numeric och läses som text. */
-async function gallandeVersion(client: PoolClient, companyId: string, partId: string): Promise<Gallandeversion> {
-  const r = await client.query<Omit<Gallandeversion, 'cap_hours'> & { cap_hours: string | null }>(
+type Senasteversion = Gallandeversion & { valid_from: string };
+/**
+ * Avtalsdelens senaste lagrade version, den med senast `valid_from`. Ett
+ * tillägg bygger på den och gäller efter den (`tillaggetsDatum`), i svepet
+ * och igen i verkställigheten. `cap_hours` är numeric och läses som text.
+ */
+async function senasteVersion(client: PoolClient, companyId: string, contractId: string, kod: string): Promise<Senasteversion | null> {
+  const r = await client.query<Omit<Senasteversion, 'cap_hours'> & { cap_hours: string | null }>(
     `SELECT name, description, parent_part_id::text AS parent_part_id, billable, hourly_rate_ore, cap_hours::text AS cap_hours,
-            cap_amount_ore, cap_confirmed, sort_order, active, start_date::text AS start_date, end_date::text AS end_date, date_precision
-       FROM contract_parts WHERE company_id = $1 AND id = $2`,
-    [companyId, partId],
+            cap_amount_ore, cap_confirmed, sort_order, active, start_date::text AS start_date, end_date::text AS end_date,
+            date_precision, valid_from::text AS valid_from
+       FROM contract_parts WHERE company_id = $1 AND contract_id = $2 AND code = $3
+      ORDER BY valid_from DESC, id DESC LIMIT 1`,
+    [companyId, contractId, kod],
   );
-  const rad = r.rows[0]!;
-  return { ...rad, cap_hours: rad.cap_hours === null ? null : Number(rad.cap_hours) };
+  const rad = r.rows[0];
+  return rad ? { ...rad, cap_hours: rad.cap_hours === null ? null : Number(rad.cap_hours) } : null;
 }
 
 /**
- * Datumen som redan bär en version av koden: lagrade versioner och väntande
- * eller mottagna förslag. Båda åtgärderna skriver versionen genom
- * `skrivBaselineversion` (B-7 punkt 4), så båda kan ge 409 `version_finns`.
+ * Har koden en väntande eller mottagen versionsändring? Båda åtgärderna
+ * skriver en ny version genom `skrivBaselineversion` (B-7 punkt 4).
  */
-async function upptagnaDatum(client: PoolClient, companyId: string, contractId: string, kod: string): Promise<string[]> {
-  const r = await client.query<{ datum: string }>(
-    `SELECT valid_from::text AS datum FROM contract_parts WHERE company_id = $1 AND contract_id = $2 AND code = $3
-     UNION
-     SELECT q.input->>'valid_from' AS datum FROM action_approvals q
+async function vantarVersionsandring(client: PoolClient, companyId: string, contractId: string, kod: string): Promise<boolean> {
+  const r = await client.query<{ vantar: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM action_approvals q
       WHERE q.company_id = $1 AND q.action IN ('andra_baseline', 'upsert_contract_part')
         AND lower(q.input->>'contract_id') = $2::text AND q.input->>'code' = $3
-        AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))
-        AND q.input->>'valid_from' IS NOT NULL`,
+        AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))) AS vantar`,
     [companyId, contractId, kod],
   );
-  return r.rows.map((x) => x.datum);
+  return r.rows[0]!.vantar;
 }
 
 /**
@@ -177,6 +186,13 @@ export async function koaOvrigtForslag(
     const delar = usage.parts as Delforbrukning[];
     const vald = delar.find((d) => d.code === f.avtalsdel_kod && d.active);
     if (!vald) { avvisa('avtalsdel_saknas'); continue; }
+    const tillagg = f.alternativ === 'tillagg';
+    // Ett tillägg räknas på delens senaste version. Väntar redan en ändring av
+    // koden (också ett tillägg tidigare i samma anrop) hade två förslag byggt
+    // på samma version, och ett ja på båda hade tappat det ena.
+    if (tillagg && await vantarVersionsandring(client, companyId, rad.contract_id, vald.code)) {
+      avvisa('avtalsdel_vantar_andring'); continue;
+    }
     // Formen prövas före varje skrivning: ett fångat INSERT-fel hade förgiftat
     // svepets transaktion (STATUS.md lärdom 2).
     const kallreferenser = f.kallreferenser ?? [];
@@ -197,24 +213,28 @@ export async function koaOvrigtForslag(
         WHERE company_id = $1 AND contract_id = $2 AND sort IN ('innanfor', 'utanfor') ORDER BY ordning, created_at, id`,
       [companyId, rad.contract_id],
     );
-    const tillagg = f.alternativ === 'tillagg';
-    const gallande = tillagg ? await gallandeVersion(client, companyId, vald.part_id) : null;
+    // Tillägget bygger på delens senaste version, ryms på den gällande. En aktiv
+    // del har alltid minst en lagrad version.
+    const bas = tillagg ? (await senasteVersion(client, companyId, rad.contract_id, vald.code))! : null;
+    const gallande = vald.versions.find((v) => v.id === vald.part_id);
     const underlag = byggOvrigtUnderlag({
       anteckning: { id: rad.id, datum: rad.datum },
       avtal: { namn: rad.avtal_namn, signerat: rad.signerat, taxa_ore: rad.taxa_ore },
       delar: delar.map((d) => ({ kod: d.code, namn: d.name, tak_minuter: d.cap_hours === null ? null : Math.round(d.cap_hours * 60),
         forbrukade_minuter: d.billable_minutes, tak_bekraftat: d.cap_status === 'bekraftat', aktiv: d.active })),
-      vald: { kod: vald.code, eget_tak_timmar: vald.versions.find((v) => v.id === vald.part_id)?.cap_hours ?? null },
+      vald: bas
+        ? { kod: vald.code, eget_tak_timmar: bas.cap_hours, kronram_ore: bas.cap_amount_ore }
+        : { kod: vald.code, eget_tak_timmar: gallande?.cap_hours ?? null, kronram_ore: gallande?.cap_amount_ore ?? null },
       scopelinjer: { innanfor: scope.rows.filter((s) => s.sort === 'innanfor').map((s) => s.text),
         utanfor: scope.rows.filter((s) => s.sort === 'utanfor').map((s) => s.text) },
       forslag: { alternativ: f.alternativ, timmar: f.timmar ?? null, skal: f.skal },
       referenser,
-      giltig_fran: tillagg ? forstaLedigaDatum(rad.datum, await upptagnaDatum(client, companyId, rad.contract_id, vald.code)) : null,
+      giltig_fran: bas ? tillaggetsDatum(rad.datum, bas.valid_from) : null,
       last_nar: lastNar,
     });
     const atgard = OVRIGT_ATGARD[f.alternativ];
-    const indata = gallande
-      ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande, underlag })
+    const indata = bas
+      ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande: bas, underlag })
       : byggRymsindata({ contract_id: rad.contract_id, underlag });
     // Samma funktion och samma auditrad som `executeAction`:s sensitive-gren.
     const koad = await createApproval(client, companyId, userId, 'agent', atgard, indata);
@@ -225,6 +245,43 @@ export async function koaOvrigtForslag(
     utfall.koade.push({ anteckning_id: rad.id, approval_id: koad.id, atgard });
   }
   return utfall;
+}
+
+/**
+ * Verkställighetens prövning av ett tillägg ur en Övrigt-rad, före varje
+ * skrivning. Posten beskriver det frysta underlaget, så ett ja får bara skriva
+ * det underlaget säger: indatat ska vara exakt det tillägg servern själv
+ * bygger ur raden, underlaget och avtalsdelens senaste version, med samma
+ * datumregel som svepet. Raden ska finnas i bolaget, vara markerad och höra
+ * till tilläggets avtal, som vid ryms. Allt annat fäller verkställigheten
+ * (`kalla_annat_avtal` eller `tillagg_avviker`): godkännandet svarar 202,
+ * köposten står kvar mottagen och ingen version skrivs. En `andra_baseline`
+ * med en annan källa passerar orörd.
+ */
+export async function provaTillaggUrOvrigt(
+  client: PoolClient, companyId: string,
+  input: Record<string, unknown> & { contract_id: string; code: string; kalla?: { typ: string; id: string }; beslutsunderlag?: OvrigtUnderlag },
+): Promise<void> {
+  if (input.kalla?.typ !== 'anteckning') return;
+  const rad = (await client.query<{ text: string; datum: string }>(
+    `SELECT a."text" AS text, a.created_at::date::text AS datum FROM uppdrag_anteckning a
+      WHERE a.company_id = $1 AND a.id = $2::uuid AND a.contract_id = $3::uuid AND a.utanfor_avtal`,
+    [companyId, input.kalla.id, input.contract_id],
+  )).rows[0];
+  if (!rad) throw new ConflictError('kalla_annat_avtal', 'Övrigt-raden hör inte till avtalet i förslaget.');
+  const u = input.beslutsunderlag;
+  const bas = await senasteVersion(client, companyId, input.contract_id, input.code);
+  const avvikande = !u || !bas ? ['beslutsunderlag'] : [
+    ...avvikandeFalt(input, byggTillaggsindata({ contract_id: input.contract_id, kod: input.code, anteckning: rad, gallande: bas, underlag: u })),
+    ...(u.anteckning_datum === rad.datum ? [] : ['beslutsunderlag.anteckning_datum']),
+    ...(u.eget_tak_timmar === bas.cap_hours ? [] : ['beslutsunderlag.eget_tak_timmar']),
+    ...(u.kronram_ore === bas.cap_amount_ore ? [] : ['beslutsunderlag.kronram_ore']),
+    ...(u.giltig_fran === tillaggetsDatum(rad.datum, bas.valid_from) ? [] : ['beslutsunderlag.giltig_fran']),
+  ];
+  if (avvikande.length > 0) {
+    throw new ConflictError('tillagg_avviker',
+      `Tillägget är inte det som underlaget och avtalsdelens senaste version ger (${avvikande.join(', ')}), så ingen version skrivs.`);
+  }
 }
 
 /**

@@ -11,7 +11,7 @@ import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
-import { DAVIDS_ANTECKNING, OvrigtUnderlagSchema, tidtext, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
+import { DAVIDS_ANTECKNING, OvrigtUnderlagSchema, forslagstextOvrigt, kronramstext, tidtext, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
 
@@ -33,11 +33,13 @@ export const KOBURNA_SLAG = {
 export const UNDANTAG_ATGARDER: readonly string[] = Object.values(KOBURNA_SLAG).flat();
 // Story 1.14 (B-4): kandidaten, prövningen och täckningen delar predikaten, så
 // att "raden har redan en köpost" betyder samma sak i alla tre. Id:t jämförs i
-// gemener: en människas köpost kan bära det i versaler.
-/** Köpost vars källa är Övrigt-raden a, i alla statusar och för alla åtgärder (B-4). */
-export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'kalla'->>'typ' = 'anteckning' AND lower(q.input->'kalla'->>'id') = a.id::text`;
-/** Beslutsrad vars källa är Övrigt-raden a. */
-export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id`;
+// gemener: en människas köpost kan bära det i versaler. Köposten och
+// beslutsraden räknas bara i radens eget avtal: en köpost för ett annat avtal
+// kan aldrig verkställas för raden, och ett beslut där gäller inte raden.
+/** Köpost vars källa är Övrigt-raden a i radens avtal, i alla statusar och för alla åtgärder (B-4). */
+export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'kalla'->>'typ' = 'anteckning' AND lower(q.input->'kalla'->>'id') = a.id::text AND lower(q.input->>'contract_id') = a.contract_id::text`;
+/** Beslutsrad vars källa är Övrigt-raden a, i radens avtal. */
+export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id AND b.contract_id = a.contract_id`;
 export const MANDATKALLOR = ['godkannandekon', 'ovrigt', 'kostnader', 'baselineforslag'] as const;
 export type Mandatkalla = (typeof MANDATKALLOR)[number];
 export const TACKNINGSNYCKEL = 'tackning';
@@ -402,7 +404,10 @@ interface Ovrigtunderlag extends Kounderlag {
 /**
  * Ren: Övrigt-frågan med beräkningen färdig (Story 1.14, FR-41). Alternativet
  * tas ur åtgärden, och texterna säger bara det som sker: när taket inte ändras
- * säger posten det och varför.
+ * säger posten det och varför, och när kronramen höjs säger den det.
+ * Förslagstexten räknas ur underlagets tal, som schemat prövat, och den
+ * frysta texten visas aldrig: en text som säger något annat än talen kan
+ * alltså inte nå David.
  */
 export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: string): Undantagspost {
   const ryms = u.kopost.action === 'registrera_uppdragsbeslut';
@@ -410,16 +415,16 @@ export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: str
   let ja: string;
   if (d === null) ja = 'Underlaget kunde inte läsas, så vad ett ja registrerar saknas i underlaget.';
   else if (ryms) ja = `Beslutet att arbetet ryms i ${d.avtalsdel_kod} registreras med beräkningen, och Övrigt-raden är dokumentationen. Ingen avtalsdel ändras.`;
-  else if (d.nytt_tak_minuter !== null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran} med taket ${tidtext(d.nytt_tak_minuter)}. Tidigare versioner står kvar.`;
-  else if (d.minuter === null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`;
-  else ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran}. Taket ändras inte, eftersom ${d.avtalsdel_kod} saknar eget tak. Tidigare versioner står kvar.`;
+  else if (d.nytt_tak_minuter !== null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran} med taket ${tidtext(d.nytt_tak_minuter)}.${kronramstext(d)} Tidigare versioner står kvar.`;
+  else if (d.timmar === null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`;
+  else ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran}. Taket ändras inte, eftersom ${d.avtalsdel_kod} saknar eget tak.${kronramstext(d)} Tidigare versioner står kvar.`;
   const rad: Kallreferens[] = u.anteckning ? [{ typ: 'yta', etikett: `${DAVIDS_ANTECKNING}, ${u.anteckning.datum}`,
     sokvag: `${bas}/projects/${u.uppdrag.project_id}/laget#kort-ovrigt` }] : [];
   return { ...kopostbas(u, 'ovrigt_beslut', lastNar),
     val: { kod: 'ja_nej', text: ryms ? 'Godkänn att förfrågan ryms i avtalet, eller säg nej med skäl.'
       : 'Ta förfrågan som tillägg till avtalet, eller säg nej med skäl.' },
     varfor_mandat: 'Förfrågan gäller arbete utanför avtalet. Bara du avgör om den blir ett tillägg, ryms i avtalet eller avböjs.',
-    forslag: d ? last({ fran: null, till: d.forslagstext, belopp_ore: d.belopp_ore }, KALLA_REDOVISNING, d.last_nar) : saknas(KALLA_REDOVISNING, lastNar),
+    forslag: d ? last({ fran: null, till: forslagstextOvrigt(d), belopp_ore: d.belopp_ore }, KALLA_REDOVISNING, d.last_nar) : saknas(KALLA_REDOVISNING, lastNar),
     skal: d ? last(d.skal, KALLA_REDOVISNING, lastNar) : saknas(KALLA_REDOVISNING, lastNar),
     kallor: kallor([...rad, ...u.referenser, yta(bas, u.uppdrag, 'kontraktet')], lastNar),
     ja_registrerar: `${ja} ${BESLUTSRADEN}`,

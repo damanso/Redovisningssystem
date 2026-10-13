@@ -1671,51 +1671,84 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
 ### Övrigt-raden blir en fråga (Story 1.14, B-4)
 
 - **Kandidaten.** En rad med `utanfor_avtal = true` i ett öppet avtal, utan
-  köpost med källan `{ typ: 'anteckning', id }` i någon status och utan
-  beslutsrad med raden som källa, står i svepets `arbetslista.ovrigt_kandidater`,
-  också när avtalet saknas i Hermes indata. Id:t jämförs i gemener.
+  köpost med källan `{ typ: 'anteckning', id }` och radens avtal som
+  `contract_id` i någon status, och utan beslutsrad med raden som källa i radens
+  avtal, står i svepets `arbetslista.ovrigt_kandidater`, också när avtalet saknas
+  i Hermes indata. Id:t jämförs i gemener. En köpost eller beslutsrad i ett annat
+  avtal tar aldrig raden ur listan eller täckningen.
 - **Prövningen** gäller varje förslag i `ovrigt_forslag[]`, i indatats ordning,
   och ger exakt ett utfall: `koade`, `redan_koade` eller `avvisade` med en orsak
   ur den slutna listan `anteckning_saknas` (okänt id eller grannbolagets rad),
   `inte_utanfor_avtal`, `uppdraget_stangt`, `avtalsdel_saknas` (koden finns inte
-  aktiv i radens avtal) och `kallreferens_ogiltig` (en url eller en sökväg). Ett
-  avvisat förslag skriver ingenting och lämnar raden som kandidat med täckningen
-  `ovrigt` som `fel`. Från den lästa raden och framåt används bara radens id och
-  avtal. Texten väljer aldrig åtgärd, avtalsdel eller alternativ.
+  aktiv i radens avtal), `avtalsdel_vantar_andring` (ett tillägg på en kod som
+  redan har en väntande eller mottagen `andra_baseline` eller
+  `upsert_contract_part`, också ett tillägg tidigare i samma anrop) och
+  `kallreferens_ogiltig` (en url eller en sökväg). Ett avvisat förslag skriver
+  ingenting och lämnar raden som kandidat med täckningen `ovrigt` som `fel`;
+  Hermes skickar det igen nästa körning. Från den lästa raden och framåt används
+  bara radens id och avtal. Texten väljer aldrig åtgärd, avtalsdel eller alternativ.
 - **Beräkningen** står i `lib/beslutsunderlag.ts`: taxan ur
   `contracts.hourly_rate_ore`, förbrukningen och taket ur `get_contract_usage`
-  (den valda delens post), belopp = timmar × taxa i ören med `roundOre`, tider i
-  hela minuter. Utrymmet räknas före arbetet mot delens tak och efter arbetet mot
-  delens tak (ryms) eller det nya taket (tillägg = delens eget tak plus timmarna).
-  Saknade timmar eller saknad taxa ger `null`, aldrig 0.
+  (den valda delens post), belopp = förslagets timmar (hundradelar) × taxa i ören
+  med `roundOre`, utrymmet i hela minuter. Utrymmet räknas före arbetet mot
+  delens tak och efter arbetet mot delens tak (ryms) eller det nya taket
+  (tillägg = det egna taket i delens senaste version plus timmarna). Ett tillägg
+  höjer kronramen med beloppet när versionen har en kronram och beloppet finns.
+  Saknade timmar eller saknad taxa ger `null`, aldrig 0. Texterna visar
+  förslagets timmar i ekvationen ("0,33 h à 1 000,00 kr/h = 330,00 kr"), aldrig
+  de avrundade minuterna.
 - **Det frysta underlaget** (`beslutsunderlag`, strikt) bär `anteckning_id`,
   `anteckning_datum`, `alternativ`, `avtal_namn`, `avtal_signerat`,
   `avtalsdel_kod`, `avtalsdel_namn`, `avtalsdelar[]` (aktiva delar med tak,
   förbrukning och bekräftelse), `taxa_ore`, `tak_minuter`, `tak_bekraftat`,
-  `forbrukade_minuter`, `timmar`, `minuter`, `belopp_ore`, `nytt_tak_minuter`,
-  `giltig_fran`, `kvar_fore_minuter`, `kvar_efter_minuter`,
+  `forbrukade_minuter`, `eget_tak_timmar` och `kronram_ore` (versionen
+  beräkningen bygger på), `timmar`, `minuter`, `belopp_ore`, `nytt_tak_minuter`,
+  `ny_kronram_ore`, `giltig_fran`, `kvar_fore_minuter`, `kvar_efter_minuter`,
   `scopelinjer_innanfor[]`, `scopelinjer_utanfor[]`, `forslagstext`, `skal`,
   `kallor[]` (först Övrigt-raden, sedan en `referens` per kallreferens med
   valfritt `handelse_datum`) och `last_nar`. Övrigt-radens text kopieras inte in.
+  Schemat kräver att `minuter`, `belopp_ore`, `nytt_tak_minuter`,
+  `ny_kronram_ore`, `kvar_fore_minuter` och `kvar_efter_minuter` är exakt det
+  beräkningen ger ur underlagets övriga värden; ett underlag där de inte stämmer
+  ger 400 `validation_error` vid köandet och godkännandet och visas som saknat i
+  undantagsvyn. Värden ur avtalets tabeller (namn, koder, scopelinjer, antalet
+  delar och linjer) har tabellernas gränser och inga andra, så ett avtal fäller
+  aldrig svepet. Posten visar förslagstexten räknad ur underlagets tal, aldrig
+  den frysta texten.
 - **Köposten** skapas av svepet med `actor: 'agent'`, en gång per rad, efter en
   SELECT i svepets transaktion och auditraden `action.approval_requested`.
-  `tillagg` blir `andra_baseline`: en fullständig ny version av den gällande
-  delen med det nya taket (kronramen ökad med beloppet när båda finns),
-  `valid_from` = radens datum eller närmast följande lediga dag och
+  `tillagg` blir `andra_baseline`: en fullständig ny version av delens senaste
+  lagrade version, där bara taket (det nya taket) och kronramen (den nya
+  kronramen) ändras, och bara när underlaget har dem. `valid_from` är radens
+  datum, men alltid dagen efter den senaste versionens `valid_from` när den
+  ligger på eller efter radens datum, så att ingen version skuggar tillägget.
   `change_reason` = "Tillägg: <radens text> (Övrigt-raden <datum>)". `ryms`
   blir `registrera_uppdragsbeslut`.
 - **`registrera_uppdragsbeslut` (sensitive, `tvafas`)** — indata `{ contract_id,
   kalla: { typ: 'anteckning', id }, beslutsunderlag }` med underlagets
   `alternativ: 'ryms'` och samma rad. Ett ja registrerar beslutsraden
   (`alternativ = 'ryms'`, handlingen `{ typ: 'ryms', anteckning_id,
-  avtalsdel_kod }`) och ändrar ingen avtalsdel; verkställigheten prövar att raden
-  hör till avtalet (409 `kalla_annat_avtal`, köposten står kvar mottagen). Nej
-  med skäl går genom `avboj_beslutsforslag`. Fel: 400 `validation_error`, 403
-  `human_approval_required` (ja) och `human_required` (nej), 409 `not_pending`.
+  avtalsdel_kod }`) och ändrar ingen avtalsdel. Verkställigheten prövar att raden
+  finns, är markerad och hör till avtalet. Gör den inte det fäller
+  verkställigheten beslutet med `kalla_annat_avtal`: godkännandet svarar 202 med
+  `result: null`, köposten står kvar `approved` med `beslut_hash` (ett mottaget
+  men overkställt beslut, som nästa svep redovisar i `mottagna_beslut.kvar`), och
+  ingen beslutsrad skrivs. Nej med skäl går genom `avboj_beslutsforslag`. Fel:
+  400 `validation_error`, 403 `human_approval_required` (ja) och `human_required`
+  (nej), 409 `not_pending`.
 - **`andra_baseline`** godtar `kalla: { typ: 'anteckning', id }` tillsammans med
   `beslutsunderlag`. Schemat kräver underlaget vid källan anteckning, fäller det
   utan källan, fäller källan tillsammans med `signal_id`, och kräver att
   underlagets `alternativ` är `tillagg` och att rad, kod och `valid_from` stämmer.
+  Verkställigheten av ett sådant tillägg (också ett som en agent köat genom
+  `executeAction` eller MCP) prövar före varje skrivning att raden finns, är
+  markerad och hör till tilläggets avtal (`kalla_annat_avtal`), och att indatat
+  är exakt det tillägg servern själv bygger ur raden, underlaget och delens
+  senaste lagrade version, med samma datumregel som svepet och samma egna tak och
+  kronram som underlaget (`tillagg_avviker`, med de avvikande fälten). Ett ja
+  skriver alltså bara det posten beskriver. Fälls det svarar godkännandet 202 med
+  `result: null`, köposten står kvar mottagen, och ingen version eller
+  beslutsrad skrivs.
 - **Väntar till senare berättelser:** komplettering av timmarna och "ändrat sedan
   förslaget" (1.15), nej-utkastet (1.16) och Hermes formulering i samma körning (1.17).
 

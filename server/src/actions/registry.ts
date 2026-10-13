@@ -50,7 +50,7 @@ import { lasUppdragslage } from '../services/uppdragLage.js';
 import { registreraJa, registreraNej, avbojForslag } from '../services/uppdragBeslut.js';
 import { lasUndantag } from '../services/uppdragUndantag.js';
 import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
-import { registreraRyms } from '../services/uppdragOvrigt.js';
+import { provaTillaggUrOvrigt, registreraRyms } from '../services/uppdragOvrigt.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
@@ -1657,9 +1657,12 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       }),
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
-    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
+    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL. Ett tillägg ur
+    // en Övrigt-rad prövas först mot raden och avtalsdelens senaste version
+    // (`provaTillaggUrOvrigt`): ett ja skriver bara det underlaget beskriver.
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
+      await provaTillaggUrOvrigt(ctx.client, ctx.companyId, i as never);
       const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;

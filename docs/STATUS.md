@@ -153,6 +153,43 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.14, omtag efter code-review: åtta fynd):**
+  Granskningen godkände inte. Varje fynd lagades som felklass:
+  1. *Posten beskrev annat än det ett ja skriver* (HIGH). `andra_baseline`
+     med Övrigt-raden som källa prövas nu i verkställigheten
+     (`provaTillaggUrOvrigt`, `services/uppdragOvrigt.ts`): raden ska finnas,
+     vara markerad och höra till tilläggets avtal, och indatat ska vara exakt
+     det tillägg servern bygger ur raden, underlaget och delens senaste version
+     (`avvikandeFalt`). Annars 202 och ingen version. `OvrigtUnderlagSchema`
+     kräver att varje räknat tal följer av underlagets övriga värden, och
+     posten visar förslagstexten räknad ur talen, aldrig den frysta texten.
+  2. *Ett tillägg kunde försvinna* (MEDIUM). Tillägget räknas på delens
+     senaste lagrade version och gäller efter den (`tillaggetsDatum` ersätter
+     `forstaLedigaDatum`); ett tillägg på en kod med en väntande
+     versionsändring avvisas med den nya orsaken `avtalsdel_vantar_andring`.
+     Två tillägg om 8 h på 12 h ger 28 h efter två ja (F15).
+  3. *Samma belopp på två grunder* (MEDIUM, LOW). Ekvationen visar
+     förslagets timmar (`timtext`, ”0,33 h”), Timmar säger också minuterna mot
+     taket när de skiljer sig, och Förslaget lägger inte till beloppet i hela
+     kronor för en Övrigt-fråga.
+  4. *Köpost och beslutsrad i ett annat avtal* (MEDIUM). Predikaten
+     `KOPOST_FOR_ANTECKNING` och `BESLUT_FOR_ANTECKNING` räknar bara radens
+     eget avtal.
+  5. *Schemats tak fällde svepet* (LOW). Underlagets listor och värden ur
+     avtalets tabeller har tabellernas gränser och inga andra.
+  6. *Kronramen ändrades tyst* (LOW). Underlaget bär `eget_tak_timmar`,
+     `kronram_ore` och `ny_kronram_ore`; förslagstexten, `ja_registrerar` och
+     vyns utrymme säger den nya kronramen.
+  7. `docs/MCP_ACTIONS.md` säger 202 och ett mottaget men overkställt beslut
+     i stället för 409, och beskriver reglerna ovan; `docs/ARKITEKTUR.md`
+     följer med.
+  Nya och ändrade prov: U1, U2, U7, U9, U10, U11, U13, U14, U15, K9, T8, T9,
+  A8, A9, F7, F10, F15, F16, F17 och R7 (i)–(k). **Inte kört i sessionen:**
+  sandlådan nekade varje körande kommando (`npm run typecheck`, `npm test`:
+  ”This command requires approval”). Utfallet är förutsagt, inte observerat;
+  kedjans typecheck och `npm test` är belägget. Ingen migration, inget nytt
+  paket, ingen ny env, inga nya klasser.
+
 - **2026-10-13 (Story 1.14, Övrigt-raden blir en fråga med färdig beräkning):**
   En markerad Övrigt-rad står nu som kandidat i svepets arbetslista, och
   Hermes förslag blir en köpost med beloppet och utrymmet uträknade.

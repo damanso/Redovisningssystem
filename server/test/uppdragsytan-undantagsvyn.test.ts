@@ -544,6 +544,9 @@ describe('R7 Övrigt-frågans block', () => {
   it('(f) Davids egen anteckning som källa', () => rena.provaOvrigtKallan());
   it('(g) märkningen och underlagets lästid', () => rena.provaOvrigtMarkningOchFarskhet());
   it('(h) ett underlag som saknas, och andra slag utan blocket', () => rena.provaOvrigtUtanUnderlag());
+  it('(i) timmar som inte är hela minuter: ekvationen visar förslagets timmar', () => rena.provaOvrigtTimmarSomInteArHelaMinuter());
+  it('(j) beloppet en gång i Förslaget', () => rena.provaOvrigtEttBelopp());
+  it('(k) den nya kronramen', () => rena.provaOvrigtKronram());
 });
 
 describe('V8 Övrigt-frågan genom vyn', () => {

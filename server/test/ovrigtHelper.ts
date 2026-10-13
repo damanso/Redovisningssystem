@@ -5,8 +5,8 @@
 import assert from 'node:assert/strict';
 import {
   DAVIDS_ANTECKNING, OvrigtUnderlagSchema, TimmarSchema,
-  beraknaOvrigt, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forslagHash, forslagstextOvrigt,
-  forstaLedigaDatum, nyttTakTimmar, ovrigtorsak, tidtext,
+  avvikandeFalt, beraknaOvrigt, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forslagHash, forslagstextOvrigt,
+  nyttTakTimmar, ovrigtorsak, tidtext, tillaggetsDatum, timtext,
   type Alternativ, type Gallandeversion, type OvrigtUnderlag, type Ovrigtdelrad,
 } from '../src/lib/beslutsunderlag.js';
 import { safeText } from '../src/lib/validation.js';
@@ -52,6 +52,8 @@ export interface Fixturval {
   tak_minuter?: number | null;
   forbrukade_minuter?: number;
   eget_tak_timmar?: number | null;
+  /** Kronramen i den version beräkningen bygger på; utelämnad = ingen kronram. */
+  kronram_ore?: number | null;
   scopelinjer?: { innanfor: string[]; utanfor: string[] };
   skal?: string;
   extraDelar?: Ovrigtdelrad[];
@@ -74,7 +76,8 @@ export function fixturunderlag(over: Fixturval = {}): OvrigtUnderlag {
     anteckning: { id: over.anteckningId ?? ANTECKNING, datum },
     avtal: { namn: 'Konsultavtal ILT (syntetiskt prov)', signerat: '2026-05-04', taxa_ore: over.taxa === undefined ? TAXA : over.taxa },
     delar,
-    vald: { kod, eget_tak_timmar: over.eget_tak_timmar !== undefined ? over.eget_tak_timmar : ilt ? ilt.eget : 32 },
+    vald: { kod, eget_tak_timmar: over.eget_tak_timmar !== undefined ? over.eget_tak_timmar : ilt ? ilt.eget : 32,
+      kronram_ore: over.kronram_ore !== undefined ? over.kronram_ore : null },
     scopelinjer: over.scopelinjer ?? { innanfor: [], utanfor: [] },
     forslag: { alternativ, timmar: over.timmar === undefined ? 8 : over.timmar,
       skal: over.skal ?? 'Liknande leverabler i registret tog omkring åtta timmar.' },
@@ -92,19 +95,24 @@ export function fixturgallande(over: Partial<Gallandeversion> = {}): Gallandever
 }
 
 const berakna = (over: Partial<Parameters<typeof beraknaOvrigt>[0]>) => beraknaOvrigt({
-  alternativ: 'ryms', timmar: 8, taxa_ore: TAXA, tak_minuter: 1920, eget_tak_timmar: 32, forbrukade_minuter: 600, ...over,
+  alternativ: 'ryms', timmar: 8, taxa_ore: TAXA, tak_minuter: 1920, eget_tak_timmar: 32, kronram_ore: null, forbrukade_minuter: 600, ...over,
 });
 
-// U1 Ryms: beloppet, minuterna och utrymmet före och efter arbetet.
+// U1 Ryms: beloppet, minuterna och utrymmet före och efter arbetet. Ryms rör aldrig kronramen.
 export function provaU1() {
   assert.deepEqual(berakna({}),
-    { minuter: 480, belopp_ore: 800000, nytt_tak_minuter: null, kvar_fore_minuter: 1320, kvar_efter_minuter: 840 });
+    { minuter: 480, belopp_ore: 800000, nytt_tak_minuter: null, ny_kronram_ore: null, kvar_fore_minuter: 1320, kvar_efter_minuter: 840 });
+  assert.strictEqual(berakna({ kronram_ore: 1_200_000 }).ny_kronram_ore, null, 'ryms med kronram');
 }
 
-// U2 Tillägg: det nya taket är det egna taket plus timmarna.
+// U2 Tillägg: det nya taket är det egna taket plus timmarna, och kronramen höjs med beloppet när båda finns.
 export function provaU2() {
-  assert.deepEqual(berakna({ alternativ: 'tillagg', tak_minuter: 720, eget_tak_timmar: 12, forbrukade_minuter: 0 }),
-    { minuter: 480, belopp_ore: 800000, nytt_tak_minuter: 1200, kvar_fore_minuter: 720, kvar_efter_minuter: 720 });
+  const tillagg = { alternativ: 'tillagg', tak_minuter: 720, eget_tak_timmar: 12, forbrukade_minuter: 0 } as const;
+  assert.deepEqual(berakna(tillagg),
+    { minuter: 480, belopp_ore: 800000, nytt_tak_minuter: 1200, ny_kronram_ore: null, kvar_fore_minuter: 720, kvar_efter_minuter: 720 });
+  assert.equal(berakna({ ...tillagg, kronram_ore: 1_200_000 }).ny_kronram_ore, 2_000_000);
+  assert.strictEqual(berakna({ ...tillagg, kronram_ore: 1_200_000, taxa_ore: null }).ny_kronram_ore, null, 'utan belopp');
+  assert.strictEqual(berakna({ ...tillagg, kronram_ore: 1_200_000, timmar: null }).ny_kronram_ore, null, 'utan timmar');
 }
 
 // U3 Saknat är null, aldrig 0.
@@ -154,13 +162,16 @@ export function provaU6() {
   assert.strictEqual(nyttTakTimmar(32, null), null);
 }
 
-// U7 Första lediga datum, över månads-, års- och skottdagsgräns.
+// U7 Tilläggets datum: radens datum, men alltid efter delens senaste version,
+// också när den versionen ligger efter radens datum. Över månads-, års- och
+// skottdagsgräns.
 export function provaU7() {
-  assert.equal(forstaLedigaDatum('2026-10-12', []), '2026-10-12');
-  assert.equal(forstaLedigaDatum('2026-10-12', ['2026-10-12']), '2026-10-13');
-  assert.equal(forstaLedigaDatum('2026-10-12', ['2026-10-12', '2026-10-13', '2026-10-15']), '2026-10-14');
-  assert.equal(forstaLedigaDatum('2026-12-31', ['2026-12-31']), '2027-01-01');
-  assert.equal(forstaLedigaDatum('2028-02-28', ['2028-02-28']), '2028-02-29');
+  assert.equal(tillaggetsDatum('2026-10-12', null), '2026-10-12');
+  assert.equal(tillaggetsDatum('2026-10-12', '2026-05-04'), '2026-10-12');
+  assert.equal(tillaggetsDatum('2026-10-12', '2026-10-12'), '2026-10-13');
+  assert.equal(tillaggetsDatum('2026-10-12', '2026-10-20'), '2026-10-21', 'en senare version skuggar aldrig tillägget');
+  assert.equal(tillaggetsDatum('2026-12-31', '2026-12-31'), '2027-01-01');
+  assert.equal(tillaggetsDatum('2028-02-28', '2028-02-28'), '2028-02-29');
 }
 
 const ORSAK = safeText(2000);
@@ -208,7 +219,25 @@ export function provaU9() {
     'Ryms i 2A Del 2A: ingen ändring av avtalet, och Övrigt-raden är dokumentationen. 8 h à 1 000,00 kr/h = 8 000,00 kr. Kvar under taket efter arbetet: 14 h.');
   const d = fixturunderlag({ alternativ: 'ryms', kod: '2A', timmar: 40 });
   assert.ok(mellanslag(d.forslagstext).endsWith('Taket överskrids med 18 h.'), d.forslagstext);
-  for (const u of [a, b, c, d]) {
+  // (f) Timmar som inte är hela minuter: ekvationen visar förslagets timmar, som beloppet räknas på.
+  const f1 = fixturunderlag({ timmar: 0.33 });
+  assert.equal(mellanslag(f1.forslagstext),
+    'Ryms i 2A Del 2A: ingen ändring av avtalet, och Övrigt-raden är dokumentationen. 0,33 h à 1 000,00 kr/h = 330,00 kr. Kvar under taket efter arbetet: 21 h 40 min.');
+  const f2 = fixturunderlag({ timmar: 0.01, taxa: 33333 });
+  assert.ok(mellanslag(f2.forslagstext).includes('0,01 h à 333,33 kr/h = 3,33 kr.'), f2.forslagstext);
+  const f3 = fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: 7.5 });
+  assert.ok(mellanslag(f3.forslagstext).includes('7,5 h à 1 000,00 kr/h = 7 500,00 kr.'), f3.forslagstext);
+  // (g) Ett tillägg som höjer kronramen säger det, med och utan nytt tak; ryms och ett tillägg utan belopp gör det inte.
+  const g1 = fixturunderlag({ alternativ: 'tillagg', kod: '2B', kronram_ore: 1_200_000 });
+  assert.equal(mellanslag(g1.forslagstext),
+    'Ta det som tillägg till 2B Del 2B: 8 h à 1 000,00 kr/h = 8 000,00 kr. Nytt tak 20 h från 2026-10-12. Kronramen höjs till 20 000,00 kr.');
+  const g2 = fixturunderlag({ alternativ: 'tillagg', kod: '2B', eget_tak_timmar: null, kronram_ore: 1_200_000 });
+  assert.equal(mellanslag(g2.forslagstext),
+    'Ta det som tillägg till 2B Del 2B: 8 h à 1 000,00 kr/h = 8 000,00 kr. Taket ändras inte, eftersom 2B saknar eget tak. Kronramen höjs till 20 000,00 kr.');
+  for (const u of [fixturunderlag({ kronram_ore: 1_200_000 }), fixturunderlag({ alternativ: 'tillagg', kod: '2B', taxa: null, kronram_ore: 1_200_000 })]) {
+    assert.ok(!u.forslagstext.includes('Kronramen'), u.forslagstext);
+  }
+  for (const u of [a, b, c, d, f1, f2, f3, g1, g2]) {
     assert.ok(!u.forslagstext.includes('%') && !/klart/i.test(u.forslagstext), u.forslagstext);
     if (u.belopp_ore === null) assert.ok(!mellanslag(u.forslagstext).includes('0,00 kr'), u.forslagstext);
   }
@@ -221,6 +250,10 @@ export function provaU10() {
   assert.equal(tidtext(45), '45 min');
   assert.equal(tidtext(60), '1 h');
   assert.equal(tidtext(0), '0 h');
+  assert.equal(timtext(8), '8 h');
+  assert.equal(timtext(7.5), '7,5 h');
+  assert.equal(timtext(0.33), '0,33 h');
+  assert.equal(timtext(999_999.99), '999999,99 h');
 }
 
 // U11 Det frysta underlagets schema är slutet och bär sina regler.
@@ -237,6 +270,15 @@ export function provaU11() {
     ['(f) ryms med giltig_fran', { ...u, giltig_fran: DATUM }],
     ['(g) tillägg utan giltig_fran', { ...tillagg, giltig_fran: null }],
     ['(h) last_nar utan zon', { ...u, last_nar: '2026-10-12T08:00:00' }],
+    // Beräkningen är en del av schemat: varje räknat tal ska följa av underlagets egna värden.
+    ['(i) ett belopp som inte är timmar × taxa', { ...u, belopp_ore: 1 }],
+    ['(j) minuter som inte är timmarna', { ...u, minuter: 481 }],
+    ['(k) utrymme efter som inte stämmer', { ...u, kvar_efter_minuter: 0 }],
+    ['(l) utrymme före som inte stämmer', { ...u, kvar_fore_minuter: 0 }],
+    ['(m) ett nytt tak som inte är eget tak plus timmar', { ...tillagg, nytt_tak_minuter: 12_000 }],
+    ['(n) ett eget tak som inte ger det nya taket', { ...tillagg, eget_tak_timmar: 200 }],
+    ['(o) en ny kronram vid ryms', { ...u, ny_kronram_ore: 5 }],
+    ['(p) en ny kronram utan kronram', { ...tillagg, ny_kronram_ore: 2_000_000 }],
   ];
   for (const [namn, varde] of fall) assert.ok(!OvrigtUnderlagSchema.safeParse(varde).success, namn);
 }
@@ -266,17 +308,23 @@ export function provaU13() {
   const anteckning = { text: 'ILT bad om en extra rapport över fakturorna.', datum: DATUM };
   const parent = '0e1a6666-1111-4222-8333-444455556666';
   const gallande = fixturgallande({ parent_part_id: parent, cap_amount_ore: 1_200_000 });
-  const i = byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande, underlag });
+  const medRam = fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: 8, kronram_ore: 1_200_000 });
+  assert.equal(medRam.ny_kronram_ore, 2_000_000);
+  const i = byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande, underlag: medRam });
   assert.equal(i.cap_hours, 20); assert.equal(i.cap_amount_ore, 2_000_000);
+  assert.equal(byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande, underlag }).cap_amount_ore, 1_200_000,
+    'ett underlag utan ny kronram ändrar inte kronramen');
+  // Det som ändras kommer ur underlaget, aldrig ur versionen: ett annat tak i versionen ger samma nya tak.
+  assert.equal(byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande: fixturgallande({ cap_hours: 15 }), underlag }).cap_hours, 20);
   assert.equal(i.valid_from, underlag.giltig_fran);
   assert.equal(i.change_reason, ovrigtorsak(anteckning.text, anteckning.datum));
   assert.deepEqual(i.kalla, { typ: 'anteckning', id: ANTECKNING });
-  assert.deepEqual(i.beslutsunderlag, underlag);
+  assert.deepEqual(i.beslutsunderlag, medRam);
   assert.ok(!Object.hasOwn(i, 'description'), 'description är null och ska saknas');
   assert.equal(i.parent_part_id, parent); assert.equal(i.cap_confirmed, true); assert.equal(i.sort_order, 50);
   assert.equal(i.code, '2B'); assert.equal(i.name, 'Del 2B'); assert.equal(i.contract_id, AVTAL);
   const utan = byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande,
-    underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: null }) });
+    underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', timmar: null, kronram_ore: 1_200_000 }) });
   assert.equal(utan.cap_hours, 12); assert.equal(utan.cap_amount_ore, 1_200_000);
   const utanTak = byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande: fixturgallande({ cap_hours: null }),
     underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B', eget_tak_timmar: null }) });
@@ -284,4 +332,35 @@ export function provaU13() {
   const ryms = byggRymsindata({ contract_id: AVTAL, underlag: fixturunderlag() });
   assert.deepEqual(Object.keys(ryms).sort(), ['beslutsunderlag', 'contract_id', 'kalla']);
   assert.deepEqual(ryms.kalla, { typ: 'anteckning', id: ANTECKNING });
+}
+
+// U14 Verkställighetens jämförelse: varje avvikande, tillagt eller saknat fält räknas, nyckelordningen inte.
+export function provaU14() {
+  const anteckning = { text: 'ILT bad om en extra rapport över fakturorna.', datum: DATUM };
+  const ratt = byggTillaggsindata({ contract_id: AVTAL, kod: '2B', anteckning, gallande: fixturgallande(),
+    underlag: fixturunderlag({ alternativ: 'tillagg', kod: '2B' }) });
+  assert.deepEqual(avvikandeFalt({ ...ratt }, ratt), []);
+  assert.deepEqual(avvikandeFalt(Object.fromEntries(Object.entries(ratt).reverse()), ratt), [], 'ordningen räknas inte');
+  const fall: Array<[Record<string, unknown>, string[]]> = [
+    [{ ...ratt, cap_hours: 200 }, ['cap_hours']],
+    [{ ...ratt, hourly_rate_ore: 1 }, ['hourly_rate_ore']],
+    [{ ...ratt, active: false }, ['active']],
+    [{ ...ratt, cap_amount_ore: 5 }, ['cap_amount_ore']],
+    [{ ...ratt, name: 'Annan del' }, ['name']],
+    [Object.fromEntries(Object.entries(ratt).filter(([k]) => k !== 'sort_order')), ['sort_order']],
+    [{ ...ratt, kalla: { typ: 'anteckning', id: ANTECKNING.toUpperCase() } }, ['kalla']],
+  ];
+  for (const [faktiskt, vantat] of fall) assert.deepEqual(avvikandeFalt(faktiskt, ratt), vantat, JSON.stringify(vantat));
+}
+
+// U15 Schemat har tabellernas gränser: långa listor, långa namn och kontrolltecken i ett namn fäller aldrig underlaget.
+export function provaU15() {
+  const linjer = Array.from({ length: 250 }, (_, i) => `Linje ${i}`);
+  const delar: Ovrigtdelrad[] = Array.from({ length: 600 }, (_, i) => ({
+    kod: `X${i}-${'k'.repeat(60)}`, namn: `Del\u0007${'n'.repeat(400)}`, tak_minuter: 60, forbrukade_minuter: 0, tak_bekraftat: true, aktiv: true,
+  }));
+  const u = fixturunderlag({ scopelinjer: { innanfor: linjer, utanfor: linjer }, extraDelar: delar });
+  assert.equal(u.scopelinjer_innanfor.length, 250);
+  assert.equal(u.avtalsdelar.length, 606);
+  assert.ok(OvrigtUnderlagSchema.safeParse(u).success);
 }

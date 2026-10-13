@@ -512,6 +512,44 @@ export function provaOvrigtMarkningOchFarskhet() {
   assert.equal((rad.match(/<span>/g) ?? []).length, 2, `postens lästid och underlagets: ${rad}`);
 }
 
+// R7 (i): timmar som inte är hela minuter. Ekvationen visar förslagets timmar,
+// som beloppet räknas på, och Timmar säger också minuterna som utrymmet räknas med.
+/** Fältets text utan taggar och med enkla mellanslag, så att en ekvation med belopp går att läsa i ett stycke. */
+const ord = (h: string): string => h.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+export function provaOvrigtTimmarSomInteArHelaMinuter() {
+  const a = ovrigtpost(fixturunderlag({ timmar: 0.33 }));
+  const berakning = ord(ovrigtfalt(a, 'berakning'));
+  assert.ok(berakning.includes('0,33 h × 1 000,00 kr/h = 330,00 kr'), berakning);
+  assert.equal(ord(ovrigtfalt(a, 'timmar')), '0,33 h · 20 min mot taket');
+  const b = ovrigtpost(fixturunderlag({ timmar: 0.01, taxa: 33333 }));
+  assert.ok(ord(ovrigtfalt(b, 'berakning')).includes('0,01 h × 333,33 kr/h = 3,33 kr'), ovrigtfalt(b, 'berakning'));
+  const hel = ovrigtpost(fixturunderlag({ timmar: 7.5 }));
+  assert.ok(ord(ovrigtfalt(hel, 'berakning')).includes('7,5 h × 1 000,00 kr/h = 7 500,00 kr'), ovrigtfalt(hel, 'berakning'));
+  assert.equal(ord(ovrigtfalt(hel, 'timmar')), '7,5 h', 'hela minuter: bara timmarna');
+  for (const p of [a, b, hel]) assert.ok(!/\d+ min ×/.test(ord(ovrigtfalt(p, 'berakning'))), 'minuter i ekvationen');
+}
+
+// R7 (j): beloppet står en gång i Förslaget, med ören, och aldrig avrundat till kronor bredvid.
+export function provaOvrigtEttBelopp() {
+  for (const [u, belopp] of [[fixturunderlag(), '= 8 000,00 kr'], [fixturunderlag({ timmar: 0.01, taxa: 33333 }), '= 3,33 kr']] as const) {
+    const f = ovrigtfalt(ovrigtpost(u), 'forslag');
+    assert.ok(!f.includes('class="amount"') && !ord(f).includes('·'), `ett tillagt kronbelopp: ${f}`);
+    assert.equal(ord(f).split(belopp).length - 1, 1, `${belopp} en gång: ${f}`);
+  }
+  // Andra slag behåller sitt belopp i Förslaget.
+  assert.ok(falt(enPost(post('kostnadsbindning', {
+    forslag: last({ fran: null, till: 'L1 · Nulägeskartläggning', belopp_ore: 240000 }, KALLA_REDOVISNING, TID) })), 'forslag').includes('class="amount"'));
+}
+
+// R7 (k): ett tillägg som höjer kronramen visar den nya kronramen i utrymmet.
+export function provaOvrigtKronram() {
+  const a = ord(ovrigtfalt(ovrigtpost(fixturunderlag({ alternativ: 'tillagg', kod: '2B', kronram_ore: 1_200_000 })), 'aterstaende'));
+  assert.ok(a.includes('Ny kronram 20 000,00 kr från 2026-10-12'), a);
+  const utan = ord(ovrigtfalt(ovrigtpost(fixturunderlag({ alternativ: 'tillagg', kod: '2B' })), 'aterstaende'));
+  assert.ok(!utan.includes('kronram'), utan);
+}
+
 // R7 (h): ett underlag som inte går att läsa ger "saknas i underlaget"; andra slag har inget av blockets fält.
 export function provaOvrigtUtanUnderlag() {
   const a = enPost(ovrigtpost(null));
