@@ -267,26 +267,29 @@ export async function tandSignal(
  */
 async function koaTillagget(
   client: PoolClient, companyId: string, userId: string, actor: Actor,
-  signalId: string, tillagg: Tillaggsindata,
+  signal: { id: string; contract_id: string }, tillagg: Tillaggsindata,
 ): Promise<Tillaggsgodkannande> {
   const fanns = await client.query<{ id: string; action: string; status: string }>(
     `SELECT id, action, status FROM action_approvals
       WHERE company_id = $1 AND action = 'andra_baseline' AND lower(input->>'signal_id') = $2
       ORDER BY created_at, id LIMIT 1`,
-    [companyId, signalId],
+    [companyId, signal.id],
   );
   const befintlig = fanns.rows[0];
   if (befintlig) return { ...befintlig, redan_koad: true };
 
   // `signal_id` följer med in i köposten — det är den som gör spåret helt när
   // godkännandet väl skriver avtalsdelen (`lankaTillaggetTillSignal`). `kalla`
-  // är förslagets källreferens (B-8). Båda tas ur den låsta signalraden, aldrig
-  // ur indatats stavning, så att de alltid säger samma sak.
+  // är förslagets källreferens (B-8). `contract_id`, `signal_id` och `kalla`
+  // tas ur den låsta signalraden, aldrig ur indatats stavning, så att de alltid
+  // säger samma sak — och avtalet är därför alltid det `lankaTillaggetTillSignal`
+  // kräver vid godkännandet.
   const koad = await createApproval(client, companyId, userId, actor, 'andra_baseline', {
     ...tillagg,
+    contract_id: signal.contract_id,
     change_reason: tillaggsorsak(tillagg.change_reason),
-    signal_id: signalId,
-    kalla: { typ: 'scopesignal', id: signalId },
+    signal_id: signal.id,
+    kalla: { typ: 'scopesignal', id: signal.id },
   });
   // Samma auditrad som `executeAction` skriver för varje köad känslig åtgärd —
   // spåret av att någon BAD om ändringen, inte av ändringen. Ingen egen
@@ -298,7 +301,7 @@ async function koaTillagget(
     action: 'action.approval_requested',
     entityType: 'approval',
     entityId: koad.id,
-    details: { action: 'andra_baseline', actor, signal_id: signalId },
+    details: { action: 'andra_baseline', actor, signal_id: signal.id },
   });
   return { id: koad.id, action: koad.action, status: koad.status, redan_koad: false };
 }
@@ -313,6 +316,10 @@ async function koaTillagget(
  * `redan_avgjord`: ett upprepat knapptryck skapar ingen ny rad och ingen ny
  * köpost. Löpnumret räknas under radlåset på signalen, så att två samtidiga
  * avgöranden av samma signal turas om.
+ *
+ * Ett tillägg på ett annat avtal än signalens ger 400 `signal_annat_avtal`
+ * efter prövningen av ett upprepat avgörande och före varje skrivning, och
+ * köposten bär alltid signalens avtal (andra granskningen i drift).
  *
  * En okänd signal — inklusive grannbolagets, som RLS ändå döljer — svarar
  * "finns inte". Ett tyst noll rader hade sett ut som ett lyckat avgörande.
@@ -352,8 +359,18 @@ export async function avgorSignal(
     );
   }
 
+  // Tillägget hör till signalens avtal (andra granskningen i drift). En köpost
+  // på ett annat avtal fälls i varje verkställighet (`lankaTillaggetTillSignal`)
+  // och spärrar genom ”ett förslag per källa” signalens tillägg för alltid.
+  if (input.tillagg && input.tillagg.contract_id.toLowerCase() !== signal.contract_id) {
+    throw new BadRequestError(
+      'signal_annat_avtal',
+      'Tillägget hör till ett annat avtal än signalen. Ett tillägg ur en signal hör alltid till signalens eget avtal.',
+    );
+  }
+
   const tillagg = input.tillagg
-    ? await koaTillagget(client, companyId, userId, actor, signal.id, input.tillagg)
+    ? await koaTillagget(client, companyId, userId, actor, signal, input.tillagg)
     : null;
 
   const radres = await client.query<Omit<Scopeavgorandrad, 'avgjort_av_namn'>>(
