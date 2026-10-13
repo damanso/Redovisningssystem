@@ -5,8 +5,7 @@ import { createHash } from 'node:crypto';
 import { api, app, registerUser, createCompany, createFiscalYear, withAdmin, type TestUser } from './helpers.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { MANDATATGARDER, KOPOSTNYCKLAR, type Mandatatgard } from '../src/services/uppdragBeslut.js';
-import { byggRymsindata, forslagHash } from '../src/lib/beslutsunderlag.js';
-import { fixturunderlag } from './ovrigtHelper.js';
+import { forslagHash } from '../src/lib/beslutsunderlag.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { createApproval } from '../src/services/approvals.js';
 import { verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
@@ -86,9 +85,14 @@ async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
   } else if (atgard === 'avsluta_uppdrag') input = { project_id: project };
   else if (atgard === 'update_contract') input = { contract_id: contract, notes: 'Provets anteckning' };
   else if (atgard === 'registrera_uppdragsbeslut') {
-    // Story 1.14: en bockad rad på fallets avtal, och ett ryms-förslag på L1.
+    // Story 1.14: en bockad rad på fallets avtal och ett ryms-förslag på L1, köat av svepet. Bara svepets
+    // (eller en människas) underlag verkställs, och svepet bygger det ur fallets egna tabeller.
     const anteckning = (await ok(f, 'skriv_uppdragsanteckning', { contract_id: contract, text: 'Provets förfrågan utanför avtalet', utanfor_avtal: true })).id as string;
-    input = byggRymsindata({ contract_id: contract, underlag: fixturunderlag({ anteckningId: anteckning, kod: 'L1' }) });
+    const svep = await ok(f, 'kor_uppdragssvep', { ovrigt_forslag: [{ anteckning_id: anteckning, alternativ: 'ryms', avtalsdel_kod: 'L1', timmar: 8, skal: 'Provets skäl' }] });
+    expect(svep.ovrigt.koade, JSON.stringify(svep.ovrigt)).toHaveLength(1);
+    const approval = svep.ovrigt.koade[0].approval_id as string;
+    const lagrat = await withAdmin(async (c) => (await c.query('SELECT input FROM action_approvals WHERE company_id=$1 AND id=$2', [company, approval])).rows[0].input);
+    return { company, project, contract, part, receipt, token, approval, input: lagrat };
   }
   else input = { contract_id: contract, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123, change_reason: 'Ändrat avtal' };
   return { company, project, contract, part, receipt, token, approval: await koa(f, atgard, input), input };

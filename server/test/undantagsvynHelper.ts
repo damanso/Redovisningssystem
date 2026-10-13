@@ -550,6 +550,20 @@ export function provaOvrigtKronram() {
   assert.ok(!utan.includes('kronram'), utan);
 }
 
+// R7 (l): vid tillägg räknas utrymmet efter arbetet mot det nya taket, och raden säger från vilket datum
+// det gäller. Granskningens fall: i dag gäller 12 h, tillägget bygger på en senare version med 6 h,
+// 5 h är förbrukade och 8 h föreslås. Före arbetet gäller dagens tak; ryms säger inget datum.
+export function provaOvrigtUtrymmeEfterTillagg() {
+  const t = ord(ovrigtfalt(ovrigtpost(fixturunderlag({ alternativ: 'tillagg', kod: '2B', eget_tak_timmar: 6, forbrukade_minuter: 300,
+    giltig_fran: '2026-11-02' })), 'aterstaende'));
+  assert.ok(t.includes('Före arbetet: 7 h'), t);
+  assert.ok(t.includes('Nytt tak 14 h från 2026-11-02'), t);
+  assert.ok(t.includes('Efter arbetet, mot det nya taket från 2026-11-02: 1 h'), t);
+  assert.ok(!/Efter arbetet: /.test(t), `en efter-rad utan datum: ${t}`);
+  const r = ord(ovrigtfalt(ovrigtpost(fixturunderlag({ timmar: 2 })), 'aterstaende'));
+  assert.ok(r.includes('Efter arbetet: 20 h') && !r.includes('nya taket'), r);
+}
+
 // R7 (h): ett underlag som inte går att läsa ger "saknas i underlaget"; andra slag har inget av blockets fält.
 export function provaOvrigtUtanUnderlag() {
   const a = enPost(ovrigtpost(null));

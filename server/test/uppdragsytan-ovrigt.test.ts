@@ -6,12 +6,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import * as rena from './ovrigtHelper.js';
-import { fixturgallande, fixturunderlag, mellanslag, ANTECKNING, AVTAL, DATUM, LAST_NAR } from './ovrigtHelper.js';
+import { fixturdata, fixturgallande, fixturunderlag, medText, mellanslag, textlov, ANTECKNING, AVTAL, DATUM, LAST_NAR, OTILLATNA_TEXTER } from './ovrigtHelper.js';
 import { withAdmin } from './helpers.js';
 import { act, godkann, koa, nyttBolag, ok, rest, type Bolag } from './undantagsvynRigg.js';
 import {
   SKAL, anteckning, anteckningsdatum, anteckningsrader, auditFor, avtalsdelsrader, beslutsradFor, beslutsraderFor, delversioner, forbruka,
-  forslag, iltUppdrag, kopostAntal, kopostInput, kopostRad, kopostUtanUnderlag, planteraMedStatus, referensrader, skrivningar, svepa,
+  forslag, iltUppdrag, kopostAntal, ovrigtFraga, kopostInput, kopostRad, kopostUtanUnderlag, planteraMedStatus, referensrader, skrivningar, svepa,
   type Ilt, type Kostatus, type Svepkort,
 } from './ovrigtRigg.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
@@ -21,7 +21,7 @@ import {
 } from '../src/services/uppdragUndantag.js';
 import { KALLA, MANDATATGARDER, alternativFor, beskrivHandling } from '../src/services/uppdragBeslut.js';
 import {
-  OvrigtUnderlagSchema, byggRymsindata, byggTillaggsindata, forslagstextOvrigt, ovrigtorsak,
+  OvrigtUnderlagSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forslagstextOvrigt, ovrigtorsak,
   type Gallandeversion, type OvrigtUnderlag,
 } from '../src/lib/beslutsunderlag.js';
 
@@ -77,7 +77,9 @@ describe('U de rena reglerna', () => {
   it('U12 underlaget', rena.provaU12);
   it('U13 köposternas indata', rena.provaU13);
   it('U14 verkställighetens jämförelse', rena.provaU14);
-  it('U15 schemat har tabellernas gränser', rena.provaU15);
+  it('U15 listorna har inget tak, och texterna har skrivvägarnas gränser', rena.provaU15);
+  it('U16 varje text i underlaget fäller NUL, kontrolltecken och en text över gränsen', rena.provaU16);
+  it('U17 verkställighetens jämförelse: lästa värden fäller, förbrukningen och sammanhanget inte', rena.provaU17);
 });
 
 describe('K kandidaterna i arbetslistan', () => {
@@ -201,10 +203,10 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
   it('T1 en väntande registrera_uppdragsbeslut blir en fråga med underlaget', async () => {
     const b = await nyttBolag('Övrigt T1');
     const ilt = await iltUppdrag(b);
-    const id = await anteckning(b, ilt.contractId, TEXT);
+    // Köposten kommer genom svepet: bara ett underlag som servern byggt visas som redovisningens.
+    const { anteckningId: id, approvalId: q } = await ovrigtFraga(b, ilt, {}, TEXT);
     const datum = await anteckningsdatum(id);
-    const underlag = fixturunderlag({ anteckningId: id, datum });
-    const q = await planteraMedStatus(b, 'registrera_uppdragsbeslut', byggRymsindata({ contract_id: ilt.contractId, underlag }));
+    const underlag = (await kopostInput(q)).beslutsunderlag as OvrigtUnderlag;
     const p = await posten(b, q);
     expect(p).toBeDefined();
     expect(p).toMatchObject({ slag: 'ovrigt_beslut', identitet: 'kopost', atgard: 'registrera_uppdragsbeslut', foreslagen_av: 'agent',
@@ -227,11 +229,9 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
   it('T2 en andra_baseline med Övrigt-raden som källa blir ovrigt_beslut; utan källa och med signal baselineandring', async () => {
     const b = await nyttBolag('Övrigt T2');
     const ilt = await iltUppdrag(b);
-    const id = await anteckning(b, ilt.contractId);
+    // Tillägget först: de två andra köposterna på 2B hade annars spärrat det (avtalsdel_vantar_andring).
+    const { anteckningId: id, approvalId: tillagg } = await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
     const datum = await anteckningsdatum(id);
-    const underlag = fixturunderlag({ anteckningId: id, datum, alternativ: 'tillagg', kod: '2B' });
-    const tillagg = await planteraMedStatus(b, 'andra_baseline', byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B',
-      anteckning: { text: TEXT, datum }, gallande: fixturgallande(), underlag }));
     const utanKalla = await planteraMedStatus(b, 'andra_baseline', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B',
       valid_from: '2026-11-01', change_reason: 'Kunden bad om mer underlag' });
     const signal = await planteraMedStatus(b, 'andra_baseline', { contract_id: ilt.contractId, code: '2B', name: 'Del 2B',
@@ -339,6 +339,38 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
     }
   }, 60_000);
 
+  it('T10 ett underlag som agenten köat själv visas aldrig som redovisningens, hur rimligt det än är; en människas visas', async () => {
+    const b = await nyttBolag('Övrigt T10');
+    const ilt = await iltUppdrag(b);
+    const [r1, r2, r3] = [await anteckning(b, ilt.contractId), await anteckning(b, ilt.contractId), await anteckning(b, ilt.contractId)];
+    const datum = await anteckningsdatum(r1);
+    const { id: _g, ...galler } = await gallande(b, ilt.contractId, '2B');
+    const ryms = (id: string, over: Parameters<typeof fixturunderlag>[0] = {}) =>
+      byggRymsindata({ contract_id: ilt.contractId, underlag: fixturunderlag({ anteckningId: id, datum, ...over }) });
+    const tillagg = byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B', anteckning: { text: TEXT, datum }, gallande: galler,
+      underlag: fixturunderlag({ anteckningId: r2, datum, alternativ: 'tillagg', kod: '2B' }) });
+    const agentens = [
+      await koaSomAgent(b, 'registrera_uppdragsbeslut', ryms(r1, { taxa: 150_000, forbrukade_minuter: 0 })),
+      await koaSomAgent(b, 'andra_baseline', tillagg),
+    ];
+    const manniskans = await koa(b, 'registrera_uppdragsbeslut', ryms(r3));
+    const u = await lasUndantag(b);
+    for (const q of agentens) {
+      const p = u.poster.find((x) => x.id === q)!;
+      expect(p.slag, q).toBe('ovrigt_beslut');
+      expect(p.foreslagen_av).toBe('agent');
+      for (const v of [p.forslag, p.skal, p.ovrigt!.underlag]) expect(v, q).toMatchObject({ lage: 'saknas', varde: null });
+      expect(p.ja_registrerar).toBe(`Underlaget är agentens eget och inte prövat av svepet, så det visas inte, och ett ja verkställs inte. ${BESLUTSRADEN}`);
+      expect(JSON.stringify(p)).not.toContain('150000');
+      // Raden är ändå förfrågan, läst ur raden själv.
+      expect(p.ovrigt!.forfragan.lage).toBe('last');
+    }
+    const m = u.poster.find((x) => x.id === manniskans)!;
+    expect(m.foreslagen_av).toBe('human');
+    expect(m.ovrigt!.underlag.lage).toBe('last');
+    expect(m.ja_registrerar).toBe(JA_RYMS('2A'));
+  }, 120_000);
+
   it('T8 beskrivOvrigtBeslut (ren): fälten, tre tilläggstexter och ett underlag som saknas', () => {
     const bas = '/app/c/bolag';
     const uppdrag: Uppdragsref = { project_id: 'p1', number: 3, name: 'ILT', contract_id: AVTAL, contract_name: 'Konsultavtal ILT' };
@@ -406,6 +438,12 @@ describe('A åtgärderna', () => {
       ['källan referens', { ...t, kalla: { typ: 'referens', id: ANTECKNING } }],
     ];
     for (const [namn, input] of fall) expect(schema('andra_baseline').safeParse(input).success, namn).toBe(false);
+    // Varje text i underlaget, på varje nivå: NUL, kontrolltecken och en text över gränsen fälls av schemat (400), aldrig av jsonb (500).
+    const vagar = textlov(t.beslutsunderlag);
+    expect(vagar.length).toBeGreaterThan(20);
+    for (const vag of vagar) for (const [namn, gor] of OTILLATNA_TEXTER) {
+      expect(schema('andra_baseline').safeParse({ ...t, beslutsunderlag: medText(t.beslutsunderlag, vag, gor) }).success, `${vag.join('.')}: ${namn}`).toBe(false);
+    }
   });
 
   it('A3 registrera_uppdragsbeslut är sensitive och tvåfas, utan människospärr, med ett slutet schema', () => {
@@ -425,6 +463,10 @@ describe('A åtgärderna', () => {
       ['anteckning_id skilt från källans', { ...ryms(), kalla: { typ: 'anteckning', id: ANNAN } }],
     ];
     for (const [namn, input] of fall) expect(a.inputSchema.safeParse(input).success, namn).toBe(false);
+    const indata = ryms();
+    for (const vag of textlov(indata.beslutsunderlag)) for (const [namn, gor] of OTILLATNA_TEXTER) {
+      expect(a.inputSchema.safeParse({ ...indata, beslutsunderlag: medText(indata.beslutsunderlag, vag, gor) }).success, `${vag.join('.')}: ${namn}`).toBe(false);
+    }
   });
 
   it('A4 MANDATATGARDER står på en rad, i den form Hermes prov läser', async () => {
@@ -502,40 +544,70 @@ describe('A åtgärderna', () => {
     expect((await svepa(b, {})).mottagna_beslut.kvar).toBeGreaterThan(0);
   }, 120_000);
 
-  it('A8 en tilläggsköpost som inte är exakt det underlaget ger verkställs aldrig, vem som än köat den', async () => {
+  it('A8 en köpost vars underlag eller indata inte är serverns verkställs aldrig, i någon av åtgärderna', async () => {
     const b = await nyttBolag('Övrigt A8');
     const ilt = await iltUppdrag(b);
+    // 2A är nästan förbrukad: 30 h av 32 h. Ett påhittat underlag säger 0 h.
+    await forbruka(b, ilt, '2A', 1800);
     const id = await anteckning(b, ilt.contractId, TEXT);
+    const id2 = await anteckning(b, ilt.contractId, 'En förfrågan som ryms');
     const datum = await anteckningsdatum(id);
     const { id: _g, ...galler } = await gallande(b, ilt.contractId, '2B');
     const underlag = (over: Parameters<typeof fixturunderlag>[0] = {}) =>
       fixturunderlag({ anteckningId: id, datum, alternativ: 'tillagg', kod: '2B', ...over });
     const bygg = (u: OvrigtUnderlag) => byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B', anteckning: { text: TEXT, datum }, gallande: galler, underlag: u });
+    const ryms = (over: Parameters<typeof fixturunderlag>[0] = {}) =>
+      byggRymsindata({ contract_id: ilt.contractId, underlag: fixturunderlag({ anteckningId: id2, datum, forbrukade_minuter: 1800, ...over }) });
+    const annatAvtal = () => {
+      const d = fixturdata({ anteckningId: id2, datum, forbrukade_minuter: 1800 });
+      return byggOvrigtUnderlag({ ...d, avtal: { ...d.avtal, namn: 'Ett annat avtal' } });
+    };
     const ratt = bygg(underlag());
     const tidigt = underlag({ giltig_fran: '2026-05-05' });
-    const fore = await delversioner(b.id, ilt.contractId, '2B');
-    const fall: Array<[string, Record<string, unknown>]> = [
-      ['taket 200 h', { ...ratt, cap_hours: 200 }],
-      ['taxan 1 öre', { ...ratt, hourly_rate_ore: 1 }],
-      ['delen inaktiv', { ...ratt, active: false }],
-      ['kronramen', { ...ratt, cap_amount_ore: 1 }],
-      ['namnet', { ...ratt, name: 'Annan del' }],
-      ['orsaken', { ...ratt, change_reason: 'Tillägg: något annat än raden' }],
-      ['ett kopierat fält saknas', Object.fromEntries(Object.entries(ratt).filter(([k]) => k !== 'sort_order'))],
-      // Indata och underlag stämmer med varandra, men underlaget bygger inte på delens senaste version.
-      ['ett eget tak som inte är versionens', bygg(underlag({ eget_tak_timmar: 188 }))],
-      ['en kronram som inte är versionens', bygg(underlag({ kronram_ore: 5_000_000 }))],
-      ['ett datum före den senaste versionen', { ...bygg(tidigt), valid_from: '2026-05-05' }],
+    const fore = { delar: await avtalsdelsrader(b.id, ilt.contractId), versioner: await delversioner(b.id, ilt.contractId, '2B') };
+    const manipulerat = { taxa: 150_000, forbrukade_minuter: 0 };
+    // (1) Agenten köar själv genom executeAction: underlaget är agentens eget, och inget av det verkställs,
+    // varken med manipulerad taxa och förbrukning eller med värden som stämmer med tabellerna.
+    const agentens: Array<[string, string, Record<string, unknown>]> = [
+      ['tillägg med taxa 1 500 kr/h och förbrukning 0', 'andra_baseline', bygg(underlag(manipulerat))],
+      ['ryms med taxa 1 500 kr/h och förbrukning 0', 'registrera_uppdragsbeslut', ryms(manipulerat)],
+      ['ryms med bara förbrukningen påhittad', 'registrera_uppdragsbeslut', ryms({ forbrukade_minuter: 0 })],
+      ['tillägg som stämmer med tabellerna', 'andra_baseline', ratt],
+      ['ryms som stämmer med tabellerna', 'registrera_uppdragsbeslut', ryms()],
     ];
-    for (const [namn, input] of fall) await fallsIVerkstalligheten(b, await koaSomAgent(b, 'andra_baseline', input), namn);
-    expect(await delversioner(b.id, ilt.contractId, '2B')).toEqual(fore);
-    // Kontroll: det rätta tillägget, köat på samma sätt, verkställs.
-    const q = await koaSomAgent(b, 'andra_baseline', ratt);
-    await godkann(b, q);
+    for (const [namn, atgard, input] of agentens) await fallsIVerkstalligheten(b, await koaSomAgent(b, atgard, input), `agenten: ${namn}`);
+    // (2) En människa köar: underlagets lästa värden prövas mot tabellerna, och indatat mot delens senaste version.
+    const manniskans: Array<[string, string, Record<string, unknown>]> = [
+      ['tillägg med taxan 1 500 kr/h', 'andra_baseline', bygg(underlag({ taxa: 150_000 }))],
+      ['ryms med taxan 1 500 kr/h', 'registrera_uppdragsbeslut', ryms({ taxa: 150_000 })],
+      ['ryms med ett annat tak', 'registrera_uppdragsbeslut', ryms({ tak_minuter: 6000 })],
+      ['tillägg med ett annat tak', 'andra_baseline', bygg(underlag({ tak_minuter: 6000 }))],
+      ['ryms med ett avtal som heter något annat', 'registrera_uppdragsbeslut', { ...ryms(), beslutsunderlag: annatAvtal() }],
+      ['taket 200 h', 'andra_baseline', { ...ratt, cap_hours: 200 }],
+      ['taxan 1 öre på delen', 'andra_baseline', { ...ratt, hourly_rate_ore: 1 }],
+      ['delen inaktiv', 'andra_baseline', { ...ratt, active: false }],
+      ['kronramen', 'andra_baseline', { ...ratt, cap_amount_ore: 1 }],
+      ['namnet', 'andra_baseline', { ...ratt, name: 'Annan del' }],
+      ['orsaken', 'andra_baseline', { ...ratt, change_reason: 'Tillägg: något annat än raden' }],
+      ['ett kopierat fält saknas', 'andra_baseline', Object.fromEntries(Object.entries(ratt).filter(([k]) => k !== 'sort_order'))],
+      ['ett eget tak som inte är versionens', 'andra_baseline', bygg(underlag({ eget_tak_timmar: 188 }))],
+      ['en kronram som inte är versionens', 'andra_baseline', bygg(underlag({ kronram_ore: 5_000_000 }))],
+      ['ett datum före den senaste versionen', 'andra_baseline', { ...bygg(tidigt), valid_from: '2026-05-05' }],
+    ];
+    for (const [namn, atgard, input] of manniskans) await fallsIVerkstalligheten(b, await koa(b, atgard, input), `människan: ${namn}`);
+    expect(await avtalsdelsrader(b.id, ilt.contractId)).toEqual(fore.delar);
+    // Kontroll: samma tillägg och samma ryms, köade av svepet, verkställs.
+    const t = await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
+    await godkann(b, t.approvalId);
     const efter = await delversioner(b.id, ilt.contractId, '2B');
-    expect(efter).toHaveLength(fore.length + 1);
-    expect(efter.at(-1)).toMatchObject({ cap_hours: 20, valid_from: datum, active: true, hourly_rate_ore: null, name: 'Del 2B' });
-  }, 180_000);
+    expect(efter).toHaveLength(fore.versioner.length + 1);
+    expect(efter.at(-1)).toMatchObject({ cap_hours: 20, active: true, hourly_rate_ore: null, name: 'Del 2B' });
+    const r = await ovrigtFraga(b, ilt);
+    await godkann(b, r.approvalId);
+    expect(await beslutsraderFor(r.approvalId)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'ryms' })]);
+    const fryst = (await beslutsraderFor(r.approvalId))[0]!.underlag.indata.beslutsunderlag as OvrigtUnderlag;
+    expect(fryst).toMatchObject({ taxa_ore: 100000, forbrukade_minuter: 1800, kvar_fore_minuter: 120, kvar_efter_minuter: -360 });
+  }, 240_000);
 
   it('A9 ett tillägg vars Övrigt-rad finns i ett annat avtal, inte finns eller inte är markerad fälls i verkställigheten', async () => {
     const b = await nyttBolag('Övrigt A9');
@@ -558,6 +630,49 @@ describe('A åtgärderna', () => {
     expect(s.arbetslista.ovrigt_kandidater.map((k) => k.id)).toContain(iAnnat);
     expect(s.tackning.find((t) => t.contract_id === annat.contractId && t.kalla === 'ovrigt')).toMatchObject({ lage: 'fel', saknas: [iAnnat] });
   }, 180_000);
+
+  it('A10 ett avtal som ändrats mellan förslaget och ja verkställs inte, i någon av åtgärderna; ett nytt förslag gör det', async () => {
+    const b = await nyttBolag('Övrigt A10');
+    const ilt = await iltUppdrag(b);
+    const ryms = await ovrigtFraga(b, ilt);
+    const tillagg = await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
+    // Avtalets namn ändras genom kön efter svepet. Underlaget lästes med det gamla namnet.
+    await godkann(b, await koa(b, 'update_contract', { contract_id: ilt.contractId, name: 'Konsultavtal ILT, omdöpt (syntetiskt prov)' }));
+    const fore = await avtalsdelsrader(b.id, ilt.contractId);
+    await fallsIVerkstalligheten(b, ryms.approvalId, 'ryms efter namnbytet');
+    await fallsIVerkstalligheten(b, tillagg.approvalId, 'tillägg efter namnbytet');
+    expect(await avtalsdelsrader(b.id, ilt.contractId)).toEqual(fore);
+    // Det mottagna men overkställda tillägget spärrar inte koden: ett nytt förslag köas och verkställs.
+    const nytt = await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
+    expect((await kopostInput(nytt.approvalId)).beslutsunderlag).toMatchObject({ avtal_namn: 'Konsultavtal ILT, omdöpt (syntetiskt prov)' });
+    await godkann(b, nytt.approvalId);
+    expect((await kopostRad(nytt.approvalId)).status).toBe('executed');
+  }, 180_000);
+
+  it('A11 NUL och kontrolltecken i ett underlag som agenten köar ger 400, aldrig 500, och ingen köpost', async () => {
+    const b = await nyttBolag('Övrigt A11');
+    const ilt = await iltUppdrag(b);
+    const id = await anteckning(b, ilt.contractId, TEXT);
+    const datum = await anteckningsdatum(id);
+    const { id: _g, ...galler } = await gallande(b, ilt.contractId, '2B');
+    const ryms = byggRymsindata({ contract_id: ilt.contractId, underlag: fixturunderlag({ anteckningId: id, datum }) });
+    const tillagg = byggTillaggsindata({ contract_id: ilt.contractId, kod: '2B', anteckning: { text: TEXT, datum }, gallande: galler,
+      underlag: fixturunderlag({ anteckningId: id, datum, alternativ: 'tillagg', kod: '2B', scopelinjer: { innanfor: ['Rapporter'], utanfor: [] } }) });
+    const fore = await kopostAntal(b.id);
+    const fall: Array<[string, string, Record<string, unknown>]> = [
+      ['avtalets namn med NUL', 'registrera_uppdragsbeslut', { ...ryms, beslutsunderlag: medText(ryms.beslutsunderlag, ['avtal_namn'], (t) => `${t}\u0000`) }],
+      ['delens namn med BEL', 'registrera_uppdragsbeslut', { ...ryms, beslutsunderlag: medText(ryms.beslutsunderlag, ['avtalsdelar', 0, 'namn'], (t) => `\u0007${t}`) }],
+      ['förslagstexten med ESC', 'registrera_uppdragsbeslut', { ...ryms, beslutsunderlag: medText(ryms.beslutsunderlag, ['forslagstext'], (t) => `${t}\u001b`) }],
+      ['scopelinjen med NUL', 'andra_baseline', { ...tillagg, beslutsunderlag: medText(tillagg.beslutsunderlag, ['scopelinjer_innanfor', 0], (t) => `${t}\u0000`) }],
+      ['koden med DEL', 'andra_baseline', { ...tillagg, beslutsunderlag: medText(tillagg.beslutsunderlag, ['avtalsdel_kod'], (t) => `${t}\u007f`) }],
+    ];
+    for (const [namn, atgard, input] of fall) {
+      const res = await act(b, atgard, input, b.agent);
+      expect(res.status, `${namn}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body.error, namn).toBe('validation_error');
+    }
+    expect(await kopostAntal(b.id)).toBe(fore);
+  }, 120_000);
 });
 
 describe('F förslagssteget i svepet', () => {
@@ -864,7 +979,40 @@ describe('F förslagssteget i svepet', () => {
     const fore = await delversioner(b.id, ilt.contractId, '2B');
     await fallsIVerkstalligheten(b, q, 'en senare version');
     expect(await delversioner(b.id, ilt.contractId, '2B')).toEqual(fore);
-  }, 120_000);
+    // Vidare: det mottagna men overkställbara tillägget spärrar aldrig koden. Ett nytt tillägg på 2B köas på den
+    // senaste versionen (15 h från D + 3), verkställs och gäller dagen efter den; täckningen är läst.
+    const z = await anteckning(b, ilt.contractId);
+    const s2 = await svepa(b, { ovrigt_forslag: [forslag(z, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
+    expect(s2.ovrigt).toEqual({ koade: [{ anteckning_id: z, approval_id: expect.any(String), atgard: 'andra_baseline' }], redan_koade: [], avvisade: [] });
+    expect(s2.mottagna_beslut.kvar).toBeGreaterThan(0);
+    expect(tackningFor(s2, ilt.contractId)).toMatchObject({ lage: 'last', saknas: [] });
+    const qz = s2.ovrigt.koade[0]!.approval_id;
+    expect(await kopostInput(qz)).toMatchObject({ cap_hours: 23, valid_from: dagEfter(d, 4) });
+    await godkann(b, qz);
+    const efter = await delversioner(b.id, ilt.contractId, '2B');
+    expect(efter.map((v) => [v.valid_from, v.cap_hours])).toEqual([['2026-05-04', 12], [dagEfter(d, 3), 15], [dagEfter(d, 4), 23]]);
+    // Och ett tredje tillägg efter det, så att spärren inte bara släpper en gång.
+    const w = await anteckning(b, ilt.contractId);
+    const s3 = await svepa(b, { ovrigt_forslag: [forslag(w, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
+    expect(s3.ovrigt.koade.map((k) => k.anteckning_id)).toEqual([w]);
+    expect(await kopostInput(s3.ovrigt.koade[0]!.approval_id)).toMatchObject({ cap_hours: 31, valid_from: dagEfter(d, 5) });
+  }, 180_000);
+
+  it('F18 ett avtal vars värden inte går igenom underlagets schema avvisar förslaget, och svepet fullföljs', async () => {
+    const b = await nyttBolag('Övrigt F18');
+    const ilt = await iltUppdrag(b);
+    // En scopelinje med ett kontrolltecken, skriven förbi skrivvägarna: underlaget kan inte frysas.
+    await withAdmin((c) => c.query(
+      `INSERT INTO uppdrag_scopelinje (company_id, contract_id, sort, "text", ordning) VALUES ($1, $2, 'utanfor', $3, 1)`,
+      [b.id, ilt.contractId, 'Integrationer\u0007']));
+    const id = await anteckning(b, ilt.contractId);
+    const fore = await skrivningar(b.id);
+    const s = await svepa(b, { ovrigt_forslag: [forslag(id), forslag(id, { alternativ: 'tillagg', avtalsdel_kod: '2B' })] });
+    expect(s.ovrigt).toEqual({ koade: [], redan_koade: [], avvisade: [
+      { anteckning_id: id, orsak: 'underlag_ogiltigt' }, { anteckning_id: id, orsak: 'underlag_ogiltigt' }] });
+    expect(await skrivningar(b.id)).toEqual(fore);
+    expect(tackningFor(s, ilt.contractId)).toMatchObject({ lage: 'fel', saknas: [id] });
+  }, 90_000);
 
   it('F17 fler scopelinjer än något tak fäller aldrig svepet, och förslaget köas med alla linjer', async () => {
     const b = await nyttBolag('Övrigt F17');

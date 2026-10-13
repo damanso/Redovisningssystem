@@ -168,7 +168,12 @@ function timmartext(d: OvrigtUnderlag): string {
   return helaMinuter || d.minuter === null ? timtext(d.timmar) : `${timtext(d.timmar)} · ${tidtext(d.minuter)} mot taket`;
 }
 
-/** Utrymmet före och efter arbetet. Ett överskridet tak sägs i ord, aldrig som ett negativt tal eller en kvot. */
+/**
+ * Utrymmet före och efter arbetet. Ett överskridet tak sägs i ord, aldrig som
+ * ett negativt tal eller en kvot. Före arbetet gäller dagens tak. Vid tillägg
+ * räknas utrymmet efter arbetet mot det nya taket, och raden säger från vilket
+ * datum det taket gäller: arbete före det datumet räknas mot dagens tak.
+ */
 function aterstaende(d: OvrigtUnderlag): Raw {
   const fore = d.kvar_fore_minuter;
   const rader: Array<Raw | string> = [fore === null ? 'Delen saknar tak'
@@ -176,7 +181,8 @@ function aterstaende(d: OvrigtUnderlag): Raw {
   if (d.nytt_tak_minuter !== null) rader.push(`Nytt tak ${tidtext(d.nytt_tak_minuter)} från ${d.giltig_fran}`);
   if (d.ny_kronram_ore !== null) rader.push(html`Ny kronram ${amount(d.ny_kronram_ore)} från ${d.giltig_fran}`);
   const efter = d.kvar_efter_minuter;
-  if (efter !== null) rader.push(efter >= 0 ? `Efter arbetet: ${tidtext(efter)}` : `Efter arbetet: taket överskrids med ${tidtext(-efter)}`);
+  const ram = d.nytt_tak_minuter !== null ? `Efter arbetet, mot det nya taket från ${d.giltig_fran}` : 'Efter arbetet';
+  if (efter !== null) rader.push(efter >= 0 ? `${ram}: ${tidtext(efter)}` : `${ram}: taket överskrids med ${tidtext(-efter)}`);
   else if (d.minuter === null) rader.push('Efter arbetet: kan inte räknas, eftersom timmarna saknas');
   return lista(rader);
 }

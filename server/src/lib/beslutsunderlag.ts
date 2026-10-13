@@ -55,14 +55,21 @@ const TakTimmarSchema = z.number().nonnegative().max(999_999.99).refine(tvaDecim
 const MinuterSchema = z.number().int().safe();
 const OreTillSchema = z.number().int().nonnegative().safe();
 const IckeTomText = (max: number) => safeText(max).refine((v) => v.trim().length > 0, { message: 'texten är tom' });
-// Värden som läses ur avtalets egna tabeller har databasens gränser och inga
-// andra: `name`, `code` och scopelinjernas text är obegränsad `text`. Ett
-// snävare schema här hade fällt svepet för ett avtal som databasen godtar.
-const Tabelltext = z.string();
+// Schemat är också indataschema för två åtgärder som en agent kan köa, så
+// varje text går genom `safeText` med en gräns (project-context.md): inga
+// kontrolltecken, och ingen NUL som fäller jsonb med ett 500. Gränserna är
+// skrivvägarnas egna (avtalets och delens namn 200, koden 40, scopelinjen ur
+// en kontraktstext på högst 200 000), så ett värde ur avtalets tabeller går
+// igenom. Gör det ändå inte avvisar svepet förslaget (`underlag_ogiltigt`)
+// i stället för att fällas. Listorna har inget tak, som tabellerna.
+const KOD_MAX = 40;
+const NAMN_MAX = 200;
+const SCOPELINJE_MAX = 200_000;
+const FORSLAGSTEXT_MAX = 4000;
 
 const OvrigtDelSchema = z.object({
-  kod: Tabelltext,
-  namn: Tabelltext,
+  kod: safeText(KOD_MAX),
+  namn: safeText(NAMN_MAX),
   tak_minuter: MinuterSchema.nullable(),
   forbrukade_minuter: MinuterSchema,
   tak_bekraftat: z.boolean(),
@@ -89,10 +96,10 @@ export const OvrigtUnderlagSchema = z.object({
   anteckning_id: UuidSchema,
   anteckning_datum: IsoDateSchema,
   alternativ: z.enum(ALTERNATIV),
-  avtal_namn: Tabelltext,
+  avtal_namn: safeText(NAMN_MAX),
   avtal_signerat: IsoDateSchema.nullable(),
-  avtalsdel_kod: Tabelltext,
-  avtalsdel_namn: Tabelltext,
+  avtalsdel_kod: safeText(KOD_MAX),
+  avtalsdel_namn: safeText(NAMN_MAX),
   avtalsdelar: z.array(OvrigtDelSchema),
   taxa_ore: OreTillSchema.nullable(),
   tak_minuter: MinuterSchema.nullable(),
@@ -110,9 +117,9 @@ export const OvrigtUnderlagSchema = z.object({
   giltig_fran: IsoDateSchema.nullable(),
   kvar_fore_minuter: MinuterSchema.nullable(),
   kvar_efter_minuter: MinuterSchema.nullable(),
-  scopelinjer_innanfor: z.array(Tabelltext),
-  scopelinjer_utanfor: z.array(Tabelltext),
-  forslagstext: z.string().min(1),
+  scopelinjer_innanfor: z.array(safeText(SCOPELINJE_MAX)),
+  scopelinjer_utanfor: z.array(safeText(SCOPELINJE_MAX)),
+  forslagstext: safeText(FORSLAGSTEXT_MAX),
   skal: IckeTomText(2000),
   kallor: z.array(OvrigtKallaSchema).min(1).max(11),
   last_nar: IsoDateTimeSchema,
@@ -272,13 +279,8 @@ export interface Ovrigtdelrad {
   kod: string; namn: string; tak_minuter: number | null; forbrukade_minuter: number; tak_bekraftat: boolean; aktiv: boolean;
 }
 
-/**
- * Det frysta underlaget. Schemat har tabellernas egna gränser, så ett
- * underlag som inte går igenom det är ett programfel och fäller svepet; en
- * vald del som inte finns bland de aktiva likaså, eftersom prövningen redan
- * har avvisat ett sådant förslag.
- */
-export function byggOvrigtUnderlag(i: {
+/** Det `byggOvrigtUnderlag` bygger underlaget av: raden, avtalets tabeller och förslagets val. */
+export interface Ovrigtunderlagsdata {
   anteckning: { id: string; datum: string };
   avtal: { namn: string; signerat: string | null; taxa_ore: number | null };
   delar: readonly Ovrigtdelrad[];
@@ -289,7 +291,26 @@ export function byggOvrigtUnderlag(i: {
   referenser: ReadonlyArray<{ id: string; handelse_datum?: string }>;
   giltig_fran: string | null;
   last_nar: string;
-}): OvrigtUnderlag {
+}
+
+/**
+ * Det frysta underlaget. Ett underlag som inte går igenom schemat kastar; en
+ * vald del som inte finns bland de aktiva likaså, eftersom prövningen redan
+ * har avvisat ett sådant förslag. Svepet prövar formen först med
+ * `ovrigtUnderlagEllerNull`, så att ett avtal med en text utanför schemat
+ * blir ett avvisat förslag och aldrig ett fällt svep.
+ */
+export function byggOvrigtUnderlag(i: Ovrigtunderlagsdata): OvrigtUnderlag {
+  return OvrigtUnderlagSchema.parse(utkastTillUnderlag(i));
+}
+
+/** Samma underlag, eller `null` när avtalets värden inte går igenom schemat. */
+export function ovrigtUnderlagEllerNull(i: Ovrigtunderlagsdata): OvrigtUnderlag | null {
+  const r = OvrigtUnderlagSchema.safeParse(utkastTillUnderlag(i));
+  return r.success ? r.data : null;
+}
+
+function utkastTillUnderlag(i: Ovrigtunderlagsdata): Record<string, unknown> {
   const delar = i.delar.filter((d) => d.aktiv);
   const vald = delar.find((d) => d.kod === i.vald.kod);
   if (!vald) throw new Error(`byggOvrigtUnderlag: ${i.vald.kod} är ingen aktiv del i avtalet`);
@@ -321,7 +342,48 @@ export function byggOvrigtUnderlag(i: {
     kallor: [{ typ: 'anteckning', id: i.anteckning.id },
       ...i.referenser.map((r) => ({ typ: 'referens' as const, id: r.id, ...(r.handelse_datum ? { handelse_datum: r.handelse_datum } : {}) }))],
   };
-  return OvrigtUnderlagSchema.parse({ ...utan, forslagstext: forslagstextOvrigt(utan), last_nar: i.last_nar });
+  return { ...utan, forslagstext: forslagstextOvrigt(utan), last_nar: i.last_nar };
+}
+
+/**
+ * Hur verkställigheten prövar varje fält i ett fryst underlag mot ett som
+ * byggts om ur egna tabeller i samma ögonblick (Story 1.14). Typen är
+ * uttömmande: ett nytt fält i underlaget fäller typkontrollen tills det har
+ * fått sin rad här.
+ *
+ *  - `provas`: ett läst värde som inte ändras av sig självt (avtalets och
+ *    delens namn, taxan, taket, kronramen, datumen) och det som räknas ur dem
+ *    och förslagets timmar. Ett ja skriver bara när de är lika.
+ *  - `forbrukning`: förbrukningen och utrymmet som följer av den. Den växer
+ *    när tid registreras, så den kan inte prövas mot dagens tabeller; att den
+ *    är serverns egen visar ursprunget (svepet eller en människa).
+ *  - `sammanhang`: avtalets alla delar och scopelinjerna. De visas som
+ *    sammanhang, påverkar varken beloppet, taket eller vad ett ja skriver, och
+ *    lästes ur egna tabeller när underlaget byggdes (ursprunget).
+ *  - `forslaget`: det förslaget självt bär, som återbyggnaden tar ur det frysta
+ *    underlaget (skälet, källorna och lästiden) eller räknar ur de andra
+ *    fälten (texten, som läsvägen alltid räknar om).
+ */
+export type Faltprovning = 'provas' | 'forbrukning' | 'sammanhang' | 'forslaget';
+export const FALTPROVNING = {
+  anteckning_id: 'provas', anteckning_datum: 'provas', alternativ: 'provas',
+  avtal_namn: 'provas', avtal_signerat: 'provas', avtalsdel_kod: 'provas', avtalsdel_namn: 'provas',
+  taxa_ore: 'provas', tak_minuter: 'provas', tak_bekraftat: 'provas', eget_tak_timmar: 'provas', kronram_ore: 'provas',
+  timmar: 'provas', minuter: 'provas', belopp_ore: 'provas', nytt_tak_minuter: 'provas', ny_kronram_ore: 'provas',
+  giltig_fran: 'provas',
+  forbrukade_minuter: 'forbrukning', kvar_fore_minuter: 'forbrukning', kvar_efter_minuter: 'forbrukning',
+  avtalsdelar: 'sammanhang', scopelinjer_innanfor: 'sammanhang', scopelinjer_utanfor: 'sammanhang',
+  forslagstext: 'forslaget', skal: 'forslaget', kallor: 'forslaget', last_nar: 'forslaget',
+} as const satisfies Record<keyof OvrigtUnderlag, Faltprovning>;
+
+/**
+ * Fälten där det frysta underlaget skiljer sig från det som byggts om ur egna
+ * tabeller, bland dem som `FALTPROVNING` säger `provas`.
+ */
+export function avvikandeUnderlag(fryst: OvrigtUnderlag, omraknat: OvrigtUnderlag): string[] {
+  const provas = (Object.keys(FALTPROVNING) as Array<keyof OvrigtUnderlag>).filter((k) => FALTPROVNING[k] === 'provas');
+  const urval = (u: OvrigtUnderlag) => Object.fromEntries(provas.map((k) => [k, u[k]]));
+  return avvikandeFalt(urval(fryst), urval(omraknat)).map((k) => `beslutsunderlag.${k}`);
 }
 
 /** Den gällande versionens rad, som tillägget kopierar till sin nya version. */

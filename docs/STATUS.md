@@ -153,6 +153,44 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.14, andra omtaget efter code-review: fyra fynd):**
+  Granskningen godkände inte. Det höga fyndet var samma felklass som i första
+  omtaget (verkställigheten litade på agentens underlag), så mekanismen är
+  bytt, inte utökad:
+  1. *Underlaget är serverns, en väg in* (HIGH). Underlaget läses bara ur
+     `lasAvtalet` (`services/uppdragOvrigt.ts`), som svepet fryser och
+     verkställigheten läser igen. `UNDERLAG_FRAN_SERVERN`
+     (`services/uppdragUndantag.ts`) känner igen en köpost som svepet köat
+     (auditraden med radens id, som bara förslagssteget skriver, med samma tid
+     som köposten) eller som en människa begärt. En agents eget underlag, köat
+     förbi svepet, visas som saknat i posten och verkställs aldrig
+     (`underlag_ej_provat`), också förbrukningen i det, som inte går att pröva
+     i efterhand. Verkställigheten av båda åtgärderna (`provaOvrigtUnderlag`)
+     bygger dessutom om underlaget och kräver lika värden för varje fält som
+     `FALTPROVNING` (`lib/beslutsunderlag.ts`, uttömmande typ) säger `provas`:
+     taxan, avtalets och delens namn, taket, kronramen och datumen
+     (`underlag_avviker`). `registreraRyms` går genom samma prövning.
+  2. *Ett overkställbart tillägg spärrade koden för gott* (MEDIUM). Spärren
+     `avtalsdel_vantar_andring` räknar bara `pending`: svepets första steg har
+     redan försökt verkställa varje mottaget beslut, så ett som står kvar är en
+     driftpost. F16 kör vidare med två nya tillägg på samma kod.
+  3. *Text utan `safeText` i ett indataschema* (MEDIUM). Varje text i
+     `OvrigtUnderlagSchema` går genom `safeText` med skrivvägarnas gräns;
+     listorna har inget tak. Ett avtal vars värden ändå inte går igenom ger
+     den nya avvisningsorsaken `underlag_ogiltigt` i stället för ett fällt svep.
+     Proven går över varje textlöv i underlaget (U16, A2, A3) och genom REST (A11).
+  4. *Utrymmet efter ett tillägg* (LOW). Vyn säger ”Efter arbetet, mot det nya
+     taket från <datum>”; före arbetet gäller dagens tak (R7 (l)).
+  Prov: U15–U17, T1 och T2 genom svepet, T10, A8 (omskrivet: agentens och
+  människans köposter, manipulerad taxa och förbrukning för båda
+  åtgärderna), A10, A11, F16 (förlängt), F18, R7 (l) och mandatprovets
+  Övrigt-fall genom svepet. **Inte kört i sessionen:** `npm run typecheck`,
+  `npm run build` och `npm test` — sandlådan nekade (`This command requires
+  approval`). Förutsagt, inte observerat; kedjans körning är belägget.
+  Driftnotis: en Övrigt-köpost som en agent köat direkt genom MCP blir en post
+  utan underlag som David avböjer; ett ja på den blir ett mottaget men
+  overkställt beslut (driftpost). `hermes/` är inte ändrat.
+
 - **2026-10-13 (Story 1.14, omtag efter code-review: åtta fynd):**
   Granskningen godkände inte. Varje fynd lagades som felklass:
   1. *Posten beskrev annat än det ett ja skriver* (HIGH). `andra_baseline`

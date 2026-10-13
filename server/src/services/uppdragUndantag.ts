@@ -40,6 +40,18 @@ export const UNDANTAG_ATGARDER: readonly string[] = Object.values(KOBURNA_SLAG).
 export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'kalla'->>'typ' = 'anteckning' AND lower(q.input->'kalla'->>'id') = a.id::text AND lower(q.input->>'contract_id') = a.contract_id::text`;
 /** Beslutsrad vars källa är Övrigt-raden a, i radens avtal. */
 export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id AND b.contract_id = a.contract_id`;
+/**
+ * Övrigt-köposten q bär ett underlag som servern själv byggt ur egna tabeller
+ * (Story 1.14, en väg in): svepets förslagssteg köade den, vilket auditraden
+ * visar som bara det steget skriver, i samma transaktion och alltså med samma
+ * tid som köposten; eller en människa begärde den. En agents eget underlag,
+ * köat direkt genom `executeAction`, visas aldrig som redovisningens och
+ * verkställs aldrig. Auditloggen är append-only, så raden går inte att efterlikna.
+ */
+export const UNDERLAG_FRAN_SERVERN = `(q.requested_actor = 'human' OR EXISTS (SELECT 1 FROM audit_log l
+  WHERE l.company_id = q.company_id AND l.occurred_at = q.created_at AND l.entity_type = 'approval'
+    AND l.entity_id = q.id::text AND l.action = 'action.approval_requested'
+    AND l.details->>'anteckning_id' = lower(q.input->'kalla'->>'id')))`;
 export const MANDATKALLOR = ['godkannandekon', 'ovrigt', 'kostnader', 'baselineforslag'] as const;
 export type Mandatkalla = (typeof MANDATKALLOR)[number];
 export const TACKNINGSNYCKEL = 'tackning';
@@ -182,6 +194,12 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
     [companyId, [...new Set(koposter.filter((q) => koburetSlag(q) === 'ovrigt_beslut')
       .map((q) => uuid(eget(eget(q.input, 'kalla'), 'id'))).filter((id): id is string => id !== null))]],
   );
+  // Bara ett underlag som servern byggt visas som redovisningens.
+  const provade = await client.query<{ id: string }>(
+    `SELECT q.id::text AS id FROM action_approvals q
+      WHERE q.company_id = $1 AND q.id = ANY($2::uuid[]) AND ${UNDERLAG_FRAN_SERVERN}`,
+    [companyId, koposter.filter((q) => koburetSlag(q) === 'ovrigt_beslut').map((q) => q.id)],
+  );
   const delar = await client.query<Uppslagsrad>(
     `SELECT cp.id AS nyckel, c.id AS contract_id, c.name AS contract_name,
             p.id AS project_id, p.number, p.name, p.status AS projektstatus,
@@ -221,6 +239,7 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
     filer: new Map(filer.rows.map((r) => [r.id, r])),
     foraldrar: new Map(foraldrar.rows.map((r) => [r.id, r])),
     anteckningar: new Map(anteckningar.rows.map((r) => [r.id, r])),
+    provade: new Set(provade.rows.map((r) => r.id)),
   };
 }
 function uppdragsref(r: Uppdragsref): Uppdragsref {
@@ -395,8 +414,10 @@ export function beskrivAvslut(
     ja_registrerar: `Uppdraget stängs. Listan över öppna leverabler fryses, och historiken blir skrivskyddad. ${BESLUTSRADEN}` };
 }
 interface Ovrigtunderlag extends Kounderlag {
-  /** Köpostens frysta underlag, eller null när det inte går att läsa. */
+  /** Köpostens frysta underlag, eller null när det inte går att läsa eller inte är serverns. */
   underlag: OvrigtUnderlag | null;
+  /** Underlaget är läsbart men agentens eget, köat förbi svepet (`UNDERLAG_FRAN_SERVERN`). */
+  agentensEget?: boolean;
   /** Övrigt-raden, eller null när den inte finns i postens avtal. */
   anteckning: Forfragan | null;
   referenser: Kallreferens[];
@@ -413,7 +434,8 @@ export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: str
   const ryms = u.kopost.action === 'registrera_uppdragsbeslut';
   const d = u.underlag;
   let ja: string;
-  if (d === null) ja = 'Underlaget kunde inte läsas, så vad ett ja registrerar saknas i underlaget.';
+  if (u.agentensEget) ja = 'Underlaget är agentens eget och inte prövat av svepet, så det visas inte, och ett ja verkställs inte.';
+  else if (d === null) ja = 'Underlaget kunde inte läsas, så vad ett ja registrerar saknas i underlaget.';
   else if (ryms) ja = `Beslutet att arbetet ryms i ${d.avtalsdel_kod} registreras med beräkningen, och Övrigt-raden är dokumentationen. Ingen avtalsdel ändras.`;
   else if (d.nytt_tak_minuter !== null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran} med taket ${tidtext(d.nytt_tak_minuter)}.${kronramstext(d)} Tidigare versioner står kvar.`;
   else if (d.timmar === null) ja = `En ny version av ${d.avtalsdel_kod} från ${d.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`;
@@ -613,15 +635,18 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
     }
     const underlag = { kopost: q, uppdrag: uppdragsref(r) };
     if (slag === 'ovrigt_beslut') {
-      // Ett underlag som inte går att läsa blir saknat, aldrig ett fel i läsningen.
+      // Ett underlag som inte går att läsa blir saknat, aldrig ett fel i
+      // läsningen. Ett underlag som agenten själv skrivit blir också saknat:
+      // dess tal är inte lästa ur redovisningen, hur rimliga de än ser ut.
       const tolkat = OvrigtUnderlagSchema.safeParse(eget(q.input, 'beslutsunderlag'));
-      const d = tolkat.success ? tolkat.data : null;
+      const agentensEget = tolkat.success && !per.provade.has(q.id);
+      const d = tolkat.success && !agentensEget ? tolkat.data : null;
       const rad = per.anteckningar.get(uuid(eget(eget(q.input, 'kalla'), 'id')) ?? '');
       const anteckning = rad && rad.contract_id === r.contract_id
         ? { id: rad.id, text: rad.text, datum: rad.datum, utanfor_avtal: rad.utanfor_avtal } : null;
       const referenser: Kallreferens[] = [];
       for (const k of d?.kallor ?? []) if (k.typ === 'referens') referenser.push(...await referens(client, companyId, k.id));
-      poster.push(beskrivOvrigtBeslut({ ...underlag, underlag: d, anteckning, referenser }, bas, lastNar));
+      poster.push(beskrivOvrigtBeslut({ ...underlag, underlag: d, agentensEget, anteckning, referenser }, bas, lastNar));
     } else if (slag === 'baselineandring') {
       const mal: BaselineMal = {};
       const kund = per.kunder.get(uuid(eget(q.input, 'customer_id')) ?? '');

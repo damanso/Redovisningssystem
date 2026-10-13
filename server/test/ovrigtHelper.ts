@@ -4,10 +4,10 @@
 // underlag här, så att ingen provfil importerar en annan provfils fall.
 import assert from 'node:assert/strict';
 import {
-  DAVIDS_ANTECKNING, OvrigtUnderlagSchema, TimmarSchema,
-  avvikandeFalt, beraknaOvrigt, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forslagHash, forslagstextOvrigt,
-  nyttTakTimmar, ovrigtorsak, tidtext, tillaggetsDatum, timtext,
-  type Alternativ, type Gallandeversion, type OvrigtUnderlag, type Ovrigtdelrad,
+  DAVIDS_ANTECKNING, FALTPROVNING, OvrigtUnderlagSchema, TimmarSchema,
+  avvikandeFalt, avvikandeUnderlag, beraknaOvrigt, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, forslagHash, forslagstextOvrigt,
+  nyttTakTimmar, ovrigtUnderlagEllerNull, ovrigtorsak, tidtext, tillaggetsDatum, timtext,
+  type Alternativ, type Gallandeversion, type OvrigtUnderlag, type Ovrigtdelrad, type Ovrigtunderlagsdata,
 } from '../src/lib/beslutsunderlag.js';
 import { safeText } from '../src/lib/validation.js';
 import { formatOre } from '../src/domain/money.js';
@@ -48,7 +48,7 @@ export interface Fixturval {
   referenser?: Array<{ id: string; handelse_datum?: string }>;
   giltig_fran?: string | null;
   last_nar?: string;
-  /** För en kod utanför ILT-delarna (till exempel L1 i mandatprovet). */
+  /** Den valda delens tak och förbrukning; för en kod utanför ILT-delarna också delens värden. */
   tak_minuter?: number | null;
   forbrukade_minuter?: number;
   eget_tak_timmar?: number | null;
@@ -61,6 +61,11 @@ export interface Fixturval {
 
 /** Ett underlag byggt av `byggOvrigtUnderlag` för ILT-delarna, med de givna värdena. */
 export function fixturunderlag(over: Fixturval = {}): OvrigtUnderlag {
+  return byggOvrigtUnderlag(fixturdata(over));
+}
+
+/** Indatat till `byggOvrigtUnderlag` för ILT-delarna, med de givna värdena. */
+export function fixturdata(over: Fixturval = {}): Ovrigtunderlagsdata {
   const alternativ = over.alternativ ?? 'ryms';
   const kod = over.kod ?? (alternativ === 'tillagg' ? '2B' : '2A');
   const datum = over.datum ?? DATUM;
@@ -70,9 +75,14 @@ export function fixturunderlag(over: Fixturval = {}): OvrigtUnderlag {
   if (!ilt) {
     delar.push({ kod, namn: `Del ${kod}`, tak_minuter: over.tak_minuter === undefined ? 1920 : over.tak_minuter,
       forbrukade_minuter: over.forbrukade_minuter ?? 0, tak_bekraftat: true, aktiv: true });
+  } else {
+    // En ILT-kod får också ett annat tak eller en annan förbrukning, när fallet säger det.
+    const vald = delar.find((d) => d.kod === kod)!;
+    if (over.tak_minuter !== undefined) vald.tak_minuter = over.tak_minuter;
+    if (over.forbrukade_minuter !== undefined) vald.forbrukade_minuter = over.forbrukade_minuter;
   }
   delar.push(...over.extraDelar ?? []);
-  return byggOvrigtUnderlag({
+  return {
     anteckning: { id: over.anteckningId ?? ANTECKNING, datum },
     avtal: { namn: 'Konsultavtal ILT (syntetiskt prov)', signerat: '2026-05-04', taxa_ore: over.taxa === undefined ? TAXA : over.taxa },
     delar,
@@ -84,7 +94,7 @@ export function fixturunderlag(over: Fixturval = {}): OvrigtUnderlag {
     referenser: over.referenser ?? [],
     giltig_fran: over.giltig_fran !== undefined ? over.giltig_fran : alternativ === 'tillagg' ? datum : null,
     last_nar: over.last_nar ?? LAST_NAR,
-  });
+  };
 }
 
 /** En gällande version av 2B för `byggTillaggsindata`. */
@@ -353,14 +363,92 @@ export function provaU14() {
   for (const [faktiskt, vantat] of fall) assert.deepEqual(avvikandeFalt(faktiskt, ratt), vantat, JSON.stringify(vantat));
 }
 
-// U15 Schemat har tabellernas gränser: långa listor, långa namn och kontrolltecken i ett namn fäller aldrig underlaget.
+// U15 Listorna har inget tak, som tabellerna, och texterna har skrivvägarnas gränser: koden 40,
+// namnen 200 och en scopelinje ur en kontraktstext på högst 200 000 tecken går igenom.
 export function provaU15() {
   const linjer = Array.from({ length: 250 }, (_, i) => `Linje ${i}`);
   const delar: Ovrigtdelrad[] = Array.from({ length: 600 }, (_, i) => ({
-    kod: `X${i}-${'k'.repeat(60)}`, namn: `Del\u0007${'n'.repeat(400)}`, tak_minuter: 60, forbrukade_minuter: 0, tak_bekraftat: true, aktiv: true,
+    kod: `X${i}`, namn: `Del ${i} ${'n'.repeat(180)}`, tak_minuter: 60, forbrukade_minuter: 0, tak_bekraftat: true, aktiv: true,
   }));
   const u = fixturunderlag({ scopelinjer: { innanfor: linjer, utanfor: linjer }, extraDelar: delar });
   assert.equal(u.scopelinjer_innanfor.length, 250);
   assert.equal(u.avtalsdelar.length, 606);
   assert.ok(OvrigtUnderlagSchema.safeParse(u).success);
+  const granser = fixturunderlag({ scopelinjer: { innanfor: ['x'.repeat(200_000)], utanfor: ['Med\ttabb och\nradbrytning'] },
+    extraDelar: [{ kod: 'k'.repeat(40), namn: 'n'.repeat(200), tak_minuter: null, forbrukade_minuter: 0, tak_bekraftat: false, aktiv: true }] });
+  assert.ok(OvrigtUnderlagSchema.safeParse(granser).success);
+}
+
+/** Sökvägen till varje text i ett värde, på varje nivå och i varje lista. */
+export function textlov(v: unknown, vag: Array<string | number> = []): Array<Array<string | number>> {
+  if (typeof v === 'string') return [vag];
+  if (Array.isArray(v)) return v.flatMap((x, i) => textlov(x, [...vag, i]));
+  if (v !== null && typeof v === 'object') return Object.entries(v).flatMap(([k, x]) => textlov(x, [...vag, k]));
+  return [];
+}
+/** En kopia av värdet där texten på sökvägen är utbytt. */
+export function medText<T>(v: T, vag: ReadonlyArray<string | number>, text: (gammal: string) => string): T {
+  const kopia = structuredClone(v) as Record<string | number, unknown>;
+  let nod = kopia;
+  for (const steg of vag.slice(0, -1)) nod = nod[steg] as Record<string | number, unknown>;
+  const sista = vag.at(-1)!;
+  nod[sista] = text(nod[sista] as string);
+  return kopia as T;
+}
+/** Fem sätt att göra en text otillåten: NUL (som fäller jsonb), tre C0-tecken, DEL och en text över varje gräns. */
+export const OTILLATNA_TEXTER: ReadonlyArray<readonly [string, (t: string) => string]> = [
+  ['NUL', (t) => `${t}\u0000`], ['SOH', (t) => `\u0001${t}`], ['BEL mitt i', (t) => `${t.slice(0, 1)}\u0007${t.slice(1)}`],
+  ['ESC', (t) => `${t}\u001b`], ['DEL', (t) => `${t}\u007f`], ['över gränsen', (t) => t + 'x'.repeat(200_001)],
+];
+
+// U16 Varje text i underlaget, på varje nivå, går genom schemat med en gräns: NUL, kontrolltecken och
+// en text över gränsen fälls var de än står. Klassen prövas på alla textlöv, inte på ett utvalt fält.
+export function provaU16() {
+  const u = fixturunderlag({ alternativ: 'tillagg', kod: '2B', referenser: [{ id: REF1, handelse_datum: '2026-10-10' }],
+    scopelinjer: { innanfor: ['Rapporter enligt bilaga 1'], utanfor: ['Nya integrationer'] } });
+  assert.ok(OvrigtUnderlagSchema.safeParse(u).success);
+  const vagar = textlov(u);
+  for (const falt of ['avtal_namn', 'avtalsdel_kod', 'avtalsdel_namn', 'forslagstext', 'skal', 'scopelinjer_innanfor', 'scopelinjer_utanfor']) {
+    assert.ok(vagar.some((v) => v[0] === falt), `${falt} saknas bland textlöven`);
+  }
+  assert.ok(vagar.some((v) => v[0] === 'avtalsdelar' && v[2] === 'namn') && vagar.some((v) => v[0] === 'avtalsdelar' && v[2] === 'kod'));
+  for (const vag of vagar) {
+    for (const [namn, gor] of OTILLATNA_TEXTER) {
+      assert.ok(!OvrigtUnderlagSchema.safeParse(medText(u, vag, gor)).success, `${vag.join('.')}: ${namn}`);
+    }
+  }
+  // Ett avtal vars värden inte går igenom schemat ger inget underlag: svepet avvisar förslaget i stället för att fällas.
+  const data = fixturdata({ extraDelar: [{ kod: 'X1', namn: 'Del\u0007X1', tak_minuter: 60, forbrukade_minuter: 0, tak_bekraftat: true, aktiv: true }] });
+  assert.strictEqual(ovrigtUnderlagEllerNull(data), null);
+  assert.throws(() => byggOvrigtUnderlag(data));
+  assert.deepEqual(ovrigtUnderlagEllerNull(fixturdata()), fixturunderlag());
+}
+
+// U17 Verkställighetens jämförelse av underlaget: varje fält har exakt en prövning, och de lästa
+// värdena som inte ändras av sig själva fäller, medan förbrukningen och sammanhanget inte gör det.
+export function provaU17() {
+  const tillagg = (over: Fixturval = {}) => fixturunderlag({ alternativ: 'tillagg', kod: '2B', ...over });
+  const u = tillagg();
+  assert.deepEqual(Object.keys(FALTPROVNING).sort(), Object.keys(u).sort(), 'en rad per fält i underlaget');
+  for (const k of ['anteckning_datum', 'avtal_namn', 'avtal_signerat', 'avtalsdel_kod', 'avtalsdel_namn', 'taxa_ore', 'tak_minuter',
+    'tak_bekraftat', 'eget_tak_timmar', 'kronram_ore', 'timmar', 'belopp_ore', 'nytt_tak_minuter', 'ny_kronram_ore', 'giltig_fran'] as const) {
+    assert.equal(FALTPROVNING[k], 'provas', k);
+  }
+  assert.deepEqual(avvikandeUnderlag(u, structuredClone(u)), []);
+  // Förbrukningen växer av sig själv, och sammanhanget påverkar inte vad ett ja skriver.
+  assert.deepEqual(avvikandeUnderlag(tillagg({ forbrukade_minuter: 300 }), u), []);
+  assert.deepEqual(avvikandeUnderlag(tillagg({ scopelinjer: { innanfor: ['Ny linje'], utanfor: [] } }), u), []);
+  const fall: Array<[string, OvrigtUnderlag, string[]]> = [
+    ['taxan', tillagg({ taxa: 150_000 }), ['belopp_ore', 'taxa_ore']],
+    ['taket', tillagg({ tak_minuter: 600 }), ['tak_minuter']],
+    ['det egna taket', tillagg({ eget_tak_timmar: 10 }), ['eget_tak_timmar', 'nytt_tak_minuter']],
+    ['kronramen', tillagg({ kronram_ore: 1_200_000 }), ['kronram_ore', 'ny_kronram_ore']],
+    ['datumet', tillagg({ giltig_fran: '2026-10-20' }), ['giltig_fran']],
+    ['radens datum', tillagg({ datum: '2026-10-11', giltig_fran: DATUM }), ['anteckning_datum']],
+    ['avtalets namn', { ...u, avtal_namn: 'Ett annat avtal' }, ['avtal_namn']],
+    ['delens namn', { ...u, avtalsdel_namn: 'En annan del' }, ['avtalsdel_namn']],
+    ['avtalets datum', { ...u, avtal_signerat: '2026-06-01' }, ['avtal_signerat']],
+    ['bekräftelsen', { ...u, tak_bekraftat: false }, ['tak_bekraftat']],
+  ];
+  for (const [namn, fryst, vantat] of fall) assert.deepEqual(avvikandeUnderlag(fryst, u), vantat.map((k) => `beslutsunderlag.${k}`), namn);
 }

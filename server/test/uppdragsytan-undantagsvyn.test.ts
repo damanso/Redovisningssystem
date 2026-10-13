@@ -547,6 +547,7 @@ describe('R7 Övrigt-frågans block', () => {
   it('(i) timmar som inte är hela minuter: ekvationen visar förslagets timmar', () => rena.provaOvrigtTimmarSomInteArHelaMinuter());
   it('(j) beloppet en gång i Förslaget', () => rena.provaOvrigtEttBelopp());
   it('(k) den nya kronramen', () => rena.provaOvrigtKronram());
+  it('(l) utrymmet efter ett tillägg gäller från det nya takets datum', () => rena.provaOvrigtUtrymmeEfterTillagg());
 });
 
 describe('V8 Övrigt-frågan genom vyn', () => {

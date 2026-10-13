@@ -50,7 +50,7 @@ import { lasUppdragslage } from '../services/uppdragLage.js';
 import { registreraJa, registreraNej, avbojForslag } from '../services/uppdragBeslut.js';
 import { lasUndantag } from '../services/uppdragUndantag.js';
 import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
-import { provaTillaggUrOvrigt, registreraRyms } from '../services/uppdragOvrigt.js';
+import { provaOvrigtUnderlag, registreraRyms } from '../services/uppdragOvrigt.js';
 import {
   avgorSignal, lankaTillaggetTillSignal, tandSignal, SIGNALAVGORANDEN, UNDERLAGSSORTER,
 } from '../services/uppdragSignal.js';
@@ -1658,11 +1658,12 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
     // (`uppdragSignal.ts`), inte här: registret bär ingen SQL. Ett tillägg ur
-    // en Övrigt-rad prövas först mot raden och avtalsdelens senaste version
-    // (`provaTillaggUrOvrigt`): ett ja skriver bara det underlaget beskriver.
+    // en Övrigt-rad prövas först (`provaOvrigtUnderlag`): raden, att underlaget
+    // är serverns, dess värden mot avtalets tabeller och indatat mot delens
+    // senaste version. Ett ja skriver bara det underlaget beskriver.
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
-      await provaTillaggUrOvrigt(ctx.client, ctx.companyId, i as never);
+      await provaOvrigtUnderlag(ctx.client, ctx.companyId, ctx.approvalId, i as never);
       const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;
@@ -1674,7 +1675,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Registrera att en förfrågan ur Övrigt ryms i avtalet',
     // `sensitive` (architecture.md, åtgärdstabellen): ett ja är Davids mandat.
     // Svepet köar förslaget med actor 'agent' och prövat underlag (Story 1.14);
-    // verkställigheten registrerar beslutet och ändrar ingen avtalsdel.
+    // verkställigheten prövar underlaget igen, som för ett tillägg
+    // (`provaOvrigtUnderlag`), registrerar beslutet och ändrar ingen avtalsdel.
     sensitivity: 'sensitive',
     inputSchema: z
       .object({
@@ -1691,7 +1693,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       }),
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i,
-      () => registreraRyms(ctx.client, ctx.companyId, i as never)),
+      () => registreraRyms(ctx.client, ctx.companyId, ctx.approvalId, i as never)),
     vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i, skal),
   }),
   def({
