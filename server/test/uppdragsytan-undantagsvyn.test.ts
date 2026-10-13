@@ -28,6 +28,7 @@ import {
   artikel, avgoranden, bedomningar, beslutsrader, bokfortKvitto, del, femSlag, frisktUppdrag, koa, kopost, koposter, notis, nyttBolag, ok,
   plantera, posta, rest, sida, svep, vy,
 } from './undantagsvynRigg.js';
+import { beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -442,6 +443,93 @@ describe('R6 bedömningsformuläret', () => {
   it('(a) tre likvärdiga lägen', () => rena.provaBedomningsformular());
   it('(b) ett formulär per postslag', () => rena.provaFormularensNycklar());
   it('(c) ingen knapp när uppdraget inte kunde läsas', () => rena.provaBedomningUtanAvtal());
+});
+
+// ---------------------------------------------------------------------------
+// R7 och V8: Övrigt-frågan med färdig beräkning (Story 1.14)
+// ---------------------------------------------------------------------------
+
+describe('R7 Övrigt-frågans block', () => {
+  it('(a) fälten, radens text escapad och beräkningen', () => rena.provaOvrigtFalten());
+  it('(b) utan timmar inget belopp', () => rena.provaOvrigtUtanTimmar());
+  it('(c) utan taxa inget belopp', () => rena.provaOvrigtUtanTaxa());
+  it('(d) ett överskridet tak', () => rena.provaOvrigtOverskridet());
+  it('(e) scopelinjerna', () => rena.provaOvrigtScopelinjer());
+  it('(f) Davids egen anteckning som källa', () => rena.provaOvrigtKallan());
+  it('(g) AI-märkningen och underlagets lästid', () => rena.provaOvrigtMarkning());
+  it('(h) andra slag har inget av blockets fält', () => rena.provaOvrigtAndraSlag());
+  it('(i) skälet när utrymmet inte går att räkna', () => rena.provaOvrigtAterstaende());
+});
+
+describe('V8 Övrigt-frågan genom vyn', () => {
+  let b: Bolag;
+  let ilt: Ilt;
+  let tillagg: string;
+  let ryms: string;
+  let rymsNej: string;
+  let agentens: string;
+
+  beforeAll(async () => {
+    b = await nyttBolag('Undantagsvyn Övrigt');
+    ilt = await iltUppdrag(b);
+    tillagg = (await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' })).approvalId;
+    ryms = (await ovrigtFraga(b, ilt)).approvalId;
+    rymsNej = (await ovrigtFraga(b, ilt)).approvalId;
+    agentens = (await ovrigtFraga(b, ilt, { avtalsdel_kod: '2B' })).approvalId;
+  }, 120_000);
+
+  it('(a) posten har blocket och formulären Ja och Nej med skäl', async () => {
+    const a = artikel(await sida(b, vy(b)), ryms);
+    expect(a, 'Övrigt-posten saknas').not.toBeNull();
+    expect(a).toContain('data-postslag="ovrigt_beslut"');
+    for (const namn of ['forfragan', 'avtalsdelar', 'timpris', 'forbrukning', 'timmar', 'berakning', 'aterstaende', 'scopelinjer']) {
+      expect(a).toContain(`data-falt="${namn}"`);
+    }
+    expect(a).toContain('name="handling" value="ja"');
+    expect(a).toContain('name="handling" value="nej"');
+    expect(a).toContain('<textarea name="skal"');
+  });
+  it('(b) ja på ett tillägg ger en ny version av 2B och en beslutsrad', async () => {
+    const res = await posta(b, { handling: 'ja', approval_id: tillagg });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    expect(res.headers.location).toBe(`/app/c/${b.id}/projects/${ilt.projektId}/laget#beslut-${tillagg}`);
+    const versioner = await delversioner(b.id, ilt.contractId, '2B');
+    expect(versioner.map((v) => v.cap_hours)).toEqual(['12.00', '20.00']);
+    const [rad] = await beslutsraderFor(tillagg);
+    expect(rad).toMatchObject({ utfall: 'ja', alternativ: 'tillagg', kalla_typ: 'anteckning' });
+    expect(await sida(b, vy(b))).not.toContain(`id="post-${tillagg}"`);
+  });
+  it('(c) ja på ett ryms registrerar beslutet och ändrar ingen avtalsdel', async () => {
+    const fore = await delversioner(b.id, ilt.contractId, '2A');
+    const res = await posta(b, { handling: 'ja', approval_id: ryms });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    const [rad] = await beslutsraderFor(ryms);
+    expect(rad).toMatchObject({ utfall: 'ja', alternativ: 'ryms', kalla_typ: 'anteckning' });
+    expect(await delversioner(b.id, ilt.contractId, '2A')).toEqual(fore);
+  });
+  it('(d) nej med skäl på ett ryms skriver nej-raden med skälet', async () => {
+    const fore = await delversioner(b.id, ilt.contractId, '2A');
+    const res = await posta(b, { handling: 'nej', approval_id: rymsNej, skal: 'Det ingår inte i år' });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    const q = await kopost(rymsNej);
+    expect(q.status).toBe('rejected');
+    expect(q.beslut_skal).toBe('Det ingår inte i år');
+    const [rad] = await beslutsraderFor(rymsNej);
+    expect(rad).toMatchObject({ utfall: 'nej', skal: 'Det ingår inte i år', alternativ: 'ryms' });
+    expect(await delversioner(b.id, ilt.contractId, '2A')).toEqual(fore);
+  });
+  it('(e) upprepat ja ger 409 not_pending; agentens token får aldrig avgöra', async () => {
+    const igen = await rest(b, `approvals/${tillagg}/approve`);
+    expect(igen.status).toBe(409);
+    expect(igen.body.error).toBe('not_pending');
+    const ja = await rest(b, `approvals/${agentens}/approve`, {}, b.agent);
+    expect(ja.status).toBe(403);
+    expect(ja.body.error).toBe('human_approval_required');
+    const nej = await rest(b, 'actions/avboj_beslutsforslag', { approval_id: agentens, skal: 'Agentens nej' }, b.agent);
+    expect(nej.status).toBe(403);
+    expect(nej.body.error).toBe('human_required');
+    expect((await kopost(agentens)).status).toBe('pending');
+  });
 });
 
 describe('V6 den begärda bedömningen', () => {

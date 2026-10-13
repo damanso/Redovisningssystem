@@ -72,6 +72,12 @@ export async function executeAction(params: {
       `${baselinefalt.join(', ')} bär baselinen och ändras bara med en ny version av avtalsdelen`);
   }
 
+  // Story 1.14: ett förslag ur Övrigt-raden räknas av servern och köas bara av
+  // svepet. Ingen köpost, auditrad eller domänskrivning får uppstå.
+  if (action.koasAvSvepet?.(input as never)) {
+    throw new ConflictError('koas_av_svepet', 'Ett förslag ur Övrigt-raden räknas och köas bara av svepet.');
+  }
+
   if (action.sensitivity === 'sensitive') {
     const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
       assertActionAllowed(role);

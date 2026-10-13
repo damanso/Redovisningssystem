@@ -379,6 +379,13 @@ describe('(d) panelen Övrigt på Läget', () => {
     expect(markup).toContain('Ingen rad gäller arbete utanför avtalet');
   });
 
+  it('D3 Lägets mening säger vad markeringen leder till (Story 1.14)', async () => {
+    const sidtext = (await sida(lagetsVag(projektId))).replace(/\s+/g, ' ');
+    expect(sidtext).toContain('När Hermes formulerat ett förslag blir raden en fråga till dig i undantagsvyn');
+    expect(sidtext).toContain('Den blir aldrig ett tillägg utan ditt ja.');
+    expect(sidtext).not.toContain('ett tillägg skrivs där tillägg skrivs');
+  });
+
   it('panelen finns även tom — med vad tomheten betyder, och med formuläret kvar', async () => {
     const markup = panelen(await sida(lagetsVag(tomtProjekt)));
     expect(markup).toContain('Ingen anteckning är skriven ännu');

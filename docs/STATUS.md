@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (203
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (204
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,82 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-10-13 (Story 1.14, Övrigt-raden blir en fråga med färdig beräkning):**
+  En markerad Övrigt-rad blir en enda fråga i undantagsvyn, med avtalsdelar,
+  taxa, förbrukning och belopp uträknade av servern (B-4, FR-41 punkt 1, 2 och 4).
+  1. `server/src/lib/beslutsunderlag.ts`: de rena reglerna — `beraknaOvrigt`
+     (timmar × taxa i ören med `roundOre`), `nyttTakTimmar`, `giltigFran`,
+     `ovrigtorsak`, `forslagstextOvrigt`, `byggOvrigtUnderlag` (kastar aldrig),
+     `byggTillaggsindata`, `byggRymsindata`, `TimmarSchema` och
+     `OvrigtUnderlagSchema` utan tak som är snävare än tabellerna.
+  2. `server/src/lib/avtalsdelsfalt.ts` (ny): `AvtalsdelFalt`, `OrsakSchema` och
+     `DatePrecisionSchema` flyttade ordagrant ur registret, plus
+     `AndraBaselineSchema` (källan anteckning och `beslutsunderlag`) och
+     `RegistreraUppdragsbeslutSchema` — samma schemaobjekt för registret och svepet.
+  3. `server/src/services/uppdragOvrigt.ts` (ny): `listaOvrigtKandidater`,
+     `provaOvrigtKalla`, `registreraRyms` och förslagssteget `koaOvrigtForslag`
+     med de sju avvisningsorsakerna. Filen är den enda som köar en Övrigt-köpost.
+  4. `server/src/services/uppdragSvep.ts`: `SvepIndataSchema` får det valfria
+     `ovrigt_forslag[]`; svaret får `ovrigt` och `arbetslista.ovrigt_kandidater`
+     (additivt). Förslagen och kandidaterna står efter uppdragen och före täckningen.
+  5. `server/src/services/uppdragUndantag.ts`: postslaget `ovrigt_beslut`
+     (`POSTSLAG`, `KOBURNA_SLAG`, `koburetSlag`, `beskrivOvrigtBeslut`, fältet
+     `ovrigt`), orsaken `underlag_ogiltigt` i `hoppade`, och de delade predikaten
+     `KOPOST_FOR_ANTECKNING`/`BESLUT_FOR_ANTECKNING` (bundna till radens avtal)
+     som också täckningen använder.
+  6. `server/src/services/uppdragBeslut.ts`: `MANDATATGARDER` (på en rad) får
+     `registrera_uppdragsbeslut`; `KALLA`, `AVTAL`, `HANDLING`, `alternativFor`,
+     kolumnen `alternativ` i `skrivBeslut` och `beskrivHandling` för ryms.
+  7. `server/src/actions/registry.ts`: `andra_baseline` använder
+     `AndraBaselineSchema` och prövar Övrigt-raden i verkställigheten; ny åtgärd
+     `registrera_uppdragsbeslut` (sensitive, tvåfas); fältet `koasAvSvepet` i `ActionDef`.
+  8. `server/src/actions/execute.ts`: den enda kontrollen `koasAvSvepet` före kön
+     (409 `koas_av_svepet`), i samma form som `kraverNyVersion`.
+  9. `server/src/services/contracts.ts`: den enda raden — auditraden
+     `contract_part.created` bär inte längre `change_reason` (lärdom 10).
+  10. `server/src/services/uppdragSignal.ts`: `underlagsreferens` exporteras.
+  11. `server/src/http/view/undantagsvyn.ts`: etiketten, formuläret och blocket
+      `ovrigtdel` (förfrågan, avtalsdelarna, timpris, förbrukning, timmar,
+      beräkning, återstående utrymme och scopelinjer). Inga nya klasser.
+  12. `server/src/http/view/routes.ts`: Lägets ledtext under bocken säger att
+      raden blir en fråga i undantagsvyn och aldrig ett tillägg utan ditt ja.
+  13. `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md` följer med; huvudet här
+      säger 204 actions.
+
+  **Prov:** `uppdragsytan-ovrigt.test.ts` (ny: U, K, T, A och F),
+  `ovrigtHelper.ts` (de rena fallen, körbara utan databas), `ovrigtRigg.ts`
+  (riggen). Ändrade: `uppdragsytan-undantag.test.ts` (P3, P4, P8, P16 och en
+  planterad Övrigt-fråga i `beforeAll`), `uppdragsytan-mandat.test.ts`
+  (`nyttFall`, raden `registrera_uppdragsbeslut`, `provaUnderlag`),
+  `undantagBeskrivningHelper.ts`, `undantagsvynHelper.ts` (`POSTID`, `post()`,
+  R7), `uppdragsytan-undantagsvyn.test.ts` (R7, V8),
+  `uppdragsytan-undantagsvyn-mobil.test.ts` (B (1)–(2) med Övrigt-frågan, B (9)–(10))
+  och `uppdragsytan-anteckning.test.ts` (D3).
+
+  **Inte kört i sessionen:** vitest, `npm run typecheck`, `npm run build` och
+  `npm test`. Sandlådan nekade varje körande kommando (`This command requires
+  approval`). Rött och grönt per uppgift står som förutsagt, inte observerat, i
+  berättelsens Debug Log. Kedjans typecheck och `npm test` är belägget.
+
+  `hermes/skills/uppdragssvep.py` är inte ändrat: kontraktet utökas additivt, och
+  Story 1.17 för in `ovrigt_forslag` där.
+
+  **Driftnotiser:**
+  1. Tills Hermes formulerar förslagen (Story 1.17) står varje markerad
+     Övrigt-rad som kandidat, `ovrigt` som `fel` och undantagsvyn som
+     ofullständig för sitt avtal. `uppdragstackning.py` är rött för det avtalet,
+     som före bygget.
+  2. `MANDATATGARDER` har `registrera_uppdragsbeslut`, och
+     `beslutsverkstallning.py` läser listan ur releasen.
+  3. `registrera_uppdragsbeslut` och `andra_baseline` med källan anteckning ger
+     409 `koas_av_svepet` genom REST och MCP.
+  4. Auditraden `contract_part.created` bär inte längre `change_reason`.
+  5. Huvudet säger 204 actions, som registret efter bygget.
+  6. Ingen migration. En återställning till föregående release efter att
+     Övrigt-köposter skapats lämnar dem väntande. Ett ja på en
+     `registrera_uppdragsbeslut` ger då 404 för en okänd åtgärd tills bygget är
+     tillbaka, och inget skrivs.
 
 - **2026-10-13 (Story 1.11, undantagsvyn som ingång):**
   Uppdragsytans ingång är nu undantagsvyn, på dator och mobil.

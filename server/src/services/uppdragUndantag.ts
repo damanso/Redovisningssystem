@@ -11,24 +11,34 @@ import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import { DAVIDS_ANTECKNING, OvrigtUnderlagSchema, tidtext, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
 
 // Story 1.10: `ny_bedomning` bara när David själv begärt den (FR-40). Ingen
 // regel skapar posten; den byggs ur obesvarade rader i begäranstabellen.
-export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande', 'ny_bedomning'] as const;
+// Story 1.14: `ovrigt_beslut` kommer ur en väntande `registrera_uppdragsbeslut`
+// eller en `andra_baseline` med Övrigt-raden som källa (`koburetSlag`).
+export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'ovrigt_beslut', 'avslut', 'scopeavgorande', 'ny_bedomning'] as const;
 export type Postslag = (typeof POSTSLAG)[number];
 
 /** Tillåtelselistan är den enda vägen från kön till ett postslag. */
 export const KOBURNA_SLAG = {
   baselineandring: ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract'],
   kostnadsbindning: ['binda_kostnad'],
+  ovrigt_beslut: ['registrera_uppdragsbeslut'],
   avslut: ['avsluta_uppdrag'],
 } as const;
 export const UNDANTAG_ATGARDER: readonly string[] = Object.values(KOBURNA_SLAG).flat();
 export const MANDATKALLOR = ['godkannandekon', 'ovrigt', 'kostnader', 'baselineforslag'] as const;
 export type Mandatkalla = (typeof MANDATKALLOR)[number];
 export const TACKNINGSNYCKEL = 'tackning';
+// Story 1.14 (B-4): kandidaten, prövningen och täckningen delar predikaten.
+// Båda binder källan till radens eget avtal och jämför id:t i gemener.
+/** Köpost vars källa är Övrigt-raden a i radens eget avtal, i alla statusar och för alla åtgärder (B-4). */
+export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'kalla'->>'typ' = 'anteckning' AND lower(q.input->'kalla'->>'id') = a.id::text AND lower(q.input->>'contract_id') = a.contract_id::text`;
+/** Beslutsrad vars källa är Övrigt-raden a i radens eget avtal. */
+export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id AND b.contract_id = a.contract_id`;
 /** Samma gräns som Hermes svepfärskhet; deklarerad bara här. */
 export const TACKNING_MAX_ALDER_MIN = 60;
 
@@ -57,6 +67,10 @@ export interface Begardbedomning {
   andringar: Lasvarde<Andringsunderlag>;
   period: { start: string; slut: string };
 }
+/** Övrigt-raden som postens förfrågan, läst ur raden och aldrig ur underlaget. */
+export interface Forfragan { id: string; text: string; datum: string; utanfor_avtal: boolean }
+/** Förfrågan och det frysta underlaget med beräkningen (Story 1.14). */
+export interface Ovrigtpost { forfragan: Lasvarde<Forfragan>; underlag: Lasvarde<OvrigtUnderlag> }
 export interface Undantagspost {
   slag: Postslag;
   id: string;
@@ -73,6 +87,8 @@ export interface Undantagspost {
   ja_registrerar: string;
   /** Bara poster av slaget `ny_bedomning` bär fältet. */
   bedomning?: Begardbedomning;
+  /** Bara poster av slaget `ovrigt_beslut` bär fältet. */
+  ovrigt?: Ovrigtpost;
 }
 export interface Kalltackning { lage: 'last' | 'fel'; saknas: string[] }
 export interface Tackningspost {
@@ -89,7 +105,7 @@ export interface Undantag {
   ofullstandig_tackning: Tackningspost[];
   aldsta_tackning: string | null;
   hoppade: Array<{ id: string; identitet: 'kopost' | 'signal' | 'begaran'; atgard: string | null;
-    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' }>;
+    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' | 'underlag_ogiltigt' }>;
   last_nar: string;
 }
 
@@ -139,7 +155,15 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
             p.id AS project_id, p.number, p.name, p.status AS projektstatus
        FROM contracts c JOIN projects p ON p.company_id=c.company_id AND p.id=c.project_id
       WHERE c.company_id=$1 AND c.id=ANY($2::uuid[])`,
-    [companyId, idn('contract_id', KOBURNA_SLAG.baselineandring)],
+    [companyId, idn('contract_id', [...KOBURNA_SLAG.baselineandring, ...KOBURNA_SLAG.ovrigt_beslut])],
+  );
+  // Story 1.14: Övrigt-raden läses ur raden, aldrig ur köpostens underlag.
+  const anteckningIdn = [...new Set(koposter.filter((q) => koburetSlag(q) === 'ovrigt_beslut')
+    .map((q) => uuid(eget(eget(q.input, 'kalla'), 'id'))).filter((id): id is string => id !== null))];
+  const anteckningar = await client.query<Forfragan & { contract_id: string }>(
+    `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal, a.created_at::date::text AS datum
+       FROM uppdrag_anteckning a WHERE a.company_id = $1 AND a.id = ANY($2::uuid[])`,
+    [companyId, anteckningIdn],
   );
   const delar = await client.query<Uppslagsrad>(
     `SELECT cp.id AS nyckel, c.id AS contract_id, c.name AS contract_name,
@@ -179,6 +203,7 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
     kunder: new Map(kunder.rows.map((r) => [r.id, r])),
     filer: new Map(filer.rows.map((r) => [r.id, r])),
     foraldrar: new Map(foraldrar.rows.map((r) => [r.id, r])),
+    anteckningar: new Map(anteckningar.rows.map((r) => [r.id, r])),
   };
 }
 function uppdragsref(r: Uppdragsref): Uppdragsref {
@@ -405,6 +430,54 @@ export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: st
     } };
 }
 
+/**
+ * Ren: köpostens postslag. Den enda platsen där en `andra_baseline` med
+ * Övrigt-raden som källa blir `ovrigt_beslut` (B-3). Läser bara åtgärdens namn
+ * och källans typ, aldrig fri text, och källan läses som egen nyckel.
+ */
+export function koburetSlag(q: Pick<Approval, 'action' | 'input'>): Postslag | null {
+  if (q.action === 'andra_baseline' && eget(eget(q.input, 'kalla'), 'typ') === 'anteckning') return 'ovrigt_beslut';
+  for (const [slag, atgarder] of Object.entries(KOBURNA_SLAG) as Array<[keyof typeof KOBURNA_SLAG, readonly string[]]>) {
+    if (atgarder.includes(q.action)) return slag;
+  }
+  return null;
+}
+
+interface Ovrigtunderlag extends Kounderlag {
+  underlag: OvrigtUnderlag;
+  anteckning: Forfragan;
+  referenser: Kallreferens[];
+}
+/**
+ * Ren: Övrigt-frågan med färdig beräkning (Story 1.14, B-4). Underlaget och
+ * raden är redan prövade av anroparen. Alternativet följer åtgärden, och
+ * texterna säger bara det som sker.
+ */
+export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: string): Undantagspost {
+  const { underlag: d, anteckning: a } = u;
+  const ryms = u.kopost.action === 'registrera_uppdragsbeslut';
+  const kod = d.avtalsdel_kod;
+  const handling = ryms
+    ? `Beslutet att arbetet ryms i ${kod} registreras med beräkningen, och Övrigt-raden är dokumentationen. Ingen avtalsdel ändras.`
+    : d.nytt_tak_minuter !== null
+      ? `En ny version av ${kod} från ${d.giltig_fran} med taket ${tidtext(d.nytt_tak_minuter)}. Tidigare versioner står kvar.`
+      : d.minuter === null
+        ? `En ny version av ${kod} från ${d.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`
+        : `En ny version av ${kod} från ${d.giltig_fran}. Taket ändras inte, eftersom ${kod} saknar eget tak. Tidigare versioner står kvar.`;
+  const anteckningsyta: Kallreferens = { typ: 'yta', etikett: `${DAVIDS_ANTECKNING}, ${a.datum}`,
+    sokvag: `${bas}/projects/${u.uppdrag.project_id}/laget#kort-ovrigt` };
+  return { ...kopostbas(u, 'ovrigt_beslut', lastNar),
+    val: { kod: 'ja_nej', text: ryms
+      ? 'Godkänn att förfrågan ryms i avtalet, eller säg nej med skäl.'
+      : 'Ta förfrågan som tillägg till avtalet, eller säg nej med skäl.' },
+    varfor_mandat: 'Förfrågan gäller arbete utanför avtalet. Bara du avgör om den blir ett tillägg, ryms i avtalet eller avböjs.',
+    forslag: last({ fran: null, till: d.forslagstext, belopp_ore: d.belopp_ore }, KALLA_REDOVISNING, d.last_nar),
+    skal: last(d.skal, KALLA_REDOVISNING, lastNar),
+    kallor: kallor([anteckningsyta, ...u.referenser, yta(bas, u.uppdrag, 'kontraktet')], lastNar),
+    ja_registrerar: `${handling} ${BESLUTSRADEN}`,
+    ovrigt: { forfragan: last(a, KALLA_REDOVISNING, lastNar), underlag: last(d, KALLA_REDOVISNING, d.last_nar) } };
+}
+
 /** Ren och deterministisk: driftens saknas-lista bär id:n, aldrig fritext. */
 export function kalltackning(saknade: string[]): Kalltackning {
   return { lage: saknade.length === 0 ? 'last' : 'fel', saknas: [...saknade].sort() };
@@ -419,15 +492,14 @@ export async function beraknaTackning(
   const saknade = new Map(contractIds.map((id) => [id, {
     godkannandekon: [] as string[], ovrigt: [] as string[], kostnader: [] as string[], baselineforslag: [] as string[],
   }]));
+  // Story 1.14: samma predikat som kandidaten, bundet till radens avtal, men
+  // bara modulens åtgärder och bara en köpost som väntar eller är mottagen.
   const ovrigt = await client.query<{ contract_id: string; id: string }>(
     `SELECT a.contract_id, a.id::text AS id FROM uppdrag_anteckning a
       WHERE a.company_id=$1 AND a.contract_id=ANY($2::uuid[]) AND a.utanfor_avtal
-        AND NOT EXISTS (SELECT 1 FROM action_approvals q
-          WHERE q.company_id=a.company_id AND q.action=ANY($3::text[])
-            AND q.input->'kalla'->>'typ'='anteckning' AND q.input->'kalla'->>'id'=a.id::text
-            AND (q.status='pending' OR q.beslut_hash IS NOT NULL))
-        AND NOT EXISTS (SELECT 1 FROM uppdrag_beslut b
-          WHERE b.company_id=a.company_id AND b.kalla_typ='anteckning' AND b.kalla_id=a.id)
+        AND NOT EXISTS (SELECT 1 FROM action_approvals q WHERE ${KOPOST_FOR_ANTECKNING}
+          AND q.action=ANY($3::text[]) AND (q.status='pending' OR q.beslut_hash IS NOT NULL))
+        AND NOT EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING})
       ORDER BY a.contract_id,a.created_at,a.id`,
     [companyId, contractIds, UNDANTAG_ATGARDER],
   );
@@ -520,17 +592,32 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
   const hoppade: Undantag['hoppade'] = [];
   const bas = `/app/c/${companyId}`;
   for (const q of koposter) {
-    const arBaseline = (KOBURNA_SLAG.baselineandring as readonly string[]).includes(q.action);
-    const arKostnad = q.action === 'binda_kostnad';
-    const falt = arBaseline ? 'contract_id' : arKostnad ? 'contract_part_id' : 'project_id';
+    // Slaget väljer både uppslaget och grenen (Story 1.14). Ett okänt slag
+    // saknar uppslag och redovisas som saknat uppdrag.
+    const slag = koburetSlag(q);
+    const falt = slag === 'kostnadsbindning' ? 'contract_part_id' : slag === 'avslut' ? 'project_id' : 'contract_id';
+    const karta = slag === 'kostnadsbindning' ? per.delar : slag === 'avslut' ? per.projekt : per.avtal;
     const id = uuid(eget(q.input, falt));
-    const r = id === null ? undefined : (arBaseline ? per.avtal : arKostnad ? per.delar : per.projekt).get(id);
+    const r = slag === null || id === null ? undefined : karta.get(id);
     if (!r || r.projektstatus === 'closed') {
       hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: r ? 'uppdrag_avslutat' : 'uppdrag_saknas' });
       continue;
     }
     const underlag = { kopost: q, uppdrag: uppdragsref(r) };
-    if (arBaseline) {
+    if (slag === 'ovrigt_beslut') {
+      // Ingen post utan läsbart underlag och en markerad rad i postens avtal:
+      // en sådan köpost hade bara haft knappar som kan ge fel (Story 1.14).
+      const fryst = OvrigtUnderlagSchema.safeParse(eget(q.input, 'beslutsunderlag'));
+      const rad = per.anteckningar.get(uuid(eget(eget(q.input, 'kalla'), 'id')) ?? '');
+      if (!fryst.success || !rad || rad.contract_id !== r.contract_id || !rad.utanfor_avtal) {
+        hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: 'underlag_ogiltigt' });
+        continue;
+      }
+      const referenser: Kallreferens[] = [];
+      for (const k of fryst.data.kallor) if (k.typ === 'referens') referenser.push(...await referens(client, companyId, k.id));
+      const { contract_id: _contractId, ...anteckning } = rad;
+      poster.push(beskrivOvrigtBeslut({ ...underlag, underlag: fryst.data, anteckning, referenser }, bas, lastNar));
+    } else if (slag === 'baselineandring') {
       const mal: BaselineMal = {};
       const kund = per.kunder.get(uuid(eget(q.input, 'customer_id')) ?? '');
       const fil = per.filer.get(uuid(eget(q.input, 'source_file_id')) ?? '');
@@ -552,7 +639,7 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
       const giltigFran = text(eget(q.input, 'valid_from')) ?? r.signed_date ?? null;
       poster.push(beskrivBaselineandring({ ...underlag, forklaring, mal, giltigFran,
         referenser: await referens(client, companyId, signal?.underlag_ref_id) }, bas, lastNar));
-    } else if (arKostnad) {
+    } else if (slag === 'kostnadsbindning') {
       const receiptId = uuid(eget(q.input, 'receipt_id'));
       const kvitto = receiptId ? (await client.query<{ total_ore: number; nuvarande_del: string | null }>(
         `SELECT r.total_ore, CASE WHEN cp.id IS NULL THEN NULL ELSE cp.code || ' · ' || cp.name END AS nuvarande_del

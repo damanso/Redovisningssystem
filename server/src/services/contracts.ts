@@ -708,7 +708,6 @@ export async function skrivBaselineversion(
       contract_id: input.contract_id, code: input.code, valid_from: validFrom,
       cap_hours: input.cap_hours ?? null, cap_amount_ore: input.cap_amount_ore ?? null,
       cap_confirmed: input.cap_confirmed ?? false,
-      change_reason: input.change_reason ?? null,
     },
   });
   return getContractUsage(client, companyId, input.contract_id);
