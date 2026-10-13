@@ -30,9 +30,10 @@ import { listSupplierInvoices } from '../../services/supplierInvoices.js';
 import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
-import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
-  type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
+import { listaBedomningar, listaObesvaradeBegaranden, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
+  type Begaransrad, type Begaransvar, type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
   type Scopelinje } from '../../services/uppdragBedomning.js';
+import { kalendermanad } from '../../lib/bedomningsbegaran.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
@@ -2588,20 +2589,8 @@ interface Bedomningsunderlag extends Bedomningshistorik {
   /** Rapporten för det första avtalet. `null` = uppdraget har inget avtal. */
   rapport: Rapportunderlag | null;
   scopelinje: Scopelinje[];
-}
-
-/**
- * Innevarande månad. Det är en formulärhjälp, inte en rytm: rytmen har ingen
- * lagring (1E Del 7). Samma period styr rapporten ovanför formuläret, så att
- * sidan aldrig visar tal för ett annat intervall än det som står i fälten.
- */
-function standardperiod(): { start: string; slut: string } {
-  const nu = new Date();
-  const dag = (d: Date): string => d.toISOString().slice(0, 10);
-  return {
-    start: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1))),
-    slut: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0))),
-  };
+  /** Avtalens obesvarade begäranden (Story 1.10): bedömningen här besvarar dem. */
+  oppnaBegaranden: Begaransrad[];
 }
 
 /** Uppdraget, dess avtal och alla bedömningar — historikens enda läsväg. */
@@ -2629,7 +2618,11 @@ async function bedomningsunderlag(
   client: PoolClient, companyId: string, projectId: string,
 ): Promise<Bedomningsunderlag> {
   const { projekt: p, avtal, historik } = await bedomningshistorik(client, companyId, projectId);
-  const period = standardperiod();
+  // Innevarande månad. Det är en formulärhjälp, inte en rytm: rytmen har ingen
+  // lagring (1E Del 7). Samma period styr rapporten ovanför formuläret, så att
+  // sidan aldrig visar tal för ett annat intervall än det som står i fälten —
+  // och samma funktion föreslår perioden i undantagsvyns post (Story 1.10).
+  const period = kalendermanad(new Date().toISOString().slice(0, 10));
   // Rapporten byggs för det avtal formuläret har förvalt — samma tjänstefunktion
   // som fryser talen vid INSERT:en, så förhandsvisningen och den frysta raden
   // kan aldrig svara olika på samma fråga.
@@ -2641,6 +2634,7 @@ async function bedomningsunderlag(
     period,
     rapport: forsta ? await byggRapportunderlag(client, companyId, forsta.id, period.start, period.slut) : null,
     scopelinje: forsta ? await lasScopelinjer(client, companyId, forsta.id) : [],
+    oppnaBegaranden: avtal.length === 0 ? [] : await listaObesvaradeBegaranden(client, companyId, avtal.map((a) => a.id)),
   };
 }
 
@@ -2806,6 +2800,20 @@ function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
   </form>`;
 }
 
+/**
+ * Story 1.10: en rad per öppen begäran, FÖRE formuläret. En bedömning som
+ * besvarar en begäran ska säga det innan den sätts (FR-16, "Inga tysta
+ * utfall"): `satt_bedomning` besvarar avtalets öppna begäran också utan id.
+ */
+function begaranderader(u: Bedomningsunderlag): Raw {
+  const flera = u.avtal.length > 1;
+  const namn = new Map(u.avtal.map((a): [string, string] => [a.id, a.name]));
+  return html`${u.oppnaBegaranden.map((b) => html`<p class="muted" style="margin:10px 16px 0;font-size:12.5px">
+    Ny bedömning begärd ${b.begard_nar.slice(0, 10)} av ${b.begard_av_namn}${flera
+      ? html` för <b>${namn.get(b.contract_id) ?? ''}</b>` : ''}.
+    Bedömningen du sätter här för avtalet besvarar begäran, och frågan försvinner.</p>`)}`;
+}
+
 function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag): Raw {
   const senaste = u.historik[u.historik.length - 1];
   const flera = u.avtal.length > 1;
@@ -2830,7 +2838,7 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
         : html`${bedomningsrapport(companyId, u)}
           <div class="panel" id="satt-bedomningen" style="margin-top:16px">
             <div class="panel__head"><h2>Sätt bedömningen</h2></div>
-            <div class="panel__body" style="padding:4px 0 4px">${bedomningsformular(companyId, u)}</div>
+            <div class="panel__body" style="padding:4px 0 4px">${begaranderader(u)}${bedomningsformular(companyId, u)}</div>
           </div>`
     }
     <h2 style="margin-top:18px">Historik</h2>
@@ -3895,6 +3903,22 @@ function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforsl
       });
     }
   }
+  // Story 1.10: en begärd bedömning väntar på David — men bara på ett aktivt
+  // uppdrag. På ett stängt hade knappen bara kunnat ge 409, och kortet säger
+  // där varför begäran står kvar.
+  if (l.uppdrag.status === 'active') {
+    for (const a of l.avtal) {
+      if (a.oppen_begaran === null) continue;
+      grepp.push({
+        marke: chip('Bedömning', 'warn', '!'),
+        text: 'Ny bedömning begärd',
+        detalj: a.oppen_begaran.begard_nar.slice(0, 10),
+        href: `${bas}/bedomning`,
+        knapp: 'Bedöm',
+        ai: false,
+      });
+    }
+  }
   for (const f of forslag) {
     grepp.push({
       marke: chip('Leverans', 'warn', '→'),
@@ -3917,7 +3941,7 @@ function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforsl
               töms bara av medvetna beslut, och det är den meningen som gör tomt
               till ett trovärdigt tillstånd i stället för ett misstänkt. */ ''}
         <p class="muted" style="margin:10px 16px 12px;font-size:13px">
-          Ingen köpost, ingen oavgjord scopesignal och inget obekräftat statusbyte ligger på uppdraget.
+          Ingen köpost, ingen oavgjord scopesignal, ingen begärd bedömning att sätta och inget obekräftat statusbyte ligger på uppdraget.
           Kön töms bara av medvetna beslut, så tomt betyder att allt är avgjort — inte att inget hände.
           <a href="${bas}/bedomning">Sätt periodens bedömning</a> när det är dags.</p>
       </div>
@@ -4038,9 +4062,39 @@ function kortLeverabler(companyId: string, l: Uppdragslage, idag: string): Raw {
     kropp, farskhetsrad([direktFarskhet(l.farskhet.leverabler, idag)]));
 }
 
+/**
+ * Story 1.10: begäran om ny bedömning, per avtal i kortet. Formuläret visas
+ * bara där en begäran kan skrivas — ett aktivt uppdrag utan öppen begäran —
+ * eftersom en knapp som bara kan ge 409 inte visas. En öppen begäran sägs rakt
+ * ut, också på ett stängt uppdrag, där den aldrig besvarades.
+ */
+function begaranIKort(bas: string, a: Uppdragslage['avtal'][number], aktivt: boolean): Raw {
+  const o = a.oppen_begaran;
+  if (o !== null) {
+    const datum = o.begard_nar.slice(0, 10);
+    return aktivt
+      ? html`<p class="muted" style="margin:4px 16px 4px;font-size:12.5px">Ny bedömning begärd ${datum} av ${o.begard_av_namn}.
+          Begäran står som en fråga till dig tills en bedömning är satt. <a href="${bas}/bedomning">Sätt bedömningen</a>.</p>`
+      : html`<p class="muted" style="margin:4px 16px 4px;font-size:12.5px">Ny bedömning begärd ${datum} av ${o.begard_av_namn}.
+          Uppdraget är avslutat, så begäran kan inte längre besvaras.</p>`;
+  }
+  if (!aktivt) return html``;
+  // Husets fält och en sekundär knapp: kortets uppgift är att visa läget.
+  // Begäran är en handling bredvid det, inte kortets huvudhandling.
+  return html`<form method="post" action="${bas}/laget" style="margin:6px 16px 10px">
+    <input type="hidden" name="handling" value="begar_bedomning">
+    <input type="hidden" name="contract_id" value="${a.contract_id}">
+    <label class="field" style="margin:0"><span>Varför (valfritt)</span>
+      <input name="kommentar" maxlength="2000" placeholder="T.ex. kunden flyttade L3 två veckor."></label>
+    <div class="actions" style="margin-top:8px">
+      <button class="btn btn--ghost btn--sm" type="submit">Begär ny bedömning</button></div>
+  </form>`;
+}
+
 function kortBedomning(companyId: string, l: Uppdragslage, idag: string): Raw {
   const flera = l.avtal.length > 1;
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
+  const aktivt = l.uppdrag.status === 'active';
   const nagon = l.avtal.some((a) => a.bedomning !== null);
   const kropp = html`${l.avtal.map((a) => {
     const b = a.bedomning;
@@ -4053,12 +4107,13 @@ function kortBedomning(companyId: string, l: Uppdragslage, idag: string): Raw {
         )
         : html`<p style="margin:10px 16px 2px">${bedomningsChip(b.lage)}
             <span class="code" style="margin-left:6px">${b.period_start} – ${b.period_slut}</span>
-            ${/* "Vem" är det raden faktiskt bär: satte en människa den? Ett namn
-                  hade varit en uppgift kolumnen inte har (0068). */ ''}
+            ${/* Raden bär `satt_av` sedan 0082, men äldre rader saknar namnet.
+                  Kortet visar därför fortfarande bara om en människa satte den. */ ''}
             <span class="muted" style="margin-left:6px;font-size:12.5px">${
               b.satt_av_manniska ? 'satt av en människa' : 'satt utan människa'} ${b.created_at.slice(0, 10)}</span></p>
           <p class="muted" style="margin:4px 16px 4px;font-size:13px">${
-            b.forsta_meningen ?? html`<em>Ingen kommentar skrevs till bedömningen.</em>`}</p>`}`;
+            b.forsta_meningen ?? html`<em>Ingen kommentar skrevs till bedömningen.</em>`}</p>`}
+      ${begaranIKort(bas, a, aktivt)}`;
   })}`;
   return faktakort('kort-bedomning', 'Senaste bedömning',
     // Aldrig grön default: en saknad bedömning är ett öppet läge, inte ett bra.
@@ -4322,6 +4377,18 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
 }));
 
 /**
+ * Story 1.10: en begäran som redan väntade skapades inte igen. Svaret säger det
+ * med `befintlig`, och sidan säger det i notisen — annars hade en omladdad sida
+ * sett ut som att en ny begäran skrevs (”Inga tysta utfall”).
+ */
+function begaransAvvikelse(result: ActionResult): string | undefined {
+  if (result.status !== 'ok') return undefined;
+  const b = result.result as Begaransvar;
+  if (!b.befintlig) return undefined;
+  return `En begäran om ny bedömning väntar redan sedan ${b.begard_nar.slice(0, 10)}. Ingen ny begäran skapades.`;
+}
+
+/**
  * Övrigt: en rad läggs till (överlämning #268).
  *
  * Samma väg som AI:t skulle ha tagit om den fick — den får inte:
@@ -4333,6 +4400,19 @@ viewRouter.post('/c/:companyId/projects/:projectId/laget', page(async (req, res)
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
   const kropp = req.body as Record<string, unknown>;
+  const tillbaka = `/app/c/${companyId}/projects/${projectId}/laget`;
+  // Story 1.10: begäran om ny bedömning går genom samma rutt, med fältet
+  // `handling` — en ny rutt hade krävt en synk av navigationskontraktet.
+  // `begar_ny_bedomning` bär `kravManniska`, och här är actor 'human'.
+  if (kropp.handling === 'begar_bedomning') {
+    const kommentar = typeof kropp.kommentar === 'string' ? kropp.kommentar.trim() : '';
+    await runViewAction(req, res, companyId, 'begar_ny_bedomning', {
+      contract_id: typeof kropp.contract_id === 'string' ? kropp.contract_id.trim() : '',
+      // Ett tomt valfritt fält utelämnas i stället för att skickas som "".
+      ...(kommentar ? { kommentar } : {}),
+    }, tillbaka, begaransAvvikelse);
+    return;
+  }
   // Texten skickas OTRIMMAD med flit: en blank ruta ska mötas av tjänstens egna
   // ord ("anteckningen är tom …"), inte av den generella formulärtexten som ett
   // tomt fält hade gett. Tomheten fälls ändå — i tjänsten och i 0073:s CHECK.
@@ -4342,7 +4422,7 @@ viewRouter.post('/c/:companyId/projects/:projectId/laget', page(async (req, res)
     contract_id: contractId,
     text,
     ...(kropp.utanfor_avtal === 'ja' ? { utanfor_avtal: true } : {}),
-  }, `/app/c/${companyId}/projects/${projectId}/laget`);
+  }, tillbaka);
 }));
 
 // --- Uppdragslistan ---------------------------------------------------------

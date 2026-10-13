@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (202
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (203
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-10-13 (Story 1.10, den begärda bedömningen):**
+  David kan begära en ny bedömning av ett avtal, och frågan står i
+  undantagsvyns läsväg med underlaget sammanställt tills en bedömning besvarar
+  den. Ändrat, fil för fil:
+  1. `server/migrations/0082_bedomningsbegaran.sql` (ny): tabellen
+     `uppdrag_bedomningsbegaran` (ÄGD, append-only, RLS, sammansatt FK,
+     avslutstriggern), och på `uppdrag_bedomning` de nullbara kolumnerna
+     `begaran_id` (FK till begäran i samma avtal, `UNIQUE`) och `satt_av`, med
+     två CHECK mot `satt_av_manniska`.
+  2. `server/src/lib/bedomningsbegaran.ts` (ny): `kalendermanad`,
+     `forbrukningsandringar`, `sammanfattaAndringar` och `LEVERABELORD`, rena.
+  3. `server/src/services/uppdragBedomning.ts`: `OBESVARAD`,
+     `listaObesvaradeBegaranden`, `begarNyBedomning`, `lasAvtalet` (radlås på
+     avtalet, ersätter `avtalsnamn`), `sattBedomning` med `userId`, `begaran_id`,
+     `satt_av` och auditraden `uppdrag.bedomning_satt`, `delsiffror` och
+     `lasDelsiffror`.
+  4. `server/src/actions/registry.ts`: `begar_ny_bedomning` (write,
+     `kravManniska`) och `begaran_id` på `satt_bedomning`. 203 actions.
+  5. `server/src/services/uppdragUndantag.ts`: postslaget `ny_bedomning`
+     (`beskrivNyBedomning`, `andringarSedan`, `bedomningsposter`).
+  6. `server/src/services/uppdragLage.ts`: `oppen_begaran` per avtal.
+  7. `server/src/http/view/routes.ts`: kortet *Senaste bedömning* (formuläret
+     *Begär ny bedömning*, och texten för en öppen begäran på aktivt och stängt
+     uppdrag), bandets rad, Lägets POST med `handling=begar_bedomning`,
+     Bedömning-sidans rad och `kalendermanad` i stället för `standardperiod`.
+  8. `docs/MCP_ACTIONS.md`, `docs/ARKITEKTUR.md` och det här huvudet.
+  Prov: K0–K6 i `server/test/uppdragsytan-bedomningsbegaran.test.ts` (rena
+  fall i `bedomningsbegaranHelper.ts`), K2 i
+  `server/test/uppdragsytan-migration-0082.test.ts`, och P2, P3, P4, P6, P8
+  (tretton vakter), P16 och kontrollvakten i `uppdragsytan-undantag.test.ts`.
+  **Inte kört i sessionen:** sandlådan nekade varje körande kommando
+  (`npx vitest run …` → ”This command requires approval”; `npm run typecheck`
+  → ”… requires approval: npm run typecheck”). Rött och grönt per uppgift står
+  som förutsagt, inte observerat, i berättelsens Debug Log. `npm run
+  typecheck`, `npm run build` och `npm test`: inte kört i sessionen, samma
+  skäl. Kedjan kör typecheck och test efter bygget, och deployen bygger före
+  bytet. Driftnotiser:
+  1. 0082 är additiv och bakåtkompatibel. En återställning till föregående
+     release lämnar begäranstabellen oanvänd; den gamla `sattBedomning`
+     skriver NULL i de nya kolumnerna, vilket villkoren tillåter.
+  2. Bedömningar satta före 0082 saknar `satt_av`. Posten visar
+     `satt_av_namn: null`, och Lägets kort visar fortfarande bara att en
+     människa satte raden.
+  3. Hermes listor känner inte den nya åtgärden och tabellen: `flerbolag.py`
+     (`GRANTS`), `manniskosparr.py` (`SKA_KRAVA`) och `uppdrag_gemensamt.py`
+     (`MODULATGARDER`, som `handgrepp.py` läser). En Hermes-berättelse kan
+     lägga till dem.
 
 - **2026-10-13 (Story 1.9, omtag efter andra granskningen i drift):**
   Task 8: tillägget hör till signalens avtal.

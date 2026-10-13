@@ -114,7 +114,8 @@ async function antal(id: string) {
 function utanLastid(svar: Undantag): Undantag {
   const kopia = structuredClone(svar);
   kopia.last_nar = 'X';
-  for (const p of kopia.poster) for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor]) {
+  for (const p of kopia.poster) for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor,
+    ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : [])]) {
     if (v.kalla === 'redovisning') v.last_nar = 'X';
   }
   return kopia;
@@ -163,6 +164,7 @@ beforeAll(async () => {
   postId.scopeavgorande = (await ok(bolag.poster!, 'tand_scopesignal', { contract_id: a.contractId, fras: 'kan ni även', klausul: '5.4', underlag: {
     sort: 'mejl', extern_id: 'undantag@mail.example.se', extern_nyckel: 'rfc822#message-id', extern_kalla: 'gmail:prov',
   } })).id as string;
+  postId.ny_bedomning = (await ok(bolag.poster!, 'begar_ny_bedomning', { contract_id: b.contractId })).id as string;
   granne = await registerUser('undantag-granne');
   grannbolag = await createCompany(granne.token, 'Grannens hemliga bolag');
   await createFiscalYear(grannbolag, auth(granne), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
@@ -181,6 +183,7 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     const svar = await undantag(bolag.poster!);
     expect(new Set(svar.poster.map((p) => p.slag))).toEqual(new Set(POSTSLAG));
     for (const p of svar.poster) for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor]) arLasvarde(v);
+    for (const p of svar.poster) if (p.bedomning) for (const v of [p.bedomning.senaste, p.bedomning.andringar]) arLasvarde(v);
     for (const t of svar.tackning) arLasvarde(t.tackning);
     expect(new Set(svar.tackning.map((t) => t.tackning.lage))).toEqual(new Set(['last', 'olast', 'saknas']));
   });
@@ -195,15 +198,15 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     expect(utanLastid(await undantag(bolag.poster!))).toEqual(utanLastid(direkt));
     expect(utanLastid(await undantag(bolag.poster!, { Authorization: `Bearer ${agentToken}` }))).toEqual(utanLastid(direkt));
   });
-  it('P4: exakt fyra slag och sju källor; avgjort och övrig kö blir inga poster; läsningen skriver inte', async () => {
-    expect(POSTSLAG).toEqual(['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande']);
+  it('P4: exakt fem slag och åtta källor; avgjort och övrig kö blir inga poster; läsningen skriver inte', async () => {
+    expect(POSTSLAG).toEqual(['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande', 'ny_bedomning']);
     expect(KOBURNA_SLAG).toEqual({ baselineandring: ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract'], kostnadsbindning: ['binda_kostnad'], avslut: ['avsluta_uppdrag'] });
     const svar = await undantag(bolag.poster!);
-    expect(svar.poster).toHaveLength(7);
+    expect(svar.poster).toHaveLength(8);
     for (const [action, id] of Object.entries(postId)) {
       const p = svar.poster.find((p) => p.id === id)!;
-      expect(p.identitet).toBe(action === 'scopeavgorande' ? 'signal' : 'kopost');
-      expect(p.slag).toBe(action === 'scopeavgorande' ? 'scopeavgorande' : action === 'binda_kostnad' ? 'kostnadsbindning' : action === 'avsluta_uppdrag' ? 'avslut' : 'baselineandring');
+      expect(p.identitet).toBe(action === 'scopeavgorande' ? 'signal' : action === 'ny_bedomning' ? 'begaran' : 'kopost');
+      expect(p.slag).toBe(action === 'scopeavgorande' ? 'scopeavgorande' : action === 'ny_bedomning' ? 'ny_bedomning' : action === 'binda_kostnad' ? 'kostnadsbindning' : action === 'avsluta_uppdrag' ? 'avslut' : 'baselineandring');
     }
     await koa(bolag.poster!, 'book_receipt', { receipt_id: await kvitto(bolag.poster!) });
     const ja = await koa(bolag.poster!, 'andra_baseline', andring(a.contractId, 'JA'));
@@ -214,7 +217,7 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     expect((await svep(bolag.poster!)).mottagna_beslut).toEqual({ verkstallda: 1, kvar: 0 });
     const verkstalld = await withAdmin(async (db) => (await db.query('SELECT status FROM action_approvals WHERE id=$1', [mottagen])).rows[0]);
     expect(verkstalld.status).toBe('executed');
-    expect((await undantag(bolag.poster!)).poster).toHaveLength(7);
+    expect((await undantag(bolag.poster!)).poster).toHaveLength(8);
     const fore = await antal(bolag.poster!);
     for (let i = 0; i < 3; i++) await undantag(bolag.poster!);
     expect(await antal(bolag.poster!)).toEqual(fore);
@@ -236,6 +239,10 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     const signal = svar.poster.find((p) => p.slag === 'scopeavgorande')!;
     expect(signal.forslag).toMatchObject({ lage: 'saknas', varde: null });
     expect(signal.kallor.varde).toContainEqual(expect.objectContaining({ typ: 'referens', extern_id: 'undantag@mail.example.se' }));
+    // Story 1.10: b saknar bedömning, så senaste mänskliga bedömning saknas.
+    const begard = svar.poster.find((p) => p.slag === 'ny_bedomning')!;
+    expect(begard.forslag.lage).toBe('last');
+    expect(begard.bedomning!.senaste).toMatchObject({ lage: 'saknas', varde: null });
     const tom = await plantera(bolag.poster!, 'update_contract', { contract_id: a.contractId });
     expect((await undantag(bolag.poster!)).poster.find((p) => p.id === tom)!.forslag).toMatchObject({ lage: 'saknas', varde: null });
     const q = await withAdmin(async (db) => (await db.query(`SELECT input FROM action_approvals WHERE company_id=$1 AND id=$2`, [bolag.poster!, postId.binda_kostnad])).rows[0]!.input as { receipt_id: string });
@@ -283,7 +290,7 @@ it('P7: alla fyra beloppen två gånger, även under avvikelsens trösklar', asy
   expect(res.status).toBe(400); expect(res.body.error).toBe('validation_error');
 });
 
-it('P8: tio rutin-/driftfall ger noll poster, riktig mandatpost ger en', async () => {
+it('P8: tretton rutin-/driftfall ger noll poster, riktig mandatpost ger en', async () => {
   const id = bolag.franvaro!; const u = await frisktUppdrag(id, 'Frånvaro'); const u2 = await frisktUppdrag(id, 'Frånvaro 2');
   await ok(id, 'paborja_leverabel', { contract_id: u.contractId, leverabel_kod: 'L1' });
   await cache(id, u.contractId, 'statusforslag:L3', { fran: 'ej_paborjad', till: 'pagar' });
@@ -300,6 +307,14 @@ it('P8: tio rutin-/driftfall ger noll poster, riktig mandatpost ger en', async (
     await verifieraReferens(db, id, refs[1]!, { finns: true, titel: 'efter' });
     await verifieraReferens(db, id, refs[2]!, { finns: false });
   });
+  // Story 1.10: tre förändringar efter bedömningen. Ingen regel gör dem till en
+  // begäran om ny bedömning (FR-40, AC 8); bara David begär den.
+  const efter = await koa(id, 'andra_baseline', andring(u.contractId, 'EFTER'));
+  await besluta(id, efter, 'approve');
+  await withAdmin((db) => db.query(`INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till)
+    SELECT company_id, contract_id, id, 'pagar', 'avvisad' FROM uppdrag_leverabel WHERE company_id=$1 AND contract_id=$2 AND kod='L1'`,
+  [id, u.contractId]));
+  await ok(id, 'log_time', { project_id: u.projektId, work_date: '2026-09-20', minutes: 60, description: 'Efter bedömningen', contract_part_id: await del(id, u.contractId) });
   await svep(id);
   await cache(id, u.contractId, 'tackning', Object.fromEntries(MANDATKALLOR.map((k) => [k, { lage: k === 'kostnader' ? 'fel' : 'last', saknas: [] }])));
   await aldra(id, u.contractId, TACKNING_MAX_ALDER_MIN + 1);
@@ -318,10 +333,17 @@ it('P8: tio rutin-/driftfall ger noll poster, riktig mandatpost ger en', async (
       await exists("SELECT 1 FROM uppdrag_svepvarde WHERE company_id=$1 AND contract_id=$2 AND nyckel='troskellarm' AND jsonb_array_length(varde->'larm')>0"),
       await exists("SELECT 1 FROM uppdrag_referens WHERE company_id=$1 AND id=ANY($2::uuid[]) AND status IN ('drift','trasig') GROUP BY company_id HAVING count(*)=2", [id, refs.slice(1)]),
       await exists("SELECT 1 FROM uppdrag_svepvarde WHERE company_id=$1 AND contract_id=$2 AND nyckel='prognos' AND varde->>'villkor'='ingen bokad framtid' AND NOT EXISTS (SELECT 1 FROM uppdrag_svepvarde WHERE company_id=$1 AND contract_id=$2 AND nyckel='troskellarm')", [id, u2.contractId]),
+      await exists("SELECT 1 FROM uppdrag_beslut WHERE company_id=$1 AND contract_id=$2 AND utfall='ja'"),
+      await exists("SELECT 1 FROM uppdrag_leverabel_handelse WHERE company_id=$1 AND contract_id=$2 AND till='avvisad'"),
+      await exists("SELECT 1 FROM time_entries WHERE company_id=$1 AND project_id=$2 AND description='Efter bedömningen'", [id, u.projektId]),
     ];
   });
   for (const vakt of vakter) { expect(vakt).toBe(true); korda.p8++; }
   expect((await undantag(id)).poster).toEqual([]);
+  const rader = await withAdmin(async (db) => (await db.query(`SELECT
+    (SELECT count(*)::int FROM uppdrag_bedomningsbegaran WHERE company_id=$1) AS begaranden,
+    (SELECT count(*)::int FROM uppdrag_bedomning WHERE company_id=$1) AS bedomningar`, [id])).rows[0]);
+  expect(rader).toEqual({ begaranden: 0, bedomningar: 1 });
   await koa(id, 'andra_baseline', andring(u.contractId, 'MANDAT'));
   expect((await undantag(id)).poster).toHaveLength(1);
 });
@@ -467,14 +489,27 @@ it('P15: grannbolaget syns inte, och ogiltiga uuid förgiftar inte transaktionen
 
 it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anropar aldrig fetch', async () => {
   expect(importer("import x from 'node:http'; import('node:https')")).toEqual(['node:http', 'node:https']);
-  const tillatna = ['pg', '../lib/lasvarde.js', '../domain/money.js', './approvals.js', './approvalSummary.js', '../http/middleware/authenticate.js'];
-  for (const fil of ['../src/services/uppdragUndantag.ts', '../src/lib/lasvarde.ts']) {
+  const DAGENS = ['pg', '../lib/lasvarde.js', '../domain/money.js', './approvals.js', './approvalSummary.js', '../http/middleware/authenticate.js'];
+  // Story 1.10: en lista per fil, så att ingen fil får mer än den behöver.
+  const tillatna: Record<string, readonly string[]> = {
+    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js'],
+    '../src/lib/lasvarde.ts': DAGENS,
+    '../src/lib/bedomningsbegaran.ts': ['./duration.js', '../domain/money.js'],
+    '../src/services/uppdragBedomning.ts': ['pg', '../lib/errors.js', './contracts.js', './projects.js', './uppdragReferens.js', './auditService.js'],
+  };
+  for (const [fil, lista] of Object.entries(tillatna)) {
     const text = await readFile(new URL(fil, import.meta.url), 'utf8');
-    expect(importer(text).filter((i) => !tillatna.includes(i))).toEqual([]);
+    expect(importer(text).filter((i) => !lista.includes(i)), fil).toEqual([]);
   }
   const stub = vi.fn(() => { throw new Error('nätverksanrop under läsningen'); });
   vi.stubGlobal('fetch', stub);
-  try { expect((await act(bolag.poster!, 'las_undantag', {})).status).toBe(200); expect(stub).not.toHaveBeenCalled(); }
+  try {
+    const res = await act(bolag.poster!, 'las_undantag', {});
+    expect(res.status).toBe(200);
+    // Den nya läsningen kördes faktiskt under stubben.
+    expect((res.body.result.poster as Array<{ slag: string }>).some((p) => p.slag === 'ny_bedomning')).toBe(true);
+    expect(stub).not.toHaveBeenCalled();
+  }
   finally { vi.unstubAllGlobals(); }
 });
 
@@ -647,7 +682,7 @@ describe('Rena regler och beskrivningar utan klocka eller databas', () => {
 });
 
 it('kontrollvakt: alla negativa fall och täckningsregler kördes', () => {
-  expect(korda.p8).toBeGreaterThanOrEqual(10);
+  expect(korda.p8).toBeGreaterThanOrEqual(13);
   expect(korda.p11).toBeGreaterThanOrEqual(13);
   expect(korda.p14).toBeGreaterThanOrEqual(7);
 });

@@ -955,14 +955,16 @@ period (på spår / risk / ur spår)". Ett handgrepp: åtgärden körs direkt, d
 köas inte.
 
 Indata: `contract_id`, `period_start`, `period_slut`, `lage`
-(`pa_spar` | `risk` | `ur_spar`, exakt CHECK-villkorets värden i 0068) och en
-valfri `kommentar` (≤ 2000 tecken). Svaret är den skrivna raden.
+(`pa_spar` | `risk` | `ur_spar`, exakt CHECK-villkorets värden i 0068), en
+valfri `kommentar` (≤ 2000 tecken) och en valfri `begaran_id` (Story 1.10).
+Svaret är den skrivna raden.
 
 - **Bara en människa (FR-15).** `kravManniska` avvisar ett agentanrop med
   **403 `human_required`** i `executeAction` — före varje skrivning, utan
   köpost och utan auditrad. `satt_av_manniska` är därför INTE ett indatafält:
   tjänsten skriver `true`, och med spärren är det svaret per konstruktion. Ett
-  fält hade återinfört exakt den lögn kolumnen finns för att utesluta.
+  fält hade återinfört exakt den lögn kolumnen finns för att utesluta. Inte
+  heller `satt_av` (0082) är ett indatafält: det är den inloggade användaren.
 - **`write`, inte `sensitive`.** Godkännandekön finns för beslut som ska LÄSAS
   av en människa innan de gäller. Här ÄR människan den som beslutar — att köa
   hennes bedömning för hennes eget godkännande vore ett handgrepp utan
@@ -973,6 +975,14 @@ valfri `kommentar` (≤ 2000 tecken). Svaret är den skrivna raden.
   bedömning för samma period — båda raderna står kvar, och vad man trodde i
   september går att läsa i oktober. Ingen unik-spärr hindrar den andra raden;
   det är meningen.
+- **Begäran besvaras (Story 1.10).** Med `begaran_id` besvarar raden den
+  begäran, som måste gälla samma avtal (annars **409 `begaran_annat_avtal`**;
+  okänd eller främmande ger 404 `not_found`). En redan besvarad begäran ger
+  **409 `begaran_besvarad`**. Utan `begaran_id` besvarar raden avtalets öppna
+  begäran, om det finns en, och svaret visar det i `begaran_id`. Raden bär
+  `satt_av` (den inloggade användaren, aldrig indata) och svaret `satt_av_namn`.
+  Auditraden `uppdrag.bedomning_satt` bär `contract_id`, `lage` och
+  `begaran_id`, och `action.executed` skrivs som förut.
 - **`handelse_ref_ids` och `frysta_siffror` fryses av SERVERN (S4.2, våg 6).**
   Tjänsten räknar om underlaget i SAMMA transaktion som INSERT:en och skriver
   det till raden: perioden, periodens timmar (`poster`, `minuter`,
@@ -1555,7 +1565,9 @@ ingen ny CSS och inga nya komponenter.
   `registrerade_minuter`), **`troskellarm`** (S6.2:s redan härledda larm ur
   svepets cache, `null` = svepet har inte kört), **`leverabler`** (alla fem lägen
   i skalans ordning med antal — uppräknade tillstånd, aldrig procent),
-  **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren) och
+  **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren, med
+  `satt_av_namn` och `begaran_id` sedan Story 1.10), **`oppen_begaran`**
+  (avtalets obesvarade begäran eller `null`) och
   **`oppna_signaler`/`signalhistorik`/`avgjorda_signaler`** (`signalhistorik`
   är de avgjorda signalerna med alla sina avgöranden, Story 1.9; tilläggets
   version nås genom avgörandets `tillagg_approval_id` och
@@ -1641,12 +1653,14 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
 - Svaret bär `utfall`, `poster[]`, `tackning[]`, `ofullstandig_tackning[]`,
   `aldsta_tackning`, `hoppade[]` och `last_nar`. Posterna bär `slag`, `id`,
   `identitet`, `atgard`, `foreslagen_av`, `skapad_nar`, `uppdrag`, `val`,
-  `varfor_mandat`, `forslag`, `skal`, `kallor` och `ja_registrerar`.
-- Den stängda listan har fyra postslag. `baselineandring` kommer ur väntande
+  `varfor_mandat`, `forslag`, `skal`, `kallor` och `ja_registrerar`, och
+  posten `ny_bedomning` dessutom det valfria fältet `bedomning`.
+- Den stängda listan har fem postslag. `baselineandring` kommer ur väntande
   `satt_baseline`, `andra_baseline`, `upsert_contract_part` eller
   `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`; `avslut`
   ur väntande `avsluta_uppdrag`; `scopeavgorande` ur en tänd signal utan
-  rad i `uppdrag_scopeavgorande`. Rutin, drift, tröskellarm och referensfel blir inga poster.
+  rad i `uppdrag_scopeavgorande`; `ny_bedomning` ur en obesvarad rad i
+  `uppdrag_bedomningsbegaran` (Story 1.10). Rutin, drift, tröskellarm och referensfel blir inga poster.
 - Kön läses utan `LIMIT`, i ordningen `created_at, id`. Signalposterna står
   därefter i `tand_nar, id`. Inget belopp filtrerar, inget tak eller urval kan
   skickas in. `listApprovals` behåller Att göras fönster.
@@ -1684,9 +1698,9 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
 - En nyupptäckt Övrigt-rad utanför avtalet, utan färdigt köbundet förslag
   eller mottaget beslut, gör `ovrigt` ofullständig redan efter första svepet.
   Ingen ny fråga eller kvittering skapas för den här.
-- `hoppade[]` redovisar köposter och signaler som lästs men inte blivit
-  poster: `id`, `identitet`, `atgard`, `orsak` (`uppdrag_saknas` eller
-  `uppdrag_avslutat`). Där finns bara id:n och koder. Främmande id:n slås
+- `hoppade[]` redovisar köposter, signaler och begäranden som lästs men inte
+  blivit poster: `id`, `identitet` (`kopost`, `signal` eller `begaran`),
+  `atgard`, `orsak` (`uppdrag_saknas` eller `uppdrag_avslutat`). Där finns bara id:n och koder. Främmande id:n slås
   aldrig upp över bolagsgränsen; ogiltiga uuid förgiftar ingen transaktion.
 - Läsvägen skriver inget och gör inga externa anrop; bara Postgres läses
   genom anroparens tenant-transaktion. Källorna är appvägar under det egna
@@ -1700,3 +1714,73 @@ Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
 `avboj_beslutsforslag` är write med **`kravManniska: true`**. Indata är `approval_id` (uuid) och `skal` (1–300 tecken). Svaret är `{ approval_id, status, verkstalld }`. Skälet får inte bestå av blanksteg. Fel: 400 `validation_error`/`skal_kravs`, 403 `human_required`, 404 för saknad köpost i bolaget, 409 `not_pending` eller `inte_mandatforslag`.
 
 `MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad` och `avsluta_uppdrag`. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`.
+
+### Den begärda bedömningen (Story 1.10, B-3)
+
+**`begar_ny_bedomning` (write, `kravManniska: true`)** — "Begär en ny
+bedömning av ett avtal". Ett handgrepp: åtgärden körs direkt, den köas inte.
+
+- **Indata:** `contract_id` (uuid) och `kommentar` (valfri, högst 2 000 tecken,
+  lagras trimmad; bara blanktecken ger **400 `validation_error`**). Den som inte
+  vill skriva något utelämnar fältet, och raden får NULL. `begard_av` är inget
+  fält: det är den inloggade användaren, och `.strict()` fäller det.
+- **Svaret** är begäran: `id`, `contract_id`, `begard_av`, `begard_av_namn`,
+  `begard_nar` (ISO 8601), `kommentar` och `befintlig`. En obesvarad begäran per
+  avtal räcker: finns den redan blir svaret 200 med **`befintlig: true`** och
+  pekar på den, och ingenting skrivs. Annars skrivs en rad i
+  `uppdrag_bedomningsbegaran` (migration 0082, ÄGD, append-only) och
+  `befintlig` är `false`.
+- **Auditraden** `uppdrag.bedomning_begard` skrivs bara när en rad skrivs, med
+  `entity_type = 'uppdrag_bedomningsbegaran'`, radens id och `details`
+  `{ contract_id, kommentar_finns }` — ingen fritext. `action.executed` skrivs
+  av `executeAction` som förut.
+- **Fel:** 400 `validation_error`, **403 `human_required`** för en agent (före
+  varje skrivning; MCP går samma REST-väg), 404 `not_found` för ett okänt eller
+  främmande avtal och **409 `rule_violation`** på ett avslutat uppdrag (triggern
+  `vagrar_skrivning_pa_avslutat`). Var en begäran öppen när uppdraget stängdes
+  ger ett nytt anrop 200 med `befintlig: true`, och ingenting skrivs.
+- **Obesvarad** betyder att ingen rad i `uppdrag_bedomning` bär begärans id.
+  Begäran besvaras genom `satt_bedomning` (se *Bedömningen*), med eller utan
+  `begaran_id`. Båda åtgärderna tar radlåset på avtalet, så två samtidiga
+  begäranden blir en, och samma begäran besvaras en gång.
+
+**Posten `ny_bedomning` i `las_undantag`.** En obesvarad begäran på ett aktivt
+uppdrag blir en post med begärans id som `id`, `identitet: 'begaran'`,
+`atgard: null`, `foreslagen_av: 'human'` och `skapad_nar` = `begard_nar`.
+`val` är `{ kod: 'bedomningslage', text }` med ● På spår, ▲ Risk och ■ Ur spår;
+**inget läge är förvalt**, och ingen maskin föreslår ett. `forslag.varde.till`
+är det sammanställda underlaget i text, aldrig ett läge. Fältet `bedomning` bär:
+
+- `begaran` (`id`, `begard_av_namn`, `begard_nar`, `kommentar`);
+- `senaste` (`Lasvarde`): senaste mänskliga bedömning med `id`, `lage`,
+  `period_start`, `period_slut`, `satt_nar`, `satt_av_namn` (NULL för rader
+  från före 0082) och `kommentar`, eller `saknas` när ingen finns;
+- `andringar` (`Lasvarde`): `sedan` (bedömningens `created_at`, NULL utan
+  bedömning), `forbrukning[]` per avtalsdel med `fore` ur bedömningens frysta
+  tal och `nu` ur `get_contract_usage` (två tal, aldrig en andel, och `andrad`),
+  `leverabelrorelser[]`, `signaler[]` (tända efter bedömningen, med `oppen`) och
+  `baselineandringar[]` (beslutsrader med ja för en baselineåtgärd efter
+  bedömningen) — allt ur egna tabeller, inget räknas om;
+- `period`: förslaget till period, läsdagens kalendermånad (samma förval som
+  Bedömning-sidan).
+
+`ja_registrerar` säger att läget blir en ny rad i bedömningshistoriken och att
+begäran räknas som besvarad. Posten försvinner när en bedömning besvarar
+begäran. En begäran på ett avslutat uppdrag blir ingen post; den står i
+`hoppade[]` med `identitet: 'begaran'` och `orsak: 'uppdrag_avslutat'`. Ingen
+regel skapar en begäran av sig själv; automatisk upptäckt av bedömningsbehov
+är Story 14.3.
+
+**`oppen_begaran` i `las_uppdragslage`.** Varje avtal bär sin obesvarade
+begäran (samma fält som svaret ovan, utan `befintlig`) eller `null`. Fältet
+visar också en begäran som aldrig besvarades innan uppdraget stängdes.
+
+**Vyn.** På Läget har kortet *Senaste bedömning* knappen **Begär ny
+bedömning** med ett valfritt fält *Varför*, på ett aktivt uppdrag utan öppen
+begäran. Formuläret postar `handling=begar_bedomning` till Lägets befintliga
+POST-rutt, som kör `begar_ny_bedomning` med actor `human`; en begäran som redan
+väntade sägs i notisen. Med en öppen begäran säger kortet när och av vem den
+begärdes, och bandet *Väntar på dig* får raden *Ny bedömning begärd* med
+**Bedöm** (bara på ett aktivt uppdrag). På ett stängt uppdrag säger kortet att
+begäran inte längre kan besvaras, utan knapp. Bedömning-sidan säger före
+formuläret att bedömningen besvarar begäran.
