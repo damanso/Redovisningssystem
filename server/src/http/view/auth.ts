@@ -138,9 +138,11 @@ export function readPendingUserId(req: Request): string | null {
  * avskalat här): `/c/<bolag>/projects/<uppdrag>` och allt under det. Mönstret
  * är avsiktligt SNÄVT — det är den enda ytan agent-läsningen öppnar (S10.7,
  * FR-39), och en bredare regel hade öppnat hela vyn i tysthet nästa gång någon
- * la till en sida.
+ * la till en sida. Story 1.11: undantagsvyn (`/c/<bolag>/uppdrag`) och listan
+ * (`/c/<bolag>/uppdrag/lista`) är modulens ingång och öppnas exakt, inget mer
+ * under dem — Hermes mäter dem med samma token (Story 1.12).
  */
-const UPPDRAGSYTANS_GET = /^\/c\/([^/]+)\/projects\/[^/]+(?:\/[^/]+)*$/;
+const UPPDRAGSYTANS_GET = /^\/c\/([^/]+)\/(?:projects\/[^/]+(?:\/[^/]+)*|uppdrag(?:\/lista)?)$/;
 
 /**
  * Agentens läsväg in i vyn.
