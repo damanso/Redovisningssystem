@@ -350,7 +350,7 @@ export function beskrivScopeavgorande(u: Signalsunderlag, bas: string, lastNar: 
     forslag: saknas(KALLA_REDOVISNING, lastNar),
     skal: last(`Frasen ”${s.fras}”${s.klausul ? ` (klausul ${s.klausul})` : ''} tändes ${s.tand_nar.toISOString()} av ${s.tand_av ?? 'okänd'}.`, KALLA_REDOVISNING, lastNar),
     kallor: kallor([yta(bas, u.uppdrag, 'signaler'), ...u.referenser ?? []], lastNar),
-    ja_registrerar: 'Avgörandet sparas på signalen. Vid utanför kan ett tillägg köas för ditt godkännande.' };
+    ja_registrerar: 'Avgörandet blir en ny rad i signalens historik, och tidigare avgöranden står kvar. Vid utanför med tillägg köas ett baselineförslag, som blir en egen post för ditt godkännande.' };
 }
 
 /** Ren och deterministisk: driftens saknas-lista bär id:n, aldrig fritext. */
@@ -532,7 +532,9 @@ async function signalposter(client: PoolClient, companyId: string, lastNar: stri
             c.id AS contract_id,c.name AS contract_name,p.id AS project_id,p.number,p.name,p.status AS projektstatus
        FROM uppdrag_scopesignal s JOIN contracts c ON c.company_id=s.company_id AND c.id=s.contract_id
        JOIN projects p ON p.company_id=c.company_id AND p.id=c.project_id
-      WHERE s.company_id=$1 AND s.avgjord IS NULL ORDER BY s.tand_nar,s.id`, [companyId],
+      WHERE s.company_id=$1
+        AND NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande a WHERE a.company_id=s.company_id AND a.signal_id=s.id)
+      ORDER BY s.tand_nar,s.id`, [companyId],
   );
   const poster: Undantagspost[] = [];
   const hoppade: Undantag['hoppade'] = [];

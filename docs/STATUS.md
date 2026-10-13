@@ -153,6 +153,73 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.9, omtag efter code-review, fem fynd):**
+  1. Signalsidan kastade `tillagg_godkannande.redan_koad` tyst. `runViewAction`
+     tar nu en valfri `avvikelse`, som läser ett lyckat svar och ger notistext
+     när utfallet inte blev det formuläret lovade. Signalsidan visar då
+     förslagets id och status. Texten vid tilläggsfälten säger att en signal
+     får ett förslag. Nytt vyprov K5 (i): väntande förslag, avvisat förslag och
+     en kontroll utan tilläggsfält. K5 (h) kräver att ett köat tillägg ger en
+     redirect utan notis.
+  2. K3 (i) kräver nu `redan_avgjord` på 409-svaret, i tre fall (innanför,
+     utanför och utanför med tillägg). K3 (k) kräver upprepningens notistext.
+  3. `MCP_ACTIONS.md`: köposten är villkorad ("om ingen köpost för signalen
+     finns") och nämner `kalla`. `redan_koad` har en egen punkt.
+  4. 0081:s huvudkommentar räknar upp båda triggrarna, funktionen och indexet.
+  5. Driftnotis 3 under Story 1.9-posten: 0081 är inte bakåtkompatibel.
+
+  **Inte kört:** vitest, typecheck och build. Sandlådan svarade
+  `This command requires approval` på `npm run typecheck`. Kedjans körning
+  är första körningen.
+
+- **2026-10-13 (Story 1.9, scopeavgörandet som ny rad):**
+  Migration `0081_scopeavgorande.sql`: kantkontroll (signal med underlag som
+  inte finns i bolaget stoppar filen), nycklarna för sammansatta FK, tabellen
+  `uppdrag_scopeavgorande` (BASELINE, append-only, löpnummer per signal, RLS,
+  `GRANT SELECT, INSERT`), överföringen av gamla `avgjord`-värden som
+  `overford = true` utan vem och när, avslutstriggern och frysningen av
+  kolumnen med triggern `uppdrag_scopesignal_fryser_avgjord`.
+  `lib/scopeavgorande.ts`: `tillaggsorsak` (”Tillägg: ” + Davids ord) och
+  `arUpprepatAvgorande`. `avgorSignal` låser signalen, räknar löpnumret,
+  ger 409 `redan_avgjord` för samma val på samma underlag och skriver raden
+  med auditraden `uppdrag.scope_avgjort` (id och koder). Tillägget köas som
+  `andra_baseline` med `kalla` och bara om ingen köpost för signalen finns i
+  någon status; annars `redan_koad: true`. Läsvägarna i `uppdragSignal.ts`,
+  `uppdragUndantag.ts` och `uppdragLage.ts` (`signalhistorik`) läser tabellen.
+  `andra_baseline` fick `kalla`. Signalsidans tabell ”Avgjorda” visar vem och
+  när och de tidigare avgörandena, med husets klasser; Lägets markup är orörd.
+  `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md` uppdaterade.
+
+  Prov: K0–K6 i `server/test/uppdragsytan-scopeavgorande.test.ts`,
+  `uppdragsytan-migration-0081.test.ts` och `scopeavgorandeHelper.ts`.
+  Hjälparna i `uppdragsytan-signaler.test.ts` och `uppdragsytan-tillagg.test.ts`
+  läser avgörandet ur tabellen, och `provaScheman` känner `kalla`.
+
+  **Inte kört:** varken vitest, typecheck eller build. Sandlådan nekade varje
+  körande kommando:
+  ```text
+  $ npx vitest run test/uppdragsytan-migration-0068.test.ts
+  This command requires approval
+  $ npm run typecheck
+  This command requires approval
+  ```
+  Ingen röd eller grön utdata finns därför, och inget prov kallas grönt.
+  Kedjans `npm ci`, `npm run typecheck` och `npm test` är första körningen.
+  Ingen migration, tjänstestart, commit eller driftsättning gjord.
+
+  Driftnotiser:
+  1. Avgöranden från före bygget står som överförda rader utan vem och när;
+     signalsidan säger ”Överfört ur den äldre kolumnen”.
+  2. Hermes `flerbolag.py` prövar inte rättigheterna för
+     `uppdrag_scopeavgorande`, eftersom tabellen inte står i dess `GRANTS`. En
+     Hermes-berättelse kan lägga till den med `SELECT, INSERT`.
+  3. **0081 är inte bakåtkompatibel.** Återställs bygget till föregående release
+     efter att 0081 körts, fäller frysningstriggern den gamla `avgorSignal`:s
+     `UPDATE uppdrag_scopesignal SET avgjord` (409 `rule_violation`), och den
+     gamla `listaSignaler` läser den frysta kolumnen, så att avgöranden gjorda
+     efter driftsättningen visas som öppna igen. En återställning görs därför
+     med en framåträttning, inte med föregående release.
+
 - **2026-10-11 (Story 1.8, spärren mot direktbindning av kostnader):**
   `server/src/lib/bindningsmal.ts` samlar den rena målregeln för löv, ström
   och uppdrag; `uppdragSvep.ts` använder den också för cachens grövre nivå.

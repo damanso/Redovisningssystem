@@ -22,7 +22,7 @@ import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
-import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
+import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue, type LiquiditySourceStatus } from '../../services/reports.js';
@@ -33,7 +33,9 @@ import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
   type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
   type Scopelinje } from '../../services/uppdragBedomning.js';
-import { listaScopefraser, listaSignaler, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
+import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
+  type Signalrad } from '../../services/uppdragSignal.js';
+import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -692,6 +694,10 @@ function parseCompanyId(value: unknown): string {
  * använder (validering, tenant-härledning, audit). write-actions utförs direkt;
  * sensitive hamnar i godkännandekön och vi skickar användaren till Att göra.
  * Valideringsfel ger en redirect tillbaka med ?fel=1 (ingen felsida för formulärslarv).
+ *
+ * `avvikelse` (valfri) läser ett lyckat svar och ger en text när utfallet inte
+ * blev det formuläret lovade. Texten står då i sidans notis, så att svaret
+ * inte kastas tyst (Story 1.9, "Inga tysta utfall").
  */
 const FORM_FEL = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
 
@@ -702,6 +708,7 @@ async function runViewAction(
   actionName: string,
   input: Record<string, unknown>,
   backTo: string,
+  avvikelse?: (result: ActionResult) => string | undefined,
 ): Promise<void> {
   const userId = getUserId(req);
   let result;
@@ -721,6 +728,11 @@ async function runViewAction(
       return;
     }
     throw err;
+  }
+  const text = avvikelse?.(result);
+  if (text) {
+    res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(text)}`);
+    return;
   }
   res.redirect(result.status === 'pending_approval' ? `/app/c/${companyId}/approvals` : backTo);
 }
@@ -2928,10 +2940,39 @@ const NYCKELRYMD: Record<string, string> = {
   kalender: 'icalendar#uid',
 };
 
+/** Köpostens status med samma ord som kvittolistan i Att göra. */
+const KOPOSTSTATUS: Record<string, string> = {
+  pending: 'väntar i Att göra', approved: 'mottaget', rejected: 'avvisat', executed: 'utfört', failed: 'misslyckat',
+};
+
+/**
+ * Story 1.9, AC 6: en signal får ett baselineförslag, i vilken status det än
+ * står. Fanns ett redan köas inget nytt, och då säger sidan det med förslagets
+ * id och status. Tilläggsfälten David fyllde i användes inte, och en sida som
+ * bara laddades om hade sett ut som att de gjorde det.
+ */
+function tillaggetsAvvikelse(result: ActionResult): string | undefined {
+  if (result.status !== 'ok') return undefined;
+  const t = (result.result as AvgorSignalSvar).tillagg_godkannande;
+  if (!t?.redan_koad) return undefined;
+  return `Avgörandet är sparat, men tillägget köades inte: signalen har redan ett baselineförslag `
+    + `(${t.id}, ${KOPOSTSTATUS[t.status] ?? t.status}), och en signal får ett förslag. `
+    + 'Tilläggsfälten du fyllde i användes inte.';
+}
+
 const signalChip = (rad: Signalrad): Raw => {
   const a = rad.avgjord ? AVGORANDE[rad.avgjord] : undefined;
   return a ? chip(a.etikett, a.kind, a.ikon) : chip('Öppen', 'warn', '◔');
 };
+
+/**
+ * Vem och när för ett avgörande (Story 1.9). En överförd rad saknar båda i
+ * underlaget, och sidan säger det i stället för att visa en tom cell som ser ut
+ * som ett fel — eller en gissning som ser ut som ett spår.
+ */
+const avgjortAvOchNar = (a: Scopeavgorandrad): string => (a.overford
+  ? 'Överfört ur den äldre kolumnen — vem och när saknas i underlaget'
+  : `${a.avgjort_av_namn ?? '—'} ${(a.avgjort_nar ?? '').slice(0, 16)}`);
 
 interface Signalunderlagsvy {
   projekt: { id: string; number: number; name: string };
@@ -2996,7 +3037,9 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
       ${f('tillagg_code', 'Kod', '0 1 108px', html`type="text" maxlength="40" placeholder="2B"`)}
       ${f('tillagg_name', 'Namn', '2 1 230px', html`type="text" maxlength="200" placeholder="Fas 2B: extra workshop"`)}
       ${f('tillagg_valid_from', 'Gäller från', '0 1 158px', html`type="date"`)}
-      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="2000" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
+      ${/* Story 1.9: köpostens orsak blir ”Tillägg: ” + texten, så fältet tar
+            emot exakt så mycket som schemat godtar — inte 2000 som sedan fälls. */ ''}
+      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="${String(TILLAGGSORSAK_MAX)}" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
       ${/* Taket är valfritt HÄR med flit: ett tak som ingen läst i avtals-
             handlingen varnar aldrig och spärrar aldrig — det redovisas som
             'vet ej'. Ett gissat tal hade sett ut som ett åtagande. */ ''}
@@ -3004,7 +3047,8 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
     </div>
     <p class="muted" style="margin:7px 0 0;font-size:12.5px">Fälten hör till <strong>Utanför</strong>. Fyller du i dem
       hamnar tillägget i <a href="/app/c/${companyId}/approvals">Att göra</a> — den nya avtalsversionen skrivs först när
-      du godkänt den där, och den gamla ligger kvar. Lämnar du dem tomma avgörs signalen bara.</p>
+      du godkänt den där, och den gamla ligger kvar. En signal får ett förslag: finns det redan ett, avgörs signalen
+      ändå och sidan säger att tillägget inte köades. Lämnar du dem tomma avgörs signalen bara.</p>
   </details>`;
 }
 
@@ -3135,17 +3179,27 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
       avgjorda.length === 0
         ? html`<p class="muted">Ingen signal är avgjord ännu.</p>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Underlag</th><th>Tänd</th></tr></thead>
-            <tbody>${avgjorda.map((s) => html`<tr>
+            <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Av och när</th><th>Underlag</th><th>Tänd</th></tr></thead>
+            <tbody>${avgjorda.map((s) => {
+              // Senaste avgörandet står först; de tidigare under det, närmast
+              // föregående överst — samma riktning som tabellens ”nyast först”.
+              const senaste = s.avgoranden[s.avgoranden.length - 1];
+              const tidigare = s.avgoranden.slice(0, -1).reverse();
+              return html`<tr>
               <td>”${s.fras}”${s.eskalerad_nar ? html` ${chip('Eskalerad', 'neg', '↑')}` : ''}</td>
               ${flera ? html`<td>${s.avtalsnamn}</td>` : ''}
               <td class="code">${s.klausul ?? '—'}</td>
-              <td>${signalChip(s)}</td>
+              <td>${signalChip(s)}${tidigare.map((a) => html`
+                <div class="muted" style="font-size:12.5px">Tidigare: ${AVGORANDE[a.avgorande]?.etikett ?? '—'} · ${avgjortAvOchNar(a)}</div>`)}</td>
+              ${senaste?.overford
+                ? html`<td class="muted" style="font-size:12.5px">${avgjortAvOchNar(senaste)}</td>`
+                : html`<td class="code">${senaste ? avgjortAvOchNar(senaste) : '—'}</td>`}
               <td class="code">${(s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined) ?? '—'}</td>
-              <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`)}
+              <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`;
+            })}
             </tbody></table></div>
-          <p class="muted" style="margin-top:8px;font-size:12.5px">Nyast först. Ett avgörande går att göra om —
-            det är en rättelse, och den syns här som det nya svaret.</p>`
+          <p class="muted" style="margin-top:8px;font-size:12.5px">Nyast först. Varje avgörande är en egen rad: ett nytt
+            avgörande läggs till och skriver aldrig över det förra, och de tidigare står kvar under det senaste.</p>`
     }`;
 }
 
@@ -3195,11 +3249,13 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
           },
         }
       : {};
+    // Den nya raden är kvittot, utom när tillägget inte köades: då säger
+    // notisen det (Story 1.9, AC 6).
     await runViewAction(req, res, companyId, 'avgor_scopesignal', {
       signal_id: falt(kropp.signal_id),
       avgjord: falt(kropp.avgjord),
       ...tillagg,
-    }, tillbaka);
+    }, tillbaka, tillaggetsAvvikelse);
     return;
   }
 

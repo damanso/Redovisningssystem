@@ -116,8 +116,13 @@ export interface Avtalslage {
   leverabler: Leverabelrakning[];
   leverabler_totalt: number;
   bedomning: Senastebedomning | null;
-  /** Öppna signaler först (tjänstens egen ordning), avgjorda som ett antal. */
+  /** Öppna signaler, och de avgjorda både som historik och som ett antal. */
   oppna_signaler: Signalrad[];
+  /**
+   * De avgjorda signalerna med alla sina avgöranden, i tjänstens ordning
+   * (Story 1.9). Tidigare avgöranden ska gå att läsa (FR-7, FR-8).
+   */
+  signalhistorik: Signalrad[];
   avgjorda_signaler: number;
 }
 
@@ -351,6 +356,7 @@ export async function lasUppdragslage(
     const senaste = bedomningar[bedomningar.length - 1] ?? null;
 
     const signaler = await listaSignaler(client, companyId, contractId);
+    const signalhistorik = signaler.filter((s) => s.avgjord !== null);
 
     avtal.push({
       contract_id: contractId,
@@ -369,7 +375,8 @@ export async function lasUppdragslage(
       leverabler_totalt: register.length,
       bedomning: senaste === null ? null : { ...senaste, forsta_meningen: forstaMeningen(senaste.kommentar) },
       oppna_signaler: signaler.filter((s) => s.avgjord === null),
-      avgjorda_signaler: signaler.filter((s) => s.avgjord !== null).length,
+      signalhistorik,
+      avgjorda_signaler: signalhistorik.length,
     });
   }
 
