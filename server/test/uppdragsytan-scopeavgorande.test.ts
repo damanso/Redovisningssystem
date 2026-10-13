@@ -1,13 +1,16 @@
 // Story 1.9 (B-8, FR-7, FR-41, FR-8): ett scopeavgörande blir en ny rad i
 // historiken.
 //
-// Provet täcker fem risker, i REST, MCP:s väg (agentnyckeln), vyn och SQL:
+// Provet täcker sex risker, i REST, MCP:s väg (agentnyckeln), vyn och SQL:
 //   * att ett avgörande skriver över ett tidigare — då går gränsen för
 //     åtagandet inte att följa i efterhand (K1, K3, K6);
 //   * att en tänd signal inte når David, eller står kvar som fråga efter
 //     avgörandet (K4);
 //   * att någon annan än en människa avgör (K3 e, K5 g);
 //   * att ett tillägg köas två gånger för samma signal (K5 d–e);
+//   * att ett tillägg köas på ett annat avtal än signalens — då fälls det i
+//     varje verkställighet och spärrar genom "ett förslag per källa"
+//     signalens tillägg för alltid (K5 j);
 //   * att ett avslutat uppdrag tar emot avgöranden (K1 h, K3 h, K4 g).
 // De rena reglerna ligger i `scopeavgorandeHelper.ts` och går att köra utan
 // databas. Migrationen som migration prövas i `uppdragsytan-migration-0081.test.ts`.
@@ -55,7 +58,7 @@ interface Auditrad { entity_type: string | null; entity_id: string | null; detai
 const auth = (b: Bolag) => ({ Authorization: `Bearer ${b.user.token}` });
 const co = (b: Bolag) => `/api/companies/${b.id}`;
 const fel = <T>(p: Promise<T>) => p.then(() => null, (e: unknown) => e);
-const korda = { k1f: 0, k1g: 0, k3eg: 0, k4c: 0, k5status: 0, k5versaler: 0, k6b: 0 };
+const korda = { k1f: 0, k1g: 0, k3eg: 0, k4c: 0, k5status: 0, k5versaler: 0, k5avtal: 0, k6b: 0 };
 let statusfall = 0;
 
 let schema: Bolag; let skriv: Bolag; let stangt: Bolag; let las: Bolag;
@@ -935,6 +938,78 @@ describe('K5 tillägget', () => {
     expect(r3.headers.location).toBe(vag);
     expect(await rader(utan.sig)).toHaveLength(1);
   });
+
+  it('j tilläggets avtal är signalens: ett annat ger 400, och köposten bär signalens avtal', async () => {
+    // Ett andra avtal på samma uppdrag skapas här och inte i beforeAll, så att
+    // K5 (a)–(i) körs mot ett uppdrag med ett avtal som förut.
+    const t2 = (await ok(tillagg, 'create_contract', {
+      project_id: p.projectId, name: 'Tillagg P2', signed_date: '2026-01-01',
+    })).id as string;
+    const vag = `/app/c/${tillagg.id}/projects/${p.projectId}/signaler`;
+    const avgor = (sig: string, contractId: string, code: string) => act(tillagg, 'avgor_scopesignal', {
+      signal_id: sig, avgjord: 'utanfor', tillagg: { contract_id: contractId, ...TILLAGG, code },
+    });
+
+    // 1. Ett annat avtal i bolaget: 400 före varje skrivning.
+    const sj = await tand(tillagg, p.contractId, 'avtalsfras annat avtal');
+    const koFore = await koantal(tillagg);
+    const auditFore = await auditantal(tillagg);
+    const annat = await avgor(sj, t2, '2P');
+    expect(annat.status, JSON.stringify(annat.body)).toBe(400);
+    expect(annat.body.error).toBe('signal_annat_avtal');
+    expect(await rader(sj)).toEqual([]);
+    expect(await koposter(sj)).toEqual([]);
+    expect(await koantal(tillagg)).toBe(koFore);
+    expect(await auditantal(tillagg)).toBe(auditFore);
+    korda.k5avtal++;
+
+    // 2. Ett okänt avtal ger samma svar: prövningen slår inte upp avtalet.
+    const okant = await avgor(sj, NOLL, '2P');
+    expect(okant.status, JSON.stringify(okant.body)).toBe(400);
+    expect(okant.body.error).toBe('signal_annat_avtal');
+    expect(await rader(sj)).toEqual([]);
+    expect(await koposter(sj)).toEqual([]);
+    expect(await koantal(tillagg)).toBe(koFore);
+    expect(await auditantal(tillagg)).toBe(auditFore);
+    korda.k5avtal++;
+
+    // 3. Signalens avtal i versaler köas i gemener ur signalraden, och verkställs.
+    const sq = await tand(tillagg, p.contractId, 'avtalsfras versaler');
+    const versaler = await avgor(sq, p.contractId.toUpperCase(), '2Q');
+    expect(versaler.status, JSON.stringify(versaler.body)).toBe(200);
+    expect(versaler.body.result.tillagg_godkannande.redan_koad).toBe(false);
+    const kq = await koposter(sq);
+    expect(kq).toHaveLength(1);
+    expect(kq[0]!.input.contract_id).toBe(p.contractId);
+    await godkann(tillagg, kq[0]!.id);
+    const q2 = (await delar(p.contractId)).find((d) => d.code === '2Q');
+    expect(q2).toBeDefined();
+    const lank = (await withAdmin((c) => c.query<{ ledde_till_part_id: string | null }>(
+      'SELECT ledde_till_part_id FROM uppdrag_scopesignal WHERE id = $1', [sq]))).rows[0]!.ledde_till_part_id;
+    expect(lank).toBe(q2!.id);
+
+    // 4. Signalen efteråt: de avvisade försöken lämnade ingenting som spärrar den.
+    const ratt = await avgor(sj, p.contractId, '2R');
+    expect(ratt.status, JSON.stringify(ratt.body)).toBe(200);
+    expect(ratt.body.result.tillagg_godkannande.redan_koad).toBe(false);
+    const kj = await koposter(sj);
+    expect(kj).toHaveLength(1);
+    expect(kj[0]!.input.contract_id).toBe(p.contractId);
+    expect(await rader(sj)).toEqual([expect.objectContaining({ tillagg_approval_id: kj[0]!.id })]);
+
+    // 5. Vyn med ett ändrat dolt fält landar i ?fel= och skriver ingenting.
+    const sw = await tand(tillagg, p.contractId, 'avtalsfras vyn');
+    const vy = await tillagg.ua.post(vag).type('form').send({
+      handling: 'avgor', signal_id: sw, avgjord: 'utanfor', tillagg_contract_id: t2,
+      tillagg_code: '2S', tillagg_name: 'Fas 2S', tillagg_valid_from: '2026-06-01',
+      tillagg_change_reason: 'Kunden bad om mer',
+    });
+    expect(vy.status).toBe(302);
+    expect(notis(vy.headers.location)).toContain('annat avtal än signalen');
+    expect(await rader(sw)).toEqual([]);
+    expect(await koposter(sw)).toEqual([]);
+    korda.k5avtal++;
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -984,5 +1059,6 @@ it('kontrollvakt: de negativa fallen och samtliga planterade statusar kördes', 
   expect(statusfall).toBe(6);
   expect(korda.k5status).toBe(statusfall);
   expect(korda.k5versaler).toBe(1);
+  expect(korda.k5avtal).toBe(3);
   expect(korda.k6b).toBe(4);
 });
