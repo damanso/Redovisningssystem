@@ -22,7 +22,7 @@ import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
 import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
-import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
+import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
 import { accountsPayableAging, accountsReceivableAging, balanceSheet, cashFlow, dashboard, generalLedger, incomeStatement, liquidityForecast, monthlyRevenue, type LiquiditySourceStatus } from '../../services/reports.js';
@@ -33,7 +33,8 @@ import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
   type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
   type Scopelinje } from '../../services/uppdragBedomning.js';
-import { listaScopefraser, listaSignaler, type Scopeavgorandrad, type Scopefras, type Signalrad } from '../../services/uppdragSignal.js';
+import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
+  type Signalrad } from '../../services/uppdragSignal.js';
 import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
@@ -693,6 +694,10 @@ function parseCompanyId(value: unknown): string {
  * använder (validering, tenant-härledning, audit). write-actions utförs direkt;
  * sensitive hamnar i godkännandekön och vi skickar användaren till Att göra.
  * Valideringsfel ger en redirect tillbaka med ?fel=1 (ingen felsida för formulärslarv).
+ *
+ * `avvikelse` (valfri) läser ett lyckat svar och ger en text när utfallet inte
+ * blev det formuläret lovade. Texten står då i sidans notis, så att svaret
+ * inte kastas tyst (Story 1.9, "Inga tysta utfall").
  */
 const FORM_FEL = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
 
@@ -703,6 +708,7 @@ async function runViewAction(
   actionName: string,
   input: Record<string, unknown>,
   backTo: string,
+  avvikelse?: (result: ActionResult) => string | undefined,
 ): Promise<void> {
   const userId = getUserId(req);
   let result;
@@ -722,6 +728,11 @@ async function runViewAction(
       return;
     }
     throw err;
+  }
+  const text = avvikelse?.(result);
+  if (text) {
+    res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(text)}`);
+    return;
   }
   res.redirect(result.status === 'pending_approval' ? `/app/c/${companyId}/approvals` : backTo);
 }
@@ -2929,6 +2940,26 @@ const NYCKELRYMD: Record<string, string> = {
   kalender: 'icalendar#uid',
 };
 
+/** Köpostens status med samma ord som kvittolistan i Att göra. */
+const KOPOSTSTATUS: Record<string, string> = {
+  pending: 'väntar i Att göra', approved: 'mottaget', rejected: 'avvisat', executed: 'utfört', failed: 'misslyckat',
+};
+
+/**
+ * Story 1.9, AC 6: en signal får ett baselineförslag, i vilken status det än
+ * står. Fanns ett redan köas inget nytt, och då säger sidan det med förslagets
+ * id och status. Tilläggsfälten David fyllde i användes inte, och en sida som
+ * bara laddades om hade sett ut som att de gjorde det.
+ */
+function tillaggetsAvvikelse(result: ActionResult): string | undefined {
+  if (result.status !== 'ok') return undefined;
+  const t = (result.result as AvgorSignalSvar).tillagg_godkannande;
+  if (!t?.redan_koad) return undefined;
+  return `Avgörandet är sparat, men tillägget köades inte: signalen har redan ett baselineförslag `
+    + `(${t.id}, ${KOPOSTSTATUS[t.status] ?? t.status}), och en signal får ett förslag. `
+    + 'Tilläggsfälten du fyllde i användes inte.';
+}
+
 const signalChip = (rad: Signalrad): Raw => {
   const a = rad.avgjord ? AVGORANDE[rad.avgjord] : undefined;
   return a ? chip(a.etikett, a.kind, a.ikon) : chip('Öppen', 'warn', '◔');
@@ -3016,7 +3047,8 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
     </div>
     <p class="muted" style="margin:7px 0 0;font-size:12.5px">Fälten hör till <strong>Utanför</strong>. Fyller du i dem
       hamnar tillägget i <a href="/app/c/${companyId}/approvals">Att göra</a> — den nya avtalsversionen skrivs först när
-      du godkänt den där, och den gamla ligger kvar. Lämnar du dem tomma avgörs signalen bara.</p>
+      du godkänt den där, och den gamla ligger kvar. En signal får ett förslag: finns det redan ett, avgörs signalen
+      ändå och sidan säger att tillägget inte köades. Lämnar du dem tomma avgörs signalen bara.</p>
   </details>`;
 }
 
@@ -3217,11 +3249,13 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
           },
         }
       : {};
+    // Den nya raden är kvittot, utom när tillägget inte köades: då säger
+    // notisen det (Story 1.9, AC 6).
     await runViewAction(req, res, companyId, 'avgor_scopesignal', {
       signal_id: falt(kropp.signal_id),
       avgjord: falt(kropp.avgjord),
       ...tillagg,
-    }, tillbaka);
+    }, tillbaka, tillaggetsAvvikelse);
     return;
   }
 

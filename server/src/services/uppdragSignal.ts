@@ -39,7 +39,10 @@ import { createApproval } from './approvals.js';
 import type { UpsertContractPartInput } from './contracts.js';
 import { skapaReferens, type Referenssort } from './uppdragReferens.js';
 
-/** Exakt CHECK-villkorets två värden i 0068 — tystnad (NULL) är det tredje läget. */
+/**
+ * Exakt CHECK-villkorets två värden (0068 och 0081). Tystnaden är det tredje
+ * läget: ingen rad i `uppdrag_scopeavgorande`, aldrig ett tredje värde.
+ */
 export const SIGNALAVGORANDEN = ['innanfor', 'utanfor'] as const;
 export type Signalavgorande = (typeof SIGNALAVGORANDEN)[number];
 

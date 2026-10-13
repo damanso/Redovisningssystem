@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-13 (Story 1.9, omtag efter code-review, fem fynd):**
+  1. Signalsidan kastade `tillagg_godkannande.redan_koad` tyst. `runViewAction`
+     tar nu en valfri `avvikelse`, som läser ett lyckat svar och ger notistext
+     när utfallet inte blev det formuläret lovade. Signalsidan visar då
+     förslagets id och status. Texten vid tilläggsfälten säger att en signal
+     får ett förslag. Nytt vyprov K5 (i): väntande förslag, avvisat förslag och
+     en kontroll utan tilläggsfält. K5 (h) kräver att ett köat tillägg ger en
+     redirect utan notis.
+  2. K3 (i) kräver nu `redan_avgjord` på 409-svaret, i tre fall (innanför,
+     utanför och utanför med tillägg). K3 (k) kräver upprepningens notistext.
+  3. `MCP_ACTIONS.md`: köposten är villkorad ("om ingen köpost för signalen
+     finns") och nämner `kalla`. `redan_koad` har en egen punkt.
+  4. 0081:s huvudkommentar räknar upp båda triggrarna, funktionen och indexet.
+  5. Driftnotis 3 under Story 1.9-posten: 0081 är inte bakåtkompatibel.
+
+  **Inte kört:** vitest, typecheck och build. Sandlådan svarade
+  `This command requires approval` på `npm run typecheck`. Kedjans körning
+  är första körningen.
+
 - **2026-10-13 (Story 1.9, scopeavgörandet som ny rad):**
   Migration `0081_scopeavgorande.sql`: kantkontroll (signal med underlag som
   inte finns i bolaget stoppar filen), nycklarna för sammansatta FK, tabellen
@@ -194,6 +213,12 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   2. Hermes `flerbolag.py` prövar inte rättigheterna för
      `uppdrag_scopeavgorande`, eftersom tabellen inte står i dess `GRANTS`. En
      Hermes-berättelse kan lägga till den med `SELECT, INSERT`.
+  3. **0081 är inte bakåtkompatibel.** Återställs bygget till föregående release
+     efter att 0081 körts, fäller frysningstriggern den gamla `avgorSignal`:s
+     `UPDATE uppdrag_scopesignal SET avgjord` (409 `rule_violation`), och den
+     gamla `listaSignaler` läser den frysta kolumnen, så att avgöranden gjorda
+     efter driftsättningen visas som öppna igen. En återställning görs därför
+     med en framåträttning, inte med föregående release.
 
 - **2026-10-11 (Story 1.8, spärren mot direktbindning av kostnader):**
   `server/src/lib/bindningsmal.ts` samlar den rena målregeln för löv, ström

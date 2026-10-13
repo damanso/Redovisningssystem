@@ -22,9 +22,19 @@
 -- (0070:s princip). Raderna märks `overford = true`, och en CHECK binder NULL i
 -- vem och när till just den märkningen.
 --
--- Filen är additiv: en ny tabell, två unika nycklar, en ny trigger och nya
--- kommentarer. Kolumnen `avgjord` tas inte bort och rättigheterna på
+-- Det filen skapar: tabellen `uppdrag_scopeavgorande` med indexet
+-- `uppdrag_scopeavgorande_avtal_idx`, två unika nycklar på befintliga tabeller
+-- (avsnitt 3), funktionen `fryser_scopesignalens_avgjord()` och två triggrar:
+-- `uppdrag_scopeavgorande_vagrar_avslutat` (med 0068:s oförändrade funktion) och
+-- `uppdrag_scopesignal_fryser_avgjord`. Därtill nya kommentarer på båda
+-- tabellerna. Kolumnen `avgjord` tas inte bort och rättigheterna på
 -- `uppdrag_scopesignal` är oförändrade. En andra körning skriver inga nya rader.
+--
+-- Filen är INTE bakåtkompatibel med koden före Story 1.9. Frysningen fäller den
+-- gamla `avgorSignal`:s `UPDATE uppdrag_scopesignal SET avgjord` (409
+-- rule_violation), och den gamla läsvägen läser den frysta kolumnen, så att
+-- avgöranden gjorda efter 0081 visas som öppna igen. En återställning efter att
+-- 0081 körts görs därför med en framåträttning, aldrig med föregående release.
 
 -- ---------------------------------------------------------------------------
 -- 2) Kantkontroll — FÖRE allt annat (formen ur 0068 avsnitt 8)

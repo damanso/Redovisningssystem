@@ -1096,21 +1096,25 @@ signal — inklusive grannbolagets — ger **404 `not_found`**, som förut.
   `change_reason` ≥ 5 tecken och `valid_from`) — det ÄR den åtgärdens indata,
   och köposten valideras om mot just det schemat vid godkännandet.
   `change_reason` får högst 1 991 tecken, och köpostens orsak blir
-  `Tillägg: <texten>`. Köposten bär `signal_id` och `kalla`. Finns redan en
-  `andra_baseline` för signalen, i någon status, köas ingen ny: avgörandet
-  skrivs ändå, och svaret säger `redan_koad: true` med den befintliga
-  köpostens id och status. Tillsammans
-  med `innanfor` ger det **400 `validation_error`**: låg frasen innanför
-  uppdraget finns det inget att lägga till avtalet. Valfritt med flit — alla
-  utanför-signaler blir inte tilläggsavtal, och ett förifyllt tak vore ett
-  förslag ingen läst i avtalshandlingen.
-- **Fältet skriver ingen avtalsdel.** Det skapar en `andra_baseline`-post i
-  **Att göra** (med `signal_id` ifyllt) plus auditraden
+  `Tillägg: <texten>`. Tillsammans med `innanfor` ger fältet
+  **400 `validation_error`**: låg frasen innanför uppdraget finns det inget att
+  lägga till avtalet. Valfritt med flit — alla utanför-signaler blir inte
+  tilläggsavtal, och ett förifyllt tak vore ett förslag ingen läst i
+  avtalshandlingen.
+- **Fältet skriver ingen avtalsdel.** Om ingen köpost för signalen finns skapar
+  det en `andra_baseline`-post i **Att göra** (med `signal_id` och
+  `kalla: { typ: 'scopesignal', id }` ifyllda) plus auditraden
   `action.approval_requested`, i samma transaktion som avgörandet — aldrig via
   ett nytt `executeAction`-anrop. Svaret bär `tillagg_godkannande` med köpostens
-  id och status. Först vid godkännandet föds versionen och signalens
-  `ledde_till_part_id`; avslås posten står avgörandet kvar men avtalet är orört.
-  **Inget femte handgrepp:** människans godkännande i kön är det andra greppet.
+  id och status och `redan_koad: false`. Först vid godkännandet föds versionen
+  och signalens `ledde_till_part_id`; avslås posten står avgörandet kvar men
+  avtalet är orört. **Inget femte handgrepp:** människans godkännande i kön är
+  det andra greppet.
+- **Ett förslag per signal (Story 1.9, AC 6).** Finns redan en `andra_baseline`
+  för signalen, i någon status, köas ingen ny: avgörandet skrivs ändå, och
+  svaret säger `redan_koad: true` med den befintliga köpostens id och status.
+  Signalsidan visar samma sak i sin notis, så att ifyllda tilläggsfält aldrig
+  kastas tyst.
 
 **Vyn:** `/app/c/:id/projects/:projectId/signaler`, undersida till uppdraget
 (knappen **Signaler** bredvid *Bedömning*). Öppna signaler ligger överst — en
@@ -1120,6 +1124,8 @@ med var sin **Tänd**-knapp och underlaget ett klick bort per fras (`<details>`)
 så att ett mejl aldrig kan fästas på fel fras. Nyckelrymden
 (`rfc822#message-id` / `icalendar#uid`) fyller vyn själv; David anger sorten,
 id:t och vilket konto det lästes ur. Inget `?ok=`: kvittot är den nya raden.
+Undantaget är ett tillägg som inte köades därför att signalen redan har ett
+förslag. Då står förslagets id och status i sidans notis (Story 1.9).
 
 **Tillägget på ytan (S5.2, våg 4):** under varje öppen signal ligger
 *Blev det ett tilläggsavtal?* (`<details>`) med fem fält — kod, namn, gäller
@@ -1132,7 +1138,8 @@ notisen står kvar på sidan; en tyst bortkastad ifyllnad hade varit värre.
 *Innanför* bär inte fälten alls, så en ifyllnad kan aldrig råka följa med fel
 svar. Texten under fälten säger var tillägget hamnar och länkar dit
 (**Att göra**): den nya avtalsversionen skrivs först när David godkänt den där,
-och den gamla ligger kvar.
+och den gamla ligger kvar. Den säger också att en signal får ett förslag, och
+att sidan säger till när tillägget därför inte köades.
 
 ### Drive-kön för registrets frysta kopia (S7.2, våg 3)
 

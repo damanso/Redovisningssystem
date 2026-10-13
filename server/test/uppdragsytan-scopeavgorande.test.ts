@@ -174,6 +174,11 @@ function iLaget(l: any, signalId: string): { oppen: any; historik: any } {
     historik: avtal.flatMap((a) => a.signalhistorik).find((s) => s.id === signalId),
   };
 }
+/** Notisens text ur en redirect till `?fel=`, avkodad. */
+const notis = (location: string | undefined): string => {
+  const kodad = (location ?? '').split('fel=')[1];
+  return kodad === undefined ? '' : decodeURIComponent(kodad);
+};
 const harPost = (u: any, signalId: string) =>
   (u.poster as Array<{ id: string; slag: string }>).some((p) => p.id === signalId && p.slag === 'scopeavgorande');
 
@@ -505,13 +510,26 @@ describe('K3 skrivvägen', () => {
     expect(r3.map((x) => x.lopnummer)).toEqual([1, 2]);
     expect(r3.map((x) => x.avgorande).sort()).toEqual(['innanfor', 'utanfor']);
 
-    const s4 = await tand(skriv, u.contractId, 'vi antog att det ingick');
-    const lika = await Promise.all([
-      act(skriv, 'avgor_scopesignal', { signal_id: s4, avgjord: 'innanfor' }),
-      act(skriv, 'avgor_scopesignal', { signal_id: s4, avgjord: 'innanfor' }),
-    ]);
-    expect(lika.map((r) => r.status).sort(), JSON.stringify(lika.map((r) => r.body))).toEqual([200, 409]);
-    expect(await rader(s4)).toHaveLength(1);
+    // Ett 409 räcker inte som belägg för låset: utan låset fäller det unika
+    // indexet den andra raden, också som 409 men med `conflict`. Bara låset
+    // ger `redan_avgjord`, eftersom den andra då läser den första raden.
+    const sammaVal = async (fras: string, indata: object) => {
+      const sig = await tand(skriv, u.contractId, fras);
+      const svar = await Promise.all([
+        act(skriv, 'avgor_scopesignal', { signal_id: sig, ...indata }),
+        act(skriv, 'avgor_scopesignal', { signal_id: sig, ...indata }),
+      ]);
+      const besked = JSON.stringify(svar.map((r) => r.body));
+      expect(svar.map((r) => r.status).sort(), besked).toEqual([200, 409]);
+      expect(svar.find((r) => r.status === 409)!.body.error, besked).toBe('redan_avgjord');
+      expect(await rader(sig)).toHaveLength(1);
+      return sig;
+    };
+    await sammaVal('vi antog att det ingick', { avgjord: 'innanfor' });
+    await sammaVal('det var väl självklart', { avgjord: 'utanfor' });
+    // Med tillägg: den andra fälls före köningen, så exakt en köpost.
+    const medTillagg = await sammaVal('ni kan väl lägga till', { avgjord: 'utanfor', tillagg: TILL() });
+    expect(await koposter(medTillagg)).toHaveLength(1);
   });
 
   it('j utanför med tillägg: köposten på raden och i auditraden, och upprepningen ger 409', async () => {
@@ -541,6 +559,8 @@ describe('K3 skrivvägen', () => {
     const igen = await skriv.ua.post(vag).type('form').send({ handling: 'avgor', signal_id: s6, avgjord: 'innanfor' });
     expect(igen.status).toBe(302);
     expect(igen.headers.location).toMatch(/\/signaler\?fel=/);
+    // Notisen ska vara upprepningens, inte vilket fel som helst.
+    expect(notis(igen.headers.location)).toMatch(/redan avgjord så, på samma underlag/);
     expect(await rader(s6)).toHaveLength(1);
   });
 });
@@ -858,11 +878,62 @@ describe('K5 tillägget', () => {
       tillagg_cap_hours: '8,5', tillagg_change_reason: 'Kunden bad om mer',
     });
     expect(res.status).toBe(302);
+    // Köat som formuläret lovade: tillbaka till sidan utan notis.
+    expect(res.headers.location).toBe(vag);
     const k = await koposter(sv);
     expect(k).toHaveLength(1);
     expect(k[0]!.input.kalla).toEqual({ typ: 'scopesignal', id: sv });
     expect(k[0]!.input.change_reason).toBe('Tillägg: Kunden bad om mer');
     expect(k[0]!.input.cap_hours).toBe(8.5);
+  });
+
+  it('i vyn: ett tillägg som inte köas syns, med förslagets id och status', async () => {
+    const vag = `/app/c/${tillagg.id}/projects/${p.projectId}/signaler`;
+    // Texten vid fälten lovar inte mer än som sker.
+    expect(await sida(tillagg, vag)).toContain('En signal får ett förslag');
+    const formular = (sig: string, code: string, medTillagg = true) => tillagg.ua.post(vag).type('form').send({
+      handling: 'avgor', signal_id: sig, avgjord: 'utanfor', tillagg_contract_id: p.contractId,
+      ...(medTillagg ? { tillagg_code: code, tillagg_name: `Fas ${code}`, tillagg_valid_from: '2026-06-01',
+        tillagg_change_reason: 'Kunden bad om mer' } : {}),
+    });
+    /** En signal med ett förslag köat genom REST, som K5 e och g bygger läget. */
+    const medForslag = async (fras: string, code: string) => {
+      const sig = await tand(tillagg, p.contractId, fras);
+      const rest = await act(tillagg, 'andra_baseline', { contract_id: p.contractId, ...TILLAGG, code,
+        change_reason: 'Tilläggsavtal ur API', signal_id: sig, kalla: { typ: 'scopesignal', id: sig } });
+      expect(rest.status, JSON.stringify(rest.body)).toBe(202);
+      return { sig, forslag: rest.body.approval.id as string };
+    };
+
+    // Väntande förslag: avgörandet sparas, och notisen säger att tillägget inte köades.
+    const vantar = await medForslag('vyfras väntar', '2K');
+    const r1 = await formular(vantar.sig, '2L');
+    expect(r1.status).toBe(302);
+    const n1 = notis(r1.headers.location);
+    expect(n1).toContain('tillägget köades inte');
+    expect(n1).toContain(vantar.forslag);
+    expect(n1).toContain('väntar i Att göra');
+    expect(await koposter(vantar.sig)).toEqual([expect.objectContaining({ id: vantar.forslag })]);
+    expect(await rader(vantar.sig)).toEqual([expect.objectContaining({ avgorande: 'utanfor', tillagg_approval_id: null })]);
+    expect(await sida(tillagg, r1.headers.location!)).toContain(vantar.forslag);
+
+    // Avvisat förslag: samma regel i en annan status, och statusen står i notisen.
+    const avvisat = await medForslag('vyfras avvisat', '2M');
+    const nej = await api.post(`${co(tillagg)}/approvals/${avvisat.forslag}/reject`).set(auth(tillagg)).send({ reason: 'Provets nej' });
+    expect(nej.status, JSON.stringify(nej.body)).toBe(200);
+    const r2 = await formular(avvisat.sig, '2N');
+    const n2 = notis(r2.headers.location);
+    expect(n2).toContain('tillägget köades inte');
+    expect(n2).toContain(avvisat.forslag);
+    expect(n2).toContain('avvisat');
+    expect(await koposter(avvisat.sig)).toHaveLength(1);
+
+    // Kontroll: utan tilläggsfält bad David inte om något tillägg, så ingen notis.
+    const utan = await medForslag('vyfras utan fält', '2O');
+    const r3 = await formular(utan.sig, '', false);
+    expect(r3.status).toBe(302);
+    expect(r3.headers.location).toBe(vag);
+    expect(await rader(utan.sig)).toHaveLength(1);
   });
 });
 
