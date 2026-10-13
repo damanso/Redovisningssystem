@@ -12,10 +12,12 @@ import * as vy from '../src/http/view/undantagsvyn.js';
 import { html } from '../src/http/view/html.js';
 import { KALLA_REDOVISNING, last, olast, saknas } from '../src/lib/lasvarde.js';
 import {
-  MANDATKALLOR, POSTSLAG,
+  MANDATKALLOR, POSTSLAG, beskrivOvrigtBeslut,
   type Kallreferens, type Kalltackning, type Postslag, type Tackningspost, type Undantag, type Undantagspost,
   type Uppdragsref,
 } from '../src/services/uppdragUndantag.js';
+import type { OvrigtUnderlag } from '../src/lib/beslutsunderlag.js';
+import { ANTECKNING, fixturunderlag, mellanslag } from './ovrigtHelper.js';
 
 // --- Fixturerna ---------------------------------------------------------------
 
@@ -31,6 +33,7 @@ export const PROJEKT_B = 'bbbbbbbb-9999-4222-8333-444455556666';
 const POSTID: Record<Postslag, string> = {
   baselineandring: 'ba5e1111-1111-4222-8333-444455556666',
   kostnadsbindning: 'c0571111-1111-4222-8333-444455556666',
+  ovrigt_beslut: '0e1a1111-1111-4222-8333-444455556666',
   avslut: 'a7511111-1111-4222-8333-444455556666',
   scopeavgorande: '5c0b1111-1111-4222-8333-444455556666',
   ny_bedomning: 'bed01111-1111-4222-8333-444455556666',
@@ -58,13 +61,13 @@ const ytan = (sokvag: string, etikett: string): Kallreferens => ({ typ: 'yta', e
 
 /** En post av ett slag, med läsvägens form. Allt är lästa värden ur redovisningen om inget annat sägs. */
 export function post(slag: Postslag, over: Partial<Undantagspost> = {}): Undantagspost {
-  const koburen = slag === 'baselineandring' || slag === 'kostnadsbindning' || slag === 'avslut';
+  const koburen = slag === 'baselineandring' || slag === 'kostnadsbindning' || slag === 'ovrigt_beslut' || slag === 'avslut';
   const bas: Undantagspost = {
     slag,
     id: POSTID[slag],
     identitet: koburen ? 'kopost' : slag === 'scopeavgorande' ? 'signal' : 'begaran',
     atgard: slag === 'baselineandring' ? 'andra_baseline' : slag === 'kostnadsbindning' ? 'binda_kostnad'
-      : slag === 'avslut' ? 'avsluta_uppdrag' : null,
+      : slag === 'ovrigt_beslut' ? 'registrera_uppdragsbeslut' : slag === 'avslut' ? 'avsluta_uppdrag' : null,
     foreslagen_av: 'human',
     skapad_nar: TID,
     uppdrag: last(uppdragsref(), KALLA_REDOVISNING, TID),
@@ -427,4 +430,94 @@ export function provaBedomningUtanAvtal() {
     assert.ok(!a.includes('<form') && !a.includes('<button'), a);
     assert.ok(a.includes('Uppdraget kunde inte läsas, så frågan kan inte avgöras här.'), a);
   }
+}
+
+// ---------------------------------------------------------------------------
+// R7: Övrigt-frågan med beräkningen (Story 1.14, Task 5)
+// ---------------------------------------------------------------------------
+
+const OVRIGT_DATUM = '2026-10-12';
+const OVRIGTFALT = ['forfragan', 'avtalsdelar', 'timpris', 'forbrukning', 'timmar', 'berakning', 'aterstaende', 'scopelinjer'] as const;
+
+/** Posten byggd av läsvägens beskrivning, med en köpost som agenten begärt. */
+export function ovrigtpost(underlag: OvrigtUnderlag | null = fixturunderlag()): Undantagspost {
+  return beskrivOvrigtBeslut({
+    kopost: { id: POSTID.ovrigt_beslut, action: 'registrera_uppdragsbeslut', input: {}, requested_actor: 'agent', created_at: new Date(TID) },
+    uppdrag: uppdragsref(), underlag,
+    anteckning: { id: ANTECKNING, text: '<b>Extra</b> rapport', datum: OVRIGT_DATUM, utanfor_avtal: true },
+    referenser: [],
+  }, `/app/c/${C}`, TID);
+}
+const ovrigtfalt = (p: Undantagspost, namn: string): string => mellanslag(falt(enPost(p), namn));
+
+// R7 (a): blockets åtta fält, radens text escapad, sex delar och beräkningen.
+export function provaOvrigtFalten() {
+  const a = enPost(ovrigtpost());
+  for (const namn of OVRIGTFALT) assert.ok(a.includes(`data-falt="${namn}"`), `${namn} saknas`);
+  const forfragan = falt(a, 'forfragan');
+  assert.ok(forfragan.includes('&lt;b&gt;Extra&lt;/b&gt; rapport'), forfragan);
+  assert.ok(!a.includes('<b>Extra</b>'), 'radens text står oescapad');
+  assert.ok(forfragan.includes(`Davids egen anteckning, ${OVRIGT_DATUM}`), forfragan);
+  assert.equal((falt(a, 'avtalsdelar').match(/<li>/g) ?? []).length, 6, falt(a, 'avtalsdelar'));
+  const berakning = text(ovrigtfalt(ovrigtpost(), 'berakning'));
+  assert.ok(berakning.includes('8 h ×') && berakning.includes('8 000,00 kr'), berakning);
+  assert.ok(text(ovrigtfalt(ovrigtpost(), 'forbrukning')).includes('10 h av 32 h'));
+  assert.ok(!/%/.test(text(a)), 'en procentsats i posten');
+}
+
+// R7 (b): timmarna saknas — inget belopp och ingen nolla.
+export function provaOvrigtUtanTimmar() {
+  const p = ovrigtpost(fixturunderlag({ timmar: null }));
+  assert.ok(ovrigtfalt(p, 'timmar').includes('Timmar saknas i förslaget'));
+  const b = ovrigtfalt(p, 'berakning');
+  assert.ok(b.includes('Inget belopp räknas: timmar saknas.'), b);
+  assert.ok(!b.includes('kr'), b);
+}
+
+// R7 (c): avtalet saknar timpris.
+export function provaOvrigtUtanTaxa() {
+  const p = ovrigtpost(fixturunderlag({ taxa: null }));
+  assert.ok(ovrigtfalt(p, 'timpris').includes('Avtalet saknar timpris'));
+  assert.ok(ovrigtfalt(p, 'berakning').includes('Inget belopp räknas: avtalet saknar timpris.'));
+}
+
+// R7 (d): ett överskridet tak sägs i ord, aldrig som ett negativt tal.
+export function provaOvrigtOverskridet() {
+  const p = ovrigtpost(fixturunderlag({ timmar: 40 }));
+  const a = text(ovrigtfalt(p, 'aterstaende'));
+  assert.ok(a.includes('Efter arbetet: taket överskrids med 18 h'), a);
+  assert.ok(!a.includes('−') && !a.includes('-18'), a);
+}
+
+// R7 (e): scopelinjerna, tomma och ifyllda.
+export function provaOvrigtScopelinjer() {
+  assert.ok(ovrigtfalt(ovrigtpost(), 'scopelinjer').includes('Avtalet har inga scopelinjer.'));
+  const s = ovrigtfalt(ovrigtpost(fixturunderlag({ scopelinjer: { innanfor: ['Rapporter enligt bilaga 1'], utanfor: ['Nya integrationer'] } })), 'scopelinjer');
+  for (const del of ['Innanför:', 'Utanför:', 'Rapporter enligt bilaga 1', 'Nya integrationer']) assert.ok(s.includes(del), `${del} saknas i ${s}`);
+}
+
+// R7 (f): förfrågan är källan "Davids egen anteckning", med länk till Övrigt på Läget.
+export function provaOvrigtKallan() {
+  const k = falt(enPost(ovrigtpost()), 'kallor');
+  assert.ok(k.includes(`<a href="/app/c/${C}/projects/${PROJEKT_A}/laget#kort-ovrigt">Davids egen anteckning, ${OVRIGT_DATUM}</a>`), k);
+}
+
+// R7 (g): AI-märkningen, och underlagets lästid i färskhetsraden.
+export function provaOvrigtMarkningOchFarskhet() {
+  const a = enPost(ovrigtpost());
+  assert.ok(a.includes('ai-markning'));
+  const i = a.indexOf('<p class="farskhet">');
+  assert.ok(i > -1, a);
+  const rad = a.slice(i, a.indexOf('</p>', i));
+  assert.equal((rad.match(/<span>/g) ?? []).length, 2, `postens lästid och underlagets: ${rad}`);
+}
+
+// R7 (h): ett underlag som inte går att läsa ger "saknas i underlaget"; andra slag har inget av blockets fält.
+export function provaOvrigtUtanUnderlag() {
+  const a = enPost(ovrigtpost(null));
+  for (const namn of OVRIGTFALT.filter((n) => n !== 'forfragan')) {
+    assert.ok(falt(a, namn).includes('saknas i underlaget'), `${namn}: ${falt(a, namn)}`);
+  }
+  const annan = enPost(post('avslut'));
+  for (const namn of OVRIGTFALT) assert.ok(!annan.includes(`data-falt="${namn}"`), `avslutet bär ${namn}`);
 }

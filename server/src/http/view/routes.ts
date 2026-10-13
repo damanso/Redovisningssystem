@@ -4294,7 +4294,8 @@ function anteckningsformular(companyId: string, l: Uppdragslage): Raw {
       <input type="checkbox" name="utanfor_avtal" value="ja" style="width:auto;margin-top:2px">
       <span>Gäller arbete utanför avtalet
         <span class="muted" style="display:block;font-size:12.5px;margin-top:3px">Markeringen följer raden och räknas
-          i panelhuvudet. Den blir aldrig ett tillägg av sig själv — ett tillägg skrivs där tillägg skrivs.</span></span>
+          i panelhuvudet. När Hermes formulerat ett förslag blir raden en fråga till dig under Uppdrag, med beräkningen
+          färdig. Den blir aldrig ett tillägg utan ditt ja.</span></span>
     </label>
     ${/* Före knappen, aldrig efter: det som inte går att ångra ska stå framför
           handen som ska göra det. */ ''}

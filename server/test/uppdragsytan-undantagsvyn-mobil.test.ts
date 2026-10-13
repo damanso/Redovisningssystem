@@ -31,6 +31,7 @@ import {
   PASSWORD, avgoranden, bedomningar, beslutsrader, femSlag, frisktUppdrag, koa, kopost, nyttBolag, ok, rest, svep,
   uppdragsdestination,
 } from './undantagsvynRigg.js';
+import { avtalsdelsrader, beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 
 const MOBIL = { viewport: { width: 390, height: 844 }, javaScriptEnabled: false, hasTouch: true, isMobile: true };
 
@@ -91,6 +92,8 @@ beforeAll(async () => {
 
   poster = await nyttBolag('Mobil poster');
   fem = await femSlag(poster);
+  // Story 1.14: en Övrigt-fråga med beräkningen mäts i (1)–(2) med de andra posterna.
+  await ovrigtFraga(poster, await iltUppdrag(poster), { alternativ: 'tillagg', avtalsdel_kod: '2B' });
   tomt = await nyttBolag('Mobil tomt');
   await frisktUppdrag(tomt, 'Friskt');
   await svep(tomt);
@@ -228,6 +231,10 @@ describe('B (6) varje val i telefonen', () => {
   let utanforSignal: string;
   /** En baselineändring som går att verkställa: avtalsdelens nya version (`uppdragsytan-mandat.test.ts`). */
   let jaPost: string;
+  /** Story 1.14: ett tillägg och ett ”ryms” ur Övrigt, köade av svepet. */
+  let ilt: Ilt;
+  let ovrigtTillagg: string;
+  let ovrigtRyms: string;
 
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
@@ -237,7 +244,10 @@ describe('B (6) varje val i telefonen', () => {
       contract_id: f.a.contractId, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123,
       change_reason: 'Ändrat avtal',
     });
-  }, 120_000);
+    ilt = await iltUppdrag(val);
+    ovrigtTillagg = (await ovrigtFraga(val, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' })).approvalId;
+    ovrigtRyms = (await ovrigtFraga(val, ilt)).approvalId;
+  }, 180_000);
 
   /** Postens dolda fält, läst ur den renderade sidan — samma data som formuläret skickar. */
   async function dolda(page: Page, id: string): Promise<Record<string, string>> {
@@ -364,6 +374,51 @@ describe('B (6) varje val i telefonen', () => {
             { lage: 'risk', satt_av_manniska: true, begaran_id: f.ny_bedomning, kommentar: null }]);
         },
         restVag: 'actions/satt_bedomning', restKropp: input, restKod: 'begaran_besvarad',
+        agentKod: 'human_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(9) ja på en Övrigt-fråga om tillägg', async () => {
+    const { kontext, page } = await mobil(val);
+    try {
+      const fore = await delversioner(val.id, ilt.contractId, '2B');
+      await valet({ page, kontext, id: ovrigtTillagg, knapp: 'Ja', form: { handling: 'ja', approval_id: ovrigtTillagg },
+        plats: laget(ilt, `beslut-${ovrigtTillagg}`),
+        rader: async () => (await beslutsrader(ovrigtTillagg)).antal,
+        registrerat: async () => {
+          expect((await kopost(ovrigtTillagg)).status).toBe('executed');
+          expect(await beslutsraderFor(ovrigtTillagg)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'tillagg' })]);
+          const efter = await delversioner(val.id, ilt.contractId, '2B');
+          expect(efter).toHaveLength(fore.length + 1);
+          expect(efter.at(-1)!.cap_hours).toBe(20);
+        },
+        restVag: `approvals/${ovrigtTillagg}/approve`, restKropp: {}, restKod: 'not_pending',
+        agentKod: 'human_approval_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(10) nej med skäl på en Övrigt-fråga som ryms', async () => {
+    const { kontext, page } = await mobil(val);
+    try {
+      const skal = 'ILT får offerera det separat';
+      const delar = await avtalsdelsrader(val.id, ilt.contractId);
+      await valet({ page, kontext, id: ovrigtRyms, knapp: 'Nej',
+        fore: () => page.fill(`#post-${ovrigtRyms} textarea[name=skal]`, skal),
+        form: { handling: 'nej', approval_id: ovrigtRyms, skal },
+        plats: laget(ilt, `beslut-${ovrigtRyms}`),
+        rader: async () => (await beslutsrader(ovrigtRyms)).antal,
+        registrerat: async () => {
+          const q = await kopost(ovrigtRyms);
+          expect(q.status).toBe('rejected');
+          expect(q.beslut_skal).toBe(skal);
+          expect(await beslutsraderFor(ovrigtRyms)).toEqual([expect.objectContaining({ utfall: 'nej', skal, alternativ: 'ryms' })]);
+          expect(await avtalsdelsrader(val.id, ilt.contractId)).toEqual(delar);
+        },
+        restVag: 'actions/avboj_beslutsforslag', restKropp: { approval_id: ovrigtRyms, skal }, restKod: 'not_pending',
         agentKod: 'human_required' });
     } finally {
       await kontext.close();

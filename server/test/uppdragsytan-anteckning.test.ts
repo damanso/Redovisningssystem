@@ -387,6 +387,13 @@ describe('(d) panelen Övrigt på Läget', () => {
     expect(flaggadeChip(markup)).toBe(0);
   });
 
+  it('D3 bockens ledtext säger vad markeringen leder till (Story 1.14)', async () => {
+    const markup = panelen(await sida(lagetsVag(tomtProjekt))).replace(/\s+/g, ' ');
+    expect(markup).toContain('När Hermes formulerat ett förslag blir raden en fråga till dig under Uppdrag, med beräkningen färdig.');
+    expect(markup).toContain('Den blir aldrig ett tillägg utan ditt ja.');
+    expect(markup).not.toContain('ett tillägg skrivs där tillägg skrivs');
+  });
+
   it('fälten står FÖRE knappen, och panelen är JS-fri', async () => {
     const markup = panelen(await sida(lagetsVag(tomtProjekt)));
     const textarea = markup.indexOf('<textarea name="text"');

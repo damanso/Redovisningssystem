@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { api, app, registerUser, createCompany, createFiscalYear, withAdmin, type TestUser } from './helpers.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { MANDATATGARDER, KOPOSTNYCKLAR, type Mandatatgard } from '../src/services/uppdragBeslut.js';
-import { forslagHash } from '../src/lib/beslutsunderlag.js';
+import { byggRymsindata, forslagHash } from '../src/lib/beslutsunderlag.js';
+import { fixturunderlag } from './ovrigtHelper.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { createApproval } from '../src/services/approvals.js';
 import { verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
@@ -84,6 +85,11 @@ async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
     input = { receipt_id: receipt, contract_part_id: part };
   } else if (atgard === 'avsluta_uppdrag') input = { project_id: project };
   else if (atgard === 'update_contract') input = { contract_id: contract, notes: 'Provets anteckning' };
+  else if (atgard === 'registrera_uppdragsbeslut') {
+    // Story 1.14: en bockad rad på fallets avtal, och ett ryms-förslag på L1.
+    const anteckning = (await ok(f, 'skriv_uppdragsanteckning', { contract_id: contract, text: 'Provets förfrågan utanför avtalet', utanfor_avtal: true })).id as string;
+    input = byggRymsindata({ contract_id: contract, underlag: fixturunderlag({ anteckningId: anteckning, kod: 'L1' }) });
+  }
   else input = { contract_id: contract, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123, change_reason: 'Ändrat avtal' };
   return { company, project, contract, part, receipt, token, approval: await koa(f, atgard, input), input };
 }
@@ -118,6 +124,10 @@ const FALL = {
     const avtal = (await saklage(f)).avtal[0]; expect(r.handling.avtal[0].oppna).toEqual(avtal.avslutat_med_oppna);
     expect(r.handling.project_id).toBe(f.project); expect(r.handling.status).toBe('closed');
   } },
+  registrera_uppdragsbeslut: { koa: () => nyttFall('registrera_uppdragsbeslut'), kalla: (f) => ({ typ: 'anteckning', id: (f.input.kalla as { id: string }).id }), handling: async (r, f) => {
+    expect(r.handling).toEqual({ typ: 'ryms', anteckning_id: (f.input.kalla as { id: string }).id, avtalsdel_kod: 'L1' });
+    expect(r.alternativ).toBe('ryms');
+  } },
 } satisfies Record<Mandatatgard, Fall>;
 beforeAll(async () => {
   user = await registerUser('mandat'); granne = await registerUser('mandat-granne');
@@ -130,7 +140,9 @@ async function provaUnderlag(f: FallContext, r: Record<string, any>, atgard: Man
   expect(r.underlag.indata).toEqual(indata); expect(r.underlag.approval_id).toBe(q.id); expect(r.underlag.atgard).toBe(atgard);
   expect(Object.keys(r.underlag).sort()).toEqual(['atgard','approval_id','foreslagen_av','skapad_nar','indata','projekt_namn','avtal_namn','forslag_fran','forslagstext','belopp_ore','skal','ja_registrerar','post_saknas','kallor','last_nar'].sort());
   for (const [k, v] of Object.entries(r.underlag)) if (!['indata', 'kallor'].includes(k)) expect(v === null || typeof v !== 'object', k).toBe(true);
-  for (const v of Object.values(indata)) expect(v === null || typeof v !== 'object').toBe(true);
+  // Story 1.14: källan och det frysta underlaget är indatats enda objekt (architecture.md, fryst underlag).
+  const objekt = atgard === 'registrera_uppdragsbeslut' ? ['kalla', 'beslutsunderlag'] : [];
+  for (const [k, v] of Object.entries(indata)) if (!objekt.includes(k)) expect(v === null || typeof v !== 'object', k).toBe(true);
   expect(forslagHash(r.underlag)).toBe(r.forslag_hash);
   expect({ typ: r.kalla_typ, id: r.kalla_id }).toEqual(FALL[atgard].kalla(f));
   const lika = await withAdmin(async (c) => (await c.query('SELECT b.beslutad_av=q.decided_by AND b.beslutad_nar=q.decided_at AS lika FROM uppdrag_beslut b JOIN action_approvals q ON q.id=b.approval_id AND q.company_id=b.company_id WHERE b.approval_id=$1 AND b.company_id=$2', [f.approval, f.company])).rows[0].lika);
