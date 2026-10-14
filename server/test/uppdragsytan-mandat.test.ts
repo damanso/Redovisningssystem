@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { api, app, registerUser, createCompany, createFiscalYear, withAdmin, type TestUser } from './helpers.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { MANDATATGARDER, KOPOSTNYCKLAR, type Mandatatgard } from '../src/services/uppdragBeslut.js';
-import { forslagHash } from '../src/lib/beslutsunderlag.js';
+import { byggRymsindata, forslagHash } from '../src/lib/beslutsunderlag.js';
+import { fixturunderlag } from './ovrigtHelper.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { createApproval } from '../src/services/approvals.js';
 import { verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
@@ -74,6 +75,17 @@ async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
   const importSvar = await api.post(`/api/companies/${company}/approvals/${imp.approval_id}/approve`).set(auth()).send({});
   expect(importSvar.status, JSON.stringify(importSvar.body)).toBe(200);
   const part = await withAdmin(async (c) => (await c.query("SELECT id FROM contract_parts WHERE company_id=$1 AND contract_id=$2 AND code='L1' ORDER BY valid_from DESC LIMIT 1", [company, contract])).rows[0].id as string);
+  if (atgard === 'registrera_uppdragsbeslut') {
+    // Story 1.14: svepet köar förslaget med actor agent; executeAction gör det aldrig (koasAvSvepet).
+    const rad = await ok(f, 'skriv_uppdragsanteckning', { contract_id: contract, text: 'Kunden ber om en extra rapport', utanfor_avtal: true });
+    const anteckningId = rad.id as string;
+    const datum = await withAdmin(async (c) => (await c.query('SELECT created_at::date::text AS d FROM uppdrag_anteckning WHERE id=$1', [anteckningId])).rows[0].d as string);
+    const input = byggRymsindata({ contract_id: contract, underlag: fixturunderlag({ anteckningId, datum, kod: 'L1', tak_minuter: 2400, forbrukade_minuter: 0, eget_tak_timmar: 40 }) });
+    const q = await withTenantTransaction(user.userId, company, (c) => createApproval(c, company, user.userId, 'agent', 'registrera_uppdragsbeslut', input));
+    const fall = { company, project, contract, part, receipt: '', token, approval: q.id, input: input as Record<string, unknown> };
+    delarVid.set(q.id, (await saklage(fall)).delar);
+    return fall;
+  }
   let receipt = '';
   let input: Record<string, unknown>;
   if (atgard === 'binda_kostnad') {
@@ -87,6 +99,8 @@ async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
   else input = { contract_id: contract, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123, change_reason: 'Ändrat avtal' };
   return { company, project, contract, part, receipt, token, approval: await koa(f, atgard, input), input };
 }
+/** Avtalsdelarna när en ryms-köpost planterades, så att ett ja kan visas lämna dem orörda. */
+const delarVid = new Map<string, unknown[]>();
 async function versionHandling(r: Record<string, any>, f: FallContext) {
   expect(r.handling.typ).toBe('ny_version');
   const p = r.handling.contract_part;
@@ -118,6 +132,11 @@ const FALL = {
     const avtal = (await saklage(f)).avtal[0]; expect(r.handling.avtal[0].oppna).toEqual(avtal.avslutat_med_oppna);
     expect(r.handling.project_id).toBe(f.project); expect(r.handling.status).toBe('closed');
   } },
+  registrera_uppdragsbeslut: { koa: () => nyttFall('registrera_uppdragsbeslut'), kalla: (f) => ({ typ: 'anteckning', id: (f.input.kalla as { id: string }).id }), handling: async (r, f) => {
+    expect(r.handling).toEqual({ typ: 'ryms', anteckning_id: (f.input.kalla as { id: string }).id, avtalsdel_kod: 'L1' });
+    expect(r.alternativ).toBe('ryms');
+    expect((await saklage(f)).delar).toEqual(delarVid.get(f.approval));
+  } },
 } satisfies Record<Mandatatgard, Fall>;
 beforeAll(async () => {
   user = await registerUser('mandat'); granne = await registerUser('mandat-granne');
@@ -130,7 +149,11 @@ async function provaUnderlag(f: FallContext, r: Record<string, any>, atgard: Man
   expect(r.underlag.indata).toEqual(indata); expect(r.underlag.approval_id).toBe(q.id); expect(r.underlag.atgard).toBe(atgard);
   expect(Object.keys(r.underlag).sort()).toEqual(['atgard','approval_id','foreslagen_av','skapad_nar','indata','projekt_namn','avtal_namn','forslag_fran','forslagstext','belopp_ore','skal','ja_registrerar','post_saknas','kallor','last_nar'].sort());
   for (const [k, v] of Object.entries(r.underlag)) if (!['indata', 'kallor'].includes(k)) expect(v === null || typeof v !== 'object', k).toBe(true);
-  for (const v of Object.values(indata)) expect(v === null || typeof v !== 'object').toBe(true);
+  // Källan och det frysta underlaget är indatats enda objekt, bara för Övrigt-frågan (architecture.md rad 888–890).
+  for (const [k, v] of Object.entries(indata)) {
+    if (atgard === 'registrera_uppdragsbeslut' && ['kalla', 'beslutsunderlag'].includes(k)) continue;
+    expect(v === null || typeof v !== 'object', k).toBe(true);
+  }
   expect(forslagHash(r.underlag)).toBe(r.forslag_hash);
   expect({ typ: r.kalla_typ, id: r.kalla_id }).toEqual(FALL[atgard].kalla(f));
   const lika = await withAdmin(async (c) => (await c.query('SELECT b.beslutad_av=q.decided_by AND b.beslutad_nar=q.decided_at AS lika FROM uppdrag_beslut b JOIN action_approvals q ON q.id=b.approval_id AND q.company_id=b.company_id WHERE b.approval_id=$1 AND b.company_id=$2', [f.approval, f.company])).rows[0].lika);

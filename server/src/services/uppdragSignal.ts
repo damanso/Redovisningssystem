@@ -207,7 +207,7 @@ async function inloggadSom(client: PoolClient, userId: string): Promise<string> 
  * det: `" abc"` och `"abc"` är samma pekare, och en otrimmad jämförelse här hade
  * missat raden och sedan skapat en dubblett av den.
  */
-async function underlagsreferens(
+export async function underlagsreferens(
   client: PoolClient, companyId: string, contractId: string, underlag: Signalunderlag,
 ): Promise<string> {
   const externId = underlag.extern_id.trim();

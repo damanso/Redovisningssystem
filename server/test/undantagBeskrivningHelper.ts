@@ -59,7 +59,7 @@ export function provaScheman() {
     const schema = actionManifest().find((a) => a.name === name)!.input_schema;
     assert.deepEqual(Object.keys(schema.properties as object).sort(), [
       ...Object.keys(DELFALTPROV), 'contract_id', 'code', 'parent_part_id', 'valid_from', 'change_reason',
-      ...(name === 'andra_baseline' ? ['signal_id', 'kalla'] : []),
+      ...(name === 'andra_baseline' ? ['signal_id', 'kalla', 'beslutsunderlag'] : []),
     ].sort());
     const action = ACTIONS.find((a) => a.name === name)!;
     for (const [falt, varden] of Object.entries(DELFALTPROV)) for (const varde of varden) {
