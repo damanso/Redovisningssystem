@@ -31,6 +31,8 @@ import {
   PASSWORD, avgoranden, bedomningar, beslutsrader, femSlag, frisktUppdrag, koa, kopost, nyttBolag, ok, rest, svep,
   uppdragsdestination,
 } from './undantagsvynRigg.js';
+import { beslutsraderFor, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
+import { ersattning, fragaUtanTimmar, komplettera, koposterForKalla } from './kompletteringRigg.js';
 
 const MOBIL = { viewport: { width: 390, height: 844 }, javaScriptEnabled: false, hasTouch: true, isMobile: true };
 
@@ -91,6 +93,8 @@ beforeAll(async () => {
 
   poster = await nyttBolag('Mobil poster');
   fem = await femSlag(poster);
+  // Story 1.14: en Övrigt-fråga med sitt block mäts i (1)–(2) som de andra posterna.
+  await ovrigtFraga(poster, await iltUppdrag(poster));
   tomt = await nyttBolag('Mobil tomt');
   await frisktUppdrag(tomt, 'Friskt');
   await svep(tomt);
@@ -228,6 +232,12 @@ describe('B (6) varje val i telefonen', () => {
   let utanforSignal: string;
   /** En baselineändring som går att verkställa: avtalsdelens nya version (`uppdragsytan-mandat.test.ts`). */
   let jaPost: string;
+  /** Story 1.14: två Övrigt-frågor, köade av svepet — ett tillägg på 2B och ett ryms på 2A. */
+  let ilt: Ilt;
+  let ovrigtTillagg: string;
+  let ovrigtRyms: string;
+  /** Story 1.15: en fråga utan timmar, ryms på 1A, som kompletteras i telefonen. */
+  let utanTimmar: { anteckningId: string; approvalId: string };
 
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
@@ -237,7 +247,11 @@ describe('B (6) varje val i telefonen', () => {
       contract_id: f.a.contractId, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123,
       change_reason: 'Ändrat avtal',
     });
-  }, 120_000);
+    ilt = await iltUppdrag(val);
+    ovrigtTillagg = (await ovrigtFraga(val, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' })).approvalId;
+    ovrigtRyms = (await ovrigtFraga(val, ilt)).approvalId;
+    utanTimmar = await fragaUtanTimmar(val, ilt, 'ryms', '1A');
+  }, 180_000);
 
   /** Postens dolda fält, läst ur den renderade sidan — samma data som formuläret skickar. */
   async function dolda(page: Page, id: string): Promise<Record<string, string>> {
@@ -294,6 +308,81 @@ describe('B (6) varje val i telefonen', () => {
         },
         restVag: `approvals/${jaPost}/approve`, restKropp: {}, restKod: 'not_pending',
         agentKod: 'human_approval_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(9) ja på en Övrigt-fråga med tillägg', async () => {
+    const { kontext, page } = await mobil(val);
+    try {
+      await valet({ page, kontext, id: ovrigtTillagg, knapp: 'Ja', form: { handling: 'ja', approval_id: ovrigtTillagg },
+        plats: laget(ilt, `beslut-${ovrigtTillagg}`),
+        rader: async () => (await beslutsrader(ovrigtTillagg)).antal,
+        registrerat: async () => {
+          expect((await kopost(ovrigtTillagg)).status).toBe('executed');
+          expect(await beslutsraderFor(ovrigtTillagg)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'tillagg', kalla_typ: 'anteckning' })]);
+        },
+        restVag: `approvals/${ovrigtTillagg}/approve`, restKropp: {}, restKod: 'not_pending',
+        agentKod: 'human_approval_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(10) nej med skäl på en Övrigt-fråga med ryms', async () => {
+    const { kontext, page } = await mobil(val);
+    try {
+      const skal = 'Ryms inte i avtalet i år';
+      await valet({ page, kontext, id: ovrigtRyms, knapp: 'Nej',
+        fore: () => page.fill(`#post-${ovrigtRyms} textarea[name=skal]`, skal),
+        form: { handling: 'nej', approval_id: ovrigtRyms, skal },
+        plats: laget(ilt, `beslut-${ovrigtRyms}`),
+        rader: async () => (await beslutsrader(ovrigtRyms)).antal,
+        registrerat: async () => {
+          const q = await kopost(ovrigtRyms);
+          expect(q.status).toBe('rejected');
+          expect(q.beslut_skal).toBe(skal);
+          expect(await beslutsraderFor(ovrigtRyms)).toEqual([expect.objectContaining({ utfall: 'nej', alternativ: 'ryms', skal })]);
+        },
+        restVag: 'actions/avboj_beslutsforslag', restKropp: { approval_id: ovrigtRyms, skal }, restKod: 'not_pending',
+        agentKod: 'human_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(11) timmarna i en Övrigt-fråga räknas om i telefonen', async () => {
+    const { kontext, page } = await mobil(val);
+    const a = utanTimmar.approvalId;
+    try {
+      await page.goto(vyn(val));
+      await ingenSidledsrullning(page, 'vyn före Räkna om');
+      await page.fill(`#post-${a} input[name="timmar"]`, '8');
+      await Promise.all([page.waitForNavigation(), page.locator(`#post-${a} button`, { hasText: 'Räkna om' }).click()]);
+      const ny = (await ersattning(a)).ersatt_av;
+      expect(ny, 'ersättaren').toBeTruthy();
+      expect(page.url()).toBe(`${bas}/app/c/${val.id}/uppdrag#post-${ny}`);
+      await ingenSidledsrullning(page, 'vyn efter Räkna om');
+      expect(await page.locator(`#post-${a}`).count(), 'den ersatta posten står kvar').toBe(0);
+      expect(await page.locator(`#post-${ny}`).count()).toBe(1);
+      const ruta = await page.locator(`#post-${ny} button`, { hasText: 'Räkna om' }).boundingBox();
+      expect(ruta, 'Räkna om syns inte').not.toBeNull();
+      expect(ruta!.height).toBeGreaterThanOrEqual(44);
+
+      const kedjan = await koposterForKalla(val.id, utanTimmar.anteckningId);
+      const igen = await kontext.request.post(vyn(val), {
+        form: { handling: 'komplettera', approval_id: a, timmar: '8' }, maxRedirects: 0 });
+      expect(igen.status(), 'upprepad komplettering').toBe(302);
+      expect(await koposterForKalla(val.id, utanTimmar.anteckningId)).toEqual(kedjan);
+
+      const r = await komplettera(val, a, 8);
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error).toBe('not_pending');
+      const agent = await komplettera(val, a, 8, val.agent);
+      expect(agent.status, JSON.stringify(agent.body)).toBe(403);
+      expect(agent.body.error).toBe('human_required');
+      expect(await koposterForKalla(val.id, utanTimmar.anteckningId)).toEqual(kedjan);
     } finally {
       await kontext.close();
     }

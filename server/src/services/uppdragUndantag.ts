@@ -11,18 +11,26 @@ import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import {
+  DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag,
+} from '../lib/beslutsunderlag.js';
+import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
+import { getContractUsage, type Delforbrukning } from './contracts.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
 
 // Story 1.10: `ny_bedomning` bara när David själv begärt den (FR-40). Ingen
 // regel skapar posten; den byggs ur obesvarade rader i begäranstabellen.
-export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande', 'ny_bedomning'] as const;
+// Story 1.14: `ovrigt_beslut` kommer ur en väntande `registrera_uppdragsbeslut`
+// eller en `andra_baseline` med Övrigt-raden som källa (`koburetSlag`).
+export const POSTSLAG = ['baselineandring', 'kostnadsbindning', 'ovrigt_beslut', 'avslut', 'scopeavgorande', 'ny_bedomning'] as const;
 export type Postslag = (typeof POSTSLAG)[number];
 
 /** Tillåtelselistan är den enda vägen från kön till ett postslag. */
 export const KOBURNA_SLAG = {
   baselineandring: ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract'],
   kostnadsbindning: ['binda_kostnad'],
+  ovrigt_beslut: ['registrera_uppdragsbeslut'],
   avslut: ['avsluta_uppdrag'],
 } as const;
 export const UNDANTAG_ATGARDER: readonly string[] = Object.values(KOBURNA_SLAG).flat();
@@ -31,6 +39,15 @@ export type Mandatkalla = (typeof MANDATKALLOR)[number];
 export const TACKNINGSNYCKEL = 'tackning';
 /** Samma gräns som Hermes svepfärskhet; deklarerad bara här. */
 export const TACKNING_MAX_ALDER_MIN = 60;
+
+// Story 1.14 (B-4): kandidaten, prövningen och täckningen delar predikaten.
+// Båda binder källan till radens eget avtal, så att en köpost i ett annat
+// avtal aldrig tystar raden. Id:t jämförs med lower(), eftersom ett id kan
+// komma med versaler (lärdomen från Story 1.8).
+/** Köpost vars källa är Övrigt-raden a i radens eget avtal, i alla statusar och för alla åtgärder (B-4). */
+export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'kalla'->>'typ' = 'anteckning' AND lower(q.input->'kalla'->>'id') = a.id::text AND lower(q.input->>'contract_id') = a.contract_id::text`;
+/** Beslutsrad vars källa är Övrigt-raden a i radens eget avtal. */
+export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id AND b.contract_id = a.contract_id`;
 
 export interface Uppdragsref {
   project_id: string; number: number; name: string;
@@ -57,6 +74,18 @@ export interface Begardbedomning {
   andringar: Lasvarde<Andringsunderlag>;
   period: { start: string; slut: string };
 }
+/** Övrigt-raden som posten bygger på (Story 1.14), läst ur raden själv. */
+export interface Forfragan { id: string; text: string; datum: string; utanfor_avtal: boolean }
+export interface Ovrigtpost {
+  forfragan: Lasvarde<Forfragan>;
+  underlag: Lasvarde<OvrigtUnderlag>;
+  /**
+   * Story 1.15: det frysta förslaget jämfört med aktuella källor. Sätts av
+   * `lasUndantag`, aldrig av `koburnaPoster`, så att verkställighetens frysta
+   * underlag aldrig bär det.
+   */
+  andrat?: Lasvarde<Andringsjamforelse>;
+}
 export interface Undantagspost {
   slag: Postslag;
   id: string;
@@ -73,6 +102,8 @@ export interface Undantagspost {
   ja_registrerar: string;
   /** Bara poster av slaget `ny_bedomning` bär fältet. */
   bedomning?: Begardbedomning;
+  /** Bara poster av slaget `ovrigt_beslut` bär fältet. */
+  ovrigt?: Ovrigtpost;
 }
 export interface Kalltackning { lage: 'last' | 'fel'; saknas: string[] }
 export interface Tackningspost {
@@ -89,7 +120,7 @@ export interface Undantag {
   ofullstandig_tackning: Tackningspost[];
   aldsta_tackning: string | null;
   hoppade: Array<{ id: string; identitet: 'kopost' | 'signal' | 'begaran'; atgard: string | null;
-    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' }>;
+    orsak: 'uppdrag_saknas' | 'uppdrag_avslutat' | 'underlag_ogiltigt' }>;
   last_nar: string;
 }
 
@@ -121,6 +152,20 @@ function yta(bas: string, uppdrag: Uppdragsref, yta: 'kontraktet' | 'laget' | 's
     sokvag: `${bas}/projects/${uppdrag.project_id}/${yta}` };
 }
 
+/**
+ * Den enda slagregeln för en köpost (Story 1.14). En `andra_baseline` med
+ * Övrigt-raden som källa är en Övrigt-fråga, inte en baselineändring; allt
+ * annat följer `KOBURNA_SLAG`. Läser bara åtgärden och källans typ, aldrig
+ * fri text, och källan läses som egen nyckel (lärdom 9).
+ */
+export function koburetSlag(q: Pick<Approval, 'action' | 'input'>): Postslag | null {
+  if (q.action === 'andra_baseline' && eget(eget(q.input, 'kalla'), 'typ') === 'anteckning') return 'ovrigt_beslut';
+  for (const [slag, atgarder] of Object.entries(KOBURNA_SLAG) as Array<[Postslag, readonly string[]]>) {
+    if (atgarder.includes(q.action)) return slag;
+  }
+  return null;
+}
+
 interface Uppslagsrad extends Uppdragsref {
   projektstatus: 'active' | 'closed';
   nyckel: string;
@@ -139,7 +184,7 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
             p.id AS project_id, p.number, p.name, p.status AS projektstatus
        FROM contracts c JOIN projects p ON p.company_id=c.company_id AND p.id=c.project_id
       WHERE c.company_id=$1 AND c.id=ANY($2::uuid[])`,
-    [companyId, idn('contract_id', KOBURNA_SLAG.baselineandring)],
+    [companyId, idn('contract_id', [...KOBURNA_SLAG.baselineandring, ...KOBURNA_SLAG.ovrigt_beslut])],
   );
   const delar = await client.query<Uppslagsrad>(
     `SELECT cp.id AS nyckel, c.id AS contract_id, c.name AS contract_name,
@@ -172,7 +217,16 @@ async function uppslag(client: PoolClient, companyId: string, koposter: Approval
       WHERE company_id=$1 AND id=ANY($2::uuid[])`,
     [companyId, idn('parent_part_id', ['andra_baseline', 'upsert_contract_part'])],
   );
+  // Story 1.14: Övrigt-raderna som frågorna bygger på. Källans id, aldrig text.
+  const anteckningar = await client.query<Forfragan & { contract_id: string }>(
+    `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal,
+            a.created_at::date::text AS datum
+       FROM uppdrag_anteckning a WHERE a.company_id = $1 AND a.id = ANY($2::uuid[])`,
+    [companyId, [...new Set(koposter.filter((q) => koburetSlag(q) === 'ovrigt_beslut')
+      .map((q) => uuid(eget(eget(q.input, 'kalla'), 'id'))).filter((id): id is string => id !== null))]],
+  );
   return {
+    anteckningar: new Map(anteckningar.rows.map((r) => [r.id, r])),
     avtal: new Map(avtal.rows.map((r) => [r.nyckel, r])),
     delar: new Map(delar.rows.map((r) => [r.nyckel, r])),
     projekt: new Map(projekt.rows.map((r) => [r.nyckel, r])),
@@ -352,6 +406,38 @@ export function beskrivAvslut(
     skal: saknas(KALLA_REDOVISNING, lastNar), kallor: kallor([yta(bas, u.uppdrag, 'laget')], lastNar),
     ja_registrerar: `Uppdraget stängs. Listan över öppna leverabler fryses, och historiken blir skrivskyddad. ${BESLUTSRADEN}` };
 }
+interface Ovrigtunderlag extends Kounderlag {
+  underlag: OvrigtUnderlag;
+  anteckning: Forfragan;
+  referenser: Kallreferens[];
+}
+/**
+ * Ren: Övrigt-frågan (Story 1.14, B-4). Underlaget och raden är prövade av
+ * läsvägen. Alternativet följer åtgärden, och texterna säger bara det som sker.
+ */
+export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: string): Undantagspost {
+  const o = u.underlag;
+  const ryms = u.kopost.action === 'registrera_uppdragsbeslut';
+  const kod = o.avtalsdel_kod;
+  let jaRegistrerar: string;
+  if (ryms) jaRegistrerar = `Beslutet att arbetet ryms i ${kod} registreras med beräkningen, och Övrigt-raden är dokumentationen. Ingen avtalsdel ändras.`;
+  else if (o.nytt_tak_minuter !== null) jaRegistrerar = `En ny version av ${kod} från ${o.giltig_fran} med taket ${tidtext(o.nytt_tak_minuter)}. Tidigare versioner står kvar.`;
+  else if (o.minuter === null) jaRegistrerar = `En ny version av ${kod} från ${o.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`;
+  else jaRegistrerar = `En ny version av ${kod} från ${o.giltig_fran}. Taket ändras inte, eftersom ${kod} saknar eget tak. Tidigare versioner står kvar.`;
+  const anteckningen: Kallreferens = { typ: 'yta', etikett: `${DAVIDS_ANTECKNING}, ${u.anteckning.datum}`,
+    sokvag: `${bas}/projects/${u.uppdrag.project_id}/laget#kort-ovrigt` };
+  return { ...kopostbas(u, 'ovrigt_beslut', lastNar),
+    val: { kod: 'ja_nej', text: ryms
+      ? 'Godkänn att förfrågan ryms i avtalet, eller säg nej med skäl.'
+      : 'Ta förfrågan som tillägg till avtalet, eller säg nej med skäl.' },
+    varfor_mandat: 'Förfrågan gäller arbete utanför avtalet. Bara du avgör om den blir ett tillägg, ryms i avtalet eller avböjs.',
+    forslag: last({ fran: null, till: o.forslagstext, belopp_ore: o.belopp_ore }, KALLA_REDOVISNING, o.last_nar),
+    skal: last(o.skal, KALLA_REDOVISNING, lastNar),
+    kallor: kallor([anteckningen, ...u.referenser, yta(bas, u.uppdrag, 'kontraktet')], lastNar),
+    ja_registrerar: `${jaRegistrerar} ${BESLUTSRADEN}`,
+    ovrigt: { forfragan: last(u.anteckning, KALLA_REDOVISNING, lastNar), underlag: last(o, KALLA_REDOVISNING, o.last_nar) } };
+}
+
 interface Signalsunderlag {
   signal: { id: string; fras: string; klausul: string | null; tand_av: string | null; tand_nar: Date };
   uppdrag: Uppdragsref;
@@ -419,15 +505,15 @@ export async function beraknaTackning(
   const saknade = new Map(contractIds.map((id) => [id, {
     godkannandekon: [] as string[], ovrigt: [] as string[], kostnader: [] as string[], baselineforslag: [] as string[],
   }]));
+  // Story 1.14: samma predikat som kandidaten, bundet till radens avtal, och
+  // begränsat till modulens åtgärder i väntan eller med mottaget beslut.
   const ovrigt = await client.query<{ contract_id: string; id: string }>(
     `SELECT a.contract_id, a.id::text AS id FROM uppdrag_anteckning a
       WHERE a.company_id=$1 AND a.contract_id=ANY($2::uuid[]) AND a.utanfor_avtal
         AND NOT EXISTS (SELECT 1 FROM action_approvals q
-          WHERE q.company_id=a.company_id AND q.action=ANY($3::text[])
-            AND q.input->'kalla'->>'typ'='anteckning' AND q.input->'kalla'->>'id'=a.id::text
+          WHERE ${KOPOST_FOR_ANTECKNING} AND q.action=ANY($3::text[])
             AND (q.status='pending' OR q.beslut_hash IS NOT NULL))
-        AND NOT EXISTS (SELECT 1 FROM uppdrag_beslut b
-          WHERE b.company_id=a.company_id AND b.kalla_typ='anteckning' AND b.kalla_id=a.id)
+        AND NOT EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING})
       ORDER BY a.contract_id,a.created_at,a.id`,
     [companyId, contractIds, UNDANTAG_ATGARDER],
   );
@@ -520,17 +606,35 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
   const hoppade: Undantag['hoppade'] = [];
   const bas = `/app/c/${companyId}`;
   for (const q of koposter) {
-    const arBaseline = (KOBURNA_SLAG.baselineandring as readonly string[]).includes(q.action);
-    const arKostnad = q.action === 'binda_kostnad';
-    const falt = arBaseline ? 'contract_id' : arKostnad ? 'contract_part_id' : 'project_id';
-    const id = uuid(eget(q.input, falt));
-    const r = id === null ? undefined : (arBaseline ? per.avtal : arKostnad ? per.delar : per.projekt).get(id);
+    // Slaget väljer både uppslaget och grenen (Story 1.14). Ett slag som
+    // saknas ger samma hopp som en saknad nyckel.
+    const slag = koburetSlag(q);
+    const arKostnad = slag === 'kostnadsbindning';
+    const arAvslut = slag === 'avslut';
+    const falt = arKostnad ? 'contract_part_id' : arAvslut ? 'project_id' : 'contract_id';
+    const id = slag === null ? null : uuid(eget(q.input, falt));
+    const r = id === null ? undefined : (arKostnad ? per.delar : arAvslut ? per.projekt : per.avtal).get(id);
     if (!r || r.projektstatus === 'closed') {
       hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: r ? 'uppdrag_avslutat' : 'uppdrag_saknas' });
       continue;
     }
     const underlag = { kopost: q, uppdrag: uppdragsref(r) };
-    if (arBaseline) {
+    if (slag === 'ovrigt_beslut') {
+      // Hela indatat prövas med samma schemaobjekt som mottagandet av ja och
+      // verkställigheten av nej parsar med. En köpost som skulle fällas där
+      // visas aldrig, och en post som visas kan inte fällas där.
+      const prov = Object.hasOwn(OVRIGT_SCHEMA, q.action) ? OVRIGT_SCHEMA[q.action as Ovrigtatgard].safeParse(q.input) : null;
+      const ovrigtUnderlag: OvrigtUnderlag | undefined = prov?.success ? prov.data.beslutsunderlag : undefined;
+      const rad = per.anteckningar.get(uuid(eget(eget(q.input, 'kalla'), 'id')) ?? '');
+      if (!ovrigtUnderlag || !rad || rad.contract_id !== r.contract_id || !rad.utanfor_avtal) {
+        hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: 'underlag_ogiltigt' });
+        continue;
+      }
+      const referenser: Kallreferens[] = [];
+      for (const k of ovrigtUnderlag.kallor) if (k.typ === 'referens') referenser.push(...await referens(client, companyId, k.id));
+      const { contract_id: _contractId, ...anteckning } = rad;
+      poster.push(beskrivOvrigtBeslut({ ...underlag, underlag: ovrigtUnderlag, anteckning, referenser }, bas, lastNar));
+    } else if (slag === 'baselineandring') {
       const mal: BaselineMal = {};
       const kund = per.kunder.get(uuid(eget(q.input, 'customer_id')) ?? '');
       const fil = per.filer.get(uuid(eget(q.input, 'source_file_id')) ?? '');
@@ -672,6 +776,37 @@ async function bedomningsposter(client: PoolClient, companyId: string, lastNar: 
   return { poster, hoppade };
 }
 
+/**
+ * ”Ändrat sedan förslaget” (Story 1.15, kriterium 11): varje Övrigt-posts
+ * frysta beräkning räknas om ur aktuella källor och jämförs. Avtalet läses en
+ * gång per avtal, och delen väljs med samma predikat som förslagets prövning
+ * (kod och `active`). Taxan är avtalets, samma kolumn som förslaget läste.
+ * Övriga poster och ordningen är oförändrade, och underlaget ändras aldrig.
+ */
+async function markeraAndrat(
+  client: PoolClient, companyId: string, poster: Undantagspost[], lastNar: string,
+): Promise<Undantagspost[]> {
+  const fryst = (p: Undantagspost): OvrigtUnderlag | null => p.ovrigt?.underlag.lage === 'last' ? p.ovrigt.underlag.varde : null;
+  const avtalIds = [...new Set(poster.filter((p) => fryst(p) !== null)
+    .map((p) => p.uppdrag.varde?.contract_id).filter((id): id is string => typeof id === 'string'))];
+  const avtal = new Map<string, { hourly_rate_ore: number | null; parts: Delforbrukning[] }>();
+  for (const id of avtalIds) {
+    avtal.set(id, await getContractUsage(client, companyId, id) as unknown as { hourly_rate_ore: number | null; parts: Delforbrukning[] });
+  }
+  return poster.map((p) => {
+    const u = fryst(p);
+    const contractId = p.uppdrag.varde?.contract_id;
+    const usage = contractId ? avtal.get(contractId) : undefined;
+    if (!p.ovrigt || u === null || !usage) return p;
+    const del = usage.parts.find((x) => x.code === u.avtalsdel_kod && x.active) ?? null;
+    const j = andratSedanForslaget(u, { taxa_ore: usage.hourly_rate_ore ?? null, del });
+    const andrat: Lasvarde<Andringsjamforelse> = j.ok
+      ? last({ delen_finns: j.delen_finns, andringar: j.andringar }, KALLA_REDOVISNING, lastNar)
+      : olast(KALLA_REDOVISNING, lastNar);
+    return { ...p, ovrigt: { ...p.ovrigt, andrat } };
+  });
+}
+
 /** En läsväg för REST, MCP och den kommande vyn, utan egen SQL i transporten. */
 export async function lasUndantag(client: PoolClient, companyId: string): Promise<Undantag> {
   const nu = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu;
@@ -683,6 +818,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   );
   const koposter = await listaVantandeKoposter(client, companyId, UNDANTAG_ATGARDER);
   const koburna = await koburnaPoster(client, companyId, koposter, lastNar);
+  const koburnaMedAndrat = await markeraAndrat(client, companyId, koburna.poster, lastNar);
   const signaler = await signalposter(client, companyId, lastNar);
   const bedomningar = await bedomningsposter(client, companyId, lastNar);
   const rader = await client.query<{ contract_id: string; varde: unknown; last_nar: Date }>(
@@ -692,7 +828,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   const per = new Map(rader.rows.map((r) => [r.contract_id, r]));
   const tackning = oppna.rows.flatMap((a) => MANDATKALLOR.map((k) => tackningspost(a, k, per.get(a.contract_id), nu)));
   // SQL-ordningen bevaras. Date tappar mikrosekunder och får inte sortera om.
-  const poster = [...koburna.poster, ...signaler.poster, ...bedomningar.poster];
+  const poster = [...koburnaMedAndrat, ...signaler.poster, ...bedomningar.poster];
   return { ...bedomUndantag(poster, tackning), poster, tackning,
     hoppade: [...koburna.hoppade, ...signaler.hoppade, ...bedomningar.hoppade], last_nar: lastNar };
 }

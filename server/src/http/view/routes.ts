@@ -37,6 +37,7 @@ import { kalendermanad } from '../../lib/bedomningsbegaran.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
+import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -4294,7 +4295,8 @@ function anteckningsformular(companyId: string, l: Uppdragslage): Raw {
       <input type="checkbox" name="utanfor_avtal" value="ja" style="width:auto;margin-top:2px">
       <span>Gäller arbete utanför avtalet
         <span class="muted" style="display:block;font-size:12.5px;margin-top:3px">Markeringen följer raden och räknas
-          i panelhuvudet. Den blir aldrig ett tillägg av sig själv — ett tillägg skrivs där tillägg skrivs.</span></span>
+          i panelhuvudet. När Hermes formulerat ett förslag blir raden en fråga till dig i undantagsvyn, med
+          beräkningen färdig. Den blir aldrig ett tillägg utan ditt ja.</span></span>
     </label>
     ${/* Före knappen, aldrig efter: det som inte går att ångra ska stå framför
           handen som ska göra det. */ ''}
@@ -4647,6 +4649,31 @@ const UNDANTAGSHANDLINGAR = {
       ...(kommentar ? { kommentar } : {}),
     }, s.tillbaka, undefined, async (r) =>
       lagetsPlats(s.userId, s.companyId, (r.result as Bedomningsrad).contract_id, 'kort-bedomning'));
+  },
+  // Komplettera: Davids timmar till `komplettera_beslutsforslag` (Story 1.15). Samma
+  // regler som `decideApproval`: not_pending är tyst (en dubbelklickning eller en
+  // gammal flik), andra verksamhetsfel blir ?fel=, och resten kastas.
+  komplettera: async (s: Undantagssvar): Promise<void> => {
+    const approvalId = parseApprovalId(s.kropp.approval_id);
+    const timmar = TimmarSchema.safeParse(Number(formfalt(s.kropp.timmar).trim().replace(',', '.')));
+    if (!timmar.success) {
+      s.res.redirect(undantagsfel(s.tillbaka, 'Ange timmarna som ett tal större än noll, med högst två decimaler, till exempel 7,5.'));
+      return;
+    }
+    let svar: ActionResult;
+    try {
+      svar = await executeAction({ companyId: s.companyId, userId: s.userId, actor: 'human',
+        actionName: 'komplettera_beslutsforslag', input: { approval_id: approvalId, timmar: timmar.data } });
+    } catch (err) {
+      if (err instanceof ConflictError && err.code === 'not_pending') { s.res.redirect(s.tillbaka); return; }
+      if (err instanceof BadRequestError || err instanceof ConflictError) {
+        s.res.redirect(undantagsfel(s.tillbaka, `Kunde inte räknas om: ${err.message}`));
+        return;
+      }
+      throw err;
+    }
+    const ersattare = (svar as Extract<ActionResult, { status: 'ok' }>).result as { ersatt_av: string };
+    s.res.redirect(`${s.tillbaka}#post-${ersattare.ersatt_av}`);
   },
 };
 

@@ -1,23 +1,29 @@
 // B-1/FR-41: samma registreringskontrakt för varje köburet mandat.
 // Underlaget fryses före domänhandlingen; raden och audit skrivs efter den.
+// Story 1.15 (B-2, IR-13): filen bär också kompletteringen, som ersätter en
+// väntande Övrigt-köpost med Davids timmar. Den är inget beslut.
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { assertSafeOre } from '../domain/money.js';
 import { forslagHash } from '../lib/beslutsunderlag.js';
+import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import type { Lasvarde } from '../lib/lasvarde.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { UuidSchema } from '../lib/validation.js';
-import { getApproval, type Approval } from './approvals.js';
+import { createApproval, ersattGodkannande, getApproval, lockPendingApproval, type Approval } from './approvals.js';
 import { writeAudit } from './auditService.js';
 import { arRenBekraftelse, baselineDatum } from './contracts.js';
-import { koburnaPoster, type Kallreferens } from './uppdragUndantag.js';
+import {
+  byggOvrigtForslag, lasOvrigtrad, provaOvrigtForslag, provaOvrigtKalla, type Avvisningsorsak,
+} from './uppdragOvrigt.js';
+import { koburetSlag, koburnaPoster, type Kallreferens } from './uppdragUndantag.js';
 
 /** Vem som verkställer och vilken köpost, från åtgärdens kontext. */
 export interface Beslutskontext { userId: string; actor: Actor; approvalId?: string }
 /** Listan är sluten: ett tillägg kräver registerkontrakt och parameteriserat prov. */
-export const MANDATATGARDER = ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract', 'binda_kostnad', 'avsluta_uppdrag'] as const;
+export const MANDATATGARDER = ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract', 'binda_kostnad', 'avsluta_uppdrag', 'registrera_uppdragsbeslut'] as const;
 export type Mandatatgard = (typeof MANDATATGARDER)[number];
 export const KALLTYPER = ['anteckning', 'kvitto', 'scopesignal', 'baselineforslag', 'avslut', 'koforslag'] as const;
 export type Kalltyp = (typeof KALLTYPER)[number];
@@ -32,15 +38,19 @@ const objekt = (v: unknown): Record<string, unknown> => v !== null && typeof v =
 
 export const KALLA: Record<Mandatatgard, (i: Indata, approvalId: string) => Kalla> = {
   satt_baseline: (i) => ({ typ: 'baselineforslag', id: id(i, 'contract_id') }),
-  andra_baseline: (i, q) => i.signal_id ? { typ: 'scopesignal', id: id(i, 'signal_id') } : { typ: 'koforslag', id: q },
+  andra_baseline: (i, q) => i.signal_id ? { typ: 'scopesignal', id: id(i, 'signal_id') }
+    : objekt(i.kalla).typ === 'anteckning' ? { typ: 'anteckning', id: id(objekt(i.kalla), 'id') } : { typ: 'koforslag', id: q },
   upsert_contract_part: (_i, q) => ({ typ: 'koforslag', id: q }),
   update_contract: (_i, q) => ({ typ: 'koforslag', id: q }),
   binda_kostnad: (i) => ({ typ: 'kvitto', id: id(i, 'receipt_id') }),
   avsluta_uppdrag: (i) => ({ typ: 'avslut', id: id(i, 'project_id') }),
+  // Story 1.14: ett ”ryms” ur Övrigt-raden har raden som källa.
+  registrera_uppdragsbeslut: (i) => ({ typ: 'anteckning', id: id(objekt(i.kalla), 'id') }),
 };
 const avtal = async (_c: PoolClient, _co: string, i: Indata) => id(i, 'contract_id');
 export const AVTAL: Record<Mandatatgard, (c: PoolClient, co: string, i: Indata) => Promise<string | null>> = {
   satt_baseline: avtal, andra_baseline: avtal, upsert_contract_part: avtal, update_contract: avtal,
+  registrera_uppdragsbeslut: avtal,
   avsluta_uppdrag: async () => null,
   binda_kostnad: async (c, co, i) => {
     const r = await c.query<{ contract_id: string }>('SELECT contract_id FROM contract_parts WHERE company_id=$1 AND id=$2', [co, id(i, 'contract_part_id')]);
@@ -73,7 +83,17 @@ export const HANDLING: Record<Mandatatgard, (c: PoolClient, co: string, i: Indat
     const v = objekt(r); return { typ: 'uppdrag_avslutat', project_id: v.project_id, status: v.status,
       avtal: Array.isArray(v.avtal) ? v.avtal.map((a: unknown) => ({ contract_id: objekt(a).contract_id, oppna: objekt(a).oppna })) : [] };
   },
+  registrera_uppdragsbeslut: async (_c, _co, _i, r) => {
+    const v = objekt(r); return { typ: 'ryms', anteckning_id: v.anteckning_id, avtalsdel_kod: v.avtalsdel_kod };
+  },
 };
+
+/** Övrigt-frågans alternativ på beslutsraden (Story 1.14); null för varje annat mandat. */
+export function alternativFor(atgard: Mandatatgard, input: Record<string, unknown>): 'tillagg' | 'ryms' | null {
+  if (atgard === 'registrera_uppdragsbeslut') return 'ryms';
+  if (atgard === 'andra_baseline' && objekt(input.kalla).typ === 'anteckning') return 'tillagg';
+  return null;
+}
 
 /** Släpp navigering och bevara endast prövade domän- och referens-id. */
 export function frysKallor(kalla: Kalla, kallor?: Lasvarde<Kallreferens[]>) {
@@ -117,11 +137,12 @@ async function mottagen(client: PoolClient, companyId: string, beslut: Beslutsko
 async function skrivBeslut(client: PoolClient, companyId: string, beslut: Beslutskontext, q: Approval, atgard: Mandatatgard, input: Indata,
   rad: { kalla: Kalla; utfall: 'ja' | 'nej'; underlag: Record<string, unknown>; skal: string | null; handling: Handling | null }) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash)
-     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9
+    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash,alternativ)
+     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9,$11
        FROM action_approvals q WHERE q.id=$10 AND q.company_id=$1 RETURNING id`,
     [companyId, await AVTAL[atgard](client, companyId, input), rad.kalla.typ, rad.kalla.id, rad.utfall,
-      JSON.stringify(rad.underlag), rad.skal, rad.handling === null ? null : JSON.stringify(rad.handling), forslagHash(rad.underlag), q.id],
+      JSON.stringify(rad.underlag), rad.skal, rad.handling === null ? null : JSON.stringify(rad.handling), forslagHash(rad.underlag), q.id,
+      alternativFor(atgard, q.input)],
   );
   const id = r.rows[0]?.id;
   if (!id) throw new ConflictError('beslut_ej_mottaget', 'beslutet är inte mottaget');
@@ -155,6 +176,7 @@ export function beskrivHandling(handling: unknown): string {
   if (h.typ === 'avtal_andrat' && Array.isArray(h.falt) && h.falt.every((f) => typeof f === 'string')) return `Avtalets fält ändrade: ${h.falt.join(', ')}`;
   if (h.typ === 'baseline_satt' && typeof h.avtalsdelar_skrivna === 'number') return `Baseline satt: ${h.avtalsdelar_skrivna} avtalsdelar`;
   if (h.typ === 'uppdrag_avslutat') return 'Uppdraget avslutat';
+  if (h.typ === 'ryms' && typeof h.avtalsdel_kod === 'string') return `Ryms i ${h.avtalsdel_kod}: ingen ändring av avtalet`;
   return 'Handlingen saknas i underlaget';
 }
 
@@ -170,6 +192,66 @@ export async function avbojForslag(client: PoolClient, companyId: string, beslut
   }
   const approval = await avvisa({ companyId, approverId: beslut.userId, approverActor: beslut.actor, approvalId: input.approval_id, skal: input.skal });
   return { approval_id: approval.id, status: approval.status, verkstalld: approval.result !== null };
+}
+
+// ---------------------------------------------------------------------------
+// Kompletteringen (Story 1.15, B-2, IR-13)
+// ---------------------------------------------------------------------------
+
+/** Varför en komplettering inte gick att räkna om, och vad David gör då. */
+export const KOMPLETTERINGSFEL: Record<Avvisningsorsak, string> = {
+  anteckning_saknas: 'Övrigt-raden finns inte i bolaget.',
+  inte_utanfor_avtal: 'Övrigt-raden är inte markerad som utanför avtalet.',
+  uppdraget_stangt: 'Uppdraget är stängt, så frågan kan inte räknas om.',
+  avtalsdel_saknas: 'Avtalsdelen finns inte längre bland avtalets aktiva delar.',
+  avtalsdel_upptagen: 'Avtalsdelen har en annan baselineändring som väntar eller en version som börjar senare. Svara på frågan som den står, eller avgör den andra ändringen först.',
+  kallreferens_ogiltig: 'En källreferens i förslaget går inte att läsa.',
+  underlag_ogiltigt: 'Förslaget går inte att räkna om med de här timmarna och avtalets värden.',
+};
+
+/**
+ * Davids timmar i en väntande Övrigt-fråga (FR-41 punkt 2). Kompletteringen
+ * låser posten, bygger ersättaren med samma byggare och samma schemaobjekt som
+ * svepet, köar den och märker den gamla posten ersatt, i anroparens enda
+ * transaktion. Den är varken ja eller nej: inget mottagande, ingen beslutsrad
+ * och ingen domänhandling. Ingenting skrivs före `createApproval`, och en
+ * prövning som faller kastar `ConflictError`, så att transaktionen rullas
+ * tillbaka. Ersättaren behåller källan, alternativet, avtalsdelen, skälet,
+ * källorna och den gamla postens begärare; resten räknas om ur egna tabeller.
+ */
+export async function kompletteraForslag(
+  client: PoolClient, companyId: string, userId: string, input: { approval_id: string; timmar: number },
+): Promise<{ approval_id: string; ersatt_av: string }> {
+  // 1. Låset först: 404 och 409 not_pending före varje annan prövning.
+  const q = await lockPendingApproval(client, companyId, input.approval_id);
+  // 2. Bara en Övrigt-fråga med sitt frysta underlag kan kompletteras.
+  const prov = koburetSlag(q) === 'ovrigt_beslut' && Object.hasOwn(OVRIGT_SCHEMA, q.action)
+    ? OVRIGT_SCHEMA[q.action as Ovrigtatgard].safeParse(q.input) : null;
+  const u = prov?.success ? prov.data.beslutsunderlag : undefined;
+  if (!prov?.success || !u) {
+    throw new ConflictError('inte_ovrigtforslag', 'Bara en väntande fråga ur Övrigt kan kompletteras med timmar.');
+  }
+  // 3. Raden prövas mot postens avtal och läses sedan ur databasen.
+  await provaOvrigtKalla(client, companyId, prov.data.contract_id, u.anteckning_id);
+  const rad = await lasOvrigtrad(client, companyId, u.anteckning_id);
+  if (!rad) throw new ConflictError('anteckning_saknas', KOMPLETTERINGSFEL.anteckning_saknas);
+  // 4.
+  const lastNar = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu.toISOString();
+  // 5. Samma prövning som svepet; posten som ersätts räknas inte som en annan ändring.
+  const p = await provaOvrigtForslag(client, companyId, rad, { alternativ: u.alternativ, avtalsdel_kod: u.avtalsdel_kod }, q.id);
+  if (!p.ok) throw new ConflictError(p.orsak, KOMPLETTERINGSFEL[p.orsak]);
+  // 6. Samma byggare som svepet. Referenserna är redan id, så ingen skrivs.
+  const b = byggOvrigtForslag(rad, { alternativ: u.alternativ, avtalsdel_kod: u.avtalsdel_kod, timmar: input.timmar, skal: u.skal },
+    p.kontext, u.kallor.slice(1).map((k) => ({ id: k.id, ...(k.handelse_datum ? { handelse_datum: k.handelse_datum } : {}) })), lastNar);
+  if (!b.ok) throw new ConflictError('underlag_ogiltigt', KOMPLETTERINGSFEL.underlag_ogiltigt);
+  // 7–9. Ersättaren, ersättningen och domänhändelsen. Id och koder, aldrig text eller timmar.
+  const ny = await createApproval(client, companyId, q.requested_by, q.requested_actor, b.atgard, b.indata);
+  await ersattGodkannande(client, companyId, q.id, ny.id);
+  await writeAudit(client, {
+    companyId, userId, action: 'uppdrag.forslag_kompletterat', entityType: 'approval', entityId: q.id,
+    details: { approval_id: q.id, ersatt_av: ny.id, atgard: b.atgard },
+  });
+  return { approval_id: q.id, ersatt_av: ny.id };
 }
 
 /** Platsen för ett uppdragsbeslut; främmande, trasiga och avtalstomma mål ger ingen länk. */

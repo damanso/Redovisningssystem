@@ -28,6 +28,7 @@ import {
   artikel, avgoranden, bedomningar, beslutsrader, bokfortKvitto, del, femSlag, frisktUppdrag, koa, kopost, koposter, notis, nyttBolag, ok,
   plantera, posta, rest, sida, svep, vy,
 } from './undantagsvynRigg.js';
+import { beslutsraderFor, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -542,4 +543,221 @@ describe('V6 (d) knapparnas förteckning', () => {
     expect(main).not.toMatch(/Inte nu|Kvittera|\bkvitto\b/);
     expect(main).not.toContain('class="kvitton"');
   });
+});
+
+// ---------------------------------------------------------------------------
+// R7 och V8: Övrigt-frågan med beräkningen (Story 1.14, Task 6)
+// ---------------------------------------------------------------------------
+
+describe('R7 de rena fallen för Övrigt-frågan', () => {
+  it('(a) blockets fält, förfrågan escapad, avtalsdelarna och beräkningen', () => rena.provaOvrigtFalten());
+  it('(b) utan timmar inget belopp', () => rena.provaOvrigtUtanTimmar());
+  it('(c) utan taxa inget belopp', () => rena.provaOvrigtUtanTaxa());
+  it('(d) överskridet tak', () => rena.provaOvrigtOverskridet());
+  it('(e) scopelinjerna', () => rena.provaOvrigtScopelinjer());
+  it('(f) Davids egen anteckning som första källa', () => rena.provaOvrigtKallan());
+  it('(g) AI-märkningen och underlagets lästid', () => rena.provaOvrigtMarkningOchFarskhet());
+  it('(h) blocket bara i sitt slag', () => rena.provaOvrigtBaraSittSlag());
+  it('(i) skälen när utrymmet inte kan räknas', () => rena.provaOvrigtSkalen());
+});
+
+describe('V8 Övrigt-frågan genom rutten', () => {
+  let b: Bolag;
+  let ilt: Ilt;
+  let tillagg: string;
+  let ryms: string;
+  const delar = async () => withAdmin(async (db) => (await db.query(
+    'SELECT * FROM contract_parts WHERE company_id=$1 ORDER BY id', [b.id])).rows);
+
+  beforeAll(async () => {
+    b = await nyttBolag('Undantagsvyn Övrigt');
+    ilt = await iltUppdrag(b);
+    tillagg = (await ovrigtFraga(b, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' })).approvalId;
+    ryms = (await ovrigtFraga(b, ilt)).approvalId;
+  }, 60_000);
+
+  it('(a) frågan har blocket och formulären Ja och Nej med skäl', async () => {
+    const a = artikel(await sida(b, vy(b)), ryms);
+    expect(a, 'artikeln').not.toBeNull();
+    expect(a!).toContain('data-postslag="ovrigt_beslut"');
+    for (const namn of ['forfragan', 'avtalsdelar', 'timpris', 'forbrukning', 'timmar', 'berakning', 'aterstaende', 'scopelinjer']) {
+      expect(a!).toContain(`data-falt="${namn}"`);
+    }
+    expect(a!).toContain('name="handling" value="ja"');
+    expect(a!).toContain('name="handling" value="nej"');
+    expect(a!).toContain('<textarea name="skal" rows="2" maxlength="300" required>');
+  });
+
+  it('(b) ja på ett tillägg ger en ny version med det nya taket och en beslutsrad', async () => {
+    const res = await posta(b, { handling: 'ja', approval_id: tillagg });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    expect(res.headers.location).toBe(beslutetsPlats(b, ilt.projektId, tillagg));
+    const tak = await withAdmin(async (db) => (await db.query<{ cap_hours: string }>(
+      "SELECT cap_hours::text FROM contract_parts WHERE company_id=$1 AND contract_id=$2 AND code='2B' ORDER BY valid_from DESC, id DESC LIMIT 1",
+      [b.id, ilt.contractId])).rows[0]!.cap_hours);
+    expect(tak).toBe('20.00');
+    expect(await beslutsraderFor(tillagg)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'tillagg', kalla_typ: 'anteckning' })]);
+    expect(await sida(b, vy(b))).not.toContain(`id="post-${tillagg}"`);
+  });
+
+  it('(c) ja på ett ryms ger en beslutsrad och ändrar ingen avtalsdel', async () => {
+    const fore = await delar();
+    const res = await posta(b, { handling: 'ja', approval_id: ryms });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    expect(await beslutsraderFor(ryms)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'ryms', kalla_typ: 'anteckning' })]);
+    expect(await delar()).toEqual(fore);
+  });
+
+  it('(d) nej med skäl på ett ryms ger nej-raden med skälet och ändrar ingen avtalsdel', async () => {
+    const q = (await ovrigtFraga(b, ilt)).approvalId;
+    const fore = await delar();
+    const res = await posta(b, { handling: 'nej', approval_id: q, skal: 'Ryms inte i år' });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    const k = await kopost(q);
+    expect(k.status).toBe('rejected');
+    expect(k.beslut_skal).toBe('Ryms inte i år');
+    expect(await beslutsraderFor(q)).toEqual([expect.objectContaining({ utfall: 'nej', skal: 'Ryms inte i år', alternativ: 'ryms' })]);
+    expect(await delar()).toEqual(fore);
+  });
+
+  it('(e) ett upprepat ja ger 409 not_pending, och agenten får varken säga ja eller nej', async () => {
+    const igen = await rest(b, `approvals/${tillagg}/approve`);
+    expect(igen.status, JSON.stringify(igen.body)).toBe(409);
+    expect(igen.body.error).toBe('not_pending');
+    const q = (await ovrigtFraga(b, ilt)).approvalId;
+    const ja = await rest(b, `approvals/${q}/approve`, {}, b.agent);
+    expect(ja.status, JSON.stringify(ja.body)).toBe(403);
+    expect(ja.body.error).toBe('human_approval_required');
+    const nej = await rest(b, 'actions/avboj_beslutsforslag', { approval_id: q, skal: 'Agentens nej' }, b.agent);
+    expect(nej.status, JSON.stringify(nej.body)).toBe(403);
+    expect(nej.body.error).toBe('human_required');
+    expect((await kopost(q)).status).toBe('pending');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R8 och V9: kompletteringen och ”ändrat sedan förslaget” (Story 1.15, Task 5)
+// ---------------------------------------------------------------------------
+
+import { amount } from '../src/http/view/html.js';
+import { KOMPLETTERINGSFEL } from '../src/services/uppdragBeslut.js';
+import { ersattning, fragaUtanTimmar, tillstand } from './kompletteringRigg.js';
+
+describe('R8 de rena fallen för kompletteringen', () => {
+  it('(a) ett tredje formulär med timmarna och Räkna om', () => rena.provaKompletteringsformular());
+  it('(b)–(c) förifyllt med förslagets timmar, tomt utan dem', () => rena.provaKompletteringensVarde());
+  it('(d) varje approval_id är postens, och ingen annan post får formuläret', () => rena.provaKompletteringensId());
+  it('(e) taxan och beloppet med båda värdena', () => rena.provaAndratTaxa());
+  it('(f) inga ändringar, inget fält', () => rena.provaAndratTomt());
+  it('(g) delen saknas: texten och ingen kompletteringsknapp', () => rena.provaAndratDelenSaknas());
+  it('(h) oläst jämförelse', () => rena.provaAndratOlast());
+  it('(i) överskridet i ord, utan procentsats', () => rena.provaAndratOverskridet());
+});
+
+describe('V9 kompletteringen genom rutten', () => {
+  let b: Bolag;
+  let ilt: Ilt;
+  let a = '';
+  let ny = '';
+  const korda = new Set<string>();
+  const TIMFEL = 'Ange timmarna som ett tal större än noll, med högst två decimaler, till exempel 7,5.';
+  beforeAll(async () => {
+    b = await nyttBolag('Undantagsvyn komplettering');
+    ilt = await iltUppdrag(b, { namn: 'ILT V9' });
+    a = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+  }, 60_000);
+
+  it('(a) frågan har kompletteringens formulär', async () => {
+    const art = artikel(await sida(b, vy(b)), a);
+    expect(art, 'artikeln').not.toBeNull();
+    expect(art!).toContain('name="handling" value="komplettera"');
+    expect(art!).toContain('<input type="number" name="timmar"');
+    korda.add('a');
+  });
+
+  it('(b) timmarna ger en ersättare, och svaret leder till dess post', async () => {
+    const res = await posta(b, { handling: 'komplettera', approval_id: a, timmar: '8' });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    ny = (await ersattning(a)).ersatt_av!;
+    expect(ny).toBeTruthy();
+    expect(res.headers.location).toBe(`/app/c/${b.id}/uppdrag#post-${ny}`);
+    const ersattare = await ersattning(ny);
+    expect(ersattare.status).toBe('pending');
+    expect((ersattare.input.beslutsunderlag as { timmar: number }).timmar).toBe(8);
+    const html = await sida(b, vy(b));
+    expect(artikel(html, ny)).not.toBeNull();
+    expect(artikel(html, a)).toBeNull();
+    korda.add('b');
+  });
+
+  it('(c) ett decimalkomma läses som timmar', async () => {
+    const { approvalId: c } = await fragaUtanTimmar(b, ilt, 'ryms', '2A');
+    const res = await posta(b, { handling: 'komplettera', approval_id: c, timmar: '7,5' });
+    expect(res.status).toBe(302);
+    const ersattare = await ersattning((await ersattning(c)).ersatt_av!);
+    expect((ersattare.input.beslutsunderlag as { timmar: number }).timmar).toBe(7.5);
+    korda.add('c');
+  });
+
+  it('(d) timmar som inte går att läsa ger notisen, och ingenting skrivs', async () => {
+    const { approvalId: d } = await fragaUtanTimmar(b, ilt, 'ryms', '2A');
+    for (const timmar of ['', '0', 'abc', '8,001', '-1']) {
+      const fore = await tillstand(b.id, d);
+      const res = await posta(b, { handling: 'komplettera', approval_id: d, timmar });
+      expect(res.status, timmar).toBe(302);
+      expect(notis(res.headers.location), timmar).toBe(TIMFEL);
+      expect(await tillstand(b.id, d), timmar).toEqual(fore);
+    }
+    korda.add('d');
+  });
+
+  it('(e)–(f) en ersatt post: upprepad komplettering, ja och nej leder tyst tillbaka utan skrivning', async () => {
+    const kroppar: Record<string, string>[] = [
+      { handling: 'komplettera', approval_id: a, timmar: '8' },
+      { handling: 'ja', approval_id: a },
+      { handling: 'nej', approval_id: a, skal: 'Prov' },
+    ];
+    for (const kropp of kroppar) {
+      const fore = await tillstand(b.id, a);
+      const res = await posta(b, kropp);
+      expect(res.status, kropp.handling).toBe(302);
+      expect(res.headers.location ?? '', kropp.handling).not.toContain('fel=');
+      if (kropp.handling === 'komplettera') expect(res.headers.location).toBe(`/app/c/${b.id}/uppdrag`);
+      expect(await tillstand(b.id, a), kropp.handling).toEqual(fore);
+    }
+    korda.add('e'); korda.add('f');
+  });
+
+  it('(g) ett nytt timpris syns som ”Ändrat sedan förslaget” med båda värdena', async () => {
+    const { approvalId: g } = await ovrigtFraga(b, ilt);
+    await withAdmin((db) => db.query('UPDATE contracts SET hourly_rate_ore=120000 WHERE company_id=$1 AND id=$2', [b.id, ilt.contractId]));
+    const art = artikel(await sida(b, vy(b)), g);
+    expect(art, 'artikeln').not.toBeNull();
+    expect(art!).toContain('data-falt="andrat"');
+    expect(art!).toContain('Ändrat sedan förslaget');
+    for (const belopp of [100000, 120000, 800000, 960000]) expect(art!).toContain(amount(belopp).value);
+    korda.add('g');
+  });
+
+  it('(h) ett stängt uppdrag ger notisen med kompletteringens text', async () => {
+    const annat = await iltUppdrag(b, { namn: 'ILT V9 stängt' });
+    const { approvalId: h } = await fragaUtanTimmar(b, annat, 'ryms', '2A');
+    await ok(b, 'set_project_status', { project_id: annat.projektId, status: 'closed' });
+    const res = await posta(b, { handling: 'komplettera', approval_id: h, timmar: '8' });
+    expect(res.status).toBe(302);
+    const text = notis(res.headers.location);
+    expect(text.startsWith('Kunde inte räknas om: '), text).toBe(true);
+    expect(text).toContain(KOMPLETTERINGSFEL.uppdraget_stangt);
+    korda.add('h');
+  });
+
+  it('(i) ett POST mot grannbolaget ger 404', async () => {
+    const res = await b.ua.post(`/app/c/${grannbolag}/uppdrag`).type('form')
+      .send({ handling: 'komplettera', approval_id: a, timmar: '8' });
+    expect(res.status).toBe(404);
+    korda.add('i');
+  });
+
+  it('kontrollvakt: V9 (a)–(i) kördes', () => expect([...korda].sort())
+    .toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']));
 });
