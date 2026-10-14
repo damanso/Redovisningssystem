@@ -6,10 +6,14 @@ import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from './auditService.js';
 
 export const APPROVAL_COLUMNS = `id, action, input, status, requested_by, requested_actor,
-  decided_by, decided_at, result, error, created_at, beslut_hash, beslut_skal`;
+  decided_by, decided_at, result, error, created_at, beslut_hash, beslut_skal, ersatt_av`;
 
-/** Mottaget mandat som kärnan ännu inte verkställt (B-2); delas av återförsök och Läget. */
-export const MOTTAGET_EJ_VERKSTALLT = `beslut_hash IS NOT NULL AND decided_by IS NOT NULL
+/**
+ * Mottaget mandat som kärnan ännu inte verkställt (B-2); delas av återförsök och Läget.
+ * En ersatt köpost (Story 1.15) är uttryckligen utesluten, utöver `beslut_hash`,
+ * som CHECK i 0083 redan håller tom för den.
+ */
+export const MOTTAGET_EJ_VERKSTALLT = `beslut_hash IS NOT NULL AND decided_by IS NOT NULL AND ersatt_av IS NULL
   AND (status = 'approved' OR (status = 'rejected' AND result IS NULL))`;
 
 export interface Approval {
@@ -26,6 +30,8 @@ export interface Approval {
   error: string | null;
   beslut_hash: string | null;
   beslut_skal: string | null;
+  /** Story 1.15: ersättaren efter en komplettering. Ett `rejected` med `ersatt_av` är inget nej. */
+  ersatt_av: string | null;
 }
 
 /** Låser mandatets lagrade JSON vid en stabil summa, oberoende av jsonb:s nyckelordning. */
@@ -167,5 +173,28 @@ export async function avvisaGodkannande(
     // Skälet finns bara i köposten, aldrig i auditloggen (lärdom 10).
     ...(rent ? { details: { action: appr.action, tvafas: true } } : {}),
   });
+  return r.rows[0]!;
+}
+
+/**
+ * Ersättningen efter en komplettering (Story 1.15, B-2, IR-13): ett tekniskt
+ * slutläge och inget mottaget beslut. Funktionen är den enda skrivningen av
+ * `ersatt_av`, och den sätter aldrig `decided_by`, `decided_at`, `beslut_hash`
+ * eller `beslut_skal` (CHECK `action_approvals_ersatt_utan_beslut` fäller varje
+ * försök). Anroparen har skapat ersättaren i samma transaktion och skriver
+ * auditraden: kärnans `action.*`-händelser dupliceras inte, och domänhändelsen
+ * hör till modulen.
+ */
+export async function ersattGodkannande(
+  client: PoolClient, companyId: string, approvalId: string, ersattareId: string,
+): Promise<Approval> {
+  // Samma lås som avvisningen: 404 och 409 not_pending, också när anroparen redan låst.
+  await lockPendingApproval(client, companyId, approvalId);
+  const r = await client.query<Approval>(
+    `UPDATE action_approvals SET status = 'rejected', ersatt_av = $1
+      WHERE id = $2 AND company_id = $3
+      RETURNING ${APPROVAL_COLUMNS}`,
+    [ersattareId, approvalId, companyId],
+  );
   return r.rows[0]!;
 }
