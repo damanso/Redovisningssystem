@@ -31,6 +31,7 @@ import {
   PASSWORD, avgoranden, bedomningar, beslutsrader, femSlag, frisktUppdrag, koa, kopost, nyttBolag, ok, rest, svep,
   uppdragsdestination,
 } from './undantagsvynRigg.js';
+import { beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 
 const MOBIL = { viewport: { width: 390, height: 844 }, javaScriptEnabled: false, hasTouch: true, isMobile: true };
 
@@ -91,6 +92,8 @@ beforeAll(async () => {
 
   poster = await nyttBolag('Mobil poster');
   fem = await femSlag(poster);
+  // Story 1.14: B (1)–(2) mäter också Övrigt-frågan med sitt block.
+  await ovrigtFraga(poster, await iltUppdrag(poster));
   tomt = await nyttBolag('Mobil tomt');
   await frisktUppdrag(tomt, 'Friskt');
   await svep(tomt);
@@ -228,6 +231,10 @@ describe('B (6) varje val i telefonen', () => {
   let utanforSignal: string;
   /** En baselineändring som går att verkställa: avtalsdelens nya version (`uppdragsytan-mandat.test.ts`). */
   let jaPost: string;
+  /** Story 1.14: ILT-avtalet och två Övrigt-frågor, ett tillägg på 2B och ett ryms på 2A. */
+  let ilt: Ilt;
+  let ovrigtTillagg: { anteckningId: string; approvalId: string };
+  let ovrigtRyms: { anteckningId: string; approvalId: string };
 
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
@@ -237,7 +244,10 @@ describe('B (6) varje val i telefonen', () => {
       contract_id: f.a.contractId, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123,
       change_reason: 'Ändrat avtal',
     });
-  }, 120_000);
+    ilt = await iltUppdrag(val);
+    ovrigtTillagg = await ovrigtFraga(val, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
+    ovrigtRyms = await ovrigtFraga(val, ilt);
+  }, 180_000);
 
   /** Postens dolda fält, läst ur den renderade sidan — samma data som formuläret skickar. */
   async function dolda(page: Page, id: string): Promise<Record<string, string>> {
@@ -348,6 +358,51 @@ describe('B (6) varje val i telefonen', () => {
       }
     }, 120_000);
   }
+
+  it('(9) ja på en Övrigt-fråga med tillägg', async () => {
+    const { kontext, page } = await mobil(val);
+    const id = ovrigtTillagg.approvalId;
+    try {
+      await valet({ page, kontext, id, knapp: 'Ja', form: { handling: 'ja', approval_id: id },
+        plats: `/app/c/${val.id}/projects/${ilt.projektId}/laget#beslut-${id}`,
+        rader: async () => (await beslutsrader(id)).antal,
+        registrerat: async () => {
+          expect((await kopost(id)).status).toBe('executed');
+          expect(await beslutsraderFor(id)).toEqual([expect.objectContaining({ utfall: 'ja', alternativ: 'tillagg', kalla_typ: 'anteckning',
+            kalla_id: ovrigtTillagg.anteckningId })]);
+          expect((await delversioner(val.id, ilt.contractId, '2B')).map((v) => v.cap_hours)).toContain('20.00');
+        },
+        restVag: `approvals/${id}/approve`, restKropp: {}, restKod: 'not_pending',
+        agentKod: 'human_approval_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(10) nej med skäl på en Övrigt-fråga med ryms', async () => {
+    const { kontext, page } = await mobil(val);
+    const id = ovrigtRyms.approvalId;
+    try {
+      const skal = 'Det ryms inte i år';
+      const delarFore = await delversioner(val.id, ilt.contractId, '2A');
+      await valet({ page, kontext, id, knapp: 'Nej',
+        fore: () => page.fill(`#post-${id} textarea[name=skal]`, skal),
+        form: { handling: 'nej', approval_id: id, skal },
+        plats: `/app/c/${val.id}/projects/${ilt.projektId}/laget#beslut-${id}`,
+        rader: async () => (await beslutsrader(id)).antal,
+        registrerat: async () => {
+          const q = await kopost(id);
+          expect(q.status).toBe('rejected');
+          expect(q.beslut_skal).toBe(skal);
+          expect(await beslutsraderFor(id)).toEqual([expect.objectContaining({ utfall: 'nej', skal, alternativ: 'ryms' })]);
+          expect(await delversioner(val.id, ilt.contractId, '2A')).toEqual(delarFore);
+        },
+        restVag: 'actions/avboj_beslutsforslag', restKropp: { approval_id: id, skal }, restKod: 'not_pending',
+        agentKod: 'human_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
 
   it('Risk på en begärd bedömning', async () => {
     const { kontext, page } = await mobil(val);

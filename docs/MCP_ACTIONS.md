@@ -1239,6 +1239,16 @@ egna databasen kommer in som validerad indata:
 - `drive_kopior[]` — utfallet av förra arbetslistans Drive-kö, samma form som
   `rapportera_drive_kopia` och genom **samma** tjänstefunktion. Utan den halvan
   hade svaret lämnat tillbaka en kö som redan var tömd.
+- `ovrigt_forslag[]` (valfri, högst 200, Story 1.14) — Hermes formulering per
+  Övrigt-kandidat: `{ anteckning_id, alternativ: 'tillagg' | 'ryms',
+  avtalsdel_kod, timmar?, skal, kallreferenser? }`, strikt. `timmar` är positivt,
+  högst 999 999,99 och med högst två decimaler; `skal` är 1–2 000 tecken och
+  inte bara blanktecken; `kallreferenser` är högst tio
+  `{ sort: 'mejl' | 'kalender', extern_id, extern_nyckel, extern_kalla,
+  handelse_datum? }`. Fel form ger 400 `validation_error` för hela anropet. Varje
+  förslag prövas sedan mot egna tabeller (se *Övrigt-raden blir en fråga*
+  nedan), och ett förslag som inte håller avvisas med en orsak och fäller aldrig
+  svepet.
 
 **Mottagna beslut först (Story 1.7, B-2):** efter bolagslåset verkställs redan mottagna mandat med en savepoint per köpost, före läsningen av öppna avtal. Svaret `svep_kort` får `mottagna_beslut: { verkstallda, kvar }` som antal; inga id eller fel förs ut. Auditraden anger verkställaren `svep`, medan beslutsfattaren förblir människan. `svep_avstod` är oförändrat.
 
@@ -1331,10 +1341,38 @@ larmar aldrig (samma regel som takvarningen: ett oläst tak varnar aldrig).
   avsnittet nedan. Utfallet står per uppdrag i svarets `bindningar`
   (`koade` och `redan_koade`, plus `automatiska`, som är tom sedan Story 1.8 men står kvar eftersom svaret aldrig tappar fält).
 
+**Övrigt-steget (Story 1.14, B-4)** står efter uppdragen (alltså efter
+referenserna och spärrmappen) och före täckningen: först prövas och köas
+`ovrigt_forslag[]`, därefter läses kandidaterna. En rad som just fått sin köpost
+står alltså inte i arbetslistan, och täckningen ser körningens köposter. Ett
+avstått svep prövar inga förslag.
+
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
 `referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
-`hoppade_kopior[]`, `tackning[]` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
-`status`, `senast_verifierad`) och `drive_ko` ur `hamta_drive_ko`. En **köad**
+`hoppade_kopior[]`, `tackning[]`, `ovrigt` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
+`status`, `senast_verifierad`), `drive_ko` ur `hamta_drive_ko` och
+`ovrigt_kandidater` (Story 1.14).
+
+- `arbetslista.ovrigt_kandidater[]` är `{ id, contract_id, text, datum }` för
+  varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
+  status) och beslutsrad i radens eget avtal, också när avtalet inte står i
+  indatat. `datum` är radens kalenderdag. Ordningen är avtalets och sedan radens
+  skapandeordning.
+- `ovrigt` är `{ koade, redan_koade, avvisade }` och står alltid med, med tomma
+  listor när inget förslag kom. `koade[]` är `{ anteckning_id, approval_id,
+  atgard }`, `redan_koade[]` är radernas id (raden hade redan en köpost eller
+  beslutsrad i sitt avtal), och `avvisade[]` är `{ anteckning_id, orsak }` med
+  en av sju orsaker:
+  - `anteckning_saknas` — raden finns inte i bolaget;
+  - `inte_utanfor_avtal` — raden är inte markerad som utanför avtalet;
+  - `uppdraget_stangt` — radens uppdrag är inte öppet;
+  - `avtalsdel_saknas` — koden är ingen aktiv del i radens avtal;
+  - `avtalsdel_upptagen` — vid tillägg: koden har en senare lagrad version, eller en baselineköpost för avtalet eller koden väntar eller är mottagen utan verkställighet;
+  - `kallreferens_ogiltig` — en kallreferens håller inte referensens form (till exempel en url);
+  - `underlag_ogiltigt` — underlaget eller köpostens indata går inte igenom åtgärdens schema (till exempel ett belopp som inte är ett säkert heltal).
+
+  Ett avvisat förslag skriver ingenting, och raden står kvar som kandidat med
+  täckningen `fel`. En **köad**
 kopia står bara i kön, aldrig bland referenserna: dess `extern_id` är ännu
 platshållaren, och en verifiering av den hade rapporterat "borta" om en fil som
 aldrig skrivits. En okänd referens eller ett avtal i ett annat bolag ger **404
@@ -1632,7 +1670,9 @@ rendering (NFR-6).
   användaren och kan inte skickas in (`.strict()`).
 - **Ingen automatik.** Bocken *utanför avtalet* är en markering att läsa, aldrig
   en trigger: ingen rad blir ett tillägg eller en scopesignal av sig själv, och
-  någon "behandlad"-status finns inte. `contracts.notes` (avtalsformulärets
+  någon "behandlad"-status finns inte. En markerad rad står i svepets
+  arbetslista (`ovrigt_kandidater`), och ett förslag som servern prövat blir en
+  fråga i undantagsvyn (Story 1.14). `contracts.notes` (avtalsformulärets
   *Anteckningar*) och `projects.notes` är orörda — de är en annan sak.
 
 **Vyn:** panelen **Övrigt** sist på Läget
@@ -1648,6 +1688,80 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
 `?fel=` i sidans notis. Ingen ny CSS-klass, ingen JS.
 
 
+### Övrigt-raden blir en fråga (Story 1.14, B-4)
+
+**Kandidaten och prövningen.** Svepet lämnar varje markerad Övrigt-rad utan
+köpost och beslutsrad i arbetslistan (`ovrigt_kandidater`). Hermes formulerar
+ett förslag per kandidat och skickar det i `ovrigt_forslag[]`. Servern prövar
+förslaget mot egna tabeller, i svepets transaktion efter bolagslåset: raden finns
+i bolaget, är markerad och saknar köpost och beslutsrad i sitt avtal, uppdraget
+är öppet, och koden är en aktiv del i **radens** avtal. Avtalet tas alltid ur
+raden, aldrig ur förslaget. Radens text väljer aldrig åtgärd, avtalsdel eller
+alternativ.
+
+**Beräkningen** (`lib/beslutsunderlag.ts`) görs av servern och aldrig av Hermes.
+Taxan är `contracts.hourly_rate_ore`, förbrukningen och taket den valda delens
+post i `get_contract_usage` (den gällande versionen, med barnen upprullade).
+Beloppet är timmar × taxa i ören, räknat i hundradelar av timmar och avrundat
+med `roundOre`. Tiden räknas i hela minuter. Vid ryms räknas återstående utrymme
+mot delens tak, och vid tillägg mot det nya taket (delens eget tak plus
+timmarna). Saknade timmar eller taxa ger `null`, aldrig 0 kr. Underlaget fryses i
+köpostens `beslutsunderlag`: `anteckning_id`, `anteckning_datum`, `alternativ`,
+`avtal_namn`, `avtal_signerat`, `avtalsdel_kod`, `avtalsdel_namn`,
+`avtalsdelar[]` (`kod`, `namn`, `tak_minuter`, `forbrukade_minuter`,
+`tak_bekraftat`), `taxa_ore`, `tak_minuter`, `tak_bekraftat`,
+`forbrukade_minuter`, `timmar`, `minuter`, `belopp_ore`, `nytt_tak_minuter`,
+`giltig_fran`, `kvar_fore_minuter`, `kvar_efter_minuter`,
+`scopelinjer_innanfor[]`, `scopelinjer_utanfor[]`, `forslagstext`, `skal`,
+`kallor[]` (först Övrigt-raden, sedan en `referens` per unik kallreferens, med
+`handelse_datum` när det fanns) och `last_nar`.
+
+**Köposten per alternativ**, köad med `actor: agent`, en gång per rad:
+- `tillagg` → `andra_baseline` med en fullständig ny version av den gällande
+  avtalsdelen: dess fält kopieras, `cap_hours` blir det nya taket (står kvar när
+  timmarna eller det egna taket saknas), `cap_amount_ore` ökas med beloppet när
+  båda finns, `change_reason` är `Tillägg: <radens text> (Övrigt-raden <datum>)`
+  och `valid_from` är radens datum, eller dagen efter den gällande versionen när
+  den är lika ny eller nyare. Tillägget köas bara när den gällande versionen är
+  kodens senaste och ingen `satt_baseline` för avtalet eller `andra_baseline`/
+  `upsert_contract_part` för koden väntar eller är mottagen utan verkställighet;
+  annars `avtalsdel_upptagen`.
+- `ryms` → `registrera_uppdragsbeslut` med `{ contract_id, kalla, beslutsunderlag }`.
+
+Indatat prövas mot åtgärdens eget schema före kön, så ett ja och ett nej alltid
+tas emot. Kallreferenserna blir pekare i `uppdrag_referens`; mejlets innehåll når
+aldrig redovisningen. Auditraden `action.approval_requested` bär
+`{ action, actor: 'agent', anteckning_id, alternativ }`, aldrig text.
+
+**`registrera_uppdragsbeslut` (sensitive, `tvafas`)** — "Registrera att en
+förfrågan ur Övrigt ryms i avtalet". Indata `{ contract_id, kalla: { typ:
+'anteckning', id }, beslutsunderlag }`, strikt, med underlagets `alternativ:
+'ryms'` och samma rad som källan. Ett ja registrerar beslutsraden (`alternativ:
+'ryms'`, handlingen `{ typ: 'ryms', anteckning_id, avtalsdel_kod }`) och ändrar
+ingen avtalsdel. Ett nej med skäl går genom `avboj_beslutsforslag`.
+Verkställigheten prövar att raden hör till avtalet och är markerad, annars 409
+`kalla_annat_avtal` och mandatet står kvar för återförsök. Fel: 400
+`validation_error`, 403 `human_approval_required` (ja av en agent) och
+`human_required` (nej av en agent), 409 `not_pending`.
+
+**En väg in.** `registrera_uppdragsbeslut` och `andra_baseline` med
+`kalla.typ = 'anteckning'` ger **409 `koas_av_svepet`** när någon anropar dem
+direkt, genom REST eller MCP, människa som agent: förslaget räknas av servern
+och köas bara av svepet. Ingen köpost, auditrad eller domänskrivning uppstår.
+
+**`andra_baseline`** har två nya fält: `kalla` får typen `anteckning`, och
+`beslutsunderlag` (det frysta underlaget) krävs med den och bara med den. Källan
+anteckning tillsammans med `signal_id` ger 400. Underlagets `alternativ` är
+`tillagg`, dess rad är källans, dess kod är `code` och dess `giltig_fran` är
+`valid_from`. Verkställigheten av ett sådant tillägg prövar raden som ryms gör.
+Auditraden `contract_part.created` för en ny avtalsdelsversion bär inte längre
+`change_reason`; orsaken står kvar i `contract_parts.change_reason`.
+
+**Väntar till senare berättelser:** komplettering av timmarna och "ändrat sedan
+förslaget" (Story 1.15) och nej-utkastet (Story 1.16). Hermes formulering finns
+sedan Story 1.17 (`uppdragssvep.py`, förslagen i körningens andra anrop).
+
+
 ### Undantagsvyns läsväg (Story 1.6, B-3)
 
 - `las_undantag` (read, ingen `kravManniska`) — utan indatafält; schemat är
@@ -1656,10 +1770,15 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   `aldsta_tackning`, `hoppade[]` och `last_nar`. Posterna bär `slag`, `id`,
   `identitet`, `atgard`, `foreslagen_av`, `skapad_nar`, `uppdrag`, `val`,
   `varfor_mandat`, `forslag`, `skal`, `kallor` och `ja_registrerar`, och
-  posten `ny_bedomning` dessutom det valfria fältet `bedomning`.
-- Den stängda listan har fem postslag. `baselineandring` kommer ur väntande
+  posten `ny_bedomning` dessutom det valfria fältet `bedomning`. Posten
+  `ovrigt_beslut` bär det valfria fältet `ovrigt`: `forfragan` (Övrigt-raden:
+  `id`, `text`, `datum`, `utanfor_avtal`) och `underlag` (det frysta
+  underlaget), båda som `Lasvarde` (Story 1.14).
+- Den stängda listan har sex postslag. `baselineandring` kommer ur väntande
   `satt_baseline`, `andra_baseline`, `upsert_contract_part` eller
-  `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`; `avslut`
+  `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`;
+  `ovrigt_beslut` ur väntande `registrera_uppdragsbeslut` eller `andra_baseline`
+  med Övrigt-raden som källa (Story 1.14); `avslut`
   ur väntande `avsluta_uppdrag`; `scopeavgorande` ur en tänd signal utan
   rad i `uppdrag_scopeavgorande`; `ny_bedomning` ur en obesvarad rad i
   `uppdrag_bedomningsbegaran` (Story 1.10). Rutin, drift, tröskellarm och referensfel blir inga poster.
@@ -1702,7 +1821,10 @@ avtalet* och knappen *Lägg till* — fälten och meningen om att raden inte gå
   Ingen ny fråga eller kvittering skapas för den här.
 - `hoppade[]` redovisar köposter, signaler och begäranden som lästs men inte
   blivit poster: `id`, `identitet` (`kopost`, `signal` eller `begaran`),
-  `atgard`, `orsak` (`uppdrag_saknas` eller `uppdrag_avslutat`). Där finns bara id:n och koder. Främmande id:n slås
+  `atgard`, `orsak` (`uppdrag_saknas`, `uppdrag_avslutat` eller
+  `underlag_ogiltigt`). `underlag_ogiltigt` är en Övrigt-köpost vars indata inte
+  går igenom åtgärdens schema, eller vars rad inte är markerad i postens avtal
+  (Story 1.14). Där finns bara id:n och koder. Främmande id:n slås
   aldrig upp över bolagsgränsen; ogiltiga uuid förgiftar ingen transaktion.
 - Läsvägen skriver inget och gör inga externa anrop; bara Postgres läses
   genom anroparens tenant-transaktion. Källorna är appvägar under det egna
@@ -1715,7 +1837,7 @@ Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
 
 `avboj_beslutsforslag` är write med **`kravManniska: true`**. Indata är `approval_id` (uuid) och `skal` (1–300 tecken). Svaret är `{ approval_id, status, verkstalld }`. Skälet får inte bestå av blanksteg. Fel: 400 `validation_error`/`skal_kravs`, 403 `human_required`, 404 för saknad köpost i bolaget, 409 `not_pending` eller `inte_mandatforslag`.
 
-`MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad` och `avsluta_uppdrag`. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`.
+`MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad`, `avsluta_uppdrag` och `registrera_uppdragsbeslut` (Story 1.14). Beslutsraden bär `alternativ` (`tillagg` eller `ryms`) för Övrigt-frågor, också vid nej. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`.
 
 ### Den begärda bedömningen (Story 1.10, B-3)
 
