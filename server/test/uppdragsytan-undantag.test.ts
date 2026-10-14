@@ -22,6 +22,8 @@ import {
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { provaScheman, provaAllaDelfalt, provaLasbaraFalt, provaMal, provaVerkan, provaDatum } from './undantagBeskrivningHelper.js';
+import { fixturunderlag } from './ovrigtHelper.js';
+import { byggRymsindata } from '../src/lib/beslutsunderlag.js';
 
 let user: TestUser;
 let granne: TestUser;
@@ -115,7 +117,8 @@ function utanLastid(svar: Undantag): Undantag {
   const kopia = structuredClone(svar);
   kopia.last_nar = 'X';
   for (const p of kopia.poster) for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor,
-    ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : [])]) {
+    ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : []),
+    ...(p.ovrigt ? [p.ovrigt.forfragan] : [])]) {
     if (v.kalla === 'redovisning') v.last_nar = 'X';
   }
   return kopia;
@@ -161,6 +164,11 @@ beforeAll(async () => {
   }
   postId.binda_kostnad = await koa(bolag.poster!, 'binda_kostnad', { receipt_id: await kvitto(bolag.poster!), contract_part_id: await del(bolag.poster!, a.contractId) });
   postId.avsluta_uppdrag = await koa(bolag.poster!, 'avsluta_uppdrag', { project_id: a.projektId });
+  // Story 1.14: en Övrigt-fråga på A, planterad som svepet köar den.
+  const rad = (await ok(bolag.poster!, 'skriv_uppdragsanteckning', { contract_id: a.contractId, text: 'Kunden bad om en extra rapport', utanfor_avtal: true })).id as string;
+  const datum = await withAdmin(async (db) => (await db.query('SELECT created_at::date::text AS d FROM uppdrag_anteckning WHERE id=$1', [rad])).rows[0]!.d as string);
+  postId.registrera_uppdragsbeslut = await plantera(bolag.poster!, 'registrera_uppdragsbeslut',
+    byggRymsindata({ contract_id: a.contractId, underlag: fixturunderlag({ anteckningId: rad, datum, alternativ: 'ryms' }) }));
   postId.scopeavgorande = (await ok(bolag.poster!, 'tand_scopesignal', { contract_id: a.contractId, fras: 'kan ni även', klausul: '5.4', underlag: {
     sort: 'mejl', extern_id: 'undantag@mail.example.se', extern_nyckel: 'rfc822#message-id', extern_kalla: 'gmail:prov',
   } })).id as string;
@@ -198,15 +206,15 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     expect(utanLastid(await undantag(bolag.poster!))).toEqual(utanLastid(direkt));
     expect(utanLastid(await undantag(bolag.poster!, { Authorization: `Bearer ${agentToken}` }))).toEqual(utanLastid(direkt));
   });
-  it('P4: exakt fem slag och åtta källor; avgjort och övrig kö blir inga poster; läsningen skriver inte', async () => {
-    expect(POSTSLAG).toEqual(['baselineandring', 'kostnadsbindning', 'avslut', 'scopeavgorande', 'ny_bedomning']);
-    expect(KOBURNA_SLAG).toEqual({ baselineandring: ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract'], kostnadsbindning: ['binda_kostnad'], avslut: ['avsluta_uppdrag'] });
+  it('P4: exakt sex slag och nio källor; avgjort och övrig kö blir inga poster; läsningen skriver inte', async () => {
+    expect(POSTSLAG).toEqual(['baselineandring', 'kostnadsbindning', 'ovrigt_beslut', 'avslut', 'scopeavgorande', 'ny_bedomning']);
+    expect(KOBURNA_SLAG).toEqual({ baselineandring: ['satt_baseline', 'andra_baseline', 'upsert_contract_part', 'update_contract'], kostnadsbindning: ['binda_kostnad'], ovrigt_beslut: ['registrera_uppdragsbeslut'], avslut: ['avsluta_uppdrag'] });
     const svar = await undantag(bolag.poster!);
-    expect(svar.poster).toHaveLength(8);
+    expect(svar.poster).toHaveLength(9);
     for (const [action, id] of Object.entries(postId)) {
       const p = svar.poster.find((p) => p.id === id)!;
       expect(p.identitet).toBe(action === 'scopeavgorande' ? 'signal' : action === 'ny_bedomning' ? 'begaran' : 'kopost');
-      expect(p.slag).toBe(action === 'scopeavgorande' ? 'scopeavgorande' : action === 'ny_bedomning' ? 'ny_bedomning' : action === 'binda_kostnad' ? 'kostnadsbindning' : action === 'avsluta_uppdrag' ? 'avslut' : 'baselineandring');
+      expect(p.slag).toBe(action === 'scopeavgorande' ? 'scopeavgorande' : action === 'ny_bedomning' ? 'ny_bedomning' : action === 'binda_kostnad' ? 'kostnadsbindning' : action === 'avsluta_uppdrag' ? 'avslut' : action === 'registrera_uppdragsbeslut' ? 'ovrigt_beslut' : 'baselineandring');
     }
     await koa(bolag.poster!, 'book_receipt', { receipt_id: await kvitto(bolag.poster!) });
     const ja = await koa(bolag.poster!, 'andra_baseline', andring(a.contractId, 'JA'));
@@ -217,7 +225,7 @@ describe('P2–P4/P6: lästa värden, ingångar och den stängda listan', () => 
     expect((await svep(bolag.poster!)).mottagna_beslut).toEqual({ verkstallda: 1, kvar: 0 });
     const verkstalld = await withAdmin(async (db) => (await db.query('SELECT status FROM action_approvals WHERE id=$1', [mottagen])).rows[0]);
     expect(verkstalld.status).toBe('executed');
-    expect((await undantag(bolag.poster!)).poster).toHaveLength(8);
+    expect((await undantag(bolag.poster!)).poster).toHaveLength(9);
     const fore = await antal(bolag.poster!);
     for (let i = 0; i < 3; i++) await undantag(bolag.poster!);
     expect(await antal(bolag.poster!)).toEqual(fore);
@@ -290,7 +298,7 @@ it('P7: alla fyra beloppen två gånger, även under avvikelsens trösklar', asy
   expect(res.status).toBe(400); expect(res.body.error).toBe('validation_error');
 });
 
-it('P8: tretton rutin-/driftfall ger noll poster, riktig mandatpost ger en', async () => {
+it('P8: sexton rutin-/driftfall ger noll poster, riktig mandatpost ger en', async () => {
   const id = bolag.franvaro!; const u = await frisktUppdrag(id, 'Frånvaro'); const u2 = await frisktUppdrag(id, 'Frånvaro 2');
   await ok(id, 'paborja_leverabel', { contract_id: u.contractId, leverabel_kod: 'L1' });
   await cache(id, u.contractId, 'statusforslag:L3', { fran: 'ej_paborjad', till: 'pagar' });
@@ -315,6 +323,13 @@ it('P8: tretton rutin-/driftfall ger noll poster, riktig mandatpost ger en', asy
     SELECT company_id, contract_id, id, 'pagar', 'avvisad' FROM uppdrag_leverabel WHERE company_id=$1 AND contract_id=$2 AND kod='L1'`,
   [id, u.contractId]));
   await ok(id, 'log_time', { project_id: u.projektId, work_date: '2026-09-20', minutes: 60, description: 'Efter bedömningen', contract_part_id: await del(id, u.contractId) });
+  // Story 1.14 (T7): en obockad rad, en bockad rad utan förslag och en
+  // Övrigt-köpost i failed. Ingen kod gör en anteckning till en post.
+  await ok(id, 'skriv_uppdragsanteckning', { contract_id: u.contractId, text: 'En vanlig rad', utanfor_avtal: false });
+  await ok(id, 'skriv_uppdragsanteckning', { contract_id: u.contractId, text: 'Utanför avtalet, utan förslag', utanfor_avtal: true });
+  const felad = (await ok(id, 'skriv_uppdragsanteckning', { contract_id: u.contractId, text: 'Utanför avtalet, köpost i failed', utanfor_avtal: true })).id as string;
+  const ovrigtFel = await plantera(id, 'registrera_uppdragsbeslut', { contract_id: u.contractId, kalla: { typ: 'anteckning', id: felad } });
+  await withAdmin((db) => db.query(`UPDATE action_approvals SET status='failed',error='driftfel' WHERE company_id=$1 AND id=$2`, [id, ovrigtFel]));
   await svep(id);
   await cache(id, u.contractId, 'tackning', Object.fromEntries(MANDATKALLOR.map((k) => [k, { lage: k === 'kostnader' ? 'fel' : 'last', saknas: [] }])));
   await aldra(id, u.contractId, TACKNING_MAX_ALDER_MIN + 1);
@@ -336,6 +351,10 @@ it('P8: tretton rutin-/driftfall ger noll poster, riktig mandatpost ger en', asy
       await exists("SELECT 1 FROM uppdrag_beslut WHERE company_id=$1 AND contract_id=$2 AND utfall='ja'"),
       await exists("SELECT 1 FROM uppdrag_leverabel_handelse WHERE company_id=$1 AND contract_id=$2 AND till='avvisad'"),
       await exists("SELECT 1 FROM time_entries WHERE company_id=$1 AND project_id=$2 AND description='Efter bedömningen'", [id, u.projektId]),
+      await exists('SELECT 1 FROM uppdrag_anteckning WHERE company_id=$1 AND contract_id=$2 AND NOT utanfor_avtal'),
+      await exists(`SELECT 1 FROM uppdrag_anteckning a WHERE a.company_id=$1 AND a.contract_id=$2 AND a.utanfor_avtal
+        AND NOT EXISTS (SELECT 1 FROM action_approvals q WHERE q.company_id=a.company_id AND lower(q.input->'kalla'->>'id')=a.id::text)`),
+      await exists("SELECT 1 FROM action_approvals WHERE company_id=$1 AND id=$2 AND action='registrera_uppdragsbeslut' AND status='failed'", [id, ovrigtFel]),
     ];
   });
   for (const vakt of vakter) { expect(vakt).toBe(true); korda.p8++; }
@@ -492,8 +511,11 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
   const DAGENS = ['pg', '../lib/lasvarde.js', '../domain/money.js', './approvals.js', './approvalSummary.js', '../http/middleware/authenticate.js'];
   // Story 1.10: en lista per fil, så att ingen fil får mer än den behöver.
   const tillatna: Record<string, readonly string[]> = {
-    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js'],
+    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js', '../lib/beslutsunderlag.js', '../lib/avtalsdelsfalt.js'],
     '../src/lib/lasvarde.ts': DAGENS,
+    // Story 1.14: läsvägens nya importer prövas på samma sätt som de gamla.
+    '../src/lib/beslutsunderlag.ts': ['node:crypto', 'zod', '../domain/money.js', './validation.js', './scopeavgorande.js'],
+    '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js'],
     '../src/lib/bedomningsbegaran.ts': ['./duration.js', '../domain/money.js'],
     '../src/services/uppdragBedomning.ts': ['pg', '../lib/errors.js', './contracts.js', './projects.js', './uppdragReferens.js', './auditService.js'],
   };
@@ -682,7 +704,7 @@ describe('Rena regler och beskrivningar utan klocka eller databas', () => {
 });
 
 it('kontrollvakt: alla negativa fall och täckningsregler kördes', () => {
-  expect(korda.p8).toBeGreaterThanOrEqual(13);
+  expect(korda.p8).toBeGreaterThanOrEqual(16);
   expect(korda.p11).toBeGreaterThanOrEqual(13);
   expect(korda.p14).toBeGreaterThanOrEqual(7);
 });

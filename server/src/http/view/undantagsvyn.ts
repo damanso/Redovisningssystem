@@ -38,6 +38,7 @@ export const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt 
 export const POSTSLAGSETIKETT: Record<Postslag, string> = {
   baselineandring: 'Baselineändring',
   kostnadsbindning: 'Kostnadsbindning',
+  ovrigt_beslut: 'Förfrågan utanför avtalet',
   avslut: 'Avslut',
   scopeavgorande: 'Scopeavgörande',
   ny_bedomning: 'Ny bedömning',
@@ -205,6 +206,7 @@ function bedomningsformular(companyId: string, p: Undantagspost): Raw {
 export const FORMULAR: Record<Postslag, (companyId: string, p: Undantagspost) => Raw> = {
   baselineandring: koburetFormular,
   kostnadsbindning: koburetFormular,
+  ovrigt_beslut: koburetFormular,
   avslut: koburetFormular,
   scopeavgorande: scopeformular,
   ny_bedomning: bedomningsformular,

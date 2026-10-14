@@ -11,6 +11,8 @@ import { createApproval } from '../src/services/approvals.js';
 import { verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { provaNyckelordning, provaLastNar, provaAndring, provaNull, provaHex, provaBeslutHash, kontrolleraTakbekraftelse, provaTakbekraftelsekontrollen } from './beslutsunderlagHelper.js';
+import { fixturunderlag } from './ovrigtHelper.js';
+import { byggRymsindata } from '../src/lib/beslutsunderlag.js';
 
 describe('P1 forslag_hash (ren)', () => {
   it('a nyckelordning', provaNyckelordning);
@@ -63,6 +65,8 @@ async function oforandrat(f: FallContext) {
   return withAdmin(async (c) => ({ q: await kopost(f), beslut: await rad(f),
     audit: (await c.query('SELECT * FROM audit_log WHERE company_id=$1 ORDER BY occurred_at,id', [f.company])).rows }));
 }
+/** Avtalsdelarna när Övrigt-frågan köades: ett ja på ryms ändrar ingen av dem. */
+const delarVidKo = new Map<string, unknown>();
 async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
   const company = await createCompany(user.token, `Mandat ${atgard}`); const f = { company };
   await createFiscalYear(company, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
@@ -76,6 +80,16 @@ async function nyttFall(atgard: Mandatatgard): Promise<FallContext> {
   const part = await withAdmin(async (c) => (await c.query("SELECT id FROM contract_parts WHERE company_id=$1 AND contract_id=$2 AND code='L1' ORDER BY valid_from DESC LIMIT 1", [company, contract])).rows[0].id as string);
   let receipt = '';
   let input: Record<string, unknown>;
+  if (atgard === 'registrera_uppdragsbeslut') {
+    // Story 1.14: köposten planteras som svepet köar den. `executeAction`
+    // avvisar åtgärden (koas_av_svepet), så `koa` går inte här.
+    const anteckningId = (await ok(f, 'skriv_uppdragsanteckning', { contract_id: contract, text: 'Kunden bad om en extra rapport', utanfor_avtal: true })).id as string;
+    const datum = await withAdmin(async (c) => (await c.query('SELECT created_at::date::text AS d FROM uppdrag_anteckning WHERE id=$1', [anteckningId])).rows[0].d as string);
+    input = byggRymsindata({ contract_id: contract, underlag: fixturunderlag({ anteckningId, datum, alternativ: 'ryms', kod: 'L1', tak_minuter: 2400, forbrukade_minuter: 0 }) });
+    const q = await withTenantTransaction(user.userId, company, (c) => createApproval(c, company, user.userId, 'agent', 'registrera_uppdragsbeslut', input));
+    delarVidKo.set(q.id, (await saklage({ company, project, contract, part, receipt, token, approval: q.id, input })).delar);
+    return { company, project, contract, part, receipt, token, approval: q.id, input };
+  }
   if (atgard === 'binda_kostnad') {
     receipt = (await ok(f, 'create_receipt', { receipt_date: '2026-11-20', description: 'Provets kvitto', net_ore: 400000, vat_rate: 25, expense_account: 5460 })).id as string;
     const book = await koa(f, 'book_receipt', { receipt_id: receipt });
@@ -118,6 +132,11 @@ const FALL = {
     const avtal = (await saklage(f)).avtal[0]; expect(r.handling.avtal[0].oppna).toEqual(avtal.avslutat_med_oppna);
     expect(r.handling.project_id).toBe(f.project); expect(r.handling.status).toBe('closed');
   } },
+  registrera_uppdragsbeslut: { koa: () => nyttFall('registrera_uppdragsbeslut'), kalla: (f) => ({ typ: 'anteckning', id: (f.input.kalla as { id: string }).id }), handling: async (r, f) => {
+    expect(r.handling).toEqual({ typ: 'ryms', anteckning_id: (f.input.kalla as { id: string }).id, avtalsdel_kod: 'L1' });
+    expect(r.alternativ).toBe('ryms');
+    expect((await saklage(f)).delar).toEqual(delarVidKo.get(f.approval));
+  } },
 } satisfies Record<Mandatatgard, Fall>;
 beforeAll(async () => {
   user = await registerUser('mandat'); granne = await registerUser('mandat-granne');
@@ -130,7 +149,11 @@ async function provaUnderlag(f: FallContext, r: Record<string, any>, atgard: Man
   expect(r.underlag.indata).toEqual(indata); expect(r.underlag.approval_id).toBe(q.id); expect(r.underlag.atgard).toBe(atgard);
   expect(Object.keys(r.underlag).sort()).toEqual(['atgard','approval_id','foreslagen_av','skapad_nar','indata','projekt_namn','avtal_namn','forslag_fran','forslagstext','belopp_ore','skal','ja_registrerar','post_saknas','kallor','last_nar'].sort());
   for (const [k, v] of Object.entries(r.underlag)) if (!['indata', 'kallor'].includes(k)) expect(v === null || typeof v !== 'object', k).toBe(true);
-  for (const v of Object.values(indata)) expect(v === null || typeof v !== 'object').toBe(true);
+  // Källan och det frysta underlaget är indatats enda objekt, och bara för Övrigt-frågan (Story 1.14).
+  for (const [k, v] of Object.entries(indata)) {
+    if (atgard === 'registrera_uppdragsbeslut' && ['kalla', 'beslutsunderlag'].includes(k)) continue;
+    expect(v === null || typeof v !== 'object', k).toBe(true);
+  }
   expect(forslagHash(r.underlag)).toBe(r.forslag_hash);
   expect({ typ: r.kalla_typ, id: r.kalla_id }).toEqual(FALL[atgard].kalla(f));
   const lika = await withAdmin(async (c) => (await c.query('SELECT b.beslutad_av=q.decided_by AND b.beslutad_nar=q.decided_at AS lika FROM uppdrag_beslut b JOIN action_approvals q ON q.id=b.approval_id AND q.company_id=b.company_id WHERE b.approval_id=$1 AND b.company_id=$2', [f.approval, f.company])).rows[0].lika);

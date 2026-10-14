@@ -1,5 +1,8 @@
 import { BASELINEKOLUMNER } from '../lib/baselinekolumner.js';
 import { TILLAGGSORSAK_MAX } from '../lib/scopeavgorande.js';
+import {
+  AndraBaselineSchema, AvtalsdelFalt, OrsakSchema, RegistreraUppdragsbeslutSchema,
+} from '../lib/avtalsdelsfalt.js';
 import type { PoolClient } from 'pg';
 import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -47,6 +50,7 @@ import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
 import { registreraJa, registreraNej, avbojForslag } from '../services/uppdragBeslut.js';
+import { provaOvrigtKalla, registreraRyms } from '../services/uppdragOvrigt.js';
 import { lasUndantag } from '../services/uppdragUndantag.js';
 import { skrivUppdragsanteckning } from '../services/uppdragAnteckning.js';
 import {
@@ -143,6 +147,10 @@ export interface ActionDef<I = unknown> {
   // B-7: baselinefält avvisas med 409 kraver_ny_version före kön och utan
   // mutation. Deklarativt som kravManniska; den gemensamma listan står i lib/.
   kraverNyVersion?: readonly string[];
+  // Förslaget räknas av servern och köas bara av svepet: `executeAction`
+  // avvisar det med 409 `koas_av_svepet` före kön och utan mutation (Story
+  // 1.14). Deklarativt som `kraverNyVersion`.
+  koasAvSvepet?: (input: I) => boolean;
   // För sensitive: committa människans beslut före verkställigheten så att
   // ett tekniskt fel aldrig kräver en ny kvittens (B-2, FR-41 punkt 4).
   tvafas?: boolean;
@@ -180,56 +188,9 @@ const VoucherLine = z
   })
   .strict();
 
-// ---------------------------------------------------------------------------
-// Avtalsdelens fält — delade av `upsert_contract_part` och `andra_baseline`
-// ---------------------------------------------------------------------------
-// Samma rad, samma tjänstefunktion (`upsertContractPart`); skillnaden är bara
-// vad som KRÄVS. Två handskrivna kopior av samma fältuppsättning hade glidit
-// isär vid nästa kolumn, och då gäller regeln bara för den väg som råkade bli
-// uppdaterad.
-//
-// De fyra sista fälten kom med migration 0068. `change_reason` är det som
-// öppnar tilläggsavtalet igen: `kraver_orsak_vid_ny_version()` kräver ett skäl
-// så snart det redan finns en annan version av samma (contract_id, code), och
-// utan fältet i schemat gick ingen ny version att skapa alls.
-const DatePrecisionSchema = z.enum(['ar', 'halvar', 'kvartal', 'manad', 'dag']);
-
-const AvtalsdelFalt = {
-  contract_id: UuidSchema,
-  code: safeText(40),
-  // Varje ny version behöver namn; ren bekräftelse använder bara nyckeln.
-  name: safeText(200).optional(),
-  description: safeText(2000).optional(),
-  parent_part_id: UuidSchema.optional(),
-  billable: z.boolean().optional(),
-  hourly_rate_ore: OreSchema.optional(),
-  // Taket i TIMMAR (avtalet skriver "32 h") respektive i ÖREN.
-  cap_hours: z.number().nonnegative().max(999_999.99).optional(),
-  cap_amount_ore: OreSchema.optional(),
-  // Default false: ett tak som ingen läst i avtalshandlingen varnar
-  // aldrig och spärrar aldrig — det redovisas som 'vet ej'.
-  cap_confirmed: z.boolean().optional(),
-  valid_from: IsoDateSchema.optional(),
-  sort_order: z.number().int().min(0).max(10_000).optional(),
-  active: z.boolean().optional(),
-  // Varför just DEN HÄR versionen skrevs (0068).
-  change_reason: safeText(2000).optional(),
-  // Avtalets period för delen. `date_precision` bär hur exakt datumet stod i
-  // avtalet ("hösten 2026" är inte ett åtagande på dagen) — värdena är exakt
-  // CHECK-villkorets i 0068.
-  start_date: IsoDateSchema.optional(),
-  end_date: IsoDateSchema.optional(),
-  date_precision: DatePrecisionSchema.optional(),
-};
-
-/**
- * Orsaken när den KRÄVS. Minst fem tecken efter trimning: triggern i 0068
- * underkänner redan blanktext, och en ensam bokstav är inte heller ett skäl
- * någon kan läsa i oktober.
- */
-const OrsakSchema = safeText(2000).refine((v) => v.trim().length >= 5, {
-  message: 'ange varför baselinen ändras (minst fem tecken)',
-});
+// Avtalsdelens fält, orsaken och `andra_baseline`:s schema bor i
+// `lib/avtalsdelsfalt.ts` (Story 1.14), så att läsvägen och svepets tjänst
+// prövar mot samma schemaobjekt som registret utan att importera härifrån.
 
 /**
  * Orsaken till ett tillägg ur ett scopeavgörande (Story 1.9). Tjänsten lägger
@@ -1602,42 +1563,38 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // sådan. Handlern använder samma tjänstefunktion som upsert_contract_part
     // använder för en ny version, med samma audit och triggrar.
     sensitivity: 'sensitive',
-    inputSchema: z
-      .object({
-        ...AvtalsdelFalt,
-        change_reason: OrsakSchema,
-        valid_from: IsoDateSchema,
-        // S5.2: signalen tillägget kom ur, när det kom ur en. Valfritt — de
-        // flesta tilläggsavtal föds i en avtalstext, inte i en fras någon sa.
-        // Bär posten den, fylls signalens `ledde_till_part_id` vid
-        // godkännandet: spåret från sagd fras till avtalad del blir helt.
-        signal_id: UuidSchema.optional(),
-        // Story 1.9: förslagets källreferens (architecture.md, åtgärdstabellen
-        // och källreferensen). `avgor_scopesignal` sätter den tillsammans med
-        // `signal_id`. Typen `anteckning` tillkommer med ILT-kedjan (Story 1.14).
-        kalla: z.object({ typ: z.literal('scopesignal'), id: UuidSchema }).strict().optional(),
-      })
-      .strict()
-      // Två fält som säger olika saker om samma källa vore ett spår åt två håll.
-      .superRefine((v, ctx) => {
-        if (v.kalla && (!v.signal_id || v.kalla.id.toLowerCase() !== v.signal_id.toLowerCase())) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'kalla med typen scopesignal kräver samma signal_id',
-            path: ['kalla'],
-          });
-        }
-      }),
+    // Schemat bor i `lib/avtalsdelsfalt.ts`: källan är signalen (Story 1.9)
+    // eller Övrigt-raden (Story 1.14), och underlaget är det frysta förslaget.
+    // Svepet och läsvägen prövar mot samma objekt (`OVRIGT_SCHEMA`).
+    inputSchema: AndraBaselineSchema,
+    // Ett tillägg ur Övrigt-raden räknas och köas bara av svepet (Story 1.14).
+    koasAvSvepet: (i) => i.kalla?.typ === 'anteckning',
     // Skrivvägen är oförändrad: tjänstefunktionen först, länken efter — och
     // BÅDA i verkställighetens transaktion efter mottagandet. Länkningen ligger i tjänsten
-    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL.
+    // (`uppdragSignal.ts`), inte här: registret bär ingen SQL. Ur Övrigt prövas
+    // först att raden hör till avtalet och är markerad, som för ryms.
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, async () => {
+      if (i.kalla?.typ === 'anteckning') await provaOvrigtKalla(ctx.client, ctx.companyId, i.contract_id, i.kalla.id);
       const utfall = await skrivBaselineversion(ctx.client, ctx.companyId, ctx.userId, i as never);
       await lankaTillaggetTillSignal(ctx.client, ctx.companyId, i as never);
       return utfall;
     }),
     vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'andra_baseline', i, skal),
+  }),
+  def({
+    name: 'registrera_uppdragsbeslut',
+    title: 'Registrera att en förfrågan ur Övrigt ryms i avtalet',
+    // `sensitive` (architecture.md, åtgärdstabellen): ett ja är Davids mandat.
+    // Svepet köar förslaget med actor 'agent' och prövat underlag (Story 1.14);
+    // verkställigheten registrerar beslutet och ändrar ingen avtalsdel.
+    sensitivity: 'sensitive',
+    inputSchema: RegistreraUppdragsbeslutSchema,
+    koasAvSvepet: () => true,
+    tvafas: true,
+    handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i,
+      () => registreraRyms(ctx.client, ctx.companyId, i as never)),
+    vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'registrera_uppdragsbeslut', i, skal),
   }),
   def({
     name: 'list_contracts',

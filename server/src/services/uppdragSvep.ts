@@ -29,6 +29,7 @@ import {
   type Bindningsdel, type Bindningsutfall, type Kostnadsforslag,
 } from './uppdragKostnad.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
+import { listaOvrigtKandidater, type Ovrigtkandidat } from './uppdragOvrigt.js';
 import {
   DriveRapportSchema, REFERENSSORTER, ReferenslageSchema, hamtaDriveKo, rapporteraDriveKopia,
   tillhorSparrmapp, verifieraReferens,
@@ -274,7 +275,11 @@ export type Svepsvar =
     /** Drive-rapporter mot ett uppdrag som stängts sedan kön delades ut. */
     hoppade_kopior: Array<Hoppat & { referens_id: string }>;
     tackning: SvepTackning[];
-    arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[] };
+    /**
+     * `ovrigt_kandidater` (Story 1.14): markerade Övrigt-rader i bolagets öppna
+     * avtal som ännu saknar köpost och beslut — Hermes formulerar en fråga per rad.
+     */
+    arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[]; ovrigt_kandidater: Ovrigtkandidat[] };
   };
 
 /** Observationen och vad verifieringen gav — parat, så härledningen slipper slå upp. */
@@ -773,6 +778,8 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * med `kalla` och `last_nar`;
  * utanför cachen skrivs bara referensernas egna lägen (S7.1), Drive-köns utfall
  * (S7.2) och bindningsstegets köposter (S6.1, Story 1.8) — alla tre genom sina befintliga tjänster.
+ * Efter uppdragen och före täckningen läses Övrigt-kandidaterna (Story 1.14,
+ * B-4) över alla öppna avtal, också dem som saknas i Hermes indata.
  * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  * `actor` är anroparens aktör. Den styr inte svepets förslag: kostnadsbindningarna
@@ -853,6 +860,10 @@ export async function korUppdragssvep(
     uppdrag.push(await svepEttUppdrag(client, companyId, userId, rad, obs));
   }
 
+  // B-4 (Story 1.14): Övrigt-kandidaterna i alla öppna avtal. Efter
+  // uppdragen och före täckningen, som arkitekturens stegordning kräver.
+  const ovrigtKandidater = await listaOvrigtKandidater(client, companyId, oppna);
+
   // B-3: alla öppna avtal, inte bara indatats. Reglerna läser enbart egna
   // tabeller, efter att körningens förslag och bindningar har skrivits.
   const tackningar = await beraknaTackning(client, companyId, oppna);
@@ -885,6 +896,6 @@ export async function korUppdragssvep(
     hoppade,
     hoppade_kopior: hoppadeKopior,
     tackning,
-    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko },
+    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko, ovrigt_kandidater: ovrigtKandidater },
   };
 }
