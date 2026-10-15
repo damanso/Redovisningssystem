@@ -1612,7 +1612,7 @@ ingen ny CSS och inga nya komponenter.
   är de avgjorda signalerna med alla sina avgöranden, Story 1.9; tilläggets
   version nås genom avgörandets `tillagg_approval_id` och
   `beslut.registrerade[].approval_id`), samt uppdragets **`koposter`** och
-  **`beslut`** (Story 1.7: `registrerade` med val, fryst underlag, handling, källreferenser och beslutsfattare/tid; `mottagna` med bara `approval_id`, `atgard`, `utfall`, `beslutad_nar`) och **`farskhet`** (en post per innehållsdel, även `beslut`). Lägets panel **Beslut** visar mottagna mandat utan ny kvittens och registrerade beslut med skäl, källa och handling. Ett upprepat svar på Att göra leder till beslutets ankare; vanliga lyckade svar leder tillbaka till Att göra. Okänt eller främmande `project_id` —
+  **`beslut`** (Story 1.7: `registrerade` med val, fryst underlag, handling, källreferenser och beslutsfattare/tid; `mottagna` med bara `approval_id`, `atgard`, `utfall`, `beslutad_nar`) och **`farskhet`** (en post per innehållsdel, även `beslut`). Sedan Story 1.16 bär varje rad i `beslut.registrerade[]` också `utkast` (`{ mottagare, amne, text }` eller `null`) och `utkast_markor` (sträng eller `null`). Lägets panel **Beslut och utkast** visar mottagna mandat utan ny kvittens och registrerade beslut med skäl, källa och handling, och under ett registrerat nej på en kundförfrågan utkastet med en `mailto:`-länk. Ett upprepat svar på Att göra leder till beslutets ankare; vanliga lyckade svar leder tillbaka till Att göra. Okänt eller främmande `project_id` —
   och ett projekt UTAN avtal — ger **404 `not_found`**: ett projekt utan avtal är
   ett projekt, inte ett uppdrag, och en tom yta hade sagt att uppdraget saknade
   sina delar i stället för att det saknades.
@@ -1757,8 +1757,8 @@ anteckning tillsammans med `signal_id` ger 400. Underlagets `alternativ` är
 Auditraden `contract_part.created` för en ny avtalsdelsversion bär inte längre
 `change_reason`; orsaken står kvar i `contract_parts.change_reason`.
 
-**Väntar till senare berättelser:** nej-utkastet (Story 1.16). Hermes formulering
-finns sedan Story 1.17 (`uppdragssvep.py`, förslagen i körningens andra anrop).
+Hermes formulering finns sedan Story 1.17 (`uppdragssvep.py`, förslagen i
+körningens andra anrop). Nej-utkastet finns sedan Story 1.16 (nedan).
 
 ### Kompletteringen och ersättningen (Story 1.15, B-2)
 
@@ -1794,6 +1794,41 @@ den, och undantagsvyn visar bara ersättaren.
 **Auditraden** `uppdrag.forslag_kompletterat` har `entity_type = 'approval'`,
 `entity_id` lika med den gamla postens id och `details = { approval_id, ersatt_av,
 atgard }`, utan fritext och utan timmar.
+
+### Nej-utkastet (Story 1.16, B-5)
+
+**När.** Utkastet skrivs i verkställigheten av ett mottaget nej på en köpost vars
+källa är en Övrigt-rad (`kalla.typ = 'anteckning'`), i samma INSERT som nej-raden i
+`uppdrag_beslut`. Det gäller alla ingångar till nejet: `avboj_beslutsforslag`,
+`approvals/:id/reject`, Att göras avvisa och undantagsvyns nej. Ingen ny åtgärd
+tillkommer. En ersatt köpost (Story 1.15) eller ett avslag utan `beslut_hash` får
+aldrig något utkast, och andra källor (`koforslag`, `kvitto`, `scopesignal`,
+`baselineforslag`, `avslut`) får inget.
+
+**Markören** är `[ref U<uppdragsnummer>-B<löpnummer>]` i kolumnen `utkast_markor`
+(migration 0084). Löpnumret tas ur bolagets nummerserie `uppdrag_beslutsutkast` i
+`number_sequences`, i samma transaktion som raden, och markören är unik per bolag.
+Formen är bara siffror mellan fasta tecken (CHECK), aldrig en uuid, fritext eller
+en personuppgift.
+
+**Utkastet** (`utkast`) är `{ mottagare, amne, text }`:
+- `amne` är `Svar på förfrågan den <datum>, uppdrag <nummer> <markör>`, där datumet
+  är Övrigt-radens;
+- `text` är en fast mall (`lib/utkast.ts`) med Övrigt-radens text och Davids skäl
+  som enda insatta värden: hälsningen, meningen om förfrågan, ”Vårt svar är nej.”,
+  ”Skäl: …” och avslutningen, utan villkor, erbjudanden eller löften;
+- `mottagare` är e-postadressen på kundkortet för avtalets kund, annars uppdragets,
+  prövad som e-postadress. Saknas den eller är den ogiltig är `mottagare` `null`.
+
+**Fryst.** Utkastet skrivs en gång i den append-only beslutsraden och räknas aldrig
+om. En Övrigt-rad som inte hör till förslagets avtal ger 409 `kalla_annat_avtal` i
+verkställigheten. Nejet står då kvar som mottaget beslut utan verkställighet och
+blir en driftpost.
+
+**Utskicksgränsen.** Redovisningen skickar inget. David skickar själv genom
+`mailto:`-länken i panelen **Beslut och utkast** på Läget, och Hermes kan läsa
+utkastet genom `las_uppdragslage`. Auditraden `uppdrag.forslag_avbojt` är
+oförändrad och bär ingen text ur utkastet.
 
 
 ### Undantagsvyns läsväg (Story 1.6, B-3)
@@ -1883,7 +1918,7 @@ Ingen migration, inget nytt beroende och ingen vy. Vyn kommer i Story 1.11.
 
 `avboj_beslutsforslag` är write med **`kravManniska: true`**. Indata är `approval_id` (uuid) och `skal` (1–300 tecken). Svaret är `{ approval_id, status, verkstalld }`. Skälet får inte bestå av blanksteg. Fel: 400 `validation_error`/`skal_kravs`, 403 `human_required`, 404 för saknad köpost i bolaget, 409 `not_pending` eller `inte_mandatforslag`.
 
-`MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad`, `avsluta_uppdrag` och `registrera_uppdragsbeslut` (Story 1.14). Beslutsraden bär `alternativ` (`tillagg` eller `ryms`) för Övrigt-frågor, också vid nej. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`.
+`MANDATATGARDER` i `services/uppdragBeslut.ts` omfattar `satt_baseline`, `andra_baseline`, `upsert_contract_part`, `update_contract`, `binda_kostnad`, `avsluta_uppdrag` och `registrera_uppdragsbeslut` (Story 1.14). Beslutsraden bär `alternativ` (`tillagg` eller `ryms`) för Övrigt-frågor, också vid nej. Alla har `tvafas`: mottagandet bevaras före verkställigheten. Även `/approvals/:id/reject` kräver `reason` för dem. `uppdrag_beslut` fryser förslaget, utfallet, skälet vid nej, källorna och den faktiskt registrerade handlingen vid ja. Ingen domänhandling visas genomförd förrän verkställigheten lyckats. Ett upprepat beslut ger 409 `not_pending`. Ett nej på en kundförfrågan ur Övrigt ger dessutom ett svarsutkast i raden (Story 1.16).
 
 ### Den begärda bedömningen (Story 1.10, B-3)
 

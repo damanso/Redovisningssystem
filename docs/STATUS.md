@@ -153,6 +153,57 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-15 (Story 1.16, nej ger ett svarsutkast som David själv skickar):**
+  Ett nej på en kundförfrågan ur Övrigt sparar skälet och ekonomin som förut och
+  ger dessutom ett fryst svarsutkast med en korrelationsmarkör, som David läser
+  och skickar själv från sin e-post. Redovisningen skickar ingenting.
+  1. `server/migrations/0084_utkast_markor.sql` (ny): kolumnen
+     `uppdrag_beslut.utkast_markor` med unikt index per bolag och fyra CHECK
+     (utkast och markör följs åt, markörens form, utkastets tre nycklar, ämnet
+     bär markören).
+  2. `server/src/lib/utkast.ts` (ny, ren): markören `[ref U<nummer>-B<löpnummer>]`,
+     ämnet, textens fasta mall, mottagaren ur kundkortet (`EmailSchema`) och
+     `mailtoLank` (RFC 6068).
+  3. `server/src/services/uppdragBeslut.ts`: `UTKASTSERIE` och `nejutkast`
+     (`provaOvrigtKalla` först, sedan frågan och löpnumret ur
+     `nextDocumentNumber`); `skrivBeslut` skriver utkastet och markören i samma
+     INSERT, och `registreraNej` bygger utkastet bara när källan är en Övrigt-rad.
+  4. `server/src/services/uppdragLage.ts`: `Beslutsrad` och läsvägen bär `utkast`
+     och `utkast_markor`.
+  5. `server/src/http/view/routes.ts`: panelen heter ”Beslut och utkast”, och
+     `utkastblock` visar utkastet under nejet med husets klasser och tokens och en
+     `mailto:`-länk (inget skript, ingen ny klass).
+  6. `docs/MCP_ACTIONS.md` (Läget, Övrigt-raden, nytt avsnitt ”Nej-utkastet
+     (Story 1.16, B-5)”, Beslutsraden) och `docs/ARKITEKTUR.md` (0001–0084,
+     beslutsraden, tabellraden `ovrigt_beslut`). Ingen åtgärd tillkommer, så
+     huvudet säger fortfarande 205 actions.
+
+  **Prov:** `uppdragsytan-utkast.test.ts` (ny, de rena fallen M1–M11; i vitest
+  återskapar `setup.ts` ändå databasen före filen, och utan databas körs fallen
+  genom `utkastHelper.ts`), `utkastHelper.ts` (ny), `utkastRigg.ts` (ny),
+  `uppdragsytan-utskick.test.ts` (ny, provet ”Davids utskick” U0–U4),
+  `utskickHelper.ts` (ny), P10–P12 i `uppdragsytan-beslut.test.ts`. Ändrade:
+  P2 i `uppdragsytan-beslut.test.ts` (nio nya CHECK-fall, 13 villkor, 32 negativa
+  kontroller), S3 i `uppdragsytan-komplettering.test.ts` (Davids eget nej har
+  utkast) och optionen `kundId` i `ovrigtRigg.ts`.
+
+  **Inte kört i sessionen:** `npm run typecheck`, `npm run build`, `npm test` och
+  `npx vitest` — utvecklarsessionen i byggkedjan körde inga kommandon. Utfallet är
+  förutsagt, inte observerat; kedjans körning är belägget. Designskillen
+  `impeccable` gick inte att starta i sessionen; panelen följer berättelsens
+  föreskrivna markup med husets klasser och tokens.
+
+  **Driftnotiser:**
+  1. Migration 0084 lägger `utkast_markor` och fyra CHECK på `uppdrag_beslut`. De
+     står kvar vid en återställning, och den äldre koden skriver inga utkast.
+  2. Ett nej på en kundförfrågan ur Övrigt ger ett utkast med mottagare ur
+     kundkortet. Saknas e-postadressen där är mottagaren tom i utkastet.
+  3. Davids svar 2026-10-07 om Gmails utkastmapp är inte byggt. Det kräver en
+     Hermes-berättelse med skrivbehörighet mot Gmail, och Hermes
+     `davids_utskick.py` fäller i dag `/drafts` (R4).
+  4. Huvudet säger fortfarande lika många actions som registret (205), eftersom
+     ingen åtgärd tillkommit.
+
 - **2026-10-15 (Story 1.15, ja till tillägg eller till ”ryms” registreras utan en
   andra kvittens):** David kan fylla i timmar i en väntande Övrigt-fråga och få
   förslaget omräknat. Den gamla köposten ersätts och är inget beslut, och

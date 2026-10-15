@@ -2,6 +2,8 @@
 // Underlaget fryses före domänhandlingen; raden och audit skrivs efter den.
 // Story 1.15 (B-2, IR-13): filen bär också kompletteringen, som ersätter en
 // väntande Övrigt-köpost med Davids timmar och inte är något beslut.
+// Story 1.16 (B-5): ett nej på en kundförfrågan ur Övrigt ger ett svarsutkast som
+// skrivs i samma INSERT som nej-raden. Ingen väg i filen skickar något.
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -12,6 +14,8 @@ import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import type { Lasvarde } from '../lib/lasvarde.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { UuidSchema } from '../lib/validation.js';
+import { byggNejutkast, type Nejutkast } from '../lib/utkast.js';
+import { nextDocumentNumber } from './accounting/numbering.js';
 import { createApproval, ersattGodkannande, getApproval, lockPendingApproval, type Approval } from './approvals.js';
 import { writeAudit } from './auditService.js';
 import { arRenBekraftelse, baselineDatum } from './contracts.js';
@@ -133,15 +137,42 @@ async function mottagen(client: PoolClient, companyId: string, beslut: Beslutsko
   }
   return q;
 }
+/** Bolagets nummerserie i `number_sequences` för nej-utkastens markörer (Story 1.16). */
+export const UTKASTSERIE = 'uppdrag_beslutsutkast';
+
+/**
+ * Story 1.16 (B-5): nej-utkastet för en kundförfrågan ur Övrigt. Källan prövas
+ * först med samma funktion som ja-vägarna; hör raden inte till avtalet kastar den
+ * 409 och nejet står kvar som mottaget beslut. Löpnumret tas sist, i samma
+ * transaktion som raden, så att ett fel rullar tillbaka det med raden.
+ */
+async function nejutkast(client: PoolClient, companyId: string, contractId: string, anteckningId: string, skal: string): Promise<{ utkast: Nejutkast; markor: string }> {
+  await provaOvrigtKalla(client, companyId, contractId, anteckningId);
+  const r = await client.query<{ text: string; datum: string; projektnummer: number; kundepost: string | null }>(
+    `SELECT a."text" AS text, a.created_at::date::text AS datum, p.number AS projektnummer, k.email AS kundepost
+       FROM uppdrag_anteckning a
+       JOIN contracts c ON c.company_id = a.company_id AND c.id = a.contract_id
+       JOIN projects p ON p.company_id = c.company_id AND p.id = c.project_id
+       LEFT JOIN customers k ON k.company_id = c.company_id AND k.id = COALESCE(c.customer_id, p.customer_id)
+      WHERE a.company_id = $1 AND a.id = $2::uuid AND a.contract_id = $3::uuid AND a.utanfor_avtal`,
+    [companyId, anteckningId, contractId],
+  );
+  const rad = r.rows[0];
+  if (!rad) throw new NotFoundError('anteckning');
+  const lopnummer = await nextDocumentNumber(client, companyId, UTKASTSERIE);
+  return byggNejutkast({ projektnummer: rad.projektnummer, lopnummer, datum: rad.datum, forfragan: rad.text, skal, kundepost: rad.kundepost });
+}
+
 async function skrivBeslut(client: PoolClient, companyId: string, beslut: Beslutskontext, q: Approval, atgard: Mandatatgard, input: Indata,
-  rad: { kalla: Kalla; utfall: 'ja' | 'nej'; underlag: Record<string, unknown>; skal: string | null; handling: Handling | null }) {
+  rad: { kalla: Kalla; utfall: 'ja' | 'nej'; underlag: Record<string, unknown>; skal: string | null; handling: Handling | null;
+    utkast: { utkast: Nejutkast; markor: string } | null }) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash,alternativ)
-     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9,$11
+    `INSERT INTO uppdrag_beslut (company_id,contract_id,kalla_typ,kalla_id,approval_id,utfall,underlag,skal,handling,beslutad_av,beslutad_nar,forslag_hash,alternativ,utkast,utkast_markor)
+     SELECT $1,$2,$3,$4,q.id,$5,$6::jsonb,$7,$8::jsonb,q.decided_by,q.decided_at,$9,$11,$12::jsonb,$13
        FROM action_approvals q WHERE q.id=$10 AND q.company_id=$1 RETURNING id`,
     [companyId, await AVTAL[atgard](client, companyId, input), rad.kalla.typ, rad.kalla.id, rad.utfall,
       JSON.stringify(rad.underlag), rad.skal, rad.handling === null ? null : JSON.stringify(rad.handling), forslagHash(rad.underlag), q.id,
-      alternativFor(atgard, q.input)],
+      alternativFor(atgard, q.input), rad.utkast === null ? null : JSON.stringify(rad.utkast.utkast), rad.utkast?.markor ?? null],
   );
   const id = r.rows[0]?.id;
   if (!id) throw new ConflictError('beslut_ej_mottaget', 'beslutet är inte mottaget');
@@ -156,7 +187,7 @@ export async function registreraJa<T>(client: PoolClient, companyId: string, bes
   const kalla = KALLA[atgard](q.input, q.id); const underlag = await byggUnderlag(client, companyId, q, kalla);
   const resultat = await verkstall();
   const handling = await HANDLING[atgard](client, companyId, input as Indata, resultat);
-  await skrivBeslut(client, companyId, beslut, q, atgard, input as Indata, { kalla, utfall: 'ja', underlag, skal: null, handling });
+  await skrivBeslut(client, companyId, beslut, q, atgard, input as Indata, { kalla, utfall: 'ja', underlag, skal: null, handling, utkast: null });
   return resultat;
 }
 /** Nej ändrar bara beslutshistoriken och dess audit, aldrig sakläget. */
@@ -164,7 +195,10 @@ export async function registreraNej(client: PoolClient, companyId: string, beslu
   const q = await mottagen(client, companyId, beslut, atgard, 'rejected');
   if (!q.beslut_skal || q.beslut_skal !== skal) throw new ConflictError('beslut_ej_mottaget', 'beslutets skäl är inte mottaget');
   const kalla = KALLA[atgard](q.input, q.id); const underlag = await byggUnderlag(client, companyId, q, kalla);
-  return skrivBeslut(client, companyId, beslut, q, atgard, input as Indata, { kalla, utfall: 'nej', underlag, skal: q.beslut_skal, handling: null });
+  // Story 1.16 (B-5): ett nej på en kundförfrågan ur Övrigt ger ett svarsutkast, i samma INSERT som raden.
+  const avtalId = kalla.typ === 'anteckning' ? await AVTAL[atgard](client, companyId, input as Indata) : null;
+  const utkast = kalla.typ === 'anteckning' && avtalId !== null ? await nejutkast(client, companyId, avtalId, kalla.id, skal) : null;
+  return skrivBeslut(client, companyId, beslut, q, atgard, input as Indata, { kalla, utfall: 'nej', underlag, skal: q.beslut_skal, handling: null, utkast });
 }
 /** Handlingens faktiska verkan i ord, utan gissning för okänd form. */
 export function beskrivHandling(handling: unknown): string {
