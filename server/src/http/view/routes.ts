@@ -42,6 +42,7 @@ import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragR
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
+import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
 import {
@@ -4648,6 +4649,32 @@ const UNDANTAGSHANDLINGAR = {
       ...(kommentar ? { kommentar } : {}),
     }, s.tillbaka, undefined, async (r) =>
       lagetsPlats(s.userId, s.companyId, (r.result as Bedomningsrad).contract_id, 'kort-bedomning'));
+  },
+  // Komplettera: Davids timmar till `komplettera_beslutsforslag` (Story 1.15). Samma
+  // regler som `decideApproval`: not_pending är tyst (en dubbelklickning eller en
+  // gammal flik), andra verksamhetsfel blir ?fel=, och resten kastas. Svaret leder
+  // tillbaka till vyn och ersättarens post, eftersom kompletteringen inget beslut är.
+  komplettera: async (s: Undantagssvar): Promise<void> => {
+    const approvalId = parseApprovalId(s.kropp.approval_id);
+    const timmar = TimmarSchema.safeParse(Number(formfalt(s.kropp.timmar).trim().replace(',', '.')));
+    if (!timmar.success) {
+      s.res.redirect(undantagsfel(s.tillbaka, 'Ange timmarna som ett tal större än noll, med högst två decimaler, till exempel 7,5.'));
+      return;
+    }
+    let svar: ActionResult;
+    try {
+      svar = await executeAction({ companyId: s.companyId, userId: s.userId, actor: 'human',
+        actionName: 'komplettera_beslutsforslag', input: { approval_id: approvalId, timmar: timmar.data } });
+    } catch (err) {
+      if (err instanceof ConflictError && err.code === 'not_pending') { s.res.redirect(s.tillbaka); return; }
+      if (err instanceof BadRequestError || err instanceof ConflictError) {
+        s.res.redirect(undantagsfel(s.tillbaka, `Kunde inte räknas om: ${err.message}`));
+        return;
+      }
+      throw err;
+    }
+    const ersattare = (svar as Extract<ActionResult, { status: 'ok' }>).result as { ersatt_av: string };
+    s.res.redirect(`${s.tillbaka}#post-${ersattare.ersatt_av}`);
   },
 };
 

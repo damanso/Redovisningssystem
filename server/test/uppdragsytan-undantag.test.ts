@@ -118,7 +118,7 @@ function utanLastid(svar: Undantag): Undantag {
   kopia.last_nar = 'X';
   for (const p of kopia.poster) for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor,
     ...(p.bedomning ? [p.bedomning.senaste, p.bedomning.andringar] : []),
-    ...(p.ovrigt ? [p.ovrigt.forfragan] : [])]) {
+    ...(p.ovrigt ? [p.ovrigt.forfragan, ...(p.ovrigt.andrat ? [p.ovrigt.andrat] : [])] : [])]) {
     if (v.kalla === 'redovisning') v.last_nar = 'X';
   }
   return kopia;
@@ -510,7 +510,7 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
   const DAGENS = ['pg', '../lib/lasvarde.js', '../domain/money.js', './approvals.js', './approvalSummary.js', '../http/middleware/authenticate.js'];
   // Story 1.10: en lista per fil, så att ingen fil får mer än den behöver.
   const tillatna: Record<string, readonly string[]> = {
-    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js', '../lib/beslutsunderlag.js', '../lib/avtalsdelsfalt.js'],
+    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js', '../lib/beslutsunderlag.js', '../lib/avtalsdelsfalt.js', './contracts.js'],
     '../src/lib/beslutsunderlag.ts': ['node:crypto', 'zod', '../domain/money.js', './validation.js', './scopeavgorande.js'],
     '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js'],
     '../src/lib/lasvarde.ts': DAGENS,

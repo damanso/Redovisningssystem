@@ -2,14 +2,18 @@
 // köpost. Filen läser tabellen uppdrag_anteckning men skriver aldrig i den; raden
 // är oföränderlig, och dess text förs bara vidare som data. Texten väljer aldrig
 // åtgärd, avtalsdel eller alternativ: de kommer ur validerade fält och egna
-// tabeller. Köposten är förslaget (ADR-6b), och den här filen är den enda som
-// köar en Övrigt-köpost. `executeAction` köar inte formen (koasAvSvepet).
+// tabeller. Köposten är förslaget (ADR-6b), och svepets förslagssteg här köar en
+// Övrigt-köpost. `executeAction` köar inte formen (koasAvSvepet). Story 1.15:
+// utöver svepets förslagssteg köar bara kompletteringen en Övrigt-köpost
+// (`kompletteraForslag` i uppdragBeslut.ts), alltid som ersättare för en väntande
+// post och med den här filens `lasOvrigtrad`, `provaOvrigtForslag` och
+// `byggOvrigtForslag`. Den märker den gamla köposten ersatt med `ersattGodkannande`.
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { ConflictError } from '../lib/errors.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
 import {
-  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, giltigFran,
+  ALTERNATIV, TimmarSchema, byggOvrigtUnderlag, byggRymsindata, byggTillaggsindata, delunderlag, egetTakTimmar, giltigFran,
   type Alternativ, type Gallandeversion, type OvrigtUnderlag,
 } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
@@ -18,7 +22,7 @@ import { writeAudit } from './auditService.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 import { SkapaReferensSchema } from './uppdragReferens.js';
 import { UNDERLAGSSORTER, underlagsreferens } from './uppdragSignal.js';
-import { BESLUT_FOR_ANTECKNING, KOPOST_FOR_ANTECKNING } from './uppdragUndantag.js';
+import { BESLUT_FOR_ANTECKNING, KOPOST_FOR_ANTECKNING, avtalsdelUpptagen } from './uppdragUndantag.js';
 
 /** En markerad Övrigt-rad som ännu saknar köpost och beslutsrad i sitt avtal. */
 export interface Ovrigtkandidat { id: string; contract_id: string; text: string; datum: string }
@@ -112,9 +116,109 @@ export function tomtOvrigtutfall(): Ovrigtutfall {
   return { koade: [], redan_koade: [], avvisade: [] };
 }
 
-interface Forslagsrad {
+/** Övrigt-raden med avtal, projektets status, taxan och om den redan har köpost eller beslutsrad i sitt avtal. */
+export interface Ovrigtrad {
   id: string; contract_id: string; text: string; utanfor_avtal: boolean; datum: string; projektstatus: string;
   avtal_namn: string; signerat: string | null; taxa_ore: number | null; har_kopost: boolean; har_beslut: boolean;
+}
+
+/** Det steg 8 och 10 behöver ur prövningen: avtalets delar, den valda delen, scopelinjerna och vid tillägg den gällande versionen. */
+export interface Ovrigtkontext {
+  parts: Delforbrukning[];
+  vald: Delforbrukning;
+  scopelinjer: { innanfor: string[]; utanfor: string[] };
+  gallande: Gallandeversion | null;
+  giltig_fran: string | null;
+}
+
+/** Steg 1: raden, dess avtal och om den redan har köpost eller beslutsrad i sitt avtal. Läser bara. */
+export async function lasOvrigtrad(client: PoolClient, companyId: string, anteckningId: string): Promise<Ovrigtrad | null> {
+  return (await client.query<Ovrigtrad>(
+    `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal,
+            a.created_at::date::text AS datum, p.status AS projektstatus, c.name AS avtal_namn,
+            c.signed_date::text AS signerat, c.hourly_rate_ore AS taxa_ore,
+            EXISTS (SELECT 1 FROM action_approvals q WHERE ${KOPOST_FOR_ANTECKNING}) AS har_kopost,
+            EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING}) AS har_beslut
+       FROM uppdrag_anteckning a
+       JOIN contracts c ON c.company_id = a.company_id AND c.id = a.contract_id
+       JOIN projects p ON p.company_id = c.company_id AND p.id = c.project_id
+      WHERE a.company_id = $1 AND a.id = $2::uuid`,
+    [companyId, anteckningId],
+  )).rows[0] ?? null;
+}
+
+/**
+ * Steg 4–6: raden är markerad, uppdraget öppet, avtalsdelen aktiv och, vid
+ * tillägg, koden inte upptagen. Läser bara; ett förslag som faller ger en orsak
+ * i stället för ett kast. `ersatter` är köposten som kompletteringen ersätter,
+ * så att den inte gör sin egen kod upptagen; för svepet är den null.
+ */
+export async function provaOvrigtForslag(
+  client: PoolClient, companyId: string, rad: Ovrigtrad, f: { alternativ: Alternativ; avtalsdel_kod: string }, ersatter: string | null,
+): Promise<{ ok: true; kontext: Ovrigtkontext } | { ok: false; orsak: Avvisningsorsak }> {
+  if (!rad.utanfor_avtal) return { ok: false, orsak: 'inte_utanfor_avtal' };
+  if (rad.projektstatus !== 'active') return { ok: false, orsak: 'uppdraget_stangt' };
+
+  // 5: avtalets delar och scopelinjer, per förslag och utan cache.
+  const usage = await getContractUsage(client, companyId, rad.contract_id);
+  const parts = usage.parts as Delforbrukning[];
+  const vald = parts.find((d) => d.code === f.avtalsdel_kod && d.active);
+  if (!vald) return { ok: false, orsak: 'avtalsdel_saknas' };
+  const linjer = await client.query<{ sort: string; text: string }>(
+    `SELECT sort, "text" FROM uppdrag_scopelinje
+      WHERE company_id = $1 AND contract_id = $2 AND sort IN ('innanfor', 'utanfor') ORDER BY ordning, created_at, id`,
+    [companyId, rad.contract_id],
+  );
+
+  // 6: bara vid tillägg ska koden ha en avgjord baseline. Den gällande versionen
+  // är kodens senaste, och ingen version är på väg genom kön (`avtalsdelUpptagen`).
+  let gallande: Gallandeversion | null = null;
+  let giltig_fran: string | null = null;
+  if (f.alternativ === 'tillagg') {
+    const senaste = (await client.query<Omit<Gallandeversion, 'cap_hours'> & { id: string; valid_from: string; cap_hours: string | null }>(
+      `SELECT id::text, valid_from::text, name, description, parent_part_id::text, billable, hourly_rate_ore, cap_hours::text,
+              cap_amount_ore, cap_confirmed, sort_order, active, start_date::text, end_date::text, date_precision
+         FROM contract_parts WHERE company_id = $1 AND contract_id = $2 AND code = $3 ORDER BY valid_from DESC, id DESC LIMIT 1`,
+      [companyId, rad.contract_id, vald.code],
+    )).rows[0];
+    const upptagen = await avtalsdelUpptagen(client, companyId, rad.contract_id, vald.code, vald.part_id, ersatter);
+    if (!senaste || upptagen) return { ok: false, orsak: 'avtalsdel_upptagen' };
+    const { id: _id, valid_from: basValidFrom, ...falt } = senaste;
+    gallande = { ...falt, cap_hours: falt.cap_hours === null ? null : Number(falt.cap_hours) };
+    giltig_fran = giltigFran(rad.datum, basValidFrom);
+  }
+  return { ok: true, kontext: { parts, vald, gallande, giltig_fran,
+    scopelinjer: { innanfor: linjer.rows.filter((l) => l.sort === 'innanfor').map((l) => l.text),
+      utanfor: linjer.rows.filter((l) => l.sort === 'utanfor').map((l) => l.text) } } };
+}
+
+/**
+ * Steg 8 och 10, utan databas: det frysta underlaget och köpostens indata,
+ * prövade mot åtgärdens eget schemaobjekt, samma som mottagandet parsar med.
+ * Avtalets delar mappas med `delunderlag` och den valda delens tak med
+ * `egetTakTimmar`, samma regler som läsvägens jämförelse.
+ */
+export function byggOvrigtForslag(
+  rad: Ovrigtrad, f: { alternativ: Alternativ; avtalsdel_kod: string; timmar: number | null; skal: string }, kontext: Ovrigtkontext,
+  referenser: ReadonlyArray<{ id: string; handelse_datum?: string }>, lastNar: string,
+): { ok: true; atgard: Ovrigtatgard; indata: Record<string, unknown> } | { ok: false; orsak: 'underlag_ogiltigt' } {
+  const { vald, gallande } = kontext;
+  const bygg = byggOvrigtUnderlag({
+    anteckning: { id: rad.id, datum: rad.datum },
+    avtal: { namn: rad.avtal_namn, signerat: rad.signerat, taxa_ore: rad.taxa_ore },
+    delar: kontext.parts.map(delunderlag),
+    vald: { kod: vald.code, eget_tak_timmar: egetTakTimmar(vald) },
+    scopelinjer: kontext.scopelinjer,
+    forslag: { alternativ: f.alternativ, timmar: f.timmar, skal: f.skal },
+    referenser: [...referenser], giltig_fran: kontext.giltig_fran, last_nar: lastNar,
+  });
+  if (!bygg.ok) return { ok: false, orsak: 'underlag_ogiltigt' };
+  const atgard = OVRIGT_ATGARD[f.alternativ];
+  const indata: Record<string, unknown> = gallande !== null
+    ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande, underlag: bygg.underlag })
+    : byggRymsindata({ contract_id: rad.contract_id, underlag: bygg.underlag });
+  if (!OVRIGT_SCHEMA[atgard].safeParse(indata).success) return { ok: false, orsak: 'underlag_ogiltigt' };
+  return { ok: true, atgard, indata };
 }
 
 /**
@@ -132,57 +236,14 @@ export async function koaOvrigtForslag(
   const lastNar = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu.toISOString();
   for (const f of forslag) {
     const avvisa = (orsak: Avvisningsorsak) => { utfall.avvisade.push({ anteckning_id: f.anteckning_id, orsak }); };
-    // 1–4: raden, dess avtal och om den redan har köpost eller beslutsrad i sitt avtal.
-    const rad = (await client.query<Forslagsrad>(
-      `SELECT a.id::text AS id, a.contract_id::text AS contract_id, a."text" AS text, a.utanfor_avtal,
-              a.created_at::date::text AS datum, p.status AS projektstatus, c.name AS avtal_namn,
-              c.signed_date::text AS signerat, c.hourly_rate_ore AS taxa_ore,
-              EXISTS (SELECT 1 FROM action_approvals q WHERE ${KOPOST_FOR_ANTECKNING}) AS har_kopost,
-              EXISTS (SELECT 1 FROM uppdrag_beslut b WHERE ${BESLUT_FOR_ANTECKNING}) AS har_beslut
-         FROM uppdrag_anteckning a
-         JOIN contracts c ON c.company_id = a.company_id AND c.id = a.contract_id
-         JOIN projects p ON p.company_id = c.company_id AND p.id = c.project_id
-        WHERE a.company_id = $1 AND a.id = $2::uuid`,
-      [companyId, f.anteckning_id],
-    )).rows[0];
+    // 1–3: raden, dess avtal och om den redan har köpost eller beslutsrad i sitt avtal.
+    const rad = await lasOvrigtrad(client, companyId, f.anteckning_id);
     if (!rad) { avvisa('anteckning_saknas'); continue; }
     if (rad.har_kopost || rad.har_beslut) { utfall.redan_koade.push(rad.id); continue; }
-    if (!rad.utanfor_avtal) { avvisa('inte_utanfor_avtal'); continue; }
-    if (rad.projektstatus !== 'active') { avvisa('uppdraget_stangt'); continue; }
 
-    // 5: avtalets delar och scopelinjer, per förslag och utan cache.
-    const usage = await getContractUsage(client, companyId, rad.contract_id);
-    const parts = usage.parts as Delforbrukning[];
-    const vald = parts.find((d) => d.code === f.avtalsdel_kod && d.active);
-    if (!vald) { avvisa('avtalsdel_saknas'); continue; }
-    const linjer = await client.query<{ sort: string; text: string }>(
-      `SELECT sort, "text" FROM uppdrag_scopelinje
-        WHERE company_id = $1 AND contract_id = $2 AND sort IN ('innanfor', 'utanfor') ORDER BY ordning, created_at, id`,
-      [companyId, rad.contract_id],
-    );
-
-    // 6: bara vid tillägg ska koden ha en avgjord baseline. Den gällande versionen
-    // är kodens senaste, och ingen version är på väg genom kön.
-    let gallande: Gallandeversion | null = null;
-    let giltig_fran: string | null = null;
-    if (f.alternativ === 'tillagg') {
-      const senaste = (await client.query<Omit<Gallandeversion, 'cap_hours'> & { id: string; valid_from: string; cap_hours: string | null }>(
-        `SELECT id::text, valid_from::text, name, description, parent_part_id::text, billable, hourly_rate_ore, cap_hours::text,
-                cap_amount_ore, cap_confirmed, sort_order, active, start_date::text, end_date::text, date_precision
-           FROM contract_parts WHERE company_id = $1 AND contract_id = $2 AND code = $3 ORDER BY valid_from DESC, id DESC LIMIT 1`,
-        [companyId, rad.contract_id, vald.code],
-      )).rows[0];
-      const upptagen = (await client.query<{ upptagen: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM action_approvals q WHERE q.company_id = $1 AND lower(q.input->>'contract_id') = $2
-            AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))
-            AND (q.action = 'satt_baseline' OR (q.action = ANY($4::text[]) AND q.input->>'code' = $3))) AS upptagen`,
-        [companyId, rad.contract_id, vald.code, ['andra_baseline', 'upsert_contract_part']],
-      )).rows[0]!.upptagen;
-      if (!senaste || senaste.id !== vald.part_id || upptagen) { avvisa('avtalsdel_upptagen'); continue; }
-      const { id: _id, valid_from: basValidFrom, ...falt } = senaste;
-      gallande = { ...falt, cap_hours: falt.cap_hours === null ? null : Number(falt.cap_hours) };
-      giltig_fran = giltigFran(rad.datum, basValidFrom);
-    }
+    // 4–6: markeringen, uppdraget, avtalsdelen och vid tillägg koden.
+    const prov = await provaOvrigtForslag(client, companyId, rad, f, null);
+    if (!prov.ok) { avvisa(prov.orsak); continue; }
 
     // 7: kallreferenserna prövas med referensens eget schema före varje skrivning.
     const kallreferenser = f.kallreferenser ?? [];
@@ -191,26 +252,9 @@ export async function koaOvrigtForslag(
       avvisa('kallreferens_ogiltig'); continue;
     }
 
-    // 8: provbygge utan skrivning. Underlaget och köpostens indata prövas mot
-    // åtgärdens eget schemaobjekt, samma som mottagandet parsar med.
-    const delar = parts.map((d) => ({ kod: d.code, namn: d.name, tak_minuter: d.cap_hours === null ? null : Math.round(d.cap_hours * 60),
-      forbrukade_minuter: d.billable_minutes, tak_bekraftat: d.cap_status === 'bekraftat', aktiv: d.active }));
-    const bygg = (referenser: Array<{ id: string; handelse_datum?: string }>) => byggOvrigtUnderlag({
-      anteckning: { id: rad.id, datum: rad.datum },
-      avtal: { namn: rad.avtal_namn, signerat: rad.signerat, taxa_ore: rad.taxa_ore },
-      delar,
-      vald: { kod: vald.code, eget_tak_timmar: vald.versions.find((v) => v.id === vald.part_id)?.cap_hours ?? null },
-      scopelinjer: { innanfor: linjer.rows.filter((l) => l.sort === 'innanfor').map((l) => l.text),
-        utanfor: linjer.rows.filter((l) => l.sort === 'utanfor').map((l) => l.text) },
-      forslag: { alternativ: f.alternativ, timmar: f.timmar ?? null, skal: f.skal },
-      referenser, giltig_fran, last_nar: lastNar,
-    });
-    const atgard = OVRIGT_ATGARD[f.alternativ];
-    const indata = (underlag: OvrigtUnderlag) => gallande !== null
-      ? byggTillaggsindata({ contract_id: rad.contract_id, kod: vald.code, anteckning: { text: rad.text, datum: rad.datum }, gallande, underlag })
-      : byggRymsindata({ contract_id: rad.contract_id, underlag });
-    const prov = bygg([]);
-    if (!prov.ok || !OVRIGT_SCHEMA[atgard].safeParse(indata(prov.underlag)).success) { avvisa('underlag_ogiltigt'); continue; }
+    // 8: provbygge utan skrivning.
+    const val = { alternativ: f.alternativ, avtalsdel_kod: f.avtalsdel_kod, timmar: f.timmar ?? null, skal: f.skal };
+    if (!byggOvrigtForslag(rad, val, prov.kontext, [], lastNar).ok) { avvisa('underlag_ogiltigt'); continue; }
 
     // 9: nu skrivs något. Varje kallreferens blir en pekare i uppdrag_referens.
     const referenser: Array<{ id: string; handelse_datum?: string }> = [];
@@ -221,9 +265,9 @@ export async function koaOvrigtForslag(
     }
 
     // 10: det slutliga underlaget skiljer sig bara i källorna och prövas igen.
-    const slutligt = bygg(referenser);
-    const input = slutligt.ok ? indata(slutligt.underlag) : null;
-    if (input === null || !OVRIGT_SCHEMA[atgard].safeParse(input).success) { avvisa('underlag_ogiltigt'); continue; }
+    const slutligt = byggOvrigtForslag(rad, val, prov.kontext, referenser, lastNar);
+    if (!slutligt.ok) { avvisa('underlag_ogiltigt'); continue; }
+    const { atgard, indata: input } = slutligt;
 
     // 11: köa och auditlogga i samma transaktion, med id och koder och aldrig text.
     const koad = await createApproval(client, companyId, userId, 'agent', atgard, input);

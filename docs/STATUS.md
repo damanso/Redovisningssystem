@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (204
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (205
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,67 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-10-15 (Story 1.15, ja till tillägg eller till ”ryms” registreras utan en
+  andra kvittens):** David kan fylla i timmar i en väntande Övrigt-fråga och få
+  förslaget omräknat. Den gamla köposten ersätts och är inget beslut, och
+  undantagsvyn visar när källorna ändrats sedan förslaget.
+  1. `server/migrations/0083_forslag_ersatt.sql` (ny): kolumnen
+     `action_approvals.ersatt_av` med sammansatt FK, UNIQUE, två CHECK och två
+     regler till i 1.4:s triggerfunktion (0077:s kropp ordagrant).
+  2. `server/src/services/approvals.ts`: `ersatt_av` i `APPROVAL_COLUMNS` och
+     `Approval`, villkoret `ersatt_av IS NULL` i `MOTTAGET_EJ_VERKSTALLT` och
+     `ersattGodkannande`, den enda skrivningen av kolumnen.
+  3. `server/src/lib/beslutsunderlag.ts`: `delunderlag`, `egetTakTimmar`,
+     `ANDRINGSFALT` och den rena `andratSedanForslaget` (kastar aldrig).
+  4. `server/src/services/uppdragOvrigt.ts`: 1.14:s förslagssteg delat i
+     `lasOvrigtrad`, `provaOvrigtForslag` och `byggOvrigtForslag` utan ändrat
+     beteende; `koaOvrigtForslag` anropar dem.
+  5. `server/src/services/uppdragUndantag.ts`: `avtalsdelUpptagen` (1.14:s steg
+     6 på en plats) och läsvägens jämförelse `markeraAndrat` (`ovrigt.andrat`).
+  6. `server/src/services/uppdragBeslut.ts`: `KOMPLETTERINGSFEL` och
+     `kompletteraForslag` (låset, ersättaren, `ersattGodkannande` och auditraden
+     `uppdrag.forslag_kompletterat` i en transaktion).
+  7. `server/src/actions/registry.ts`: åtgärden `komplettera_beslutsforslag`
+     (write, `kravManniska`).
+  8. `server/src/http/view/undantagsvyn.ts` och `routes.ts`: kompletteringens
+     JS-fria formulär (”Räkna om”), fältet ”Ändrat sedan förslaget” och grenen
+     `komplettera` i `UNDANTAGSHANDLINGAR`, med husets befintliga mönster.
+  9. `docs/MCP_ACTIONS.md` och `docs/ARKITEKTUR.md`. Huvudet säger 205 actions,
+     räknat ur registret.
+
+  **Prov:** `uppdragsytan-komplettering.test.ts` (ny: E, J, K, S, T),
+  `kompletteringRigg.ts` (ny), `kompletteringHelper.ts` (ny, körbar utan
+  databas), P8 och P9 i `uppdragsytan-beslut.test.ts`. Ändrade:
+  `uppdragsytan-undantag.test.ts` (P3, P16), `undantagsvynHelper.ts` (R8),
+  `uppdragsytan-undantagsvyn.test.ts` (R8, V9) och
+  `uppdragsytan-undantagsvyn-mobil.test.ts` (B (11)).
+
+  **Inte kört i sessionen:** `npm run typecheck`, `npm run build`, `npm test`
+  och `npx vitest` — sandlådan nekade kommandona ("This command requires
+  approval"). Utfallet är förutsagt, inte observerat; kedjans körning är
+  belägget.
+
+  **Omtag (kedjans `npm test`):** `tidsforslag.test.ts` ”grupperar per dag,
+  nyaste överst …” föll den 15/10. Provet sökte datumen i hela sidan, och
+  ramens stilblad har en kommentar med `2026-09-14` (`html.ts:611`), som är
+  just `dagarSedan(31)` den dagen. Ordningen läses nu på dagrubrikerna
+  (`>${dag}</span>`) inuti `<main>`, och varje rubrik måste finnas. Lärdom: ett
+  prov söker aldrig ett datum eller en ordning i hela sidan. Avgränsa till
+  `<main>` och kräv träffen innan positionerna jämförs. Inte heller detta är
+  kört i sessionen.
+
+  **Driftnotiser:**
+  1. Migration 0083 lägger `ersatt_av` på `action_approvals`. Kolumnen står kvar
+     vid en återställning, och den äldre koden skriver eller läser den inte.
+  2. En ersatt köpost är `rejected` med `ersatt_av` och utan `beslut_hash`. Den
+     är inget nej, och klienter läser `ersatt_av`.
+  3. `beslutsverkstallning.py` påverkas inte, eftersom en ersatt post saknar
+     `beslut_hash`.
+  4. Huvudet säger lika många actions som registret har efter bygget (205).
+  5. Undantagsvyn har ett tredje formulär på Övrigt-frågor (`handling=komplettera`,
+     `approval_id` och `<input type="number" name="timmar">`), i den form
+     `kontrollytan.py`:s fall b9 godtar.
 
 - **2026-10-14 (Story 1.14, Övrigt-raden blir en fråga med färdig beräkning):**
   En markerad Övrigt-rad blir en fråga i undantagsvyn med avtalsdelar, taxa,

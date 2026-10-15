@@ -605,7 +605,16 @@ describe('/tid/forslag — kön', () => {
       .reduce((s: Set<string>, r) => s.add(r.work_date), new Set<string>()).size;
     expect(html).toContain(`${dagar} obehandlade dagar`);
     // Nyaste dagen överst: äldre dagar ligger kvar under, de förfaller aldrig.
-    expect(html.indexOf(dagA)).toBeLessThan(html.indexOf(dagB));
+    // Ordningen läses på dagrubrikerna i <main>, inte på första förekomsten av
+    // datumet i sidan: ramens stilblad bär datum i sina kommentarer, och ett
+    // sådant datum sammanföll en dag med dagB (15/10: 2026-09-14).
+    const main = html.slice(html.indexOf('<main>'), html.indexOf('</main>'));
+    const rubrik = (dag: string): number => {
+      const i = main.indexOf(`>${dag}</span>`);
+      expect(i, `dagrubriken för ${dag} saknas i <main>`).toBeGreaterThan(-1);
+      return i;
+    };
+    expect(rubrik(dagA)).toBeLessThan(rubrik(dagB));
     expect(html).toContain('Dag A ett');
   });
 

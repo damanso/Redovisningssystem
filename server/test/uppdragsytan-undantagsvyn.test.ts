@@ -28,7 +28,9 @@ import {
   artikel, avgoranden, bedomningar, beslutsrader, bokfortKvitto, del, femSlag, frisktUppdrag, koa, kopost, koposter, notis, nyttBolag, ok,
   plantera, posta, rest, sida, svep, vy,
 } from './undantagsvynRigg.js';
-import { beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
+import { beslutsraderFor, delversioner, iltUppdrag, kopostInput, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
+import { ersattning, fragaUtanTimmar, tillstand } from './kompletteringRigg.js';
+import { amount } from '../src/http/view/html.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -614,6 +616,130 @@ describe('V8 Övrigt-frågan genom rutten', () => {
     expect(nej.body.error).toBe('human_required');
     expect((await kopost(ny.approvalId)).status).toBe('pending');
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// R8 och V9: kompletteringen och ”Ändrat sedan förslaget” (Story 1.15, Task 5)
+// ---------------------------------------------------------------------------
+
+describe('R8 kompletteringens formulär och ändrat sedan förslaget', () => {
+  it('(a) ett tredje formulär med timmarna och Räkna om', () => rena.provaKompletteringsformular());
+  it('(b) förifyllt med förslagets timmar', () => rena.provaKompletteringForifylld());
+  it('(c) tomt utan timmar', () => rena.provaKompletteringTom());
+  it('(d) varje approval_id är postens, och bara Övrigt-posten har formuläret', () => rena.provaKompletteringensId());
+  it('(e) ändringar med båda värdena', () => rena.provaAndratMedAndringar());
+  it('(f) inga ändringar ger inget fält', () => rena.provaAndratUtanAndringar());
+  it('(g) en del som saknas döljer formuläret', () => rena.provaAndratDelenSaknas());
+  it('(h) en jämförelse som inte kunde göras', () => rena.provaAndratOlast());
+  it('(i) ett överskridet utrymme sägs med ord', () => rena.provaAndratOverskridet());
+  it('(j) en upptagen kod ger meningen i formulärets ställe', () => rena.provaAndratUpptagen());
+});
+
+describe('V9 kompletteringen genom rutten', () => {
+  const korda = new Set<string>();
+  let b: Bolag;
+  let ilt: Ilt;
+  let A: string;
+  let B: string;
+  const TIMFEL = 'Ange timmarna som ett tal större än noll, med högst två decimaler, till exempel 7,5.';
+
+  beforeAll(async () => {
+    b = await nyttBolag('Undantagsvyn komplettering');
+    ilt = await iltUppdrag(b);
+    A = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+  }, 90_000);
+
+  it('(a) vyn har kompletteringens formulär i posten', async () => {
+    const a = artikel(await sida(b, vy(b)), A);
+    expect(a, 'posten saknas').not.toBeNull();
+    expect(a).toContain('name="handling" value="komplettera"');
+    expect(a).toMatch(/<input type="number" name="timmar"/);
+    korda.add('a');
+  });
+
+  it('(b) Räkna om ersätter posten och leder till ersättaren', async () => {
+    const res = await posta(b, { handling: 'komplettera', approval_id: A, timmar: '8' });
+    expect(res.status, res.text.slice(0, 200)).toBe(302);
+    B = (await ersattning(A)).ersatt_av as string;
+    expect(B).toBeTruthy();
+    expect(res.headers.location).toBe(`/app/c/${b.id}/uppdrag#post-${B}`);
+    expect(await kopost(B)).toMatchObject({ status: 'pending' });
+    expect((await kopostInput(B)).beslutsunderlag.timmar).toBe(8);
+    const html = await sida(b, vy(b));
+    expect(artikel(html, B)).not.toBeNull();
+    expect(artikel(html, A)).toBeNull();
+    korda.add('b');
+  });
+
+  it('(c) decimalkomma tolkas som decimal', async () => {
+    const a2 = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+    const res = await posta(b, { handling: 'komplettera', approval_id: a2, timmar: '7,5' });
+    expect(res.status).toBe(302);
+    expect((await kopostInput((await ersattning(a2)).ersatt_av as string)).beslutsunderlag.timmar).toBe(7.5);
+    korda.add('c');
+  });
+
+  it('(d) ogiltiga timmar ger notisen och ingenting skrivs', async () => {
+    const a3 = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+    const fore = await tillstand(b.id, a3);
+    for (const timmar of ['', '0', 'abc', '8,001', '-1']) {
+      const res = await posta(b, { handling: 'komplettera', approval_id: a3, timmar });
+      expect(res.status, timmar).toBe(302);
+      expect(notis(res.headers.location), timmar).toBe(TIMFEL);
+      expect(await tillstand(b.id, a3), timmar).toEqual(fore);
+    }
+    korda.add('d');
+  });
+
+  it('(e) ett upprepat Räkna om på den ersatta posten är tyst och skriver inget', async () => {
+    const fore = await tillstand(b.id, A);
+    const res = await posta(b, { handling: 'komplettera', approval_id: A, timmar: '8' });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`/app/c/${b.id}/uppdrag`);
+    expect(await tillstand(b.id, A)).toEqual(fore);
+    korda.add('e');
+  });
+
+  it('(f) ja och nej på den ersatta posten är tysta och skriver inget', async () => {
+    const fore = await tillstand(b.id, A);
+    const kroppar: Array<Record<string, string>> = [{ handling: 'ja', approval_id: A }, { handling: 'nej', approval_id: A, skal: 'Prov' }];
+    for (const kropp of kroppar) {
+      const res = await posta(b, kropp);
+      expect(res.status, kropp.handling).toBe(302);
+      expect(res.headers.location ?? '', kropp.handling).not.toContain('fel=');
+      expect(await tillstand(b.id, A), kropp.handling).toEqual(fore);
+    }
+    korda.add('f');
+  });
+
+  it('(g) en ny taxa visas som ändrat sedan förslaget med båda värdena', async () => {
+    const a4 = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+    await withAdmin((db) => db.query('UPDATE contracts SET hourly_rate_ore=120000 WHERE company_id=$1 AND id=$2', [b.id, ilt.contractId]));
+    const a = artikel(await sida(b, vy(b)), a4);
+    expect(a).toContain('data-falt="andrat"');
+    expect(a).toContain('Ändrat sedan förslaget');
+    expect(a).toContain(`Timpris: ${amount(100000).value}/h i förslaget, nu ${amount(120000).value}/h`);
+    korda.add('g');
+  });
+
+  it('(h) ett stängt uppdrag ger notisen med orsaken', async () => {
+    const a5 = (await fragaUtanTimmar(b, ilt, 'ryms', '2A')).approvalId;
+    await ok(b, 'set_project_status', { project_id: ilt.projektId, status: 'closed' });
+    const res = await posta(b, { handling: 'komplettera', approval_id: a5, timmar: '8' });
+    expect(res.status).toBe(302);
+    const n = notis(res.headers.location);
+    expect(n.startsWith('Kunde inte räknas om: ')).toBe(true);
+    expect(n).toContain('Uppdraget är stängt, så frågan kan inte räknas om.');
+    korda.add('h');
+  });
+
+  it('(i) grannbolagets companyId ger 404', async () => {
+    const res = await b.ua.post(`/app/c/${grannbolag}/uppdrag`).type('form').send({ handling: 'komplettera', approval_id: A, timmar: '8' });
+    expect(res.status).toBe(404);
+    korda.add('i');
+  });
+
+  it('kontrollvakt: alla nio fall kördes', () => expect([...korda].sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']));
 });
 
 describe('V6 (d) knapparnas förteckning', () => {

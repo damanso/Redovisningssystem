@@ -1,4 +1,5 @@
 // P2–P7/FR-41: beslutets schema, registrering, återförsök och läsning i riktiga lager.
+// P8–P9 (Story 1.15): kompletteringens kontrollfall och ja på Övrigt-frågan som förlopp.
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -475,4 +476,142 @@ describe('P7 täckningen för Övrigt', () => {
     korda.add(fall);
   });
   it('kontrollvakt: alla fyra täckningslägen kördes', () => expect([...korda].sort()).toEqual(['a','b','c','d']));
+});
+
+// Story 1.15: ja på Övrigt-frågan som förlopp, med riggarna ur 1.11, 1.14 och 1.15.
+// Varje fall har ett eget ILT-bolag; beslutsrader räknas för källan, aldrig i bolaget.
+import { godkann, koposter, nyttBolag, posta, rest, type Bolag } from './undantagsvynRigg.js';
+import { delversioner, forbruka, forslag, iltUppdrag, kopostInput, ovrigtFraga, svepa, type Ilt } from './ovrigtRigg.js';
+import { beslutForKalla, fragaUtanTimmar, komplettera, koposterForKalla } from './kompletteringRigg.js';
+import { verkstallMottagnaBeslut } from '../src/actions/execute.js';
+
+async function avtalsdelar(b: Bolag, ilt: Ilt) {
+  return (await withAdmin((c) => c.query('SELECT * FROM contract_parts WHERE company_id=$1 AND contract_id=$2 ORDER BY id', [b.id, ilt.contractId]))).rows;
+}
+async function iltFraga(namn: string, alternativ: 'tillagg' | 'ryms') {
+  const b = await nyttBolag(namn); const ilt = await iltUppdrag(b);
+  const kod = alternativ === 'tillagg' ? '2B' : '2A';
+  const { anteckningId, approvalId } = await ovrigtFraga(b, ilt, { alternativ, avtalsdel_kod: kod });
+  return { b, ilt, kod, anteckningId, q: approvalId };
+}
+describe('P8 kontrollfallet: komplettering, svep och omstart före något ja eller nej', () => {
+  const korda = new Set<string>();
+  type Kontrollfall = { b: Bolag; ilt: Ilt; anteckningId: string; a: string; ersattare: string; delar: Record<string, unknown>[] };
+  const fall: Partial<Record<'ryms' | 'tillagg', Kontrollfall>> = {};
+  const auditAntal = async (bolagId: string) => (await withAdmin((c) => c.query(
+    "SELECT action, count(*)::int AS n FROM audit_log WHERE company_id=$1 AND action IN ('uppdrag.forslag_avbojt','uppdrag.beslut_registrerat') GROUP BY action ORDER BY action",
+    [bolagId]))).rows;
+  for (const [namn, alternativ] of [['a', 'ryms'], ['a′', 'tillagg']] as const) it(`${namn}: ${alternativ} utan timmar kompletteras, och ingenting avgörs`, async () => {
+    const b = await nyttBolag(`P8 ${alternativ}`); const ilt = await iltUppdrag(b);
+    await forbruka(b, ilt, '2A', 600);
+    const { anteckningId, approvalId: a } = await fragaUtanTimmar(b, ilt, alternativ, alternativ === 'ryms' ? '2A' : '2B');
+    const delar = await avtalsdelar(b, ilt); const audit = await auditAntal(b.id);
+    const r = await komplettera(b, a, 8); expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const ersattare = r.body.result.ersatt_av as string;
+    expect((await svepa(b)).mottagna_beslut).toEqual({ verkstallda: 0, kvar: 0 });
+    expect(await withTenantTransaction(b.user.userId, b.id, (c) => verkstallMottagnaBeslut(c, b.id))).toEqual({ verkstallda: [], kvar: [] });
+    expect(await beslutForKalla(b.id, anteckningId)).toEqual([]);
+    expect(await avtalsdelar(b, ilt)).toEqual(delar);
+    expect(await auditAntal(b.id)).toEqual(audit);
+    const u = await rest(b, 'actions/las_undantag'); expect(u.status).toBe(200);
+    expect((u.body.result.poster as Array<{ id: string; ovrigt?: { forfragan?: { varde?: { id: string } } } }>)
+      .filter((p) => p.ovrigt?.forfragan?.varde?.id === anteckningId).map((p) => p.id)).toEqual([ersattare]);
+    fall[alternativ] = { b, ilt, anteckningId, a, ersattare, delar };
+    korda.add(namn);
+  });
+  it('b: ja på ersättaren för ”ryms” ger exakt en beslutsrad, och den ersatta posten är oförändrad', async () => {
+    const f = fall.ryms!; const fore = await kopostFor(f.a);
+    await godkann(f.b, f.ersattare);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId);
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ approval_id: f.ersattare, utfall: 'ja', alternativ: 'ryms', kalla_typ: 'anteckning' });
+    expect(rader[0]!.underlag.indata.beslutsunderlag.timmar).toBe(8);
+    expect(await avtalsdelar(f.b, f.ilt)).toEqual(f.delar);
+    expect(await kopostFor(f.a)).toEqual(fore);
+    korda.add('b');
+  });
+  it('c: ja på ersättaren för tillägget ger exakt en ny version och en beslutsrad', async () => {
+    const f = fall.tillagg!; const fore = await kopostFor(f.a);
+    const versionerFore = await delversioner(f.b.id, f.ilt.contractId, '2B');
+    await godkann(f.b, f.ersattare);
+    const versioner = await delversioner(f.b.id, f.ilt.contractId, '2B');
+    const nya = versioner.filter((v) => !versionerFore.some((x) => x.id === v.id));
+    expect(nya).toEqual([expect.objectContaining({ cap_hours: '20.00', valid_from: (await kopostInput(f.ersattare)).valid_from })]);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId);
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ approval_id: f.ersattare, utfall: 'ja', alternativ: 'tillagg' });
+    expect(rader[0]!.handling).toMatchObject({ typ: 'ny_version' });
+    expect(await kopostFor(f.a)).toEqual(fore);
+    korda.add('c');
+  });
+  it('kontrollvakt: alla fyra förlopp kördes', () => expect([...korda].sort()).toEqual(['a', 'a′', 'b', 'c'].sort()));
+});
+
+describe('P9 ja på Övrigt-frågan: fel efter mottagandet och upprepning', () => {
+  const korda = new Set<string>();
+  for (const [fall, alternativ] of [['a', 'tillagg'], ['b', 'ryms']] as const) it(`${fall}: ${alternativ} efter ett planterat fel tas om av svepet utan ny kvittens`, async () => {
+    const { b, ilt, kod, anteckningId, q } = await iltFraga(`P9 ${fall}`, alternativ);
+    const antalFore = await koposter(b.id);
+    const versionerFore = await delversioner(b.id, ilt.contractId, kod);
+    const delarFore = await avtalsdelar(b, ilt);
+    const atgard = alternativ === 'tillagg' ? 'andra_baseline' : 'registrera_uppdragsbeslut';
+    const logg = vi.spyOn(console, 'error');
+    try {
+      await planteratFel(async () => {
+        const r = await rest(b, `approvals/${q}/approve`);
+        expect(r.status, JSON.stringify(r.body)).toBe(202);
+        const k = await kopostFor(q); expect(k.status).toBe('approved'); expect(k.beslut_hash).toMatch(/^[a-f0-9]{64}$/);
+        expect(await beslutForKalla(b.id, anteckningId)).toEqual([]);
+        expect(await delversioner(b.id, ilt.contractId, kod)).toEqual(versionerFore);
+        if (alternativ === 'ryms') expect(await avtalsdelar(b, ilt)).toEqual(delarFore);
+        const u = await rest(b, 'actions/las_undantag'); expect(u.status).toBe(200);
+        expect((u.body.result.poster as Array<{ id: string }>).map((p) => p.id)).not.toContain(q);
+        const l = await rest(b, 'actions/las_uppdragslage', { project_id: ilt.projektId }); expect(l.status, JSON.stringify(l.body)).toBe(200);
+        expect(l.body.result.beslut.mottagna.find((m: { approval_id: string }) => m.approval_id === q)).toMatchObject({ utfall: 'ja' });
+        expect(l.body.result.beslut.registrerade.map((m: { approval_id: string }) => m.approval_id)).not.toContain(q);
+        expect(logg.mock.calls).toContainEqual(['[verkställighet] mottaget beslut ej verkställt — köpost', q, atgard, 'P0001']);
+      }, q);
+    } finally { logg.mockRestore(); }
+    expect((await svepa(b)).mottagna_beslut).toEqual({ verkstallda: 1, kvar: 0 });
+    const versioner = await delversioner(b.id, ilt.contractId, kod);
+    const rader = await beslutForKalla(b.id, anteckningId);
+    expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ approval_id: q, utfall: 'ja', alternativ, kalla_typ: 'anteckning' });
+    if (alternativ === 'tillagg') {
+      const input = await kopostInput(q);
+      expect(versioner).toHaveLength(versionerFore.length + 1);
+      expect(versioner.filter((v) => !versionerFore.some((f) => f.id === v.id))).toEqual([
+        expect.objectContaining({ cap_hours: '20.00', valid_from: input.valid_from, change_reason: input.change_reason })]);
+      expect(rader[0]!.handling).toMatchObject({ typ: 'ny_version', contract_part: { code: '2B' } });
+    } else {
+      expect(versioner).toEqual(versionerFore);
+      expect(await avtalsdelar(b, ilt)).toEqual(delarFore);
+      expect(rader[0]!.handling).toMatchObject({ typ: 'ryms' });
+    }
+    expect((await kopostFor(q)).status).toBe('executed');
+    expect(await koposter(b.id)).toBe(antalFore);
+    expect((await svepa(b)).mottagna_beslut).toEqual({ verkstallda: 0, kvar: 0 });
+    korda.add(fall);
+  });
+  for (const [fall, alternativ] of [['c', 'tillagg'], ['d', 'ryms']] as const) it(`${fall}: ${alternativ}, upprepat ja och upprepat svep ger ingen andra handling`, async () => {
+    const { b, ilt, kod, anteckningId, q } = await iltFraga(`P9 ${fall}`, alternativ);
+    const versionerFore = await delversioner(b.id, ilt.contractId, kod);
+    const delarFore = await avtalsdelar(b, ilt);
+    await godkann(b, q);
+    const igen = await rest(b, `approvals/${q}/approve`);
+    expect(igen.status).toBe(409); expect(igen.body.error).toBe('not_pending');
+    const v = await posta(b, { handling: 'ja', approval_id: q });
+    expect(v.status).toBe(302); expect(v.headers.location).toBe(`/app/c/${b.id}/projects/${ilt.projektId}/laget#beslut-${q}`);
+    await svepa(b);
+    const s = await svepa(b, { ovrigt_forslag: [forslag(anteckningId, { alternativ, avtalsdel_kod: kod })] });
+    expect(s.ovrigt.redan_koade).toEqual([anteckningId]); expect(s.ovrigt.koade).toEqual([]);
+    await svepa(b);
+    expect(await koposterForKalla(b.id, anteckningId)).toHaveLength(1);
+    const versioner = await delversioner(b.id, ilt.contractId, kod);
+    if (alternativ === 'tillagg') expect(versioner).toHaveLength(versionerFore.length + 1);
+    else { expect(versioner).toEqual(versionerFore); expect(await avtalsdelar(b, ilt)).toEqual(delarFore); }
+    expect(await beslutForKalla(b.id, anteckningId)).toHaveLength(1);
+    korda.add(fall);
+  });
+  it('kontrollvakt: alla fyra förlopp kördes', () => expect([...korda].sort()).toEqual(['a','b','c','d']));
 });

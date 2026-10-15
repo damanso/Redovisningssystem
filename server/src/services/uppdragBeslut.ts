@@ -1,18 +1,24 @@
 // B-1/FR-41: samma registreringskontrakt för varje köburet mandat.
 // Underlaget fryses före domänhandlingen; raden och audit skrivs efter den.
+// Story 1.15 (B-2, IR-13): filen bär också kompletteringen, som ersätter en
+// väntande Övrigt-köpost med Davids timmar och inte är något beslut.
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { assertSafeOre } from '../domain/money.js';
 import { forslagHash } from '../lib/beslutsunderlag.js';
+import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import type { Lasvarde } from '../lib/lasvarde.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { UuidSchema } from '../lib/validation.js';
-import { getApproval, type Approval } from './approvals.js';
+import { createApproval, ersattGodkannande, getApproval, lockPendingApproval, type Approval } from './approvals.js';
 import { writeAudit } from './auditService.js';
 import { arRenBekraftelse, baselineDatum } from './contracts.js';
-import { koburnaPoster, type Kallreferens } from './uppdragUndantag.js';
+import { koburetSlag, koburnaPoster, type Kallreferens } from './uppdragUndantag.js';
+import {
+  byggOvrigtForslag, lasOvrigtrad, provaOvrigtForslag, provaOvrigtKalla, type Avvisningsorsak,
+} from './uppdragOvrigt.js';
 
 /** Vem som verkställer och vilken köpost, från åtgärdens kontext. */
 export interface Beslutskontext { userId: string; actor: Actor; approvalId?: string }
@@ -185,6 +191,63 @@ export async function avbojForslag(client: PoolClient, companyId: string, beslut
   }
   const approval = await avvisa({ companyId, approverId: beslut.userId, approverActor: beslut.actor, approvalId: input.approval_id, skal: input.skal });
   return { approval_id: approval.id, status: approval.status, verkstalld: approval.result !== null };
+}
+
+// ---------------------------------------------------------------------------
+// Kompletteringen (Story 1.15, B-2, IR-13, architecture.md rad 929): David fyller
+// i timmar i en väntande fråga ur Övrigt. Den låser posten, köar en ersättare med
+// samma byggare och samma schemaobjekt som svepets förslagssteg och märker den
+// gamla köposten ersatt med `ersattGodkannande`, i en transaktion. Den är varken
+// ja eller nej: inget mottagande, ingen beslutsrad och ingen domänhandling.
+// ---------------------------------------------------------------------------
+
+/** En svensk text per orsak, i kompletteringens 409. Typen kräver alla sju. */
+export const KOMPLETTERINGSFEL: Record<Avvisningsorsak, string> = {
+  anteckning_saknas: 'Övrigt-raden finns inte i bolaget.',
+  inte_utanfor_avtal: 'Övrigt-raden är inte markerad som utanför avtalet.',
+  uppdraget_stangt: 'Uppdraget är stängt, så frågan kan inte räknas om.',
+  avtalsdel_saknas: 'Avtalsdelen finns inte längre bland avtalets aktiva delar.',
+  avtalsdel_upptagen: 'Avtalsdelen har en annan baselineändring som väntar eller en version som börjar senare. Svara på frågan som den står, eller avgör den andra ändringen först.',
+  kallreferens_ogiltig: 'En källreferens i förslaget går inte att läsa.',
+  underlag_ogiltigt: 'Förslaget går inte att räkna om med de här timmarna och avtalets värden.',
+};
+
+/**
+ * Ersätter en väntande Övrigt-köpost med en ny med Davids timmar och serverns
+ * beräkning ur egna tabeller. Låset först, så att 404 och 409 `not_pending`
+ * kommer före varje annan prövning; inget skrivs före `createApproval`, och en
+ * prövning som faller kastar `ConflictError`, så att anroparens transaktion rullas
+ * tillbaka. Källan, alternativet, avtalsdelen, skälet och källorna behålls, och
+ * ersättaren köas med den gamla postens begärare. Radens text väljer ingenting.
+ */
+export async function kompletteraForslag(
+  client: PoolClient, companyId: string, userId: string, input: { approval_id: string; timmar: number },
+): Promise<{ approval_id: string; ersatt_av: string }> {
+  const q = await lockPendingApproval(client, companyId, input.approval_id);
+  const prov = koburetSlag(q) === 'ovrigt_beslut' && Object.hasOwn(OVRIGT_SCHEMA, q.action)
+    ? OVRIGT_SCHEMA[q.action as Ovrigtatgard].safeParse(q.input) : null;
+  const parsat = prov !== null && prov.success ? prov.data : null;
+  const u = parsat?.beslutsunderlag;
+  if (parsat === null || !u) {
+    throw new ConflictError('inte_ovrigtforslag', 'Bara en väntande fråga ur Övrigt kan kompletteras med timmar.');
+  }
+  await provaOvrigtKalla(client, companyId, parsat.contract_id, u.anteckning_id);
+  const rad = await lasOvrigtrad(client, companyId, u.anteckning_id);
+  if (rad === null) throw new ConflictError('anteckning_saknas', KOMPLETTERINGSFEL.anteckning_saknas);
+  const lastNar = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu.toISOString();
+  const p = await provaOvrigtForslag(client, companyId, rad, { alternativ: u.alternativ, avtalsdel_kod: u.avtalsdel_kod }, q.id);
+  if (!p.ok) throw new ConflictError(p.orsak, KOMPLETTERINGSFEL[p.orsak]);
+  const referenser = u.kallor.slice(1).map((k) => ({ id: k.id, ...(k.handelse_datum ? { handelse_datum: k.handelse_datum } : {}) }));
+  const b = byggOvrigtForslag(rad, { alternativ: u.alternativ, avtalsdel_kod: u.avtalsdel_kod, timmar: input.timmar, skal: u.skal },
+    p.kontext, referenser, lastNar);
+  if (!b.ok) throw new ConflictError('underlag_ogiltigt', KOMPLETTERINGSFEL.underlag_ogiltigt);
+  const ny = await createApproval(client, companyId, q.requested_by, q.requested_actor, b.atgard, b.indata);
+  await ersattGodkannande(client, companyId, q.id, ny.id);
+  await writeAudit(client, {
+    companyId, userId, action: 'uppdrag.forslag_kompletterat', entityType: 'approval', entityId: q.id,
+    details: { approval_id: q.id, ersatt_av: ny.id, atgard: b.atgard },
+  });
+  return { approval_id: q.id, ersatt_av: ny.id };
 }
 
 /** Platsen för ett uppdragsbeslut; främmande, trasiga och avtalstomma mål ger ingen länk. */
