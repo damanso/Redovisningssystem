@@ -17,9 +17,12 @@ export const ILT_DELAR: ReadonlyArray<readonly [string, string, number | null]> 
 
 export interface Ilt { projektId: string; contractId: string; delar: Record<string, string> }
 
-/** Projekt, avtal med taxa och de sex delarna, var och en köad och godkänd. */
-export async function iltUppdrag(b: Bolag, { taxa = SYNTETISK_TAXA as number | null, namn = 'ILT' } = {}): Promise<Ilt> {
-  const projektId = (await ok(b, 'create_project', { name: `${namn} (syntetiskt prov)` })).id as string;
+/**
+ * Projekt, avtal med taxa och de sex delarna, var och en köad och godkänd.
+ * Story 1.16: med `kundId` får uppdraget kunden, och avtalet ärver den.
+ */
+export async function iltUppdrag(b: Bolag, { taxa = SYNTETISK_TAXA as number | null, namn = 'ILT', kundId = undefined as string | undefined } = {}): Promise<Ilt> {
+  const projektId = (await ok(b, 'create_project', { name: `${namn} (syntetiskt prov)`, ...(kundId === undefined ? {} : { customer_id: kundId }) })).id as string;
   const contractId = (await ok(b, 'create_contract', {
     project_id: projektId, name: `Konsultavtal ${namn} (syntetiskt prov)`, signed_date: '2026-05-04',
     ...(taxa === null ? {} : { hourly_rate_ore: taxa }),

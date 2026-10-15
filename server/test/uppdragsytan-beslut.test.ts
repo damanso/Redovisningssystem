@@ -1,5 +1,8 @@
 // P2–P7/FR-41: beslutets schema, registrering, återförsök och läsning i riktiga lager.
 // P8–P9 (Story 1.15): kompletteringens kontrollfall och ja på Övrigt-frågan som förlopp.
+// P10–P12 (Story 1.16, B-5, FR-42): nej-utkastets kolumn och skydd i databasen, nejet
+// som skriver utkastet i verkställigheten genom alla ingångar, och Lägets läsväg och
+// panel ”Beslut och utkast” med Davids mailto-länk.
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -9,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { beslutHash } from '../src/services/approvals.js';
 import { MANDATATGARDER, registreraJa, registreraNej, frysKallor, BeslutskallaSchema, beskrivHandling } from '../src/services/uppdragBeslut.js';
 import { BESLUTSRADEN, beskrivKostnadsbindning, beskrivAvslut, beskrivScopeavgorande, UNDANTAG_ATGARDER } from '../src/services/uppdragUndantag.js';
-import { forslagHash } from '../src/lib/beslutsunderlag.js';
+import { forslagHash, byggRymsindata } from '../src/lib/beslutsunderlag.js';
 
 import { updateContract } from '../src/services/contracts.js';
 import { bindaKostnad } from '../src/services/uppdragKostnad.js';
@@ -52,6 +55,8 @@ function sattInBeslutsrad(rad: Record<string, unknown>, anvandare = user, bolag 
 async function skrivRad(extra: Record<string, unknown> = {}, anvandare = user, bolag = company) {
   return sattInBeslutsrad(await nyBeslutsrad(extra), anvandare, bolag);
 }
+/** Story 1.16: ett giltigt utkast vars ämne bär markören. En funktionsdeklaration, eftersom P2:s CHECKFALL anropar den när blocket samlas. */
+function UTKAST(m: string): string { return JSON.stringify({ mottagare: null, amne: `Svar ${m}`, text: 'Hej' }); }
 beforeAll(async () => {
   user = await registerUser('beslut'); company = await createCompany(user.token, 'Beslut AB');
   avtal = (await nyttAvtal(user, company)).contract;
@@ -187,6 +192,7 @@ describe('P2 beslutstabellen', () => {
       expect(await fel(skrivRad(extra))).toMatchObject({ code: '23505' }); negativa++;
     }
   });
+  const m = '[ref U1-B1]';
   const CHECKFALL = [
     ['utfall', { utfall: 'kanske' }],
     ['utfall', { utfall: 'JA', skal: null, handling: '{}' }],
@@ -198,6 +204,16 @@ describe('P2 beslutstabellen', () => {
     ['utkast_vid_nej', { utfall: 'ja', skal: null, handling: '{}', utkast: '{}' }],
     ['underlag_objekt', { underlag: '[]' }], ['avtal_utom_avslut', { contract_id: null }],
     ['avtal_utom_avslut', { kalla_typ: 'avslut' }], ['forslag_hash_form', { forslag_hash: 'abc' }], ['alternativ', { alternativ: 'kanske' }],
+    // Story 1.16 (0084): utkastet och markören följs åt, markören har en form, utkastet tre nycklar och ämnet bär markören.
+    ['utkast_med_markor', { utkast: UTKAST(m) }],
+    ['utkast_med_markor', { utkast_markor: m }],
+    ['utkast_markor_form', { utkast: UTKAST('[ref 3f2a9c1e]'), utkast_markor: '[ref 3f2a9c1e]' }],
+    ['utkast_markor_form', { utkast: UTKAST('[ref ILT bad om]'), utkast_markor: '[ref ILT bad om]' }],
+    ['utkast_markor_form', { utkast: UTKAST('[ref U1-B0]'), utkast_markor: '[ref U1-B0]' }],
+    ['utkast_form', { utkast: '{"amne":"Svar [ref U1-B1]","text":"Hej"}', utkast_markor: m }],
+    ['utkast_form', { utkast: '{"mottagare":null,"amne":"Svar [ref U1-B1]","text":"Hej","skickat":true}', utkast_markor: m }],
+    ['utkast_form', { utkast: '{"mottagare":42,"amne":"Svar [ref U1-B1]","text":"Hej"}', utkast_markor: m }],
+    ['utkast_amne_bar_markor', { utkast: '{"mottagare":null,"amne":"Svar utan referens","text":"Hej"}', utkast_markor: m }],
   ] as const;
   let checkregler: { namn: string; uttryck: string }[];
   beforeAll(async () => {
@@ -205,7 +221,7 @@ describe('P2 beslutstabellen', () => {
       "SELECT conname AS namn, pg_get_expr(conbin, conrelid) AS uttryck FROM pg_constraint WHERE conrelid='uppdrag_beslut'::regclass AND contype='c' ORDER BY conname",
     ))).rows;
     expect(checkregler.map((r) => r.namn)).toEqual([...new Set(CHECKFALL.map(([namn]) => `uppdrag_beslut_${namn}`))].sort());
-    expect(checkregler).toHaveLength(9);
+    expect(checkregler).toHaveLength(13);
   });
   for (const [namn, extra] of CHECKFALL) it(`h CHECK ${namn}: ${JSON.stringify(extra)}`, async () => {
     const rad = await nyBeslutsrad(extra);
@@ -232,7 +248,7 @@ describe('P2 beslutstabellen', () => {
     expect((await skrivRad({ company_id: bolag, contract_id: a.contract, approval_id: q.id, kalla_id: q.id }, user, bolag)).rowCount).toBe(1);
     expect((await withAdmin((c) => c.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgrelid='uppdrag_beslut'::regclass AND NOT tgisinternal"))).rows[0].n).toBe(0);
   });
-  it('kontrollvakt: alla negativa kontroller kördes', () => expect(negativa).toBe(23));
+  it('kontrollvakt: alla negativa kontroller kördes', () => expect(negativa).toBe(32));
 });
 
 // Varje svepräkning har ett eget bolag: mottagna mandat gäller hela bolaget.
@@ -480,10 +496,16 @@ describe('P7 täckningen för Övrigt', () => {
 
 // Story 1.15: ja på Övrigt-frågan som förlopp, med riggarna ur 1.11, 1.14 och 1.15.
 // Varje fall har ett eget ILT-bolag; beslutsrader räknas för källan, aldrig i bolaget.
-import { godkann, koposter, nyttBolag, posta, rest, type Bolag } from './undantagsvynRigg.js';
-import { delversioner, forbruka, forslag, iltUppdrag, kopostInput, ovrigtFraga, svepa, type Ilt } from './ovrigtRigg.js';
+import { godkann, koa, koposter, nyttBolag, nyttUppdrag, ok, posta, rest, sida, type Bolag } from './undantagsvynRigg.js';
+import {
+  anteckning, delversioner, forbruka, forslag, iltUppdrag, kopostInput, ovrigtFraga, planteraMedStatus, radDatum, svepa, type Ilt,
+} from './ovrigtRigg.js';
 import { beslutForKalla, fragaUtanTimmar, komplettera, koposterForKalla } from './kompletteringRigg.js';
-import { verkstallMottagnaBeslut } from '../src/actions/execute.js';
+import { verkstallBeslut, verkstallMottagnaBeslut } from '../src/actions/execute.js';
+import { fixturunderlag } from './ovrigtHelper.js';
+import { blocktext, kundIlt, nej, projektnummer, serie, utkastblockHtml, vantatBlocktext, vantatUtkast } from './utkastRigg.js';
+import { esc } from '../src/http/view/html.js';
+import { mailtoDelar } from './utkastHelper.js';
 
 async function avtalsdelar(b: Bolag, ilt: Ilt) {
   return (await withAdmin((c) => c.query('SELECT * FROM contract_parts WHERE company_id=$1 AND contract_id=$2 ORDER BY id', [b.id, ilt.contractId]))).rows;
@@ -614,4 +636,440 @@ describe('P9 ja på Övrigt-frågan: fel efter mottagandet och upprepning', () =
     korda.add(fall);
   });
   it('kontrollvakt: alla fyra förlopp kördes', () => expect([...korda].sort()).toEqual(['a','b','c','d']));
+});
+
+// Story 1.16 (0084): kolumnen utkast_markor och dess skydd, med rader som rollen app skriver direkt.
+describe('P10 kolumnen utkast_markor', () => {
+  const korda = new Set<string>();
+  const skrivna: string[] = [];
+  const M = '[ref U1-B1]';
+  it('C1 kolumnen är nullbar text med fyra CHECK och ett unikt index per bolag', async () => {
+    await withAdmin(async (c) => {
+      const kol = (await c.query("SELECT data_type, is_nullable FROM information_schema.columns WHERE table_name='uppdrag_beslut' AND column_name='utkast_markor'")).rows;
+      expect(kol).toEqual([{ data_type: 'text', is_nullable: 'YES' }]);
+      const villkor = (await c.query<{ namn: string; typ: string; def: string }>(
+        "SELECT conname AS namn, contype AS typ, pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid='uppdrag_beslut'::regclass AND conname LIKE 'uppdrag_beslut_utkast_%' ORDER BY conname",
+      )).rows;
+      const namn = (n: string) => villkor.find((v) => v.namn === n);
+      for (const n of ['uppdrag_beslut_utkast_med_markor', 'uppdrag_beslut_utkast_markor_form', 'uppdrag_beslut_utkast_form', 'uppdrag_beslut_utkast_amne_bar_markor']) {
+        expect(namn(n), n).toMatchObject({ typ: 'c' });
+      }
+      expect(namn('uppdrag_beslut_utkast_markor_uk')).toMatchObject({ typ: 'u', def: 'UNIQUE (company_id, utkast_markor)' });
+    });
+    korda.add('C1');
+  });
+  it('C2 en nej-rad med utkast och markör skrivs som app och läses tillbaka', async () => {
+    const r = (await skrivRad({ utkast: UTKAST(M), utkast_markor: M })).rows[0];
+    skrivna.push(r.id);
+    const tillbaka = (await withTenantTransaction(user.userId, company, (c) => c.query('SELECT utkast, utkast_markor FROM uppdrag_beslut WHERE company_id=$1 AND id=$2', [company, r.id]))).rows;
+    expect(tillbaka).toEqual([{ utkast: JSON.parse(UTKAST(M)), utkast_markor: M }]);
+    korda.add('C2');
+  });
+  it('C3 markören är unik per bolag, men samma markör går i grannbolaget och flera rader utan utkast går', async () => {
+    const krock = await fel(skrivRad({ utkast: UTKAST(M), utkast_markor: M }));
+    expect(krock).toMatchObject({ code: '23505', constraint: 'uppdrag_beslut_utkast_markor_uk' });
+    const grannQ = await withTenantTransaction(granne.userId, grannbolag, (c) => createApproval(c, grannbolag, granne.userId, 'human', 'update_contract', { contract_id: grannavtal, notes: 'Prov' }));
+    const grannrad = await sattInBeslutsrad({ ...(await nyBeslutsrad({ utkast: UTKAST(M), utkast_markor: M })),
+      company_id: grannbolag, contract_id: grannavtal, kalla_id: grannQ.id, approval_id: grannQ.id, beslutad_av: granne.userId }, granne, grannbolag);
+    expect(grannrad.rows[0]).toMatchObject({ company_id: grannbolag, utkast_markor: M });
+    for (let i = 0; i < 2; i++) {
+      const r = (await skrivRad()).rows[0];
+      expect(r).toMatchObject({ utkast: null, utkast_markor: null }); skrivna.push(r.id);
+    }
+    korda.add('C3');
+  });
+  it('C4 append-only: app kan inte ändra markören eller utkastet', async () => {
+    const id = skrivna[0]!;
+    const fore = (await withAdmin((c) => c.query('SELECT * FROM uppdrag_beslut WHERE id=$1', [id]))).rows;
+    expect(fore).toHaveLength(1);
+    for (const sql of ['UPDATE uppdrag_beslut SET utkast_markor = NULL WHERE id = $1', 'UPDATE uppdrag_beslut SET utkast = NULL WHERE id = $1']) {
+      expect(await fel(withTenantTransaction(user.userId, company, (c) => c.query(sql, [id])))).toMatchObject({ code: '42501' });
+    }
+    expect((await withAdmin((c) => c.query('SELECT * FROM uppdrag_beslut WHERE id=$1', [id]))).rows).toEqual(fore);
+    korda.add('C4');
+  });
+  it('C5 befintliga rader har varken utkast eller markör', async () => {
+    const r = (await withAdmin((c) => c.query<{ alla: number; med: number }>(
+      'SELECT count(*)::int AS alla, count(*) FILTER (WHERE utkast IS NOT NULL OR utkast_markor IS NOT NULL)::int AS med FROM uppdrag_beslut WHERE company_id=$1 AND NOT (id = ANY($2::uuid[]))',
+      [company, skrivna]))).rows[0]!;
+    expect(r.alla).toBeGreaterThan(0); expect(r.med).toBe(0);
+    korda.add('C5');
+  });
+  it('kontrollvakt: alla fem kolumnfall kördes', () => expect([...korda].sort()).toEqual(['C1', 'C2', 'C3', 'C4', 'C5']));
+});
+
+// Story 1.16: nejet skriver utkastet i verkställigheten. Varje fall har ett eget ILT-bolag;
+// beslutsrader räknas per källa eller per köpost, aldrig i hela bolaget.
+const FORFRAGAN = 'ILT bad om en extra rapport över fakturorna.';
+const SKAL = 'Det ingår inte i uppdraget i år.';
+const MOTTAGNA_NYCKLAR = ['approval_id', 'atgard', 'utfall', 'beslutad_nar'];
+/** En Övrigt-fråga i ett eget ILT-bolag med kund: ”ryms” på 2A eller tillägg på 2B, 8 h. */
+async function nejFraga(namn: string, alternativ: 'ryms' | 'tillagg' = 'ryms', text?: string) {
+  const b = await nyttBolag(namn); const { ilt } = await kundIlt(b);
+  const kod = alternativ === 'tillagg' ? '2B' : '2A';
+  const { anteckningId, approvalId: q } = await ovrigtFraga(b, ilt, { alternativ, avtalsdel_kod: kod }, text);
+  return { b, ilt, kod, anteckningId, q, nummer: await projektnummer(ilt.projektId), datum: await radDatum(anteckningId) };
+}
+const lage = async (b: Bolag, ilt: Ilt, headers = b.auth) => {
+  const l = await rest(b, 'actions/las_uppdragslage', { project_id: ilt.projektId }, headers);
+  expect(l.status, JSON.stringify(l.body)).toBe(200);
+  return l.body.result as { beslut: { mottagna: Record<string, any>[]; registrerade: Record<string, any>[] } };
+};
+const undantagFor = async (b: Bolag, anteckningId: string): Promise<string[]> => {
+  const u = await rest(b, 'actions/las_undantag'); expect(u.status, JSON.stringify(u.body)).toBe(200);
+  return (u.body.result.poster as Array<{ id: string; ovrigt?: { forfragan?: { varde?: { id: string } } } }>)
+    .filter((p) => p.ovrigt?.forfragan?.varde?.id === anteckningId).map((p) => p.id);
+};
+const kandidater = (svar: Record<string, any>): string[] => {
+  const lista = svar.arbetslista?.ovrigt_kandidater;
+  expect(Array.isArray(lista), JSON.stringify(svar.arbetslista)).toBe(true);
+  return (lista as { id: string }[]).map((k) => k.id);
+};
+
+describe('P11 nej-utkastet', () => {
+  const korda = new Set<string>();
+  it('N1 nej på ”ryms” registrerar skäl och ekonomi och skriver utkastet i samma rad', async () => {
+    const f = await nejFraga('P11 N1');
+    const r = await nej(f.b, f.q); expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId); expect(rader).toHaveLength(1);
+    const rad = rader[0]!; const k = await kopostFor(f.q);
+    expect(rad).toMatchObject({ utfall: 'nej', approval_id: f.q, kalla_typ: 'anteckning', kalla_id: f.anteckningId, alternativ: 'ryms',
+      skal: SKAL, handling: null, beslutad_av: f.b.user.userId });
+    expect(rad.beslutad_nar).toEqual(k.decided_at);
+    expect(rad.underlag.belopp_ore).toBe(800_000);
+    expect(rad.underlag.indata.beslutsunderlag).toEqual(k.input.beslutsunderlag);
+    const v = vantatUtkast({ nummer: f.nummer, lopnummer: 1, datum: f.datum, forfragan: FORFRAGAN, skal: SKAL, mottagare: 'kontakt@ilt.example' });
+    expect(rad.utkast).toEqual(v.utkast); expect(rad.utkast_markor).toBe(v.markor);
+    expect(await serie(f.b.id)).toBe(2);
+    const audit = (await withAdmin((c) => c.query("SELECT details FROM audit_log WHERE company_id=$1 AND entity_id=$2 AND action='uppdrag.forslag_avbojt'", [f.b.id, rad.id]))).rows;
+    expect(audit).toEqual([{ details: { approval_id: f.q, atgard: 'registrera_uppdragsbeslut', utfall: 'nej', kalla_typ: 'anteckning' } }]);
+    korda.add('N1');
+  }, 120_000);
+  it('N2 nej på ett tillägg ger samma utkast och ingen ny version', async () => {
+    const f = await nejFraga('P11 N2', 'tillagg');
+    const fore = await delversioner(f.b.id, f.ilt.contractId, '2B');
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId); expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ utfall: 'nej', alternativ: 'tillagg', approval_id: f.q });
+    const v = vantatUtkast({ nummer: f.nummer, lopnummer: 1, datum: f.datum, forfragan: FORFRAGAN, skal: SKAL, mottagare: 'kontakt@ilt.example' });
+    expect(rader[0]!.utkast).toEqual(v.utkast); expect(rader[0]!.utkast_markor).toBe(v.markor);
+    expect(await delversioner(f.b.id, f.ilt.contractId, '2B')).toEqual(fore);
+    korda.add('N2');
+  }, 120_000);
+  it('N3 ett fel i raden rullar tillbaka utkastet och löpnumret; svepet tar om', async () => {
+    const f = await nejFraga('P11 N3');
+    const logg = vi.spyOn(console, 'error');
+    try {
+      await planteratFel(async () => {
+        const r = await nej(f.b, f.q); expect(r.status, JSON.stringify(r.body)).toBe(200); expect(r.body.result.verkstalld).toBe(false);
+        const k = await kopostFor(f.q);
+        expect(k.status).toBe('rejected'); expect(k.beslut_hash).toMatch(/^[a-f0-9]{64}$/); expect(k.beslut_skal).toBe(SKAL);
+        expect(await beslutForKalla(f.b.id, f.anteckningId)).toEqual([]);
+        expect(await serie(f.b.id)).toBeNull();
+        const l = await lage(f.b, f.ilt);
+        const m = l.beslut.mottagna.find((x) => x.approval_id === f.q);
+        expect(m).toMatchObject({ utfall: 'nej' }); expect(Object.keys(m!).sort()).toEqual([...MOTTAGNA_NYCKLAR].sort());
+        expect(l.beslut.registrerade.map((x) => x.approval_id)).not.toContain(f.q);
+      }, f.q);
+    } finally { logg.mockRestore(); }
+    expect((await svepa(f.b)).mottagna_beslut).toEqual({ verkstallda: 1, kvar: 0 });
+    const rader = await beslutForKalla(f.b.id, f.anteckningId);
+    expect(rader).toHaveLength(1); expect(rader[0]!.utkast_markor).toBe(`[ref U${f.nummer}-B1]`);
+    expect(await serie(f.b.id)).toBe(2);
+    korda.add('N3');
+  }, 120_000);
+  it('N4 alla fyra ingångar till nejet ger ett utkast, i den ordning nejen sades', async () => {
+    const b = await nyttBolag('P11 N4'); const { ilt } = await kundIlt(b);
+    const nummer = await projektnummer(ilt.projektId);
+    const f1 = await ovrigtFraga(b, ilt); const f2 = await ovrigtFraga(b, ilt); const f3 = await ovrigtFraga(b, ilt);
+    const a = await rest(b, `approvals/${f1.approvalId}/reject`, { reason: 'Prov a' }); expect(a.status, JSON.stringify(a.body)).toBe(200);
+    const v = await posta(b, { handling: 'nej', approval_id: f2.approvalId, skal: 'Prov b' });
+    expect(v.status).toBe(302); expect(v.headers.location).toMatch(new RegExp(`/laget#beslut-${f2.approvalId}$`));
+    const c = await b.ua.post(`/app/c/${b.id}/approvals/${f3.approvalId}/reject`).type('form').send({ skal: 'Prov c' });
+    expect(c.status).toBe(302); expect(c.headers.location ?? '').not.toContain('fel=');
+    for (const [i, [fr, skal]] of ([[f1, 'Prov a'], [f2, 'Prov b'], [f3, 'Prov c']] as const).entries()) {
+      const rader = await beslutForKalla(b.id, fr.anteckningId); expect(rader, skal).toHaveLength(1);
+      expect(rader[0]).toMatchObject({ approval_id: fr.approvalId, utfall: 'nej', skal, utkast_markor: `[ref U${nummer}-B${i + 1}]` });
+      expect(rader[0]!.utkast.text).toContain(`Skäl: ${skal}`);
+    }
+    korda.add('N4');
+  }, 120_000);
+  it('N5 mottagaren är kundkortets adress: avtalets kund före uppdragets, annars saknad', async () => {
+    const b1 = await nyttBolag('P11 N5a'); const ilt1 = await iltUppdrag(b1);
+    const q1 = await ovrigtFraga(b1, ilt1); expect((await nej(b1, q1.approvalId)).status).toBe(200);
+    expect((await beslutForKalla(b1.id, q1.anteckningId))[0]!.utkast.mottagare).toBeNull();
+    const b2 = await nyttBolag('P11 N5b'); const { ilt: ilt2 } = await kundIlt(b2, 'ring Karin');
+    const q2 = await ovrigtFraga(b2, ilt2); expect((await nej(b2, q2.approvalId)).status).toBe(200);
+    expect((await beslutForKalla(b2.id, q2.anteckningId))[0]!.utkast.mottagare).toBeNull();
+    const b3 = await nyttBolag('P11 N5c'); const { ilt: ilt3 } = await kundIlt(b3, 'projekt@ilt.example');
+    const avtalskund = (await ok(b3, 'create_customer', { name: 'Avtalets kund (syntetiskt prov)', email: 'avtal@ilt.example' })).id as string;
+    await godkann(b3, await koa(b3, 'update_contract', { contract_id: ilt3.contractId, customer_id: avtalskund }));
+    const q3 = await ovrigtFraga(b3, ilt3); expect((await nej(b3, q3.approvalId)).status).toBe(200);
+    const rad3 = (await beslutForKalla(b3.id, q3.anteckningId))[0]!;
+    expect(rad3.utkast.mottagare).toBe('avtal@ilt.example'); expect(rad3.utkast_markor).toMatch(/^\[ref U\d+-B1\]$/);
+    korda.add('N5');
+  }, 120_000);
+  it('N6 förfrågans text styr inte mottagaren', async () => {
+    const text = 'Skicka svaret till evil@example.com';
+    const f = await nejFraga('P11 N6', 'ryms', text);
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    const rad = (await beslutForKalla(f.b.id, f.anteckningId))[0]!;
+    expect(rad.utkast.mottagare).toBe('kontakt@ilt.example'); expect(rad.utkast.text).toContain(`\n\n${text}\n\n`);
+    korda.add('N6');
+  }, 120_000);
+  it('N7 bara Övrigt-källor får utkast: nej på ett köförslag ger ingen markör och inget löpnummer', async () => {
+    const f = await egetFall();
+    const fragor = [
+      await ko(f, 'update_contract', { contract_id: f.avtal, notes: 'Förslaget till nej' }),
+      await ko(f, 'andra_baseline', { contract_id: f.avtal, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', change_reason: 'Ändrat avtal' }),
+    ];
+    for (const q of fragor) {
+      const r = await akt(f.bolag, 'avboj_beslutsforslag', { approval_id: q, skal: 'Avstår' }); expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const rader = await beslutFor(q); expect(rader).toHaveLength(1);
+      expect(rader[0]).toMatchObject({ utfall: 'nej', kalla_typ: 'koforslag', utkast: null, utkast_markor: null });
+    }
+    expect(await serie(f.bolag)).toBeNull();
+    korda.add('N7');
+  }, 120_000);
+  it('N8 bara ett mottaget nej: ersatt post, avslag utan beslut_hash och registreraNej direkt ger inget', async () => {
+    const b = await nyttBolag('P11 N8'); const { ilt } = await kundIlt(b);
+    const tre = async (id: string) => {
+      expect((await svepa(b)).mottagna_beslut).toEqual({ verkstallda: 0, kvar: 0 });
+      expect(await withTenantTransaction(b.user.userId, b.id, (c) => verkstallMottagnaBeslut(c, b.id))).toEqual({ verkstallda: [], kvar: [] });
+      expect((await withTenantTransaction(b.user.userId, b.id, (c) => verkstallBeslut(c, b.id, id))).verkstalld).toBe(false);
+    };
+    // (a) en ersatt post
+    const { anteckningId: radA, approvalId: A } = await fragaUtanTimmar(b, ilt, 'ryms', '2A');
+    const k = await komplettera(b, A, 8); expect(k.status, JSON.stringify(k.body)).toBe(200);
+    await tre(A);
+    // (b) en planterad rejected utan beslut_hash, med fullt underlag
+    const radB = await anteckning(b, ilt.contractId);
+    const input = byggRymsindata({ contract_id: ilt.contractId, underlag: fixturunderlag({ anteckningId: radB, datum: await radDatum(radB), kod: '2A' }) });
+    const P = await planteraMedStatus(b, 'registrera_uppdragsbeslut', input, 'rejected');
+    await tre(P);
+    // (c) registreraNej direkt med posten i (b)
+    const direkt = await fel(withTenantTransaction(b.user.userId, b.id, (c) => registreraNej(c, b.id,
+      { userId: b.user.userId, actor: 'human', approvalId: P }, 'registrera_uppdragsbeslut', input, 'Nej')));
+    expect(direkt).toMatchObject({ status: 409, code: 'beslut_ej_mottaget' });
+    for (const rad of [radA, radB]) expect(await beslutForKalla(b.id, rad)).toEqual([]);
+    expect(await serie(b.id)).toBeNull();
+    korda.add('N8');
+  }, 120_000);
+  it('N9 upprepning skapar ingen ny rad och ingen ny markör', async () => {
+    const f = await nejFraga('P11 N9');
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    const fore = await beslutForKalla(f.b.id, f.anteckningId); expect(fore).toHaveLength(1);
+    const igen = await nej(f.b, f.q); expect(igen.status).toBe(409); expect(igen.body.error).toBe('not_pending');
+    const avslag = await rest(f.b, `approvals/${f.q}/reject`, { reason: 'Igen' }); expect(avslag.status).toBe(409); expect(avslag.body.error).toBe('not_pending');
+    for (let i = 0; i < 2; i++) expect((await svepa(f.b)).mottagna_beslut).toEqual({ verkstallda: 0, kvar: 0 });
+    expect((await withTenantTransaction(f.b.user.userId, f.b.id, (c) => verkstallBeslut(c, f.b.id, f.q))).verkstalld).toBe(false);
+    const input = await kopostInput(f.q);
+    const krock = await fel(withTenantTransaction(f.b.user.userId, f.b.id, (c) => registreraNej(c, f.b.id,
+      { userId: f.b.user.userId, actor: 'human', approvalId: f.q }, 'registrera_uppdragsbeslut', input, SKAL)));
+    expect(krock).toMatchObject({ code: '23505' });
+    expect(['uppdrag_beslut_en_per_kopost', 'uppdrag_beslut_en_per_kalla']).toContain(krock!.constraint);
+    const efter = await beslutForKalla(f.b.id, f.anteckningId);
+    expect(efter).toHaveLength(1);
+    expect(efter[0]).toMatchObject({ id: fore[0]!.id, utkast: fore[0]!.utkast, utkast_markor: fore[0]!.utkast_markor });
+    expect(await serie(f.b.id)).toBe(2);
+    korda.add('N9');
+  }, 120_000);
+  it('N10 två nej samma dag till samma mottagare får B1 och B2 och ämnen som bara skiljer sig i markören', async () => {
+    const b = await nyttBolag('P11 N10'); const { ilt } = await kundIlt(b);
+    const nummer = await projektnummer(ilt.projektId);
+    const f1 = await ovrigtFraga(b, ilt); const f2 = await ovrigtFraga(b, ilt);
+    expect((await nej(b, f1.approvalId)).status).toBe(200); expect((await nej(b, f2.approvalId)).status).toBe(200);
+    const r1 = (await beslutForKalla(b.id, f1.anteckningId))[0]!; const r2 = (await beslutForKalla(b.id, f2.anteckningId))[0]!;
+    expect(r1.utkast_markor).toBe(`[ref U${nummer}-B1]`); expect(r2.utkast_markor).toBe(`[ref U${nummer}-B2]`);
+    expect(await radDatum(f1.anteckningId)).toBe(await radDatum(f2.anteckningId));
+    expect(r1.utkast.mottagare).toBe(r2.utkast.mottagare);
+    expect(r1.utkast.amne).not.toBe(r2.utkast.amne);
+    expect(r1.utkast.amne.replace(r1.utkast_markor, '')).toBe(r2.utkast.amne.replace(r2.utkast_markor, ''));
+    korda.add('N10');
+  }, 120_000);
+  it('N11 raden kommer aldrig tillbaka som fråga efter nejet', async () => {
+    const f = await nejFraga('P11 N11');
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    expect(kandidater(await svepa(f.b))).not.toContain(f.anteckningId);
+    const s = await svepa(f.b, { ovrigt_forslag: [forslag(f.anteckningId)] });
+    expect(s.ovrigt.redan_koade).toEqual([f.anteckningId]); expect(s.ovrigt.koade).toEqual([]);
+    expect(kandidater(await svepa(f.b))).not.toContain(f.anteckningId);
+    expect(await undantagFor(f.b, f.anteckningId)).toEqual([]);
+    expect(await koposterForKalla(f.b.id, f.anteckningId)).toHaveLength(1);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId);
+    expect(rader).toHaveLength(1); expect(rader[0]!.utkast).not.toBeNull();
+    korda.add('N11');
+  }, 120_000);
+  it('N12 en omprövning är en ny rad, och det gamla nejet står kvar', async () => {
+    const f = await nejFraga('P11 N12');
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    const gammalKopost = await kopostFor(f.q); const gammalRad = await beslutFor(f.q);
+    const ny = await anteckning(f.b, f.ilt.contractId, FORFRAGAN);
+    const s = await svepa(f.b, { ovrigt_forslag: [forslag(ny)] });
+    const koad = (s.ovrigt.koade as { approval_id: string }[])[0]; expect(koad, JSON.stringify(s.ovrigt)).toBeDefined();
+    expect([...(await undantagFor(f.b, f.anteckningId)), ...(await undantagFor(f.b, ny))]).toEqual([koad!.approval_id]);
+    await godkann(f.b, koad!.approval_id);
+    expect(await beslutForKalla(f.b.id, ny)).toEqual([expect.objectContaining({ utfall: 'ja', approval_id: koad!.approval_id })]);
+    expect(await kopostFor(f.q)).toEqual(gammalKopost); expect(await beslutFor(f.q)).toEqual(gammalRad);
+    expect(kandidater(await svepa(f.b))).not.toContain(f.anteckningId);
+    korda.add('N12');
+  }, 120_000);
+  it('N13 en Övrigt-rad i ett annat avtal ger inget utkast, och nejet står kvar som mottaget', async () => {
+    const b = await nyttBolag('P11 N13'); const { ilt } = await kundIlt(b);
+    const annat = await nyttUppdrag(b, 'Annat uppdrag');
+    const rad = await anteckning(b, annat.contractId);
+    const q = await planteraMedStatus(b, 'registrera_uppdragsbeslut', byggRymsindata({ contract_id: ilt.contractId,
+      underlag: fixturunderlag({ anteckningId: rad, datum: await radDatum(rad), kod: '2A' }) }), 'rejected_hash');
+    expect((await kopostFor(q)).beslut_skal).toBe('Provets nej');
+    const logg = vi.spyOn(console, 'error');
+    try {
+      expect((await svepa(b)).mottagna_beslut.kvar).toBe(1);
+      expect(logg.mock.calls).toContainEqual(['[verkställighet] mottaget beslut ej verkställt — köpost', q, '', 'kalla_annat_avtal']);
+    } finally { logg.mockRestore(); }
+    expect(await beslutForKalla(b.id, rad)).toEqual([]); expect(await beslutFor(q)).toEqual([]);
+    expect(await serie(b.id)).toBeNull();
+    korda.add('N13');
+  }, 120_000);
+  it('N14 nej efter att uppdraget stängts skrivs med utkast och markör', async () => {
+    const f = await nejFraga('P11 N14');
+    const s = await rest(f.b, 'actions/set_project_status', { project_id: f.ilt.projektId, status: 'closed' }); expect(s.status, JSON.stringify(s.body)).toBe(200);
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    const rader = await beslutForKalla(f.b.id, f.anteckningId); expect(rader).toHaveLength(1);
+    expect(rader[0]).toMatchObject({ utfall: 'nej', utkast_markor: `[ref U${f.nummer}-B1]` }); expect(rader[0]!.utkast).not.toBeNull();
+    korda.add('N14');
+  }, 120_000);
+  it('kontrollvakt: alla fjorton nejfall kördes', () => expect([...korda].sort()).toEqual(
+    ['N1', 'N10', 'N11', 'N12', 'N13', 'N14', 'N2', 'N3', 'N4', 'N5', 'N6', 'N7', 'N8', 'N9']));
+});
+
+// Story 1.16: Lägets läsväg och panelen ”Beslut och utkast”. Fallen läser bara panelen,
+// raden och utkastblocket, aldrig hela sidan, och kräver att varje del finns innan något jämförs.
+const lagesida = (b: Bolag, ilt: Ilt) => `/app/c/${b.id}/projects/${ilt.projektId}/laget`;
+/** Utkastblocket för raden q på Läget; kastar när raden eller blocket saknas. */
+async function blockFor(b: Bolag, ilt: Ilt, q: string): Promise<{ rad: string; block: string }> {
+  const rad = beslutsradHtml(panel(await sida(b, lagesida(b, ilt))), q);
+  const block = utkastblockHtml(rad);
+  expect(block, 'utkastblocket saknas').not.toBeNull();
+  return { rad, block: block! };
+}
+const lankar = (block: string) => [...block.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]);
+const hrefFor = (tagg: string) => /\bhref="([^"]*)"/.exec(tagg)?.[1] ?? '';
+
+describe('P12 Läget och panelen Beslut och utkast', () => {
+  const korda = new Set<string>();
+  let delat: Promise<Awaited<ReturnType<typeof nejFraga>>> | null = null;
+  /** L1–L4 och L8 delar ett bolag med ett registrerat nej med utkast. */
+  const forsta = () => (delat ??= (async () => {
+    const f = await nejFraga('P12 L1');
+    expect((await nej(f.b, f.q)).status).toBe(200);
+    return f;
+  })());
+  it('L1 las_uppdragslage bär utkastet och markören, lika för människan och agenten', async () => {
+    const f = await forsta();
+    const rad = (await beslutForKalla(f.b.id, f.anteckningId))[0]!;
+    expect(rad.utkast).not.toBeNull();
+    for (const headers of [f.b.auth, f.b.agent]) {
+      const r = (await lage(f.b, f.ilt, headers)).beslut.registrerade.find((x) => x.approval_id === f.q);
+      expect(r).toMatchObject({ utkast: rad.utkast, utkast_markor: rad.utkast_markor, utfall: 'nej', skal: SKAL,
+        kalla: { typ: 'anteckning', id: f.anteckningId }, underlag: rad.underlag, handling: null });
+    }
+    korda.add('L1');
+  }, 120_000);
+  it('L2 panelen heter Beslut och utkast och nej-raden har ett utkastblock', async () => {
+    const f = await forsta();
+    const s = await sida(f.b, lagesida(f.b, f.ilt));
+    expect(s).toContain('<h2 id="kort-beslut">Beslut och utkast</h2>'); expect(s).toContain('id="beslut"');
+    const rad = beslutsradHtml(panel(s), f.q);
+    const b = (await beslutForKalla(f.b.id, f.anteckningId))[0]!;
+    expect(rad).toContain('>Nej<'); expect(rad).toContain(esc(b.underlag.forslagstext)); expect(rad).toContain(esc(SKAL)); expect(rad).toContain('Övrigt-raden');
+    expect(rad.match(/<div\b[^>]*\bdata-utkast\b/g) ?? []).toHaveLength(1);
+    expect(utkastblockHtml(rad)).toMatch(/^<div\b[^>]*\bdata-traffyta\b/);
+    korda.add('L2');
+  }, 120_000);
+  it('L3 blockets text är exakt de fasta meningarna med utkastets värden', async () => {
+    const f = await forsta();
+    const b = (await beslutForKalla(f.b.id, f.anteckningId))[0]!;
+    const { block } = await blockFor(f.b, f.ilt, f.q);
+    expect(blocktext(block)).toBe(vantatBlocktext(b.utkast, b.utkast_markor));
+    korda.add('L3');
+  }, 120_000);
+  it('L4 skickhandlingen är exakt en mailto-länk med mottagare, ämne och text', async () => {
+    const f = await forsta();
+    const b = (await beslutForKalla(f.b.id, f.anteckningId))[0]!;
+    const { block } = await blockFor(f.b, f.ilt, f.q);
+    const a = lankar(block); expect(a).toHaveLength(1);
+    const href = hrefFor(a[0]!); expect(href.startsWith('mailto:')).toBe(true);
+    expect(mailtoDelar(href)).toEqual({ till: b.utkast.mottagare, subject: b.utkast.amne, body: b.utkast.text.replace(/\n/g, '\r\n') });
+    expect(a[0]).toContain('target="_blank"'); expect(a[0]).toContain('rel="noopener"');
+    expect(block).not.toMatch(/<form|<button|<script/);
+    korda.add('L4');
+  }, 120_000);
+  it('L5 mottagaren saknas: blocket säger det och länken har ingen adress', async () => {
+    const b = await nyttBolag('P12 L5'); const ilt = await iltUppdrag(b);
+    const q = await ovrigtFraga(b, ilt); expect((await nej(b, q.approvalId)).status).toBe(200);
+    const { block } = await blockFor(b, ilt, q.approvalId);
+    expect(blocktext(block)).toContain('Till: saknas — kundkortet har ingen giltig e-postadress, så du fyller i mottagaren i din e-post');
+    expect(hrefFor(lankar(block)[0] ?? '').startsWith('mailto:?subject=')).toBe(true);
+    korda.add('L5');
+  }, 120_000);
+  it('L6 utkastet syns först när nej-raden finns', async () => {
+    const f = await nejFraga('P12 L6');
+    const logg = vi.spyOn(console, 'error');
+    try {
+      await planteratFel(async () => {
+        expect((await nej(f.b, f.q)).status).toBe(200);
+        const rad = beslutsradHtml(panel(await sida(f.b, lagesida(f.b, f.ilt))), f.q);
+        expect(rad).toContain('Ditt nej är mottaget och utförs utan att du behöver svara igen.');
+        expect(rad).not.toContain('data-utkast'); expect(rad).not.toContain('mailto:');
+      }, f.q);
+    } finally { logg.mockRestore(); }
+    await svepa(f.b);
+    const { block } = await blockFor(f.b, f.ilt, f.q);
+    expect(block).toContain('mailto:');
+    korda.add('L6');
+  }, 120_000);
+  it('L7 två utkast har var sitt block med sin egen markör i länkens ämne', async () => {
+    const b = await nyttBolag('P12 L7'); const { ilt } = await kundIlt(b);
+    const f1 = await ovrigtFraga(b, ilt); const f2 = await ovrigtFraga(b, ilt);
+    expect((await nej(b, f1.approvalId)).status).toBe(200); expect((await nej(b, f2.approvalId)).status).toBe(200);
+    expect(panel(await sida(b, lagesida(b, ilt))).match(/<div\b[^>]*\bdata-utkast\b/g) ?? []).toHaveLength(2);
+    const amnen = new Set<string>();
+    for (const fr of [f1, f2]) {
+      const r = (await beslutForKalla(b.id, fr.anteckningId))[0]!;
+      const { block } = await blockFor(b, ilt, fr.approvalId);
+      const subject = mailtoDelar(hrefFor(lankar(block)[0] ?? '')).subject;
+      expect(subject).toBe(r.utkast.amne); expect(subject).toContain(r.utkast_markor);
+      amnen.add(subject!);
+    }
+    expect(amnen.size).toBe(2);
+    korda.add('L7');
+  }, 120_000);
+  it('L8 inget skickat-läge: blocket är detsamma i två renderingar', async () => {
+    const f = await forsta();
+    const forstaBlock = (await blockFor(f.b, f.ilt, f.q)).block;
+    const andraBlock = (await blockFor(f.b, f.ilt, f.q)).block;
+    expect(forstaBlock.length).toBeGreaterThan(0);
+    expect(andraBlock).toBe(forstaBlock);
+    korda.add('L8');
+  }, 120_000);
+  it('L9 ingen annan rad får block: ett ja och ett nej på ett köförslag', async () => {
+    const b = await nyttBolag('P12 L9'); const { ilt } = await kundIlt(b);
+    const ja = await ovrigtFraga(b, ilt); await godkann(b, ja.approvalId);
+    const q = await koa(b, 'update_contract', { contract_id: ilt.contractId, notes: 'Förslaget till nej' });
+    expect((await nej(b, q)).status).toBe(200);
+    const p = panel(await sida(b, lagesida(b, ilt)));
+    for (const id of [ja.approvalId, q]) expect(beslutsradHtml(p, id)).not.toContain('data-utkast');
+    expect(p).not.toContain('mailto:');
+    expect((await withAdmin((c) => c.query('SELECT count(*)::int AS n FROM uppdrag_beslut WHERE company_id=$1 AND utkast IS NOT NULL', [b.id]))).rows[0].n).toBe(0);
+    korda.add('L9');
+  }, 120_000);
+  it('L10 grannbolaget får 404 för sidan och för las_uppdragslage', async () => {
+    const f = await forsta();
+    const granne = await nyttBolag('P12 L10 granne');
+    expect((await granne.ua.get(lagesida(f.b, f.ilt))).status).toBe(404);
+    expect((await rest(f.b, 'actions/las_uppdragslage', { project_id: f.ilt.projektId }, granne.auth)).status).toBe(404);
+    korda.add('L10');
+  }, 120_000);
+  it('kontrollvakt: alla tio panelfall kördes', () => expect([...korda].sort()).toEqual(
+    ['L1', 'L10', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9']));
 });
