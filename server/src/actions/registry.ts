@@ -46,7 +46,8 @@ import { begarNyBedomning, sattBedomning, BEDOMNINGSLAGEN } from '../services/up
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
-import { registreraJa, registreraNej, avbojForslag } from '../services/uppdragBeslut.js';
+import { registreraJa, registreraNej, avbojForslag, kompletteraForslag } from '../services/uppdragBeslut.js';
+import { TimmarSchema } from '../lib/beslutsunderlag.js';
 import {
   AndraBaselineSchema, AvtalsdelFalt, DatePrecisionSchema, OrsakSchema, RegistreraUppdragsbeslutSchema,
 } from '../lib/avtalsdelsfalt.js';
@@ -2125,6 +2126,17 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       const { rejectApproval } = await import('./execute.js');
       return avbojForslag(ctx.client, ctx.companyId, ctx, i, rejectApproval);
     },
+  }),
+  def({
+    name: 'komplettera_beslutsforslag',
+    title: 'Fyll i timmar i en fråga ur Övrigt och få förslaget omräknat',
+    // `write` + `kravManniska` (architecture.md, åtgärdstabellen): David fyller i
+    // timmar i sin egen fråga. Kompletteringen är varken ja eller nej. Den gamla
+    // köposten ersätts och är inget mottaget beslut (B-2, IR-13, Story 1.15).
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z.object({ approval_id: UuidSchema, timmar: TimmarSchema }).strict(),
+    handler: (ctx, i) => kompletteraForslag(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan, överlämning #268: anteckningsloggen under Övrigt på Läget.

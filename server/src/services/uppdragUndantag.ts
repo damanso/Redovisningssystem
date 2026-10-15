@@ -11,8 +11,9 @@ import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
-import { DAVIDS_ANTECKNING, tidtext, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
+import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
+import { getContractUsage, type Delforbrukning } from './contracts.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
 
@@ -56,6 +57,29 @@ export const KOPOST_FOR_ANTECKNING = `q.company_id = a.company_id AND q.input->'
 export const BESLUT_FOR_ANTECKNING = `b.company_id = a.company_id AND b.kalla_typ = 'anteckning' AND b.kalla_id = a.id AND b.contract_id = a.contract_id`;
 /** Samma gräns som Hermes svepfärskhet; deklarerad bara här. */
 export const TACKNING_MAX_ALDER_MIN = 60;
+
+/**
+ * Story 1.15: förslagsstegets två villkor för en upptagen kod (1.14:s steg 6) på
+ * en plats, så att svepets förslagssteg, kompletteringen och läsvägen prövar samma
+ * sak. Koden är upptagen när dess senaste lagrade version saknas eller inte är den
+ * gällande, alltså när en version börjar senare, eller när en baselineändring för
+ * koden väntar eller är mottagen. `ersatter` är köposten som inte räknas, så att en
+ * fråga aldrig gör sin egen kod upptagen; null för svepet. Läser bara.
+ */
+export async function avtalsdelUpptagen(
+  client: PoolClient, companyId: string, contractId: string, kod: string, gallandePartId: string, ersatter: string | null,
+): Promise<boolean> {
+  const r = await client.query<{ upptagen: boolean }>(
+    `SELECT (SELECT cp.id FROM contract_parts cp WHERE cp.company_id = $1 AND cp.contract_id = $2::uuid AND cp.code = $3::text
+              ORDER BY cp.valid_from DESC, cp.id DESC LIMIT 1) IS DISTINCT FROM $4::uuid
+         OR EXISTS (SELECT 1 FROM action_approvals q WHERE q.company_id = $1 AND lower(q.input->>'contract_id') = $2::uuid::text
+              AND (q.status = 'pending' OR (q.status = 'approved' AND q.beslut_hash IS NOT NULL))
+              AND (q.action = 'satt_baseline' OR (q.action = ANY($6::text[]) AND q.input->>'code' = $3::text))
+              AND ($5::uuid IS NULL OR q.id <> $5::uuid)) AS upptagen`,
+    [companyId, contractId, kod, gallandePartId, ersatter, ['andra_baseline', 'upsert_contract_part']],
+  );
+  return r.rows[0]!.upptagen;
+}
 
 export interface Uppdragsref {
   project_id: string; number: number; name: string;
@@ -104,7 +128,16 @@ export interface Undantagspost {
 /** Övrigt-raden som posten gäller, läst ur raden och aldrig kopierad in i underlaget. */
 export interface Forfragan { id: string; text: string; datum: string; utanfor_avtal: boolean }
 /** Förfrågan och det frysta underlaget med beräkningen (Story 1.14). */
-export interface Ovrigtpost { forfragan: Lasvarde<Forfragan>; underlag: Lasvarde<OvrigtUnderlag> }
+export interface Ovrigtpost {
+  forfragan: Lasvarde<Forfragan>;
+  underlag: Lasvarde<OvrigtUnderlag>;
+  /**
+   * Story 1.15: det frysta förslaget jämfört med aktuella källor. Sätts av
+   * `lasUndantag`, aldrig av `koburnaPoster`, så att verkställighetens frysta
+   * underlag aldrig bär det.
+   */
+  andrat?: Lasvarde<Andringsjamforelse & { upptagen: boolean }>;
+}
 export interface Kalltackning { lage: 'last' | 'fel'; saknas: string[] }
 export interface Tackningspost {
   contract_id: string; contract_name: string; project_id: string; project_name: string;
@@ -761,6 +794,47 @@ async function bedomningsposter(client: PoolClient, companyId: string, lastNar: 
   return { poster, hoppade };
 }
 
+/**
+ * Story 1.15, ”ändrat sedan förslaget” (B-3, architecture.md rad 505): varje
+ * Övrigt-posts beräkning räknas om ur aktuella källor, avtalets taxa och den
+ * valda kodens aktiva del, och jämförs med den frysta. Delen väljs med samma
+ * predikat som `provaOvrigtForslag` (kod och `active`), och en upptagen kod
+ * prövas med samma `avtalsdelUpptagen`, med postens eget id undantaget. Avtalen
+ * läses en gång var; `avtalsdelUpptagen` en gång per tilläggspost, eftersom
+ * villkoret ska vara exakt svepets och kompletteringens. Läser bara. Ger en ny
+ * lista i samma ordning, och övriga poster är oförändrade.
+ */
+async function markeraAndrat(client: PoolClient, companyId: string, poster: Undantagspost[], lastNar: string): Promise<Undantagspost[]> {
+  const fryst = (p: Undantagspost): OvrigtUnderlag | null => {
+    const u = p.ovrigt?.underlag;
+    return u?.lage === 'last' ? u.varde : null;
+  };
+  const avtalIdn = [...new Set(poster
+    .filter((p) => fryst(p) !== null)
+    .map((p) => p.uppdrag.varde?.contract_id)
+    .filter((id): id is string => typeof id === 'string'))];
+  const avtal = new Map<string, { hourly_rate_ore: number | null; parts: Delforbrukning[] }>();
+  for (const id of avtalIdn) {
+    avtal.set(id, await getContractUsage(client, companyId, id) as unknown as { hourly_rate_ore: number | null; parts: Delforbrukning[] });
+  }
+  const markerade: Undantagspost[] = [];
+  for (const p of poster) {
+    const u = fryst(p);
+    const avtalId = p.uppdrag.varde?.contract_id ?? null;
+    const usage = avtalId === null ? undefined : avtal.get(avtalId);
+    if (!p.ovrigt || u === null || avtalId === null || !usage) { markerade.push(p); continue; }
+    const del = usage.parts.find((x) => x.code === u.avtalsdel_kod && x.active) ?? null;
+    const j = andratSedanForslaget(u, { taxa_ore: usage.hourly_rate_ore ?? null, del });
+    const upptagen = j.ok && del !== null && u.alternativ === 'tillagg'
+      ? await avtalsdelUpptagen(client, companyId, avtalId, u.avtalsdel_kod, del.part_id, p.id)
+      : false;
+    markerade.push({ ...p, ovrigt: { ...p.ovrigt,
+      andrat: j.ok ? last({ delen_finns: j.delen_finns, upptagen, andringar: j.andringar }, KALLA_REDOVISNING, lastNar)
+        : olast(KALLA_REDOVISNING, lastNar) } });
+  }
+  return markerade;
+}
+
 /** En läsväg för REST, MCP och den kommande vyn, utan egen SQL i transporten. */
 export async function lasUndantag(client: PoolClient, companyId: string): Promise<Undantag> {
   const nu = (await client.query<{ nu: Date }>('SELECT now() AS nu')).rows[0]!.nu;
@@ -772,6 +846,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   );
   const koposter = await listaVantandeKoposter(client, companyId, UNDANTAG_ATGARDER);
   const koburna = await koburnaPoster(client, companyId, koposter, lastNar);
+  const markerade = await markeraAndrat(client, companyId, koburna.poster, lastNar);
   const signaler = await signalposter(client, companyId, lastNar);
   const bedomningar = await bedomningsposter(client, companyId, lastNar);
   const rader = await client.query<{ contract_id: string; varde: unknown; last_nar: Date }>(
@@ -781,7 +856,7 @@ export async function lasUndantag(client: PoolClient, companyId: string): Promis
   const per = new Map(rader.rows.map((r) => [r.contract_id, r]));
   const tackning = oppna.rows.flatMap((a) => MANDATKALLOR.map((k) => tackningspost(a, k, per.get(a.contract_id), nu)));
   // SQL-ordningen bevaras. Date tappar mikrosekunder och får inte sortera om.
-  const poster = [...koburna.poster, ...signaler.poster, ...bedomningar.poster];
+  const poster = [...markerade, ...signaler.poster, ...bedomningar.poster];
   return { ...bedomUndantag(poster, tackning), poster, tackning,
     hoppade: [...koburna.hoppade, ...signaler.hoppade, ...bedomningar.hoppade], last_nar: lastNar };
 }

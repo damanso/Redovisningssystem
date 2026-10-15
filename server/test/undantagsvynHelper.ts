@@ -9,13 +9,14 @@
 // fall som använder den.
 import assert from 'node:assert/strict';
 import * as vy from '../src/http/view/undantagsvyn.js';
-import { html } from '../src/http/view/html.js';
+import { amount, html } from '../src/http/view/html.js';
 import { KALLA_REDOVISNING, last, olast, saknas } from '../src/lib/lasvarde.js';
 import {
   MANDATKALLOR, POSTSLAG, beskrivOvrigtBeslut,
   type Kallreferens, type Kalltackning, type Postslag, type Tackningspost, type Undantag, type Undantagspost,
   type Uppdragsref,
 } from '../src/services/uppdragUndantag.js';
+import type { Andring } from '../src/lib/beslutsunderlag.js';
 import { ANTECKNING, fixturunderlag, mellanslag, type Fixtur } from './ovrigtHelper.js';
 
 // --- Fixturerna ---------------------------------------------------------------
@@ -507,6 +508,132 @@ export function provaOvrigtSkalen() {
   assert.ok(utanEget.includes('Efter arbetet: kan inte räknas, eftersom 1A saknar eget tak'), utanEget);
   const utanTimmar = falt(enPost(ovrigtPost({ alternativ: 'tillagg', kod: '2B', timmar: null })), 'aterstaende');
   assert.ok(utanTimmar.includes('Efter arbetet: kan inte räknas, eftersom timmarna saknas'), utanTimmar);
+}
+
+// ---------------------------------------------------------------------------
+// R8: kompletteringens formulär och ”Ändrat sedan förslaget” (Story 1.15, Task 5)
+// ---------------------------------------------------------------------------
+
+type Andratvarde = NonNullable<NonNullable<Undantagspost['ovrigt']>['andrat']>;
+/** Läsvägens jämförelse på posten, med alla tre nycklarna och `upptagen: false` om inget annat sägs. */
+function medAndrat(p: Undantagspost, andrat: Andratvarde): Undantagspost {
+  return { ...p, ovrigt: { ...p.ovrigt!, andrat } };
+}
+const lastAndrat = (over: { delen_finns?: boolean; upptagen?: boolean; andringar?: Andring[] } = {}): Andratvarde =>
+  last({ delen_finns: true, upptagen: false, andringar: [], ...over }, KALLA_REDOVISNING, TID);
+const TAXA_OCH_BELOPP: Andring[] = [
+  { falt: 'taxa_ore', forslag: 100000, nu: 120000 }, { falt: 'belopp_ore', forslag: 800000, nu: 960000 },
+];
+const KOMPLETTERA = 'name="handling" value="komplettera"';
+const RAKNA_OM_MENING = 'Vill du ha de nya värdena räknar du om förslaget med timmarna nedan.';
+const UPPTAGEN_MENING = 'Förslaget kan inte räknas om just nu. Avtalsdelen har en annan baselineändring som väntar eller en version som börjar senare. Svara på frågan som den står, eller avgör den andra ändringen först.';
+
+/** Ja- och Nej-formulären står kvar, en gång var. */
+function jaOchNej(a: string): void {
+  const f = formular(a);
+  assert.equal(f.filter((x) => x.includes('name="handling" value="ja"')).length, 1, a);
+  assert.equal(f.filter((x) => x.includes('name="handling" value="nej"')).length, 1, a);
+}
+/** Timfältet i kompletteringens formulär. */
+function timfaltet(a: string): string {
+  const m = /<input type="number" name="timmar"[^>]*>/.exec(a);
+  assert.ok(m, `timfältet saknas i ${a}`);
+  return m[0];
+}
+
+// R8 (a): Övrigt-posten har ett tredje formulär med timmarna och knappen Räkna om.
+export function provaKompletteringsformular() {
+  const p = ovrigtPost();
+  const a = enPost(p);
+  const f = formular(a);
+  assert.equal(f.length, 3, `${f.length} formulär`);
+  const k = f.find((x) => x.includes(KOMPLETTERA));
+  assert.ok(k, a);
+  assert.ok(k.includes(`method="post" action="/app/c/${C}/uppdrag"`), k);
+  assert.ok(k.includes(`name="approval_id" value="${p.id}"`), k);
+  const input = timfaltet(k);
+  for (const attr of ['min="0.01"', 'step="0.01"', 'required']) assert.ok(input.includes(attr), `${attr} saknas i ${input}`);
+  assert.ok(k.includes('>Räkna om</button>'), k);
+  jaOchNej(a);
+}
+
+// R8 (b): med timmar är fältet förifyllt, med raka citattecken.
+export function provaKompletteringForifylld() {
+  const input = timfaltet(enPost(ovrigtPost({ timmar: 8 })));
+  assert.ok(input.includes('value="8"'), input);
+  assert.ok(!input.includes('&quot;'), input);
+}
+
+// R8 (c): utan timmar är fältet tomt.
+export function provaKompletteringTom() {
+  const input = timfaltet(enPost(ovrigtPost({ timmar: null })));
+  assert.ok(!/\bvalue=/.test(input), input);
+}
+
+// R8 (d): varje approval_id i artikeln är postens id, och bara Övrigt-posten har formuläret.
+export function provaKompletteringensId() {
+  const p = ovrigtPost();
+  const a = enPost(p);
+  const idn = [...a.matchAll(/name="approval_id" value="([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(idn.length >= 2, a);
+  for (const id of idn) assert.equal(id, p.id);
+  assert.ok(!enPost(post('baselineandring')).includes(KOMPLETTERA), 'en baselinepost har kompletteringen');
+}
+
+// R8 (e): ändringar visas med båda värdena och meningen om att ja godkänner det som står.
+export function provaAndratMedAndringar() {
+  const a = enPost(medAndrat(ovrigtPost(), lastAndrat({ andringar: TAXA_OCH_BELOPP })));
+  assert.ok(a.includes('Ändrat sedan förslaget'), a);
+  const v = falt(a, 'andrat');
+  const rader = [...v.matchAll(/<li>([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+  assert.deepEqual(rader, [
+    `Timpris: ${amount(100000).value}/h i förslaget, nu ${amount(120000).value}/h`,
+    `Belopp: ${amount(800000).value} i förslaget, nu ${amount(960000).value}`,
+  ]);
+  assert.ok(v.includes(`Ja godkänner förslaget som det står. ${RAKNA_OM_MENING}`), v);
+}
+
+// R8 (f): en jämförelse utan ändringar ger inget fält.
+export function provaAndratUtanAndringar() {
+  assert.ok(!enPost(medAndrat(ovrigtPost(), lastAndrat())).includes('data-falt="andrat"'));
+}
+
+// R8 (g): en del som saknas sägs, och formuläret som bara kan ge 409 visas inte.
+export function provaAndratDelenSaknas() {
+  const a = enPost(medAndrat(ovrigtPost(), lastAndrat({ delen_finns: false })));
+  const v = falt(a, 'andrat');
+  assert.ok(v.includes('Avtalsdelen 2A finns inte längre bland avtalets aktiva delar.'), v);
+  assert.ok(v.includes('Förslaget kan inte räknas om, eftersom avtalsdelen saknas.'), v);
+  assert.ok(!a.includes(KOMPLETTERA) && !a.includes('name="timmar"'), a);
+  jaOchNej(a);
+}
+
+// R8 (h): en jämförelse som inte kunde göras sägs, och formuläret står kvar.
+export function provaAndratOlast() {
+  const a = enPost(medAndrat(ovrigtPost(), olast(KALLA_REDOVISNING, TID)));
+  assert.ok(falt(a, 'andrat').includes('Beräkningen kunde inte räknas om ur aktuella källor.'), a);
+  assert.ok(a.includes(KOMPLETTERA), a);
+}
+
+// R8 (i): ett överskridet utrymme sägs med ord, och postens sju fält står en gång var.
+export function provaAndratOverskridet() {
+  const a = enPost(medAndrat(ovrigtPost(), lastAndrat({ andringar: [{ falt: 'kvar_efter_minuter', forslag: 840, nu: -1080 }] })));
+  assert.ok(falt(a, 'andrat').includes('överskridet med 18 h'), falt(a, 'andrat'));
+  assert.ok(!/%/.test(text(a)), 'en procentsats i posten');
+  for (const namn of FALT) assert.equal(a.split(`data-falt="${namn}"`).length - 1, 1, `${namn} står inte exakt en gång`);
+}
+
+// R8 (j): en upptagen kod ger meningen i formulärets ställe; Ja och Nej står kvar.
+export function provaAndratUpptagen() {
+  const tillagg = ovrigtPost({ alternativ: 'tillagg', kod: '2B' });
+  const a = enPost(medAndrat(tillagg, lastAndrat({ upptagen: true })));
+  assert.ok(a.includes(UPPTAGEN_MENING), a);
+  assert.ok(!a.includes(KOMPLETTERA) && !a.includes('name="timmar"') && !a.includes('data-falt="andrat"'), a);
+  jaOchNej(a);
+  const medTaxa = enPost(medAndrat(tillagg, lastAndrat({ upptagen: true, andringar: [TAXA_OCH_BELOPP[0]!] })));
+  const v = falt(medTaxa, 'andrat');
+  assert.ok(v.includes('Ja godkänner förslaget som det står.</p>'), v);
+  assert.ok(!v.includes(RAKNA_OM_MENING), v);
 }
 
 // R6 (c): ett oläst uppdrag eller ett avtal som saknas ger ingen knapp — bara texten.

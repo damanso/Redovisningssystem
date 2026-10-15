@@ -317,3 +317,71 @@ export function byggTillaggsindata(i: {
 export function byggRymsindata(i: { contract_id: string; underlag: OvrigtUnderlag }) {
   return { contract_id: i.contract_id, kalla: { typ: 'anteckning' as const, id: i.underlag.anteckning_id }, beslutsunderlag: i.underlag };
 }
+
+// Story 1.15 (B-3, FR-41 punkt 2): avtalsdelens fält i Övrigt-underlaget och
+// jämförelsen mellan det frysta förslaget och aktuella källor. Svepet,
+// kompletteringen och läsvägen mappar en avtalsdel här och bara här, så att en
+// skillnad i ”ändrat sedan förslaget” aldrig kommer av två olika mappningar.
+
+/**
+ * Den del av `Delforbrukning` (services/contracts.ts) som Övrigt-reglerna läser.
+ * Typen är strukturell, så att lib/ aldrig importerar ur services/, och en
+ * `Delforbrukning` går in utan omvandling.
+ */
+export interface Delforbrukningsdata {
+  part_id: string;
+  code: string;
+  name: string;
+  active: boolean;
+  billable_minutes: number;
+  cap_hours: number | null;
+  cap_status: 'bekraftat' | 'vet_ej';
+  versions: ReadonlyArray<{ id: string; cap_hours: number | null }>;
+}
+
+/** En avtalsdel som underlagets del: taket i minuter, förbrukningen och bekräftelsen. */
+export function delunderlag(p: Delforbrukningsdata) {
+  return { kod: p.code, namn: p.name, tak_minuter: p.cap_hours === null ? null : Math.round(p.cap_hours * 60),
+    forbrukade_minuter: p.billable_minutes, tak_bekraftat: p.cap_status === 'bekraftat', aktiv: p.active };
+}
+
+/** Den gällande versionens eget tak i timmar, eller null när versionen saknar ett. */
+export function egetTakTimmar(p: Delforbrukningsdata): number | null {
+  return p.versions.find((v) => v.id === p.part_id)?.cap_hours ?? null;
+}
+
+/** Beräkningens sju tal, i visningens ordning. */
+export const ANDRINGSFALT = ['taxa_ore', 'tak_minuter', 'forbrukade_minuter', 'belopp_ore', 'nytt_tak_minuter', 'kvar_fore_minuter', 'kvar_efter_minuter'] as const;
+export type Andringsfalt = (typeof ANDRINGSFALT)[number];
+export interface Andring { falt: Andringsfalt; forslag: number | null; nu: number | null }
+export interface Andringsjamforelse { delen_finns: boolean; andringar: Andring[] }
+
+/**
+ * Det frysta underlaget jämfört med aktuella källor: avtalets taxa och den valda
+ * kodens aktiva del. Räknar med de frysta timmarna och det frysta alternativet,
+ * ändrar aldrig underlaget och ersätter aldrig null med 0. En ändring står bara
+ * när värdena skiljer sig. Kastar aldrig: hela kroppen står i en `try`.
+ */
+export function andratSedanForslaget(
+  u: OvrigtUnderlag, aktuellt: { taxa_ore: number | null; del: Delforbrukningsdata | null },
+): ({ ok: true } & Andringsjamforelse) | { ok: false } {
+  try {
+    if (aktuellt.del === null) {
+      return { ok: true, delen_finns: false,
+        andringar: u.taxa_ore !== aktuellt.taxa_ore ? [{ falt: 'taxa_ore', forslag: u.taxa_ore, nu: aktuellt.taxa_ore }] : [] };
+    }
+    const d = delunderlag(aktuellt.del);
+    const eget = egetTakTimmar(aktuellt.del);
+    // Samma prövning som byggOvrigtUnderlag gör före beraknaOvrigt.
+    if (u.timmar !== null && aktuellt.taxa_ore !== null && !Number.isSafeInteger(Math.round(u.timmar * 100) * aktuellt.taxa_ore)) return { ok: false };
+    const b = beraknaOvrigt({ alternativ: u.alternativ, timmar: u.timmar, taxa_ore: aktuellt.taxa_ore,
+      tak_minuter: d.tak_minuter, eget_tak_timmar: eget, forbrukade_minuter: d.forbrukade_minuter });
+    const nu: Record<Andringsfalt, number | null> = { taxa_ore: aktuellt.taxa_ore, tak_minuter: d.tak_minuter,
+      forbrukade_minuter: d.forbrukade_minuter, belopp_ore: b.belopp_ore, nytt_tak_minuter: b.nytt_tak_minuter,
+      kvar_fore_minuter: b.kvar_fore_minuter, kvar_efter_minuter: b.kvar_efter_minuter };
+    const andringar = ANDRINGSFALT.filter((f) => u[f] !== nu[f]).map((f): Andring => ({ falt: f, forslag: u[f], nu: nu[f] }));
+    return { ok: true, delen_finns: true, andringar };
+  } catch {
+    return { ok: false };
+  }
+}

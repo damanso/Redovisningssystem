@@ -17,6 +17,8 @@
 //    ett läge — och utfallet läses ur databasen. Samma POST igen ändrar inget,
 //    REST ger 409 med koden, och agentens token ger 403 (B (6)).
 //  * **De tre lägena är likvärdiga** i storlek och plats, smalt och brett (B (7)).
+//  * **Kompletteringen** (Story 1.15): timmarna fylls i och Räkna om leder till
+//    ersättarens post, utan sidledsrullning och med 44 px på knappen (B (11)).
 //
 // Formen följer `webbmeny.test.ts`: `app.listen(0)`, inloggning genom
 // formuläret och `chromium.launch()` i `beforeAll`. Bolagen, posterna och
@@ -32,6 +34,7 @@ import {
   uppdragsdestination,
 } from './undantagsvynRigg.js';
 import { beslutsraderFor, delversioner, iltUppdrag, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
+import { ersattning, fragaUtanTimmar, koposterForKalla } from './kompletteringRigg.js';
 
 const MOBIL = { viewport: { width: 390, height: 844 }, javaScriptEnabled: false, hasTouch: true, isMobile: true };
 
@@ -235,6 +238,7 @@ describe('B (6) varje val i telefonen', () => {
   let ilt: Ilt;
   let ovrigtTillagg: { anteckningId: string; approvalId: string };
   let ovrigtRyms: { anteckningId: string; approvalId: string };
+  let ovrigtUtanTimmar: { anteckningId: string; approvalId: string };
 
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
@@ -247,6 +251,8 @@ describe('B (6) varje val i telefonen', () => {
     ilt = await iltUppdrag(val);
     ovrigtTillagg = await ovrigtFraga(val, ilt, { alternativ: 'tillagg', avtalsdel_kod: '2B' });
     ovrigtRyms = await ovrigtFraga(val, ilt);
+    // Story 1.15: en fråga utan timmar, som B (11) kompletterar.
+    ovrigtUtanTimmar = await fragaUtanTimmar(val, ilt, 'ryms', '1A');
   }, 180_000);
 
   /** Postens dolda fält, läst ur den renderade sidan — samma data som formuläret skickar. */
@@ -399,6 +405,40 @@ describe('B (6) varje val i telefonen', () => {
         },
         restVag: 'actions/avboj_beslutsforslag', restKropp: { approval_id: id, skal }, restKod: 'not_pending',
         agentKod: 'human_required' });
+    } finally {
+      await kontext.close();
+    }
+  }, 120_000);
+
+  it('(11) Räkna om på en Övrigt-fråga utan timmar', async () => {
+    const { kontext, page } = await mobil(val);
+    const A = ovrigtUtanTimmar.approvalId;
+    try {
+      await page.goto(vyn(val));
+      await ingenSidledsrullning(page, 'vyn före Räkna om');
+      await page.fill(`#post-${A} input[name="timmar"]`, '8');
+      await Promise.all([page.waitForNavigation(), page.locator(`#post-${A} button`, { hasText: 'Räkna om' }).click()]);
+      const B = (await ersattning(A)).ersatt_av as string;
+      expect(B, 'ersättaren saknas').toBeTruthy();
+      expect(page.url()).toBe(`${bas}/app/c/${val.id}/uppdrag#post-${B}`);
+      await ingenSidledsrullning(page, 'vyn efter Räkna om');
+      expect(await page.locator(`#post-${A}`).count(), `posten ${A} står kvar`).toBe(0);
+      expect(await page.locator(`#post-${B}`).count()).toBe(1);
+      const ruta = await page.locator(`#post-${B} button`, { hasText: 'Räkna om' }).boundingBox();
+      expect(ruta, 'Räkna om syns inte i ersättaren').not.toBeNull();
+      expect(ruta!.height).toBeGreaterThanOrEqual(44);
+
+      const fore = await koposterForKalla(val.id, ovrigtUtanTimmar.anteckningId);
+      const igen = await kontext.request.post(vyn(val), { form: { handling: 'komplettera', approval_id: A, timmar: '8' }, maxRedirects: 0 });
+      expect(igen.status(), 'upprepat Räkna om').toBe(302);
+      expect(await koposterForKalla(val.id, ovrigtUtanTimmar.anteckningId)).toEqual(fore);
+
+      const r = await rest(val, 'actions/komplettera_beslutsforslag', { approval_id: A, timmar: 8 });
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error).toBe('not_pending');
+      const a = await rest(val, 'actions/komplettera_beslutsforslag', { approval_id: A, timmar: 8 }, val.agent);
+      expect(a.status, JSON.stringify(a.body)).toBe(403);
+      expect(a.body.error).toBe('human_required');
     } finally {
       await kontext.close();
     }

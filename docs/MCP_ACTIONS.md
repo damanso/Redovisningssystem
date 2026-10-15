@@ -29,8 +29,8 @@ härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas
 |---|---|
 | lista verktyg (`tools/list`) | `GET /api/companies/:companyId/actions` (manifest) |
 | anropa verktyg (`tools/call`) | `POST /api/companies/:companyId/actions/:action` |
-| godkännandekö | `GET /api/companies/:companyId/approvals` |
-| godkänn / avslå | `POST .../approvals/:id/approve` \| `.../reject` (`reason` blir skälet för en åtgärd med `tvafas`; 202 när beslutet är mottaget men inte verkställt) |
+| godkännandekö | `GET /api/companies/:companyId/approvals` (varje köpost bär `ersatt_av`, Story 1.15: en `rejected` med `ersatt_av` är en ersatt post och inget nej) |
+| godkänn / avslå | `POST .../approvals/:id/approve` \| `.../reject` (`reason` blir skälet för en åtgärd med `tvafas`; 202 när beslutet är mottaget men inte verkställt; köposten i svaret bär `ersatt_av`) |
 | AI-OCR (förslag) | `POST .../ocr/receipt` |
 
 En MCP-server ansluter med ett **agent-token** (se nedan) och mappar
@@ -1757,9 +1757,43 @@ anteckning tillsammans med `signal_id` ger 400. Underlagets `alternativ` är
 Auditraden `contract_part.created` för en ny avtalsdelsversion bär inte längre
 `change_reason`; orsaken står kvar i `contract_parts.change_reason`.
 
-**Väntar till senare berättelser:** komplettering av timmarna och "ändrat sedan
-förslaget" (Story 1.15) och nej-utkastet (Story 1.16). Hermes formulering finns
-sedan Story 1.17 (`uppdragssvep.py`, förslagen i körningens andra anrop).
+**Väntar till senare berättelser:** nej-utkastet (Story 1.16). Hermes formulering
+finns sedan Story 1.17 (`uppdragssvep.py`, förslagen i körningens andra anrop).
+
+### Kompletteringen och ersättningen (Story 1.15, B-2)
+
+**`komplettera_beslutsforslag` (write, `kravManniska: true`)** — "Fyll i timmar i
+en fråga ur Övrigt och få förslaget omräknat". Indata `{ approval_id, timmar }`,
+strikt: `approval_id` är en väntande Övrigt-köpost i bolaget, och `timmar` är ett
+tal större än noll med högst två decimaler, högst 999 999,99. Svaret är
+`{ approval_id, ersatt_av }`. Kompletteringen gäller varje väntande Övrigt-fråga,
+också en som redan har timmar.
+
+**Ersättaren.** I en transaktion låses den väntande köposten, och en ersättare köas
+med samma källa, alternativ, avtalsdel, skäl och källor, Davids timmar och en
+beräkning som servern räknat om ur egna tabeller med samma byggare och samma
+schema som svepets förslagssteg. Ersättaren köas med den gamla postens begärare.
+Den gamla posten blir `rejected` med `ersatt_av` lika med ersättarens id och utan
+beslutsfält (`decided_by`, `decided_at`, `beslut_hash` och `beslut_skal` är tomma).
+Den är **inget nej**: läs `ersatt_av`, aldrig `rejected` ensamt. Ingen beslutsrad,
+inget nej-utkast och ingen domänhandling skapas förrän David svarar ja eller nej på
+ersättaren, och ja godkänner alltid den lagrade ersättaren.
+
+**Fel:** 400 `validation_error`, 403 `human_required` (agentens nyckel), 404 för en
+köpost som saknas i bolaget, och 409 `not_pending`, `inte_ovrigtforslag`,
+`kalla_annat_avtal` (också när raden saknas eller inte är markerad),
+`uppdraget_stangt`, `avtalsdel_saknas`, `avtalsdel_upptagen` (en annan
+baselineändring för koden väntar, eller en version börjar senare) och
+`underlag_ogiltigt`. Ett prövningsfel skriver ingenting.
+
+**En ersatt post går inte att avgöra igen.** Godkänn (`approvals/:id/approve`),
+avvisa (`approvals/:id/reject`), `avboj_beslutsforslag` och
+`komplettera_beslutsforslag` ger 409 `not_pending`. Återförsöket och Läget utesluter
+den, och undantagsvyn visar bara ersättaren.
+
+**Auditraden** `uppdrag.forslag_kompletterat` har `entity_type = 'approval'`,
+`entity_id` lika med den gamla postens id och `details = { approval_id, ersatt_av,
+atgard }`, utan fritext och utan timmar.
 
 
 ### Undantagsvyns läsväg (Story 1.6, B-3)
@@ -1774,6 +1808,18 @@ sedan Story 1.17 (`uppdragssvep.py`, förslagen i körningens andra anrop).
   `ovrigt_beslut` bär det valfria fältet `ovrigt`: `forfragan` (Övrigt-raden:
   `id`, `text`, `datum`, `utanfor_avtal`) och `underlag` (det frysta
   underlaget), båda som `Lasvarde` (Story 1.14).
+- `ovrigt.andrat` (Story 1.15) är det frysta förslaget jämfört med aktuella
+  källor, som `Lasvarde<{ delen_finns, upptagen, andringar[] }>`. En ändring är
+  `{ falt, forslag, nu }`, och `falt` är ett av sju i fast ordning: `taxa_ore`,
+  `tak_minuter`, `forbrukade_minuter`, `belopp_ore`, `nytt_tak_minuter`,
+  `kvar_fore_minuter` och `kvar_efter_minuter`. En ändring står bara när värdena
+  skiljer sig. `delen_finns` är falskt när koden inte längre är en aktiv del i
+  avtalet, och `upptagen` är sant när ett tillägg inte kan räknas om eftersom en
+  annan baselineändring för koden väntar eller en version börjar senare (samma
+  villkor som svepets förslagssteg). Kunde beräkningen inte göras är läget
+  `olast`. Ja godkänner alltid det lagrade förslaget; den som vill ha nya värden
+  kompletterar. Vyn visar inte kompletteringen när `delen_finns` är falskt eller
+  `upptagen` sant.
 - Den stängda listan har sex postslag. `baselineandring` kommer ur väntande
   `satt_baseline`, `andra_baseline`, `upsert_contract_part` eller
   `update_contract`; `kostnadsbindning` ur väntande `binda_kostnad`;
