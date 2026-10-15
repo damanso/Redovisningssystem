@@ -78,6 +78,7 @@ import { clearSessionCookie, issuePendingSession, issueSession, page, readPendin
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
 import { emailEnabled } from '../../services/email.js';
+import { mailtoLank, type Nejutkast } from '../../lib/utkast.js';
 import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
 import { importSie, parseSie } from '../../services/sieImport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
@@ -4328,6 +4329,23 @@ function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Antec
   </section>`;
 }
 
+/**
+ * Story 1.16 (B-5, FR-42): nej-utkastet som David själv läser och skickar.
+ * Skickhandlingen är en mailto-länk till hans egen e-postklient; inget skickas
+ * härifrån, och blocket säger aldrig att något är skickat.
+ */
+function utkastblock(u: Nejutkast, markor: string): Raw {
+  return html`<div data-utkast data-traffyta style="margin:10px 0 0;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm)">
+    <p style="margin:0;font-size:13px;font-weight:550">Svarsutkast till kunden</p>
+    <p style="margin:6px 0 0;font-size:14px;overflow-wrap:anywhere">Till: ${u.mottagare ?? 'saknas — kundkortet har ingen giltig e-postadress, så du fyller i mottagaren i din e-post'}</p>
+    <p style="margin:4px 0 0;font-size:14px;overflow-wrap:anywhere">Ämne: ${u.amne}</p>
+    <p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere">${u.text}</p>
+    <p class="muted" style="margin:6px 0 0;font-size:12.5px">Referensen ${markor} i ämnet är det som gör att utskicket känns igen. Låt den stå kvar.</p>
+    <p style="margin:8px 0 0"><a class="btn btn--ghost btn--sm" href="${mailtoLank(u)}" target="_blank" rel="noopener">Öppna utkastet i din e-post</a></p>
+    <p class="muted" style="margin:6px 0 0;font-size:12.5px">Du läser och skickar själv från din e-post. Inget går till kunden förrän du gör det.</p>
+  </div>`;
+}
+
 /** Samma logg som Övrigt: beslutets spår är läsning, med panelens egen färskhet. */
 function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
   const etiketter: Record<string, string> = {
@@ -4336,7 +4354,7 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
   };
   const { registrerade, mottagna } = l.beslut;
   return html`<section class="panel" id="beslut" aria-labelledby="kort-beslut" style="margin-top:16px">
-    <div class="panel__head"><h2 id="kort-beslut">Beslut</h2></div>
+    <div class="panel__head"><h2 id="kort-beslut">Beslut och utkast</h2></div>
     <div class="panel__body" style="padding:0">
       ${registrerade.length === 0 && mottagna.length === 0
         ? html`<p style="margin:0;padding:12px 16px;font-size:14px">Inga beslut är registrerade i uppdraget.
@@ -4357,6 +4375,7 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
               ${b.utfall === 'nej' ? html`<p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${b.skal}</p>`
                 : html`<p style="margin:6px 0 0;font-size:14px">${beskrivHandling(b.handling)}</p>`}
               <p style="margin:6px 0 0;font-size:12.5px">${etiketter[b.kalla.typ] ?? b.kalla.typ}${b.referenser.map((r) => html` · ${r.titel ?? r.extern_id} (${r.sort})`)}</p>
+              ${b.utkast !== null && b.utkast_markor !== null ? utkastblock(b.utkast, b.utkast_markor) : ''}
             </div>
           </div>`)}
         </div>`}

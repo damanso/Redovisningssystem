@@ -40,6 +40,7 @@ import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import type { Troskelutfall } from '../lib/troskel.js';
+import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 
@@ -151,6 +152,8 @@ export interface Beslutsrad {
   underlag: Record<string, unknown>; handling: Record<string, unknown> | null;
   referenser: Array<{ referens_id: string; sort: string; extern_id: string; extern_kalla: string | null; titel: string | null }>;
   beslutad_av: string; beslutad_av_namn: string; beslutad_nar: string; forslag_hash: string;
+  /** Story 1.16: nej-utkastet och dess markör, fryst i beslutsraden. Null utom på ett nej på en kundförfrågan ur Övrigt. */
+  utkast: Nejutkast | null; utkast_markor: string | null;
 }
 export interface Mottagetbeslut { approval_id: string; atgard: string; utfall: 'ja' | 'nej'; beslutad_nar: string }
 export interface Beslutslage { registrerade: Beslutsrad[]; mottagna: Mottagetbeslut[] }
@@ -488,5 +491,6 @@ async function registreradeBeslut(client: PoolClient, companyId: string, contrac
     referenser: refIdn(b).flatMap((id) => { const ref = perRef.get(id); return ref ? [ref] : []; }),
     beslutad_av: b.beslutad_av, beslutad_av_namn: b.beslutad_av_namn,
     beslutad_nar: b.beslutad_nar.toISOString(), forslag_hash: b.forslag_hash,
+    utkast: b.utkast ?? null, utkast_markor: b.utkast_markor ?? null,
   }));
 }

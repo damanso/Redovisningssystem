@@ -633,7 +633,8 @@ describe('S samtidiga försök avgörs av låset', () => {
     const r = await ersattning(a);
     if (r.ersatt_av !== null) { expect(r.beslut_hash).toBeNull(); expect(r.decided_by).toBeNull(); }
     const rader = await beslutForKalla(b.id, anteckningId);
-    for (const rad of rader) expect(rad.utkast).toBeNull();
+    // Story 1.16: en ersatt post ger aldrig ett utkast; bara Davids eget mottagna nej på a är ett nej med utkast.
+    for (const rad of rader) if (!(rad.utfall === 'nej' && rad.approval_id === a)) expect(rad.utkast).toBeNull();
     return rader;
   };
 
@@ -684,6 +685,7 @@ describe('S samtidiga försök avgörs av låset', () => {
       } else {
         expect(r.beslut_hash).toMatch(/^[a-f0-9]{64}$/); expect(r.beslut_skal).toBe('Prov'); expect(r.ersatt_av).toBeNull();
         expect(rader).toHaveLength(1); expect(rader[0]).toMatchObject({ approval_id: a, utfall: 'nej' });
+        expect(rader[0]!.utkast).not.toBeNull(); expect(rader[0]!.utkast_markor).toMatch(/^\[ref U\d+-B\d+\]$/);
         expect(await koposterForKalla(b.id, anteckningId)).toHaveLength(1);
       }
     }
