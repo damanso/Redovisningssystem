@@ -21,20 +21,35 @@
 //     (kryssrutan/`upsert_contract_part`), och kräver ett FRYST kontrakt via
 //     0068:s `vagrar_baseline_i_utkast`. Ett tak som en maskin bekräftat åt en
 //     människa är exakt det oläst tak som aldrig varnar.
+import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import {
-  parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
+  lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
+// Importcykeln uppdragImport → uppdragSvep → uppdragUndantag → approvalSummary →
+// uppdragImport är ofarlig i ESM så länge inget importerat namn läses på modulnivå.
+import { UTKASTFRAGENYCKEL, upsertSvepvarden } from './uppdragSvep.js';
 
-/** Skälet varje importerad version bär. `kraver_orsak_vid_ny_version()` (0068) läser det. */
-export const IMPORTORSAK = 'import ur leveranskontraktet v1';
+/**
+ * Skälet varje importerad version bär: ”avtal”, en av orsakerna avtal, tillägg
+ * och utfall (PRD resa 1 steg 4, DK-8). `kraver_orsak_vid_ny_version()` (0068)
+ * läser det.
+ */
+export const IMPORTORSAK = 'avtal';
+
+/**
+ * Orsaken som importen skrev före Story 2.1. Rader lagrade med den är
+ * oföränderliga (B-7, 0079), så `lika()` godtar den när allt annat är lika — en
+ * oförändrad del ska lämnas, inte ge 409 `version_finns` för ett bytt ord.
+ */
+export const TIDIGARE_IMPORTORSAK = 'import ur leveranskontraktet v1';
 
 interface Avtalsrad {
   id: string;
@@ -43,13 +58,15 @@ interface Avtalsrad {
   kontrakt_tillstand: string;
   godkannare: string | null;
   godkannare_eskalering: string | null;
+  /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
+  source_file_id: string | null;
 }
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -179,8 +196,11 @@ function lika(befintlig: Delrad, onskad: Onskad): boolean {
     && befintlig.end_date === onskad.end_date
     && befintlig.date_precision === onskad.date_precision
     && befintlig.sort_order === onskad.sort_order
-    && befintlig.change_reason === IMPORTORSAK;
+    && (befintlig.change_reason === IMPORTORSAK || befintlig.change_reason === TIDIGARE_IMPORTORSAK);
 }
+
+/** `lika` under ett exporterat namn, för funktionsprovet (Story 2.1, I9). */
+export const likaSomImport = lika;
 
 async function hamtaDelrader(
   client: PoolClient, companyId: string, contractId: string, validFrom: string | null,
@@ -316,20 +336,51 @@ export async function importeraLeveranskontrakt(
     uppdrag: { code: ROTKOD, ...kontrakt.ram },
     strommar: kontrakt.strommar,
     leverabler: kontrakt.leverabler,
+    styrning: kontrakt.styrning,
     saknade_falt: saknadeFalt(kontrakt),
   };
   const svar = { contract_id: input.contract_id, kontrakt_tillstand: kontrakt.kontrakt_tillstand, forslag };
+  if (kontrakt.kontrakt_tillstand === 'utkast') {
+    // Utkastläget skriver bara en sak (B-14): frågornas rubriker och dokumentets
+    // referens, i ett eget omfång som svepet varken skriver eller raderar.
+    // Ingen kopia av texten — dess identitet räcker (NFR-12, CACHE).
+    const utkastfragor = lasUtkastfragor(input.kontraktstext);
+    await upsertSvepvarden(client, companyId, avtal.id, [{
+      nyckel: UTKASTFRAGENYCKEL,
+      varde: {
+        fragor: utkastfragor.map((rubrik) => ({ rubrik })),
+        source_file_id: avtal.source_file_id,
+        kontraktstext_sha256: createHash('sha256').update(input.kontraktstext, 'utf8').digest('hex'),
+      },
+      kalla: 'importera_leveranskontrakt',
+    }], 'kontrakt_utkastfragor');
+    return { ...svar, utkastfragor };
+  }
   if (kontrakt.kontrakt_tillstand !== 'fryst') return svar;
   if (!avtal.signed_date) {
     throw new BadRequestError('valid_from_required', 'avtalet saknar undertecknandedatum — baselinen kan inte tidsättas');
   }
+  // En köpost per källa (B-8): källan är paret (avtal, text), och finns en
+  // `satt_baseline` för paret i någon status köas ingen ny — inte heller efter
+  // Davids nej. Radlåset på avtalet serialiserar två samtidiga importer, och
+  // uppslaget sker före INSERT i stället för att en krock fångas (lärdom 2).
+  await client.query('SELECT id FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE', [input.contract_id, companyId]);
+  const befintlig = (await client.query<{ id: string; status: string }>(
+    `SELECT id, status FROM action_approvals
+      WHERE company_id = $1 AND action = 'satt_baseline'
+        AND lower(input->>'contract_id') = lower($2) AND input->>'kontraktstext' = $3
+      ORDER BY created_at, id LIMIT 1`,
+    [companyId, input.contract_id, input.kontraktstext],
+  )).rows[0];
+  if (befintlig) return { ...svar, approval_id: befintlig.id, redan_koad: true, kostatus: befintlig.status };
+
   const koad = await createApproval(client, companyId, userId, actor, 'satt_baseline', input);
   await writeAudit(client, {
     companyId, userId, action: 'action.approval_requested',
     entityType: 'approval', entityId: koad.id,
     details: { action: 'satt_baseline', actor },
   });
-  return { ...svar, approval_id: koad.id };
+  return { ...svar, approval_id: koad.id, redan_koad: false };
 }
 
 /** Den tidigare importskrivningen, körd av `approveAction` i samma tenanttransaktion. */

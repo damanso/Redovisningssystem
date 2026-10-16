@@ -273,6 +273,7 @@ describe('KRAV-6 (5): fem kalenderdagars försening mot en daterad post tänder'
       ram: 'dagar',
       kod: 'L1',
       slutdatum: '2026-09-01',
+      precision: 'dag',
       arvt_fran: null,
       forsening_dagar: 5,
       troskel_dagar: 5,
@@ -323,8 +324,26 @@ describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets s
       ram: 'dagar',
       kod: 'L2',
       slutdatum: '2026-09-30',
+      precision: 'dag',
       // Vilken del intervallet KOM ifrån. Ett larm på ett datum som inte står
       // på posten självt är obegripligt utan den upplysningen.
+      arvt_fran: 'S1',
+      forsening_dagar: 5,
+      troskel_dagar: 5,
+    }]);
+  });
+
+  it('(V5, Story 2.1) dagslarmet bär staplens precision bredvid sitt slutdatum', () => {
+    const manad = [
+      period('UPPDRAG', null, null, null),
+      { ...period('S1', 'UPPDRAG', '2026-08-01', '2026-09-30'), date_precision: 'manad' as const },
+      period('L2', 'S1', null, null),
+    ];
+    expect(larm({ idag: '2026-10-05', delar, perioder: manad })).toEqual([{
+      ram: 'dagar',
+      kod: 'L2',
+      slutdatum: '2026-09-30',
+      precision: 'manad',
       arvt_fran: 'S1',
       forsening_dagar: 5,
       troskel_dagar: 5,
@@ -341,6 +360,7 @@ describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets s
       ram: 'dagar',
       kod: 'L2',
       slutdatum: '2026-08-20',
+      precision: 'dag',
       arvt_fran: null,
       forsening_dagar: 17,
       troskel_dagar: 5,

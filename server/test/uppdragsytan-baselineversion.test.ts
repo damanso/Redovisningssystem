@@ -219,7 +219,9 @@ describe('B-7: varje lagrad version är fryst', () => {
       return { ...innehall, parent_code: rader.find((p) => p.id === parent_part_id)?.code ?? null };
     }).sort((a, b) => String(a.code).localeCompare(String(b.code)));
     expect(plan(fore)).toEqual(plan(baselineV1).map((r) => r.code === 'L1' ? { ...r, cap_hours: '41.00' } : r));
-    const ko2 = await importeradKo(id, LEVERANSKONTRAKT_NVR001), fel = await godkann(ko2);
+    // Story 2.1: importen köar en gång per källa, också efter ett nej — svaret pekar på den avvisade köposten.
+    expect(await importeradKo(id, LEVERANSKONTRAKT_NVR001)).toBe(ko);
+    const ko2 = await koa('satt_baseline', { contract_id: id, kontraktstext: LEVERANSKONTRAKT_NVR001 }), fel = await godkann(ko2);
     await provaMottagetFel(fel, bolag, user, 'version_finns', verkstallLogg); await mottaget(ko2); expect(await delrader(id)).toEqual(fore);
   });
 
@@ -239,7 +241,7 @@ describe('B-7: varje lagrad version är fryst', () => {
     const r = await act('update_contract', { contract_id: contractId, hourly_rate_ore: 1 }); expect(r.status).toBe(409); expect(r.body.error).toBe('kraver_ny_version'); korda.p12++;
     await provaSqlFrysning('p12');
     expect(await delrader()).toEqual(fore); expect(await avtalsrad()).toEqual(avtal);
-    const ja = await godkann(await importeradKo(contractId, LEVERANSKONTRAKT_NVR001));
+    const ja = await godkann(await koa('satt_baseline', { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 }));
     expect(ja.status, JSON.stringify(ja.body)).toBe(200); expect(ja.body.result.avtalsdelar_skrivna).toBe(0); expect(ja.body.result.oforandrad).toBe(true);
     expect(await delrader()).toEqual(fore); expect(await avtalsrad()).toEqual(avtal);
   });

@@ -153,6 +153,60 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-16 (Story 2.1, importen läser det frysta v3-kontraktet utan omformatering):**
+  1. **Parsern** (`lib/leveranskontrakt.ts`) läser v3:s egen form: ramens timmar
+     ur timtabellens Summa-rad när `**Timmar:**` bara är ungefärligt (`ca 430`
+     förblir NULL i `timmar()`), och styrningen ur `<namn> (STYRNING)` med
+     timmarna från timtabellens `-`-rad. Ny ren funktion `lasUtkastfragor`.
+  2. **Migration 0085** (`0085_datumprecision.sql`): CHECK
+     `contract_parts_datum_kraver_precision` — ett datum kräver `date_precision`.
+     Kantkontroll först (`driftfel fore 0085: …`), `NOT VALID` och `VALIDATE` i
+     samma fil. Zod-regeln `kravPrecisionVidDatum` (`lib/avtalsdelsfalt.ts`) i
+     `upsert_contract_part`, `andra_baseline` och `avgor_scopesignal`:s `tillagg`.
+  3. **Importen** (`services/uppdragImport.ts`): `IMPORTORSAK = 'avtal'`;
+     `lika()` godtar den tidigare orsaken `'import ur leveranskontraktet v1'`
+     (`TIDIGARE_IMPORTORSAK`) för redan lagrade rader. Svaret bär
+     `forslag.styrning`. En köpost per källa (`contract_id`, `kontraktstext`) i
+     valfri status: radlås på avtalet, uppslag före `createApproval`, svaret
+     `redan_koad`/`kostatus`. Utkastläget skriver bara cachenyckeln
+     `kontrakt_utkastfragor` (rubriker, `source_file_id`, sha256) i ett eget,
+     reserverat omfång i `upsertSvepvarden` (`services/uppdragSvep.ts`).
+  4. **Datum efter precision**: `visaDatum`/`visaIntervall` (`lib/uppdragsplan.ts`)
+     på fem visningsställen — Planens tabell och datumlista, kortet i
+     `explainApproval`, `delandringar` och dagslarmets `larmtext`. Dagslarmet
+     (`lib/troskel.ts`) bär `precision`.
+  5. **Prov**: nya `uppdragsytan-import-v3.test.ts` (P1–P5, I1–I9, K1–K6, U1–U6),
+     `uppdragsytan-migration-0085.test.ts` (M1–M5) och fixturen
+     `fixtures/leveranskontrakt-syntetisk-v3form.ts`. Ändrade: `uppdragsytan-plan`
+     (V1–V4, V6, månadsformen i två befintliga led), `uppdragsytan-troskel` (V5,
+     `precision` i tre `toEqual`), `uppdragsytan-import`, `-baselineversion` och
+     `-drive-ko` (återimport av samma text går via `sattBaselineDirekt` i
+     `uppdragImportHelper.ts`), `uppdragsytan-svep-bindning` (S2 för med
+     precisionen) och `undantagBeskrivningHelper.ts` (datum med precision, plus
+     ett negativt led).
+  6. **Inte kört:** sandlådan nekade `node`, `npx vitest` och `npm run typecheck`
+     ("This command requires approval"). Inget prov är observerat grönt i
+     sessionen; kedjans `npm run typecheck` och `npm test` är belägget.
+  7. **Drift:** `0085` körs vid nästa driftsättning. Finns en avtalsdel med datum
+     utan precision fäller kantkontrollen deployen med `driftfel fore 0085: …
+     (id: …)`; rättelsen görs av ägarrollen med triggern
+     `contract_parts_kraver_orsak` avstängd i samma transaktion (som provet M3),
+     och är en driftpost, ingen fråga till David.
+  8. **Omtag (typecheck rött):** M5:s datumvarianter i
+     `uppdragsytan-migration-0085.test.ts` infererades som en union med
+     `?: undefined`, och den kan inte tilldelas `Record<string, string>` (TS2345).
+     Varianterna har nu en uttrycklig typ, `Datum` (`Partial<Record<…, string>>`).
+     Ingen fler förekomst av felklassen finns i ändringen. Inte kört i sandlådan.
+  9. **Omtag 2 (två prov röda):** V2 i `uppdragsytan-plan` sökte den literala
+     taggen `<td class="code">DEL1</td>`. Efterbehandlingen `staplabaraTabeller`
+     (`html.ts`) ger varje cell `role` och `data-etikett`, så `indexOf` gav −1 och
+     utdraget blev tyst `''`. Proven läser nu raden med `tabellrad` (på
+     strukturen) och `mellan`, och båda fäller provet när en markör saknas.
+     **Lärdom:** sök aldrig en `<td>`/`<tr>` som literal i en renderad sida. P16 i
+     `uppdragsytan-undantag` fick `../lib/uppdragsplan.js` i listan för
+     `uppdragUndantag.ts`, och `uppdragsplan.ts`/`leveranskontrakt.ts` fick egna
+     importlistor. Ingen produktkod är ändrad. Inte kört i sandlådan.
+
 - **2026-10-16 (Story 1.18, första leveransens kedja provas som ett förlopp):**
   Första leveransens slutprov. Kedjan från Davids Övrigt-rad till ett registrerat
   ja eller nej körs som ett förlopp genom vyn och en körning i svepkontraktets

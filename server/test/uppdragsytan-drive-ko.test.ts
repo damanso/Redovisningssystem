@@ -23,7 +23,7 @@ import { ACTIONS } from '../src/actions/registry.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann } from './uppdragImportHelper.js';
+import { importeraOchGodkann, sattBaselineDirekt } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -445,7 +445,9 @@ describe('KRAV-2: omkö', () => {
       referens_id: ref.id, utfall: { lage: 'skriven', drive_id: `${DRIVE_ID}-g` },
     });
 
-    await importeraOchGodkann(companyId, auth(), {
+    // Story 2.1: importen köar en gång per källa, så den andra verkställda
+    // sattBaseline begärs direkt — koaRegisterkopia anropas ovillkorligt.
+    await sattBaselineDirekt(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 
@@ -465,7 +467,9 @@ describe('KRAV-2: omkö', () => {
     });
     expect((await kopian(contractId)).ko_fel).toBe('Drive svarade 500');
 
-    await importeraOchGodkann(companyId, auth(), {
+    // Story 2.1: importen köar en gång per källa, så den andra verkställda
+    // sattBaseline begärs direkt — koaRegisterkopia anropas ovillkorligt.
+    await sattBaselineDirekt(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
 

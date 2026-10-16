@@ -49,27 +49,43 @@ export interface Svepvarde {
 }
 
 /**
+ * Utkastets frågerubriker (Story 2.1, B-14). Skrivs bara av importens
+ * utkastläge, i ett eget omfång — annars hade nästa svep raderat nyckeln,
+ * eftersom standardomfånget tar bort varje nyckel som saknas i dess indata.
+ */
+export const UTKASTFRAGENYCKEL = 'kontrakt_utkastfragor';
+
+/**
  * Skriver svepets värden för ett uppdrag med upsert på
  * (company_id, contract_id, nyckel) — 0068:s uppdrag_svepvarde_uk. Två
  * körningar på samma indata ger exakt samma rader (last_nar undantaget:
  * den säger NÄR värdet lästes, inte VAD det är). Nycklar som inte längre
- * finns i indata tas bort inom samma omfång. Standardomfånget 'svep' rör
- * aldrig täckningsnyckeln; 'tackning' skriver bara den nyckeln. Stegen kan
- * därför inte radera varandras cache. Tom lista tömmer bara eget omfång.
- * Sorteras på nyckel så skrivordningen är deterministisk.
+ * finns i indata tas bort inom samma omfång.
+ *
+ * Två nycklar är reserverade och har var sitt omfång: `tackning`
+ * (täckningssteget) och `kontrakt_utkastfragor` (importens utkastläge). Ett
+ * reserverat omfång skriver bara sin egen nyckel och raderar bara den.
+ * Standardomfånget 'svep' varken skriver eller raderar någon reserverad nyckel;
+ * ett indata med en sådan kastar. Stegen kan därför inte radera varandras
+ * cache. Tom lista tömmer bara eget omfång. Sorteras på nyckel så
+ * skrivordningen är deterministisk.
  */
 export async function upsertSvepvarden(
   client: PoolClient, companyId: string, contractId: string, varden: Svepvarde[],
-  omfang: 'svep' | 'tackning' = 'svep',
+  omfang: 'svep' | 'tackning' | 'kontrakt_utkastfragor' = 'svep',
 ): Promise<{ skrivna: number; borttagna: number }> {
   const sorterade = [...varden].sort((a, b) => a.nyckel.localeCompare(b.nyckel, 'sv'));
   const nycklar = sorterade.map((v) => v.nyckel);
   if (new Set(nycklar).size !== nycklar.length) {
     throw new Error('upsertSvepvarden: samma nyckel två gånger i ett svep');
   }
-  const egen = omfang === 'tackning';
-  if (sorterade.some((v) => (v.nyckel === TACKNINGSNYCKEL) !== egen)) {
-    throw new Error(`upsertSvepvarden: nyckeln ${TACKNINGSNYCKEL} skrivs bara av täckningssteget`);
+  // Läses här och inte på modulnivå: importcykeln via uppdragUndantag (ESM).
+  const reserverade: string[] = [TACKNINGSNYCKEL, UTKASTFRAGENYCKEL];
+  const egen = omfang === 'tackning' ? TACKNINGSNYCKEL : omfang === 'kontrakt_utkastfragor' ? UTKASTFRAGENYCKEL : null;
+  for (const v of sorterade) {
+    if (egen === null ? reserverade.includes(v.nyckel) : v.nyckel !== egen) {
+      throw new Error(`upsertSvepvarden: nyckeln ${v.nyckel} hör inte till omfånget ${omfang}`);
+    }
   }
   for (const v of sorterade) {
     await client.query(
@@ -80,11 +96,12 @@ export async function upsertSvepvarden(
       [companyId, contractId, v.nyckel, JSON.stringify(v.varde ?? null), v.kalla ?? null],
     );
   }
+  // Standardomfånget raderar allt utom de reserverade; ett reserverat bara sitt eget.
   const borttagna = await client.query(
     `DELETE FROM uppdrag_svepvarde
       WHERE company_id = $1 AND contract_id = $2 AND NOT (nyckel = ANY($3::text[]))
-        AND (nyckel = $4) = $5`,
-    [companyId, contractId, nycklar, TACKNINGSNYCKEL, egen],
+        AND (nyckel = ANY($4::text[])) = $5`,
+    [companyId, contractId, nycklar, egen === null ? reserverade : [egen], egen !== null],
   );
   return { skrivna: sorterade.length, borttagna: borttagna.rowCount ?? 0 };
 }

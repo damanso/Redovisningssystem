@@ -21,7 +21,7 @@ import { IMPORTORSAK } from '../src/services/uppdragImport.js';
 import { explainApproval } from '../src/services/approvalSummary.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { importeraOchGodkann, provaMottagetFel } from './uppdragImportHelper.js';
+import { importeraOchGodkann, provaMottagetFel, sattBaselineDirekt } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const verkstallLogg = vi.spyOn(console, 'error');
@@ -142,6 +142,15 @@ async function delrader(contractId: string): Promise<Delrad[]> {
 }
 
 const per = (rader: Delrad[]): Map<string, Delrad> => new Map(rader.map((r) => [r.code, r]));
+
+/** Avtalets `satt_baseline`-köposter, äldst först (Story 2.1: en per källa). */
+async function baselinekoposter(contractId: string): Promise<string[]> {
+  return withAdmin(async (c) => (await c.query<{ id: string }>(
+    `SELECT id FROM action_approvals WHERE company_id = $1 AND action = 'satt_baseline'
+        AND input->>'contract_id' = $2 ORDER BY created_at, id`,
+    [companyId, contractId],
+  )).rows.map((r) => r.id));
+}
 
 /** Hela raderna: även en UPDATE eller köad registerkopia måste upptäckas. */
 async function importtillstand(): Promise<Record<string, unknown[]>> {
@@ -525,7 +534,16 @@ describe('importera_leveranskontrakt', () => {
       scope: (await c.query('SELECT id, sort, text, klausul, ordning FROM uppdrag_scopelinje WHERE contract_id = $1 ORDER BY ordning', [contractId])).rows,
     }));
 
-    const om = await importeraOchGodkann(companyId, auth(), {
+    // Story 2.1: samma källa köas inte igen — svaret pekar på avtalets enda köpost.
+    const koposter = await baselinekoposter(contractId);
+    expect(koposter).toHaveLength(1);
+    const igen = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    expect(igen).toMatchObject({ approval_id: koposter[0], redan_koad: true, kostatus: 'executed' });
+    expect(await baselinekoposter(contractId)).toEqual(koposter);
+    expect(await delrader(contractId)).toEqual(foreDelar);
+
+    // sattBaseline:s egen idempotens, begärd direkt med samma text.
+    const om = await sattBaselineDirekt(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
     expect(om).toMatchObject({
@@ -692,7 +710,11 @@ describe('baselineförslaget och godkännandet', () => {
     )).rows);
     expect(importAudit).toHaveLength(1);
 
-    const samma = await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    // Story 2.1: samma källa köas inte igen; sattBaseline:s idempotens provas direkt.
+    const sammaImport = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(sammaImport).toMatchObject({ approval_id: approvalId, redan_koad: true, kostatus: 'executed' });
+    expect(await baselinekoposter(contractId)).toEqual([approvalId]);
+    const samma = await sattBaselineDirekt(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
     expect(samma).toMatchObject({ oforandrad: true, avtalsdelar_skrivna: 0 });
     expect(await delrader(contractId)).toEqual(rader);
 
@@ -709,7 +731,9 @@ describe('baselineförslaget och godkännandet', () => {
       expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: datum, end_date: datum });
     }
     const foreAterimport = await delrader(contractId);
-    const identisk = await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    const identiskImport = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
+    expect(identiskImport).toMatchObject({ approval_id: approvalId, redan_koad: true, kostatus: 'executed' });
+    const identisk = await sattBaselineDirekt(companyId, auth(), { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
     expect(identisk).toMatchObject({ oforandrad: true, avtalsdelar_skrivna: 0 });
     expect(await delrader(contractId)).toEqual(foreAterimport);
     expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: '2026-09-11', end_date: '2026-09-11' });

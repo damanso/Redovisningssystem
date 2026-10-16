@@ -50,6 +50,7 @@ import { registreraJa, registreraNej, avbojForslag, kompletteraForslag } from '.
 import { TimmarSchema } from '../lib/beslutsunderlag.js';
 import {
   AndraBaselineSchema, AvtalsdelFalt, DatePrecisionSchema, OrsakSchema, RegistreraUppdragsbeslutSchema,
+  kravPrecisionVidDatum,
 } from '../lib/avtalsdelsfalt.js';
 import { provaOvrigtKalla, registreraRyms } from '../services/uppdragOvrigt.js';
 import { lasUndantag } from '../services/uppdragUndantag.js';
@@ -1539,6 +1540,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // B-7/FR-2: samma nyckel ger version_finns vid godkännandet. Allt utom
     // ren bekräftelse är en ny version med orsak, också den första av en kod.
     inputSchema: z.object(AvtalsdelFalt).strict().superRefine((v, ctx) => {
+      kravPrecisionVidDatum(v, ctx);
       if (arRenBekraftelse(v)) return;
       if (!OrsakSchema.safeParse(v.change_reason ?? '').success) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['change_reason'],
@@ -1824,6 +1826,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       // uppdraget finns det inget att lägga till avtalet. Fälls här, före varje
       // skrivning, i stället för att köa en post ingen kan förklara.
       .superRefine((v, ctx) => {
+        if (v.tillagg) kravPrecisionVidDatum(v.tillagg, ctx, ['tillagg']);
         if (v.tillagg && v.avgjord !== 'utanfor') {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,

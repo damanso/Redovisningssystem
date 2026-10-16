@@ -31,6 +31,14 @@
 //     namn, timmar, klausul, acceptans, mått och placering under `Ström`.
 //   * **V3:s ram** — `Ram`, `Timmar` och svensk dagperiod i `Period`;
 //     `kontrakt_tillstand` avgör om texten får bli ett baselineförslag.
+//     Står timmarna bara ungefärligt (`**Timmar:** ca 430`) läses ramen ur
+//     timtabellens **Summa-rad** (`| | **Summa** | **430** | |`, stjärnorna
+//     bort). Ett exakt fält vinner alltid; `ca 430` blir aldrig ett tal.
+//   * **V3:s styrning** — en leverabelcell `<namn> (STYRNING)` i placeringen
+//     ger styrningens namn, och timmarna står på timtabellens **`-`-rad** med
+//     samma namn (`| - | <namn> | 15 | … |`, kontraktets egen markering för
+//     ”ej leverabel”). Utan koden i texten finns ingen styrning; rubriken
+//     `### STYRNING …` vinner över tabellformen.
 //   * **Omfattningen (del 5)** — avsnitt vars rubrik nämner "innanför",
 //     "utanför" respektive "signalfras". Raderna läses ur en tabell
 //     (`Rad`/`Text`/`Fras` + valfri `Klausul`) eller ur en punktlista, och då
@@ -326,6 +334,8 @@ const text = (varde: string | undefined): string | null => {
 
 const LEVERABELRUBRIK = /^(L[1-9]\d?|STYRNING)\b[\s.:—–-]*(.*)$/i;
 const LEVERABELKOD = /^L[1-9]\d?$/i;
+/** `Löpande styrgruppsrapportering (STYRNING)` — koden står i texten, den uppfinns inte. */
+const STYRNINGSCELL = new RegExp(`^(.*?)\\s*\\(${STYRNINGSKOD}\\)\\s*$`, 'i');
 
 const SCOPESORTER: Array<{ nyckel: string; sort: Scopelinje['sort'] }> = [
   { nyckel: 'innanfor', sort: 'innanfor' },
@@ -385,6 +395,16 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     }
   };
   let styrning: Styrning | null = null;
+  // v3:s tabellform: ramens timmar i Summa-raden, styrningen som
+  // `<namn> (STYRNING)` och dess timmar på timtabellens `-`-rad. Timtabellen
+  // står före placeringen, så raderna samlas här och knyts efter slingan.
+  let summaTimmar: number | null | undefined;
+  let styrningsnamn: string | null | undefined;
+  const ejLeverabelTimmar = new Map<string, number | null>();
+  const timcell = (varde: string | undefined): number | null => {
+    const v = (varde ?? '').replace(/\*/g, '').trim();
+    return timmar(/^[\d\s ]+(?:[.,]\d{1,2})?$/.test(v) ? `${v} h` : v);
+  };
   for (const a of avsnitten) {
     const m = LEVERABELRUBRIK.exec(a.titel);
     if (m) {
@@ -418,6 +438,16 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
       for (const rad of tabell.rader) {
         const id = text(rad[iId]);
         const namn = text(rad[iLeverabel]);
+        if (namn && iTimmar >= 0) {
+          const nyckel = normalisera(namn);
+          if (nyckel === 'summa') {
+            if (summaTimmar === undefined) summaTimmar = timcell(rad[iTimmar]);
+          } else if ((id === null || id === '-') && nyckel && !ejLeverabelTimmar.has(nyckel)) {
+            ejLeverabelTimmar.set(nyckel, timcell(rad[iTimmar]));
+          }
+        }
+        const styrningsrad = namn ? STYRNINGSCELL.exec(namn) : null;
+        if (styrningsrad && styrningsnamn === undefined) styrningsnamn = text(styrningsrad[1]);
         const kod = id && LEVERABELKOD.test(id) ? id : namn && LEVERABELKOD.test(namn) ? namn : null;
         if (!kod) continue;
         const f: Partial<Leverabel> = {};
@@ -433,6 +463,14 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
         sammanfoga(kod.toUpperCase(), f);
       }
     }
+  }
+  // Rubriken `### STYRNING …` vinner alltid; tabellformen fyller bara en lucka.
+  if (!styrning && styrningsnamn !== undefined) {
+    styrning = {
+      kod: STYRNINGSKOD,
+      namn: styrningsnamn,
+      cap_hours: styrningsnamn === null ? null : ejLeverabelTimmar.get(normalisera(styrningsnamn)) ?? null,
+    };
   }
 
   // Del 5: innanför, utanför och signalfraserna.
@@ -470,7 +508,8 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     kontrakt_tillstand: dokumentfalt.get('kontrakttillstand') === 'fryst' ? 'fryst'
       : dokumentfalt.get('kontrakttillstand') === 'utkast' ? 'utkast' : null,
     ram: {
-      cap_hours: timmar(dokumentfalt.get('takvolym') ?? dokumentfalt.get('timmar')),
+      // Ett exakt fält vinner; `ca 430` är inget tal, och då gäller Summa-raden.
+      cap_hours: timmar(dokumentfalt.get('takvolym') ?? dokumentfalt.get('timmar')) ?? summaTimmar ?? null,
       cap_amount_ore: oren(dokumentfalt.get('takbelopp') ?? dokumentfalt.get('ram')),
       ...periodvarde(dokumentfalt.get('period')),
     },
@@ -485,4 +524,42 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
       ?? dokumentfalt.get('godkannareeskalering'),
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Utkastets frågor (Story 2.1, B-14)
+// ---------------------------------------------------------------------------
+
+/** Ett frågeavsnitt har ordet fråga, frågan, frågor eller frågorna som helt ord i rubriken. */
+const FRAGEORD = /\b(fraga|fragan|fragor|fragorna)\b/;
+
+/**
+ * Rubrikerna på ett utkasts öppna frågor, i textens ordning. Bara rubrikerna:
+ * ett förslag eller ett svar i samma tabell läses aldrig, och de cachas som
+ * referens till dokumentet, inte som en kopia av innehållet (NFR-12).
+ *
+ * I ett frågeavsnitt läses den första tabellen med kolumnen `Fråga`/`Frågan`,
+ * en rubrik per icke-tom cell, och annars punktlistan, en rubrik per punkt.
+ * Ordgränsen gör att till exempel ”förfrågan” inte räknas som ett frågeord.
+ */
+export function lasUtkastfragor(kontraktstext: string): string[] {
+  const rubriker: string[] = [];
+  for (const a of avsnitt(kontraktstext)) {
+    const titel = a.titel.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    if (!FRAGEORD.test(titel)) continue;
+    const tabell = tabeller(a.rader).find((t) => kolumn(t.rubrik, ['fraga', 'fragan']) >= 0);
+    if (tabell) {
+      const iFraga = kolumn(tabell.rubrik, ['fraga', 'fragan']);
+      for (const rad of tabell.rader) {
+        const rubrik = text(rad[iFraga]);
+        if (rubrik) rubriker.push(rubrik);
+      }
+      continue;
+    }
+    for (const rad of a.rader) {
+      const rubrik = text(/^\s*[-*]\s+(.+?)\s*$/.exec(rad)?.[1]);
+      if (rubrik) rubriker.push(rubrik);
+    }
+  }
+  return rubriker;
 }

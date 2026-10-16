@@ -51,6 +51,27 @@ export const AvtalsdelFalt = {
 };
 
 /**
+ * FR-34 (B-16): ett datum på en avtalsdel kräver sin precision. Första
+ * försvarslinjen; CHECK-villkoret `contract_parts_datum_kraver_precision`
+ * (0085) är den andra. Utan regeln här köas ett förslag som får Davids ja och
+ * sedan faller i verkställigheten — fel ska stoppas vid dörren, inte efter
+ * beslutet. Regeln är exakt villkorets, inte snävare.
+ */
+export function kravPrecisionVidDatum(
+  v: { start_date?: string; end_date?: string; date_precision?: string },
+  ctx: z.RefinementCtx,
+  sokvag: (string | number)[] = [],
+): void {
+  if ((v.start_date !== undefined || v.end_date !== undefined) && v.date_precision === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...sokvag, 'date_precision'],
+      message: 'ett datum kräver sin precision (date_precision)',
+    });
+  }
+}
+
+/**
  * Orsaken när den KRÄVS. Minst fem tecken efter trimning: triggern i 0068
  * underkänner redan blanktext, och en ensam bokstav är inte heller ett skäl
  * någon kan läsa i oktober.
@@ -84,6 +105,7 @@ export const AndraBaselineSchema = z
   })
   .strict()
   .superRefine((v, ctx) => {
+    kravPrecisionVidDatum(v, ctx);
     if (v.kalla?.typ === 'scopesignal' && (!v.signal_id || v.kalla.id.toLowerCase() !== v.signal_id.toLowerCase())) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

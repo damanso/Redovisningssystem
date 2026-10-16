@@ -13,6 +13,7 @@ import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomn
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
 import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
+import { visaDatum, type Datumprecision } from '../lib/uppdragsplan.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 
 export const BESLUTSRADEN = 'Beslutet sparas i uppdragets historik med förslaget och källorna.';
@@ -294,10 +295,16 @@ function renTakbekraftelse(q: Beskrivningsko): boolean {
 }
 function delandringar(input: Record<string, unknown>, mal: BaselineMal): string[] {
   const varden: string[] = [];
+  // Datumen visas efter förslagets egen precision (FR-34, Story 2.1), aldrig som en härledd dag.
+  const p = eget(input, 'date_precision');
+  const precision = typeof p === 'string' && Object.hasOwn(PRECISION, p) ? p as Datumprecision : null;
   for (const k of DELFALT) {
     if (!Object.hasOwn(input, k) || input[k] === undefined) continue;
     const v = input[k];
-    if (k === 'start_date' || k === 'end_date') varden.push(`${k === 'start_date' ? 'start' : 'slut'}: ${text(v) ?? 'datum saknas'}`);
+    if (k === 'start_date' || k === 'end_date') {
+      const datum = text(v);
+      varden.push(`${k === 'start_date' ? 'start' : 'slut'}: ${datum === null ? 'datum saknas' : visaDatum(datum, precision)}`);
+    }
     else if (k === 'cap_hours' && typeof v === 'number') varden.push(`tak ${v} h`);
     else if (k === 'cap_amount_ore' && typeof v === 'number' && Number.isSafeInteger(v)) varden.push(`tak ${formatOre(v, { currency: true })}`);
     else if (k === 'hourly_rate_ore' && typeof v === 'number' && Number.isSafeInteger(v)) varden.push(`taxa ${formatOre(v, { currency: true })}/h`);

@@ -63,7 +63,12 @@ export function provaScheman() {
     ].sort());
     const action = ACTIONS.find((a) => a.name === name)!;
     for (const [falt, varden] of Object.entries(DELFALTPROV)) for (const varde of varden) {
-      assert.ok(action.inputSchema.safeParse({ ...grund, [falt]: varde }).success);
+      // FR-34 (0085): ett datum bär alltid sin precision.
+      const precision = falt === 'start_date' || falt === 'end_date' ? { date_precision: 'dag' } : {};
+      assert.ok(action.inputSchema.safeParse({ ...grund, [falt]: varde, ...precision }).success);
+      if (falt === 'start_date' || falt === 'end_date') {
+        assert.ok(!action.inputSchema.safeParse({ ...grund, [falt]: varde }).success, `${name}: ${falt} utan date_precision`);
+      }
     }
   }
 }
