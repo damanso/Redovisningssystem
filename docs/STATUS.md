@@ -153,6 +153,72 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-16 (Story 1.18, första leveransens kedja provas som ett förlopp):**
+  Första leveransens slutprov. Kedjan från Davids Övrigt-rad till ett registrerat
+  ja eller nej körs som ett förlopp genom vyn och en körning i svepkontraktets
+  form, tillsammans med första leveransens övriga beslutade posttyper och
+  frånvaroprovet. Inget i produktionskoden ändras.
+  1. `server/test/kedjaRigg.ts` (ny): riggen för kedjan, alltså Davids väg genom
+     vyn (Uppdrag → Uppdragens läge → ILT → Läget → panelen Övrigt, och svaren i
+     undantagsvyn), Hermes körning med två anrop till `kor_uppdragssvep` och
+     läsarna för kedjans läge per källa.
+  2. `server/test/uppdragsytan-beslut.test.ts`: blocken P13–P20 och en krok som
+     mockar `../src/actions/execute.js` (`vi.hoisted` och `vi.mock` med
+     `importActual`, förlagan är `uppdragsytan-godkannandevag.test.ts`).
+  3. Inget i `server/src`, ingen migration, ingen åtgärd och inget paket.
+
+  **Prov** (alla i `uppdragsytan-beslut.test.ts`, syntetiska och märkta
+  ”(syntetiskt prov)”):
+  - P13: steg (1) och (2). Raden skrivs genom vyn, är oföränderlig och kan inte
+    skrivas av en agent, och en körning ger frågan med beräkningen i ören. Saknade
+    timmar eller saknat timpris ger inget belopp.
+  - P14: en körning ger frågan före körningens slut. Ett formuleringsfel, ett
+    källfel eller ett uteblivet andra anrop ger ofullständigt underlag och
+    `ovrigt.lage = 'fel'`, aldrig ett förslag. Nästa körning tar om kandidaten.
+  - P15: steg (3a)–(3c) genom vyn, alltså ja till tillägg, ja till ”ryms” och nej
+    med utkastet.
+  - P16: kompletteringen, svepet och omstarten avgör ingenting, och ersättaren är
+    den enda frågan.
+  - P17: steg (4) och (5). Upprepade svep och knapptryck ger ingenting nytt,
+    agentnyckeln får 403, och ”inte nu” finns inte.
+  - P18: ett fel mellan mottagandet och verkställigheten. Mandatet står kvar som
+    mottaget och verkställs en gång av återförsöket utan nytt ja eller nej.
+  - P19: ett fel efter verkställigheten men före svaret. Klienten får 500, och
+    upprepningen ger 409 `not_pending` (i vyn den tysta omdirigeringen) och exakt
+    en handling.
+  - P20: baselineändringen, kostnadsbindningen till strömmen S2, scopesignalen
+    och den begärda bedömningen avgörs genom vyn över höjda trösklar. I samma
+    bolag ger sedan ett rutinstatusbyte, en frisk period och två tekniska fel noll
+    poster.
+
+  **Inte kört i sessionen:** `npm run typecheck`, `npm run build`, `npm test` och
+  `npx vitest run test/uppdragsytan-beslut.test.ts`. Sandlådan nekade kommandona
+  (”This command requires approval”). Utfallet är förutsagt, inte observerat, och
+  kedjans körning är belägget.
+
+  **Driftnotiser:**
+  1. Ingen kod, migration eller åtgärd ändras. Releasens beteende är detsamma.
+  2. Första leveransens acceptans mot en verklig Övrigt-rad: KUNDE_INTE i kopian.
+     Kopians databas har ingen verklig rad, bara provets syntetiska. Acceptansen
+     är en läsande kontroll i drift mot Davids egen rad, och den trycker aldrig ja
+     eller nej åt honom.
+  3. Davids svar 2026-10-07 om Gmails utkastmapp är fortfarande inte byggt.
+     Utkastet ligger i panelen ”Beslut och utkast” med en `mailto:`-länk.
+  4. Huvudet säger fortfarande 205 actions, eftersom ingen åtgärd tillkommit.
+  5. Provfilen mockar `../src/actions/execute.js` med en krok som bara P19 sätter.
+     Med kroken på 0 släpper mocken igenom kärnans funktioner oförändrade.
+     Omtag samma dag: kedjans körning fällde P19 (c) och (d), alltså nej i vyn och
+     genom REST. Nejet når `rejectApproval` genom registrets dynamiska
+     `import('./execute.js')`, och den importen får inte mocken. Kroken sitter nu
+     på varje funktion som koden utanför `actions/` importerar ur `execute.js`
+     (`approveAction`, `executeAction`, `rejectApproval`, listan
+     `krok.ingangar`). En kontrollvakt i P19 fäller en ny ingång som går förbi
+     kroken. Lärdom: `vi.mock` når inte en dynamisk `import()` i `src`, så en krok
+     ska sitta där transporten anropar kärnan. Omtaget är inte kört i sessionen
+     (sandlådan), och kedjans körning är belägget.
+  6. Riggens `begarBedomningIVyn` ordnar begärandena på `begard_nar`. Berättelsen
+     skrev `created_at`, men 0082 har ingen sådan kolumn.
+
 - **2026-10-15 (Story 1.16, nej ger ett svarsutkast som David själv skickar):**
   Ett nej på en kundförfrågan ur Övrigt sparar skälet och ekonomin som förut och
   ger dessutom ett fryst svarsutkast med mottagare, ämne med referens och text.
