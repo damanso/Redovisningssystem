@@ -355,12 +355,16 @@ describe('bindningsmål efter nya baselineversioner', () => {
 
     // En ny aktiv version får användas. Barnens lagrade föräldralänkar pekar
     // fortfarande på den äldre versionen; de får inte behöva skrivas om.
+    // Datumen följer med sin precision (FR-34, 0085): `Bindningsdel` bär den
+    // inte, så den läses ur provets egen ögonblicksbild.
+    const egen = fore.find((r) => r.id === del.part_id)!;
     const ny = await okKoad('upsert_contract_part', {
       contract_id: avtal, code: kod, name: kod, valid_from: '2026-09-05',
       change_reason: 'Avtalsdelen återinförs i avtalet', active: true,
       ...(del.parent_part_id === null ? {} : { parent_part_id: del.parent_part_id }),
       ...(del.start_date === null ? {} : { start_date: del.start_date }),
       ...(del.end_date === null ? {} : { end_date: del.end_date }),
+      ...(egen.date_precision === null ? {} : { date_precision: egen.date_precision }),
     });
     const nyId = (ny.parts as Array<{ code: string; part_id: string }>).find((d) => d.code === kod)!.part_id;
     const kvitto2 = await bokatKvitto('2026-11-20', supplierId, 'Aktiv tredje version');

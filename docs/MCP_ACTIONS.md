@@ -806,6 +806,13 @@ NULL när de inte skickas. Ren bekräftelse kräver ingen orsak:
   som "2026-09-01"; precisionen finns för att en uppskattning aldrig ska läsas
   som ett åtagande på dagen. Ett värde utanför de fem ger 400
   `validation_error` (zod, före databasen).
+- **Ett datum kräver sin precision (Story 2.1, FR-34).** `start_date` eller
+  `end_date` utan `date_precision` ger 400 `validation_error` före kön
+  (`kravPrecisionVidDatum` i `lib/avtalsdelsfalt.ts`). Samma regel gäller
+  `andra_baseline` och `avgor_scopesignal`:s `tillagg`. Schemat bär den som
+  andra försvarslinje: CHECK-villkoret `contract_parts_datum_kraver_precision`
+  (migration 0085) fäller en rad med datum utan precision, också från en
+  framtida skrivväg.
 
 **`andra_baseline` (sensitive)** — "Ny baselineversion av en avtalsdel, med
 orsak. Köas för godkännande." Samma fält som `upsert_contract_part`, men
@@ -813,7 +820,9 @@ orsak. Köas för godkännande." Samma fält som `upsert_contract_part`, men
 **obligatoriska**. Åtgärden går genom samma tjänstefunktion
 (`skrivBaselineversion`) som `upsert_contract_part` använder för en ny version
 — samma audit, samma triggrar, ingen egen SQL. En befintlig nyckel ger 409
-`version_finns` före skrivningen; den gamla raden står alltid kvar.
+`version_finns` före skrivningen; den gamla raden står alltid kvar. Ett
+`start_date` eller `end_date` utan `date_precision` ger 400 `validation_error`
+före kön, som för `upsert_contract_part` (Story 2.1, migration 0085).
 
 - **Känslig av samma skäl som `book_invoice`:** en ändrad baseline flyttar vad
   kunden har lovats. Ett agentanrop svarar därför 202 `pending_approval` och
@@ -912,8 +921,17 @@ den som har texten skickar in den. Tolkningen sker i den rena parsern
 går efter mänskligt godkännande genom `skrivBaselineversion` — ingen
 parallell väg in till avtalsdelarna.
 
-Importen köar `satt_baseline`. Ur texten skrivs efter godkännandet, allt i
-samma transaktion:
+Importen köar `satt_baseline`, **en gång per källa** (Story 2.1, B-8). Källan
+är paret (`contract_id`, `kontraktstext`). Finns redan en `satt_baseline`-köpost
+för paret, i valfri status (`pending`, `approved`, `rejected`, `executed`,
+`failed`), köas ingen ny och ingen auditrad skrivs. Svaret bär då den
+befintligas `approval_id`, `redan_koad: true` och `kostatus` (dess status). En
+ny köpost ger `redan_koad: false`. Avtalets rad låses (`FOR UPDATE`) före
+uppslaget, så två samtidiga importer av samma par ger en köpost, och
+`contract_id` jämförs oberoende av skiftläge. En ny fryst text, eller samma text
+mot ett annat avtal, är en ny källa. Har David sagt nej till en text köas den
+inte igen; en direkt begärd `satt_baseline` köar alltid. Ur texten skrivs efter
+godkännandet, allt i samma transaktion:
 
 - rotdelen `UPPDRAG` som ny rad med ramens `cap_hours`/`cap_amount_ore` och
   `valid_from = signed_date`,
@@ -927,6 +945,25 @@ samma transaktion:
 - `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul),
 - `contracts.godkannare` / `godkannare_eskalering`.
 
+- **Utkastläget (Story 2.1, B-14).** En text med `kontrakt_tillstand: utkast`
+  förhandsvisas, också utan `signed_date`: ingen baseline, inget register och
+  ingen köpost. Det enda som skrivs är cachenyckeln `kontrakt_utkastfragor` i
+  `uppdrag_svepvarde`, med exakt tre fält: `fragor` (`[{ rubrik }]`),
+  `source_file_id` (avtalets befintliga dokumentpekare eller `null`) och
+  `kontraktstext_sha256`. Rubrikerna läses ur ett avsnitt vars rubrik har ordet
+  fråga, frågan, frågor eller frågorna som helt ord: ur den första tabellen med
+  kolumnen `Fråga`/`Frågan`, annars ur punktlistan. Ett förslag eller ett svar i
+  samma tabell läses aldrig, och texten själv sparas inte. Nyckeln har ett eget,
+  reserverat omfång i `upsertSvepvarden`, så svepet varken skriver eller raderar
+  den. Svaret bär `kontrakt_tillstand: 'utkast'`, `utkastfragor` (rubrikerna)
+  och inget `approval_id`.
+- **Datumen visas efter sin precision (Story 2.1, FR-34).** Ett månadsintervall
+  lagras som första och sista dagen, men visas som `ÅÅÅÅ-MM` (`kvartal`
+  `ÅÅÅÅ K1–K4`, `halvar` `ÅÅÅÅ H1/H2`, `ar` `ÅÅÅÅ`, `dag` `ÅÅÅÅ-MM-DD`): i Planens
+  tabell och datumlista, i godkännandekortet, i undantagsvyns beskrivning av en
+  föreslagen deländring och i dagslarmet på Läget och Pengarna. Dagslarmet i
+  cachen `troskellarm` bär därför `precision` bredvid `slutdatum`. REST- och
+  MCP-svarens råa datumfält är data med sin precision bredvid och ändras inte.
 - **Saknat fält blir NULL, aldrig en gissning.** Ett värde parsern inte hittar
   skrivs inte, och redovisas i svarets `saknade_falt` — saknat ska synas som
   saknat.
@@ -941,9 +978,19 @@ samma transaktion:
   `oforandrad: true`, `avtalsdelar_skrivna: 0`. En lagrad rad som skiljer sig
   ger **409 `version_finns`**: hela godkännandet rullas tillbaka, också register
   och scopelinjer. En rättelse efter lagring kräver en ny version med orsak.
-- **Varje skriven del bär `change_reason = 'import ur leveranskontraktet v1'`**,
-  och auditraden `uppdrag.leveranskontrakt_importerat` skrivs alltid: den är
-  spåret av att importen kördes, inte av en ändring.
+- **Varje skriven del bär `change_reason = 'avtal'`** (Story 2.1; orsakerna
+  är avtal, tillägg och utfall, DK-8). Före Story 2.1 skrev importen
+  `'import ur leveranskontraktet v1'`; sådana rader är oföränderliga (0079), och
+  jämförelsen `lika()` godtar fortfarande den orsaken för en redan lagrad rad som
+  i övrigt är lika. Auditraden `uppdrag.leveranskontrakt_importerat` skrivs
+  alltid: den är spåret av att importen kördes, inte av en ändring.
+- **v3:s form läses som den står (Story 2.1).** Står ramens timmar bara
+  ungefärligt (`**Timmar:** ca 430`) läses de ur timtabellens Summa-rad
+  (`| | **Summa** | **430** | |`); ett exakt fält vinner alltid, och `ca 430`
+  blir aldrig ett tal. Styrningen läses ur en leverabelcell `<namn> (STYRNING)`
+  och dess timmar ur timtabellens `-`-rad med samma namn (`| - | <namn> | 15 |`).
+  Utan koden i texten finns ingen styrning. Svaret bär den under
+  `forslag.styrning` (`{ kod, namn, cap_hours }` eller `null`).
 - Uppsättning och import är `write`, men importen skriver planen först genom
   den känsliga köposten `satt_baseline`. Ingen lagrad version går att skriva
   över, bekräftad eller obekräftad: 0079 är sista försvarslinjen.
@@ -1112,7 +1159,9 @@ signal — inklusive grannbolagets — ger **404 `not_found`**, som förut.
   **400 `validation_error`**: låg frasen innanför uppdraget finns det inget att
   lägga till avtalet. Valfritt med flit — alla utanför-signaler blir inte
   tilläggsavtal, och ett förifyllt tak vore ett förslag ingen läst i
-  avtalshandlingen.
+  avtalshandlingen. Ett `start_date` eller `end_date` i tillägget utan
+  `date_precision` ger **400 `validation_error`** före varje skrivning (Story
+  2.1, FR-34, samma regel som `andra_baseline`).
 - **Tilläggets avtal (Story 1.9).** `tillagg.contract_id` ska vara signalens
   avtal. Annars ger anropet **400 `signal_annat_avtal`** före varje skrivning,
   utan rad, köpost eller auditrad. Ett upprepat knapptryck med samma val på

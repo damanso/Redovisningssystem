@@ -36,7 +36,7 @@
 // FR-3:s sista sats: en leverabel som bara har strömmens period kan aldrig
 // larma före periodens slut.
 
-import { byggPlan, type Plandel } from './uppdragsplan.js';
+import { byggPlan, type Datumprecision, type Plandel } from './uppdragsplan.js';
 
 export type { Plandel };
 
@@ -93,6 +93,8 @@ export type Larm =
     ram: 'dagar'; kod: string;
     /** Intervallets slut — delens eget, annars det ärvda. */
     slutdatum: string;
+    /** Staplens precision: slutdatumet visas efter den (FR-34, Story 2.1). */
+    precision: Datumprecision | null;
     /** Koden intervallet ärvdes från, null när det är delens eget. */
     arvt_fran: string | null;
     forsening_dagar: number; troskel_dagar: number;
@@ -288,6 +290,7 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
       larm.push({
         ram: 'dagar', kod: rad.code,
         slutdatum: rad.stapel.end_date,
+        precision: rad.stapel.precision,
         arvt_fran: rad.stapel.arvd ? rad.stapel.kalla_kod : null,
         forsening_dagar: forsening, troskel_dagar: t.dagar,
       });

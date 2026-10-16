@@ -54,7 +54,9 @@ import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
-import { byggPlan, grupperaEfterSlut, type Plan, type Plandel, type Planrad } from '../../lib/uppdragsplan.js';
+import {
+  byggPlan, grupperaEfterSlut, visaDatum, type Datumprecision, type Plan, type Plandel, type Planrad,
+} from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
@@ -3438,7 +3440,7 @@ function datumlista(u: Planunderlag): Raw {
             ${/* En rad = en milstolpe: koden, delen och det datum den landar.
                   1D:s namn på just den raden är `.milstolpe` (S10.7). */ ''}
             ${a.rader.map((r) => html`<li class="milstolpe"><span class="code">${r.code}</span> ${r.name}
-              — <span class="code">${r.stapel!.end_date}</span>
+              — <span class="code">${visaDatum(r.stapel!.end_date, r.stapel!.precision)}</span>
               ${r.stapel!.arvd ? html` ${chip(`Ärvd från ${r.stapel!.kalla_kod}`, 'muted', '↳')}` : ''}</li>`)}
           </ul>`)
       : html`<p class="muted" style="margin:0">Ingen avtalsdel har någon period ännu — läs in leveranskontraktet
@@ -3446,9 +3448,9 @@ function datumlista(u: Planunderlag): Raw {
   </div>`;
 }
 
-/** Start- eller slutdatumet som det STÅR i avtalet. Saknat sägs som saknat. */
-const plandatum = (varde: string | null): Raw =>
-  varde ? html`<span class="code">${varde}</span>` : html`<span class="muted">saknas</span>`;
+/** Start- eller slutdatumet som det STÅR i avtalet, efter sin precision. Saknat sägs som saknat. */
+const plandatum = (varde: string | null, precision: Datumprecision | null): Raw =>
+  varde ? html`<span class="code">${visaDatum(varde, precision)}</span>` : html`<span class="muted">saknas</span>`;
 
 /**
  * Precisionskolumnen bär också varifrån perioden kommer. Det är inte en sjätte
@@ -3507,8 +3509,8 @@ function plansida(companyId: string, u: Planunderlag): Raw {
             <tbody>${p.rader.map((rad) => html`<tr>
               <td class="code">${rad.code}</td>
               <td>${rad.name}</td>
-              <td>${plandatum(rad.start_date)}</td>
-              <td>${plandatum(rad.end_date)}</td>
+              <td>${plandatum(rad.start_date, rad.date_precision)}</td>
+              <td>${plandatum(rad.end_date, rad.date_precision)}</td>
               <td>${precisionscell(rad)}</td></tr>`)}
             </tbody></table></div>
           <p class="muted" style="margin-top:8px;font-size:12.5px">Gällande version per delkod, aktiva delar,
@@ -4027,7 +4029,9 @@ function larmtext(larm: Larm): Raw {
     return html`<span class="code">${larm.kod}</span> ${kronor(larm.avvikelse_ore)} över tröskeln ${
       kronor(larm.troskel_ore)}${grund}`;
   }
-  return html`<span class="code">${larm.kod}</span> ${String(larm.forsening_dagar)} dagar efter ${larm.slutdatum}${
+  // Ett äldre cachevärde saknar `precision` fram till nästa svep: då visas datumet som det står.
+  return html`<span class="code">${larm.kod}</span> ${String(larm.forsening_dagar)} dagar efter ${
+    visaDatum(larm.slutdatum, larm.precision ?? null)}${
     larm.arvt_fran === null ? '' : html` <span class="muted">(ärvt intervall från ${larm.arvt_fran})</span>`}`;
 }
 

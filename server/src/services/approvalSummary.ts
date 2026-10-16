@@ -11,6 +11,7 @@
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
+import { visaIntervall } from '../lib/uppdragsplan.js';
 import { lasBaselineandring } from './uppdragImport.js';
 
 const SEP = ' · ';
@@ -163,7 +164,6 @@ export async function explainApproval(
       'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
     if (!avtal) return none;
     const kontrakt = parseLeveranskontrakt(input.kontraktstext);
-    const intervall = (start: string | null, slut: string | null): string => `${start ?? 'datum saknas'} till ${slut ?? 'datum saknas'}`;
     let andring: Awaited<ReturnType<typeof lasBaselineandring>>;
     try {
       andring = await lasBaselineandring(client, companyId, contractId, kontrakt);
@@ -174,7 +174,7 @@ export async function explainApproval(
       const leverabel = /^L[1-9]\d?$/.test(d.code);
       const placering = d.parent_code ? ` under ${d.parent_code}` : '';
       const datum = leverabel && d.start_date === null && d.end_date === null
-        ? 'ärver stegets intervall' : `${leverabel ? 'eget datum: ' : ''}${intervall(d.start_date, d.end_date)}`;
+        ? 'ärver stegets intervall' : `${leverabel ? 'eget datum: ' : ''}${visaIntervall(d.start_date, d.end_date, d.date_precision)}`;
       return `${d.code}${leverabel ? placering : ''} ${datum} — ${d.name}`
         + `${d.date_precision ? ` (${d.date_precision})` : ''}`
         + `${d.cap_hours !== null ? `; tak ${d.cap_hours} h` : ''}`

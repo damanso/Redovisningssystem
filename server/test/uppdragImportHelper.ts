@@ -22,6 +22,23 @@ export async function provaMottagetFel(svar: { status: number; body: unknown }, 
   expect(retry.kvar).toContain(q.id);
 }
 
+/**
+ * `satt_baseline` begärd direkt (202) och godkänd (200, `executed`). Importen
+ * köar bara en gång per källa (Story 2.1), så `sattBaseline`:s egen
+ * idempotens för samma text mot samma avtal provas den här vägen.
+ */
+export async function sattBaselineDirekt(
+  companyId: string, auth: Record<string, string>, input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const base = `/api/companies/${companyId}`;
+  const begaran = await api.post(`${base}/actions/satt_baseline`).set(auth).send(input);
+  expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
+  const godkant = await api.post(`${base}/approvals/${begaran.body.approval.id}/approve`).set(auth).send({});
+  expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
+  expect(godkant.body.approval.status).toBe('executed');
+  return godkant.body.result;
+}
+
 /** Så testbaselinen genom samma förslag och mänskliga godkännande som produkten. */
 export async function importeraOchGodkann(
   companyId: string, auth: Record<string, string>, input: Record<string, unknown>,

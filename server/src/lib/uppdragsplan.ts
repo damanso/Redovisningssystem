@@ -272,6 +272,32 @@ export function byggPlan(delar: Plandel[], idag: string): Plan {
   };
 }
 
+/**
+ * En avtalsdels datum som det står i avtalet, efter sin precision (FR-34,
+ * Story 2.1). Ett månadsintervall lagras som första och sista dagen, men ingen
+ * vy får visa den dagen: avtalet sa ”2026-09”, inte ”2026-09-30”. Formerna:
+ * `dag` ÅÅÅÅ-MM-DD, `manad` ÅÅÅÅ-MM, `kvartal` ÅÅÅÅ K1–K4, `halvar` ÅÅÅÅ H1/H2
+ * och `ar` ÅÅÅÅ. Ett datum utan precision visas som det står — CHECK-villkoret
+ * i 0085 gör fallet omöjligt för nya rader. Saknat sägs som saknat.
+ */
+export function visaDatum(datum: string | null, precision: Datumprecision | null): string {
+  if (datum === null) return 'saknas';
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(datum);
+  if (!m || precision === null || precision === 'dag') return datum;
+  const ar = m[1]!;
+  const manad = Number(m[2]);
+  if (precision === 'manad') return `${ar}-${m[2]!}`;
+  if (precision === 'kvartal') return `${ar} K${String(Math.floor((manad - 1) / 3) + 1)}`;
+  if (precision === 'halvar') return `${ar} H${manad <= 6 ? '1' : '2'}`;
+  return ar;
+}
+
+/** Ett intervall efter sin precision; en saknad ände är ”datum saknas”. */
+export function visaIntervall(start: string | null, slut: string | null, precision: Datumprecision | null): string {
+  const ande = (datum: string | null): string => (datum === null ? 'datum saknas' : visaDatum(datum, precision));
+  return `${ande(start)} till ${ande(slut)}`;
+}
+
 export interface Datumgrupper {
   /** Slutdatumet har passerat. */
   forsenat: Planrad[];

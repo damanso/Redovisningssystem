@@ -21,8 +21,14 @@
 // den riktiga fixturen.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { byggPlan, grupperaEfterSlut, manadsetikett, type Plandel } from '../src/lib/uppdragsplan.js';
+import { withTenantTransaction } from '../src/db/tx.js';
+import {
+  byggPlan, grupperaEfterSlut, manadsetikett, visaDatum, visaIntervall, type Plandel,
+} from '../src/lib/uppdragsplan.js';
+import { explainApproval } from '../src/services/approvalSummary.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
+import { LEVERANSKONTRAKT_NVR001_V3 } from './fixtures/leveranskontrakt-nvr-001-v3.js';
+import { LEVERANSKONTRAKT_SYNTETISK_V3FORM } from './fixtures/leveranskontrakt-syntetisk-v3form.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 
@@ -290,6 +296,26 @@ describe('(a) grupperaEfterSlut: datumlistans tre grupper', () => {
   });
 });
 
+// Story 2.1, kriterium 8: ett datum visas efter sin precision — ingen vy
+// härleder en dag ur ett månadsintervall.
+describe('(a) visaDatum och visaIntervall (V1)', () => {
+  it('varje precision har sin form, och saknat sägs som saknat', () => {
+    expect(visaDatum('2026-11-15', 'dag')).toBe('2026-11-15');
+    expect(visaDatum('2026-11-30', 'manad')).toBe('2026-11');
+    expect(visaDatum('2026-01-01', 'kvartal')).toBe('2026 K1');
+    expect(visaDatum('2026-12-31', 'kvartal')).toBe('2026 K4');
+    expect(visaDatum('2026-06-30', 'halvar')).toBe('2026 H1');
+    expect(visaDatum('2026-07-01', 'halvar')).toBe('2026 H2');
+    expect(visaDatum('2026-12-31', 'ar')).toBe('2026');
+    expect(visaDatum(null, 'dag')).toBe('saknas');
+    expect(visaDatum(null, null)).toBe('saknas');
+    expect(visaDatum('2026-11-15', null)).toBe('2026-11-15');
+    expect(visaIntervall('2027-01-01', '2027-02-28', 'manad')).toBe('2027-01 till 2027-02');
+    expect(visaIntervall(null, '2026-12-31', 'dag')).toBe('datum saknas till 2026-12-31');
+    expect(visaIntervall(null, null, null)).toBe('datum saknas till datum saknas');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // (b) Vyn genom hela stacken, på NVR-001:s riktiga leveranskontrakt
 // ---------------------------------------------------------------------------
@@ -393,9 +419,12 @@ describe('(b) vyn: Planen', () => {
     for (const kod of ['UPPDRAG', 'S1', 'S2', 'S3', 'L1', 'L6', 'STYRNING']) {
       expect(html, `koden ${kod} saknas i tabellen`).toContain(`>${kod}</td>`);
     }
-    expect(html).toContain('>2026-09-01<'); // S1 start
-    expect(html).toContain('>2026-10-31<'); // S1 slut
-    expect(html).toContain('>2027-03-31<'); // S3 slut
+    // Strömmarna har månadsprecision: datumet visas som månaden, aldrig som en
+    // härledd dag (Story 2.1, kriterium 8).
+    expect(html).toContain('>2026-09<'); // S1 start
+    expect(html).toContain('>2026-10<'); // S1 slut
+    expect(html).toContain('>2027-03<'); // S3 slut
+    expect(html).not.toContain('>2026-10-31<');
     expect(html).toContain('Månad');
     // UPPDRAG och STYRNING har inga datum, och får inga påhittade.
     expect(html).toContain('<span class="muted">saknas</span>');
@@ -423,7 +452,8 @@ describe('(b) vyn: Planen', () => {
     // Listan säger samma sak som staplarna: koden, när det landar, och om
     // perioden är ärvd.
     expect(listan).toContain('>S1</span>');
-    expect(listan).toContain('2026-10-31');
+    expect(listan).toContain('2026-10');
+    expect(listan).not.toContain('2026-10-31');
     expect(listan).toContain('Ärvd från S1');
   });
 
@@ -446,5 +476,111 @@ describe('(b) tenantgränsen', () => {
   it('ett okänt uppdrag i vårt eget bolag svarar också 404', async () => {
     const res = await ua.get(`/app/c/${companyId}/projects/00000000-0000-4000-8000-000000000000/planen`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 2.1, kriterium 8: datumet visas efter sin precision på varje ställe
+// ---------------------------------------------------------------------------
+
+/** Ett nytt uppdrag med ett avtal vars text importeras och godkänns. */
+async function importeratUppdrag(namn: string, kontraktstext: string): Promise<{ projekt: string; avtal: string }> {
+  const projekt = (await ok('create_project', { name: namn })).id as string;
+  const avtal = (await ok('skapa_uppdrag', { project_id: projekt, name: `Avtal ${namn}`, signed_date: SIGNERAT })).contract_id as string;
+  await importeraOchGodkann(companyId, auth(), { contract_id: avtal, kontraktstext });
+  return { projekt, avtal };
+}
+
+/** Dagarna som bara finns som härledda ändar av det syntetiska kontraktets månadsintervall. */
+const HARLEDDA_DAGAR = ['2027-02-28', '2027-03-01', '2027-05-31', '2027-06-01'];
+
+/**
+ * Texten från `fran` till nästa `till`. En saknad markör fäller provet med sitt
+ * namn — en tom sträng hade gjort varje `toContain` efteråt till ett gåtfullt fel.
+ */
+function mellan(text: string, fran: string, till: string): string {
+  const start = text.indexOf(fran);
+  expect(start, `markören ${fran}`).toBeGreaterThanOrEqual(0);
+  const slut = text.indexOf(till, start);
+  expect(slut, `markören ${till} efter ${fran}`).toBeGreaterThan(start);
+  return text.slice(start, slut);
+}
+
+/**
+ * Tabellraden vars första cell är koden. Sidan efterbehandlas
+ * (`staplabaraTabeller` ger varje `<td>` roll och etikett), så raden hittas på
+ * sin struktur och aldrig på en literal tagg som efterbehandlingen skriver om.
+ */
+function tabellrad(html: string, kod: string): string {
+  const rad = new RegExp(`<tr\\b[^>]*>\\s*<td\\b[^>]*>${kod}</td>[\\s\\S]*?</tr>`).exec(html)?.[0];
+  expect(rad, `tabellraden för ${kod}`).toBeDefined();
+  return rad!;
+}
+
+describe('(b) månadsintervall i Planen, datumlistan och kortet (V2, V4, V6)', () => {
+  let syntetiskt: { projekt: string; avtal: string };
+
+  beforeAll(async () => {
+    syntetiskt = await importeratUppdrag('Syntetiskt månadskontrakt', LEVERANSKONTRAKT_SYNTETISK_V3FORM);
+  });
+
+  it('(V2) tabellen, datumlistan och kortet visar ÅÅÅÅ-MM och ingen härledd dag', async () => {
+    const html = await sida(`/app/c/${companyId}/projects/${syntetiskt.projekt}/planen`);
+    expect(html).toContain('data-precision="manad"');
+    const del1 = tabellrad(html, 'DEL1');
+    expect(del1).toContain('data-etikett="Start"');
+    expect(del1).toContain('>2027-01<');
+    expect(del1).toContain('>2027-02<');
+    for (const dag of HARLEDDA_DAGAR) expect(html, dag).not.toContain(dag);
+    // UPPDRAG:s egna dagdatum står i kontraktet med dagprecision.
+    expect(html).toContain('>2027-01-01<');
+    expect(html).toContain('>2027-06-30<');
+
+    const listan = mellan(html, '<div data-planlista>', '>Avtalsdelar<');
+    const rad = mellan(listan, '>DEL1</span>', '</li>');
+    expect(rad).toContain('>2027-02<');
+    for (const dag of HARLEDDA_DAGAR) expect(listan, dag).not.toContain(dag);
+
+    const kort = await withTenantTransaction(user.userId, companyId, (c) => explainApproval(c, companyId, 'satt_baseline',
+      { contract_id: syntetiskt.avtal, kontraktstext: LEVERANSKONTRAKT_SYNTETISK_V3FORM }, `/app/c/${companyId}`));
+    const text = JSON.stringify(kort);
+    expect(text).toContain('DEL1 2027-01 till 2027-02');
+    for (const dag of HARLEDDA_DAGAR) expect(text, dag).not.toContain(dag);
+  });
+
+  it('(V4) en köad andra_baseline med månadsprecision beskrivs med ÅÅÅÅ-MM i undantagsvyn', async () => {
+    const begaran = await api.post(`${co()}/actions/andra_baseline`).set(auth()).send({
+      contract_id: syntetiskt.avtal, code: 'DEL2', name: 'Upphandling', valid_from: '2026-10-01',
+      change_reason: 'Upphandlingen flyttas en månad', start_date: '2027-03-01', end_date: '2027-05-31', date_precision: 'manad',
+    });
+    expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
+    const undantag = await ok('las_undantag', {});
+    const post = (undantag.poster as Array<Record<string, any>>).find((p) => p.id === begaran.body.approval.id);
+    expect(post?.slag).toBe('baselineandring');
+    const till = post!.forslag.varde.till as string;
+    expect(till).toContain('start: 2027-03');
+    expect(till).toContain('slut: 2027-05');
+    expect(till).not.toContain('2027-03-01');
+    expect(till).not.toContain('2027-05-31');
+  });
+
+  it('(V6) Läget visar dagslarmet för ett förflutet månadsintervall utan den härledda sista dagen', async () => {
+    const forflutet = await importeratUppdrag('Förflutet månadskontrakt', LEVERANSKONTRAKT_SYNTETISK_V3FORM.replaceAll('| 2027-', '| 2026-'));
+    await ok('kor_uppdragssvep', { uppdrag: [{ contract_id: forflutet.avtal }] });
+    const html = await sida(`/app/c/${companyId}/projects/${forflutet.projekt}/laget`);
+    expect(html).toContain('dagar efter 2026-02');
+    for (const dag of ['2026-02-28', '2026-05-31', '2026-06-30']) expect(html, dag).not.toContain(dag);
+  });
+});
+
+describe('(b) v3:s leverabler ärver sitt stegs dagintervall (V3)', () => {
+  it('varje Lx och STYRNING bär data-arvd och data-precision som attribut', async () => {
+    const v3 = await importeratUppdrag('NVR-001 v3', LEVERANSKONTRAKT_NVR001_V3);
+    const html = await sida(`/app/c/${companyId}/projects/${v3.projekt}/planen`);
+    for (const kod of ['L1', 'L2', 'L3', 'L4', 'L5', 'L6']) {
+      expect(html, kod).toMatch(new RegExp(`class="stapel stapel--baseline"[^>]* data-arvd data-precision="dag">${kod}</span>`));
+    }
+    expect(antal(html, ' data-arvd')).toBe(7);
+    expect(html).not.toContain('stapel--arvd');
   });
 });
