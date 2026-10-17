@@ -25,6 +25,7 @@ import {
   type Kallreferens, type Undantag,
 } from '../src/services/uppdragUndantag.js';
 import { KALLA, MANDATATGARDER, alternativFor, beskrivHandling } from '../src/services/uppdragBeslut.js';
+import { orsaksmening } from '../src/lib/avtalsdelsfalt.js';
 
 const TEXT = 'ILT bad om en extra rapport över fakturorna.';
 const LANG = 90_000;
@@ -197,7 +198,7 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
     const u = await undantagFor(b);
     const p = u.poster.find((x) => x.id === q)!;
     expect(p).toMatchObject({ slag: 'ovrigt_beslut', atgard: 'andra_baseline' });
-    expect(p.ja_registrerar).toBe(`En ny version av 2B från ${input.valid_from as string} med taket 20 h. Tidigare versioner står kvar. ${BESLUTSRADEN}`);
+    expect(p.ja_registrerar).toBe(`En ny version av 2B från ${input.valid_from as string} med taket 20 h. Tidigare versioner står kvar. ${orsaksmening(input.change_reason as string)} ${BESLUTSRADEN}`);
     for (const id of [utan, signal]) expect(u.poster.find((x) => x.id === id)!.slag).toBe('baselineandring');
   }, LANG);
 
@@ -278,7 +279,8 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
     const tid = '2026-10-12T09:00:00.000Z';
     const bas = '/app/c/bolag';
     const uppdrag = { project_id: 'p', number: 1, name: 'ILT', contract_id: 'c', contract_name: 'Konsultavtal ILT' };
-    const kopost = (action: string) => ({ id: 'q', action, input: {}, created_at: new Date(tid), requested_actor: 'agent' as const });
+    const kopost = (action: string, input: Record<string, unknown> = {}) => ({ id: 'q', action, input, created_at: new Date(tid), requested_actor: 'agent' as const });
+    const ORSAK = ovrigtorsak(TEXT, '2026-10-12');
     const forfragan = { id: ANTECKNING, text: TEXT, datum: '2026-10-12', utanfor_avtal: true };
     const referenser: Kallreferens[] = [
       { typ: 'referens', referens_id: 'r1', sort: 'mejl', extern_id: '<msg-1@ilt.example.se>', extern_kalla: 'gmail:prov', titel: null },
@@ -304,11 +306,13 @@ describe('T läsvägen: postslaget ovrigt_beslut', () => {
         underlag: { varde: underlag, kalla: 'redovisning', last_nar: underlag.last_nar, lage: 'last' },
       },
     });
-    const ja = (over: Fixtur) => beskrivOvrigtBeslut({ kopost: kopost('andra_baseline'), uppdrag, underlag: fixturunderlag({ alternativ: 'tillagg', ...over }),
-      anteckning: forfragan, referenser: [] }, bas, tid).ja_registrerar;
-    expect(ja({ kod: '2B' })).toBe(`En ny version av 2B från 2026-10-12 med taket 20 h. Tidigare versioner står kvar. ${BESLUTSRADEN}`);
-    expect(ja({ kod: '2B', timmar: null })).toBe(`En ny version av 2B från 2026-10-12. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar. ${BESLUTSRADEN}`);
-    expect(ja({ kod: '1A' })).toBe(`En ny version av 1A från 2026-10-12. Taket ändras inte, eftersom 1A saknar eget tak. Tidigare versioner står kvar. ${BESLUTSRADEN}`);
+    const ja = (over: Fixtur, input: Record<string, unknown> = { change_reason: ORSAK }) => beskrivOvrigtBeslut({ kopost: kopost('andra_baseline', input),
+      uppdrag, underlag: fixturunderlag({ alternativ: 'tillagg', ...over }), anteckning: forfragan, referenser: [] }, bas, tid).ja_registrerar;
+    expect(ja({ kod: '2B' })).toBe(`En ny version av 2B från 2026-10-12 med taket 20 h. Tidigare versioner står kvar. ${orsaksmening(ORSAK)} ${BESLUTSRADEN}`);
+    expect(ja({ kod: '2B', timmar: null })).toBe(`En ny version av 2B från 2026-10-12. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar. ${orsaksmening(ORSAK)} ${BESLUTSRADEN}`);
+    expect(ja({ kod: '1A' })).toBe(`En ny version av 1A från 2026-10-12. Taket ändras inte, eftersom 1A saknar eget tak. Tidigare versioner står kvar. ${orsaksmening(ORSAK)} ${BESLUTSRADEN}`);
+    // Story 2.2: en köpost utan orsak säger det på samma plats, och ingen orsak hittas på.
+    expect(ja({ kod: '2B' }, {})).toBe(`En ny version av 2B från 2026-10-12 med taket 20 h. Tidigare versioner står kvar. Orsaken saknas i förslaget. ${BESLUTSRADEN}`);
   });
 });
 

@@ -58,6 +58,10 @@ export interface AvtalsdelRad {
    * avsändare.
    */
   change_reason: string | null;
+  /** Versionens period och hur exakt den stod skriven (0068, 0085). Läses i historiken (Story 2.2). */
+  start_date: string | null;
+  end_date: string | null;
+  date_precision: 'ar' | 'halvar' | 'kvartal' | 'manad' | 'dag' | null;
   manually_edited: boolean;
   sort_order: number;
   active: boolean;
@@ -70,6 +74,7 @@ export interface AvtalsdelRad {
 const DEL_KOLUMNER = `cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name, cp.description,
        cp.billable, cp.hourly_rate_ore, cp.cap_hours::text AS cap_hours, cp.cap_amount_ore,
        cp.cap_confirmed, cp.valid_from::text, cp.change_reason, cp.manually_edited, cp.sort_order, cp.active,
+       cp.start_date::text AS start_date, cp.end_date::text AS end_date, cp.date_precision,
        c.hourly_rate_ore AS contract_hourly_rate_ore, c.project_id`;
 
 async function hamtaDelar(
@@ -110,6 +115,13 @@ export interface Takversion {
   cap_confirmed: boolean;
   /** Skälet till versionen; äldre rader och första inläsningen ur utkast kan ha NULL. */
   change_reason: string | null;
+  /**
+   * Versionens datum och precision (Story 2.2): en version som ändrade ett
+   * leverabeldatum ska gå att läsa i sak, inte bara att den finns.
+   */
+  start_date: string | null;
+  end_date: string | null;
+  date_precision: 'ar' | 'halvar' | 'kvartal' | 'manad' | 'dag' | null;
   manually_edited: boolean;
   active: boolean;
 }
@@ -241,7 +253,8 @@ function byggForbrukning(
       versions: versioner.map((v) => ({
         id: v.id, valid_from: v.valid_from, cap_hours: taltak(v.cap_hours),
         cap_amount_ore: v.cap_amount_ore, cap_confirmed: v.cap_confirmed,
-        change_reason: v.change_reason, manually_edited: v.manually_edited, active: v.active,
+        change_reason: v.change_reason, start_date: v.start_date, end_date: v.end_date,
+        date_precision: v.date_precision, manually_edited: v.manually_edited, active: v.active,
       })),
     });
     if (foralderNyckel) barn.set(foralderNyckel, [...(barn.get(foralderNyckel) ?? []), nyckel]);

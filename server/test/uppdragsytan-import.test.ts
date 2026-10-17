@@ -718,18 +718,22 @@ describe('baselineförslaget och godkännandet', () => {
     expect(samma).toMatchObject({ oforandrad: true, avtalsdelar_skrivna: 0 });
     expect(await delrader(contractId)).toEqual(rader);
 
-    // Båda befintliga datumvägarna kräver godkännande. Importtexten innehåller
-    // med flit egna leverabelfält; varken importen eller satt_baseline läser dem.
-    for (const atgard of ['upsert_contract_part', 'andra_baseline']) {
-      const datum = atgard === 'upsert_contract_part' ? '2026-09-10' : '2026-09-11';
-      const begaran = await act(atgard, { contract_id: contractId, code: 'L1', name: 'Första leveransen', parent_part_id: delar.get('STEG1')!.id, valid_from: datum, start_date: datum, end_date: datum, date_precision: 'dag', change_reason: 'Davids datumbeslut' });
-      expect(begaran.status).toBe(202);
-      const foreBeslut = per(await delrader(contractId)).get('L1')!;
-      expect(foreBeslut.start_date).toBe(atgard === 'upsert_contract_part' ? null : '2026-09-10');
-      const beslut = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
-      expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
-      expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: datum, end_date: datum });
-    }
+    // Ett leverabeldatum har en väg: `andra_baseline` genom kön (Story 2.2).
+    // Importtexten innehåller med flit egna leverabelfält; varken importen
+    // eller satt_baseline läser dem.
+    const datumforslag = (datum: string) => ({ contract_id: contractId, code: 'L1', name: 'Första leveransen', parent_part_id: delar.get('STEG1')!.id, valid_from: datum, start_date: datum, end_date: datum, date_precision: 'dag', change_reason: 'Davids datumbeslut' });
+    const viaUpsert = await act('upsert_contract_part', datumforslag('2026-09-10'));
+    expect(viaUpsert.status, JSON.stringify(viaUpsert.body)).toBe(400);
+    expect(viaUpsert.body.error).toBe('validation_error');
+    expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: null, end_date: null });
+    const datum = '2026-09-11';
+    const begaran = await act('andra_baseline', datumforslag(datum));
+    expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
+    const foreBeslut = per(await delrader(contractId)).get('L1')!;
+    expect(foreBeslut.start_date).toBe(null);
+    const beslut = await api.post(`${co()}/approvals/${begaran.body.approval!.id}/approve`).set(auth()).send({});
+    expect(beslut.status, JSON.stringify(beslut.body)).toBe(200);
+    expect(per(await delrader(contractId)).get('L1')!).toMatchObject({ start_date: datum, end_date: datum });
     const foreAterimport = await delrader(contractId);
     const identiskImport = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: TABELLKONTRAKT });
     expect(identiskImport).toMatchObject({ approval_id: approvalId, redan_koad: true, kostatus: 'executed' });

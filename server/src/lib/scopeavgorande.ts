@@ -25,6 +25,18 @@ export function tillaggsorsak(text: string): string {
   return TILLAGGSORSAK_PREFIX + text.trim();
 }
 
+/**
+ * Orsaken ur signalens fras när David inte skrivit egna ord (Story 2.2, B-7
+ * punkt 6): ”Tillägg: signalfrasen ”<frasen>””, på samma funktion som
+ * `tillaggsorsak`. En fras som är tom efter trimning ger `null` — en saknad
+ * orsak hittas aldrig på (FR-2). Frasen är högst 500 tecken
+ * (`tand_scopesignal`), så orsaken ryms alltid i `OrsakSchema`.
+ */
+export function signalorsak(fras: string): string | null {
+  const kropp = fras.trim();
+  return kropp === '' ? null : tillaggsorsak(`signalfrasen ”${kropp}”`);
+}
+
 /** Det regeln behöver veta om ett avgörande: valet och underlaget det vilade på. */
 export interface Avgorandeuppgift {
   avgorande: string;

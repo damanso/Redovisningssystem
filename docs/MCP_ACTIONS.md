@@ -518,7 +518,10 @@ Tre regler bär hela funktionen:
   `contract_id`, `code`, valfritt `valid_from` och `cap_confirmed: true`.
   `bekraftaTak` ändrar då bara bekräftelsen framåt och skriver
   `contract_part.confirmed`; redan bekräftat är en tyst no-op utan auditrad.
-  `manually_edited` sätts vid INSERT, aldrig efteråt.
+  `manually_edited` sätts vid INSERT, aldrig efteråt. En leverabelkod (`L1`–`L99`,
+  parserns `LEVERABELKOD`) med `start_date`, `end_date` eller `date_precision`
+  ger **400 `validation_error` före kön** (Story 2.2, FR-1): ett eget
+  leverabeldatum sätts bara med `andra_baseline`.
 - `list_contracts` (read) — filter `project_id`, `contract_id`. Varje avtal bär
   `parts` med förbrukning per del.
 - `get_contract_usage` (read) — `contract_id`. Per del: `billable_minutes` och
@@ -528,6 +531,10 @@ Tre regler bär hela funktionen:
   `cap_status`, `share` och `versions`. **Föräldradelens förbrukning är summan
   över barnens**; saknar föräldern eget tak härleds det ur barnens
   (`cap_derived: true`) och är bekräftat bara om varje ingående tak är det.
+  `versions` är baselinens versionshistorik: varje lagrad version av koden
+  med `id`, `valid_from`, `change_reason`, `start_date`, `end_date` och
+  `date_precision` (Story 2.2), taken, `cap_confirmed`, `manually_edited` och
+  `active`. Ingen version skrivs över (B-7), så alla står kvar.
 - `assign_contract_part` (write) — `time_entry_id`, `contract_part_id`. Sätter
   **enbart** klassificeringen och är därför tillåten även på en `fakturerad`
   post: den ändrar varken belopp, minuter eller låset till fakturan. Allt annat
@@ -1151,11 +1158,16 @@ signal — inklusive grannbolagets — ger **404 `not_found`**, som förut.
   tillägg `tillagg_godkannande` med `redan_koad`.
 
 - **`tillagg` (valfritt objekt, S5.2, våg 4)** — tillägget som följde av ett
-  "utanför". **Samma fält och samma krav som `andra_baseline`** (obligatoriska
-  `change_reason` ≥ 5 tecken och `valid_from`) — det ÄR den åtgärdens indata,
-  och köposten valideras om mot just det schemat vid godkännandet.
-  `change_reason` får högst 1 991 tecken, och köpostens orsak blir
-  `Tillägg: <texten>`. Tillsammans med `innanfor` ger fältet
+  "utanför". **Samma fält som `andra_baseline`** (obligatoriskt `valid_from`)
+  — det ÄR den åtgärdens indata, och köposten valideras om mot just det schemat
+  vid godkännandet. `change_reason` är valfritt (Story 2.2). Anges det ska det
+  ha minst 5 och högst 1 991 tecken, och köpostens orsak blir
+  `Tillägg: <texten>`. Utelämnat blir köpostens orsak
+  `Tillägg: signalfrasen ”<frasen>”` ur signalraden, och en fras som är tom
+  efter trimning ger **400 `orsak_saknas`** före varje skrivning, utan rad,
+  köpost eller auditrad: en saknad orsak hittas aldrig på. Vyns orsaksfält
+  visar den förifyllda orsaken som platshållare, och ett tomt fält skickas
+  inte. Tillsammans med `innanfor` ger fältet
   **400 `validation_error`**: låg frasen innanför uppdraget finns det inget att
   lägga till avtalet. Valfritt med flit — alla utanför-signaler blir inte
   tilläggsavtal, och ett förifyllt tak vore ett förslag ingen läst i
@@ -1938,6 +1950,14 @@ paketlistan och e-postköns importörer i hela `server/src`.
   **befintlig version** från en **ny version**. Effektivt versionsdatum är
   explicit `valid_from`, annars avtalets lästa `signed_date`; saknas båda
   anges datum som saknat, utan att härledas ur kötid eller klocka.
+- Story 2.2 (B-7 punkt 6, FR-2): för en post vars ja skriver en ny version
+  (`satt_baseline`, `andra_baseline` i båda slagen och `upsert_contract_part`
+  utom ren takbekräftelse) slutar `ja_registrerar` med
+  `Versionen får orsaken ”<orsak>”.` före beslutsraden, och med
+  `Orsaken saknas i förslaget.` när köposten saknar orsak. Orsaken är den som
+  ett ja registrerar: importens `avtal`, köpostens `change_reason` (signalens
+  eller Davids ord, Övrigt-radens text och datum). Samma text fryses i
+  beslutsradens `underlag.ja_registrerar`, också vid ett nej.
 - `tackning[]` är alla öppna avtal gånger de fyra mandatkällorna. Varje rad
   namnger avtal, projekt och källa, med `tackning`, `farsk` och `orsak`.
   Saknad cacherad ger `saknas`; oläsbar källa ger `olast`; regelbrott ger

@@ -37,12 +37,10 @@ import { koaRegisterkopia } from './uppdragReferens.js';
 // uppdragImport är ofarlig i ESM så länge inget importerat namn läses på modulnivå.
 import { UTKASTFRAGENYCKEL, upsertSvepvarden } from './uppdragSvep.js';
 
-/**
- * Skälet varje importerad version bär: ”avtal”, en av orsakerna avtal, tillägg
- * och utfall (PRD resa 1 steg 4, DK-8). `kraver_orsak_vid_ny_version()` (0068)
- * läser det.
- */
-export const IMPORTORSAK = 'avtal';
+// Importens orsak bor i lib (Story 2.2), så att läsvägen når den utan en
+// importcykel. Namnet exporteras vidare härifrån för befintliga anropare.
+import { IMPORTORSAK } from '../lib/avtalsdelsfalt.js';
+export { IMPORTORSAK } from '../lib/avtalsdelsfalt.js';
 
 /**
  * Orsaken som importen skrev före Story 2.1. Rader lagrade med den är

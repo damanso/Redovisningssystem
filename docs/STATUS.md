@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
+  1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
+     flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena
+     `versionsorsak(atgard, input)` och `orsaksmening(orsak)`. `signalorsak(fras)`
+     i `lib/scopeavgorande.ts`: `Tillägg: signalfrasen ”<frasen>”`, null för tom fras.
+  2. **Orsaken i postens ja-text** (`services/uppdragUndantag.ts`):
+     `beskrivBaselineandring` och `beskrivOvrigtBeslut` lägger
+     `Versionen får orsaken ”…”.` (eller `Orsaken saknas i förslaget.`) före
+     beslutsraden för varje post som skriver en ny version. Texten fryses i
+     beslutsradens `underlag.ja_registrerar`, också vid nej.
+  3. **Signalens fras som orsak**: `avgor_scopesignal`:s `tillagg.change_reason`
+     är valfritt; utan Davids ord blir köpostens orsak `signalorsak(fras)` ur den
+     låsta signalraden, och en tom fras ger 400 `orsak_saknas` före varje
+     skrivning. Vyns orsaksfält visar den förifyllda orsaken som platshållare,
+     och ett tomt fält skickas inte.
+  4. **Datum i `versions`**: `get_contract_usage` bär `start_date`, `end_date`
+     och `date_precision` per version (`DEL_KOLUMNER`, `AvtalsdelRad`, `Takversion`).
+  5. **Leverabeldatumets enda väg**: `LEVERABELKOD` exporteras ur
+     `lib/leveranskontrakt.ts`; zod-regeln `kravAndraBaselineForLeverabeldatum` i
+     `upsert_contract_part` fäller en leverabelkod med datumfält med 400 före kön.
+  6. **Prov**: nya `uppdragsytan-baselineorsak.test.ts` (N1–N4, F1–F6, S1–S7,
+     H1–H4, L1–L5 med planterade brott och vaktfall). Omskrivna: T2 och T8 i
+     `uppdragsytan-ovrigt`, L6 i `uppdragsytan-import` (rad 721–), P16:s lista
+     för `lib/avtalsdelsfalt.ts` i `uppdragsytan-undantag`, och fallet ”ett
+     halvfyllt tillägg fälls av zod” i `uppdragsytan-tillagg` (saknar nu
+     `valid_from` i stället för orsaken, som inte längre krävs).
+  7. **Inte kört:** sandlådan nekade `npm run typecheck` ("This command requires
+     approval"), så varken typecheck eller vitest kördes. Inget prov är observerat
+     grönt eller rött i sessionen; kedjans `npm run typecheck` och `npm test` är
+     belägget.
+  8. **Ingen migration** tillkommer.
+  9. **Drift:** en väntande `upsert_contract_part` med leverabelkod och datumfält
+     går efter driftsättningen varken att godkänna eller avvisa (schemat parsas
+     om). Driften hittar sådana med `SELECT id FROM action_approvals WHERE action =
+     'upsert_contract_part' AND status = 'pending' AND input->>'code' ~*
+     '^L[1-9][0-9]?$' AND (input ? 'start_date' OR input ? 'end_date' OR input ?
+     'date_precision')`; förslaget görs om som `andra_baseline`. Det är en
+     driftpost, ingen fråga till David. Väntande signaltillägg har redan en orsak
+     och påverkas inte, och redan registrerade beslutsrader behåller sin frysta
+     ja-text.
+
 - **2026-10-16 (Story 2.1, importen läser det frysta v3-kontraktet utan omformatering):**
   1. **Parsern** (`lib/leveranskontrakt.ts`) läser v3:s egen form: ramens timmar
      ur timtabellens Summa-rad när `**Timmar:**` bara är ungefärligt (`ca 430`

@@ -333,7 +333,12 @@ const text = (varde: string | undefined): string | null => {
 // ---------------------------------------------------------------------------
 
 const LEVERABELRUBRIK = /^(L[1-9]\d?|STYRNING)\b[\s.:—–-]*(.*)$/i;
-const LEVERABELKOD = /^L[1-9]\d?$/i;
+/**
+ * Den enda definitionen av en leverabelkod (`L1`–`L99`). Registret får bara
+ * rader med sådana koder, ur parserns utdata, och samma regel avgör att ett
+ * leverabeldatum bara sätts genom `andra_baseline` (Story 2.2, FR-1).
+ */
+export const LEVERABELKOD = /^L[1-9]\d?$/i;
 /** `Löpande styrgruppsrapportering (STYRNING)` — koden står i texten, den uppfinns inte. */
 const STYRNINGSCELL = new RegExp(`^(.*?)\\s*\\(${STYRNINGSKOD}\\)\\s*$`, 'i');
 

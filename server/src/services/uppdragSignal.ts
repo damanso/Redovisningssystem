@@ -32,7 +32,7 @@
 // någon status, och orsaken byggs av `tillaggsorsak` (B-8).
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
-import { arUpprepatAvgorande, tillaggsorsak } from '../lib/scopeavgorande.js';
+import { arUpprepatAvgorande, signalorsak, tillaggsorsak } from '../lib/scopeavgorande.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
@@ -74,9 +74,10 @@ export interface TandSignalInput {
  * Tillägget som ett "utanför" kan föda — EXAKT `andra_baseline`:s indata
  * (S1.3), inte en egen fältuppsättning. Köposten valideras om mot just det
  * schemat vid godkännandet (`approveAction`), så två listor hade bara varit två
- * ställen där samma sak kan sluta stämma.
+ * ställen där samma sak kan sluta stämma. Orsaken är valfri här (Story 2.2):
+ * utan Davids ord blir köpostens orsak signalens fras (`signalorsak`).
  */
-export type Tillaggsindata = UpsertContractPartInput & { valid_from: string; change_reason: string };
+export type Tillaggsindata = UpsertContractPartInput & { valid_from: string; change_reason?: string };
 
 export interface AvgorSignalInput {
   signal_id: string;
@@ -264,10 +265,15 @@ export async function tandSignal(
  * krock. `signal_id` jämförs med `lower`, eftersom en köpost som en människa
  * köat kan bära versaler. Ett tillägg som redan fanns redovisas med
  * `redan_koad: true` i stället för att hoppas över tyst.
+ *
+ * Orsaken (Story 2.2, B-7 punkt 6): Davids egna ord med prefixet när han
+ * skrivit dem, annars orsaken ur den låsta signalradens fras. `avgorSignal`
+ * har redan fällt en tom fras utan egna ord med 400 `orsak_saknas`, så
+ * köposten bär alltid en orsak och ingen är påhittad.
  */
 async function koaTillagget(
   client: PoolClient, companyId: string, userId: string, actor: Actor,
-  signal: { id: string; contract_id: string }, tillagg: Tillaggsindata,
+  signal: { id: string; contract_id: string; fras: string }, tillagg: Tillaggsindata,
 ): Promise<Tillaggsgodkannande> {
   const fanns = await client.query<{ id: string; action: string; status: string }>(
     `SELECT id, action, status FROM action_approvals
@@ -287,7 +293,7 @@ async function koaTillagget(
   const koad = await createApproval(client, companyId, userId, actor, 'andra_baseline', {
     ...tillagg,
     contract_id: signal.contract_id,
-    change_reason: tillaggsorsak(tillagg.change_reason),
+    change_reason: tillagg.change_reason !== undefined ? tillaggsorsak(tillagg.change_reason) : signalorsak(signal.fras),
     signal_id: signal.id,
     kalla: { typ: 'scopesignal', id: signal.id },
   });
@@ -319,7 +325,9 @@ async function koaTillagget(
  *
  * Ett tillägg på ett annat avtal än signalens ger 400 `signal_annat_avtal`
  * efter prövningen av ett upprepat avgörande och före varje skrivning, och
- * köposten bär alltid signalens avtal (andra granskningen i drift).
+ * köposten bär alltid signalens avtal (andra granskningen i drift). Ett
+ * tillägg utan orsak på en signal vars fras är tom ger därefter 400
+ * `orsak_saknas`, också det före varje skrivning (Story 2.2).
  *
  * En okänd signal — inklusive grannbolagets, som RLS ändå döljer — svarar
  * "finns inte". Ett tyst noll rader hade sett ut som ett lyckat avgörande.
@@ -337,8 +345,8 @@ export async function avgorSignal(
 ): Promise<AvgorSignalSvar> {
   // Radlåset serialiserar två samtidiga avgöranden av samma signal. Avtalet och
   // underlaget kommer ur den låsta raden, aldrig ur indata.
-  const signalres = await client.query<{ id: string; contract_id: string; underlag_ref_id: string | null }>(
-    `SELECT id, contract_id, underlag_ref_id FROM uppdrag_scopesignal
+  const signalres = await client.query<{ id: string; contract_id: string; fras: string; underlag_ref_id: string | null }>(
+    `SELECT id, contract_id, fras, underlag_ref_id FROM uppdrag_scopesignal
       WHERE id = $1 AND company_id = $2 FOR UPDATE`,
     [input.signal_id, companyId],
   );
@@ -366,6 +374,16 @@ export async function avgorSignal(
     throw new BadRequestError(
       'signal_annat_avtal',
       'Tillägget hör till ett annat avtal än signalen. Ett tillägg ur en signal hör alltid till signalens eget avtal.',
+    );
+  }
+
+  // Story 2.2 (FR-2): utan Davids ord är frasen orsaken. En fras som är tom
+  // efter trimning ger ingen orsak, och en saknad orsak hittas aldrig på.
+  // Före varje skrivning, som prövningarna ovan.
+  if (input.tillagg && input.tillagg.change_reason === undefined && signalorsak(signal.fras) === null) {
+    throw new BadRequestError(
+      'orsak_saknas',
+      'Signalens fras är tom, så orsaken kan inte härledas. Skriv orsaken i tillägget.',
     );
   }
 
