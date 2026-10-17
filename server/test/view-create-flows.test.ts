@@ -3,7 +3,7 @@
 // godkännandekön (Att göra) — samma action-lager och regler som AI-vägen.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, registerUser, type TestUser } from './helpers.js';
+import { api, app, registerUser, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123'; // samma som registerUser använder
 
@@ -244,10 +244,23 @@ describe('godkännandekonflikt syns i Att göra', () => {
     const pay = await agent.post(`/app/c/${companyId}/invoices/${inv![1]}/pay`).type('form')
       .send({ payment_date: '2025-09-10' });
     expect(pay.headers.location).toBe(`/app/c/${companyId}/approvals`);
-    // ...och godkänn: utförandet ska stoppas med ett SYNLIGT skäl (inte tyst).
+    // Förslagets id ur kön (Story 1.1): kortet har inte längre något
+    // approve-formulär att läsa id:t ur, eftersom bokningen inte ligger i kön.
+    const ko = await api.get(`/api/companies/${companyId}/approvals?status=pending`).set({ Authorization: `Bearer ${user.token}` });
+    expect(ko.status, JSON.stringify(ko.body)).toBe(200);
+    const forslag = (ko.body.approvals as { id: string; action: string; input: { invoice_id?: string } }[])
+      .find((a) => a.action === 'register_invoice_payment' && a.input.invoice_id === inv![1]);
+    expect(forslag, 'betalningsförslaget saknas i kön').toBeDefined();
+    const aid = [forslag!.id, forslag!.id] as const;
+    // Kortet visar ordningen i stället för en Godkänn-knapp som bara kan ge fel.
     const appr = await agent.get(`/app/c/${companyId}/approvals`);
-    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/approve/);
-    const res = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
+    const kortet = appr.text.split('<article class="ai-card"').find((k) => k.includes(`id="forslag-${aid[1]}"`));
+    expect(kortet, 'betalningskortet saknas på Att göra').toBeDefined();
+    expect(kortet!.split('</article>')[0]).not.toContain(`/approvals/${aid[1]}/approve`);
+    expect(kortet!.split('</article>')[0]).toContain('Be AI-assistenten föreslå bokföringen först.');
+    // ...och godkänn ändå från en gammal flik: utförandet ska stoppas med ett
+    // SYNLIGT skäl (inte tyst).
+    const res = await agent.post(`/app/c/${companyId}/approvals/${aid[1]}/approve`).send({});
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toContain('fel=');
     const page = await agent.get(res.headers.location!);

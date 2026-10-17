@@ -109,24 +109,61 @@ export function parseSie(text: string): ParsedSie {
 
 export interface SieImportResult { accounts_created: number; accounts_skipped: number; vouchers_imported: number }
 
-export async function importSie(
-  client: PoolClient, companyId: string, userId: string, fiscalYearId: string, parsed: ParsedSie,
-): Promise<SieImportResult> {
-  let accountsCreated = 0, accountsSkipped = 0, vouchersImported = 0;
+/** Vad en import skulle göra: kontona som skapas, antalet som hoppas över och verifikaten med rader. */
+export interface SieImportPlan { newAccounts: ParsedSieAccount[]; skippedAccounts: number; vouchers: ParsedSieVoucher[] }
 
-  // 1) Konton: skapa de som inte redan finns (standard-BAS eller egna).
-  //    Befintliga hämtas FÖRST i en SELECT och hoppas över — vi får ALDRIG låta
-  //    en INSERT slå i unik-indexet inne i importtransaktionen: en misslyckad
-  //    sats försätter hela Postgres-transaktionen i abortläge (25P02) och nästa
-  //    fråga kraschar rått. (Grindfynd: import mot bolag med befintliga konton
-  //    gav 500 exakt så.)
+/**
+ * Importens regel på ett ställe, så att förhandsvisningen i Att göra räknar
+ * exakt som importen (Story 1.1). Befintliga konton hämtas FÖRST i en SELECT och
+ * hoppas över — vi får ALDRIG låta en INSERT slå i unik-indexet inne i
+ * importtransaktionen: en misslyckad sats försätter hela Postgres-transaktionen
+ * i abortläge (25P02) och nästa fråga kraschar rått. (Grindfynd: import mot
+ * bolag med befintliga konton gav 500 exakt så.) Verifikat utan rader importeras inte.
+ */
+export async function planSieImport(client: PoolClient, companyId: string, parsed: ParsedSie): Promise<SieImportPlan> {
   const existing = await client.query<{ account_number: number }>(
     'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
     [companyId, parsed.accounts.map((a) => a.number)],
   );
   const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
+  const newAccounts: ParsedSieAccount[] = [];
+  let skippedAccounts = 0;
   for (const acc of parsed.accounts) {
-    if (acc.number < 1000 || acc.number > 9999 || existingNumbers.has(acc.number)) { accountsSkipped += 1; continue; }
+    if (acc.number < 1000 || acc.number > 9999 || existingNumbers.has(acc.number)) { skippedAccounts += 1; continue; }
+    newAccounts.push(acc);
+  }
+  return { newAccounts, skippedAccounts, vouchers: parsed.vouchers.filter((v) => v.lines.length > 0) };
+}
+
+/**
+ * Antalet verifikat och nya konton som en import av texten skulle ge, utan att
+ * skriva något. `null` när texten inte går att läsa. Bara `parseSie` står i
+ * `try`: ett databasfel fångas aldrig i transaktionen (lärdom 2).
+ */
+export async function sieImportPreview(
+  client: PoolClient, companyId: string, sieContent: string,
+): Promise<{ vouchers: number; newAccounts: number } | null> {
+  let parsed: ParsedSie;
+  try {
+    parsed = parseSie(sieContent);
+  } catch (err) {
+    if (err instanceof BadRequestError) return null;
+    throw err;
+  }
+  const plan = await planSieImport(client, companyId, parsed);
+  return { vouchers: plan.vouchers.length, newAccounts: plan.newAccounts.length };
+}
+
+export async function importSie(
+  client: PoolClient, companyId: string, userId: string, fiscalYearId: string, parsed: ParsedSie,
+): Promise<SieImportResult> {
+  let accountsCreated = 0, vouchersImported = 0;
+
+  // 1) Konton: skapa de som inte redan finns (standard-BAS eller egna). Urvalet
+  //    görs av planSieImport, med SELECT före varje INSERT.
+  const plan = await planSieImport(client, companyId, parsed);
+  const accountsSkipped = plan.skippedAccounts;
+  for (const acc of plan.newAccounts) {
     await createCompanyAccount(client, companyId, userId, {
       account_number: acc.number, name: acc.name, account_type: accountTypeForNumber(acc.number),
     });
@@ -135,8 +172,7 @@ export async function importSie(
 
   // 2) Verifikat: importeras med FÄRSKA nummer i importserien 'I'; ursprungligt
   //    serie/nummer bevaras i beskrivningen. postVoucher tvingar debet=kredit.
-  for (const v of parsed.vouchers) {
-    if (v.lines.length === 0) continue;
+  for (const v of plan.vouchers) {
     await postVoucher(client, companyId, userId, {
       fiscalYearId,
       series: 'I',

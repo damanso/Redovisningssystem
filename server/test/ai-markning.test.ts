@@ -36,7 +36,8 @@ async function nyFaktura(): Promise<string> {
 }
 
 /**
- * Korten på den renderade sidan, ett per <article class="ai-card">.
+ * Korten på den renderade sidan, ett per <article class="ai-card" …>. Delningen
+ * går på prefixet, eftersom kortet bär `aria-labelledby` efter klassen (Story 1.1).
  *
  * Assertionen inuti är inte pynt: `grep 'class="innehall"'` gav 0 träffar i ett
  * annat pass där sanningen var 2, för attributet skrevs utan citattecken. En
@@ -44,9 +45,9 @@ async function nyFaktura(): Promise<string> {
  */
 function kort(sidtext: string): string[] {
   expect(sidtext, 'sidan innehåller inget ai-card — då mäter provet ingenting')
-    .toContain('<article class="ai-card">');
+    .toContain('<article class="ai-card"');
   return sidtext
-    .split('<article class="ai-card">')
+    .split('<article class="ai-card"')
     .slice(1)
     .map((s) => s.slice(0, s.indexOf('</article>')));
 }

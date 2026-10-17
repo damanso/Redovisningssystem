@@ -1,6 +1,7 @@
 import { formatOre, type Ore } from '../../domain/money.js';
 import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
+import { oppningsvag, type Referensvisning } from '../../lib/referens.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -118,6 +119,45 @@ export function farskhetsrad(delar: readonly string[]): Raw {
   return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
 }
 
+/**
+ * En tidpunkt som Postgres skriver den (`senast_verifierad::text`, till
+ * exempel "2026-09-01 08:00:00.123+02") i ISO 8601-form, så att `Date` läser
+ * den lika i varje miljö. En tid som redan är ISO lämnas som den är.
+ */
+function isoTid(tid: string): string {
+  return tid.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+}
+
+/** Sortens namn när referensen saknar titel, och när källan inte är namngiven. */
+const REFERENSNAMN: Record<Referensvisning['sort'], { titel: string; kalla: string }> = {
+  drive: { titel: 'Dokument i Drive', kalla: 'Drive' },
+  mejl: { titel: 'Mejl', kalla: 'mejl' },
+  kalender: { titel: 'Kalenderpost', kalla: 'kalender' },
+};
+
+/**
+ * En referens i vyn (Story 3.1, FR-35, FR-36) — den enda renderaren för en
+ * pekare ut till Drive, mejlen eller kalendern.
+ *
+ * Fyra delar, i läsordning: vägen ut (härledd ur id:t vid rendering, aldrig
+ * lagrad och aldrig hämtad), id:t självt (så att en referens utan väg ändå går
+ * att söka upp), läget som husets statuschip, och en rad med källa, lästid och
+ * händelsedatum. Lästiden står vid värdet med datum när den inte är från i dag;
+ * det som saknas — "aldrig verifierad", "datum saknas" — står som vanlig text,
+ * aldrig nedtonat, eftersom ett tomläge inte är en bisak.
+ */
+export function referensvisning(r: Referensvisning, idag: string): Raw {
+  const vag = oppningsvag(r);
+  const namn = r.titel ?? REFERENSNAMN[r.sort].titel;
+  return html`<span data-referens="${r.referens_id}">${vag === null
+    ? html`<span>${namn}</span>`
+    : html`<a href="${vag}" target="_blank" rel="noopener">${namn}</a>`} <span class="code" style="font-size:12px">${r.extern_id}</span> ${statusChip(r.status)} <span style="font-size:12.5px"><span class="muted">källa ${r.extern_kalla ?? REFERENSNAMN[r.sort].kalla}</span> · ${r.senast_verifierad === null
+    ? html`<span>aldrig verifierad</span>`
+    : html`<span class="muted">verifierad ${farskhetstid(isoTid(r.senast_verifierad), idag)}</span>`} · ${r.handelse_datum === null
+    ? html`<span>datum saknas</span>`
+    : html`<span class="muted">händelse ${r.handelse_datum}</span>`}</span></span>`;
+}
+
 /** "läst ur redovisningen <tid>" för ett värde läst direkt ur en källa. */
 export const direktFarskhet = (f: Farskhet, idag: string): string =>
   `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
@@ -219,6 +259,9 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
   drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
   trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
+  // uppdrag_referens (0086)
+  overifierad: { label: 'Ej verifierad', kind: 'muted', icon: '○' },
+  utanfor_sparr: { label: 'Utanför spärrmappen', kind: 'neg', icon: '!' },
   // Kvittobilagor (0075). `active` finns redan ovan.
   awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
   uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files
@@ -1016,6 +1059,8 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 }
 .ai-markning__i { line-height: 1; }
 .ai-card__why { padding: 4px 16px 6px; color: var(--ink-2); font-size: 13px; }
+/* Beroendet: .ai-card__why:s mått i ockrans bläck ("väntar på människa"), ersätter en hårdkodad hexfärg. */
+.ai-card__beroende { padding: 4px 16px 6px; font-size: 13px; color: var(--ai-ink); }
 /* Identifierande rad: vilken faktura/lön/verifikat förslaget gäller. */
 .ai-card__subject { padding: 2px 16px 0; font-size: 14.5px; color: var(--ink); }
 .ai-fields { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 6px 16px 12px; }

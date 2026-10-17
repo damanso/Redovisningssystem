@@ -1132,6 +1132,13 @@ idempotent, ingen backfill.
   tänds heller. En befintlig referens med samma `(sort, extern_id)` på avtalet
   **återanvänds** (läsning före skrivning): samma mejl tänder ofta två fraser,
   och utan uppslaget hade den andra fallit på `uppdrag_referens_uk`.
+  **Story 3.1:** underlagets id prövas mot källans form (`lib/referens.ts`), och
+  fel form ger 400 `validation_error`. Ett mejl är ett RFC 5322 Message-ID,
+  `id-left@id-right`, med eller utan vinkelparenteser, och det **lagras utan
+  vinkelparenteserna** — uppslaget görs på samma kanoniska form, så `<abc@x>`
+  och `abc@x` är samma referens. En kalenderpost är Google Calendars
+  händelse-id (`A–Z a–z 0–9 - _`, minst fem tecken, aldrig ett iCalUID med `@`).
+  Referensen föds `overifierad`.
 - **`tand_av` är INTE ett indatafält.** Det härleds ur den inloggade användaren
   (profilnamn, annars e-post) — samma regel som `satt_av_manniska`: ett fält
   anroparen fyller i om sig själv är ett påstående, inte ett spår.
@@ -1239,7 +1246,9 @@ oskriven referens, och en egen kötabell hade betytt två rader om samma sak.
 ENA kopiereferens är `sort = 'drive'`, `extern_nyckel = 'registerkopia'`,
 `extern_kalla = 'drive:sparrmapp'`; första gången finns ingen fil, så raden föds
 med det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
-får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
+får sitt riktiga `extern_id` när kopian rapporteras skriven. Raden föds
+`overifierad` som varje annan referens (Story 3.1), och platshållaren är det
+enda id som undantas från Drive-formen. Köningen sker även
 från `skriven` och `fel` (omkö vid ny ändring) och nollställer då `ko_fel`.
 Rullas importen tillbaka finns ingen köpost kvar — och går den igenom kan kopian
 aldrig glömmas bort.
@@ -1256,7 +1265,11 @@ aldrig glömmas bort.
   - `{ lage: 'skriven', drive_id }` → `ko_status = 'skriven'`, `extern_id` blir
     Drive-id:t, `ko_fel` nollställs. Id:t prövas med **samma spärr som varje
     annan referens**: aldrig en url, aldrig en sökväg (400 `validation_error`) —
-    en delningslänk hade slutat fungera nästa gång filen delades om.
+    en delningslänk hade slutat fungera nästa gång filen delades om. Sedan
+    Story 3.1 prövas id:t också mot Drives form (`A–Z a–z 0–9 - _`), och fel
+    form ger 400 `validation_error`. Står samma Drive-id redan i avtalet som
+    `utanfor_sparr` (svepet har sett filen utanför spärrmappen) fälls rapporten
+    med **409 `utanfor_sparr`**, och köposten står kvar.
   - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med källsystemets egna ord i
     `ko_fel`. Posten står kvar i hämtningen.
   - **En rapport mot en rad utan öppen köpost fälls:** 409 `ingen_oppen_kopost`
@@ -1290,8 +1303,14 @@ egna databasen kommer in som validerad indata:
 - `uppdrag[]` — per uppdrag `contract_id`, `referenser[]`, `kalenderhandelser[]`
   och valfri `sparrmapp_id` (Drive-id, aldrig en sökväg).
   - `referenser[]`: `referens_id`, `lage` (samma union som S7.1:s verifiering),
-    valfri `leverabel_kod`, valfri `revision` och valfri `foralderkedja`
-    (Drive-id:n, filens egen förälder först).
+    valfri `leverabel_kod`, valfri `revision`, valfri `foralderkedja`
+    (Drive-id:n, filens egen förälder först) och valfri `handelse_datum`
+    (`YYYY-MM-DD`, Story 3.1) — källhändelsens datum ur Hermes läsning av
+    källan, aldrig länkningstiden. Det är den enda vägen in för referensens
+    händelsedatum; utelämnat lämnar det lagrade orört, och ett ogiltigt datum
+    ger 400 `validation_error` för hela anropet.
+  - **En referens som Hermes inte kunde verifiera skickas inte. Servern lämnar då
+    status och `senast_verifierad` orörda.**
   - `kalenderhandelser[]`: `datum` + `minuter` som **heltal** — aldrig timmar som
     flyttal, samma regel som tidposternas `billable_minutes`.
   - **Ett uppdrag som inte står i listan rörs inte.** Cachen speglar det senaste
@@ -1317,10 +1336,40 @@ egna databasen kommer in som validerad indata:
 spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändelserna
 — och därefter förslagen. Svarets `nycklar` står i **härledningsordning** (inte
 sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
-`kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
-avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`),
+`kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (`antal`,
+räknarna `levande`, `drift`, `trasig`, `overifierad` och `utanfor_sparr`, som
+tillsammans är `antal`, och `avvikande`), `sparrmapp` (`ok`, `provade`, `utanfor`),
 `prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`, `ram_timmar`,
 `ram_kronor`) och `troskellarm` (`trosklar`, `larm`).
+
+**Referensens läge (Story 3.1, FR-10, FR-36).** En ny referens är
+`overifierad` tills svepet sagt annat. Varje observation bedöms av
+`referensutfall` i den här ordningen:
+
+- `finns: false` → `trasig` med avvikelsen `saknas`. Det finns inget tomt läge.
+- **Fryst revision.** En referens med `revision` (fryst vid länkningen, bara
+  Drive) och en observation utan `revision` **bedöms inte**: ingen skrivning,
+  och referensen står i svarets `ej_bedomda` med orsaken `revision_saknas`. En
+  drift återställs alltså aldrig tyst till `levande`. En rapporterad annan
+  revision ger avvikelsen `revision`, och den lagrade revisionen skrivs aldrig
+  om.
+- **Spärrdomen.** När både uppdragets `sparrmapp_id` och observationens
+  `foralderkedja` finns räknas domen `innanfor` eller `utanfor` med
+  `tillhorSparrmapp`. En Drive-referens med domen `utanfor` får avvikelsen och
+  läget **`utanfor_sparr`**, och **läget består tills en dom `innanfor`
+  kommer** (eller tills filen försvunnit och raden blir `trasig`). Ett svep utan
+  dom gör aldrig en utanför-fil levande. Utan `sparrmapp_id` görs ingen
+  spärrmappskontroll, som förut.
+- Därefter `titel` och `hash` som förut. Avvikelserna står i ordningen
+  `utanfor_sparr`, `titel`, `hash`, `revision`. Med `utanfor_sparr` blir läget
+  `utanfor_sparr`, med någon annan avvikelse `drift`, annars `levande`.
+- `senast_verifierad = now()` och `handelse_datum` (när det skickas) skrivs i
+  samma UPDATE som läget, och bara för en bedömd observation.
+
+En referens i `utanfor_sparr` visas aldrig som registerdokument
+(`las_kontraktsyta`), och en ny länkning eller en Drive-rapport med samma id i
+avtalet fälls med 409 `utanfor_sparr`. Utfallet är en driftpost för Hermes,
+aldrig en post i `las_undantag`.
 
 **Prognosens två ramdatum (S7.4, FR-5).** `ram_timmar` och `ram_kronor` säger när
 uppdragets ram nås, härlett ur den registrerade tiden t.o.m. i dag (rotdelens
@@ -1409,10 +1458,14 @@ står alltså inte i arbetslistan, och täckningen ser körningens köposter. Et
 avstått svep prövar inga förslag.
 
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
-`referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
+`referenser_verifierade` — bara de bedömda —, `okanda_leverabelkoder`,
+`utanfor_sparr` — id:n för de bedömda referenser som står i `utanfor_sparr`
+efter svepet — och `ej_bedomda` — `{ referens_id, orsak: 'revision_saknas' }`;
+båda listorna står alltid med, också tomma), `hoppade[]`,
 `hoppade_kopior[]`, `tackning[]`, `ovrigt` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
-`status`, `senast_verifierad`), `drive_ko` ur `hamta_drive_ko` och
-`ovrigt_kandidater` (Story 1.14).
+`status`, `senast_verifierad` och `revision` — den frysta revisionen, så att
+Hermes vet vilka referenser som ska rapportera sin), `drive_ko` ur
+`hamta_drive_ko` och `ovrigt_kandidater` (Story 1.14).
 
 - `arbetslista.ovrigt_kandidater[]` är `{ id, contract_id, text, datum }` för
   varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
@@ -1623,6 +1676,13 @@ känslig åtgärd och godkänns i **Att göra**.
   `valid_from` och orsaken) och `scopelinje` (avtalets egna innanför/utanför/
   fraser i `ordning`). Okänt eller främmande avtal ger **404 `not_found`** —
   aldrig en tom yta, som hade sett ut som "avtalet är tomt".
+  **Story 3.1:** varje pekare i `dokument.referenser[]` bär också
+  `handelse_datum` (`null` = datum saknas) bredvid `status` och
+  `senast_verifierad`. En Drive-referens i läget `utanfor_sparr` (svepets
+  spärrdom) är inget registerdokument: den står inte i `dokument.referenser`,
+  och dess id redovisas i det nya fältet **`dokument.utanfor_sparr: string[]`**,
+  så att inget filtreras bort i tysthet. `dokument` har nycklarna
+  `source_file_id`, `referenser` och `utanfor_sparr`.
 - **Ytan är vägen till dokumentet och registret över dess läge — aldrig en
   kopia** (NFR-12). Svaret bär `source_file_id` och Drive-referensernas
   `extern_id` och ingenting mer om handlingen; `includeContent` anropas aldrig
@@ -1649,8 +1709,9 @@ känslig åtgärd och godkänns i **Att göra**.
 (knappen **Kontraktet** sist i knappbandet, efter *Planen* — husets ruttmönster,
 ingen `.subnav`: menyn ägs av S10.7). Fyra paneler per avtal, i läsarens
 frågeordning: **Vägen till dokumentet** (länk till husets dokumentarkiv för
-`source_file_id`, och Drive-pekarna som ID med nyckelrymd, källa och läge — id:t
-aldrig länken, S7.1), **Det som gäller nu**, **Tilläggen** med orsaken i den
+`source_file_id`, och Drive-pekarna med nyckelrymd, källa, läge, lästid och
+händelsedatum — pekaren lagras som id, och länken härleds ur id:t när sidan
+ritas, Story 3.1), **Det som gäller nu**, **Tilläggen** med orsaken i den
 bredaste kolumnen, och **Vad som ingår**. Ett avtal i `kontrakt_tillstand =
 'utkast'` byter rubrik till **Utkastets delar** och säger rakt ut att ingenting
 där gäller; utkastets obesvarade frågor hänvisas till handlingen och återges

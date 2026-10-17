@@ -164,6 +164,10 @@ export async function lasSvepvarden(
  * förra arbetslistan. Repot kan inte avgöra det själv (det ser inte Drive), och
  * ett svep som gissade "ny" ur sin egen cache hade inte längre varit
  * omräkningsbart: samma indata två gånger måste ge samma rader.
+ *
+ * `handelse_datum` (Story 3.1) är källhändelsens datum ur Hermes läsning av
+ * källan — den enda vägen in för referensens händelsedatum. Utelämnat lämnar
+ * det lagrade orört.
  */
 const ReferensobservationSchema = z.object({
   referens_id: UuidSchema,
@@ -172,6 +176,7 @@ const ReferensobservationSchema = z.object({
   revision: z.number().int().nonnegative().safe().optional(),
   /** Drive-id:n, filens egen förälder först. Prövas av `tillhorSparrmapp`. */
   foralderkedja: z.array(safeText(200)).max(50).optional(),
+  handelse_datum: IsoDateSchema.optional(),
 }).strict();
 
 /**
@@ -253,12 +258,25 @@ export interface Arbetsreferens {
   hash_vid_lankning: string | null;
   status: string;
   senast_verifierad: string | null;
+  /** Revisionen fryst vid länkningen (Story 3.1): referensen ska rapportera sin. */
+  revision: number | null;
+}
+
+/** En observation som inte bedömdes och inte skrevs (Story 3.1). */
+export interface EjBedomd {
+  referens_id: string;
+  orsak: 'revision_saknas';
 }
 
 export interface Uppdragsutfall {
   contract_id: string;
   project_id: string;
+  /** De bedömda referenserna. En referens i `ej_bedomda` räknas inte. */
   referenser_verifierade: number;
+  /** Bedömda referenser som står i `utanfor_sparr` efter svepet. En driftpost, aldrig en fråga. */
+  utanfor_sparr: string[];
+  /** Observationer som inte bedömdes, med orsaken. Alltid med, också tom. */
+  ej_bedomda: EjBedomd[];
   nycklar: string[];
   skrivna: number;
   borttagna: number;
@@ -542,13 +560,29 @@ async function svepEttUppdrag(
 ): Promise<Uppdragsutfall> {
   // (1) Referenserna. `verifieraReferens` äger jämförelsen mot baslinjen och
   // stämpeln `senast_verifierad` — svepet gör ingen egen bedömning av drift.
+  // Spärrdomen räknas här, före verifieringen, när både uppdragets spärrmapp
+  // och observationens kedja finns (Story 3.1). En observation som inte
+  // bedömdes står bara i `ej_bedomda`: den räknas varken i cachen eller i
+  // förslagen.
   const verifierade: Verifierad[] = [];
+  const ejBedomda: EjBedomd[] = [];
   for (const o of obs.referenser ?? []) {
-    const utfall = await verifieraReferens(client, companyId, o.referens_id, o.lage);
+    const sparr = obs.sparrmapp_id === undefined || o.foralderkedja === undefined
+      ? undefined
+      : tillhorSparrmapp(o.foralderkedja, obs.sparrmapp_id) ? 'innanfor' as const : 'utanfor' as const;
+    const utfall = await verifieraReferens(client, companyId, o.referens_id, o.lage, {
+      ...(o.revision === undefined ? {} : { revision: o.revision }),
+      ...(o.handelse_datum === undefined ? {} : { handelse_datum: o.handelse_datum }),
+      ...(sparr === undefined ? {} : { sparr }),
+    });
     // En referens under ett ANNAT uppdrag är inte det här uppdragets referens.
     // RLS och bolagsspärren i S7.1 stoppar grannbolaget; det här stoppar en
     // observation som hamnat under fel uppdrag i anroparens indata.
     if (utfall.referens.contract_id !== rad.contract_id) throw new NotFoundError('uppdrag_referens');
+    if (!utfall.bedomd) {
+      ejBedomda.push({ referens_id: utfall.referens.id, orsak: utfall.orsak ?? 'revision_saknas' });
+      continue;
+    }
     verifierade.push({ obs: o, utfall });
   }
 
@@ -557,6 +591,7 @@ async function svepEttUppdrag(
     const iSort = verifierade.filter((v) => v.utfall.referens.sort === sort);
     if (iSort.length === 0) continue;
     // En rad per källsystem, så att varje värde bär EN sann `kalla` (FR-35).
+    // De fem räknarna är tillsammans `antal`.
     varden.push({
       nyckel: `referenser:${sort}`,
       kalla: sort,
@@ -565,6 +600,8 @@ async function svepEttUppdrag(
         levande: iSort.filter((v) => v.utfall.referens.status === 'levande').length,
         drift: iSort.filter((v) => v.utfall.referens.status === 'drift').length,
         trasig: iSort.filter((v) => v.utfall.referens.status === 'trasig').length,
+        overifierad: iSort.filter((v) => v.utfall.referens.status === 'overifierad').length,
+        utanfor_sparr: iSort.filter((v) => v.utfall.referens.status === 'utanfor_sparr').length,
         avvikande: iSort
           .filter((v) => v.utfall.avvikelser.length > 0)
           .map((v) => ({
@@ -774,6 +811,10 @@ async function svepEttUppdrag(
     contract_id: rad.contract_id,
     project_id: rad.project_id,
     referenser_verifierade: verifierade.length,
+    utanfor_sparr: verifierade
+      .filter((v) => v.utfall.referens.status === 'utanfor_sparr')
+      .map((v) => v.utfall.referens.id),
+    ej_bedomda: ejBedomda,
     // HÄRLEDNINGSORDNINGEN, inte den sorterade skrivordningen: ordningen är ett
     // krav (verifiering → spärrmapp → prognos), och ett krav som inte syns i
     // svaret går bara att pröva genom att läsa koden.
@@ -909,7 +950,7 @@ export async function korUppdragssvep(
   // fil som aldrig skrivits. De ligger i Drive-kön i stället.
   const attVerifiera = await client.query<Arbetsreferens>(
     `SELECT id AS referens_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
-            hash_vid_lankning, status, senast_verifierad::text
+            hash_vid_lankning, status, senast_verifierad::text, revision
        FROM uppdrag_referens
       WHERE company_id = $1 AND contract_id = ANY($2::uuid[])
         AND (ko_status IS NULL OR ko_status = 'skriven')
