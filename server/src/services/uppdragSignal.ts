@@ -38,6 +38,7 @@ import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import type { UpsertContractPartInput } from './contracts.js';
 import { skapaReferens, type Referenssort } from './uppdragReferens.js';
+import { kanonisktReferensId } from '../lib/referens.js';
 
 /**
  * Exakt CHECK-villkorets två värden (0068 och 0081). Tystnaden är det tredje
@@ -204,14 +205,15 @@ async function inloggadSom(client: PoolClient, userId: string): Promise<string> 
  * extern_id). Utan uppslaget hade den andra signalen på samma mejl fallit på en
  * dubblettkonflikt — ett 409 mitt i ett flöde där ingenting är fel.
  *
- * Id:t trimmas före uppslaget av exakt samma skäl som `skapaReferens` trimmar
- * det: `" abc"` och `"abc"` är samma pekare, och en otrimmad jämförelse här hade
- * missat raden och sedan skapat en dubblett av den.
+ * Uppslaget och skrivningen använder samma kanoniska form
+ * (`kanonisktReferensId`, Story 3.1): trimmat, och för mejl utan vinkelparenteser.
+ * `"<a@b>"` och `"a@b"` är samma pekare, och en annan form här hade missat raden
+ * och gett 409 mitt i flödet när `skapaReferens` sedan krockade med den.
  */
 export async function underlagsreferens(
   client: PoolClient, companyId: string, contractId: string, underlag: Signalunderlag,
 ): Promise<string> {
-  const externId = underlag.extern_id.trim();
+  const externId = kanonisktReferensId(underlag.sort, underlag.extern_id);
   const fanns = await client.query<{ id: string }>(
     `SELECT id FROM uppdrag_referens
       WHERE company_id = $1 AND contract_id = $2 AND sort = $3 AND extern_id = $4`,

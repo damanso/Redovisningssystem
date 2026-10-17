@@ -24,7 +24,8 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { withTenantTransaction } from '../src/db/tx.js';
-import { upsertSvepvarden } from '../src/services/uppdragSvep.js';
+import { upsertSvepvarden, type Svepvarde } from '../src/services/uppdragSvep.js';
+import { listaReferenser, skapaReferens } from '../src/services/uppdragReferens.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const MOTTAGARE = 'Eva Lind, NVR Bygg AB';
@@ -147,17 +148,34 @@ async function nyttUppdrag(namn: string, opts: {
   return { projektId: projekt, avtalId: avtal };
 }
 
-/** Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen. */
+/**
+ * Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen.
+ * Story 3.1: handlingen är en riktig referens, skriven genom S7.1:s skrivväg
+ * (återanvänd om den redan finns), och förslaget bär dess `referens_id`.
+ */
 async function skrivForslag(contractId: string, koder: string[], revision: number): Promise<void> {
-  await withTenantTransaction(user.userId, companyId, (client) => upsertSvepvarden(
-    client, companyId, contractId,
-    koder.map((kod) => ({
-      nyckel: `statusforslag:${kod}`,
-      kalla: 'drive',
-      varde: { leverabel_kod: kod, revision, extern_id: `1AbC_${kod}`, referensstatus: 'levande' },
-    })),
-  ));
+  await withTenantTransaction(user.userId, companyId, async (client) => {
+    const befintliga = await listaReferenser(client, companyId, contractId);
+    const varden: Svepvarde[] = [];
+    for (const kod of koder) {
+      const externId = `1AbC_${kod}`;
+      const referens = befintliga.find((r) => r.sort === 'drive' && r.extern_id === externId)
+        ?? await skapaReferens(client, companyId, {
+          contract_id: contractId, sort: 'drive', extern_id: externId, extern_nyckel: 'leverabel-handling', extern_kalla: 'drive:locollabs',
+        });
+      handlingar.set(`${contractId}:${kod}`, referens.id);
+      varden.push({
+        nyckel: `statusforslag:${kod}`,
+        kalla: 'drive',
+        varde: { leverabel_kod: kod, revision, referens_id: referens.id, extern_id: externId, referensstatus: 'levande' },
+      });
+    }
+    await upsertSvepvarden(client, companyId, contractId, varden);
+  });
 }
+
+/** Referensens id per avtal och leverabelkod, så att vyprovet kan pröva hjälparens krok. */
+const handlingar = new Map<string, string>();
 
 beforeAll(async () => {
   user = await registerUser('statusbyte');
@@ -508,6 +526,9 @@ describe('vyn: statusförslaget på uppdragssidan', () => {
     // Underlaget: koden, Drive-revisionen och handlingen — i klartext.
     expect(html).toContain('Drive-revision');
     expect(html).toContain('1AbC_L6');
+    // Story 3.1: handlingen står genom vyhjälparen, med sitt läge.
+    expect(html).toContain(`data-referens="${handlingar.get(`${avtalId}:L6`)}"`);
+    expect(html).toContain('Ej verifierad');
     expect(html).toContain('name="utfall" value="bekraftad"');
     expect(html).toContain('name="utfall" value="retur"');
     // JS-fritt, som resten av vyn.

@@ -153,6 +153,71 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-17 (Story 3.1, en referens är overifierad tills svepet sagt annat och bär händelsedatum och fryst revision):**
+  1. **Migration 0086** (`server/migrations/0086_referens.sql`, additiv och
+     idempotent): `uppdrag_referens.status` får fem värden, `overifierad` (ny
+     standard) och `utanfor_sparr` tillkommer. Kolumnerna `handelse_datum date`
+     och `revision bigint` tillkommer, plus CHECK
+     `uppdrag_referens_revision_bara_drive` och triggern
+     `uppdrag_referens_fryser_revision`, som fäller varje UPDATE av revisionen.
+     Etiketterna ”Ej verifierad” och ”Utanför spärrmappen” finns i `html.ts`.
+  2. **0086 rättar befintliga rader i öppna uppdrag.** Aldrig verifierade
+     `levande`-rader blir `overifierad`, och mejl-id med vinkelparenteser blir
+     kanoniska (`<a@b>` → `a@b`). En kantkontroll fäller migrationen före varje
+     ändring om två mejlrader i samma avtal får samma kanoniska id.
+  3. **Formregeln** (`server/src/lib/referens.ts`, ren): `kanonisktReferensId`,
+     `referensFormFel` (Drive-id, Google Calendars händelse-id, RFC 5322
+     Message-ID), `oppningsvag` (Drive-länk, Gmail `rfc822msgid:`,
+     kalenderns händelselänk eller dagvy) och `driveLank`/`urlEllerSokvag`, som
+     flyttats hit och återexporteras.
+  4. **Skrivvägen** (`uppdragReferens.ts`): `skapaReferens` skriver inte längre
+     `status`, så en ny referens föds `overifierad`. Den läser före skrivningen
+     och ger 409 `utanfor_sparr` för ett känt utanför-utfall i samma avtal.
+     `revision` skrivs bara vid länkningen och bara för Drive. Drive-rapporten
+     prövar Drive-formen och ger 409 `utanfor_sparr`. `underlagsreferens` slår
+     upp i den kanoniska formen.
+  5. **Svepets dom** (`uppdragSvep.ts` och `referensutfall`): spärrdomen räknas
+     före verifieringen. `utanfor_sparr` består tills en dom innanför kommer.
+     En fryst revision utan rapporterad revision bedöms inte och redovisas i
+     `ej_bedomda`. `handelse_datum` kommer bara ur observationen. Svaret bär
+     `uppdrag[].utanfor_sparr`, `uppdrag[].ej_bedomda` och arbetslistans
+     `revision`, och cachen har räknarna `overifierad` och `utanfor_sparr`.
+  6. **Vyhjälparen** `referensvisning` (`html.ts`) ritar varje referens i de sex
+     vyerna (undantagsvyn, Lägets beslut, Signaler, Kontraktet,
+     bedömningsrapporten, statusförslaget). Den visar öppningsväg, id, läge,
+     källa, lästid med datum när den inte är från i dag, och händelsedatum eller
+     ”datum saknas”. Läsvägarna (`uppdragUndantag`, `uppdragLage`,
+     `uppdragKontrakt`) bär `status`, `senast_verifierad` och `handelse_datum`,
+     och `las_kontraktsyta` bär `dokument.utanfor_sparr`.
+  7. **Prov**: `uppdragsytan-referens.test.ts` fick fyra nya describe-block
+     (F1–F4, W1–W9 och D1, V1–V8, Y1–Y9 med planterade brott och vaktfall). Nytt
+     prov: `uppdragsytan-migration-0086.test.ts` (M1–M7). Omskrivna:
+     `uppdragsytan-svep` (spärrfallet och refStangt),
+     `uppdragsytan-drive-ko` (kopian föds overifierad), `uppdragsytan-ovrigt`
+     (F8 (c) och fixturerna), `beslutsunderlagHelper`, `undantagsvynHelper`
+     (källorna), `uppdragsytan-statusbyte` (riggen skriver en riktig referens),
+     `uppdragsytan-beslut` och `uppdragsytan-kontraktsyta` (fältet
+     `utanfor_sparr` i `Object.keys`).
+  8. **Inte kört:** sessionens skal nekade `npm test`, `npx vitest` och `node`
+     ("This command requires approval"), så varken typecheck eller vitest
+     kördes. Inget utfall är observerat. Kedjans `npm run typecheck` och
+     `npm test` är belägget.
+  9. **Följden i drift:** deployen kör 0086 som ägarrollen. Fäller
+     kantkontrollen stoppas deployen med de krockande id:na, och då slår driften
+     ihop mejlraderna (en driftpost för Hermes, ingen fråga till David). Efter
+     deployen visas aldrig verifierade referenser som ”Ej verifierad”, också
+     registerkopiorna, tills nästa svep sett dem. `handelse_datum` förblir
+     `null` (”datum saknas”) tills Story 3.2 skickar datumet, och kalenderposter
+     får länk först när datumet finns eller `extern_kalla` namnger kalendern.
+     Avsteget från vågplanens regel 6, posten skrivs i byggets egen ändring,
+     står i berättelsens beslut 14.
+  10. **Omtag 1:** i kedjans körning passerade typkontrollen och ett prov föll,
+      Y1 (`[object Object]`). Provet läste hjälparens `Raw` med `String()`. Nu
+      läses det via `.value` på en enda väg (`ritad`), och varje variant prövas
+      också mot `[object Object]`. Vyernas sju anrop ligger alla i `html`-mallar,
+      så ingen produktionskod är ändrad. Omtaget är inte kört i sessionen,
+      eftersom den saknar skal.
+
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
      flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena

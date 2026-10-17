@@ -1,6 +1,7 @@
 import { formatOre, type Ore } from '../../domain/money.js';
 import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
+import { oppningsvag, type Referensvisning } from '../../lib/referens.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -118,6 +119,46 @@ export function farskhetsrad(delar: readonly string[]): Raw {
   return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
 }
 
+const REFERENSSORTNAMN: Record<Referensvisning['sort'], string> = {
+  drive: 'Dokument i Drive', mejl: 'Mejl', kalender: 'Kalenderpost',
+};
+
+/**
+ * Lästiden i ISO-form. Läsvägarna läser tidpunkten som text (`::text`), och
+ * Postgres textform (`2026-10-17 07:14:03.123456+02`) är inte ISO 8601 — den
+ * görs om här, en gång, innan `farskhetstid` tolkar den. ISO går igenom orörd.
+ */
+function isoTid(tid: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2})(?::?(\d{2}))?$/.exec(tid);
+  if (!m) return tid;
+  return `${m[1]}T${m[2]}.${(m[3] ?? '').padEnd(3, '0').slice(0, 3)}${m[4]}:${m[5] ?? '00'}`;
+}
+
+/**
+ * En referens i vyn (Story 3.1, FR-35, FR-36) — det enda stället där en
+ * referens ritas. Fyra delar, i läsordning:
+ *
+ *  - **Öppningsvägen**, härledd ur id:t när sidan ritas (`oppningsvag`). Det är
+ *    en sträng: ingen källa frågas (NFR-6). Utan säker väg står namnet utan länk.
+ *  - **Id:t**, alltid, så att en referens utan väg ändå går att söka upp.
+ *  - **Läget** som chip med glyf och svensk etikett — aldrig färgen ensam.
+ *  - **Raden** med källa, lästid och händelsedatum. Lästiden bär datum när den
+ *    inte är från i dag (`farskhetstid`), så ett gammalt utfall aldrig ser
+ *    nyverifierat ut. Klassen `farskhet` används inte: den är kortets egen rad.
+ */
+export function referensvisning(r: Referensvisning, idag: string): Raw {
+  const vag = oppningsvag(r);
+  const namn = r.titel ?? REFERENSSORTNAMN[r.sort];
+  const lank = vag === null ? html`<span>${namn}</span>` : html`<a href="${vag}" target="_blank" rel="noopener">${namn}</a>`;
+  const delar = [
+    `källa ${r.extern_kalla ?? REFERENSSORTNAMN[r.sort]}`,
+    r.senast_verifierad === null ? 'aldrig verifierad' : `verifierad ${farskhetstid(isoTid(r.senast_verifierad), idag)}`,
+    r.handelse_datum === null ? 'datum saknas' : `händelse ${r.handelse_datum}`,
+  ];
+  return html`<span data-referens="${r.referens_id}">${lank} <span class="code" style="font-size:12px">${r.extern_id}</span> ${
+    statusChip(r.status)} <span class="muted" style="font-size:12.5px">${delar.join(' · ')}</span></span>`;
+}
+
 /** "läst ur redovisningen <tid>" för ett värde läst direkt ur en källa. */
 export const direktFarskhet = (f: Farskhet, idag: string): string =>
   `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
@@ -219,6 +260,9 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
   drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
   trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
+  // uppdrag_referens (0086)
+  overifierad: { label: 'Ej verifierad', kind: 'muted', icon: '○' },
+  utanfor_sparr: { label: 'Utanför spärrmappen', kind: 'neg', icon: '!' },
   // Kvittobilagor (0075). `active` finns redan ovan.
   awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
   uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files
