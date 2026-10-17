@@ -24,8 +24,8 @@ import { farskhetstid, referensvisning } from '../src/http/view/html.js';
 import type { Kontraktsyta } from '../src/services/uppdragKontrakt.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import {
-  koaRegisterkopia, listaReferenser, registerkopiaPlatshallare, skapaReferens, tillhorSparrmapp, urlEllerSokvag,
-  verifieraReferens, type SkapaReferensInput,
+  koaRegisterkopia, listaReferenser, referensutfall, registerkopiaPlatshallare, skapaReferens, tillhorSparrmapp,
+  urlEllerSokvag, verifieraReferens, type SkapaReferensInput,
 } from '../src/services/uppdragReferens.js';
 import { underlagsreferens } from '../src/services/uppdragSignal.js';
 import {
@@ -703,6 +703,43 @@ describe('Story 3.1 · svepets utfall', () => {
     expect(efter.status).toBe('drift');
     expect(efter.senast_verifierad).toBe(fore.senast_verifierad);
     expect(svar.arbetslista.referenser.find((r) => r.referens_id === id)?.revision).toBe(7);
+  });
+
+  // Omtag 2: en avvikelse är något svepet SÅG. Felklassen är en avvikelse som
+  // räknas mot ett fält som inte observerades (`undefined !== 7`), och den
+  // prövas för varje jämförelse i regeln, med och utan spärrdom.
+  it('(V7b) en avvikelse kräver ett observerat värde — titel, hash och revision', () => {
+    const rad = {
+      sort: 'drive' as const, status: 'levande' as const,
+      titel_vid_lankning: 'Bilaga 1', hash_vid_lankning: 'sha256:a', revision: 7,
+    };
+    const finns = { finns: true as const };
+    const fall: Array<[string, Parameters<typeof referensutfall>, ReturnType<typeof referensutfall>]> = [
+      ['dom utanför, ingen revision rapporterad', [rad, finns, { sparr: 'utanfor' }],
+        { bedomd: true, status: 'utanfor_sparr', avvikelser: ['utanfor_sparr'] }],
+      ['dom utanför, samma revision', [rad, finns, { sparr: 'utanfor', revision: 7 }],
+        { bedomd: true, status: 'utanfor_sparr', avvikelser: ['utanfor_sparr'] }],
+      ['dom utanför, annan revision', [rad, finns, { sparr: 'utanfor', revision: 9 }],
+        { bedomd: true, status: 'utanfor_sparr', avvikelser: ['utanfor_sparr', 'revision'] }],
+      ['läget består utan dom, ingen revision rapporterad', [{ ...rad, status: 'utanfor_sparr' }, finns, {}],
+        { bedomd: false, orsak: 'revision_saknas' }],
+      ['ingen titel och ingen hash observerad', [{ ...rad, revision: null }, finns, { sparr: 'innanfor' }],
+        { bedomd: true, status: 'levande', avvikelser: [] }],
+      ['dom utanför utan titel, hash eller revision', [{ ...rad, revision: null }, finns, { sparr: 'utanfor' }],
+        { bedomd: true, status: 'utanfor_sparr', avvikelser: ['utanfor_sparr'] }],
+      ['allt observerat och ändrat', [rad, { finns: true, titel: 'Bilaga 2', hash: 'sha256:b' }, { sparr: 'innanfor', revision: 8 }],
+        { bedomd: true, status: 'drift', avvikelser: ['titel', 'hash', 'revision'] }],
+      ['saknad fil', [rad, { finns: false }, { sparr: 'utanfor' }],
+        { bedomd: true, status: 'trasig', avvikelser: ['saknas'] }],
+    ];
+    for (const [namn, args, vantat] of fall) expect(referensutfall(...args), namn).toEqual(vantat);
+  });
+
+  it('(V7c) i svepet: en dom utanför utan rapporterad revision påstår ingen revisionsändring', async () => {
+    const id = (await drive('fil-V7c', { revision: 7 })).id;
+    expect(await utfall(id, { lage: { finns: true }, foralderkedja: [UTANFOR] }))
+      .toEqual({ status: 'utanfor_sparr', avvikelser: ['utanfor_sparr'] });
+    expect((await referensrad(avtal31, id)).revision).toBe(7);
   });
 
   it('(V8) händelsedatumet kommer bara ur observationen, och ett ogiltigt datum rullar tillbaka hela svepet', async () => {

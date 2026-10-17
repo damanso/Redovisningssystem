@@ -217,6 +217,21 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
       också mot `[object Object]`. Vyernas sju anrop ligger alla i `html`-mallar,
       så ingen produktionskod är ändrad. Omtaget är inte kört i sessionen,
       eftersom den saknar skal.
+  11. **Omtag 2 (code-review, tre fynd):**
+      - **Förslagsstegen** i svepet, steg (4) och (5), har en väg in,
+        `registretsHandlingar`, som utesluter `utanfor_sparr`. En fil som svepet
+        dömt utanför spärrmappen ger alltså inget statusförslag, ingen
+        titelträff för kostnadsförslag och ingen köad `binda_kostnad`. Det gäller
+        också när läget står kvar från ett tidigare svep. Ett källprov fäller
+        varje förslagssteg som läser `verifierade` direkt.
+      - **`referensutfall`** lägger till avvikelsen `revision` bara när en
+        revision rapporterats.
+      - **Berättelsens not om kantkontrollen** är rättad. Kontrollen fäller
+        varje par med samma kanoniska mejl-id, också `<abc>` och `abc`, och
+        STATUS-punkt 2 ovan stämmer redan med koden.
+      - **Proven** finns i `uppdragsytan-svep.test.ts` och
+        `uppdragsytan-referens.test.ts` (V7b och V7c). De är inte körda, eftersom
+        skalet nekade vitest med ”This command requires approval”.
 
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`

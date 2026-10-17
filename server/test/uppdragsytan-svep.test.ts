@@ -577,6 +577,69 @@ describe('KRAV-5/6: statusförslaget och kostnadsförslaget', () => {
     expect((await cache()).map((r) => r.nyckel)).not.toContain('statusforslag:L9');
   });
 
+  // Story 3.1, omtag 2: en fil som svepet självt dömt utanför spärrmappen är
+  // ingen registerhandling (FR-10, AC 4). Felklassen är att ett förslagssteg
+  // läser de bedömda referenserna utan att titta på läget, så fallen prövar
+  // båda förslagsstegen i båda vägarna till läget: domen i samma svep, och
+  // läget som består från ett tidigare svep utan ny dom. Kontrollen sist visar
+  // att riggen föder förslagen, alltså att frånvaron inte är riggens.
+  it('en handling i utanfor_sparr ger varken statusförslag eller kostnadsförslag (Story 3.1)', async () => {
+    const forslag = async () => (await cache()).map((r) => r.nyckel)
+      .filter((n) => n.startsWith('statusforslag:') || n.startsWith('kostnadsforslag:'));
+    const observation = (kedja?: string[]): SvepIndata => ({
+      uppdrag: [{
+        contract_id: avtal,
+        sparrmapp_id: SPARRMAPP,
+        referenser: [{
+          referens_id: refL3,
+          lage: { finns: true, hash: 'sha256:abc' },
+          leverabel_kod: 'L3',
+          revision: 4,
+          ...(kedja !== undefined ? { foralderkedja: kedja } : {}),
+        }],
+      }],
+    });
+    const lage = () => withAdmin(async (c) => (await c.query<{ status: string }>(
+      'SELECT status FROM uppdrag_referens WHERE id = $1', [refL3],
+    )).rows[0]!.status);
+
+    // (a) Domen utanför i samma svep.
+    const utanfor = await svep(observation([UTANFOR_MAPP]));
+    expect(await lage()).toBe('utanfor_sparr');
+    expect(utanfor.uppdrag[0]!.utanfor_sparr).toEqual([refL3]);
+    expect(utanfor.uppdrag[0]!.nycklar.filter((n) => /^(status|kostnads)forslag:/.test(n))).toEqual([]);
+    // Inget kostnadsförslag, alltså inget bindningssteg och ingen köpost.
+    expect(utanfor.uppdrag[0]!.bindningar).toEqual({ koade: [], automatiska: [], redan_koade: [] });
+    expect(await forslag()).toEqual([]);
+
+    // (b) Läget består utan ny dom, och förslagen uteblir fortfarande.
+    await svep(observation());
+    expect(await lage()).toBe('utanfor_sparr');
+    expect(await forslag()).toEqual([]);
+
+    // (c) Kontrollen: en dom innanför föder båda förslagen igen.
+    await svep(observation([SPARRMAPP]));
+    expect(await lage()).toBe('levande');
+    const efter = await forslag();
+    expect(efter).toContain('statusforslag:L3');
+    expect(efter.filter((n) => n.startsWith('kostnadsforslag:'))).toHaveLength(3);
+  });
+
+  // Mekanismen bakom fallet ovan: förslagsstegen har EN väg in,
+  // `registretsHandlingar`. Ett nytt eller ändrat förslagssteg som läser de
+  // bedömda referenserna direkt fälls här, inte först när en fil hamnar utanför.
+  it('förslagsstegen läser bara registretsHandlingar, aldrig verifierade direkt (Story 3.1)', async () => {
+    const kalla = await readFile(KALLA, 'utf8');
+    const start = kalla.indexOf('const handlingar = registretsHandlingar(verifierade);');
+    const slut = kalla.indexOf('const skrivning = await upsertSvepvarden(', start);
+    expect(start, 'förslagsstegens väg in saknas').toBeGreaterThan(-1);
+    expect(slut, 'förslagsstegens slut saknas').toBeGreaterThan(start);
+    const steg = kalla.slice(start + 'const handlingar = registretsHandlingar(verifierade);'.length, slut);
+    expect(steg).toContain('// (4)');
+    expect(steg).toContain('// (5)');
+    expect(steg.match(/\bverifierade\b/g) ?? []).toEqual([]);
+  });
+
   it('utan revision i indatat föds inget statusförslag', async () => {
     await svep({
       uppdrag: [{

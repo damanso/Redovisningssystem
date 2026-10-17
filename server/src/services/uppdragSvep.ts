@@ -705,6 +705,11 @@ async function svepEttUppdrag(
     }),
   });
 
+  // Förslagsstegen (4) och (5) läser registrets handlingar och ingenting annat:
+  // en fil som svepet självt dömt utanför spärrmappen är ingen registerhandling
+  // (FR-10, Story 3.1), varken som statusförslag eller som titelträff.
+  const handlingar = registretsHandlingar(verifierade);
+
   // (4) Statusförslaget per leverabel. Koden prövas mot leverabelregistret —
   // en felstavad kod hade annars fött en förslagsnyckel för en leverabel som
   // inte finns, och den hade blivit kvar i cachen som ett fynd.
@@ -715,7 +720,7 @@ async function svepEttUppdrag(
   // (`uppdrag_svepvarde_uk` har en rad per nyckel), och den högsta revisionen är
   // den senaste. Utan sammanslagningen hade `upsertSvepvarden` fällt hela svepet.
   const statusforslag = new Map<string, { v: Verifierad; revision: number }>();
-  for (const v of verifierade) {
+  for (const v of handlingar) {
     const kod = v.obs.leverabel_kod;
     if (kod === undefined) continue;
     if (!koder.has(kod)) {
@@ -747,7 +752,7 @@ async function svepEttUppdrag(
   // leverabelhandlingens titel — det enda som binder ett kvitto i redovisningen
   // till ett dokument i Drive. Namn under tre tecken jämförs inte: "AB" står i
   // varannan titel, och ett förslag som alltid träffar är brus.
-  const medTitel = leverabelhandlingar(verifierade, koder);
+  const medTitel = leverabelhandlingar(handlingar, koder);
   // Körningens egna förslag, i härledningsordning — bindningssteget nedan verkar
   // ENBART på dem. Ett kvitto utan kostnadsförslag är en allmän bolagskostnad
   // och hör inte till uppdraget; det rörs aldrig.
@@ -821,9 +826,18 @@ async function svepEttUppdrag(
   };
 }
 
+/**
+ * De bedömda referenser som får bära ett förslag: allt utom läget
+ * `utanfor_sparr`, oavsett om domen kom i det här svepet eller står kvar från
+ * ett tidigare (Story 3.1). Förslagsstegens enda indata.
+ */
+function registretsHandlingar(verifierade: Verifierad[]): Verifierad[] {
+  return verifierade.filter((v) => v.utfall.referens.status !== 'utanfor_sparr');
+}
+
 /** Leverabelhandlingar med en titel att matcha en leverantör mot. */
-function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Verifierad[] {
-  return verifierade.filter((v) => v.obs.leverabel_kod !== undefined
+function leverabelhandlingar(handlingar: Verifierad[], koder: Set<string>): Verifierad[] {
+  return handlingar.filter((v) => v.obs.leverabel_kod !== undefined
     && koder.has(v.obs.leverabel_kod)
     && v.utfall.referens.titel_vid_lankning !== null);
 }

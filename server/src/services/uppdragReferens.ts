@@ -315,7 +315,11 @@ export function referensutfall(
   if (domUtanfor || (rad.status === 'utanfor_sparr' && tillagg.sparr !== 'innanfor')) avvikelser.push('utanfor_sparr');
   if (harAndrats(rad.titel_vid_lankning, lage.titel)) avvikelser.push('titel');
   if (harAndrats(rad.hash_vid_lankning, lage.hash)) avvikelser.push('hash');
-  if (rad.revision !== null && tillagg.revision !== rad.revision) avvikelser.push('revision');
+  // Som `harAndrats`: en avvikelse kräver ett observerat värde. Utan rapporterad
+  // revision (möjligt bara med en dom utanför, se ovan) har ingen ändring setts.
+  if (rad.revision !== null && tillagg.revision !== undefined && tillagg.revision !== rad.revision) {
+    avvikelser.push('revision');
+  }
   const status: Referensstatus = avvikelser.includes('utanfor_sparr') ? 'utanfor_sparr'
     : avvikelser.length > 0 ? 'drift' : 'levande';
   return { bedomd: true, status, avvikelser };

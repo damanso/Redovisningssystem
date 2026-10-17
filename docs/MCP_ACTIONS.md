@@ -1323,7 +1323,8 @@ egna databasen kommer in som validerad indata:
   - **Fryst revision.** En referens med fryst `revision` (kontraktsversion,
     skriven vid länkningen och aldrig om) jämförs med den rapporterade: en annan
     revision ger `drift` med avvikelsen `revision`, och den lagrade skrivs
-    aldrig över. Saknas en rapporterad revision bedöms raden inte: ingen UPDATE,
+    aldrig över. En avvikelse kräver ett observerat värde: utan rapporterad
+    revision läggs avvikelsen `revision` aldrig till. Saknas en rapporterad revision bedöms raden inte: ingen UPDATE,
     och referensen står i svarets `ej_bedomda` med orsaken `revision_saknas`. En
     drift återställs alltså aldrig tyst till `levande`.
   - `kalenderhandelser[]`: `datum` + `minuter` som **heltal** — aldrig timmar som
@@ -1419,6 +1420,13 @@ larmar aldrig (samma regel som takvarningen: ett oläst tak varnar aldrig).
   delas aldrig ut igen så länge uppdraget är stängt.
 
 **Förslagen är CACHE, aldrig en åtgärd.** De rör aldrig `uppdrag_leverabel` eller `receipts`. S3.2 bekräftar statusbytet, och bindningssteget nedan köar varje kostnadsbindning för en människas godkännande (Story 1.8).
+
+**En handling i `utanfor_sparr` bär inget förslag (Story 3.1, FR-10).** Båda
+förslagsstegen läser bara registrets handlingar, alltså de bedömda referenserna
+utom dem som efter verifieringen står i `utanfor_sparr`, oavsett om domen kom i
+samma svep eller står kvar från ett tidigare. En fil som svepet dömt utanför
+spärrmappen ger alltså varken `statusforslag:` eller `kostnadsforslag:`, och
+därmed ingen köad bindning. Den redovisas i `uppdrag[].utanfor_sparr`.
 
 - `statusforslag:<leverabel>` — skrivs när indatat rapporterar en **revision**
   för leverabelns handling. Repot avgör aldrig själv om en revision är "ny" (det
