@@ -37,10 +37,11 @@ import { kalendermanad } from '../../lib/bedomningsbegaran.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
-import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
+import { hamtaDriveKo, listaReferenser, tillReferensvisning, type Kopost } from '../../services/uppdragReferens.js';
+import type { Referensvisning } from '../../lib/referens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
-import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { lasKontraktsyta, type Dokumentpekare, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -75,7 +76,7 @@ import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } 
 import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
-import { aiMarkning, amount, chip, direktFarskhet, entityLink, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, direktFarskhet, entityLink, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, referensvisning, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -1666,7 +1667,8 @@ interface Statusforslagskort {
   klausul: string | null;
   /** Drive-revisionen ur svepets förslag — aldrig samma tal som överlämningens. */
   revision: string | null;
-  extern_id: string | null;
+  /** Handlingen, slagen upp på förslagets `referens_id` (Story 3.1). */
+  referens: Referensvisning | null;
 }
 
 /** Ett jsonb-fält som text, eller null. Cachen är fri JSON och lovar ingen form. */
@@ -1695,6 +1697,9 @@ async function statusforslag(
       (await lasLeverabelregister(client, companyId, { contract_id: contractId }))
         .map((r) => [r.kod, r] as const),
     );
+    // Referenserna läses genom S7.1:s läsväg; vyn rör aldrig tabellen själv.
+    const referenser = new Map((await listaReferenser(client, companyId, contractId))
+      .map((r) => [r.id, tillReferensvisning(r)] as const));
     for (const v of await lasSvepvarden(client, companyId, contractId)) {
       if (!v.nyckel.startsWith(FORSLAGSPREFIX)) continue;
       const kod = v.nyckel.slice(FORSLAGSPREFIX.length);
@@ -1706,14 +1711,14 @@ async function statusforslag(
         kod,
         klausul: leverabel.klausul,
         revision: forslagsfalt(v.varde, 'revision'),
-        extern_id: forslagsfalt(v.varde, 'extern_id'),
+        referens: referenser.get(forslagsfalt(v.varde, 'referens_id') ?? '') ?? null,
       });
     }
   }
   return kort;
 }
 
-function statusforslagskort(companyId: string, projectId: string, k: Statusforslagskort, flera: boolean): Raw {
+function statusforslagskort(companyId: string, projectId: string, k: Statusforslagskort, flera: boolean, idag: string): Raw {
   const post = `/app/c/${companyId}/projects/${projectId}/statusforslag`;
   const knapp = (utfall: 'bekraftad' | 'retur', etikett: string, beskrivning: string): Raw =>
     html`<form method="post" action="${post}" style="margin:0">
@@ -1744,7 +1749,7 @@ function statusforslagskort(companyId: string, projectId: string, k: Statusforsl
     <div class="ai-fields">
       <div class="ai-field"><span class="l">Leverabel</span><span class="v code">${k.kod}</span></div>
       <div class="ai-field"><span class="l">Drive-revision</span><span class="v">${k.revision ?? '—'}</span></div>
-      <div class="ai-field"><span class="l">Handling</span><span class="v code">${k.extern_id ?? '—'}</span></div>
+      <div class="ai-field"><span class="l">Handling</span><span class="v">${k.referens ? referensvisning(k.referens, idag) : '—'}</span></div>
     </div>
     ${/* Två likvärdiga knappar, ingen förvald: svaret kommer utifrån, inte ur
           kortet (S5.1:s regel för Innanför/Utanför). */ ''}
@@ -1901,7 +1906,8 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
               // Avtalsnamnet skrivs bara ut när uppdraget har flera avtal — annars
               // upprepar varje kort en uppgift som redan står i sidhuvudet.
               const flera = new Set(forslag.map((f) => f.avtalId)).size > 1;
-              return forslag.map((f) => statusforslagskort(companyId, projectId, f, flera));
+              const idag = new Date().toLocaleDateString('sv-SE');
+              return forslag.map((f) => statusforslagskort(companyId, projectId, f, flera, idag));
             })()}`}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
@@ -2689,7 +2695,7 @@ const saknasText = (text: string): Raw =>
  * takberäkning som varningen och faktureringsspärren läser, och sidan räknar
  * ingenting själv.
  */
-function bedomningsrapport(companyId: string, u: Bedomningsunderlag): Raw {
+function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: string): Raw {
   const r = u.rapport;
   if (!r) return html``;
   const f = r.frysta;
@@ -2745,10 +2751,7 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag): Raw {
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/signaler">Signaler</a> — rapporten hittar aldrig på
             en händelse som ingen länkat.</p>`
         : html`<ul style="margin:4px 16px 12px;padding-left:20px">
-            ${r.handelser.map((h) => html`<li style="margin-bottom:3px">
-              ${chip(h.sort === 'mejl' ? 'Mejl' : 'Kalenderpost', 'muted', '○')}
-              ${h.titel_vid_lankning ?? html`<span class="muted">Utan titel</span>`}
-              <span class="code" style="font-size:12px"> ${h.extern_id}</span></li>`)}
+            ${r.handelser.map((h) => html`<li style="margin-bottom:3px">${referensvisning(tillReferensvisning(h), idag)}</li>`)}
           </ul>`}
 
       <h3 style="margin:16px 16px 4px">Vad avtalet lovade</h3>
@@ -2855,6 +2858,7 @@ function begaranderader(u: Bedomningsunderlag): Raw {
 function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag): Raw {
   const senaste = u.historik[u.historik.length - 1];
   const flera = u.avtal.length > 1;
+  const idag = new Date().toLocaleDateString('sv-SE');
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Bedömning</h1>
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
         Håller det som lovats? Svaret ges av en människa, en gång per period, och skrivs aldrig om i efterhand.</p></div>
@@ -2873,7 +2877,7 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag):
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
             Bedömningen sätts mot avtalet — det är där det står vad som lovats.
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
-        : html`${bedomningsrapport(companyId, u)}
+        : html`${bedomningsrapport(companyId, u, idag)}
           <div class="panel" id="satt-bedomningen" style="margin-top:16px">
             <div class="panel__head"><h2>Sätt bedömningen</h2></div>
             <div class="panel__body" style="padding:4px 0 4px">${begaranderader(u)}${bedomningsformular(companyId, u)}</div>
@@ -3030,8 +3034,8 @@ interface Signalunderlagsvy {
   avtal: { id: string; name: string }[];
   fraser: (Scopefras & { avtalId: string; avtalsnamn: string })[];
   signaler: (Signalrad & { avtalsnamn: string })[];
-  /** extern_id per referens-id — underlaget ska SYNAS, annars är det inte spårbart. */
-  underlag: Map<string, string>;
+  /** Referensen per referens-id — underlaget ska SYNAS, annars är det inte spårbart. */
+  underlag: Map<string, Referensvisning>;
   /** Förifylls i "Läst ur": kontot signalen lästes ur är oftast användarens eget. */
   epost: string;
 }
@@ -3045,7 +3049,7 @@ async function signalunderlag(
 
   const fraser: (Scopefras & { avtalId: string; avtalsnamn: string })[] = [];
   const signaler: (Signalrad & { avtalsnamn: string })[] = [];
-  const underlag = new Map<string, string>();
+  const underlag = new Map<string, Referensvisning>();
   for (const a of avtal) {
     for (const f of await listaScopefraser(client, companyId, a.id)) {
       fraser.push({ ...f, avtalId: a.id, avtalsnamn: a.name });
@@ -3056,7 +3060,7 @@ async function signalunderlag(
     // Referenserna läses genom S7.1:s enda läsväg — vyn rör aldrig
     // `uppdrag_referens` själv.
     for (const r of await listaReferenser(client, companyId, a.id)) {
-      underlag.set(r.id, `${r.sort} ${r.extern_id}`);
+      underlag.set(r.id, tillReferensvisning(r));
     }
   }
   // Öppna först över ALLA avtal, nyast överst — samma ordning som tjänsten ger
@@ -3109,7 +3113,7 @@ function tillaggsfalt(companyId: string, formId: string, forifylld: string | nul
 }
 
 /** En öppen signal: vad som sades, vad det vilar på, och de två svaren. */
-function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { avtalsnamn: string }): Raw {
+function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { avtalsnamn: string }, idag: string): Raw {
   const flera = u.avtal.length > 1;
   const ref = s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined;
   const tillaggForm = `tillagg-${s.id}`;
@@ -3123,7 +3127,7 @@ function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { a
       ${/* Underlaget ska SYNAS. En referens som bara finns i en kolumn är inte
             spårbar för den som läser sidan — och spårbarheten är hela FR-26. */ ''}
       <p class="muted" style="margin:4px 0 0;font-size:12.5px">Tänd av ${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}
-        ${ref ? html` · Underlag: <span class="code">${ref}</span>` : ' · utan underlag'}</p>
+        ${ref ? html` · Underlag: ${referensvisning(ref, idag)}` : ' · utan underlag'}</p>
       ${tillaggsfalt(companyId, tillaggForm, signalorsak(s.fras))}
     </div>
     ${/* Två likvärdiga knappar, ingen förvald: svaret ska komma ur omdömet.
@@ -3193,6 +3197,7 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
   const oppna = u.signaler.filter((s) => s.avgjord === null);
   const avgjorda = u.signaler.filter((s) => s.avgjord !== null);
   const flera = u.avtal.length > 1;
+  const idag = new Date().toLocaleDateString('sv-SE');
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Signaler</h1>
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
         Fraserna står i kontraktet; en människa tänder dem och en människa avgör vad de betydde.
@@ -3218,7 +3223,7 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
               ? html`<div class="panel__body"><p class="muted" style="margin:0">Inget obesvarat.
                   En tänd fras står kvar här tills någon avgjort om den låg innanför eller utanför uppdraget —
                   den försvinner aldrig av sig själv.</p></div>`
-              : html`<div>${oppna.map((s) => oppenSignal(companyId, u, s))}</div>`}
+              : html`<div>${oppna.map((s) => oppenSignal(companyId, u, s, idag))}</div>`}
           </div>
 
           <div class="panel" style="margin-top:14px">
@@ -3250,7 +3255,10 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy): Raw 
               ${senaste?.overford
                 ? html`<td class="muted" style="font-size:12.5px">${avgjortAvOchNar(senaste)}</td>`
                 : html`<td class="code">${senaste ? avgjortAvOchNar(senaste) : '—'}</td>`}
-              <td class="code">${(s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined) ?? '—'}</td>
+              <td>${(() => {
+                const ref = s.underlag_ref_id ? u.underlag.get(s.underlag_ref_id) : undefined;
+                return ref ? referensvisning(ref, idag) : '—';
+              })()}</td>
               <td class="code">${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}</td></tr>`;
             })}
             </tbody></table></div>
@@ -3608,8 +3616,17 @@ const tillstandChip = (t: Kontraktsyta['contract']['kontrakt_tillstand']): Raw =
 const takstatusChipYta = (status: 'bekraftat' | 'vet_ej'): Raw =>
   status === 'bekraftat' ? chip('Bekräftat', 'ok', '✓') : chip('Vet ej', 'muted', '○');
 
+/** En Drive-pekare i den form vyhjälparen läser (Story 3.1). */
+function pekarvisning(r: Dokumentpekare): Referensvisning {
+  return {
+    referens_id: r.id, sort: 'drive', extern_id: r.extern_id, extern_kalla: r.extern_kalla,
+    titel: r.titel_vid_lankning, status: r.status, senast_verifierad: r.senast_verifierad,
+    handelse_datum: r.handelse_datum,
+  };
+}
+
 /** Vägen till handlingen: husets egen fil, och pekarna ut till Drive. */
-function dokumentpanel(companyId: string, y: Kontraktsyta): Raw {
+function dokumentpanel(companyId: string, y: Kontraktsyta, idag: string): Raw {
   const d = y.dokument;
   const tomt = d.source_file_id === null && d.referenser.length === 0;
   return html`<section class="panel" style="margin-top:16px" aria-labelledby="dok-${y.contract.id}">
@@ -3629,26 +3646,26 @@ function dokumentpanel(companyId: string, y: Kontraktsyta): Raw {
           ${d.referenser.length === 0
             ? ''
             : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
-                <thead><tr><th>Handling</th><th>Id i Drive</th><th>Läst ur</th><th>Läge</th></tr></thead>
-                ${/* Nyckelrymden står under titeln, inte i en egen kolumn: en
+                <thead><tr><th>Handling, läge och källa</th><th>Nyckelrymd</th></tr></thead>
+                ${/* Nyckelrymden står under handlingen, inte i en egen kolumn: en
                       referens ÄR id + nyckel + källa (S7.1), och utan nyckeln
                       går registerkopian inte att skilja från avtalshandlingen —
-                      två helt olika filer med samma sorts id. */ ''}
+                      två helt olika filer med samma sorts id. Själva referensen
+                      — väg, id, läge, källa, lästid och datum — ritas av
+                      vyhjälparen (Story 3.1), samma som på varje annan yta. */ ''}
                 <tbody>${d.referenser.map((r) => html`<tr>
-                  <td>${r.titel_vid_lankning ?? html`<span class="muted">Ingen titel lästes</span>`}
-                    ${r.extern_nyckel ? html`<div class="muted" style="font-size:12.5px">${r.extern_nyckel}</div>` : ''}</td>
-                  <td class="code">${r.extern_id}</td>
-                  <td class="muted">${r.extern_kalla ?? '—'}</td>
-                  <td>${statusChip(r.status)}</td></tr>`)}
+                  <td>${referensvisning(pekarvisning(r), idag)}</td>
+                  <td class="muted" style="font-size:12.5px">${r.extern_nyckel ?? '—'}</td></tr>`)}
                 </tbody></table></div>`}
-          ${/* Regeln utskriven vid det den gäller: id, aldrig länk. Läsaren
-                kopierar id:t till Drives sökruta — och den vanan är hela
-                skälet till att pekaren håller när filen döps om. */ ''}
-          <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Id:t, aldrig länken — ett id överlever att filen
-            döps om, flyttas och delas om. Läget är det senaste svepet SÅG; sidan frågar aldrig Drive när den ritas.
-            En rad med nyckelrymden <span class="code">registerkopia</span> är den frysta registerkopian i spärrmappen —
-            den får sitt riktiga id först när svepet skrivit filen. Innehållet står kvar i handlingen: den här ytan är
-            vägen dit, aldrig en kopia av den.</p>`}
+          ${/* Regeln utskriven vid det den gäller. Pekaren lagras som id och
+                länken härleds när sidan ritas — därför håller den när filen
+                döps om. */ ''}
+          <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Pekaren lagras som ett id, aldrig som en länk —
+            ett id överlever att filen döps om, flyttas och delas om, och länken härleds ur id:t när sidan ritas. Läget är
+            det senaste svepet såg; sidan frågar aldrig Drive. En rad med nyckelrymden
+            <span class="code">registerkopia</span> är den frysta registerkopian i spärrmappen — den får sitt riktiga id
+            först när svepet skrivit filen. Innehållet står kvar i handlingen: den här ytan är vägen dit, aldrig en kopia
+            av den.</p>`}
     </div>
   </section>`;
 }
@@ -3755,12 +3772,12 @@ function scopepanel(companyId: string, y: Kontraktsyta): Raw {
 }
 
 /** Ett avtal: läget, vägen dit, det som gäller, tilläggen och scopelinjen. */
-function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean): Raw {
+function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean, idag: string): Raw {
   return html`${flera
       ? html`<h2 style="margin:22px 0 0">${y.contract.name}
           <span style="font-weight:400"> ${tillstandChip(y.contract.kontrakt_tillstand)}</span></h2>`
       : ''}
-    ${dokumentpanel(companyId, y)}
+    ${dokumentpanel(companyId, y, idag)}
     ${gallandepanel(y)}
     ${tillaggspanel(y)}
     ${scopepanel(companyId, y)}`;
@@ -3768,6 +3785,7 @@ function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean): R
 
 function kontraktssida(companyId: string, u: Kontraktsunderlag): Raw {
   const flera = u.ytor.length > 1;
+  const idag = new Date().toLocaleDateString('sv-SE');
   const en = u.ytor[0];
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Kontraktet</h1>
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
@@ -3787,7 +3805,7 @@ function kontraktssida(companyId: string, u: Kontraktsunderlag): Raw {
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
             Kontraktsytan läser avtalets eget läge — utan avtal finns varken dokument, tak eller scopelinje att peka på.
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtal</a> först.</div>`
-        : u.ytor.map((y) => kontraktsavsnitt(companyId, y, flera))
+        : u.ytor.map((y) => kontraktsavsnitt(companyId, y, flera, idag))
     }`;
 }
 
@@ -4386,7 +4404,7 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
               <p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${typeof b.underlag.forslagstext === 'string' ? b.underlag.forslagstext : 'Förslaget saknas i underlaget'}</p>
               ${b.utfall === 'nej' ? html`<p style="margin:6px 0 0;font-size:14px;white-space:pre-wrap">${b.skal}</p>`
                 : html`<p style="margin:6px 0 0;font-size:14px">${beskrivHandling(b.handling)}</p>`}
-              <p style="margin:6px 0 0;font-size:12.5px">${etiketter[b.kalla.typ] ?? b.kalla.typ}${b.referenser.map((r) => html` · ${r.titel ?? r.extern_id} (${r.sort})`)}</p>
+              <p style="margin:6px 0 0;font-size:12.5px">${etiketter[b.kalla.typ] ?? b.kalla.typ}${b.referenser.map((r) => html` · ${referensvisning(r, idag)}`)}</p>
               ${b.utkast !== null && b.utkast_markor !== null ? utkastblock(b.utkast, b.utkast_markor) : ''}
             </div>
           </div>`)}

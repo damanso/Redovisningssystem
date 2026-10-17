@@ -116,12 +116,16 @@ describe('P3 registreringskontraktet', () => {
     expect(audit).toEqual([{ action: 'uppdrag.beslut_registrerat', entity_type: 'uppdrag_beslut', details: { approval_id: q, atgard: 'binda_kostnad', utfall: 'ja', kalla_typ: 'kvitto' } }]);
   });
   it('c källor fryses bara som egna id och typer', () => {
-    const id = randomUUID(); const ref = randomUUID();
+    const id = randomUUID(); const ref = randomUUID(); const ref2 = randomUUID();
+    // Story 3.1: svepets läge och händelsedatum följer med kallreferensen men fryses aldrig in i beslutet.
     const kallor = { varde: [{ typ: 'yta' as const, etikett: 'Läget', sokvag: '/app' },
-      { typ: 'referens' as const, referens_id: ref, sort: 'drive' as const, extern_id: 'extern', extern_kalla: null, titel: null }],
+      { typ: 'referens' as const, referens_id: ref, sort: 'drive' as const, extern_id: 'extern', extern_kalla: null, titel: null,
+        status: 'overifierad', senast_verifierad: null, handelse_datum: null },
+      { typ: 'referens' as const, referens_id: ref2, sort: 'mejl' as const, extern_id: 'id@mail.example', extern_kalla: 'gmail', titel: 'Fråga',
+        status: 'levande', senast_verifierad: '2026-10-01T00:00:00Z', handelse_datum: '2026-09-30' }],
     kalla: 'redovisning', last_nar: '2026-10-01T00:00:00Z', lage: 'last' as const };
-    expect(frysKallor({ typ: 'kvitto', id }, kallor)).toEqual([{ typ: 'kvitto', id }, { typ: 'referens', id: ref }]);
-    expect(frysKallor({ typ: 'koforslag', id }, kallor)).toEqual([{ typ: 'referens', id: ref }]);
+    expect(frysKallor({ typ: 'kvitto', id }, kallor)).toEqual([{ typ: 'kvitto', id }, { typ: 'referens', id: ref }, { typ: 'referens', id: ref2 }]);
+    expect(frysKallor({ typ: 'koforslag', id }, kallor)).toEqual([{ typ: 'referens', id: ref }, { typ: 'referens', id: ref2 }]);
     for (const v of [{ typ: 'referens', id: 'https://drive.google.com/x' }, { typ: 'mejl', id }, { typ: 'referens', id, href: '/x' }]) {
       expect(BeslutskallaSchema.safeParse(v).success).toBe(false); negativa++;
     }

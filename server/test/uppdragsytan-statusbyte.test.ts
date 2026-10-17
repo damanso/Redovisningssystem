@@ -24,6 +24,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { withTenantTransaction } from '../src/db/tx.js';
+import { listaReferenser, skapaReferens } from '../src/services/uppdragReferens.js';
 import { upsertSvepvarden } from '../src/services/uppdragSvep.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -147,16 +148,28 @@ async function nyttUppdrag(namn: string, opts: {
   return { projektId: projekt, avtalId: avtal };
 }
 
-/** Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen. */
+/**
+ * Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen.
+ * Story 3.1: handlingen är en riktig referens, skriven genom S7.1:s tjänst (och
+ * återanvänd vid nästa skrivning), så att kortet kan visa den genom hjälparen.
+ */
 async function skrivForslag(contractId: string, koder: string[], revision: number): Promise<void> {
-  await withTenantTransaction(user.userId, companyId, (client) => upsertSvepvarden(
-    client, companyId, contractId,
-    koder.map((kod) => ({
-      nyckel: `statusforslag:${kod}`,
-      kalla: 'drive',
-      varde: { leverabel_kod: kod, revision, extern_id: `1AbC_${kod}`, referensstatus: 'levande' },
-    })),
-  ));
+  await withTenantTransaction(user.userId, companyId, async (client) => {
+    const fanns = await listaReferenser(client, companyId, contractId);
+    const varden: Array<{ nyckel: string; kalla: string; varde: unknown }> = [];
+    for (const kod of koder) {
+      const externId = `1AbC_${kod}`;
+      const ref = fanns.find((r) => r.sort === 'drive' && r.extern_id === externId) ?? await skapaReferens(client, companyId, {
+        contract_id: contractId, sort: 'drive', extern_id: externId, extern_nyckel: 'leverabel-handling', extern_kalla: 'drive:locollabs',
+      });
+      varden.push({
+        nyckel: `statusforslag:${kod}`,
+        kalla: 'drive',
+        varde: { leverabel_kod: kod, revision, referens_id: ref.id, extern_id: externId, referensstatus: 'levande' },
+      });
+    }
+    await upsertSvepvarden(client, companyId, contractId, varden);
+  });
 }
 
 beforeAll(async () => {
@@ -508,6 +521,12 @@ describe('vyn: statusförslaget på uppdragssidan', () => {
     // Underlaget: koden, Drive-revisionen och handlingen — i klartext.
     expect(html).toContain('Drive-revision');
     expect(html).toContain('1AbC_L6');
+    // Story 3.1: handlingen står genom vyhjälparen, med sitt läge.
+    const l6 = (await withTenantTransaction(user.userId, companyId, (c) => listaReferenser(c, companyId, avtalId)))
+      .find((r) => r.extern_id === '1AbC_L6')!;
+    const kortet = html.slice(html.indexOf('Leverabel L6 kan vara levererad'));
+    expect(kortet.slice(0, kortet.indexOf('</article>'))).toContain(`data-referens="${l6.id}"`);
+    expect(kortet.slice(0, kortet.indexOf('</article>'))).toContain('Ej verifierad');
     expect(html).toContain('name="utfall" value="bekraftad"');
     expect(html).toContain('name="utfall" value="retur"');
     // JS-fritt, som resten av vyn.

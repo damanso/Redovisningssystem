@@ -1,6 +1,7 @@
 import { formatOre, type Ore } from '../../domain/money.js';
 import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
+import { oppningsvag, type Referensvisning } from '../../lib/referens.js';
 
 // Escaping-som-standard. `html`-mallen escapar ALLA interpolerade värden, så
 // användarstyrd text (bolagsnamn, kundnamn, beskrivningar) aldrig kan injicera
@@ -118,6 +119,40 @@ export function farskhetsrad(delar: readonly string[]): Raw {
   return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
 }
 
+const REFERENSNAMN: Record<Referensvisning['sort'], string> = {
+  drive: 'Dokument i Drive', mejl: 'Mejl', kalender: 'Kalenderpost',
+};
+const REFERENSKALLA: Record<Referensvisning['sort'], string> = {
+  drive: 'Drive', mejl: 'mejl', kalender: 'kalendern',
+};
+
+/**
+ * En referens som den ska läsas (Story 3.1, FR-35/FR-36): vägen dit, id:t,
+ * läget och raden med källa, lästid och händelsedatum. Det ENDA sättet att
+ * skriva ut en referens i vyn — samma skäl som `entityLink`: en referens som
+ * renderas för hand får en annan regel, och då visas en overifierad källa som
+ * säker.
+ *
+ * Vägen härleds ur id:t vid rendering (`oppningsvag`): en sträng, ingen
+ * begäran. Saknas en väg står titeln som text, och id:t står alltid kvar så att
+ * referensen går att söka upp. Lästiden står vid värdet med datum när den inte
+ * är från i dag; en referens som aldrig verifierats säger det.
+ */
+export function referensvisning(r: Referensvisning, idag: string): Raw {
+  const vag = oppningsvag(r);
+  const namn = r.titel ?? REFERENSNAMN[r.sort];
+  const rad = [
+    `källa ${r.extern_kalla ?? REFERENSKALLA[r.sort]}`,
+    r.senast_verifierad === null ? 'aldrig verifierad' : `verifierad ${farskhetstid(r.senast_verifierad, idag)}`,
+    r.handelse_datum === null ? 'datum saknas' : `händelse ${r.handelse_datum}`,
+  ].join(' · ');
+  // `overflow-wrap:anywhere`: ett Message-ID är ett enda långt ord, och på en
+  // telefon ska det bryta i raden i stället för att trycka ut sidan i sidled.
+  return html`<span data-referens="${r.referens_id}" style="overflow-wrap:anywhere">${vag === null
+    ? html`<span>${namn}</span>`
+    : html`<a href="${vag}" target="_blank" rel="noopener">${namn}</a>`} <span class="code" style="font-size:12px">${r.extern_id}</span> ${statusChip(r.status)} <span class="muted" style="font-size:12.5px">${rad}</span></span>`;
+}
+
 /** "läst ur redovisningen <tid>" för ett värde läst direkt ur en källa. */
 export const direktFarskhet = (f: Farskhet, idag: string): string =>
   `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
@@ -219,6 +254,9 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
   drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
   trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
+  // uppdrag_referens (0086)
+  overifierad: { label: 'Ej verifierad', kind: 'muted', icon: '○' },
+  utanfor_sparr: { label: 'Utanför spärrmappen', kind: 'neg', icon: '!' },
   // Kvittobilagor (0075). `active` finns redan ovan.
   awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
   uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files

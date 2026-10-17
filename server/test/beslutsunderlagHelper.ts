@@ -93,8 +93,10 @@ export function provaTakbekraftelsekontrollen() {
   }
 }
 
+// Story 3.1: id:t har källans form — ett Message-ID är `id@domän`, och
+// kalenderns händelse-id godtas som det står.
 export const SIGNALUNDERLAGSPROV = UNDERLAGSSORTER.map((sort) => ({
-  sort, extern_id: `${sort}-extra`, extern_nyckel: `${sort}-id`, extern_kalla: sort,
+  sort, extern_id: sort === 'mejl' ? 'mejl-extra@ilt.example' : `${sort}-extra`, extern_nyckel: `${sort}-id`, extern_kalla: sort,
 } satisfies Signalunderlag));
 
 /** Scopeproven måste använda varje sort som den befintliga ingången tillåter. */

@@ -50,6 +50,8 @@ export interface Dokumentpekare {
   titel_vid_lankning: string | null;
   status: Referensstatus;
   senast_verifierad: string | null;
+  /** Story 3.1: källhändelsens datum ur Hermes läsning, eller null. */
+  handelse_datum: string | null;
 }
 
 /** Den version av en delkod som gäller — samma regel som taket använder. */
@@ -109,6 +111,12 @@ export interface Kontraktsyta {
   dokument: {
     source_file_id: string | null;
     referenser: Dokumentpekare[];
+    /**
+     * Story 3.1: referenser som svepet sett utanför spärrmappen. De är inga
+     * registerdokument och står därför inte i `referenser` — men deras id
+     * redovisas här, så att inget filtreras bort i tysthet.
+     */
+    utanfor_sparr: string[];
   };
   gallande: Gallandedel[];
   tillagg: Tillaggsversion[];
@@ -144,8 +152,12 @@ export async function lasKontraktsyta(
   // Bara `drive`-referenserna: kalenderposter och mejl pekar på underlag för
   // signaler (S5.1), inte på avtalshandlingen. En yta som blandar ihop dem
   // svarar på en annan fråga än den som ställdes.
-  const referenser = (await listaReferenser(client, companyId, input.contract_id))
-    .filter((r) => r.sort === 'drive')
+  const drive = (await listaReferenser(client, companyId, input.contract_id))
+    .filter((r) => r.sort === 'drive');
+  // Story 3.1: en fil utanför spärrmappen är inget registerdokument.
+  const utanforSparr = drive.filter((r) => r.status === 'utanfor_sparr').map((r) => r.id);
+  const referenser = drive
+    .filter((r) => r.status !== 'utanfor_sparr')
     .map((r): Dokumentpekare => ({
       id: r.id,
       extern_id: r.extern_id,
@@ -154,6 +166,7 @@ export async function lasKontraktsyta(
       titel_vid_lankning: r.titel_vid_lankning,
       status: r.status,
       senast_verifierad: r.senast_verifierad,
+      handelse_datum: r.handelse_datum,
     }));
 
   const gallande: Gallandedel[] = [];
@@ -212,7 +225,7 @@ export async function lasKontraktsyta(
       kontrakt_tillstand: avtal.kontrakt_tillstand,
       signed_date: avtal.signed_date,
     },
-    dokument: { source_file_id: avtal.source_file_id, referenser },
+    dokument: { source_file_id: avtal.source_file_id, referenser, utanfor_sparr: utanforSparr },
     gallande,
     tillagg,
     scopelinje: linjer.rows,
