@@ -277,10 +277,12 @@ describe('(a) avgör "utanför" med tillägg', () => {
     const { avtalId } = await nyttUppdrag('Halvfyllt');
     const signalId = await tandSignal(avtalId);
 
-    // Utan orsak: `andra_baseline`:s krav gäller ordagrant här.
+    // Utan giltighetsdatum: `andra_baseline`:s krav gäller ordagrant här. En
+    // utelämnad orsak fälls inte längre — sedan Story 2.2 blir signalens fras
+    // orsaken (`uppdragsytan-baselineorsak.test.ts`, S1).
     const res = await act('avgor_scopesignal', {
       signal_id: signalId, avgjord: 'utanfor',
-      tillagg: { contract_id: avtalId, code: '2B', name: 'Fas 2B', valid_from: '2026-06-01' },
+      tillagg: { contract_id: avtalId, code: '2B', name: 'Fas 2B' },
     });
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(res.body.error).toBe('validation_error');

@@ -36,7 +36,7 @@ import { listaBedomningar, listaObesvaradeBegaranden, byggRapportunderlag, lasSc
 import { kalendermanad } from '../../lib/bedomningsbegaran.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
-import { TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
+import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { hamtaDriveKo, listaReferenser, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -3077,8 +3077,12 @@ async function signalunderlag(
  *
  * Tomma fält = inget tillägg. Alla utanför-avgöranden blir inte tilläggsavtal,
  * och ett förifyllt tak hade varit ett förslag ingen läst i avtalet.
+ *
+ * Story 2.2: `forifylld` är orsaken ur signalens fras (`signalorsak`). Den står
+ * som platshållare och i texten under fälten; ett tomt orsaksfält ger just den.
+ * Saknas den (tom fras) säger texten att orsaken måste skrivas.
  */
-function tillaggsfalt(companyId: string, formId: string): Raw {
+function tillaggsfalt(companyId: string, formId: string, forifylld: string | null): Raw {
   const f = (namn: string, etikett: string, bredd: string, extra: Raw): Raw =>
     html`<label class="field" style="margin:0;flex:${bredd}"><span>${etikett}</span>
       <input form="${formId}" name="${namn}" ${extra}></label>`;
@@ -3090,7 +3094,7 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
       ${f('tillagg_valid_from', 'Gäller från', '0 1 158px', html`type="date"`)}
       ${/* Story 1.9: köpostens orsak blir ”Tillägg: ” + texten, så fältet tar
             emot exakt så mycket som schemat godtar — inte 2000 som sedan fälls. */ ''}
-      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="${String(TILLAGGSORSAK_MAX)}" placeholder="Tilläggsavtal 1: kunden bad om …"`)}
+      ${f('tillagg_change_reason', 'Orsak', '2 1 260px', html`type="text" maxlength="${String(TILLAGGSORSAK_MAX)}" placeholder="${forifylld ?? ''}"`)}
       ${/* Taket är valfritt HÄR med flit: ett tak som ingen läst i avtals-
             handlingen varnar aldrig och spärrar aldrig — det redovisas som
             'vet ej'. Ett gissat tal hade sett ut som ett åtagande. */ ''}
@@ -3099,7 +3103,8 @@ function tillaggsfalt(companyId: string, formId: string): Raw {
     <p class="muted" style="margin:7px 0 0;font-size:12.5px">Fälten hör till <strong>Utanför</strong>. Fyller du i dem
       hamnar tillägget i <a href="/app/c/${companyId}/approvals">Att göra</a> — den nya avtalsversionen skrivs först när
       du godkänt den där, och den gamla ligger kvar. En signal får ett förslag: finns det redan ett, avgörs signalen
-      ändå och sidan säger att tillägget inte köades. Lämnar du dem tomma avgörs signalen bara.</p>
+      ändå och sidan säger att tillägget inte köades. Lämnar du dem tomma avgörs signalen bara.
+      ${forifylld ? html`Lämnar du orsaken tom blir den ”${forifylld}”.` : 'Signalen saknar fras, så orsaken måste skrivas.'}</p>
   </details>`;
 }
 
@@ -3119,7 +3124,7 @@ function oppenSignal(companyId: string, u: Signalunderlagsvy, s: Signalrad & { a
             spårbar för den som läser sidan — och spårbarheten är hela FR-26. */ ''}
       <p class="muted" style="margin:4px 0 0;font-size:12.5px">Tänd av ${s.tand_av ?? '—'} ${s.tand_nar.slice(0, 16)}
         ${ref ? html` · Underlag: <span class="code">${ref}</span>` : ' · utan underlag'}</p>
-      ${tillaggsfalt(companyId, tillaggForm)}
+      ${tillaggsfalt(companyId, tillaggForm, signalorsak(s.fras))}
     </div>
     ${/* Två likvärdiga knappar, ingen förvald: svaret ska komma ur omdömet.
           Utanför bär tilläggsfältens formulär — men förblir ETT svar, inte två
@@ -3288,8 +3293,8 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
     // hellre än en tyst bortkastad ifyllnad.
     const tak = falt(kropp.tillagg_cap_hours);
     const namn = falt(kropp.tillagg_name);
-    const tillaggsfalten = [falt(kropp.tillagg_code), namn, falt(kropp.tillagg_valid_from),
-      falt(kropp.tillagg_change_reason), tak];
+    const orsak = falt(kropp.tillagg_change_reason);
+    const tillaggsfalten = [falt(kropp.tillagg_code), namn, falt(kropp.tillagg_valid_from), orsak, tak];
     const timmar = timmarUrText(tak);
     const tillagg: Record<string, unknown> = tillaggsfalten.some((v) => v !== '')
       ? {
@@ -3301,7 +3306,10 @@ viewRouter.post('/c/:companyId/projects/:projectId/signaler', page(async (req, r
             contract_id: falt(kropp.tillagg_contract_id),
             code: falt(kropp.tillagg_code),
             valid_from: falt(kropp.tillagg_valid_from),
-            change_reason: falt(kropp.tillagg_change_reason),
+            // Story 2.2: ett tomt orsaksfält utelämnas (project-context.md,
+            // tomma valfria fält skickas inte som ""), och tjänsten ger då
+            // orsaken ur signalens fras.
+            ...(orsak ? { change_reason: orsak } : {}),
             ...(namn ? { name: namn } : {}),
             ...(timmar === undefined ? {} : { cap_hours: timmar }),
           },

@@ -12,7 +12,7 @@ import { describeApproval, explainApproval, type ApprovalExplanation } from './a
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
 import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
-import { OVRIGT_SCHEMA, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
+import { OVRIGT_SCHEMA, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import { visaDatum, type Datumprecision } from '../lib/uppdragsplan.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 
@@ -365,7 +365,8 @@ export function beskrivBaselineandring(
     if (e?.change && text(e.change.to)) forslag = last({ fran: e.change.from, till: e.change.to, belopp_ore: null }, KALLA_REDOVISNING, lastNar);
     skal = lastText(e?.why, lastNar);
     if (e?.source) referenser = [{ typ: 'yta', etikett: e.source.label, sokvag: e.source.href }];
-    jaRegistrerar = 'Baseline version 1 skrivs ur det frysta kontraktet.';
+    // Story 2.2 (B-7 punkt 6): orsaken som ett ja registrerar står i förslaget.
+    jaRegistrerar = `Baseline version 1 skrivs ur det frysta kontraktet. ${orsaksmening(versionsorsak(q.action, input))}`;
   } else if (q.action === 'update_contract') {
     const falt = avtalsandringar(input, mal);
     if (falt.length > 0) forslag = last({ fran: null, till: falt.join(' · '), belopp_ore: null,
@@ -381,7 +382,7 @@ export function beskrivBaselineandring(
     skal = lastText(eget(input, 'change_reason'), lastNar);
     jaRegistrerar = renBekraftelse
       ? `Taket för ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'} bekräftas på befintlig version.`
-      : `En ny version av ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'}. Tidigare versioner står kvar.`;
+      : `En ny version av ${kod ?? 'avtalsdelen'} från ${datum ?? 'datum saknas'}. Tidigare versioner står kvar. ${orsaksmening(versionsorsak(q.action, input))}`;
   }
   return { ...kopostbas(u, 'baselineandring', lastNar),
     val: { kod: 'ja_nej', text: 'Godkänn ändringen, eller säg nej med skäl.' },
@@ -447,13 +448,15 @@ export function beskrivOvrigtBeslut(u: Ovrigtunderlag, bas: string, lastNar: str
   const x = u.underlag;
   const ryms = u.kopost.action === 'registrera_uppdragsbeslut';
   const kod = x.avtalsdel_kod;
+  // Story 2.2: tillägget säger orsaken som versionen får; ryms skriver ingen version.
+  const orsak = ` ${orsaksmening(versionsorsak(u.kopost.action, u.kopost.input))}`;
   const ja = ryms
     ? `Beslutet att arbetet ryms i ${kod} registreras med beräkningen, och Övrigt-raden är dokumentationen. Ingen avtalsdel ändras.`
     : x.nytt_tak_minuter !== null
-      ? `En ny version av ${kod} från ${x.giltig_fran} med taket ${tidtext(x.nytt_tak_minuter)}. Tidigare versioner står kvar.`
+      ? `En ny version av ${kod} från ${x.giltig_fran} med taket ${tidtext(x.nytt_tak_minuter)}. Tidigare versioner står kvar.${orsak}`
       : x.minuter === null
-        ? `En ny version av ${kod} från ${x.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.`
-        : `En ny version av ${kod} från ${x.giltig_fran}. Taket ändras inte, eftersom ${kod} saknar eget tak. Tidigare versioner står kvar.`;
+        ? `En ny version av ${kod} från ${x.giltig_fran}. Taket ändras inte, eftersom timmarna saknas i förslaget. Tidigare versioner står kvar.${orsak}`
+        : `En ny version av ${kod} från ${x.giltig_fran}. Taket ändras inte, eftersom ${kod} saknar eget tak. Tidigare versioner står kvar.${orsak}`;
   const anteckning: Kallreferens = { typ: 'yta', etikett: `${DAVIDS_ANTECKNING}, ${u.anteckning.datum}`,
     sokvag: `${bas}/projects/${u.uppdrag.project_id}/laget#kort-ovrigt` };
   return { ...kopostbas(u, 'ovrigt_beslut', lastNar),

@@ -516,7 +516,7 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
     '../src/lib/uppdragsplan.ts': ['./leveranskontrakt.js'],
     '../src/lib/leveranskontrakt.ts': [],
     '../src/lib/beslutsunderlag.ts': ['node:crypto', 'zod', '../domain/money.js', './validation.js', './scopeavgorande.js'],
-    '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js'],
+    '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js', './leveranskontrakt.js'],
     '../src/lib/lasvarde.ts': DAGENS,
     '../src/lib/bedomningsbegaran.ts': ['./duration.js', '../domain/money.js'],
     '../src/services/uppdragBedomning.ts': ['pg', '../lib/errors.js', './contracts.js', './projects.js', './uppdragReferens.js', './auditService.js'],

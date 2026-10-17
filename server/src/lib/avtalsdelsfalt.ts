@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { IsoDateSchema, OreSchema, UuidSchema, safeText } from './validation.js';
 import { OvrigtUnderlagSchema } from './beslutsunderlag.js';
+import { LEVERABELKOD } from './leveranskontrakt.js';
 
 // ---------------------------------------------------------------------------
 // Avtalsdelens fält — delade av `upsert_contract_part` och `andra_baseline`
@@ -72,6 +73,29 @@ export function kravPrecisionVidDatum(
 }
 
 /**
+ * FR-1 (Story 2.2): ett eget leverabeldatum är en baselineändring och sätts
+ * bara genom `andra_baseline` via kön. Regeln står i `upsert_contract_part`:s
+ * schema och fäller förslaget före kön, aldrig efter Davids ja (NFR-3). Vad som
+ * är en leverabelkod avgör parserns `LEVERABELKOD`, inte ett uppslag i
+ * registret. `andra_baseline` och signalens tillägg får inte regeln: de är vägen.
+ */
+export function kravAndraBaselineForLeverabeldatum(
+  v: { code: string; start_date?: string; end_date?: string; date_precision?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (!LEVERABELKOD.test(v.code)) return;
+  for (const falt of ['start_date', 'end_date', 'date_precision'] as const) {
+    if (v[falt] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [falt],
+        message: 'ett leverabeldatum sätts bara genom andra_baseline (FR-1)',
+      });
+    }
+  }
+}
+
+/**
  * Orsaken när den KRÄVS. Minst fem tecken efter trimning: triggern i 0068
  * underkänner redan blanktext, och en ensam bokstav är inte heller ett skäl
  * någon kan läsa i oktober.
@@ -79,6 +103,33 @@ export function kravPrecisionVidDatum(
 export const OrsakSchema = safeText(2000).refine((v) => v.trim().length >= 5, {
   message: 'ange varför baselinen ändras (minst fem tecken)',
 });
+
+/**
+ * Skälet varje importerad version bär: ”avtal”, en av orsakerna avtal, tillägg
+ * och utfall (PRD resa 1 steg 4, DK-8). `kraver_orsak_vid_ny_version()` (0068)
+ * läser det. Importens orsak bor här, bredvid `OrsakSchema`, så att läsvägen
+ * (`uppdragUndantag.ts`) når den utan att importera en tjänst (Story 2.2).
+ */
+export const IMPORTORSAK = 'avtal';
+
+/**
+ * Story 2.2 (B-7 punkt 6, FR-2): orsaken som ett ja på köposten registrerar.
+ * Importen skriver alltid `IMPORTORSAK`; en ny version bär köpostens egen
+ * `change_reason`. Allt annat — en åtgärd utan version, en saknad, tom eller
+ * ärvd nyckel (lärdom 9) — är `null`, och en saknad orsak hittas aldrig på.
+ */
+export function versionsorsak(atgard: string, input: Record<string, unknown>): string | null {
+  if (atgard === 'satt_baseline') return IMPORTORSAK;
+  if (atgard !== 'andra_baseline' && atgard !== 'upsert_contract_part') return null;
+  if (!Object.hasOwn(input, 'change_reason')) return null;
+  const orsak = input.change_reason;
+  return typeof orsak === 'string' && orsak.trim() !== '' ? orsak : null;
+}
+
+/** Meningen som säger orsaken i förslaget, eller att den saknas (Story 2.2). */
+export function orsaksmening(orsak: string | null): string {
+  return orsak === null ? 'Orsaken saknas i förslaget.' : `Versionen får orsaken ”${orsak}”.`;
+}
 
 /**
  * `andra_baseline`:s indata. Källan är signalen (Story 1.9, satt av
