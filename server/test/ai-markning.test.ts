@@ -44,9 +44,9 @@ async function nyFaktura(): Promise<string> {
  */
 function kort(sidtext: string): string[] {
   expect(sidtext, 'sidan innehåller inget ai-card — då mäter provet ingenting')
-    .toContain('<article class="ai-card">');
+    .toContain('<article class="ai-card"');
   return sidtext
-    .split('<article class="ai-card">')
+    .split('<article class="ai-card"')
     .slice(1)
     .map((s) => s.slice(0, s.indexOf('</article>')));
 }

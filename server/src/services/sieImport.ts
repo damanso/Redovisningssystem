@@ -120,13 +120,9 @@ export async function importSie(
   //    sats försätter hela Postgres-transaktionen i abortläge (25P02) och nästa
   //    fråga kraschar rått. (Grindfynd: import mot bolag med befintliga konton
   //    gav 500 exakt så.)
-  const existing = await client.query<{ account_number: number }>(
-    'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
-    [companyId, parsed.accounts.map((a) => a.number)],
-  );
-  const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
-  for (const acc of parsed.accounts) {
-    if (acc.number < 1000 || acc.number > 9999 || existingNumbers.has(acc.number)) { accountsSkipped += 1; continue; }
+  const plan = await planSieImport(client, companyId, parsed);
+  accountsSkipped = parsed.accounts.length - plan.accounts.length;
+  for (const acc of plan.accounts) {
     await createCompanyAccount(client, companyId, userId, {
       account_number: acc.number, name: acc.name, account_type: accountTypeForNumber(acc.number),
     });
@@ -135,8 +131,7 @@ export async function importSie(
 
   // 2) Verifikat: importeras med FÄRSKA nummer i importserien 'I'; ursprungligt
   //    serie/nummer bevaras i beskrivningen. postVoucher tvingar debet=kredit.
-  for (const v of parsed.vouchers) {
-    if (v.lines.length === 0) continue;
+  for (const v of plan.vouchers) {
     await postVoucher(client, companyId, userId, {
       fiscalYearId,
       series: 'I',
@@ -153,4 +148,32 @@ export async function importSie(
     details: { accounts_created: accountsCreated, vouchers_imported: vouchersImported },
   });
   return { accounts_created: accountsCreated, accounts_skipped: accountsSkipped, vouchers_imported: vouchersImported };
+}
+
+/** Samma urval används av förhandsvisningen och importen; SELECT före INSERT. */
+export async function planSieImport(client: PoolClient, companyId: string, parsed: ParsedSie) {
+  const existing = await client.query<{ account_number: number }>(
+    'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
+    [companyId, parsed.accounts.map((a) => a.number)],
+  );
+  const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
+  return {
+    accounts: parsed.accounts.filter((a) => a.number >= 1000 && a.number <= 9999 && !existingNumbers.has(a.number)),
+    vouchers: parsed.vouchers.filter((v) => v.lines.length > 0),
+  };
+}
+
+/** Läsfel i SIE-texten skiljs från databasfel; bara den rena parsern fångas. */
+export async function sieImportPreview(
+  client: PoolClient, companyId: string, sieContent: string,
+): Promise<{ vouchers: number; newAccounts: number } | null> {
+  let parsed: ParsedSie;
+  try {
+    parsed = parseSie(sieContent);
+  } catch (err) {
+    if (err instanceof BadRequestError) return null;
+    throw err;
+  }
+  const plan = await planSieImport(client, companyId, parsed);
+  return { vouchers: plan.vouchers.length, newAccounts: plan.accounts.length };
 }

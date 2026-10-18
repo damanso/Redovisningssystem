@@ -724,10 +724,10 @@ describe('F förslagssteget i svepet', () => {
     // (c)
     const c = await anteckning(b, ilt.contractId, 'c');
     const svarC = await svepa(b, { ovrigt_forslag: [forslag(c, { kallreferenser: [
-      { ...MEJL, extern_id: ' M2', extern_nyckel: 'rfc822#message-id' }, { ...MEJL, extern_id: 'M2', extern_nyckel: 'rfc822#annan' },
+      { ...MEJL, extern_id: ' <m2@ilt.example> ', extern_nyckel: 'rfc822#message-id' }, { ...MEJL, extern_id: 'm2@ilt.example', extern_nyckel: 'rfc822#annan' },
     ] })] });
     expect(svarC.ovrigt.koade).toHaveLength(1);
-    const m2 = (await referensrader(b.id, ilt.contractId)).filter((r) => r.extern_id === 'M2');
+    const m2 = (await referensrader(b.id, ilt.contractId)).filter((r) => r.extern_id === 'm2@ilt.example');
     expect(m2).toHaveLength(1);
     const inputC = await kopostInput(svarC.ovrigt.koade[0].approval_id);
     expect(inputC.beslutsunderlag.kallor).toEqual([{ typ: 'anteckning', id: c }, { typ: 'referens', id: m2[0]!.id }]);

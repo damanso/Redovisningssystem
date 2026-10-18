@@ -1127,8 +1127,9 @@ idempotent, ingen backfill.
 - `underlag` (valfritt objekt) — `sort` (`mejl` | `kalender`), `extern_id`,
   `extern_nyckel`, `extern_kalla`. Blir signalens `underlag_ref_id` via
   `skapaReferens` (S7.1). **Underlaget är en pekare, aldrig en kopia:** ett
-  Message-ID eller ett event-uid, och en url eller sökväg fälls med **400
-  `validation_error`** av spärren i `uppdragReferens.ts` — varvid ingen signal
+  Message-ID (lagras utan vinkelparenteser) eller Google Calendars händelse-id.
+  Källans form prövas; en url, sökväg eller fel form fälls med **400
+  `validation_error`** av den gemensamma formregeln — varvid ingen signal
   tänds heller. En befintlig referens med samma `(sort, extern_id)` på avtalet
   **återanvänds** (läsning före skrivning): samma mejl tänder ofta två fraser,
   och utan uppslaget hade den andra fallit på `uppdrag_referens_uk`.
@@ -1238,7 +1239,7 @@ oskriven referens, och en egen kötabell hade betytt två rader om samma sak.
 `koaRegisterkopia` i SAMMA transaktion som registerraderna (steg e). Uppdragets
 ENA kopiereferens är `sort = 'drive'`, `extern_nyckel = 'registerkopia'`,
 `extern_kalla = 'drive:sparrmapp'`; första gången finns ingen fil, så raden föds
-med det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
+overifierad med det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
 får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
 från `skriven` och `fel` (omkö vid ny ändring) och nollställer då `ko_fel`.
 Rullas importen tillbaka finns ingen köpost kvar — och går den igenom kan kopian
@@ -1254,11 +1255,14 @@ aldrig glömmas bort.
 - **`rapportera_drive_kopia` (write)** — `referens_id` + `utfall`, en
   diskriminerad union på `lage`:
   - `{ lage: 'skriven', drive_id }` → `ko_status = 'skriven'`, `extern_id` blir
-    Drive-id:t, `ko_fel` nollställs. Id:t prövas med **samma spärr som varje
-    annan referens**: aldrig en url, aldrig en sökväg (400 `validation_error`) —
+    Drive-id:t, `ko_fel` nollställs. Id:t prövas mot **Drive-formen**:
+    bokstäver, siffror, `-` och `_`, aldrig en url eller sökväg (400 `validation_error`) —
     en delningslänk hade slutat fungera nästa gång filen delades om.
   - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med källsystemets egna ord i
     `ko_fel`. Posten står kvar i hämtningen.
+  - Ett Drive-id med känt utanför-utfall i samma avtal avvisas med **409
+    `utanfor_sparr`**. Även en rapport i svepets `drive_kopior` prövas så;
+    fel form ger 400 och ett känt utanför-utfall 409 för hela svepet.
   - **En rapport mot en rad utan öppen köpost fälls:** 409 `ingen_oppen_kopost`
     (`ko_status` NULL eller redan `skriven`), 404 `not_found` för en okänd
     referens. Det finns ingen tyst övergång — en rapport om något ingen bett om

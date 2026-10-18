@@ -160,7 +160,7 @@ describe('Story 1.4 — mottagandet före verkställigheten', () => {
     const utan = await koa('test_utan_tvafas', { name: 'Kort utan tvåfas' });
     const sida = await ua.get(vy());
     expect(sida.status, sida.text).toBe(200);
-    const korten = sida.text.split('<article class="ai-card">').slice(1).map((s) => s.split('</article>')[0]!);
+    const korten = sida.text.split('<article class="ai-card"').slice(1).map((s) => s.split('</article>')[0]!);
     const kort = korten.find((k) => k.includes(`/${id}/reject`));
     const vanligt = korten.find((k) => k.includes(`/${utan}/reject`));
     expect(kort).toBeDefined();

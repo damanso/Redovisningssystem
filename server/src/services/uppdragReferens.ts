@@ -28,35 +28,16 @@ import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { UuidSchema, safeText } from '../lib/validation.js';
 import { lasLeverabelregister, type Leverabelrad } from './uppdragRegister.js';
 
-/** Exakt CHECK-villkorets tre värden i 0068. */
-export const REFERENSSORTER = ['drive', 'kalender', 'mejl'] as const;
-export type Referenssort = (typeof REFERENSSORTER)[number];
+export { REFERENSSORTER, urlEllerSokvag, type Referenssort } from '../lib/referens.js';
+import { REFERENSSORTER, kanonisktReferensId, referensFormFel, urlEllerSokvag, type Referenssort } from '../lib/referens.js';
 
-/** Exakt CHECK-villkorets tre värden i 0068 — etiketterna finns i `html.ts` 192–194. */
-export const REFERENSSTATUSAR = ['levande', 'drift', 'trasig'] as const;
+/** CHECK-villkorets fem värden i 0086; svenska etiketter i html.ts:s STATUS. */
+export const REFERENSSTATUSAR = ['overifierad', 'levande', 'drift', 'trasig', 'utanfor_sparr'] as const;
 export type Referensstatus = (typeof REFERENSSTATUSAR)[number];
 
 // ---------------------------------------------------------------------------
 // Spärren mot url och sökväg (KRAV-3)
 // ---------------------------------------------------------------------------
-
-/**
- * Varför värdet inte är ett stabilt id — eller `null` om det är det.
- *
- * Prövningen är medvetet grov och medvetet på FORMEN, inte på vilket
- * källsystem det gäller: en `https://drive.google.com/…`, en `/Delade
- * enheter/NVR/…` och en `C:\Uppdrag\…` är alla samma fel — någon har klistrat in
- * det man SER i stället för det som identifierar. Drive-, Gmail- och
- * kalender-id:n innehåller aldrig snedstreck, så inget äkta id fastnar här.
- */
-export function urlEllerSokvag(varde: string): string | null {
-  if (varde.includes('://')) return 'ser ut som en url (innehåller ://) — ange källsystemets id';
-  if (/^http/i.test(varde)) return 'ser ut som en url (börjar med http) — ange källsystemets id';
-  if (varde.includes('/') || varde.includes('\\')) {
-    return 'ser ut som en sökväg (innehåller / eller \\) — ange källsystemets id';
-  }
-  return null;
-}
 
 /**
  * Ett stabilt id ur ett källsystem. Trimmas först: ett inklistrat id bär ofta
@@ -79,6 +60,24 @@ const StabiltIdSchema = safeText(200)
 // ---------------------------------------------------------------------------
 
 /**
+ * Nyckelrymden för uppdragets kopiereferens. Den är också RADENS IDENTITET:
+ * uppdraget har EN kopia, och den känns igen på (sort, extern_nyckel) — inte på
+ * `extern_id`, som byter värde den dag Drive-id:t kommer.
+ */
+export const REGISTERKOPIA_NYCKEL = 'registerkopia';
+
+/**
+ * Första gången kopian köas finns ingen fil, och därför inget Drive-id. Raden
+ * föds med ett DETERMINISTISKT platshållar-id: det är stabilt över omköer (så
+ * `uppdrag_referens_uk` håller uppdragets enda kopiereferens på plats) och byts
+ * mot det riktiga id:t när Hermes rapporterar `skriven`. Ett Drive-id innehåller
+ * aldrig kolon, så en platshållare kan aldrig läsas som en pekare som fungerar.
+ */
+export function registerkopiaPlatshallare(contractId: string): string {
+  return `registerkopia:${contractId}`;
+}
+
+/**
  * `extern_kalla` prövas INTE mot url-spärren: den namnger nyckelrymden
  * ("drive:locollabs", "gmail:david@locollabs.com"), den pekar inte ut något.
  * `titel_vid_lankning`/`hash_vid_lankning` är valfria därför att de bara är
@@ -88,12 +87,22 @@ const StabiltIdSchema = safeText(200)
 export const SkapaReferensSchema = z.object({
   contract_id: UuidSchema,
   sort: z.enum(REFERENSSORTER),
-  extern_id: StabiltIdSchema,
+  extern_id: safeText(200),
   extern_nyckel: StabiltIdSchema,
   extern_kalla: safeText(200),
   titel_vid_lankning: safeText(500).optional(),
   hash_vid_lankning: safeText(200).optional(),
-}).strict();
+  revision: z.number().int().nonnegative().safe().optional(),
+}).strict().superRefine((v, ctx) => {
+  const k = kanonisktReferensId(v.sort, v.extern_id);
+  const platshallare = v.sort === 'drive' && v.extern_nyckel === REGISTERKOPIA_NYCKEL
+    && k === registerkopiaPlatshallare(v.contract_id);
+  const fel = platshallare ? null : referensFormFel(v.sort, k);
+  if (fel) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['extern_id'], message: fel });
+  if (v.revision !== undefined && v.sort !== 'drive') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['revision'], message: 'en fryst revision gäller bara en Drive-referens' });
+  }
+}).transform((v) => ({ ...v, extern_id: kanonisktReferensId(v.sort, v.extern_id) }));
 
 export type SkapaReferensInput = z.input<typeof SkapaReferensSchema>;
 
@@ -109,11 +118,13 @@ export interface Referensrad {
   senast_verifierad: string | null;
   status: Referensstatus;
   created_at: string;
+  handelse_datum: string | null;
+  revision: number | null;
 }
 
 const KOLUMNER = `id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
                   titel_vid_lankning, hash_vid_lankning,
-                  senast_verifierad::text, status, created_at::text`;
+                  senast_verifierad::text, status, created_at::text, handelse_datum::text, revision`;
 
 /**
  * Avtalet måste finnas i BOLAGET. Den sammansatta främmande nyckeln
@@ -129,26 +140,30 @@ async function kravAvtal(client: PoolClient, companyId: string, contractId: stri
   if (res.rows.length === 0) throw new NotFoundError('contract');
 }
 
-/**
- * Skapar en referens med status `levande` — status tas aldrig som indata. Läget
- * är resultatet av en VERIFIERING mot den andra änden, och vid länkningen är
- * den änden per definition just läst. En referens som föddes `trasig` vore ett
- * påstående ingen kontrollerat.
- */
+/** En ny referens är overifierad tills svepet sagt annat (FR-10). Status tas aldrig som indata. */
 export async function skapaReferens(
   client: PoolClient, companyId: string, input: SkapaReferensInput,
 ): Promise<Referensrad> {
   const data = SkapaReferensSchema.parse(input);
   await kravAvtal(client, companyId, data.contract_id);
+  const fanns = await client.query<{ id: string; status: Referensstatus }>(
+    `SELECT id, status FROM uppdrag_referens
+      WHERE company_id = $1 AND contract_id = $2 AND sort = $3 AND extern_id = $4`,
+    [companyId, data.contract_id, data.sort, data.extern_id],
+  );
+  if (fanns.rows[0]?.status === 'utanfor_sparr') {
+    throw new ConflictError('utanfor_sparr', 'filen ligger enligt svepet utanför uppdragets spärrmapp och kan inte länkas');
+  }
+  if (fanns.rows[0]) throw new ConflictError('referens_finns_redan', 'referensen är redan länkad till uppdraget');
   try {
     const res = await client.query<Referensrad>(
       `INSERT INTO uppdrag_referens
          (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
-          titel_vid_lankning, hash_vid_lankning, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'levande')
+          titel_vid_lankning, hash_vid_lankning, revision)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING ${KOLUMNER}`,
       [companyId, data.contract_id, data.sort, data.extern_id, data.extern_nyckel,
-        data.extern_kalla, data.titel_vid_lankning ?? null, data.hash_vid_lankning ?? null],
+        data.extern_kalla, data.titel_vid_lankning ?? null, data.hash_vid_lankning ?? null, data.revision ?? null],
     );
     return res.rows[0]!;
   } catch (err) {
@@ -322,30 +337,12 @@ export const KOSTATUSAR = ['koad', 'skriven', 'fel'] as const;
 export type Kostatus = (typeof KOSTATUSAR)[number];
 
 /**
- * Nyckelrymden för uppdragets kopiereferens. Den är också RADENS IDENTITET:
- * uppdraget har EN kopia, och den känns igen på (sort, extern_nyckel) — inte på
- * `extern_id`, som byter värde den dag Drive-id:t kommer.
- */
-export const REGISTERKOPIA_NYCKEL = 'registerkopia';
-
-/**
  * Vilket konto/vilken enhet kopian hör hemma i. Konstant, och medvetet inte
  * mappens id: repot känner inte Drive (ADR-4), och ett mapp-id i koden hade
  * varit en konfiguration förklädd till en konstant. Spärrmappen väljs av den som
  * faktiskt skriver filen.
  */
 export const REGISTERKOPIA_KALLA = 'drive:sparrmapp';
-
-/**
- * Första gången kopian köas finns ingen fil, och därför inget Drive-id. Raden
- * föds med ett DETERMINISTISKT platshållar-id: det är stabilt över omköer (så
- * `uppdrag_referens_uk` håller uppdragets enda kopiereferens på plats) och byts
- * mot det riktiga id:t när Hermes rapporterar `skriven`. Ett Drive-id innehåller
- * aldrig kolon, så en platshållare kan aldrig läsas som en pekare som fungerar.
- */
-export function registerkopiaPlatshallare(contractId: string): string {
-  return `registerkopia:${contractId}`;
-}
 
 export interface Koreferens {
   referens_id: string;
@@ -442,7 +439,10 @@ export async function hamtaDriveKo(client: PoolClient, companyId: string): Promi
 export const DriveRapportSchema = z.object({
   referens_id: UuidSchema,
   utfall: z.discriminatedUnion('lage', [
-    z.object({ lage: z.literal('skriven'), drive_id: StabiltIdSchema }).strict(),
+    z.object({ lage: z.literal('skriven'), drive_id: StabiltIdSchema.superRefine((v, ctx) => {
+      const fel = referensFormFel('drive', v);
+      if (fel) ctx.addIssue({ code: z.ZodIssueCode.custom, message: fel });
+    }) }).strict(),
     // Källsystemets egna ord. Ett fel som inte lagras är ett fel ingen kan se.
     z.object({ lage: z.literal('fel'), fel: safeText(1000) }).strict(),
   ]),
@@ -477,6 +477,18 @@ export async function rapporteraDriveKopia(
       'ingen_oppen_kopost',
       'referensen har ingen öppen köpost — det finns inget utfall att rapportera',
     );
+  }
+
+  if (data.utfall.lage === 'skriven') {
+    const utanfor = await client.query(
+      `SELECT 1 FROM uppdrag_referens
+        WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive'
+          AND extern_id = $3 AND id <> $4 AND status = 'utanfor_sparr'`,
+      [companyId, rad.contract_id, data.utfall.drive_id, data.referens_id],
+    );
+    if (utanfor.rows.length > 0) {
+      throw new ConflictError('utanfor_sparr', 'filen ligger enligt svepet utanför uppdragets spärrmapp och kan inte länkas');
+    }
   }
 
   try {

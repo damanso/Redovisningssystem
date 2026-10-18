@@ -19,6 +19,7 @@
  * Ur `services/` importeras bara typer och konstanter; vyn anropar ingen
  * funktion därifrån.
  */
+import { driveLank } from '../../lib/referens.js';
 import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
 import { DAVIDS_ANTECKNING, tidtext, type Andring, type Andringsfalt, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
@@ -64,14 +65,7 @@ export const BEDOMNINGSVAL: Record<Bedomningslage, { symbol: string; ord: string
   ur_spar: { symbol: '■', ord: 'Ur spår' },
 };
 
-/**
- * Drive-adressen ur ett file-id, vid rendering. Samma form som insamlaren
- * använder när Drive inte lämnar en egen länk (`dokumentforteckning.py`). Det
- * är en sträng: inget anrop görs, och innehållet läses aldrig (NFR-6).
- */
-export function driveLank(fileId: string): string {
-  return `https://drive.google.com/open?id=${encodeURIComponent(fileId)}`;
-}
+export { driveLank };
 
 /**
  * Har Hermes eller en agent formulerat postens text? Då bär posten husets

@@ -21,7 +21,7 @@ import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
-import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
+import { CARD_TEXT, describeApproval, describeFields, explainApproval, type FieldRow } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -9642,6 +9642,7 @@ viewRouter.post('/c/:companyId/documents/upload', documentUpload, page(async (re
 
 // Att göra: AI-/agentförslag som väntar på mänskligt godkännande (read-only vy).
 viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', async (client, companyId, req) => {
+  const titel = (namn: string): string => getAction(namn)?.title ?? CARD_TEXT.unknownAction;
   const pendingRaw = await listApprovals(client, companyId, 'pending');
   // K4: annotera varje förslag med sitt (färskt beräknade) beroende så att
   // ordningen syns i kön — "godkänn Bokför faktura X först" — i stället för
@@ -9656,23 +9657,28 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
       dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
       // Identifierande rad så att den som godkänner ser VILKEN faktura/lön/
       // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
-      summary: await describeApproval(client, companyId, a.input),
+      summary: await describeApproval(client, companyId, a.input, a.action),
       // Designunderlagets fyra krav för ett tiosekundersbeslut: vad som ändras,
       // varför, varifrån — och två knappar.
       forklaring: await explainApproval(client, companyId, a.action, a.input, `/app/c/${companyId}`),
+      falt: await describeFields(client, companyId, a.action, a.input),
     });
   }
   // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
   const decidedRaw = await listRecentDecisions(client, companyId, 5);
   const decided = [];
   for (const d of decidedRaw) {
-    decided.push({ ...d, summary: await describeApproval(client, companyId, d.input) });
+    decided.push({ ...d, summary: await describeApproval(client, companyId, d.input, d.action) });
   }
-  const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
-  const fmtVal = (v: unknown): string => {
-    if (v === null || v === undefined) return '—';
-    if (typeof v === 'object') return JSON.stringify(v);
-    return String(v);
+  // Fältmodellen bär texten; vyn väljer bara husets belopp, länkar och grupper.
+  const faltvarde = (rad: FieldRow): Raw => {
+    if (rad.rows) return html`${rad.rows.map((grupp, i) => html`${i ? html`<br>` : ''}${
+      grupp.map((r, j) => html`${j ? ' · ' : ''}${r.label} ${faltvarde(r)}`)
+    }`)}`;
+    const v = rad.value;
+    if (v?.kind === 'amount') return amount(v.ore);
+    if (v?.kind === 'post' && v.link) return entityLink(companyId, v.link.kind, v.link.id, v.text);
+    return html`${v?.text ?? '—'}`;
   };
   return html`<div class="page-head"><div>${eyebrow('Att göra')}<h1>Väntar på din granskning</h1>
       <p class="lede">AI:t föreslår — du bestämmer. Känsliga åtgärder (bokföra, låsa period) bokförs aldrig automatiskt.</p></div></div>
@@ -9683,24 +9689,20 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
         : pending.map((a) => {
             const def = getAction(a.action);
             const fromAgent = a.requested_actor === 'agent';
-            const entries = Object.entries(a.input).slice(0, 6);
-            return html`<article class="ai-card">
+            return html`<article class="ai-card" aria-labelledby="forslag-${a.id}">
               <div class="ai-card__head">
                 ${fromAgent ? aiMarkning() : chip('Förslag', 'info', '•')}
-                <span class="ai-card__title">${def?.title ?? a.action}</span>
-                <span class="code" style="margin-left:auto">${a.action}</span>
+                <span class="ai-card__title" id="forslag-${a.id}" tabindex="-1">${titel(a.action)}</span>
               </div>
-              ${a.summary ? html`<div class="ai-card__subject"><strong>${a.summary}</strong></div>` : ''}
+              <div class="ai-card__subject"><strong>${a.summary}</strong></div>
               ${/* Före → efter. Det enda som gör ett godkännande till ett
                    beslut i stället för ett medgivande: man ser vad som faktiskt
                    händer, inte bara vad åtgärden heter. */ ''}
-              ${a.forklaring.change
-                ? html`<div class="andring">
-                    <span class="andring__f">${a.forklaring.change.from}</span>
+              ${[a.forklaring.change, ...(a.forklaring.fler ?? [])].filter((c) => c !== null).map((c) => html`<div class="andring">
+                    <span class="andring__f">${c.from}</span>
                     <span class="andring__p" aria-hidden="true">→</span>
-                    <span class="andring__t">${a.forklaring.change.to}</span>
-                  </div>`
-                : ''}
+                    <span class="andring__t">${c.to}</span>
+                  </div>`)}
               <div class="ai-card__why">${
                 a.forklaring.why ?? html`Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.`
               }</div>
@@ -9716,7 +9718,8 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
               <details class="ai-raw"${a.forklaring.change ? '' : html` open`}>
                 <summary>Visa fälten som skickas</summary>
                 <div class="ai-fields">
-                  ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
+                  ${a.falt.map((r) => html`<div class="ai-field"><span class="l">${r.label}</span><span class="v">${faltvarde(r)}</span></div>`)}
+                  <div class="ai-field"><span class="l">${CARD_TEXT.technicalAction}</span><span class="v"><span class="code">${a.action}</span></span></div>
                 </div>
               </details>
               <div class="ai-actions">
@@ -9752,7 +9755,7 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
             : d.status === 'approved' ? chip('Mottaget', 'info', '•')
             : d.status === 'failed' ? chip('Misslyckades', 'neg', '!')
             : d.status === 'executed' ? chip('Utförd', 'ok', '✓') : chip('Väntar', 'info', '•')}
-          <span class="kvitto__vad">${getAction(d.action)?.title ?? d.action}${
+          <span class="kvitto__vad">${titel(d.action)}${
             d.summary ? html` · <span class="muted">${d.summary}</span>` : ''
           }</span>
           <time class="kvitto__nar" datetime="${d.decided_at ? new Date(d.decided_at).toISOString() : ''}">${

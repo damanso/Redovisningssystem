@@ -31,6 +31,7 @@
 // `ledde_till_part_id`. Sedan Story 1.9 köas tillägget en gång per signal, i
 // någon status, och orsaken byggs av `tillaggsorsak` (B-8).
 import type { PoolClient } from 'pg';
+import { kanonisktReferensId } from '../lib/referens.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { arUpprepatAvgorande, signalorsak, tillaggsorsak } from '../lib/scopeavgorande.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -204,14 +205,13 @@ async function inloggadSom(client: PoolClient, userId: string): Promise<string> 
  * extern_id). Utan uppslaget hade den andra signalen på samma mejl fallit på en
  * dubblettkonflikt — ett 409 mitt i ett flöde där ingenting är fel.
  *
- * Id:t trimmas före uppslaget av exakt samma skäl som `skapaReferens` trimmar
- * det: `" abc"` och `"abc"` är samma pekare, och en otrimmad jämförelse här hade
- * missat raden och sedan skapat en dubblett av den.
+ * Uppslaget och skrivningen använder samma kanoniska id. Annars hade ett
+ * mejl med vinkelparenteser missat raden och gett 409 mitt i flödet.
  */
 export async function underlagsreferens(
   client: PoolClient, companyId: string, contractId: string, underlag: Signalunderlag,
 ): Promise<string> {
-  const externId = underlag.extern_id.trim();
+  const externId = kanonisktReferensId(underlag.sort, underlag.extern_id);
   const fanns = await client.query<{ id: string }>(
     `SELECT id FROM uppdrag_referens
       WHERE company_id = $1 AND contract_id = $2 AND sort = $3 AND extern_id = $4`,
