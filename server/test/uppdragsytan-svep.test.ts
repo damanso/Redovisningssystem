@@ -313,18 +313,19 @@ describe('KRAV-4: verifiering → spärrmapp → prognos, i den ordningen', () =
         contract_id: avtal,
         sparrmapp_id: SPARRMAPP,
         referenser: [
-          // Hashen har bytts i Drive: drift, inte trasig (S7.1).
+          // Filen ligger utanför spärren och hashen har bytts.
           { referens_id: refL3, lage: { finns: true, hash: 'sha256:NY' }, foralderkedja: [UTANFOR_MAPP] },
         ],
       }],
     });
     const rader = await cache();
     expect(varde(rader, 'referenser:drive')).toMatchObject({
-      antal: 1, levande: 0, drift: 1, trasig: 0,
+      antal: 1, levande: 0, drift: 0, trasig: 0, overifierad: 0, utanfor_sparr: 1,
     });
     const avvikande = (varde(rader, 'referenser:drive').avvikande as Array<Record<string, unknown>>);
     expect(avvikande).toHaveLength(1);
-    expect(avvikande[0]!.avvikelser).toEqual(['hash']);
+    expect(avvikande[0]!.avvikelser).toEqual(['utanfor_sparr', 'hash']);
+    expect((await withAdmin(async (c) => (await c.query('SELECT status FROM uppdrag_referens WHERE company_id = $1 AND id = $2', [companyId, refL3])).rows[0])).status).toBe('utanfor_sparr');
     // Spärrmappen prövas på kedjan i samma svep: filen ligger utanför.
     expect(varde(rader, 'sparrmapp')).toEqual({ ok: false, provade: 1, utanfor: [refL3] });
     // Kalenderreferensen kom inte med i det här svepet: cachen speglar det
@@ -440,7 +441,7 @@ describe('KRAV-3: ett avslutat uppdrag rörs inte', () => {
       'SELECT senast_verifierad::text, status FROM uppdrag_referens WHERE id = $1', [refStangt],
     )).rows[0]!);
     expect(ref.senast_verifierad).toBeNull();
-    expect(ref.status).toBe('levande');
+    expect(ref.status).toBe('overifierad');
   });
 
   it('det stängda uppdragets referenser och köposter står inte i arbetslistan', async () => {

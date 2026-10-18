@@ -1,3 +1,4 @@
+import { kanonisktReferensId } from '../lib/referens.js';
 // Uppdragsytan S5.1, våg 3 (PRD FR-6/FR-7/FR-26): scopesignalen tänds och avgörs.
 //
 // En scopesignal är ögonblicket då någon säger "kan ni även…" — kontraktets
@@ -204,14 +205,13 @@ async function inloggadSom(client: PoolClient, userId: string): Promise<string> 
  * extern_id). Utan uppslaget hade den andra signalen på samma mejl fallit på en
  * dubblettkonflikt — ett 409 mitt i ett flöde där ingenting är fel.
  *
- * Id:t trimmas före uppslaget av exakt samma skäl som `skapaReferens` trimmar
- * det: `" abc"` och `"abc"` är samma pekare, och en otrimmad jämförelse här hade
- * missat raden och sedan skapat en dubblett av den.
+ * Uppslaget och skrivningen använder samma kanoniska form; annars ger samma
+ * mejl med vinkelparenteser en dubblett och 409 mitt i flödet.
  */
 export async function underlagsreferens(
   client: PoolClient, companyId: string, contractId: string, underlag: Signalunderlag,
 ): Promise<string> {
-  const externId = underlag.extern_id.trim();
+  const externId = kanonisktReferensId(underlag.sort, underlag.extern_id);
   const fanns = await client.query<{ id: string }>(
     `SELECT id FROM uppdrag_referens
       WHERE company_id = $1 AND contract_id = $2 AND sort = $3 AND extern_id = $4`,

@@ -50,6 +50,7 @@ export interface Dokumentpekare {
   titel_vid_lankning: string | null;
   status: Referensstatus;
   senast_verifierad: string | null;
+  handelse_datum: string | null;
 }
 
 /** Den version av en delkod som gäller — samma regel som taket använder. */
@@ -109,6 +110,7 @@ export interface Kontraktsyta {
   dokument: {
     source_file_id: string | null;
     referenser: Dokumentpekare[];
+    utanfor_sparr: string[];
   };
   gallande: Gallandedel[];
   tillagg: Tillaggsversion[];
@@ -144,8 +146,9 @@ export async function lasKontraktsyta(
   // Bara `drive`-referenserna: kalenderposter och mejl pekar på underlag för
   // signaler (S5.1), inte på avtalshandlingen. En yta som blandar ihop dem
   // svarar på en annan fråga än den som ställdes.
-  const referenser = (await listaReferenser(client, companyId, input.contract_id))
-    .filter((r) => r.sort === 'drive')
+  const drive = (await listaReferenser(client, companyId, input.contract_id)).filter((r) => r.sort === 'drive');
+  const utanfor_sparr = drive.filter((r) => r.status === 'utanfor_sparr').map((r) => r.id);
+  const referenser = drive.filter((r) => r.status !== 'utanfor_sparr')
     .map((r): Dokumentpekare => ({
       id: r.id,
       extern_id: r.extern_id,
@@ -154,6 +157,7 @@ export async function lasKontraktsyta(
       titel_vid_lankning: r.titel_vid_lankning,
       status: r.status,
       senast_verifierad: r.senast_verifierad,
+      handelse_datum: r.handelse_datum,
     }));
 
   const gallande: Gallandedel[] = [];
@@ -212,7 +216,7 @@ export async function lasKontraktsyta(
       kontrakt_tillstand: avtal.kontrakt_tillstand,
       signed_date: avtal.signed_date,
     },
-    dokument: { source_file_id: avtal.source_file_id, referenser },
+    dokument: { source_file_id: avtal.source_file_id, referenser, utanfor_sparr },
     gallande,
     tillagg,
     scopelinje: linjer.rows,

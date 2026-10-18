@@ -89,7 +89,8 @@ export interface Uppdragsref {
 export type Kallreferens =
   | { typ: 'yta'; etikett: string; sokvag: string }
   | { typ: 'referens'; referens_id: string; sort: 'drive' | 'kalender' | 'mejl';
-      extern_id: string; extern_kalla: string | null; titel: string | null };
+      extern_id: string; extern_kalla: string | null; titel: string | null;
+      status: string; senast_verifierad: string | null; handelse_datum: string | null };
 /** Föreslagna mål är lästa underlag, aldrig en etikett som döljer identiteten. */
 interface BaselineMal {
   customer_id?: Lasvarde<{ id: string; customer_number: number; name: string; org_number: string | null }>;
@@ -624,7 +625,8 @@ async function referens(client: PoolClient, companyId: string, id: unknown): Pro
   const refId = uuid(id);
   if (!refId) return [];
   const r = await client.query<Extract<Kallreferens, { typ: 'referens' }>>(
-    `SELECT id AS referens_id,sort,extern_id,extern_kalla,titel_vid_lankning AS titel
+    `SELECT id AS referens_id,sort,extern_id,extern_kalla,titel_vid_lankning AS titel,
+            status,senast_verifierad::text,handelse_datum::text
        FROM uppdrag_referens WHERE company_id=$1 AND id=$2`, [companyId, refId],
   );
   return r.rows.map((ref) => ({ ...ref, typ: 'referens' }));

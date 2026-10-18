@@ -150,7 +150,7 @@ export interface Beslutsrad {
   utfall: 'ja' | 'nej'; alternativ: string | null; skal: string | null;
   kalla: { typ: string; id: string };
   underlag: Record<string, unknown>; handling: Record<string, unknown> | null;
-  referenser: Array<{ referens_id: string; sort: string; extern_id: string; extern_kalla: string | null; titel: string | null }>;
+  referenser: Array<{ referens_id: string; sort: 'drive' | 'kalender' | 'mejl'; extern_id: string; extern_kalla: string | null; titel: string | null; status: string; senast_verifierad: string | null; handelse_datum: string | null }>;
   beslutad_av: string; beslutad_av_namn: string; beslutad_nar: string; forslag_hash: string;
   /** Story 1.16: nej-utkastet och dess markör, fryst i beslutsraden. Null utom på ett nej på en kundförfrågan ur Övrigt. */
   utkast: Nejutkast | null; utkast_markor: string | null;
@@ -481,7 +481,8 @@ async function registreradeBeslut(client: PoolClient, companyId: string, contrac
   }) : [];
   const idn = [...new Set(r.rows.flatMap(refIdn))];
   const refs = await client.query<Beslutsrad['referenser'][number]>(
-    `SELECT id AS referens_id, sort, extern_id, extern_kalla, titel_vid_lankning AS titel
+    `SELECT id AS referens_id, sort, extern_id, extern_kalla, titel_vid_lankning AS titel,
+            status, senast_verifierad::text, handelse_datum::text
       FROM uppdrag_referens WHERE company_id=$1 AND id=ANY($2::uuid[])`, [companyId, idn],
   );
   const perRef = new Map(refs.rows.map((ref) => [ref.referens_id, ref]));

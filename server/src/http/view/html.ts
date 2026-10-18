@@ -1,3 +1,4 @@
+import { oppningsvag, type Referensvisning } from '../../lib/referens.js';
 import { formatOre, type Ore } from '../../domain/money.js';
 import { doldaAv157, modell, postFor, type Post } from './kontrakt.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
@@ -118,6 +119,21 @@ export function farskhetsrad(delar: readonly string[]): Raw {
   return html`<p class="farskhet">${delar.map((t) => html`<span>${t}</span>`)}</p>`;
 }
 
+/** FR-35/FR-36: samma öppningsväg, läge och källålder i varje referensyta. */
+export function referensvisning(r: Referensvisning, idag: string): Raw {
+  const vag = oppningsvag(r);
+  const namn = r.titel ?? { drive: 'Dokument i Drive', mejl: 'Mejl', kalender: 'Kalenderpost' }[r.sort];
+  const sortnamn = { drive: 'Drive', mejl: 'mejl', kalender: 'kalender' }[r.sort];
+  return html`<span data-referens="${r.referens_id}">
+    ${vag ? html`<a href="${vag}" target="_blank" rel="noopener">${namn}</a>` : html`<span>${namn}</span>`}
+    <span class="code" style="font-size:12px">${r.extern_id}</span>
+    ${statusChip(r.status)}
+    <span style="font-size:12.5px"><span class="muted">källa ${r.extern_kalla ?? sortnamn}</span> · ${r.senast_verifierad === null
+      ? html`<span>aldrig verifierad</span>` : html`<span class="muted">verifierad ${farskhetstid(r.senast_verifierad, idag)}</span>`} · ${r.handelse_datum === null
+      ? html`<span>datum saknas</span>` : html`<span class="muted">händelse ${r.handelse_datum}</span>`}</span>
+  </span>`;
+}
+
 /** "läst ur redovisningen <tid>" för ett värde läst direkt ur en källa. */
 export const direktFarskhet = (f: Farskhet, idag: string): string =>
   `läst ur ${f.kalla === 'redovisning' ? 'redovisningen' : f.kalla} ${farskhetstid(f.last_nar, idag)}`;
@@ -219,6 +235,9 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   levande: { label: 'Levande', kind: 'ok', icon: '✓' },            // uppdrag_referens
   drift: { label: 'Har glidit', kind: 'warn', icon: '±' },         // uppdrag_referens
   trasig: { label: 'Trasig', kind: 'neg', icon: '!' },             // uppdrag_referens
+  // uppdrag_referens (0086)
+  overifierad: { label: 'Ej verifierad', kind: 'muted', icon: '○' },
+  utanfor_sparr: { label: 'Utanför spärrmappen', kind: 'neg', icon: '!' },
   // Kvittobilagor (0075). `active` finns redan ovan.
   awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
   uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files

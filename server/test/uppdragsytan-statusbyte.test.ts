@@ -1,3 +1,4 @@
+import { listaReferenser, skapaReferens } from '../src/services/uppdragReferens.js';
 // Uppdragsytan S3.2, våg 4: statusbytet med transmittal (PRD FR-12/FR-13, NFR-4).
 //
 // Före det här bygget fanns INGEN kodväg till `uppdrag_leverabel.status`. Det
@@ -149,14 +150,18 @@ async function nyttUppdrag(namn: string, opts: {
 
 /** Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen. */
 async function skrivForslag(contractId: string, koder: string[], revision: number): Promise<void> {
-  await withTenantTransaction(user.userId, companyId, (client) => upsertSvepvarden(
-    client, companyId, contractId,
-    koder.map((kod) => ({
-      nyckel: `statusforslag:${kod}`,
-      kalla: 'drive',
-      varde: { leverabel_kod: kod, revision, extern_id: `1AbC_${kod}`, referensstatus: 'levande' },
-    })),
-  ));
+  await withTenantTransaction(user.userId, companyId, async (client) => {
+    const referenser = await listaReferenser(client, companyId, contractId);
+    const varden = [];
+    for (const kod of koder) {
+      const extern_id = `1AbC_${kod}`;
+      const r = referenser.find((r) => r.extern_id === extern_id) ?? await skapaReferens(client, companyId, {
+        contract_id: contractId, sort: 'drive', extern_id, extern_nyckel: 'drive#file', extern_kalla: 'drive:prov',
+      });
+      varden.push({ nyckel: `statusforslag:${kod}`, kalla: 'drive', varde: { leverabel_kod: kod, revision, extern_id, referens_id: r.id, referensstatus: r.status } });
+    }
+    await upsertSvepvarden(client, companyId, contractId, varden);
+  });
 }
 
 beforeAll(async () => {
@@ -508,6 +513,9 @@ describe('vyn: statusförslaget på uppdragssidan', () => {
     // Underlaget: koden, Drive-revisionen och handlingen — i klartext.
     expect(html).toContain('Drive-revision');
     expect(html).toContain('1AbC_L6');
+    const id = await withAdmin(async (c) => (await c.query("SELECT id FROM uppdrag_referens WHERE company_id = $1 AND extern_id = '1AbC_L6'", [companyId])).rows[0].id as string);
+    expect(html).toContain(`data-referens="${id}"`);
+    expect(html).toContain('Ej verifierad');
     expect(html).toContain('name="utfall" value="bekraftad"');
     expect(html).toContain('name="utfall" value="retur"');
     // JS-fritt, som resten av vyn.

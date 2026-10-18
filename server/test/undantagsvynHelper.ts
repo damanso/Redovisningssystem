@@ -257,22 +257,22 @@ export function provaUppdragetsLank() {
   assert.ok(falt(utanAvtalsnamn, 'uppdrag').trim().endsWith('Uppdrag 7 · NVR-001 Fas 2</a>'), falt(utanAvtalsnamn, 'uppdrag'));
 }
 
-// R3 (c): källorna — ytan som länk, Drive som länk ut, mejl och kalender som text.
+// R3 (c): ytan, Drive och mejlet har länkar; kalendern behöver kalender-id eller datum.
 export function provaKallorna() {
   const kallor: Kallreferens[] = [
     ytan(`/app/c/${C}/projects/${PROJEKT_A}/signaler`, 'Signaler'),
-    { typ: 'referens', referens_id: 'r1', sort: 'drive', extern_id: '1AbC d', extern_kalla: null, titel: 'Avtalet.pdf' },
-    { typ: 'referens', referens_id: 'r2', sort: 'mejl', extern_id: 'id@mail.example', extern_kalla: 'gmail', titel: 'Fråga om mer' },
-    { typ: 'referens', referens_id: 'r3', sort: 'kalender', extern_id: 'kal-42', extern_kalla: null, titel: null },
+    { typ: 'referens', status: 'levande', senast_verifierad: null, handelse_datum: null, referens_id: 'r1', sort: 'drive', extern_id: '1AbCd', extern_kalla: null, titel: 'Avtalet.pdf' },
+    { typ: 'referens', status: 'levande', senast_verifierad: null, handelse_datum: null, referens_id: 'r2', sort: 'mejl', extern_id: 'id@mail.example', extern_kalla: 'gmail', titel: 'Fråga om mer' },
+    { typ: 'referens', status: 'levande', senast_verifierad: null, handelse_datum: null, referens_id: 'r3', sort: 'kalender', extern_id: 'kal-42', extern_kalla: null, titel: null },
   ];
   const k = falt(enPost(post('scopeavgorande', { kallor: last(kallor, KALLA_REDOVISNING, TID) })), 'kallor');
   assert.ok(k.includes(`<a href="/app/c/${C}/projects/${PROJEKT_A}/signaler">Signaler</a>`), k);
-  assert.ok(k.includes('<a href="https://drive.google.com/open?id=1AbC%20d" target="_blank" rel="noopener">Avtalet.pdf</a>'), k);
+  assert.ok(k.includes('<a href="https://drive.google.com/open?id=1AbCd" target="_blank" rel="noopener">Avtalet.pdf</a>'), k);
   assert.equal(vy.driveLank('1AbC d'), 'https://drive.google.com/open?id=1AbC%20d');
-  assert.ok(k.includes('mejl: Fråga om mer'), k);
-  assert.ok(k.includes('kalenderpost: kal-42'), k);
-  // Bara ytan och Drive är länkar: mejl och kalender öppnas i Epic 3.
-  assert.equal((k.match(/<a /g) ?? []).length, 2, k);
+  assert.ok(k.includes('rfc822msgid%3Aid%40mail.example') && k.includes('Fråga om mer'), k);
+  assert.ok(k.includes('<span class="code" style="font-size:12px">kal-42</span>'), k);
+  // Ytan, Drive och mejlet är länkar. Kalendern saknar kalender-id och datum.
+  assert.equal((k.match(/<a /g) ?? []).length, 3, k);
 }
 
 // R3 (d): märkningen följer ett enda predikat.

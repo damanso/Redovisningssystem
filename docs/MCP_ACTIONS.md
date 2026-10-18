@@ -1127,7 +1127,9 @@ idempotent, ingen backfill.
 - `underlag` (valfritt objekt) — `sort` (`mejl` | `kalender`), `extern_id`,
   `extern_nyckel`, `extern_kalla`. Blir signalens `underlag_ref_id` via
   `skapaReferens` (S7.1). **Underlaget är en pekare, aldrig en kopia:** ett
-  Message-ID eller ett event-uid, och en url eller sökväg fälls med **400
+  Message-ID eller Google Calendars händelse-id. Id:t prövas mot källans form;
+  Message-ID lagras utan vinkelparenteser. En url, sökväg eller fel form
+  fälls med **400
   `validation_error`** av spärren i `uppdragReferens.ts` — varvid ingen signal
   tänds heller. En befintlig referens med samma `(sort, extern_id)` på avtalet
   **återanvänds** (läsning före skrivning): samma mejl tänder ofta två fraser,
@@ -1238,8 +1240,8 @@ oskriven referens, och en egen kötabell hade betytt två rader om samma sak.
 `koaRegisterkopia` i SAMMA transaktion som registerraderna (steg e). Uppdragets
 ENA kopiereferens är `sort = 'drive'`, `extern_nyckel = 'registerkopia'`,
 `extern_kalla = 'drive:sparrmapp'`; första gången finns ingen fil, så raden föds
-med det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
-får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
+med status `overifierad` och det deterministiska platshållar-id:t
+**`registerkopia:<contract_id>`**. Den får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
 från `skriven` och `fel` (omkö vid ny ändring) och nollställer då `ko_fel`.
 Rullas importen tillbaka finns ingen köpost kvar — och går den igenom kan kopian
 aldrig glömmas bort.
@@ -1255,8 +1257,12 @@ aldrig glömmas bort.
   diskriminerad union på `lage`:
   - `{ lage: 'skriven', drive_id }` → `ko_status = 'skriven'`, `extern_id` blir
     Drive-id:t, `ko_fel` nollställs. Id:t prövas med **samma spärr som varje
-    annan referens**: aldrig en url, aldrig en sökväg (400 `validation_error`) —
+    annan referens**, samt mot Drive-formen `[A-Za-z0-9_-]+`: aldrig en url
+    eller sökväg (400 `validation_error`) —
     en delningslänk hade slutat fungera nästa gång filen delades om.
+  - En annan referens med samma Drive-id i samma avtal i `utanfor_sparr`
+    ger 409 `utanfor_sparr` före skrivning. Detta gäller också svepets
+    `drive_kopior`: både formfelet och spärrdomen fäller hela svepet.
   - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med källsystemets egna ord i
     `ko_fel`. Posten står kvar i hämtningen.
   - **En rapport mot en rad utan öppen köpost fälls:** 409 `ingen_oppen_kopost`
@@ -1290,8 +1296,10 @@ egna databasen kommer in som validerad indata:
 - `uppdrag[]` — per uppdrag `contract_id`, `referenser[]`, `kalenderhandelser[]`
   och valfri `sparrmapp_id` (Drive-id, aldrig en sökväg).
   - `referenser[]`: `referens_id`, `lage` (samma union som S7.1:s verifiering),
-    valfri `leverabel_kod`, valfri `revision` och valfri `foralderkedja`
-    (Drive-id:n, filens egen förälder först).
+    valfri `leverabel_kod`, valfri `revision`, valfri `foralderkedja`
+    (Drive-id:n, filens egen förälder först) och valfritt `handelse_datum`
+    (ett verkligt ISO-kalenderdatum ur Hermes läsning av källhändelsen).
+    Utelämnat datum lämnar lagrat datum orört.
   - `kalenderhandelser[]`: `datum` + `minuter` som **heltal** — aldrig timmar som
     flyttal, samma regel som tidposternas `billable_minutes`.
   - **Ett uppdrag som inte står i listan rörs inte.** Cachen speglar det senaste
@@ -1312,6 +1320,15 @@ egna databasen kommer in som validerad indata:
   svepet.
 
 **Mottagna beslut först (Story 1.7, B-2):** efter bolagslåset verkställs redan mottagna mandat med en savepoint per köpost, före läsningen av öppna avtal. Svaret `svep_kort` får `mottagna_beslut: { verkstallda, kvar }` som antal; inga id eller fel förs ut. Auditraden anger verkställaren `svep`, medan beslutsfattaren förblir människan. `svep_avstod` är oförändrat.
+
+**Referensutfallet (Story 3.1):** förlust ger `trasig`; ändrad titel, hash eller
+fryst revision ger `drift`. Drive-kedjan utanför uppdragets spärrmapp ger
+`utanfor_sparr`. Läget består tills en dom `innanfor` kommer eller målet
+försvinner. En fryst revision (satt i arbetslistan) rapporteras i varje
+observation. Utan den bedöms raden inte, ingen skrivning sker och
+`uppdrag[].ej_bedomda` får `{ referens_id, orsak: 'revision_saknas' }`.
+Den räknas inte i cachen, spärrmappskontrollen eller förslagsstegen.
+En referens som Hermes inte kunde verifiera skickas inte. Servern lämnar då status och `senast_verifierad` orörda.
 
 **Ordningen efter beslutssteget är kravet:** (1) verifiera referenserna via S7.1, (2) kontrollera
 spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändelserna
@@ -1409,10 +1426,12 @@ står alltså inte i arbetslistan, och täckningen ser körningens köposter. Et
 avstått svep prövar inga förslag.
 
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
-`referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
+`referenser_verifierade`, `okanda_leverabelkoder`, `utanfor_sparr` (bedömda
+referensers id), `ej_bedomda`), `hoppade[]`,
 `hoppade_kopior[]`, `tackning[]`, `ovrigt` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
-`status`, `senast_verifierad`), `drive_ko` ur `hamta_drive_ko` och
-`ovrigt_kandidater` (Story 1.14).
+`status`, `senast_verifierad`, `revision` (null om ofryst)), `drive_ko` ur `hamta_drive_ko` och
+`ovrigt_kandidater` (Story 1.14). `utanfor_sparr` och `ej_bedomda` finns alltid,
+också som tomma listor.
 
 - `arbetslista.ovrigt_kandidater[]` är `{ id, contract_id, text, datum }` för
   varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
@@ -1617,7 +1636,10 @@ känslig åtgärd och godkänns i **Att göra**.
 - `las_kontraktsyta` (read, ingen `kravManniska`) — `contract_id`. Avtalets hela
   livscykel ur EN definition (FR-23, FR-38): `contract` (namn, uppdrag, kund,
   `kontrakt_tillstand`, `signed_date`), `dokument` (`source_file_id` +
-  Drive-pekarna ur `uppdrag_referens` med `sort = 'drive'`), `gallande` (den
+  Drive-pekarna ur `uppdrag_referens` med `sort = 'drive'`).
+  `dokument.referenser[]` bär också `handelse_datum`. Referenser med
+  `utanfor_sparr` utesluts och deras id redovisas i `dokument.utanfor_sparr`.
+  Ytan bär också `gallande` (den
   version per delkod som GÄLLER, med `valid_from`, `change_reason`, taket och
   `cap_status`), `tillagg` (varje version utöver den första, i tidsordning, med
   `valid_from` och orsaken) och `scopelinje` (avtalets egna innanför/utanför/
@@ -1658,6 +1680,9 @@ aldrig. JS-fri serverrenderad HTML, inga externa anrop under rendering (NFR-6),
 ingen ny CSS och inga nya komponenter.
 
 ### Läget (S10.1, våg 6)
+
+`beslut.registrerade[].referenser` bär `status`, `senast_verifierad` och
+`handelse_datum` tillsammans med identitet, källa och titel (Story 3.1).
 
 - `las_uppdragslage` (read, ingen `kravManniska`) — `project_id`. Uppdragets läge
   ur EN definition (FR-18, FR-23): `uppdrag` (nummer, namn, status, kund),
@@ -1896,6 +1921,9 @@ paketlistan och e-postköns importörer i hela `server/src`.
 
 
 ### Undantagsvyns läsväg (Story 1.6, B-3)
+
+Källornas objekt med `typ: 'referens'` bär `status`, `senast_verifierad` och
+`handelse_datum` tillsammans med identitet, källa och titel (Story 3.1).
 
 - `las_undantag` (read, ingen `kravManniska`) — utan indatafält; schemat är
   strikt tomt. REST, MCP och den kommande vyn använder samma `lasUndantag`.

@@ -19,7 +19,8 @@
  * Ur `services/` importeras bara typer och konstanter; vyn anropar ingen
  * funktion därifrån.
  */
-import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, type Raw } from './html.js';
+import { driveLank } from '../../lib/referens.js';
+import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, referensvisning, html, kronor, raw, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
 import { DAVIDS_ANTECKNING, tidtext, type Andring, type Andringsfalt, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
 import type {
@@ -64,14 +65,7 @@ export const BEDOMNINGSVAL: Record<Bedomningslage, { symbol: string; ord: string
   ur_spar: { symbol: '■', ord: 'Ur spår' },
 };
 
-/**
- * Drive-adressen ur ett file-id, vid rendering. Samma form som insamlaren
- * använder när Drive inte lämnar en egen länk (`dokumentforteckning.py`). Det
- * är en sträng: inget anrop görs, och innehållet läses aldrig (NFR-6).
- */
-export function driveLank(fileId: string): string {
-  return `https://drive.google.com/open?id=${encodeURIComponent(fileId)}`;
-}
+export { driveLank };
 
 /**
  * Har Hermes eller en agent formulerat postens text? Då bär posten husets
@@ -103,14 +97,9 @@ function lasvardetext<T>(v: Lasvarde<T>, idag: string, visa: (varde: T) => Raw |
   }
 }
 
-/** En källa: uppdragsytans sida, en Drive-länk ut, eller mejl och kalender som text. */
-function kallrad(k: Kallreferens): Raw {
-  if (k.typ === 'yta') return html`<a href="${k.sokvag}">${k.etikett}</a>`;
-  if (k.sort === 'drive') {
-    return html`<a href="${driveLank(k.extern_id)}" target="_blank" rel="noopener">${k.titel ?? 'Dokument i Drive'}</a>`;
-  }
-  // Öppningsvägen för mejl och kalenderposter är Epic 3: här står vad det är.
-  return html`<span>${k.sort === 'mejl' ? 'mejl' : 'kalenderpost'}: ${k.titel ?? k.extern_id}</span>`;
+/** Ytan är en intern länk; varje källreferens använder kanons visning. */
+function kallrad(k: Kallreferens, idag: string): Raw {
+  return k.typ === 'yta' ? html`<a href="${k.sokvag}">${k.etikett}</a>` : referensvisning(k, idag);
 }
 
 /** Ett fält i postens beskrivningslista. */
@@ -368,7 +357,7 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
           f.belopp_ore === null ? '' : html` · ${kronor(f.belopp_ore)}`}`))}
         ${faltet('Skälen', 'skal', lasvardetext(p.skal, idag, (s) => s))}
         ${faltet('Källorna', 'kallor', lasvardetext(p.kallor, idag, (ks) => html`<ul style="margin:0;padding-left:18px">${
-          ks.map((k) => html`<li>${kallrad(k)}</li>`)}</ul>`))}
+          ks.map((k) => html`<li>${kallrad(k, idag)}</li>`)}</ul>`))}
         ${faltet('Ditt svar registrerar', 'ja_registrerar', p.ja_registrerar)}
         ${p.bedomning ? html`${faltet('Senaste bedömning', 'senaste', senasteBedomning(p.bedomning, idag))}${
           faltet('Perioden', 'period', `${p.bedomning.period.start} – ${p.bedomning.period.slut}`)}` : ''}

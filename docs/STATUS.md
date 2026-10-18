@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-18 (Story 3.1, referensens verkliga läge, källdatum och frysta revision):**
+  1. **0086_referens.sql:** fem statusvärden, standard `overifierad`, nullbart
+     `handelse_datum` och fryst Drive-`revision`. Rättar aldrig verifierade
+     levande rader och kanoniserar mejl-id i öppna uppdrag; kantkontrollen
+     stoppar kollisioner före ändring. Avslutade uppdrag lämnas orörda.
+  2. **Form och skrivning:** gemensam ren formregel och kanoniskt mejl-id;
+     känd `utanfor_sparr` avvisas före skrivning. Svepet lämnar uteblivna
+     observationer orörda, tar emot källdatum och redovisar `ej_bedomda` när
+     en fryst revision saknas. Utanför-läget består tills ny dom eller förlust.
+  3. **Sex befintliga vyer:** samma `referensvisning` med härledd länk, status,
+     källa, verifieringstid och händelsedatum. Husets tokens, typografi,
+     tangentbordslänkar och fokus återanvänds. Tomlägen står i vanlig text.
+  4. **Prov:** F1–F4, M1–M7, W1–W9/D1, V1–V8 och Y1/Y3–Y9, samt uppdaterade
+     regressioner. `npm test` har inte kunnat köra proven: före teststart
+     `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+     Ingen databas startas och ingen migration eller driftsättning körs manuellt.
+     `npm run typecheck` och `npm run build`: exit 0. Rena körkontroller av
+     former, skrivscheman, öppningsvägar och bedömningsregel godkända; dessutom
+     `38 befintliga rena vyprov godkända, inklusive provaKallorna och färskhet/tomlägen.`
+     Hela databas- och HTTP-sviten återstår för kedjan enligt körundantaget.
+  5. **Följd i drift:** kedjan kör 0086 före releasen. Därefter visas aldrig
+     verifierade referenser som Ej verifierad tills svepet sett dem. Före
+     Story 3.2 är källdatum null (datum saknas); kalendern får länk när kalenderns
+     id eller datum finns. Drive och mejlets öppningsvägar härleds direkt.
+     Spärrutfall hör till driften och blir aldrig en fråga i undantagsvyn.
+
+
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
      flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena
