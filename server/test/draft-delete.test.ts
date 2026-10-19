@@ -11,7 +11,8 @@ import { readFile } from 'node:fs/promises';
 import type { Response } from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
-import { linkAndUnlink, performAction, type LinkKind } from './voucherLinkHelper.js';
+import { linkAndUnlink, performAction } from './voucherLinkHelper.js';
+import type { LinkableEntityType } from '../src/services/voucherLinks.js';
 
 let user: TestUser;
 let companyId: string;
@@ -22,16 +23,22 @@ const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
 
 // Tabellerna nycklas bara med typens fyra fasta värden, aldrig med indata.
-const ALL_KINDS: LinkKind[] = ['invoice', 'receipt', 'supplier_invoice', 'payslip'];
-const TABLE: Record<LinkKind, string> = {
+// Varje tabell är en Record över LinkableEntityType, och typlistan och
+// B-fallen härleds ur dem: en femte baklänkningsbar typ kompilerar inte förrän
+// den har en rad här, och får då R-, H- och B-fall utan att någon lista glöms.
+const TABLE: Record<LinkableEntityType, string> = {
   invoice: 'invoices', receipt: 'receipts', supplier_invoice: 'supplier_invoices', payslip: 'payslips',
 };
-const ID_FIELD: Record<LinkKind, string> = {
+const ID_FIELD: Record<LinkableEntityType, string> = {
   invoice: 'invoice_id', receipt: 'receipt_id', supplier_invoice: 'supplier_invoice_id', payslip: 'payslip_id',
 };
-const DRAFT_STATUS: Record<LinkKind, string> = {
+const DRAFT_STATUS: Record<LinkableEntityType, string> = {
   invoice: 'draft', receipt: 'registered', supplier_invoice: 'draft', payslip: 'draft',
 };
+const B_CASE: Record<LinkableEntityType, string> = {
+  invoice: 'B1', supplier_invoice: 'B2', payslip: 'B3', receipt: 'B4',
+};
+const ALL_KINDS = Object.keys(TABLE) as LinkableEntityType[];
 
 async function approve(reqBody: { approval: { id: string } }) {
   return api.post(`${co()}/approvals/${reqBody.approval.id}/approve`).set(auth()).send({});
@@ -47,7 +54,7 @@ async function createInvoiceDraft(): Promise<string> {
 }
 
 /** Ett utkast av typen, med samma indata som fallet för kvitto, leverantörsfaktura och lönebesked. */
-async function createDraft(kind: LinkKind): Promise<string> {
+async function createDraft(kind: LinkableEntityType): Promise<string> {
   if (kind === 'invoice') return createInvoiceDraft();
   let res: Response;
   if (kind === 'receipt') {
@@ -72,22 +79,22 @@ async function createDraft(kind: LinkKind): Promise<string> {
 }
 
 /** Bokför posten med sin bokningsåtgärd och godkänner förslaget. */
-async function bookDraft(kind: LinkKind, id: string): Promise<void> {
+async function bookDraft(kind: LinkableEntityType, id: string): Promise<void> {
   const res = await performAction(co(), auth(), `book_${kind}`, { [ID_FIELD[kind]]: id, fiscal_year_id: fiscalYearId });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
 }
 
-function requestDelete(kind: LinkKind, id: string) {
+function requestDelete(kind: LinkableEntityType, id: string) {
   return api.post(`${co()}/actions/delete_draft_${kind}`).set(auth()).send({ [ID_FIELD[kind]]: id });
 }
 
-async function rowExists(kind: LinkKind, id: string): Promise<boolean> {
+async function rowExists(kind: LinkableEntityType, id: string): Promise<boolean> {
   return withAdmin(async (admin) => ((await admin.query(
     `SELECT 1 FROM ${TABLE[kind]} WHERE id = $1 AND company_id = $2`, [id, companyId],
   )).rowCount ?? 0) > 0);
 }
 
-async function draftDeletedRows(kind: LinkKind, id: string): Promise<{ details: { snapshot: Record<string, unknown> } }[]> {
+async function draftDeletedRows(kind: LinkableEntityType, id: string): Promise<{ details: { snapshot: Record<string, unknown> } }[]> {
   return withAdmin(async (admin) => (await admin.query(
     'SELECT details FROM audit_log WHERE company_id = $1 AND action = $2 AND entity_id = $3',
     [companyId, `${kind}.draft_deleted`, id],
@@ -237,16 +244,21 @@ describe('utkastradering för de fyra typerna (regression)', () => {
       expect(res.status, `${kind}: ${JSON.stringify(res.body)}`).toBe(404);
       expect(await rowExists(kind, id)).toBe(true);
 
+      // Raden räknas i samma transaktion, som ägarrollen och FÖRE ROLLBACK: efter
+      // återrullningen finns raden alltid kvar, och en kontroll där kunde aldrig fällas.
       const raw = await withAdmin(async (admin) => {
         await admin.query('BEGIN');
         await admin.query('SET LOCAL ROLE app');
         await admin.query("SELECT set_config('app.user_id', $1, true)", [other.userId]);
-        const r = await admin.query(`DELETE FROM ${TABLE[kind]} WHERE id = $1`, [id]);
+        const deleted = (await admin.query(`DELETE FROM ${TABLE[kind]} WHERE id = $1`, [id])).rowCount;
+        await admin.query('RESET ROLE');
+        const remaining = (await admin.query(
+          `SELECT 1 FROM ${TABLE[kind]} WHERE id = $1 AND company_id = $2`, [id, companyId],
+        )).rowCount;
         await admin.query('ROLLBACK');
-        return r.rowCount;
+        return { deleted, remaining };
       });
-      expect(raw, kind).toBe(0);
-      expect(await rowExists(kind, id)).toBe(true);
+      expect(raw, kind).toEqual({ deleted: 0, remaining: 1 });
     }
   });
 
@@ -260,9 +272,7 @@ describe('utkastradering för de fyra typerna (regression)', () => {
 });
 
 describe('en gång baklänkad post kan aldrig raderas (FR-41, AD-12)', () => {
-  it.each<[string, LinkKind]>([
-    ['B1', 'invoice'], ['B2', 'supplier_invoice'], ['B3', 'payslip'], ['B4', 'receipt'],
-  ])('%s %s: kopplad och lossad ger 409 previously_linked och raden finns kvar', async (_caseId, kind) => {
+  it.each(Object.entries(B_CASE) as [string, LinkableEntityType][])('%s %s: kopplad och lossad ger 409 previously_linked och raden finns kvar', async (_caseId, kind) => {
     const id = await createDraft(kind);
     await linkAndUnlink(co(), auth(), fiscalYearId, kind, id, '2025-04-01');
 

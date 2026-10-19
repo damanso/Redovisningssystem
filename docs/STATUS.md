@@ -153,6 +153,22 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-19 (Story 1.7, omtag efter code-review, 3 fynd):**
+  1. **Typmängden har en enda källa.** `test/voucherLinkHelper.ts` deklarerar
+     inte längre `LinkKind` utan typimporterar `LinkableEntityType`.
+     `draft-delete.test.ts` härleder `ALL_KINDS` ur `TABLE` och B-fallen ur
+     `B_CASE`, som är `Record` över typen. En femte baklänkningsbar typ
+     kompilerar inte förrän den har rader, och får då R-, H- och B-fall.
+  2. **R3 räknar raden före ROLLBACK** (som ägarrollen, `RESET ROLE`), i
+     stället för efter återrullningen, där kontrollen aldrig kunde fällas.
+  3. **ÖPPET:** `server/test/voucherLinkHelper.ts` är fortfarande ospårad.
+     Filen fanns ospårad redan före förra körningen, och kedjans commit
+     706968d tog inte med den. `git add` kräver godkännande i sandlådan, och
+     `git commit` är förbjudet för utvecklarrollen. Kedjan eller David måste
+     lägga till filen: `git add server/test/voucherLinkHelper.ts`.
+  4. **Inte kört:** `npm run typecheck` och `npm test` krävde godkännande i
+     sandlådan.
+
 - **2026-10-19 (Story 1.7, en gång baklänkad post kan aldrig raderas, FR-41/FR-12, AD-12):**
   1. **Spärren** (`services/draftDelete.ts`): nytt predikat
      `hasBeenVoucherLinked(client, companyId, kind, id)` läser
