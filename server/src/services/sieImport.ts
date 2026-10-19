@@ -109,24 +109,74 @@ export function parseSie(text: string): ParsedSie {
 
 export interface SieImportResult { accounts_created: number; accounts_skipped: number; vouchers_imported: number }
 
+export interface SieImportPlan {
+  accountsToCreate: ParsedSieAccount[];
+  accountsSkipped: number;
+  vouchers: ParsedSieVoucher[];
+}
+
+/**
+ * Importens räkning, delad med förhandsvisningen på förslagskortet: vilka
+ * konton som skapas, hur många som hoppas över och vilka verifikat som bokförs.
+ *
+ * Befintliga konton hämtas FÖRST i en SELECT och hoppas över — vi får ALDRIG
+ * låta en INSERT slå i unik-indexet inne i importtransaktionen: en misslyckad
+ * sats försätter hela Postgres-transaktionen i abortläge (25P02) och nästa
+ * fråga kraschar rått. (Grindfynd: import mot bolag med befintliga konton gav
+ * 500 exakt så.) Av samma skäl når bara nummer 1000–9999 `$2::int[]`: ett
+ * nummer utanför heltalsintervallet (`#KONTO 99999999999`) gav 22003 i frågan.
+ */
+export async function planSieImport(client: PoolClient, companyId: string, parsed: ParsedSie): Promise<SieImportPlan> {
+  const inRange = parsed.accounts.filter((a) => Number.isInteger(a.number) && a.number >= 1000 && a.number <= 9999);
+  const existing = await client.query<{ account_number: number }>(
+    'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
+    [companyId, inRange.map((a) => a.number)],
+  );
+  const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
+  const accountsToCreate = inRange.filter((a) => !existingNumbers.has(a.number));
+  return {
+    accountsToCreate,
+    accountsSkipped: parsed.accounts.length - accountsToCreate.length,
+    vouchers: parsed.vouchers.filter((v) => v.lines.length > 0),
+  };
+}
+
+/**
+ * Förhandsvisningen på förslagskortet: hur många verifikat och nya konton
+ * importen skulle ge. null när innehållet inte är en sträng eller inte går att
+ * läsa. `parseSie` är ren och körs före varje fråga, så felet fångas utan att
+ * transaktionen rörts.
+ *
+ * Avvägning: funktionen parsar hela texten (högst 4 MB enligt schemat) och
+ * anropas bara för ett väntande förslag, en gång per kort och sidvisning. En
+ * avgjord rad räknar aldrig om, eftersom importen då redan har skapat kontona
+ * som räkningen letar efter (`approvalSummary`, läget `avgjord`). Väntande
+ * `import_sie` är få, och svaret sparas inte: en cache vore ett nytt mönster,
+ * och kortet ska visa vad importen ger i dag, inte vad den gav när förslaget köades.
+ */
+export async function previewSieImport(
+  client: PoolClient, companyId: string, sieContent: unknown,
+): Promise<{ vouchers: number; newAccounts: number } | null> {
+  if (typeof sieContent !== 'string') return null;
+  let parsed: ParsedSie;
+  try {
+    parsed = parseSie(sieContent);
+  } catch (err) {
+    if (err instanceof BadRequestError) return null;
+    throw err;
+  }
+  const plan = await planSieImport(client, companyId, parsed);
+  return { vouchers: plan.vouchers.length, newAccounts: plan.accountsToCreate.length };
+}
+
 export async function importSie(
   client: PoolClient, companyId: string, userId: string, fiscalYearId: string, parsed: ParsedSie,
 ): Promise<SieImportResult> {
-  let accountsCreated = 0, accountsSkipped = 0, vouchersImported = 0;
+  let accountsCreated = 0, vouchersImported = 0;
 
-  // 1) Konton: skapa de som inte redan finns (standard-BAS eller egna).
-  //    Befintliga hämtas FÖRST i en SELECT och hoppas över — vi får ALDRIG låta
-  //    en INSERT slå i unik-indexet inne i importtransaktionen: en misslyckad
-  //    sats försätter hela Postgres-transaktionen i abortläge (25P02) och nästa
-  //    fråga kraschar rått. (Grindfynd: import mot bolag med befintliga konton
-  //    gav 500 exakt så.)
-  const existing = await client.query<{ account_number: number }>(
-    'SELECT account_number FROM accounts WHERE company_id = $1 AND account_number = ANY($2::int[])',
-    [companyId, parsed.accounts.map((a) => a.number)],
-  );
-  const existingNumbers = new Set(existing.rows.map((r) => r.account_number));
-  for (const acc of parsed.accounts) {
-    if (acc.number < 1000 || acc.number > 9999 || existingNumbers.has(acc.number)) { accountsSkipped += 1; continue; }
+  // 1) Konton: skapa de som inte redan finns, enligt planen (SELECT före INSERT).
+  const plan = await planSieImport(client, companyId, parsed);
+  for (const acc of plan.accountsToCreate) {
     await createCompanyAccount(client, companyId, userId, {
       account_number: acc.number, name: acc.name, account_type: accountTypeForNumber(acc.number),
     });
@@ -135,8 +185,7 @@ export async function importSie(
 
   // 2) Verifikat: importeras med FÄRSKA nummer i importserien 'I'; ursprungligt
   //    serie/nummer bevaras i beskrivningen. postVoucher tvingar debet=kredit.
-  for (const v of parsed.vouchers) {
-    if (v.lines.length === 0) continue;
+  for (const v of plan.vouchers) {
     await postVoucher(client, companyId, userId, {
       fiscalYearId,
       series: 'I',
@@ -152,5 +201,5 @@ export async function importSie(
     companyId, userId, action: 'sie.imported', entityType: 'company', entityId: companyId,
     details: { accounts_created: accountsCreated, vouchers_imported: vouchersImported },
   });
-  return { accounts_created: accountsCreated, accounts_skipped: accountsSkipped, vouchers_imported: vouchersImported };
+  return { accounts_created: accountsCreated, accounts_skipped: plan.accountsSkipped, vouchers_imported: vouchersImported };
 }

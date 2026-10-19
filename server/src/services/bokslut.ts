@@ -94,6 +94,18 @@ export async function bookCorporateTax(
 }
 
 /**
+ * Årets resultat i ören, gemensamt för förslagskortet och bokningen. Kortet
+ * räknar bara för ett väntande förslag. En avgjord rad visar året utan belopp,
+ * eftersom ett belopp räknat nu inte är det belopp som bokfördes.
+ */
+export async function computeYearResult(client: PoolClient, companyId: string, fiscalYearId: string): Promise<number> {
+  const fy = await loadFy(client, companyId, fiscalYearId);
+  const rows = await accountSums(client, companyId, { from: fy.from, to: fy.to });
+  return rows.filter((r) => r.account_number >= 3000 && r.account_number <= 8989)
+    .reduce((sum, r) => sum + (r.credit_ore - r.debit_ore), 0);
+}
+
+/**
  * Överför årets resultat till eget kapital. R = nettot av resultatkonton 3000–8989
  * (kredit − debet, inkl. skatt och bokslutsdispositioner). Vinst: 8999 debet /
  * 2099 kredit; förlust omvänt. Nollställer resultaträkningen och lägger resultatet
@@ -104,9 +116,7 @@ export async function bookYearResult(
 ): Promise<Record<string, unknown>> {
   const fy = await loadFy(client, companyId, fiscalYearId);
   if (fy.locked) throw new ConflictError('year_locked', 'räkenskapsåret är låst');
-  const rows = await accountSums(client, companyId, { from: fy.from, to: fy.to });
-  const result = rows.filter((r) => r.account_number >= 3000 && r.account_number <= 8989)
-    .reduce((s, r) => s + (r.credit_ore - r.debit_ore), 0);
+  const result = await computeYearResult(client, companyId, fiscalYearId);
   if (result === 0) return { skipped: true, reason: 'noll resultat' };
 
   const lines = result > 0
