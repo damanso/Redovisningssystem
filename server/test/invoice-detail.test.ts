@@ -4,6 +4,9 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { linkAndUnlink } from './voucherLinkHelper.js';
+import { executeAction } from '../src/actions/execute.js';
+import { ConflictError } from '../src/lib/errors.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -114,5 +117,40 @@ describe('fakturadetaljsidan', () => {
     expect(del.headers.location).toContain('fel=');
     const back = await ua.get(del.headers.location!);
     expect(back.text).toContain('rättelseverifikat');
+  });
+
+  it('V1 en faktura som kopplats och lossats: ingen radera-knapp, och felnotisen bär åtgärdens text', async () => {
+    const linked = await newDraft();
+    await linkAndUnlink(co(), auth(), fiscalYearId, 'invoice', linked.id, '2025-03-01');
+
+    const page = await ua.get(`/app/c/${companyId}/invoices/${linked.id}`);
+    expect(page.status).toBe(200);
+    expect(page.text).not.toContain('Radera utkastet');
+    expect(page.text).toContain('har varit kopplat till ett bokfört verifikat');
+
+    // Åtgärdens egen text: samma källa som vyns raderingsrutt läser.
+    let caught: unknown = null;
+    try {
+      await executeAction({
+        companyId, userId: user.userId, actor: 'human', actionName: 'delete_draft_invoice',
+        input: { invoice_id: linked.id },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, 'delete_draft_invoice kastade inte').toBeInstanceOf(ConflictError);
+    if (!(caught instanceof ConflictError)) throw new Error('väntade ConflictError');
+    expect(caught.code).toBe('not_deletable');
+
+    const del = await ua.post(`/app/c/${companyId}/invoices/${linked.id}/delete`).send({});
+    expect([302, 303]).toContain(del.status);
+    expect(del.headers.location).toContain('fel=');
+    const back = await ua.get(del.headers.location!);
+    expect(back.text).toContain(`<p class="notice">${caught.message}</p>`);
+
+    const kvar = await withAdmin(async (admin) => (await admin.query(
+      'SELECT 1 FROM invoices WHERE id = $1 AND company_id = $2', [linked.id, companyId],
+    )).rowCount);
+    expect(kvar).toBe(1);
   });
 });
