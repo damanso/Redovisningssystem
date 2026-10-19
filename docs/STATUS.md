@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-19 (Story 1.7, en gång baklänkad post kan aldrig raderas, FR-41/FR-12, AD-12):**
+  1. **Ändrat:** `services/draftDelete.ts` har predikatet `hasBeenVoucherLinked`
+     (läser `<typ>.voucher_linked` i `audit_log`, samma filter som `unlinkVoucher`
+     utan villkoret på verifikat-id) och en ny gren efter radlåset och före första
+     sidoeffekten: 409 `not_deletable` med `details: { reason: 'previously_linked',
+     use_action: 'reverse_voucher' }`. Dagens gren bär nu `details.reason:
+     'not_a_draft'` med oförändrad text. `DraftKind` är `LinkableEntityType`.
+     `ConflictError` tar valfria `details` (som `BadRequestError`). Fakturadetaljen
+     visar ingen raderingsknapp för en en gång baklänkad faktura och säger varför.
+     `docs/MCP_ACTIONS.md` (Städning (K7) och kvittobilagorna) beskriver spärren.
+  2. **Prov:** R1–R3, H1 och B1–B6 (ett fall per typ där det gäller) och D1 i
+     `test/draft-delete.test.ts`; K1 och K2 i `test/kvittobilagor.test.ts`; V1 i
+     `test/invoice-detail.test.ts`; hjälpfilen `test/voucherLinkHelper.ts` (ny).
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal nekade
+     npm-kommandon. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+  4. **Baslinjen:** provvaktens röda prov (adresskontraktet, bmadglidning,
+     gitlas_prov, gmail_kvitton_farskhet, projektstyrning, proxysvep,
+     reindexfarskhet, skattepaminnelse_farskhet) och continuityvakt (KUNDE_INTE)
+     står oförändrade; bygget rör inte det de mäter.
+  5. **Ingen migration** tillkommer (AD-12, «utan migration»). En rå DELETE som
+     `app` i det egna bolaget på ett lossat utkast släpps fortfarande igenom av RLS;
+     ingen väg i `server/src` gör en sådan DELETE utanför `deleteDraft`.
+  6. **Driftnot:** `delete_draft_invoice` för fakturaregister 13–18 (se «Kvarstår i
+     produktionsdatan» ovan) vägras om fakturorna någon gång baklänkats. Frågan till David står i
+     berättelsen (Frågor till David).
+
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
      flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena

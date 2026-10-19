@@ -240,7 +240,8 @@ BOKFÖRT kvitto är bilagan oföränderlig — den går varken att skriva över 
 radera (RLS-policy + trigger i migration 0075); en felaktig bilaga rättas genom
 att ladda upp rätt och ange `ersatter_file_id`, varpå den gamla raden märks med
 `superseded_by` och ligger kvar. `delete_draft_receipt` städar ett OBOKAT
-utkasts bilagerader och objekt. Varje bifogning auditloggas
+utkasts bilagerader och objekt, om kvittot aldrig baklänkats (se Städning
+(K7)). Varje bifogning auditloggas
 (`receipt.file_attached`) med sha256, uppladdare och tid, i samma transaktion
 som mutationen. Påbörjade men aldrig bekräftade uppladdningar städas lazily i
 tjänstens egna anrop — redovisningen har ingen scheduler.
@@ -255,6 +256,16 @@ tjänstens egna anrop — redovisningen har ingen scheduler.
 `delete_draft_supplier_invoice` / `delete_draft_payslip` (write) — raderar
 OBOKADE utkast (RLS-policyn släpper aldrig igenom bokförda poster).
 Auditloggas med snapshot; dokumentkopplingar städas, bilagda filer behålls.
+
+En post som någon gång kopplats via `link_voucher` (händelsen
+`<typ>.voucher_linked` i revisionsloggen) raderas aldrig, inte heller efter
+`unlink_voucher` — den har nått huvudboken (FR-41). Båda avvisningarna ger 409
+`not_deletable` med `details.reason` (`not_a_draft` för en bokförd post eller
+en post som inte längre är ett utkast, `previously_linked` för en en gång
+baklänkad post) och `details.use_action: 'reverse_voucher'`: rättelse sker via
+rättelseverifikat. RLS-policyn i 0041 är den hårda garantin för bokförda
+poster; spärren för tidigare baklänkade poster bor i tjänsten, under radlås
+(AD-12), eftersom historiken bara finns i revisionsloggen.
 
 ### Fakturamallen (Locollabs riktiga mall)
 
