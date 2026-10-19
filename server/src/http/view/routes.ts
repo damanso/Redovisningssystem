@@ -21,7 +21,7 @@ import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
-import { describeApproval, explainApproval } from '../../services/approvalSummary.js';
+import { avgjordRad, forslagskort, type FieldValue } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -9649,81 +9649,87 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   // Sekventiellt, inte Promise.all: alla anrop här delar EN anslutning, och pg
   // kan inte köra dem parallellt — den köar dem och varnar (borttaget i pg@9).
   // Samma regel som i crmRelations och crm.ts.
+  // FR-27 (AD-8): kortets text kommer bara ur kortmodellen i approvalSummary.
+  // Vyn ritar och uppfinner inget — inga nyckelnamn, ingen JSON, inga UUID:n.
   const pending = [];
   for (const a of pendingRaw) {
-    pending.push({
-      ...a,
-      dependency: await checkApprovalDependency(client, companyId, a.action, a.input),
-      // Identifierande rad så att den som godkänner ser VILKEN faktura/lön/
-      // verifikat det gäller — inte bara ett rå-UUID i fältlistan.
-      summary: await describeApproval(client, companyId, a.input),
-      // Designunderlagets fyra krav för ett tiosekundersbeslut: vad som ändras,
-      // varför, varifrån — och två knappar.
-      forklaring: await explainApproval(client, companyId, a.action, a.input, `/app/c/${companyId}`),
-    });
+    const dep = await checkApprovalDependency(client, companyId, a.action, a.input);
+    pending.push(await forslagskort(client, companyId, a, {
+      title: getAction(a.action)?.title,
+      dependency: dep,
+      dependencyTitle: dep?.depends_on_action ? getAction(dep.depends_on_action)?.title : undefined,
+      base: `/app/c/${companyId}`,
+    }));
   }
   // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
   const decidedRaw = await listRecentDecisions(client, companyId, 5);
   const decided = [];
   for (const d of decidedRaw) {
-    decided.push({ ...d, summary: await describeApproval(client, companyId, d.input) });
+    decided.push({ ...d, rad: await avgjordRad(client, companyId, d, getAction(d.action)?.title) });
   }
-  const fieldLabel = (k: string) => k.replace(/_/g, ' ').replace(/\bid\b/gi, 'ID').replace(/^./, (c) => c.toUpperCase());
-  const fmtVal = (v: unknown): string => {
-    if (v === null || v === undefined) return '—';
-    if (typeof v === 'object') return JSON.stringify(v);
-    return String(v);
-  };
+  const faltvarde = (v: FieldValue): Raw | string =>
+    v.kind === 'amount' ? amount(v.ore)
+    : v.kind === 'link' ? entityLink(companyId, v.link.kind, v.link.id, v.text)
+    : v.text;
   return html`<div class="page-head"><div>${eyebrow('Att göra')}<h1>Väntar på din granskning</h1>
       <p class="lede">AI:t föreslår — du bestämmer. Känsliga åtgärder (bokföra, låsa period) bokförs aldrig automatiskt.</p></div></div>
     ${felNotis(req)}
     ${
       pending.length === 0
         ? html`<div class="empty"><div class="big">Inget väntar 🎉</div>Alla AI-förslag är hanterade. Nya förslag dyker upp här.</div>`
-        : pending.map((a) => {
-            const def = getAction(a.action);
-            const fromAgent = a.requested_actor === 'agent';
-            const entries = Object.entries(a.input).slice(0, 6);
+        : pending.map((kort) => {
+            const def = getAction(kort.atgard);
             return html`<article class="ai-card">
               <div class="ai-card__head">
-                ${fromAgent ? aiMarkning() : chip('Förslag', 'info', '•')}
-                <span class="ai-card__title">${def?.title ?? a.action}</span>
-                <span class="code" style="margin-left:auto">${a.action}</span>
+                ${kort.franAgent ? aiMarkning() : chip('Förslag', 'info', '•')}
+                ${/* Fragmentets mål är rubriken: "Godkänn … först ↑" flyttar
+                     fokus hit, och :target ger den luft under sidhuvudet. */ ''}
+                <span class="ai-card__title" id="forslag-${kort.id}">${kort.titel}</span>
               </div>
-              ${a.summary ? html`<div class="ai-card__subject"><strong>${a.summary}</strong></div>` : ''}
+              ${kort.postbeteckning ? html`<div class="ai-card__subject"><strong>${kort.postbeteckning}</strong></div>` : ''}
               ${/* Före → efter. Det enda som gör ett godkännande till ett
                    beslut i stället för ett medgivande: man ser vad som faktiskt
-                   händer, inte bara vad åtgärden heter. */ ''}
-              ${a.forklaring.change
-                ? html`<div class="andring">
-                    <span class="andring__f">${a.forklaring.change.from}</span>
+                   händer, inte bara vad åtgärden heter. En rad per ändring. */ ''}
+              ${kort.andringar.map((c) => html`<div class="andring">
+                    <span class="andring__f">${c.fore}</span>
                     <span class="andring__p" aria-hidden="true">→</span>
-                    <span class="andring__t">${a.forklaring.change.to}</span>
-                  </div>`
-                : ''}
+                    <span class="andring__t">${c.efter}</span>
+                  </div>`)}
               <div class="ai-card__why">${
-                a.forklaring.why ?? html`Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.`
+                kort.varfor ?? html`Föreslagen ${kort.franAgent ? 'av AI-assistenten' : 'av en användare'} · kräver mänskligt godkännande innan den utförs.`
               }</div>
-              ${a.forklaring.why
-                ? html`<div class="ai-card__why muted">Föreslagen ${fromAgent ? 'av AI-assistenten' : 'av en användare'}.</div>`
+              ${kort.varfor
+                ? html`<div class="ai-card__why muted">Föreslagen ${kort.franAgent ? 'av AI-assistenten' : 'av en användare'}.</div>`
                 : ''}
-              ${a.dependency && !a.dependency.satisfied
-                ? html`<div class="ai-card__why" style="color:#b45309">⚠ ${a.dependency.message}</div>`
+              ${kort.beroende
+                ? html`<div class="ai-card__beroende">${kort.beroende.text}${
+                    kort.beroende.first ? html` <a href="#forslag-${kort.beroende.first.approvalId}">${kort.beroende.first.linkText}</a>` : ''
+                  }</div>`
                 : ''}
               ${/* Fältlistan är kvar, men hopfälld: den är underlaget man vill
                    se när något ser fel ut, inte det man läser varje gång. Utan
-                   beskrivning fälls den ut direkt — då är den allt som finns. */ ''}
-              <details class="ai-raw"${a.forklaring.change ? '' : html` open`}>
+                   beskrivning fälls den ut direkt — då är den allt som finns.
+                   Alla fält, med svensk etikett; åtgärdsnamnet står bara sist. */ ''}
+              <details class="ai-raw"${kort.andringar.length > 0 ? '' : html` open`}>
                 <summary>Visa fälten som skickas</summary>
                 <div class="ai-fields">
-                  ${entries.map(([k, v]) => html`<div class="ai-field"><span class="l">${fieldLabel(k)}</span><span class="v">${fmtVal(v)}</span></div>`)}
+                  ${kort.falt.map((r) => html`<div class="ai-field"><span class="l">${r.label}</span><span class="v">${faltvarde(r.value)}</span></div>`)}
+                  <div class="ai-field"><span class="l">Teknisk åtgärd</span><span class="v"><span class="code">${kort.atgard}</span></span></div>
                 </div>
               </details>
               <div class="ai-actions">
-                <form method="post" action="/app/c/${companyId}/approvals/${a.id}/approve" style="margin:0">
+                ${/* Knappvalet: utan beroende som i dag; väntar bokningen i kön
+                     leder knappens plats dit; finns inget att godkänna först
+                     visas ingen Godkänn alls — ett klick som bara kan ge fel är
+                     värre än ingen knapp. Avvisa står alltid kvar. */ ''}
+                ${kort.beroende === null
+                  ? html`<form method="post" action="/app/c/${companyId}/approvals/${kort.id}/approve" style="margin:0">
                   <button class="btn btn--primary btn--sm" type="submit">✓ Godkänn &amp; utför</button>
-                </form>
-                <form method="post" action="/app/c/${companyId}/approvals/${a.id}/reject" style="margin:0">
+                </form>`
+                  : kort.beroende.first
+                    ? html`<a class="btn btn--ghost btn--sm" href="#forslag-${kort.beroende.first.approvalId}">Godkänn ${kort.beroende.first.title} först ↑</a>`
+                    : ''}
+                <form method="post" action="/app/c/${companyId}/approvals/${kort.id}/reject" style="margin:0">
                   ${def?.tvafas
                     ? html`<label class="field" style="margin:0"><span>Skäl till nej
                         <span class="muted" style="font-weight:400">· sparas med beslutet</span></span>
@@ -9731,8 +9737,8 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
                     : ''}
                   <button class="btn btn--ghost btn--sm" type="submit">Avvisa</button>
                 </form>
-                ${a.forklaring.source
-                  ? html`<a class="btn btn--ghost btn--sm" href="${a.forklaring.source.href}">${a.forklaring.source.label} →</a>`
+                ${kort.kalla
+                  ? html`<a class="btn btn--ghost btn--sm" href="${kort.kalla.href}">${kort.kalla.text} →</a>`
                   : ''}
                 <span class="hint">Du bestämmer — varje beslut loggas i revisionsloggen.</span>
               </div>
@@ -9752,8 +9758,8 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
             : d.status === 'approved' ? chip('Mottaget', 'info', '•')
             : d.status === 'failed' ? chip('Misslyckades', 'neg', '!')
             : d.status === 'executed' ? chip('Utförd', 'ok', '✓') : chip('Väntar', 'info', '•')}
-          <span class="kvitto__vad">${getAction(d.action)?.title ?? d.action}${
-            d.summary ? html` · <span class="muted">${d.summary}</span>` : ''
+          <span class="kvitto__vad">${d.rad.titel}${
+            d.rad.postbeteckning ? html` · <span class="muted">${d.rad.postbeteckning}</span>` : ''
           }</span>
           <time class="kvitto__nar" datetime="${d.decided_at ? new Date(d.decided_at).toISOString() : ''}">${
             d.decided_at ? dayOf(d.decided_at) : ''

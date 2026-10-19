@@ -1016,6 +1016,11 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 }
 .ai-markning__i { line-height: 1; }
 .ai-card__why { padding: 4px 16px 6px; color: var(--ink-2); font-size: 13px; }
+/* Beroenderaden (UX K1 punkt 5): samma stil som '.ai-card__why', under ett
+   namn som påstår «det här förslaget beror på ett annat». Den bar tidigare en
+   hårdkodad hexfärg inline; nu AI-ockrans bläck, samma ton som kortets
+   handlingsrad, så att raden läses som en del av förslaget och inte som ett fel. */
+.ai-card__beroende { padding: 4px 16px 6px; color: var(--ai-ink); font-size: 13px; }
 /* Identifierande rad: vilken faktura/lön/verifikat förslaget gäller. */
 .ai-card__subject { padding: 2px 16px 0; font-size: 14.5px; color: var(--ink); }
 .ai-fields { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 6px 16px 12px; }

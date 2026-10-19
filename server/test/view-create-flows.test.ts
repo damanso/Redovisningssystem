@@ -244,9 +244,16 @@ describe('godkännandekonflikt syns i Att göra', () => {
     const pay = await agent.post(`/app/c/${companyId}/invoices/${inv![1]}/pay`).type('form')
       .send({ payment_date: '2025-09-10' });
     expect(pay.headers.location).toBe(`/app/c/${companyId}/approvals`);
-    // ...och godkänn: utförandet ska stoppas med ett SYNLIGT skäl (inte tyst).
+    // FR-27 AC 6: ingen bokning väntar i kön, så kortet har ingen Godkänn-knapp
+    // — bara texten om vad som måste hända först. Id:t läses därför ur
+    // avvisningsformuläret.
     const appr = await agent.get(`/app/c/${companyId}/approvals`);
-    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/approve/);
+    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/reject/);
+    expect(aid, 'förslaget saknas i Att göra').toBeTruthy();
+    expect(appr.text).not.toContain(`/approvals/${aid![1]}/approve`);
+    expect(appr.text).toContain('Be AI-assistenten föreslå bokföringen först.');
+    // ...och godkänn ändå direkt mot adressen: utförandet ska stoppas med ett
+    // SYNLIGT skäl (inte tyst).
     const res = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toContain('fel=');

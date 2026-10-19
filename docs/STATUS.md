@@ -153,6 +153,39 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-19 (Story 1.1, FR-27: förslagskortet visar posten i klartext, utan UUID:n):**
+  1. **Kortmodellen** (`services/approvalSummary.ts`, AD-8): tillåtelselistorna
+     `FIELD_LABELS` (92 nycklar), `VALUE_LABELS` (14 värden), `ID_LOOKUPS` (22
+     id-nycklar), `CARD_TEXT`, `describeFields` (alla fält, rekursivt, utan tak),
+     `describeDependency`, `forslagskort`/`avgjordRad` med maskpasset `utanUuid`.
+     `describeApproval` tar `action` (sju nya regler + generisk reserv; utan
+     `action` som förut). `explainApproval` ger före → efter per nummer för
+     `update_supplier_payment_details` (`changes`). Strikt `asUuid` och
+     `kontonummer` före varje fråga (lärdom 2).
+  2. **Tjänsterna:** `computeYearResult` (bokslut, delas med `bookYearResult`),
+     `planSieImport`/`previewSieImport` (sieImport). **Beteendeskillnad i
+     `import_sie`:** ett kontonummer utanför 1000–9999 når inte längre
+     `$2::int[]` — `#KONTO 99999999999` gav 22003, nu räknas det som överhoppat.
+  3. **Vyn:** Att göra ritar kortet bara ur kortmodellen; åtgärdsnamnet bara sist
+     i detaljdelen. Beroendet som `.ai-card__beroende` (`var(--ai-ink)`, inte
+     `#b45309`) med ankarlänk till bokningskortet; Godkänn ersätts av
+     "Godkänn … först ↑" eller visas inte alls när inget kan godkännas först.
+  4. **Prov:** `forslagskort-klartext` (T1–T6, ny), T6.2 i `mcp`.
+     `view-create-flows` rad 248–250 omskriven: kortet i läge 3 har inget
+     godkännandeformulär längre, så id:t läses ur avvisningsformuläret och provet
+     kräver att knappen saknas (skarpare, inte svagare).
+     **Omtag:** T4.5/T4.9 föll i kedjan för att provhjälparen `normal()` slog
+     ihop beloppens hårda mellanslag (`formatOre`) med `\s+`, medan det
+     förväntade `kr()` behöll dem. `normal()` slår nu bara ihop ASCII-blanktecken,
+     som webbläsaren gör. Lärdom: jämför synlig text med samma blankteckensregel
+     som HTML, och normalisera aldrig bort U+00A0 på bara den ena sidan.
+  5. **Inte kört:** typecheck, build och vitest — sandlådan nekade alla
+     npm-kommandon i utvecklarrollen; kedjan kör dem efter bygget.
+  6. Baslinjens röda Hermes-prov (`adresskontraktet`, `bmadglidning`,
+     `insatskon`, `startsida_prov`, `rollpassen_fr20_yta`; KUNDE_INTE `zonankare`,
+     `zonprov`) är oförändrade av bygget. Ingen migration, rutt, åtgärd eller nytt
+     beroende.
+
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
      flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena

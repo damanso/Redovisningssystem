@@ -142,4 +142,30 @@ describe('MCP-server (stdio) driver kärnan', () => {
     const pend = await api.get(`/api/companies/${companyId}/approvals?status=pending`).set({ Authorization: `Bearer ${user.token}` });
     expect(pend.body.approvals.length).toBeGreaterThan(0);
   });
+
+  // FR-27 AC 7 (regression): agenten köar, en människa avgör. Rött om ett
+  // verktyg läggs till eller faller bort utanför manifestet — till exempel ett
+  // verktyg som godkänner eller avvisar ett förslag.
+  it('T6.2 verktygslistan är manifestet plus två läsverktyg, och kön syns för agenten', async () => {
+    const h = { Authorization: `Bearer ${user.token}` };
+    const manifest = await api.get(`/api/companies/${companyId}/actions`).set(h);
+    expect(manifest.status, JSON.stringify(manifest.body)).toBe(200);
+    const vantat = new Set([
+      ...(manifest.body.actions as { name: string }[]).map((a) => a.name),
+      'list_pending_approvals', 'self_check',
+    ]);
+    const res = await mcp.request('tools/list', {});
+    const namn = (res.result as { tools: { name: string }[] }).tools.map((t) => t.name);
+    expect(namn).toHaveLength(vantat.size);
+    expect(new Set(namn)).toEqual(vantat);
+
+    const pend = await api.get(`/api/companies/${companyId}/approvals?status=pending`).set(h);
+    expect(pend.status, JSON.stringify(pend.body)).toBe(200);
+    const bokning = (pend.body.approvals as { id: string; action: string; input: { invoice_id?: string } }[])
+      .find((a) => a.action === 'book_invoice' && a.input.invoice_id === invoiceId);
+    expect(bokning, 'MCP-svitens book_invoice saknas i kön').toBeDefined();
+    const lista = await mcp.request('tools/call', { name: 'list_pending_approvals', arguments: {} });
+    const content = (lista.result as { content: { type: string; text: string }[] }).content;
+    expect(content[0]!.text).toContain(bokning!.id);
+  });
 });
