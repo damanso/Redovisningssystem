@@ -21,7 +21,7 @@ import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
 import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
-import { avgjordRad, forslagskort, type FieldValue } from '../../services/approvalSummary.js';
+import { avgjordRad, forslagskort, iBeroendeordning, type FieldValue } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -9651,16 +9651,19 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   // Samma regel som i crmRelations och crm.ts.
   // FR-27 (AD-8): kortets text kommer bara ur kortmodellen i approvalSummary.
   // Vyn ritar och uppfinner inget — inga nyckelnamn, ingen JSON, inga UUID:n.
-  const pending = [];
+  const kortIKon = [];
   for (const a of pendingRaw) {
     const dep = await checkApprovalDependency(client, companyId, a.action, a.input);
-    pending.push(await forslagskort(client, companyId, a, {
+    kortIKon.push(await forslagskort(client, companyId, a, {
       title: getAction(a.action)?.title,
       dependency: dep,
       dependencyTitle: dep?.depends_on_action ? getAction(dep.depends_on_action)?.title : undefined,
       base: `/app/c/${companyId}`,
     }));
   }
+  // Det som ska godkännas först står ovanför det som väntar på det, så att
+  // "först ↑" är sant (ordningen bestäms i kortmodellen, inte här).
+  const pending = iBeroendeordning(kortIKon);
   // Kvittona: de senast avgjorda förslagen, med samma identifierande rad.
   const decidedRaw = await listRecentDecisions(client, companyId, 5);
   const decided = [];
@@ -9683,8 +9686,10 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
               <div class="ai-card__head">
                 ${kort.franAgent ? aiMarkning() : chip('Förslag', 'info', '•')}
                 ${/* Fragmentets mål är rubriken: "Godkänn … först ↑" flyttar
-                     fokus hit, och :target ger den luft under sidhuvudet. */ ''}
-                <span class="ai-card__title" id="forslag-${kort.id}">${kort.titel}</span>
+                     fokus hit (tabindex="-1" gör den fokuserbar utan att den
+                     hamnar i tabbordningen; husets :focus-visible ritar ringen),
+                     och :target ger den luft under sidhuvudet. */ ''}
+                <span class="ai-card__title" id="forslag-${kort.id}" tabindex="-1">${kort.titel}</span>
               </div>
               ${kort.postbeteckning ? html`<div class="ai-card__subject"><strong>${kort.postbeteckning}</strong></div>` : ''}
               ${/* Före → efter. Det enda som gör ett godkännande till ett

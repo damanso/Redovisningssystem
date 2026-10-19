@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-19 (Story 1.1, omtag efter code-review — sex fynd):**
+  1. **Avgjorda rader förhandsräknar inte** (`approvalSummary`): beteckningen
+     skrivs i ett läge, `vantande` eller `avgjord`, och bara väntande förslag får
+     anropa `previewSieImport`/`computeYearResult`. Ett utfört `import_sie`
+     påstod annars "0 nya konton" i kvittot (räkningen hittade kontona importen
+     just skapat). Samma mekanism tar bort SIE-parsningen ur "Nyss avgjort".
+     Lärdom: en kvittorad visar det som identifierar posten, aldrig en räkning
+     gjord efter utförandet.
+  2. **Kortordningen** (`iBeroendeordning`): det kort som ska godkännas först
+     står ovanför det första kort som väntar på det, så att "först ↑" är sant
+     och fokusordningen följer arbetsordningen. Inget kort läggs till eller tas bort.
+  3. **Fokusmålet:** kortets rubrik har `tabindex="-1"`, så ankarlänken flyttar fokus dit.
+  4. **Tidsstämplar i lokal tid:** värden med tidszon (`…Z`, `±TT:MM`) räknas
+     om som `farskhetstid`. Anteckningens datum läses som ett ögonblick och
+     skrivs i lokal tid, inte som `created_at::date` i databasens tidszon.
+  5. **Prov:** R2.1–R2.3, R3.1–R3.2, R4.1, R5.1–R5.2 och R6.1 i `forslagskort-klartext`.
+  6. **Inte kört:** typecheck och vitest. Sandlådan nekade npm igen, så kedjan kör dem.
+     **Inte gjort:** commit av arbetsträdet. Husreglerna förbjuder utvecklaren
+     `git commit`. Kedjans commit måste ta med de tre tjänsterna och den ospårade
+     provfilen (fynd 1).
+  7. Baslinjens röda Hermes-prov är oförändrade. Ingen migration, rutt, åtgärd
+     eller nytt beroende.
+
 - **2026-10-19 (Story 1.1, FR-27: förslagskortet visar posten i klartext, utan UUID:n):**
   1. **Kortmodellen** (`services/approvalSummary.ts`, AD-8): tillåtelselistorna
      `FIELD_LABELS` (92 nycklar), `VALUE_LABELS` (14 värden), `ID_LOOKUPS` (22
