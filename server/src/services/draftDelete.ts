@@ -3,6 +3,10 @@
 // aldrig nått huvudboken får rättas genom radering. Regler:
 //   - endast voucher_id IS NULL och utkaststatus (RLS-policyn i 0041 är den
 //     hårda garantin; tjänsten ger rena 404/409 i stället för tysta 0 rader)
+//   - ALDRIG en post som någon gång kopplats via link_voucher (FR-41, AD-12):
+//     den har nått huvudboken även när unlink_voucher nollat voucher_id igen.
+//     Spärren läser händelsen <typ>.voucher_linked i audit_log och bor här i
+//     tjänsten, under radlåset — RLS:en i 0041 ser bara voucher_id och status
 //   - dokumentKOPPLINGAR till posten tas bort; bilagda filer BEHÅLLS i
 //     dokumentarkivet (de kan vara delade/underlag) — utom postens egen
 //     genererade/uppladdade fil (fakturans PDF, kvittots foto) som raderas
@@ -13,8 +17,11 @@ import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 import { removeStoredFile } from './fileStorage.js';
 import { raderaBilageObjekt, raderaBilagorForUtkast } from './receiptFiles.js';
+import type { LinkableEntityType } from './voucherLinks.js';
 
-type DraftKind = 'invoice' | 'receipt' | 'supplier_invoice' | 'payslip';
+// Samma mängd som baklänkningen: en ny baklänkningsbar typ fäller KINDS nedan
+// tills den har en rad, och händelsenamnet byggs ur samma värden som linkVoucher.
+type DraftKind = LinkableEntityType;
 
 const KINDS: Record<DraftKind, {
   table: string;
@@ -28,6 +35,26 @@ const KINDS: Record<DraftKind, {
   payslip: { table: 'payslips', deletableStatus: 'draft', ownFileColumn: null, label: 'lönebeskedsutkastet' },
 };
 
+/**
+ * Har posten någon gång kopplats till ett verifikat via link_voucher?
+ * FR-41/AD-12: en sådan post har nått huvudboken och raderas aldrig, inte
+ * heller när unlink_voucher nollat voucher_id. Händelsen
+ * `<typ>.voucher_linked` skrivs av linkVoucher, och audit_log är append-only
+ * (0003) — svaret går därför aldrig från sant till falskt. Samma filter som
+ * spärren i unlinkVoucher, utan villkoret på den aktuella kopplingen.
+ */
+export async function hasBeenVoucherLinked(
+  client: PoolClient, companyId: string, kind: DraftKind, id: string,
+): Promise<boolean> {
+  const r = await client.query(
+    `SELECT 1 FROM audit_log
+      WHERE company_id = $1 AND action = $2 AND entity_type = $3 AND entity_id = $4
+      LIMIT 1`,
+    [companyId, `${kind}.voucher_linked`, kind, id],
+  );
+  return r.rows.length > 0;
+}
+
 async function deleteDraft(
   client: PoolClient, companyId: string, userId: string, kind: DraftKind, id: string,
 ): Promise<Record<string, unknown>> {
@@ -39,7 +66,14 @@ async function deleteDraft(
   const row = locked.rows[0];
   if (!row) throw new NotFoundError(kind);
   if (row.voucher_id || row.status !== spec.deletableStatus) {
-    throw new ConflictError('not_deletable', `${spec.label} är bokfört eller inte längre ett utkast — rättelse sker via rättelseverifikat`);
+    throw new ConflictError('not_deletable', `${spec.label} är bokfört eller inte längre ett utkast — rättelse sker via rättelseverifikat`,
+      { reason: 'not_a_draft', use_action: 'reverse_voucher' });
+  }
+  // FR-41: före första sidoeffekten — disk och objekt städas efter DB-stegen,
+  // så en senare kontroll vore inte säker även om transaktionen rullas tillbaka.
+  if (await hasBeenVoucherLinked(client, companyId, kind, id)) {
+    throw new ConflictError('not_deletable', `${spec.label} har varit kopplat till ett bokfört verifikat och kan aldrig raderas — rättelse sker via rättelseverifikat`,
+      { reason: 'previously_linked', use_action: 'reverse_voucher' });
   }
 
   // Tiden som låstes till fakturan ÅTERÖPPNAS i samma transaktion. Utan det

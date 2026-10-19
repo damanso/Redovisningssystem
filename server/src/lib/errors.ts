@@ -45,8 +45,9 @@ export class ForbiddenError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(code = 'conflict', message?: string) {
-    super(409, code, message);
+  /** `details` bär bara data som är säker att visa (se AppError.details). */
+  constructor(code = 'conflict', message?: string, details?: unknown) {
+    super(409, code, message, details);
   }
 }
 

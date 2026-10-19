@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-19 (Story 1.7, en gång baklänkad post kan aldrig raderas, FR-41/FR-12, AD-12):**
+  1. **Spärren** (`services/draftDelete.ts`): nytt predikat
+     `hasBeenVoucherLinked(client, companyId, kind, id)` läser
+     `<typ>.voucher_linked` i `audit_log` (samma filter som `unlinkVoucher`).
+     `deleteDraft` vägrar efter radlåset och före första sidoeffekten med 409
+     `not_deletable`, `details: { reason: 'previously_linked', use_action:
+     'reverse_voucher' }`. Dagens gren bär `reason: 'not_a_draft'`.
+     `DraftKind` är nu `LinkableEntityType`. `ConflictError` tar valfria
+     `details` (`lib/errors.ts`). Ingen migration tillkommer.
+  2. **Vyn** (fakturadetaljen): ingen «Radera utkastet» för en en gång
+     baklänkad faktura; en förklaringsrad säger varför. POST-rutten oförändrad.
+  3. **Prov:** R1–R3, H1, B1–B6 och D1 i `draft-delete`, K1 och K2 i
+     `kvittobilagor`, V1 i `invoice-detail`; delad hjälpfil
+     `test/voucherLinkHelper.ts`. Docs: `MCP_ACTIONS.md` (Städning (K7)).
+  4. **Inte kört i sessionen:** `npm run typecheck`, `npm run build` och
+     `npm test` — sandlådan krävde godkännande för varje kommando, och ingen
+     användare satt med. Kedjan kör dem efter bygget. Provvaktens röda
+     baslinjeprov (adresskontraktet, bmadglidning, gitlas_prov m.fl.) och
+     continuityvakt (KUNDE_INTE) står oförändrade.
+  5. **Driftnot:** `delete_draft_invoice` för fakturaregister 13–18 (ovan)
+     vägras om någon av fakturorna någon gång baklänkats — se «Frågor till
+     David» i berättelsen 1-7.
+
 - **2026-10-17 (Story 2.2, varje baselineändring bär sin orsak förifylld och läsbar):**
   1. **Orsaken på en plats** (`lib/avtalsdelsfalt.ts`): `IMPORTORSAK = 'avtal'`
      flyttad hit (återexporterad ur `services/uppdragImport.ts`), de rena

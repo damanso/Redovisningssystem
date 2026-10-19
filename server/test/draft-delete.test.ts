@@ -2,15 +2,36 @@
 // verifikat — ett utkast (t.ex. faktura registrerad på fel kund) får raderas.
 // Bokförda poster avvisas; varje radering auditloggas med snapshot; RLS-
 // policyn i migration 0041 är den hårda garantin även mot direkta DELETE.
+//
+// FR-41 (AD-12, Story 1.7): en post som någon gång kopplats via link_voucher
+// har nått huvudboken, också när unlink_voucher nollat voucher_id igen. Risken
+// som proven täcker är att en sådan post raderas genom utkastradering — de
+// fyra typerna, med hänvisningen till rättelseverifikat i `details`.
+import { readFile } from 'node:fs/promises';
+import type { Response } from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { linkAndUnlink, performAction, type LinkKind } from './voucherLinkHelper.js';
 
 let user: TestUser;
 let companyId: string;
 let fiscalYearId: string;
 let customerId: string;
+let supplierId: string;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
+
+// Tabellerna nycklas bara med typens fyra fasta värden, aldrig med indata.
+const ALL_KINDS: LinkKind[] = ['invoice', 'receipt', 'supplier_invoice', 'payslip'];
+const TABLE: Record<LinkKind, string> = {
+  invoice: 'invoices', receipt: 'receipts', supplier_invoice: 'supplier_invoices', payslip: 'payslips',
+};
+const ID_FIELD: Record<LinkKind, string> = {
+  invoice: 'invoice_id', receipt: 'receipt_id', supplier_invoice: 'supplier_invoice_id', payslip: 'payslip_id',
+};
+const DRAFT_STATUS: Record<LinkKind, string> = {
+  invoice: 'draft', receipt: 'registered', supplier_invoice: 'draft', payslip: 'draft',
+};
 
 async function approve(reqBody: { approval: { id: string } }) {
   return api.post(`${co()}/approvals/${reqBody.approval.id}/approve`).set(auth()).send({});
@@ -25,6 +46,54 @@ async function createInvoiceDraft(): Promise<string> {
   return inv.body.result.id;
 }
 
+/** Ett utkast av typen, med samma indata som fallet för kvitto, leverantörsfaktura och lönebesked. */
+async function createDraft(kind: LinkKind): Promise<string> {
+  if (kind === 'invoice') return createInvoiceDraft();
+  let res: Response;
+  if (kind === 'receipt') {
+    res = await api.post(`${co()}/actions/create_receipt`).set(auth()).send({
+      receipt_date: '2025-04-01', description: 'Fel kvitto', net_ore: 10_000, vat_rate: 25, expense_account: 5460, payment_account: 1930,
+    });
+  } else if (kind === 'supplier_invoice') {
+    res = await api.post(`${co()}/actions/create_supplier_invoice`).set(auth()).send({
+      supplier_id: supplierId, invoice_date: '2025-04-01', due_date: '2025-04-30',
+      net_ore: 50_000, vat_rate: 25, expense_account: 5460,
+    });
+  } else {
+    // En ny anställd per lönebesked: payslips_period_uk (0023) ger annars duplicate_payslip.
+    const emp = await api.post(`${co()}/actions/create_employee`).set(auth()).send({ name: 'Anna', monthly_salary_ore: 3_000_000 });
+    expect(emp.status, JSON.stringify(emp.body)).toBe(200);
+    res = await api.post(`${co()}/actions/create_payslip`).set(auth()).send({ employee_id: emp.body.result.id, period: '2025-05' });
+  }
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  const id = res.body?.result?.id;
+  expect(typeof id, JSON.stringify(res.body)).toBe('string');
+  return id as string;
+}
+
+/** Bokför posten med sin bokningsåtgärd och godkänner förslaget. */
+async function bookDraft(kind: LinkKind, id: string): Promise<void> {
+  const res = await performAction(co(), auth(), `book_${kind}`, { [ID_FIELD[kind]]: id, fiscal_year_id: fiscalYearId });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+}
+
+function requestDelete(kind: LinkKind, id: string) {
+  return api.post(`${co()}/actions/delete_draft_${kind}`).set(auth()).send({ [ID_FIELD[kind]]: id });
+}
+
+async function rowExists(kind: LinkKind, id: string): Promise<boolean> {
+  return withAdmin(async (admin) => ((await admin.query(
+    `SELECT 1 FROM ${TABLE[kind]} WHERE id = $1 AND company_id = $2`, [id, companyId],
+  )).rowCount ?? 0) > 0);
+}
+
+async function draftDeletedRows(kind: LinkKind, id: string): Promise<{ details: { snapshot: Record<string, unknown> } }[]> {
+  return withAdmin(async (admin) => (await admin.query(
+    'SELECT details FROM audit_log WHERE company_id = $1 AND action = $2 AND entity_id = $3',
+    [companyId, `${kind}.draft_deleted`, id],
+  )).rows);
+}
+
 beforeAll(async () => {
   user = await registerUser('draftdel');
   companyId = await createCompany(user.token, 'Utkast AB');
@@ -32,6 +101,9 @@ beforeAll(async () => {
   fiscalYearId = fy.id;
   const cust = await api.post(`${co()}/actions/create_customer`).set(auth()).send({ name: 'Fel Kund AB' });
   customerId = cust.body.result.id;
+  const supp = await api.post(`${co()}/actions/create_supplier`).set(auth()).send({ name: 'Utkastleverantör AB' });
+  expect(supp.status, JSON.stringify(supp.body)).toBe(200);
+  supplierId = supp.body.result.id;
 });
 
 describe('delete_draft_invoice', () => {
@@ -128,5 +200,129 @@ describe('delete_draft_invoice', () => {
     const res = await api.post(`/api/companies/${otherCompany}/actions/delete_draft_invoice`)
       .set({ Authorization: `Bearer ${other.token}` }).send({ invoice_id: invoiceId });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('utkastradering för de fyra typerna (regression)', () => {
+  it.each(ALL_KINDS)('R1 %s: ett utkast som aldrig nått huvudboken raderas, med snapshot i auditloggen', async (kind) => {
+    const id = await createDraft(kind);
+    const res = await requestDelete(kind, id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result.deleted).toBe(true);
+
+    const audit = await draftDeletedRows(kind, id);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.details.snapshot.id).toBe(id);
+    expect(audit[0]!.details.snapshot.status).toBe(DRAFT_STATUS[kind]);
+    expect(await rowExists(kind, id)).toBe(false);
+  });
+
+  it.each(ALL_KINDS)('R2 %s: en bokförd post ger 409 not_deletable och ingenting raderas', async (kind) => {
+    const id = await createDraft(kind);
+    await bookDraft(kind, id);
+    const res = await requestDelete(kind, id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('not_deletable');
+    expect(await rowExists(kind, id)).toBe(true);
+    expect(await draftDeletedRows(kind, id)).toHaveLength(0);
+  });
+
+  it('R3 tenant-gräns för de fyra typerna: 404 i B:s bolag, och en rå DELETE som B tar 0 rader', async () => {
+    const other = await registerUser('draftdel-r3');
+    const otherCompany = await createCompany(other.token, 'Grannbolaget AB');
+    for (const kind of ALL_KINDS) {
+      const id = await createDraft(kind);
+      const res = await api.post(`/api/companies/${otherCompany}/actions/delete_draft_${kind}`)
+        .set({ Authorization: `Bearer ${other.token}` }).send({ [ID_FIELD[kind]]: id });
+      expect(res.status, `${kind}: ${JSON.stringify(res.body)}`).toBe(404);
+      expect(await rowExists(kind, id)).toBe(true);
+
+      const raw = await withAdmin(async (admin) => {
+        await admin.query('BEGIN');
+        await admin.query('SET LOCAL ROLE app');
+        await admin.query("SELECT set_config('app.user_id', $1, true)", [other.userId]);
+        const r = await admin.query(`DELETE FROM ${TABLE[kind]} WHERE id = $1`, [id]);
+        await admin.query('ROLLBACK');
+        return r.rowCount;
+      });
+      expect(raw, kind).toBe(0);
+      expect(await rowExists(kind, id)).toBe(true);
+    }
+  });
+
+  it.each(ALL_KINDS)('H1 %s: avvisningen av en bokförd post hänvisar till rättelseverifikat i details', async (kind) => {
+    const id = await createDraft(kind);
+    await bookDraft(kind, id);
+    const res = await requestDelete(kind, id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toEqual({ reason: 'not_a_draft', use_action: 'reverse_voucher' });
+  });
+});
+
+describe('en gång baklänkad post kan aldrig raderas (FR-41, AD-12)', () => {
+  it.each<[string, LinkKind]>([
+    ['B1', 'invoice'], ['B2', 'supplier_invoice'], ['B3', 'payslip'], ['B4', 'receipt'],
+  ])('%s %s: kopplad och lossad ger 409 previously_linked och raden finns kvar', async (_caseId, kind) => {
+    const id = await createDraft(kind);
+    await linkAndUnlink(co(), auth(), fiscalYearId, kind, id, '2025-04-01');
+
+    // Vägen ut är prövad: posten ser ut som ett utkast som aldrig bokförts.
+    const lage = await withAdmin(async (admin) => (await admin.query<{ voucher_id: string | null; status: string }>(
+      `SELECT voucher_id, status FROM ${TABLE[kind]} WHERE id = $1 AND company_id = $2`, [id, companyId],
+    )).rows[0]);
+    expect(lage).toEqual({ voucher_id: null, status: DRAFT_STATUS[kind] });
+
+    const res = await requestDelete(kind, id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('not_deletable');
+    expect(res.body.details).toEqual({ reason: 'previously_linked', use_action: 'reverse_voucher' });
+    expect(await rowExists(kind, id)).toBe(true);
+    expect(await draftDeletedRows(kind, id)).toHaveLength(0);
+  });
+
+  it('B5 kontrollen gäller posten: ett utkast som aldrig kopplats raderas fast ett annat i bolaget kopplats och lossats', async () => {
+    const linked = await createDraft('invoice');
+    await linkAndUnlink(co(), auth(), fiscalYearId, 'invoice', linked, '2025-04-01');
+    const untouched = await createDraft('invoice');
+
+    const res = await requestDelete('invoice', untouched);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await rowExists('invoice', untouched)).toBe(false);
+  });
+
+  it('B6 kopplad, lossad och kopplad igen ger 409 not_a_draft — dagens gren prövas först', async () => {
+    const id = await createDraft('invoice');
+    const voucherId = await linkAndUnlink(co(), auth(), fiscalYearId, 'invoice', id, '2025-04-01');
+    const relinked = await performAction(co(), auth(), 'link_voucher', {
+      entity_type: 'invoice', entity_id: id, voucher_id: voucherId,
+    });
+    expect(relinked.status, JSON.stringify(relinked.body)).toBe(200);
+
+    const res = await requestDelete('invoice', id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.reason).toBe('not_a_draft');
+  });
+});
+
+/** Avsnittet från rubriken «### Städning (K7)» till nästa «### »-rubrik; tom text om rubriken saknas. */
+function k7Section(text: string): string {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.startsWith('### Städning (K7)'));
+  if (start < 0) return '';
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => l.startsWith('### '));
+  return (end < 0 ? rest : rest.slice(0, end)).join('\n');
+}
+
+describe('dokumentationen', () => {
+  it('D1 MCP_ACTIONS.md, Städning (K7), beskriver spärren, båda avvisningarna och rättelseverifikatet', async () => {
+    const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const section = k7Section(doc);
+    expect(section.trim()).not.toBe('');
+    for (const word of ['voucher_linked', 'previously_linked', 'not_a_draft', 'reverse_voucher', 'rättelseverifikat']) {
+      expect(section, word).toContain(word);
+    }
+    // Negativ kontroll: en utplockning som lämnar hela texten fälls här.
+    expect(k7Section('### Annat\ntext\n')).toBe('');
   });
 });

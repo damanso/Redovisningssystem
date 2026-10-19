@@ -11,6 +11,7 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { publikApiBas, signeraBilagelank } from '../src/lib/bilagesignatur.js';
+import { linkAndUnlink } from './voucherLinkHelper.js';
 
 let user: TestUser;
 let companyId: string;
@@ -255,6 +256,53 @@ describe('livscykel och oföränderlighet', () => {
     )).rowCount);
     expect(kvar).toBe(0);
     await expect(access(full)).rejects.toThrow();
+  });
+
+  it('K2 delete_draft_receipt på ett BOKFÖRT kvitto ger 409 — bilagan, kvittot och objektet finns kvar', async () => {
+    const receiptId = await skapaKvitto('Bokfört kvitto som inte får raderas');
+    const bilaga = await bifoga(receiptId, jpeg(8_500), 'bokford.jpg');
+    await bokfor(receiptId);
+    const nyckel = await withAdmin(async (admin) => (await admin.query<{ storage_key: string }>(
+      'SELECT storage_key FROM receipt_files WHERE id = $1', [bilaga.fileId],
+    )).rows[0]!.storage_key);
+    const full = path.resolve(process.env.RECEIPT_FILES_DIR!, nyckel);
+
+    const res = await api.post(`${co()}/actions/delete_draft_receipt`).set(auth()).send({ receipt_id: receiptId });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('not_deletable');
+
+    const lage = await withAdmin(async (admin) => ({
+      bilagor: (await admin.query<{ status: string }>(
+        'SELECT status FROM receipt_files WHERE id = $1 AND company_id = $2', [bilaga.fileId, companyId],
+      )).rows.map((r) => r.status),
+      kvitton: (await admin.query(
+        'SELECT 1 FROM receipts WHERE id = $1 AND company_id = $2', [receiptId, companyId],
+      )).rowCount,
+    }));
+    expect(lage.bilagor).toEqual(['active']);
+    expect(lage.kvitton).toBe(1);
+    await expect(access(full)).resolves.toBeUndefined();
+  });
+
+  it('K1 ett kvitto som kopplats och lossats ger 409 — båda bilagorna och objekten finns kvar (FR-41)', async () => {
+    const receiptId = await skapaKvitto('Baklänkat och lossat kvitto');
+    const forsta = await bifoga(receiptId, jpeg(7_000), 'nota.jpg');
+    const andra = await bifoga(receiptId, heic(), 'deltagarlista.heic', 'image/heic');
+    await linkAndUnlink(co(), auth(), fiscalYearId, 'receipt', receiptId, '2026-03-02');
+
+    const res = await api.post(`${co()}/actions/delete_draft_receipt`).set(auth()).send({ receipt_id: receiptId });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.reason).toBe('previously_linked');
+
+    const bilagor = await withAdmin(async (admin) => (await admin.query<{ id: string; status: string; storage_key: string }>(
+      'SELECT id, status, storage_key FROM receipt_files WHERE company_id = $1 AND receipt_id = $2 ORDER BY created_at',
+      [companyId, receiptId],
+    )).rows);
+    expect(bilagor.map((b) => b.id)).toEqual([forsta.fileId, andra.fileId]);
+    expect(bilagor.map((b) => b.status)).toEqual(['active', 'active']);
+    for (const b of bilagor) {
+      await expect(access(path.resolve(process.env.RECEIPT_FILES_DIR!, b.storage_key))).resolves.toBeUndefined();
+    }
   });
 });
 

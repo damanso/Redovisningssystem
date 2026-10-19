@@ -73,6 +73,7 @@ import { inviteMember, listMembers, removeMember, setMemberRole } from '../../se
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
 import { removeStoredFile, resolveStoredPath, validateUpload, writeStoredFile } from '../../services/fileStorage.js';
 import { listDocuments } from '../../services/documents.js';
+import { hasBeenVoucherLinked } from '../../services/draftDelete.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
 import { aiMarkning, amount, chip, direktFarskhet, entityLink, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
@@ -9248,6 +9249,10 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
   const fyId = await hasFiscalYear(client, companyId);
   const today = new Date().toISOString().slice(0, 10);
   const isDraft = !inv.voucher_id && inv.status === 'draft';
+  // FR-41: ett utkast som en gång baklänkats har nått huvudboken — ingen
+  // knapp som bara kan ge 409, men sidan säger varför. Frågan körs bara för utkast.
+  const everLinked = isDraft && await hasBeenVoucherLinked(client, companyId, 'invoice', invoiceId);
+  const deletable = isDraft && !everLinked;
   const lines = inv.lines as { line_no: number; description: string | null; quantity: string; unit: string | null; unit_price_ore: number; vat_rate: number; line_net_ore: number }[];
   return html`<div class="page-head"><div>${eyebrow('Fakturor')}<h1>Faktura ${String(inv.effective_invoice_number ?? inv.invoice_number)} — ${entityLink(companyId, 'customer', inv.customer_id as string, inv.customer_name)}</h1>
       <p class="lede"><a href="/app/c/${companyId}/invoices">← Alla fakturor</a></p></div></div>
@@ -9315,10 +9320,11 @@ viewRouter.get('/c/:companyId/invoices/:invoiceId', pageFor('invoices', 'Faktura
         <button class="btn btn--ghost btn--sm" type="submit">Registrera betalning…</button></form>` : ''}
       ${inv.pdf_file_id ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/pdf/regenerate" style="display:inline">
         <button class="btn btn--ghost btn--sm" type="submit">Generera om PDF (senaste mallen)</button></form>` : ''}
-      ${isDraft ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/delete" style="display:inline">
+      ${deletable ? html`<form method="post" action="/app/c/${companyId}/invoices/${invoiceId}/delete" style="display:inline">
         <button class="btn btn--ghost btn--sm" type="submit" style="color:#b91c1c">Radera utkastet</button></form>` : ''}
     </div>
-    ${isDraft ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Ett utkast kan raderas (auditloggas med innehållet). En bokförd faktura kan aldrig raderas — rättelse sker via rättelseverifikat.</p>` : ''}`;
+    ${deletable ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Ett utkast kan raderas (auditloggas med innehållet). En bokförd faktura kan aldrig raderas — rättelse sker via rättelseverifikat.</p>` : ''}
+    ${everLinked ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Utkastet har varit kopplat till ett bokfört verifikat och kan aldrig raderas — rättelse sker via rättelseverifikat.</p>` : ''}`;
 }));
 
 // PDF-nedladdning: återanvänder redan genererad PDF (fakturor är oföränderliga
