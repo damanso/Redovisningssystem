@@ -137,7 +137,8 @@ describe('seriesynk: kundens nummer på gamla fakturor (internt 14 = externt 26)
     });
     expect(req.status).toBe(202);
     const res = await approve(req.body);
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('number_already_in_use');
   });
 });
 
