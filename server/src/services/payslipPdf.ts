@@ -1,15 +1,18 @@
 // K3: lönespecifikationen som PDF enligt Locollabs befintliga mall (portad från
 // Cowork-skillen lonespecifikation/skapa_lonespec.py): header, infoblock i två
 // kolumner, tabell (Månadslön / ev. Semesterersättning / Prel skatt tabell),
-// Brutto+Netto-rad, ackumulerat per kalenderår och sidfot. Genereras ur
+// Brutto+Netto-rad, blocket «Ackumulerat {år}» och sidfot. Genereras ur
 // systemets data och lagras i dokumentarkivet kopplad till lönebeskedet —
-// ersätter den externa PDF:en i bokföringsmappen.
+// ersätter den externa PDF:en i bokföringsmappen. Blocket visar fem belopp
+// (bruttolön, skatt, nettolön, arbetsgivaravgift, semesterersättning) ur
+// payrollYearSummary, samma funktion som payroll_year_summary (FR-16).
 import PDFDocument from 'pdfkit';
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 import { linkDocument, type AttachedDocument } from './documents.js';
 import { validateUpload, writeStoredFile, removeStoredFile } from './fileStorage.js';
+import { payrollYearSummary } from './payroll.js';
 
 // Mallens beloppsformat: mellanslag som tusentalsavgränsare, komma + 3 decimaler
 // ("56 500,000"). Ören → kronor.
@@ -40,7 +43,14 @@ export interface PayslipPdfData {
     net_ore: number;
     tax_source: string;
   };
-  accumulated: { gross_ore: number; tax_ore: number };
+  accumulated: {
+    year: number;
+    gross_ore: number;
+    tax_ore: number;
+    net_ore: number;
+    employer_contribution_ore: number;
+    vacation_pay_ore: number;
+  };
   createdDate: string;         // 'YYYY-MM-DD'
 }
 
@@ -130,13 +140,25 @@ export function generatePayslipPdf(data: PayslipPdfData): Promise<Buffer> {
     doc.font('Helvetica').text(kr(payslip.net_ore), xBelopp - 90, y, { width: 90, align: 'right' });
     y += 24;
 
-    // Ackumulerat (kalenderår, t.o.m. denna period)
-    doc.fontSize(9).font('Helvetica').text('Ack. Bruttolön', left, y);
-    doc.font('Helvetica-Bold').text(kr(data.accumulated.gross_ore), left + 80, y);
-    doc.font('Helvetica').text('Ack. Förmån', left + 200, y);
-    doc.font('Helvetica-Bold').text(kr(0), left + 270, y);
-    doc.font('Helvetica').text('Ack. Skatt', left + 340, y);
-    doc.font('Helvetica-Bold').text(kr(data.accumulated.tax_ore), xBelopp - 90, y, { width: 90, align: 'right' });
+    // Ackumulerat (kalenderår, t.o.m. denna period): fem belopp ur
+    // payrollYearSummary (FR-16) i två kolumner, eftersom «Ack.
+    // Arbetsgivaravgift» inte ryms i den gamla radens 70 punkter. Varje belopp
+    // ritas direkt efter sin etikett, så att texten står i par i filen.
+    const acc = data.accumulated;
+    doc.fontSize(9).font('Helvetica-Bold').text(`Ackumulerat ${acc.year}`, left, y);
+    const accPair = (label: string, ore: number, labelX: number, amountX: number) => {
+      doc.font('Helvetica').text(label, labelX, y);
+      doc.font('Helvetica-Bold').text(kr(ore), amountX, y, { width: 90, align: 'right' });
+    };
+    for (const [leftLabel, leftOre, rightLabel, rightOre] of [
+      ['Ack. Bruttolön', acc.gross_ore, 'Ack. Skatt', acc.tax_ore],
+      ['Ack. Nettolön', acc.net_ore, 'Ack. Arbetsgivaravgift', acc.employer_contribution_ore],
+      ['Ack. Semesterersättning', acc.vacation_pay_ore, 'Ack. Förmån', 0],
+    ] as const) {
+      y += lineH;
+      accPair(leftLabel, leftOre, left, left + 140);
+      accPair(rightLabel, rightOre, left + 250, xBelopp - 90);
+    }
 
     // Sidfot
     doc.fontSize(7.5).font('Helvetica-Oblique');
@@ -156,12 +178,13 @@ export async function generateAndAttachPayslipPdf(
   client: PoolClient, companyId: string, userId: string, payslipId: string, createdDate: string,
 ): Promise<AttachedDocument> {
   const r = await client.query<{
+    employee_id: string;
     period: string; payment_date: string | null; gross_ore: string; vacation_pay_ore: string;
     tax_ore: string; net_ore: string; tax_source: string;
     employee_name: string; personnummer: string | null; employment_type: string;
     company_name: string; org_number: string | null;
   }>(
-    `SELECT p.period, p.payment_date::text, p.gross_ore, p.vacation_pay_ore, p.tax_ore, p.net_ore, p.tax_source,
+    `SELECT p.employee_id, p.period, p.payment_date::text, p.gross_ore, p.vacation_pay_ore, p.tax_ore, p.net_ore, p.tax_source,
             e.name AS employee_name, e.personnummer, e.employment_type,
             c.name AS company_name, c.org_number
      FROM payslips p
@@ -173,15 +196,13 @@ export async function generateAndAttachPayslipPdf(
   const row = r.rows[0];
   if (!row) throw new NotFoundError('payslip');
 
-  // Ackumulerat brutto/skatt för kalenderåret t.o.m. denna period (den anställda).
-  const acc = await client.query<{ gross: string | null; tax: string | null }>(
-    `SELECT SUM(p.gross_ore)::text AS gross, SUM(p.tax_ore)::text AS tax
-     FROM payslips p
-     WHERE p.company_id = $1 AND p.status <> 'cancelled'
-       AND p.employee_id = (SELECT employee_id FROM payslips WHERE id = $2)
-       AND p.period LIKE $3 AND p.period <= $4`,
-    [companyId, payslipId, `${row.period.slice(0, 4)}-%`, row.period],
-  );
+  // Ackumulerat för kalenderåret t.o.m. denna period (den anställda), räknat i
+  // payrollYearSummary som payroll_year_summary, så att specen och åtgärden
+  // aldrig visar olika tal (FR-16). Året och gränsen tas ur specens period.
+  const year = Number(row.period.slice(0, 4));
+  const acc = await payrollYearSummary(client, companyId, year, {
+    employee_id: row.employee_id, through_period: row.period,
+  });
 
   const pdf = await generatePayslipPdf({
     company: { name: row.company_name, org_number: row.org_number },
@@ -191,7 +212,14 @@ export async function generateAndAttachPayslipPdf(
       gross_ore: Number(row.gross_ore), vacation_pay_ore: Number(row.vacation_pay_ore),
       tax_ore: Number(row.tax_ore), net_ore: Number(row.net_ore), tax_source: row.tax_source,
     },
-    accumulated: { gross_ore: Number(acc.rows[0]?.gross ?? 0), tax_ore: Number(acc.rows[0]?.tax ?? 0) },
+    accumulated: {
+      year: acc.year,
+      gross_ore: acc.gross_total_ore,
+      tax_ore: acc.tax_total_ore,
+      net_ore: acc.net_total_ore,
+      employer_contribution_ore: acc.employer_contribution_total_ore,
+      vacation_pay_ore: acc.vacation_pay_total_ore,
+    },
     createdDate,
   });
 
