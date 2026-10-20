@@ -13,6 +13,7 @@
     "dev": "npm run dev -w server",
     "build": "npm run build -w server",
     "test": "npm run test -w server",
+    "test:meny": "npm run test:meny -w server",
     "typecheck": "npm run typecheck -w server",
     "migrate": "npm run migrate -w server",
     "mcp:install": "node scripts/mcp-install.mjs",

@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 3.4, menyn mäts vid de fastställda fönsterstorlekarna, NFR-9):**
+  1. **Ändrat:** det nya provet `server/test/menyn-fonsterstorlekar.test.ts`
+     med riggen `server/test/menymatningRigg.ts`, och skriptet `test:meny` i
+     `server/package.json` och i rotens `package.json` (`npm run test:meny`
+     kör bara provfilen; provet ingår också i `npm test`). Ingen fil under
+     `server/src` är ändrad, och inga beroenden.
+  2. **Vad provet mäter:** Chromium vid 1280 × 800, 1440 × 900 och
+     2560 × 1440 i zoom 100 % kräver `scrollHeight − clientHeight = 0` på
+     `.navmenu__panel`, ingen vågrät rullning och `overflow-y: auto` som
+     skyddsnät. Vid 390 × 844 får panelen rulla inuti, men sidan får inte
+     rulla i sidled. Två negativa kontroller planterar innehåll (40 extra
+     menyposter vid 1280 × 800 och ett 2 000 px brett element vid 390 × 844)
+     och måste ge ett fynd. Utan webbläsare blir varje webbläsarfall rött
+     med «kunde inte köras: {orsak}», aldrig grönt och aldrig överhoppat.
+  3. **Bakgrund:** punkten för 2026-09-24 (#182) sa att repot inte fick
+     någon egen mätrigg, eftersom Hermes rigg mätte efter deploy. Nu mäts
+     mätvillkoret ur UX-specifikationen också i repots egen svit, före
+     driftsättningen. `server/test/appmenyn-hel.test.ts` vaktar fortfarande
+     reglerna, och det nya provet mäter följden.
+  4. **Inte kört:** typecheck, build, `npm run test:meny` och vitest —
+     sessionens skal krävde godkännande för npm-kommandon och för `tsc`
+     direkt. Att menyn har 0 px dolt i kedjans Chromium är alltså inte
+     uppmätt i den här sessionen. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt.
+  5. **Baslinjen:** provvaktens `continuityvakt` står oförändrad på
+     KUNDE_INTE; punkten står under rubriken och rör inte huvudet.
+
 - **2026-10-20 (Story 2.5, kravfilen säger bruttometod från september 2026, FR-17):**
   1. **Ändrat:** K2-raden i `docs/ACCEPTANS.md` säger bruttometod med
      skuldkontona 2710/2731 för perioder från och med 2026-09 och kontantmetod
