@@ -179,6 +179,15 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
     default för `payment_date` är den 12:e månaden efter med bankdagsregeln.
     Kontot 2731 (Avräkning lagstadgade sociala avgifter) läggs till i
     standardkontoplanen av migration `0067`.
+  - **Dubbelbokningsspärren (FR-37, AD-14).** En andra `book_payroll_tax`
+    för en period som redan har en rad i `payroll_tax_payments` avvisas vid
+    godkännandet med 409 `already_booked` («skattebetalningen för perioden är
+    redan bokförd»). Det sker före varje verifikat, också om räkenskapsåret
+    har låsts efteråt. Förslaget står kvar som väntande, felet syns som notis
+    på Att göra, och förslaget avvisas för hand. Två samtidiga godkännanden
+    ger exakt en betalning: tjänsten tar ett transaktionslås per bolag och
+    period före uppslaget, och det unika villkoret
+    `payroll_tax_payments_period_uk` är sista linjen.
 - `payroll_year_summary` (read) ger ackumulerat per kalenderår.
   `generate_payslip_pdf` (write) skapar lönespecifikationen enligt Locollabs
   mall och bilägger den på lönebeskedet.

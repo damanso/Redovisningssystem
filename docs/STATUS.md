@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 1.8, dubbel skattebetalning ger rätt besked, FR-37, AD-14):**
+  1. **Ändrat:** `bookPayrollTax` i `server/src/services/payroll.ts` tar först
+     ett transaktionslås per bolag och period (`lockPayrollTaxPeriod`,
+     `pg_advisory_xact_lock`) och slår sedan upp periodens rad i
+     `payroll_tax_payments`, före summeringen, räkenskapsåret och
+     `postVoucher`. En andra `book_payroll_tax` för en betald period ger
+     därför 409 `already_booked` i stället för `already_posted` eller
+     `period_locked`, och inget verifikat skapas. Fångsten av 23505 kring
+     INSERT är borttagen; det unika villkoret är sista linjen. Punkten om
+     spärren står under «Lön (K1–K3)» i `docs/MCP_ACTIONS.md`.
+  2. **Prov:** R1, R2, D1–D4, V1, K1, G1 och M1 i den nya
+     `test/payroll-tax-dublett.test.ts`; P1 i `test/payroll-payment.test.ts`;
+     R3 i `test/autopost-vat-sie.test.ts`; R4 i `test/business.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal krävde
+     godkännande för npm-kommandon. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt.
+  4. **Baslinjen:** provvaktens `continuityvakt` står oförändrad på KUNDE_INTE;
+     punkten står under rubriken och rör inte det provet mäter.
+  5. **Ingen migration** tillkommer.
+  6. **Bakgrund:** bygge 9243 markerade berättelsen done utan ändring i koden,
+     och bygge 9245 stannade med HALT. Det här bygget är ändringen.
+  7. **Driftnot:** i drift märks ändringen först när ett andra förslag för en
+     redan betald period godkänns.
+
 - **2026-10-20 (Story 1.9, två fakturor kan aldrig visa samma nummer, FR-6, LOC-263):**
   1. **Ändrat:** fyra punkter under «Seriesynk» i `docs/MCP_ACTIONS.md`
      (Fakturaserien och bilagan (LOC-263)): samma radlås för räknarflytten,
