@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 1.9, två fakturor kan aldrig visa samma nummer, FR-6, LOC-263):**
+  1. **Ändrat:** fyra punkter under «Seriesynk» i `docs/MCP_ACTIONS.md`
+     (Fakturaserien och bilagan (LOC-263)): samma radlås för räknarflytten,
+     kundnummertilldelningen och fakturaskapandet; 409
+     `series_cannot_move_backwards` och `number_already_in_use`; avslaget före
+     första skrivningen i `set_external_invoice_numbers`; notisen på Att göra.
+  2. **Bakgrund:** serverdelen gick i drift i commit `d70954573069` 2026-10-20
+     (uppslaget i `setExternalInvoiceNumbers`, `test/fakturanummer-samtidighet.test.ts`
+     och S1 i `test/invoice-series-appendix.test.ts`). MCP_ACTIONS och STATUS kom
+     inte med, eftersom filerna redan var ändrade i arbetskopian när bygget
+     började, och kedjan checkar bara in filer som ändras under bygget. M1 var
+     därför rött mot main fram till det här bygget. Andra granskningen efter
+     drift (post 233) fann det.
+  3. **Prov:** R1, G1–G4, B1, E1, V1 och M1 i `test/fakturanummer-samtidighet.test.ts`
+     och S1 i `test/invoice-series-appendix.test.ts`. Inget prov är ändrat i det
+     här bygget.
+  4. **Inte kört:** typecheck, build och vitest — sessionens skal nekade
+     npm-kommandon. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+  5. **Baslinjen:** provvaktens `continuityvakt` står oförändrad på KUNDE_INTE;
+     punkten står under rubriken och rör inte huvudet som provet mäter.
+  6. **Ingen migration** tillkommer, och ingen fil under `server/` ändras.
+  7. **Driftnot:** i drift märks ändringen i koden först när ett förslag med ett
+     redan upptaget kundnummer godkänns. Dokumentet beskriver nu det beteendet.
+
 - **2026-10-19 (Story 1.7, en gång baklänkad post kan aldrig raderas, FR-41/FR-12, AD-12):**
   1. **Ändrat:** `services/draftDelete.ts` har predikatet `hasBeenVoucherLinked`
      (läser `<typ>.voucher_linked` i `audit_log`, samma filter som `unlinkVoucher`
