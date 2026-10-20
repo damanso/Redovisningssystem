@@ -126,6 +126,10 @@ export interface ExternalNumberAssignment {
  * Görs som en BATCH i en transaktion med unikhetsvillkoret uppskjutet, så att
  * en omnumrering kan göras i valfri ordning — annars skulle 14→26 krocka med
  * den befintliga 26:an innan den hunnit bli 27.
+ *
+ * Ett nummer som redan visas på en faktura utanför batchen avvisas före första
+ * skrivningen med 409 `number_already_in_use`; den uppskjutna nyckeln är sista
+ * linjen.
  */
 export async function setExternalInvoiceNumbers(
   client: PoolClient, companyId: string, userId: string, assignments: ExternalNumberAssignment[],
@@ -145,6 +149,26 @@ export async function setExternalInvoiceNumbers(
   // Lås räknaren FÖRST, så batchen serialiseras mot flyttar och fakturaskapande
   // och värdet nedan inte hinner bli inaktuellt innan räknaren hålls i takt.
   const currentNext = await lockSequence(client, companyId);
+
+  // Uppslaget står efter låset: fakturaskapandet och räknarflytten tar samma
+  // radlås, så en faktura som skapades medan batchen väntade syns här. Det står
+  // före första skrivningen, så ingenting rullas tillbaka halvvägs och ingen
+  // krock fångas (lärdom 2). Batchens egna fakturor räknas inte — ett nummer får
+  // flytta mellan dem. Den uppskjutna unika nyckeln är sista linjen; ett
+  // ConflictError gör att ett misslyckat godkännande syns som notis (lärdom 4).
+  const inUse = await client.query<{ nr: number }>(
+    `SELECT effective_invoice_number AS nr FROM invoices
+      WHERE company_id = $1 AND effective_invoice_number = ANY($2::int[]) AND NOT (id = ANY($3::uuid[]))
+      ORDER BY effective_invoice_number LIMIT 1`,
+    [companyId, assignments.map((a) => a.externalNumber), assignments.map((a) => a.invoiceId)],
+  );
+  const taken = inUse.rows[0];
+  if (taken) {
+    throw new ConflictError(
+      'number_already_in_use',
+      `fakturanummer ${taken.nr} visas redan på en annan faktura — avvisa förslaget och ange ett ledigt nummer`,
+    );
+  }
 
   // Skjut upp unikhetskontrollen till COMMIT — ordningen i listan ska inte spela roll.
   await client.query('SET CONSTRAINTS invoices_effective_number_uk DEFERRED');
