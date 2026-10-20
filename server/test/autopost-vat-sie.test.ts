@@ -62,6 +62,15 @@ describe('automatkontering + dubbelbokningsspärr', () => {
         }),
       ),
     ).rejects.toMatchObject({ code: 'already_posted' });
+    // R3 (FR-37, AC 3): inget andra verifikat skapades för källan.
+    const n = await tenant(async (c) => {
+      const r = await c.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM vouchers WHERE company_id = $1 AND source_type = $2 AND source_id = $3',
+        [companyId, 'invoice', 'INV-1'],
+      );
+      return r.rows[0]?.n;
+    });
+    expect(n).toBe(1);
   });
 
   it('leverantörsfaktura konteras (kostnad + ingående moms debet, skuld kredit)', async () => {

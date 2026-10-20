@@ -147,7 +147,8 @@ describe('lönebesked med utbetalningsdatum och semesterersättning', () => {
     const req = await api.post(`${co()}/actions/book_payroll_tax`).set(auth()).send({ period: '2026-07' });
     expect(req.status).toBe(202);
     const dup = await api.post(`${co()}/approvals/${req.body.approval.id}/approve`).set(auth()).send({});
-    expect(dup.status).toBe(409);
+    expect(dup.status, JSON.stringify(dup.body)).toBe(409);
+    expect(dup.body.error).toBe('already_booked');
   });
 
   it('payroll_year_summary: ackumulerat brutto/skatt ur systemet', async () => {
