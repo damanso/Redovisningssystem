@@ -284,3 +284,93 @@ describe('brytpunkten 2026-09: bruttometod med skuldkonton (LOC-355)', () => {
     expect(s[2510]).toBe(3_069_500);
   });
 });
+
+// Story 2.5 (FR-17, beslut #107): fallet här är det som K2-raden i
+// docs/ACCEPTANS.md pekar på, och provet acceptans-k2 kräver att titeln står
+// ordagrant här — byt inte titel utan att ändra raden. Eget bolag, så att
+// filens ordning, payroll_year_summary och saldona i KRAV-5 är orörda.
+describe('K2-raden i ACCEPTANS: båda grenarna i ett fall (beslut #107)', () => {
+  let k2User: TestUser;
+  let k2CompanyId: string;
+  let k2EmployeeId: string;
+  const k2Auth = () => ({ Authorization: `Bearer ${k2User.token}` });
+  const k2Co = () => `/api/companies/${k2CompanyId}`;
+
+  async function approveActionFor(name: string, body: Record<string, unknown>) {
+    const req = await api.post(`${k2Co()}/actions/${name}`).set(k2Auth()).send(body);
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    return api.post(`${k2Co()}/approvals/${req.body.approval.id}/approve`).set(k2Auth()).send({});
+  }
+
+  beforeAll(async () => {
+    k2User = await registerUser('payrollk2');
+    k2CompanyId = await createCompany(k2User.token, 'Brytpunkt AB');
+    await createFiscalYear(k2CompanyId, k2Auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    const emp = await api.post(`${k2Co()}/actions/create_employee`).set(k2Auth()).send({
+      name: 'Brytpunkt Testsson', monthly_salary_ore: 5_650_000, tax_rate: 23,
+    });
+    expect(emp.status, JSON.stringify(emp.body)).toBe(200);
+    k2EmployeeId = emp.body.result.id;
+  });
+
+  // B1: augusti och september med samma lön i ett och samma bolag. 56 500 kr
+  // brutto ger 12 943 kr skatt (tabell 30), 43 557 kr netto och 31,42 % avgift
+  // = 17 752,30 kr; skatt och avgift 30 695,30 kr betalas med 30 695 kr.
+  it('K2 brytpunkten: 2026-08 bokförs med kontantmetoden och 2026-09 med bruttometoden', async () => {
+    const aug = await api.post(`${k2Co()}/actions/create_payslip`).set(k2Auth()).send({ employee_id: k2EmployeeId, period: '2026-08' });
+    expect(aug.status, JSON.stringify(aug.body)).toBe(200);
+    const sep = await api.post(`${k2Co()}/actions/create_payslip`).set(k2Auth()).send({ employee_id: k2EmployeeId, period: '2026-09' });
+    expect(sep.status, JSON.stringify(sep.body)).toBe(200);
+    const augNet: number = aug.body.result.net_ore;
+    const sepGross: number = sep.body.result.gross_ore;
+    const sepTaxOre: number = sep.body.result.tax_ore;
+    const sepNet: number = sep.body.result.net_ore;
+    const sepEmployer: number = sep.body.result.employer_contribution_ore;
+    for (const slip of [aug.body.result, sep.body.result]) {
+      expect(slip.gross_ore).toBe(5_650_000);
+      expect(slip.tax_ore).toBe(1_294_300);
+      expect(slip.net_ore).toBe(4_355_700);
+      expect(slip.employer_contribution_ore).toBe(1_775_230);
+    }
+
+    // 2026-08, kontantmetoden: nettot mot banken, skattekontot mot 2510.
+    const augSlip = await approveActionFor('book_payslip', { payslip_id: aug.body.result.id });
+    expect(augSlip.status, JSON.stringify(augSlip.body)).toBe(200);
+    const augSlipLines = await voucherLines(augSlip.body.result.voucher_id);
+    expect(augSlipLines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, augNet, 0],
+      [1930, 0, augNet],
+    ]);
+    const augTax = await approveActionFor('book_payroll_tax', { period: '2026-08' });
+    expect(augTax.status, JSON.stringify(augTax.body)).toBe(200);
+    expect(augTax.body.result.amount_ore).toBe(3_069_500);
+    const augTaxLines = await voucherLines(augTax.body.result.voucher_id);
+    expect(augTaxLines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [2510, 3_069_500, 0],
+      [1930, 0, 3_069_500],
+    ]);
+
+    // 2026-09, bruttometoden: kostnad och skulder i ett verifikat, och
+    // skattekontobetalningen tömmer 2710 och 2731 med öresresten på 3740.
+    const sepSlip = await approveActionFor('book_payslip', { payslip_id: sep.body.result.id });
+    expect(sepSlip.status, JSON.stringify(sepSlip.body)).toBe(200);
+    const sepSlipLines = await voucherLines(sepSlip.body.result.voucher_id);
+    expect(sepSlipLines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [7010, sepGross, 0],
+      [7510, sepEmployer, 0],
+      [2710, 0, sepTaxOre],
+      [2731, 0, sepEmployer],
+      [1930, 0, sepNet],
+    ]);
+    const sepTax = await approveActionFor('book_payroll_tax', { period: '2026-09' });
+    expect(sepTax.status, JSON.stringify(sepTax.body)).toBe(200);
+    expect(sepTax.body.result.amount_ore).toBe(3_069_500);
+    const sepTaxLines = await voucherLines(sepTax.body.result.voucher_id);
+    expect(sepTaxLines.map((l) => [l.account_number, Number(l.debit_ore), Number(l.credit_ore)])).toEqual([
+      [2710, sepTaxOre, 0],
+      [2731, sepEmployer, 0],
+      [1930, 0, 3_069_500],
+      [3740, 0, 30], // 30 695 kr betalt mot 30 695,30 kr i skuld
+    ]);
+  });
+});
