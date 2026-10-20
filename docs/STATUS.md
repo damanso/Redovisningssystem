@@ -153,6 +153,35 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 4.2, lönespecen visar alla fem ackumulerade belopp, FR-16/FR-18):**
+  1. **Ändrat:** `payrollYearSummary` i `server/src/services/payroll.ts` fick
+     den valfria gränsen `through_period` och det typade svaret
+     `PayrollYearSummary`. Åtgärden `payroll_year_summary` sätter aldrig
+     gränsen och svarar som förut. Lönespecen
+     (`server/src/services/payslipPdf.ts`) har ingen egen summering längre:
+     den läser sina fem belopp ur samma funktion och visar blocket
+     «Ackumulerat {år}» med bruttolön, skatt, nettolön, arbetsgivaravgift och
+     semesterersättning, till och med specens period. «Ack. Förmån» med 0
+     står kvar. Punkten om `payroll_year_summary` i `docs/MCP_ACTIONS.md`
+     säger detsamma.
+  2. **Prov:** P1, A1, A2, A3 och B1 i den nya
+     `server/test/payslip-ackumulerat.test.ts`. P1 anropar renderaren direkt
+     och bär den negativa kontrollen (andra tal och ett annat år), A2 binder
+     åtgärdens svar och specens text rad för rad, A3 prövar gränsen till och
+     med specens period och B1 årsgränsen. `documents`, `agi` och
+     lönesviterna står oförändrade.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1b, 2a och 2b) —
+     sessionens skal krävde godkännande för npm-kommandon och för git. Att
+     de nya fallen var röda före koden och är gröna efter den är alltså inte
+     uppmätt i den här sessionen. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt.
+  4. **Baslinjen:** provvaktens `continuityvakt` står oförändrad på
+     KUNDE_INTE; punkten står under rubriken och rör inte huvudet.
+  5. **Ingen migration**, ingen ny åtgärd och ingen ändrad vy.
+  6. **Driftnot:** redan genererade lönespecar ändras inte. En ny spec för
+     ett befintligt lönebesked genereras med `generate_payslip_pdf` och
+     kopplas bredvid den gamla.
+
 - **2026-10-20 (Story 3.4, menyn mäts vid de fastställda fönsterstorlekarna, NFR-9):**
   1. **Ändrat:** det nya provet `server/test/menyn-fonsterstorlekar.test.ts`
      med riggen `server/test/menymatningRigg.ts`, och skriptet `test:meny` i

@@ -450,20 +450,45 @@ export async function bookPayrollTax(
 }
 
 /**
+ * Svaret ur payrollYearSummary: årets fem summor i ören och raderna de räknas
+ * ur. Samma form läses av åtgärden payroll_year_summary och av lönespecens
+ * block «Ackumulerat {år}», så att de två aldrig visar olika tal (FR-16,
+ * Story 4.2).
+ */
+export interface PayrollYearSummary {
+  year: number;
+  payslip_count: number;
+  gross_total_ore: number;
+  vacation_pay_total_ore: number;
+  tax_total_ore: number;
+  net_total_ore: number;
+  employer_contribution_total_ore: number;
+  payslips: Record<string, unknown>[];
+}
+
+/**
  * Ackumulerat per kalenderår ur systemets lönebesked (ersätter den externa
  * state-filen): totalsummor + rader per lönebesked. Makulerade räknas inte.
+ *
+ * Gränsen `through_period` ('YYYY-MM', ta med perioder till och med den)
+ * används av lönespecen, som räknar till och med sitt eget lönebesked. Då
+ * räknar specen och åtgärden på ett ställe (FR-16, Story 4.2). Åtgärden sätter
+ * aldrig gränsen, så dess svar är detsamma som utan den.
  */
 export async function payrollYearSummary(
-  client: PoolClient, companyId: string, year: number, opts: { employee_id?: string } = {},
-): Promise<Record<string, unknown>> {
+  client: PoolClient, companyId: string, year: number,
+  opts: { employee_id?: string; through_period?: string } = {},
+): Promise<PayrollYearSummary> {
+  // Perioder är 'YYYY-MM' och jämförs därför rätt som text (som usesGrossMethod).
   const rows = await client.query(
     `SELECT p.id, e.name AS employee_name, p.employee_id, p.period, p.payment_date::text,
             p.gross_ore, p.vacation_pay_ore, p.tax_ore, p.net_ore, p.employer_contribution_ore, p.tax_source, p.status
      FROM payslips p JOIN employees e ON e.id = p.employee_id
      WHERE p.company_id = $1 AND p.period LIKE $2 AND p.status <> 'cancelled'
        AND ($3::uuid IS NULL OR p.employee_id = $3)
+       AND ($4::text IS NULL OR p.period <= $4)
      ORDER BY p.period, e.name`,
-    [companyId, `${year}-%`, opts.employee_id ?? null],
+    [companyId, `${year}-%`, opts.employee_id ?? null, opts.through_period ?? null],
   );
   const total = (field: string) => rows.rows.reduce((s, r) => s + Number(r[field]), 0);
   return {

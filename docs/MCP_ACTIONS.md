@@ -190,7 +190,11 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
     `payroll_tax_payments_period_uk` är sista linjen.
 - `payroll_year_summary` (read) ger ackumulerat per kalenderår.
   `generate_payslip_pdf` (write) skapar lönespecifikationen enligt Locollabs
-  mall och bilägger den på lönebeskedet.
+  mall och bilägger den på lönebeskedet. Specen bär blocket «Ackumulerat {år}»
+  med bruttolön, skatt, nettolön, arbetsgivaravgift och semesterersättning för
+  den anställdas lönebesked i kalenderåret till och med specens period.
+  Beloppen räknas av samma funktion som `payroll_year_summary`, så att de två
+  aldrig skiljer sig (FR-16).
 
 ### Dokument (K3)
 
