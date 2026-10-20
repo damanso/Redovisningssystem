@@ -153,6 +153,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 1.9, två fakturor kan aldrig visa samma nummer, FR-6, LOC-263):**
+  1. **Ändrat:** `services/invoiceNumbering.ts`, `setExternalInvoiceNumbers`:
+     direkt efter `lockSequence` och före `SET CONSTRAINTS` slår en
+     parametriserad fråga (med `company_id = $1` uttryckligen) upp om något av
+     batchens nummer redan visas på en faktura i bolaget utanför batchen. Då
+     blir det 409 `number_already_in_use` före första skrivningen, i stället för
+     409 `conflict` ur COMMIT i API:t och status 500 i vyn. Ingen ny felkod;
+     `docs/MCP_ACTIONS.md` (Fakturaserien och bilagan) beskriver låset,
+     felkoderna och notisen.
+  2. **Prov:** R1, G1–G4, B1, E1, V1 och M1 i `test/fakturanummer-samtidighet.test.ts`
+     (ny); S1 i `test/invoice-series-appendix.test.ts` (kräver nu 409
+     `number_already_in_use`).
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal nekade
+     npm-kommandon. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+     Kedjans första körning fällde `uppdragsytan-baseline` › (f) och
+     `ixbrl-export`. I `ixbrl-export` passerade `beforeAll` 60 s redan vid
+     `createCompany`. Ingen av dem når den ändrade funktionen, och inget av
+     1.9:s prov var rött. Ingen kod ändrades i omtaget. Kommer sviterna tillbaka
+     röda vid en ensam körning är felet deras eget.
+  4. **Baslinjen:** `continuityvakt` står oförändrad på KUNDE_INTE; bygget rör inte
+     det den mäter.
+  5. **Ingen migration** tillkommer. Den uppskjutna unika nyckeln
+     `invoices_effective_number_uk` (0046) står kvar som sista linje.
+  6. **Driftnot:** i drift märks ändringen först när ett förslag med ett redan
+     upptaget kundnummer godkänns.
+
+- **2026-10-19 (Story 1.8, dubbel skattebetalning ger rätt besked, FR-37, AD-14):**
+  1. **Ändrat:** `services/payroll.ts`, `bookPayrollTax`: efter formatkontrollen tar
+     den nya modulprivata `lockPayrollTaxPeriod` ett `pg_advisory_xact_lock` på
+     `payroll_tax:{bolag}:{period}`, och därefter slås periodens rad i
+     `payroll_tax_payments` upp med en egen `SELECT` före summeringen,
+     räkenskapsåret och `postVoucher`. Finns raden blir det 409 `already_booked`
+     (tidigare `already_posted` ur källspärren, eller `period_locked` för ett låst
+     år). `try/catch` kring INSERT är borttagen, så ingen unik-krock fångas i
+     transaktionen (lärdom 2). `docs/MCP_ACTIONS.md` (Lön (K1–K3)) beskriver spärren.
+  2. **Prov:** R1, R2, D1–D4, V1, K1, G1 och M1 i `test/payroll-tax-dublett.test.ts`
+     (ny); P1 i `test/payroll-payment.test.ts`; R3 i `test/autopost-vat-sie.test.ts`;
+     R4 i `test/business.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal nekade
+     npm-kommandon. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+  4. **Baslinjen:** `continuityvakt` står oförändrad på KUNDE_INTE; bygget rör inte
+     det den mäter.
+  5. **Ingen migration** tillkommer. Villkoret `payroll_tax_payments_period_uk`
+     (0039) står kvar som sista linje.
+  6. **Driftnot:** i drift märks ändringen först när ett andra förslag för en redan
+     betald period godkänns. Frågan om rättade betalningar står i berättelsen
+     (Frågor till David).
+
 - **2026-10-19 (Story 1.7, en gång baklänkad post kan aldrig raderas, FR-41/FR-12, AD-12):**
   1. **Ändrat:** `services/draftDelete.ts` har predikatet `hasBeenVoucherLinked`
      (läser `<typ>.voucher_linked` i `audit_log`, samma filter som `unlinkVoucher`

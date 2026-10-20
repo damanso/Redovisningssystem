@@ -338,6 +338,16 @@ export async function bookPayslip(
 }
 
 /**
+ * Ett godkännande i taget per bolag och period (AD-14, FR-37). Låset gäller
+ * transaktionen och släpps vid COMMIT eller ROLLBACK. Prefixet håller nyckeln
+ * skild från svepets lås, som tas på bolagets id. Varje väg som skriver i
+ * payroll_tax_payments tar samma lås före sitt uppslag.
+ */
+async function lockPayrollTaxPeriod(client: PoolClient, companyId: string, period: string): Promise<void> {
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))', [`payroll_tax:${companyId}:${period}`]);
+}
+
+/**
  * Skattekontobetalningen för en löneperiod. Metoden avgörs av perioden
  * (se GROSS_METHOD_FROM_PERIOD):
  *
@@ -352,14 +362,29 @@ export async function bookPayslip(
  *
  * Beloppet föreslås ur periodens lönebesked (ej makulerade) avrundat till hela
  * kronor; amount_ore kan ange annat. Utbetalningsdatum: angivet, annars den
- * 12:e månaden efter perioden med bankdagsregeln. UNIQUE (company_id, period)
- * spärrar dubbelbokning.
+ * 12:e månaden efter perioden med bankdagsregeln.
+ *
+ * Dubbelbokning (FR-37, AD-14): periodens betalningsrad slås upp före
+ * verifikatet, och finns den ger bokningen 409 `already_booked`. Ingen
+ * unik-krock fångas i transaktionen (lärdom 2). UNIQUE (company_id, period)
+ * står kvar som sista linje.
  */
 export async function bookPayrollTax(
   client: PoolClient, companyId: string, userId: string,
   input: { period: string; fiscal_year_id?: string; payment_date?: string; amount_ore?: number },
 ): Promise<Record<string, unknown>> {
   if (!/^\d{4}-\d{2}$/.test(input.period)) throw new BadRequestError('bad_period', 'period ska vara YYYY-MM');
+  await lockPayrollTaxPeriod(client, companyId, input.period);
+  // Uppslaget står före allt annat. Annars stoppar källspärren i postVoucher
+  // en andra bokning med `already_posted`, och ett låst år ger
+  // `period_locked`, i stället för beskedet att perioden redan är betald.
+  // Det är en egen sats efter låset: i READ COMMITTED ser bara en sats som
+  // startar efter låset raden som ett samtidigt godkännande har committat.
+  const booked = await client.query(
+    'SELECT 1 FROM payroll_tax_payments WHERE company_id = $1 AND period = $2',
+    [companyId, input.period],
+  );
+  if (booked.rows[0]) throw new ConflictError('already_booked', 'skattebetalningen för perioden är redan bokförd');
   const sums = await client.query<{ tax_ore: string | null; employer_ore: string | null; n: string }>(
     `SELECT SUM(tax_ore)::text AS tax_ore, SUM(employer_contribution_ore)::text AS employer_ore, COUNT(*)::text AS n
      FROM payslips WHERE company_id = $1 AND period = $2 AND status <> 'cancelled'`,
@@ -406,18 +431,12 @@ export async function bookPayrollTax(
     sourceId: input.period,
     lines,
   });
-  let paymentId: string;
-  try {
-    const r = await client.query<{ id: string }>(
-      `INSERT INTO payroll_tax_payments (company_id, period, payment_date, tax_ore, employer_contribution_ore, amount_ore, voucher_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [companyId, input.period, date, tax, employer, amount, voucher.id, userId],
-    );
-    paymentId = r.rows[0]!.id;
-  } catch (err) {
-    if ((err as { code?: string }).code === '23505') throw new ConflictError('already_booked', 'skattebetalningen för perioden är redan bokförd');
-    throw err;
-  }
+  const r = await client.query<{ id: string }>(
+    `INSERT INTO payroll_tax_payments (company_id, period, payment_date, tax_ore, employer_contribution_ore, amount_ore, voucher_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [companyId, input.period, date, tax, employer, amount, voucher.id, userId],
+  );
+  const paymentId = r.rows[0]!.id;
   await writeAudit(client, {
     companyId, userId, action: 'payroll_tax.booked', entityType: 'payroll_tax_payment', entityId: paymentId,
     details: { period: input.period, payment_date: date, amount_ore: amount, tax_ore: tax, employer_contribution_ore: employer, voucher_id: voucher.id },

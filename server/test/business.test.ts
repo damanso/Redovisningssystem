@@ -1,7 +1,7 @@
 // Acceptanstester för Fas 2 (KICKOFF §4): affärsobjekt bakom förtroendegränsen,
 // standardlistning visar aktiva, PDF med Bankgiro, ladda upp → hämta fil.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, createCompany, pdfText, registerUser, type TestUser } from './helpers.js';
+import { api, createCompany, pdfText, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 let user: TestUser;
 let other: TestUser;
@@ -104,6 +104,15 @@ describe('faktura: nummer/OCR, totaler i ören, bokföring, PDF med Bankgiro', (
     const again = await api.post(`${co()}/invoices/${invoiceId}/book`).set(auth()).send({ fiscal_year_id: fiscalYearId });
     expect(again.status).toBe(409);
     expect(again.body.error).toBe('already_booked');
+    // R4: avvisningen lämnar exakt ett verifikat för fakturans källa.
+    const n = await withAdmin(async (admin) => {
+      const r = await admin.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM vouchers WHERE company_id = $1 AND source_type = $2 AND source_id = $3',
+        [companyId, 'invoice', invoiceId],
+      );
+      return r.rows[0]?.n ?? 0;
+    });
+    expect(n).toBe(1);
   });
 
   it('registrerar betalning via action-lagret (känsligt → godkännande) → faktura betald', async () => {

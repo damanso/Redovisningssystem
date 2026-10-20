@@ -179,6 +179,15 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
     default för `payment_date` är den 12:e månaden efter med bankdagsregeln.
     Kontot 2731 (Avräkning lagstadgade sociala avgifter) läggs till i
     standardkontoplanen av migration `0067`.
+  - **Dubbelbokningsspärren (FR-37, AD-14).** En andra `book_payroll_tax`
+    för en period som redan har en rad i `payroll_tax_payments` avvisas vid
+    godkännandet med **409 `already_booked`** («skattebetalningen för
+    perioden är redan bokförd»). Det sker före varje verifikat, också om
+    räkenskapsåret har låsts efteråt. Förslaget står kvar som väntande,
+    felet syns som notis på Att göra, och förslaget avvisas för hand. Två
+    samtidiga godkännanden ger exakt en betalning: tjänsten tar ett
+    transaktionslås per bolag och period före uppslaget, och det unika
+    villkoret `payroll_tax_payments_period_uk` är sista linjen.
 - `payroll_year_summary` (read) ger ackumulerat per kalenderår.
   `generate_payslip_pdf` (write) skapar lönespecifikationen enligt Locollabs
   mall och bilägger den på lönebeskedet.
@@ -330,6 +339,18 @@ ett eget fält. Bokförd historik numreras aldrig om.
   finns, annars internt) med en DEFERRABLE unik nyckel per bolag → **två
   fakturor kan aldrig visa samma nummer för en kund**. PDF, vy och filnamn
   använder alltid det numret; internnumret syns kvar på detaljsidan.
+- Räknarflytten, kundnummertilldelningen och fakturaskapandet tar **samma
+  radlås** på räknaren. Två samtidiga godkännanden, eller ett godkännande och
+  ett fakturaskapande, läser därför aldrig samma gamla värde.
+- `set_invoice_number_series` som skulle flytta räknaren bakåt avvisas vid
+  godkännandet med **409 `series_cannot_move_backwards`**, och ett nummer som
+  redan är utställt avvisas med **409 `number_already_in_use`**.
+- `set_external_invoice_numbers` avvisar vid godkännandet, före första
+  skrivningen, ett nummer som redan visas på en faktura i bolaget utanför
+  batchen med **409 `number_already_in_use`**. Ett nummer får flytta mellan
+  fakturor i samma batch, och ett nummer i ett annat bolag räknas inte.
+- Ett avvisat godkännande rullas tillbaka helt. Förslaget står kvar som
+  väntande, felet syns som notis på Att göra, och förslaget avvisas för hand.
 - **OCR:** systemets Luhn-giltiga OCR gäller framåt. Husmallens 12-siffriga
   variant (t.ex. `202626010027`) är **inte** Luhn-giltig och riskerar avvisad
   betalning om bankgiroavtalets OCR-kontroll är påslagen.
