@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-20 (Story 2.5, kravfilen säger bruttometod från september 2026, FR-17):**
+  1. **Ändrat:** K2-raden i `docs/ACCEPTANS.md` säger bruttometod med
+     skuldkontona 2710/2731 för perioder från och med 2026-09 och kontantmetod
+     (7010 D / 1930 K = verkligt netto, skattekontot 2510 D / 1930 K) för
+     tidigare perioder, med beslut #107 som källa, och pekar på testfallet B1.
+     Inga andra rader i ACCEPTANS är ändrade; testantalet på rad 8 är orört
+     (det skrivs av Hermes skript `hermes/skills/statussiffror.py`).
+  2. **Prov:** B1 («K2 brytpunkten: 2026-08 bokförs med kontantmetoden och
+     2026-09 med bruttometoden», eget bolag, fyra verifikat med exakta rader)
+     i `server/test/payroll-payment.test.ts`; A1–A3 i den nya
+     `server/test/acceptans-k2.test.ts`, där A2 är den negativa kontrollen med
+     den gamla radtexten.
+  3. **Inte kört:** typecheck och vitest — sessionens skal nekade
+     npm-kommandon. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+  4. **Baslinjen:** provvaktens `continuityvakt` stod på KUNDE_INTE i
+     baslinjen vid create-story (körning `897455058fe4`). Bygget ändrar inget
+     som provet mäter: talen före «tester», «sviter» och «actions» i
+     STATUS-huvudet och i ACCEPTANS.
+  5. **Ingen produktionskod och ingen migration** ändras.
+
 - **2026-10-20 (Story 1.8, dubbel skattebetalning ger rätt besked, FR-37, AD-14):**
   1. **Ändrat:** `bookPayrollTax` i `server/src/services/payroll.ts` tar först
      ett transaktionslås per bolag och period (`lockPayrollTaxPeriod`,
