@@ -234,6 +234,15 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
   i dag alltid 0. `warnings` bär kompletthetsvaktens varning när ruta 48 är
   0 trots inköp på konton 5000–6999, oavsett belopp och med beloppet;
   varningen stoppar ingenting (FR-19).
+- `accounts_payable_aging` (read) — leverantörsreskontran med åldersanalys
+  per leverantör. Med `as_of` visar den vad bolaget var skyldigt den dagen:
+  en leverantörsfaktura ingår när dess verifikat (bokföringen eller
+  baklänkningen) är daterat senast `as_of`, och en betalning räknas från
+  betalningsverifikatets datum, så en faktura som betalats efter `as_of`
+  står med det som återstod den dagen. En betalmarkering via baklänkning
+  räknas från det kopplade verifikatets datum. Åldern räknas från
+  förfallodagen till `as_of`. Utan `as_of` räknas reskontran mot dagens
+  datum med fakturornas betalda belopp som de står i dag (FR-29).
 
 ### Kvittobilagor — tre steg, där steg 2 inte är ett MCP-anrop (beslut #178)
 
