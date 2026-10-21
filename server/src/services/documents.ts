@@ -23,6 +23,32 @@ const ENTITY_TABLES: Record<DocumentEntityType, string> = {
 
 export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024; // 10 MB — samma som uppladdningsgränsen
 
+/**
+ * Längden av base64 med utfyllnad för den största tillåtna filen (13 981 016
+ * tecken). Tillsammans med de två konstanterna nedan den enda källan för
+ * åtgärdsruttens kroppsgräns (FR-18, AD-10), så att gränsen och tjänstens
+ * 10 MB inte kan glida isär.
+ */
+export const MAX_DOCUMENT_BASE64_CHARS = 4 * Math.ceil(MAX_DOCUMENT_BYTES / 3);
+
+/**
+ * Marginalen för JSON-kuvertet runt base64-fältet (16 KiB). Kuvertets övriga
+ * fält är entity_type, entity_id, filename och title; de två sista är högst
+ * 200 tecken var (safeText(200)), också som \uXXXX-escapes sex byte per tecken
+ * (2 400 byte), plus nycklar och skiljetecken. Marginalen räknar med kompakt
+ * JSON, som JSON.stringify ger och som MCP-servern skickar. Del av den enda
+ * källan för åtgärdsruttens kroppsgräns (FR-18, AD-10).
+ */
+export const DOCUMENT_JSON_ENVELOPE_MARGIN_BYTES = 16 * 1024;
+
+/**
+ * Kroppsgränsen i byte för åtgärdsrutten attach_document (13 997 400): base64
+ * för MAX_DOCUMENT_BYTES plus kuvertets marginal. Den enda källan för gränsen
+ * (FR-18, AD-10); parsern i http/routes/actions.ts importerar den, så att
+ * transportens gräns och tjänstens 10 MB inte kan glida isär.
+ */
+export const ATTACH_DOCUMENT_BODY_LIMIT_BYTES = MAX_DOCUMENT_BASE64_CHARS + DOCUMENT_JSON_ENVELOPE_MARGIN_BYTES;
+
 async function assertEntityExists(
   client: PoolClient, companyId: string, entityType: DocumentEntityType, entityId: string,
 ): Promise<void> {

@@ -7,6 +7,7 @@ import { pool } from '../db/pool.js';
 import { authenticate } from './middleware/authenticate.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.js';
+import { isAttachDocumentRequest } from './routes/actions.js';
 import { sessionsAnvandare } from './view/auth.js';
 import { withTransaction } from '../db/tx.js';
 import { companiesRouter } from './routes/companies.js';
@@ -51,7 +52,18 @@ export function createApp(): express.Express {
       referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     }),
   );
-  app.use(express.json({ limit: '1mb' }));
+  // 1 MB gäller varje JSON-kropp utom åtgärdsrutten för attach_document:
+  // base64 för ett dokument på 10 MB ryms inte i 1 MB (FR-18). Den rutten får
+  // sin egen parser i routes/actions.ts, monterad först efter authenticate och
+  // requireCompanyAccess, så ingen stor kropp tolkas före dem (AD-10).
+  const globalJsonParser = express.json({ limit: '1mb' });
+  app.use((req, res, next) => {
+    if (isAttachDocumentRequest(req.method, req.path)) {
+      next();
+      return;
+    }
+    globalJsonParser(req, res, next);
+  });
 
   app.get('/health', async (_req, res) => {
     try {
