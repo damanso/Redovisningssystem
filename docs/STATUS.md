@@ -153,6 +153,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 4.5, momsdeklarationens nollsatta rutor räknas ur bokföringen, FR-19):**
+  1. **Ändrat:** migration 0086 (`vat_box_accounts`, bolagets kontolista för
+     momsrutorna, RLS med FORCE, app har SELECT, INSERT och DELETE), den
+     känsliga åtgärden `set_vat_box_accounts`, reglerna
+     (`MAPPABLE_VAT_BOX_CODES`, `mappedBoxAmounts`, `withoutMappedAccounts`,
+     `reverseIsDistributed`, `reverseBaseWarning`, `vatDisclaimer`) och
+     läsningen och skrivningen (`listVatBoxAccounts`, `setVatBoxAccounts`) i
+     `server/src/services/vatDeclaration.ts`, där `vatDeclaration` räknar
+     rutorna 06–08, 20–24, 37–38 och 40 ur listan och visar den i
+     `box_accounts`; förslagskortets gren i
+     `server/src/services/approvalSummary.ts`; punkterna för
+     `vat_declaration` och `set_vat_box_accounts` i `docs/MCP_ACTIONS.md`.
+  2. **Prov:** M1–M9 (reglerna utan databas), L1–L8 och S1 (åtgärden genom
+     kön, kortet, kontoplanen, schemat, bolagsgränsen och källtexten) och
+     D1–D4 (deklarationen, med ett tvillingbolag utan lista) i
+     `server/test/vat-declaration.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a, 2b, 3a
+     och 3b) — sessionens skal krävde godkännande för npm, och det gick inte
+     att ge. Att de nya fallen var röda före koden och är gröna efter den är
+     alltså inte uppmätt i den här sessionen; fallen är genomgångna statiskt
+     mot koden och migrationen. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt.
+  4. **Efter driftsättningen** (inte gjort i bygget): Locollabs har ingen
+     kontolista, så deklarationen räknas som förut tills Hermes lagt
+     förslaget med `set_vat_box_accounts` och David godkänt det i Att göra
+     (Davids svar 2026-10-16).
+  5. **Baslinjen:** provvaktens crmintag står RÖD och continuityvakt
+     KUNDE_INTE sedan före bygget; bygget rör inte deras källor, och punkten
+     rör inte huvudet i `docs/STATUS.md`.
+
 - **2026-10-21 (Story 5.6, agentens fel säger alltid var och varför, FR-28):**
   1. **Ändrat:** ny modul `server/src/mcp/karnanrop.ts` (AD-11) med
      `TIMEOUT_MS`, `anropaKarnan` (nätanropet och läsningen av kroppen under

@@ -230,10 +230,22 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
   verifikat bryter mot metoden; SIE-import och rättelser undantas.
 - `vat_declaration` (read) — momsdeklarationens uppställning med rutorna
   05–49 för perioden `from`–`to`, ett beräknat underlag ur momskontona och
-  ett fåtal försäljningskonton; rutorna 06–08, 20, 22–24, 37–38 och 40 är
-  i dag alltid 0. `warnings` bär kompletthetsvaktens varning när ruta 48 är
-  0 trots inköp på konton 5000–6999, oavsett belopp och med beloppet;
-  varningen stoppar ingenting (FR-19).
+  ett fåtal försäljningskonton. Rutorna 06–08, 20–24, 37–38 och 40 räknas
+  ur bolagets kontolista för momsrutorna (`set_vat_box_accounts`): ett konto
+  i listan räknas i exakt en ruta och lämnar de fasta intervallen, och
+  `box_accounts` visar listan. Utan kontolista räknas rutorna som förut.
+  `warnings` bär kompletthetsvaktens varning när ruta 48 är 0 trots inköp
+  på konton 5000–6999, oavsett belopp och med beloppet; varningen stoppar
+  ingenting (FR-19). När listan har konton för rutorna 20–24 bär `warnings`
+  också en varning när underlaget i ruta 20–24 inte stämmer med den
+  utgående momsen i ruta 30–32.
+- `set_vat_box_accounts` (sensitive) — ersätter bolagets kontolista för
+  momsrutorna: `accounts` är en lista med `account_number` och `box` (06,
+  07, 08, 20–24, 37, 38 eller 40). Köas för mänskligt godkännande; varje
+  konto ska finnas i bolagets kontoplan (`unknown_account` vid
+  godkännandet), ett konto får stå en gång och momskonton 2600–2699
+  avvisas. En tom lista tar bort listan. Auditloggas som
+  `tax.vat_box_accounts_set` (FR-19).
 - `accounts_payable_aging` (read) — leverantörsreskontran med åldersanalys
   per leverantör. Med `as_of` visar den vad bolaget var skyldigt den dagen:
   en leverantörsfaktura ingår när dess verifikat (bokföringen eller

@@ -13,6 +13,9 @@ import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { lasBaselineandring } from './uppdragImport.js';
+import {
+  listVatBoxAccounts, MAPPABLE_VAT_BOX_CODES, reverseIsDistributed, type VatBoxAccount,
+} from './vatDeclaration.js';
 
 const SEP = ' · ';
 
@@ -300,6 +303,52 @@ export async function explainApproval(
       },
       why: 'Gallring enligt bolagets lagringsperiod. Raderingen går inte att ångra, och källhänvisningarna till det som gallras bort rensas samtidigt.',
       source: { label: 'Relationer', href: `${base}/relations` },
+    };
+  }
+
+  // FR-19 (Story 4.5): kontolistan för momsrutorna godkänns av David en gång, så
+  // kortet visar hela listan före och efter i klartext, med kontonamnen och de
+  // rutor som står kvar som 0.
+  if (action === 'set_vat_box_accounts') {
+    if (!Array.isArray(input.accounts)) return none;
+    const fore = await listVatBoxAccounts(client, companyId);
+    // Indatat läses defensivt: bara poster med ett heltalskonto och en ruta ur
+    // tillåtelselistan.
+    const efter = (input.accounts as unknown[]).flatMap((a): VatBoxAccount[] => {
+      if (typeof a !== 'object' || a === null) return [];
+      const { account_number: konto, box } = a as Record<string, unknown>;
+      return typeof konto === 'number' && Number.isInteger(konto)
+        && typeof box === 'string' && (MAPPABLE_VAT_BOX_CODES as readonly string[]).includes(box)
+        ? [{ account_number: konto, box: box as VatBoxAccount['box'] }]
+        : [];
+    });
+    // Bolagets eget konto går före standardkontot, som i reports.ts.
+    const nummer = [...new Set([...fore, ...efter].map((a) => a.account_number))];
+    const namn = new Map((await client.query<{ account_number: number; name: string }>(
+      `SELECT DISTINCT ON (account_number) account_number, name FROM accounts
+        WHERE account_number = ANY($2::int[]) AND (company_id = $1 OR company_id IS NULL)
+        ORDER BY account_number, company_id NULLS LAST`,
+      [companyId, nummer],
+    )).rows.map((r): [number, string] => [r.account_number, r.name]));
+    const beskriv = (lista: VatBoxAccount[]): string => {
+      if (lista.length === 0) {
+        return 'Ingen kontolista: rutorna 06–08, 20, 22–24, 37–38 och 40 är 0, och ruta 21 räknas ur den utgående momsen';
+      }
+      const poster = [...lista]
+        .sort((x, y) => (x.box < y.box ? -1 : x.box > y.box ? 1 : x.account_number - y.account_number))
+        .map((a) => `Ruta ${a.box}: ${a.account_number}${namn.has(a.account_number) ? ` ${namn.get(a.account_number)}` : ''}`);
+      // Utan konto på 20–24 räknas ruta 21 fortfarande ur den utgående momsen
+      // och förblir alltså inte 0.
+      const fordelad = reverseIsDistributed(lista);
+      const utan = MAPPABLE_VAT_BOX_CODES.filter((b) => (fordelad || b !== '21') && !lista.some((a) => a.box === b));
+      if (utan.length > 0) poster.push(`Utan konto, förblir 0: ${utan.join(', ')}`);
+      if (!fordelad) poster.push('Ruta 21 räknas ur den utgående momsen');
+      return poster.join(SEP);
+    };
+    return {
+      change: { from: beskriv(fore), to: beskriv(efter) },
+      why: 'Momsdeklarationen räknar rutorna ur kontona i listan för alla perioder från nästa läsning. Ett konto räknas i exakt en ruta och lämnar de intervall det annars hade räknats i. Ingenting bokförs.',
+      source: { label: 'Momsdeklaration', href: `${base}/vat` },
     };
   }
 

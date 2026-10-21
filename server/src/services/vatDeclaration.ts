@@ -6,12 +6,20 @@
 // (moms ÷ skattesats) så att B/D-rutorna alltid stämmer med A/C-rutorna. Undantagen
 // försäljning (rutor 35–42) hämtas ur specifika försäljningskonton. Heltal ören.
 //
-// FÖRBEHÅLL: beräknat underlag ur bokföringen, ingen digital inlämning. Rutorna för
-// omvänd skattskyldighet antar EU-tjänsteinköp som standard (ruta 21) — omklassa vid
-// varor/land utanför EU. Kontrollera mot Skatteverkets blankett innan inlämning.
+// Rutorna 06–08, 20–24, 37–38 och 40 räknas ur bolagets kontolista för momsrutorna
+// (vat_box_accounts, FR-19, Story 4.5), som David godkänner i Att göra. Ett konto i
+// listan räknas i exakt en ruta och lämnar de fasta intervallen, och ruta 05 bär
+// inte det som redovisas i rutorna 06–08.
+//
+// FÖRBEHÅLL: beräknat underlag ur bokföringen, ingen digital inlämning. Utan konton
+// för rutorna 20–24 i listan antar rutorna för omvänd skattskyldighet EU-tjänsteinköp
+// som standard (ruta 21) — omklassa vid varor/land utanför EU. Kontrollera mot
+// Skatteverkets blankett innan inlämning.
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { assertSafeOre, formatOre } from '../domain/money.js';
+import { assertAccountsExist } from './accounting/accounts.js';
+import { writeAudit } from './auditService.js';
 import { accountSums, type AccountLine } from './reports.js';
 
 export interface VatBox { code: string; label: string; amount_ore: Ore }
@@ -27,6 +35,7 @@ export interface VatDeclaration {
   net: VatBox;              // G. Moms att betala/få tillbaka (49)
   net_to_pay_ore: Ore;      // > 0 att betala, < 0 att få tillbaka
   warnings: string[];       // kompletthetsvarningar (t.ex. ruta 48 = 0 trots momsbärande inköp)
+  box_accounts: VatBoxAccount[]; // bolagets kontolista för momsrutorna som den lästes (tom utan lista)
   disclaimer: string;
 }
 
@@ -61,12 +70,144 @@ export function inputVatCompletenessWarning(inputVatOre: Ore, purchasesOre: Ore)
 }
 
 /**
+ * Rutorna som bolagets kontolista för momsrutorna kan bära (FR-19, Story 4.5), i
+ * blankettens ordning. Ruta 21 står med, så att EU-tjänsteinköpens underlag inte
+ * försvinner när de omvända inköpen fördelas på rutorna 20–24.
+ */
+export const MAPPABLE_VAT_BOX_CODES = ['06', '07', '08', '20', '21', '22', '23', '24', '37', '38', '40'] as const;
+export type MappableVatBox = (typeof MAPPABLE_VAT_BOX_CODES)[number];
+
+/**
+ * Sidan som en rutas konton räknas på. Försäljningsrutorna (06–08, 38 och 40) bärs
+ * av intäktskonton med kreditsaldo, inköpsrutorna (20–24 och 37) av kostnadskonton
+ * med debetsaldo. Sidan är fast per ruta, så att listan bara behöver kontot.
+ */
+export const VAT_BOX_SIDES: Record<MappableVatBox, 'credit' | 'debit'> = {
+  '06': 'credit', '07': 'credit', '08': 'credit',
+  '20': 'debit', '21': 'debit', '22': 'debit', '23': 'debit', '24': 'debit',
+  '37': 'debit', '38': 'credit', '40': 'credit',
+};
+
+/** En rad i bolagets kontolista för momsrutorna: kontot och rutan det räknas i. */
+export interface VatBoxAccount { account_number: number; box: MappableVatBox }
+
+/**
+ * Beloppet per ruta ur kontona i listan: summan av kontonas saldo på rutans sida.
+ * Alla elva rutor är närvarande, med 0 när inget konto bokförts. Ett saldo på fel
+ * sida står negativt, så att det syns i stället för att tyst nollställas.
+ */
+export function mappedBoxAmounts(rows: AccountLine[], mapping: VatBoxAccount[]): Record<MappableVatBox, Ore> {
+  const amounts = Object.fromEntries(MAPPABLE_VAT_BOX_CODES.map((code) => [code, 0])) as Record<MappableVatBox, Ore>;
+  const boxOf = new Map(mapping.map((m): [number, MappableVatBox] => [m.account_number, m.box]));
+  for (const r of rows) {
+    const box = boxOf.get(r.account_number);
+    if (box === undefined) continue;
+    amounts[box] += VAT_BOX_SIDES[box] === 'credit' ? r.credit_ore - r.debit_ore : r.debit_ore - r.credit_ore;
+  }
+  return amounts;
+}
+
+/**
+ * Raderna vars konto inte står i listan, i samma ordning. De fasta intervallen för
+ * rutorna 35, 36, 39, 41 och 42 räknas ur dem, så att ett konto i listan räknas i
+ * exakt en ruta.
+ */
+export function withoutMappedAccounts(rows: AccountLine[], mapping: VatBoxAccount[]): AccountLine[] {
+  const mapped = new Set(mapping.map((m) => m.account_number));
+  return rows.filter((r) => !mapped.has(r.account_number));
+}
+
+/**
+ * Sann exakt när listan har minst ett konto för ruta 20, 21, 22, 23 eller 24. Då
+ * räknas de omvända inköpen ur kontona, och rekonstruktionen i ruta 21 används inte.
+ */
+export function reverseIsDistributed(mapping: VatBoxAccount[]): boolean {
+  return mapping.some((m) => ['20', '21', '22', '23', '24'].includes(m.box));
+}
+
+// En krona: deklarationen redovisas i hela kronor, och rekonstruktionen ur momsen
+// avrundar varje sats till hela ören, så små öresskillnader ska inte ge en varning
+// varje period.
+const REVERSE_BASE_TOLERANCE_ORE = 100;
+
+/**
+ * Varningen när underlaget i ruta 20–24 ur kontolistan skiljer sig med en krona
+ * eller mer från underlaget som den utgående momsen i ruta 30–32 motsvarar, annars
+ * null. Ett omvänt inköp på ett konto utanför listan, vars utgående moms är
+ * bokförd, försvinner därmed aldrig tyst ur deklarationen.
+ */
+export function reverseBaseWarning(distributedOre: Ore, reconstructedOre: Ore): string | null {
+  if (Math.abs(distributedOre - reconstructedOre) < REVERSE_BASE_TOLERANCE_ORE) return null;
+  return `Underlaget i ruta 20–24 (${formatOre(distributedOre, { currency: true })}) stämmer inte med den utgående `
+    + `momsen i ruta 30–32, som motsvarar ett underlag på ${formatOre(reconstructedOre, { currency: true })}. `
+    + 'Kontrollera att varje konto för inköp med omvänd skattskyldighet står i bolagets kontolista för momsrutorna.';
+}
+
+/**
+ * Deklarationens förbehåll. Utan fördelning på rutorna 20–24 antas de omvända
+ * inköpen vara EU-tjänsteinköp (ruta 21); med fördelningen gäller inte antagandet,
+ * och förbehållet säger i stället att rutorna räknas ur bolagets kontolista.
+ */
+export function vatDisclaimer(reverseDistributed: boolean): string {
+  return reverseDistributed
+    ? 'Beräknad momsdeklaration ur bokföringen för perioden. Rutorna 06–08, 20–24, 37–38 och 40 räknas ur bolagets kontolista för momsrutorna. Ingen digital inlämning; kontrollera mot Skatteverkets blankett.'
+    : 'Beräknad momsdeklaration ur bokföringen för perioden. Rutorna för omvänd skattskyldighet antar EU-tjänsteinköp (ruta 21) — omklassa vid varor eller land utanför EU. Ingen digital inlämning; kontrollera mot Skatteverkets blankett.';
+}
+
+/** Bolagets kontolista för momsrutorna, sorterad på ruta och konto. Tom när ingen lista godkänts. */
+export async function listVatBoxAccounts(client: PoolClient, companyId: string): Promise<VatBoxAccount[]> {
+  const r = await client.query<VatBoxAccount>(
+    'SELECT account_number, box FROM vat_box_accounts WHERE company_id = $1 ORDER BY box, account_number',
+    [companyId],
+  );
+  return r.rows;
+}
+
+/**
+ * Ersätter bolagets kontolista för momsrutorna (FR-19, Story 4.5). Listans enda
+ * skrivväg: den känsliga åtgärden set_vat_box_accounts kör den först när en
+ * människa godkänt förslaget, i godkännandets transaktion (Davids svar
+ * 2026-10-16). Kontona prövas mot bolagets kontoplan innan något skrivs, så ett
+ * okänt eller inaktivt konto ger 400 unknown_account och listan står kvar som
+ * förut. Inget fel fångas här, så transaktionen förgiftas aldrig. En tom lista
+ * tar bort listan.
+ */
+export async function setVatBoxAccounts(
+  client: PoolClient, companyId: string, userId: string, accounts: VatBoxAccount[],
+): Promise<{ accounts: VatBoxAccount[] }> {
+  await assertAccountsExist(client, companyId, accounts.map((a) => a.account_number));
+  await client.query('DELETE FROM vat_box_accounts WHERE company_id = $1', [companyId]);
+  if (accounts.length > 0) {
+    await client.query(
+      `INSERT INTO vat_box_accounts (company_id, account_number, box)
+       SELECT $1::uuid, * FROM unnest($2::int[], $3::text[])`,
+      [companyId, accounts.map((a) => a.account_number), accounts.map((a) => a.box)],
+    );
+  }
+  const sorted = [...accounts].sort((x, y) => (x.box < y.box ? -1 : x.box > y.box ? 1 : x.account_number - y.account_number));
+  await writeAudit(client, {
+    companyId, userId, action: 'tax.vat_box_accounts_set', entityType: 'company', entityId: companyId,
+    details: { accounts: sorted },
+  });
+  return { accounts: sorted };
+}
+
+/**
  * Momsdeklaration för perioden [from, to]. Rutorna 05–49 fylls ur momskontona och
- * ett fåtal försäljningskonton. Rutorna är alltid närvarande (0 när ingen sådan
- * omsättning finns) så uppställningen speglar Skatteverkets blankett.
+ * ett fåtal försäljningskonton. Rutorna 06–08, 20–24, 37–38 och 40 räknas ur bolagets
+ * kontolista för momsrutorna (FR-19, Story 4.5); utan konton för rutorna 20–24 i
+ * listan rekonstrueras ruta 21 ur den utgående momsen som förut. Rutorna är alltid
+ * närvarande (0 när ingen sådan omsättning finns) så uppställningen speglar
+ * Skatteverkets blankett.
  */
 export async function vatDeclaration(client: PoolClient, companyId: string, from: string, to: string): Promise<VatDeclaration> {
   const rows = await accountSums(client, companyId, { from, to });
+  // Kontolistan (FR-19): rutorna i listan räknas ur sina konton, och kontona lämnar
+  // de fasta intervallen nedan. Utan lista är beräkningen densamma som förut.
+  const mapping = await listVatBoxAccounts(client, companyId);
+  const mapped = mappedBoxAmounts(rows, mapping);
+  const rangeRows = withoutMappedAccounts(rows, mapping);
+  const distributed = reverseIsDistributed(mapping);
 
   // B. Utgående moms på EGEN försäljning per skattesats (ospecificerad + försäljning
   // inom Sverige: 261x/262x/263x med suffix 0–3). Konton för omvänd skattskyldighet
@@ -83,22 +224,24 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   const inVat = debit(rows, 2640, 2649);
 
   // A. Beskattningsunderlag för egen momspliktig försäljning (ruta 05) = summan av
-  // underlagen per skattesats, rekonstruerade ur utgående moms.
+  // underlagen per skattesats, rekonstruerade ur utgående moms, minus det som
+  // redovisas i rutorna 06–08 ur kontolistan (ruta 05 «ingår inte i 06, 07 eller 08»).
   const base25 = baseFromVat(out25, 250);
   const base12 = baseFromVat(out12, 120);
   const base6 = baseFromVat(out6, 60);
-  const box05 = base25 + base12 + base6;
+  const box05 = assertSafeOre(base25 + base12 + base6 - (mapped['06'] + mapped['07'] + mapped['08']));
 
   // C. Underlag för inköp vid omvänd skattskyldighet (rekonstruerat ur ruta 30–32).
   const revBase = baseFromVat(rev25, 250) + baseFromVat(rev12, 120) + baseFromVat(rev6, 60);
 
-  // E. Undantagen försäljning ur specifika försäljningskonton (kreditsaldo).
-  const euGoods = credit(rows, 3105, 3106);   // varor till annat EU-land (ruta 35)
+  // E. Undantagen försäljning ur specifika försäljningskonton (kreditsaldo), utan
+  // kontona i kontolistan, som redan räknas i sin ruta.
+  const euGoods = credit(rangeRows, 3105, 3106);   // varor till annat EU-land (ruta 35)
   // export utanför EU (ruta 36) — hoppa över 3231–3239 (omvänd skattskyldighet, ruta 41).
-  const exportGoods = credit(rows, 3107, 3108) + credit(rows, 3200, 3230) + credit(rows, 3240, 3299);
-  const euServices = credit(rows, 3308, 3308); // tjänster till näringsidkare i annat EU-land (ruta 39)
-  const revChargeSales = credit(rows, 3231, 3239); // omvänd skattskyldighet, köparen betalar (ruta 41)
-  const exemptOther = credit(rows, 3004, 3004); // momsfri övrig försäljning (ruta 42)
+  const exportGoods = credit(rangeRows, 3107, 3108) + credit(rangeRows, 3200, 3230) + credit(rangeRows, 3240, 3299);
+  const euServices = credit(rangeRows, 3308, 3308); // tjänster till näringsidkare i annat EU-land (ruta 39)
+  const revChargeSales = credit(rangeRows, 3231, 3239); // omvänd skattskyldighet, köparen betalar (ruta 41)
+  const exemptOther = credit(rangeRows, 3004, 3004); // momsfri övrig försäljning (ruta 42)
 
   const totalOutput = out25 + out12 + out6 + rev25 + rev12 + rev6;
   const net = totalOutput - inVat;
@@ -118,14 +261,21 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   const warnings: string[] = [];
   const inputVatWarning = inputVatCompletenessWarning(inVat, deductibleCostDebit);
   if (inputVatWarning !== null) warnings.push(inputVatWarning);
+  // Med fördelningen på 20–24 får ett omvänt inköp på ett konto utanför listan inte
+  // försvinna tyst: underlaget ur kontona jämförs med det som momsen i 30–32 motsvarar.
+  if (distributed) {
+    const reverseWarning = reverseBaseWarning(
+      mapped['20'] + mapped['21'] + mapped['22'] + mapped['23'] + mapped['24'], revBase);
+    if (reverseWarning !== null) warnings.push(reverseWarning);
+  }
 
   return {
     from, to,
     sales: [
       { code: '05', label: 'Momspliktig försäljning som inte ingår i ruta 06, 07 eller 08', amount_ore: box05 },
-      { code: '06', label: 'Momspliktiga uttag', amount_ore: 0 },
-      { code: '07', label: 'Beskattningsunderlag vid vinstmarginalbeskattning', amount_ore: 0 },
-      { code: '08', label: 'Hyresinkomster vid frivillig skattskyldighet', amount_ore: 0 },
+      { code: '06', label: 'Momspliktiga uttag', amount_ore: mapped['06'] },
+      { code: '07', label: 'Beskattningsunderlag vid vinstmarginalbeskattning', amount_ore: mapped['07'] },
+      { code: '08', label: 'Hyresinkomster vid frivillig skattskyldighet', amount_ore: mapped['08'] },
     ],
     output_vat: [
       { code: '10', label: 'Utgående moms 25 %', amount_ore: out25 },
@@ -133,11 +283,11 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
       { code: '12', label: 'Utgående moms 6 %', amount_ore: out6 },
     ],
     reverse_purchases: [
-      { code: '20', label: 'Inköp av varor från ett annat EU-land', amount_ore: 0 },
-      { code: '21', label: 'Inköp av tjänster från ett annat EU-land', amount_ore: revBase },
-      { code: '22', label: 'Inköp av tjänster från ett land utanför EU', amount_ore: 0 },
-      { code: '23', label: 'Inköp av varor i Sverige (omvänd skattskyldighet)', amount_ore: 0 },
-      { code: '24', label: 'Övriga inköp av tjänster (omvänd skattskyldighet)', amount_ore: 0 },
+      { code: '20', label: 'Inköp av varor från ett annat EU-land', amount_ore: mapped['20'] },
+      { code: '21', label: 'Inköp av tjänster från ett annat EU-land', amount_ore: distributed ? mapped['21'] : revBase },
+      { code: '22', label: 'Inköp av tjänster från ett land utanför EU', amount_ore: mapped['22'] },
+      { code: '23', label: 'Inköp av varor i Sverige (omvänd skattskyldighet)', amount_ore: mapped['23'] },
+      { code: '24', label: 'Övriga inköp av tjänster (omvänd skattskyldighet)', amount_ore: mapped['24'] },
     ],
     reverse_output_vat: [
       { code: '30', label: 'Utgående moms 25 % på inköp i ruta 20–24', amount_ore: rev25 },
@@ -147,10 +297,10 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
     exempt_sales: [
       { code: '35', label: 'Försäljning av varor till ett annat EU-land', amount_ore: euGoods },
       { code: '36', label: 'Försäljning av varor utanför EU (export)', amount_ore: exportGoods },
-      { code: '37', label: 'Mellanmans inköp av varor vid trepartshandel', amount_ore: 0 },
-      { code: '38', label: 'Mellanmans försäljning av varor vid trepartshandel', amount_ore: 0 },
+      { code: '37', label: 'Mellanmans inköp av varor vid trepartshandel', amount_ore: mapped['37'] },
+      { code: '38', label: 'Mellanmans försäljning av varor vid trepartshandel', amount_ore: mapped['38'] },
       { code: '39', label: 'Försäljning av tjänster till näringsidkare i annat EU-land', amount_ore: euServices },
-      { code: '40', label: 'Övrig försäljning av tjänster omsatta utom landet', amount_ore: 0 },
+      { code: '40', label: 'Övrig försäljning av tjänster omsatta utom landet', amount_ore: mapped['40'] },
       { code: '41', label: 'Försäljning när köparen är skattskyldig i Sverige', amount_ore: revChargeSales },
       { code: '42', label: 'Övrig försäljning m.m. (momsfri)', amount_ore: exemptOther },
     ],
@@ -158,6 +308,7 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
     net: { code: '49', label: net >= 0 ? 'Moms att betala' : 'Moms att få tillbaka', amount_ore: net },
     net_to_pay_ore: net,
     warnings,
-    disclaimer: 'Beräknad momsdeklaration ur bokföringen för perioden. Rutorna för omvänd skattskyldighet antar EU-tjänsteinköp (ruta 21) — omklassa vid varor eller land utanför EU. Ingen digital inlämning; kontrollera mot Skatteverkets blankett.',
+    box_accounts: mapping,
+    disclaimer: vatDisclaimer(distributed),
   };
 }

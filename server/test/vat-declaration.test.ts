@@ -1,11 +1,17 @@
 // Fas C5: momsdeklaration (skattedeklaration för moms) — alla rutor 05–49 beräknade
 // ur bokföringen. Utgående moms per sats (10–12), ingående moms (48), moms att betala
 // (49), underlag (05) och undantagen försäljning (35/39/42). Beräknat underlag.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
-import { inputVatCompletenessWarning } from '../src/services/vatDeclaration.js';
+import {
+  inputVatCompletenessWarning, mappedBoxAmounts, MAPPABLE_VAT_BOX_CODES, reverseBaseWarning, reverseIsDistributed,
+  VAT_BOX_SIDES, vatDisclaimer, withoutMappedAccounts, type VatBoxAccount,
+} from '../src/services/vatDeclaration.js';
+import type { AccountLine } from '../src/services/reports.js';
+import { pool } from '../src/db/pool.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -319,5 +325,386 @@ describe('4.4 kompletthetsvakten utan tröskel (deklarationen)', () => {
     const res = await api.post(`${c()}/actions/set_vat_method`).set(a()).send({ vat_method: 'invoice' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(await rader()).toEqual([{ m: 'invoice' }]);
+  });
+});
+
+// Story 4.5 (FR-19): tio rutor i momsdeklarationen var alltid 0, och allt underlag
+// för omvänd skattskyldighet hamnade i ruta 21, så att filen till Skatteverket kunde
+// se komplett ut utan att vara det. Reglerna för bolagets kontolista prövas här utan
+// databas: vilka rutor listan kan bära och på vilken sida, att ett konto räknas i
+// exakt en ruta och när förbehållet och varningen gäller.
+describe('4.5 kontolistan för momsrutorna (reglerna)', () => {
+  const rad = (account_number: number, debit_ore: number, credit_ore: number): AccountLine => ({
+    account_number, name: '', account_type: 'revenue', debit_ore, credit_ore, balance_ore: debit_ore - credit_ore,
+  });
+  const nollor = (): Record<string, number> => Object.fromEntries(MAPPABLE_VAT_BOX_CODES.map((k) => [k, 0]));
+
+  it('M1 tillåtelselistan har elva rutor, var och en med sin sida', () => {
+    expect([...MAPPABLE_VAT_BOX_CODES]).toEqual(['06', '07', '08', '20', '21', '22', '23', '24', '37', '38', '40']);
+    expect(Object.keys(VAT_BOX_SIDES).sort()).toEqual([...MAPPABLE_VAT_BOX_CODES].sort());
+    for (const k of ['06', '07', '08', '38', '40'] as const) expect(VAT_BOX_SIDES[k], `ruta ${k}`).toBe('credit');
+    for (const k of ['20', '21', '22', '23', '24', '37'] as const) expect(VAT_BOX_SIDES[k], `ruta ${k}`).toBe('debit');
+  });
+
+  it('M2 kontona i listan räknas i sin ruta och övriga konton inte alls', () => {
+    const lista: VatBoxAccount[] = [{ account_number: 3911, box: '08' }, { account_number: 4056, box: '20' }];
+    const rader = [rad(3911, 0, 30000), rad(4056, 40000, 0), rad(3001, 0, 100000)];
+    expect(mappedBoxAmounts(rader, lista)).toEqual({ ...nollor(), '08': 30000, '20': 40000 });
+  });
+
+  it('M3 två konton på samma ruta summeras', () => {
+    const lista: VatBoxAccount[] = [{ account_number: 4531, box: '21' }, { account_number: 4532, box: '21' }];
+    expect(mappedBoxAmounts([rad(4531, 50000, 0), rad(4532, 10000, 0)], lista)).toEqual({ ...nollor(), '21': 60000 });
+  });
+
+  it('M4 ett saldo på fel sida står negativt, inte tyst nollställt', () => {
+    const lista: VatBoxAccount[] = [{ account_number: 3911, box: '08' }];
+    expect(mappedBoxAmounts([rad(3911, 5000, 0)], lista)).toEqual({ ...nollor(), '08': -5000 });
+  });
+
+  it('M5 ett konto utan bokningar ger 0 i alla elva rutor', () => {
+    const lista: VatBoxAccount[] = [{ account_number: 3911, box: '08' }];
+    const belopp = mappedBoxAmounts([], lista);
+    expect(belopp).toEqual(nollor());
+    expect(Object.keys(belopp)).toHaveLength(11);
+  });
+
+  it('M6 fördelningen på 20–24 görs exakt när listan har ett konto för någon av rutorna', () => {
+    expect(reverseIsDistributed([])).toBe(false);
+    expect(reverseIsDistributed([{ account_number: 3911, box: '08' }])).toBe(false);
+    expect(reverseIsDistributed([{ account_number: 4425, box: '24' }])).toBe(true);
+    expect(reverseIsDistributed([{ account_number: 4531, box: '21' }])).toBe(true);
+  });
+
+  it('M7 varningen kommer vid en krona eller mer i skillnad', () => {
+    expect(reverseBaseWarning(300000, 300000)).toBeNull();
+    expect(reverseBaseWarning(300000, 300099)).toBeNull();
+    expect(reverseBaseWarning(300000, 300100)).toContain('Underlaget i ruta 20–24');
+    const text = reverseBaseWarning(0, 20000);
+    // Parentesen hör till kontrollen, eftersom «0,00 kr» också står i «200,00 kr».
+    expect(text).toContain('(0,00 kr)');
+    expect(text).toContain('200,00 kr');
+    expect(reverseBaseWarning(20000, 0)).not.toBeNull();
+  });
+
+  it('M8 förbehållet om EU-tjänsteinköp står bara kvar utan fördelning', () => {
+    // Kopierad ur förbehållet i tjänsten före Story 4.5, tecken för tecken.
+    const dagens = 'Beräknad momsdeklaration ur bokföringen för perioden. Rutorna för omvänd skattskyldighet antar EU-tjänsteinköp (ruta 21) — omklassa vid varor eller land utanför EU. Ingen digital inlämning; kontrollera mot Skatteverkets blankett.';
+    expect(vatDisclaimer(false)).toBe(dagens);
+    const fordelad = vatDisclaimer(true);
+    expect(fordelad).not.toContain('antar EU-tjänsteinköp');
+    expect(fordelad).toContain('kontolista för momsrutorna');
+    expect(fordelad).toContain('Ingen digital inlämning');
+  });
+
+  it('M9 ett konto i listan lämnar raderna som de fasta intervallen räknas ur', () => {
+    const lista: VatBoxAccount[] = [{ account_number: 3108, box: '38' }];
+    const kvar = withoutMappedAccounts([rad(3108, 0, 110000), rad(3001, 0, 10000), rad(3308, 0, 30000)], lista);
+    expect(kvar.map((r) => r.account_number)).toEqual([3001, 3308]);
+  });
+});
+
+// Story 4.5 (FR-19): kontolistan styr vad filen till Skatteverket innehåller, så den
+// får bara ändras med Davids ja i Att göra (Davids svar 2026-10-16). Blocket prövar
+// den enda vägen in genom hela stacken: förslaget utan verkan, människospärren,
+// kortet, godkännandet med auditrad, kontoplanen, schemat och bolagsgränsen.
+describe('4.5 kontolistan för momsrutorna (åtgärden)', () => {
+  let u: TestUser; let cid: string; let agentToken: string; let forslagId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const agent = () => ({ Authorization: `Bearer ${agentToken}` });
+  const c = () => `/api/companies/${cid}`;
+  const LISTA_L: VatBoxAccount[] = [
+    { account_number: 3911, box: '08' },
+    { account_number: 4056, box: '20' },
+    { account_number: 4531, box: '21' },
+  ];
+  const listan = () => withAdmin(async (admin) => (await admin.query(
+    'SELECT account_number, box FROM vat_box_accounts WHERE company_id = $1 ORDER BY box, account_number',
+    [cid],
+  )).rows);
+  const auditrader = () => withAdmin(async (admin) => (await admin.query(
+    "SELECT details FROM audit_log WHERE company_id = $1 AND action = 'tax.vat_box_accounts_set' ORDER BY created_at",
+    [cid],
+  )).rows);
+  const koposter = () => withAdmin(async (admin) => (await admin.query(
+    'SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1', [cid],
+  )).rows[0].n as number);
+
+  beforeAll(async () => {
+    u = await registerUser('vat-lista-45');
+    cid = await createCompany(u.token, 'Kontolista AB');
+    const konto = await api.post(`${c()}/accounting/accounts`).set(a())
+      .send({ account_number: 3911, name: 'Hyresintäkter, frivillig skattskyldighet', account_type: 'revenue' });
+    expect(konto.status, JSON.stringify(konto.body)).toBe(201);
+    const token = await api.post(`${c()}/agent-tokens`).set(a()).send({ name: 'Hermes' });
+    expect(token.status, JSON.stringify(token.body)).toBe(201);
+    agentToken = token.body.token;
+  });
+
+  it('L1 agentens förslag köas och listan står orörd tills en människa godkänt', async () => {
+    const res = await api.post(`${c()}/actions/set_vat_box_accounts`).set(agent()).send({ accounts: LISTA_L });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body.status).toBe('pending_approval');
+    forslagId = res.body.approval.id;
+    expect(await listan()).toEqual([]);
+    expect(await auditrader()).toEqual([]);
+  });
+
+  it('L2 agenten kan inte godkänna förslaget', async () => {
+    const res = await api.post(`${c()}/approvals/${forslagId}/approve`).set(agent()).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe('human_approval_required');
+    expect(await listan()).toEqual([]);
+  });
+
+  it('L3 kortet i Att göra visar listan före och efter i klartext', async () => {
+    const ua = supertest.agent(app);
+    await ua.post('/app/login').type('form').send({ email: u.email, password: PASSWORD });
+    const sida = await ua.get(`/app/c/${cid}/approvals`);
+    expect(sida.status).toBe(200);
+    expect(sida.text).toContain('Ställ in konton för momsdeklarationens rutor');
+    expect(sida.text).toContain('Ingen kontolista');
+    expect(sida.text).toContain('Ruta 08: 3911 Hyresintäkter, frivillig skattskyldighet');
+    expect(sida.text).toContain('Ruta 20: 4056');
+    expect(sida.text).toContain('Utan konto, förblir 0: 06, 07, 22, 23, 24, 37, 38, 40');
+  });
+
+  it('L4 människans godkännande skriver listan och en auditrad', async () => {
+    const res = await api.post(`${c()}/approvals/${forslagId}/approve`).set(a()).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await listan()).toEqual(LISTA_L);
+    expect(await auditrader()).toEqual([{ details: { accounts: LISTA_L } }]);
+  });
+
+  it('L5 ett konto utanför kontoplanen avvisas vid godkännandet och listan står kvar', async () => {
+    const req = await api.post(`${c()}/actions/set_vat_box_accounts`).set(a())
+      .send({ accounts: [{ account_number: 3999, box: '40' }] });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const res = await api.post(`${c()}/approvals/${req.body.approval.id}/approve`).set(a()).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe('unknown_account');
+    expect(await listan()).toEqual(LISTA_L);
+    expect(await auditrader()).toHaveLength(1);
+  });
+
+  it('L6 dubblett, momskonto och ruta utanför listan avvisas redan vid förslaget', async () => {
+    const fore = await koposter();
+    const ogiltiga = [
+      [{ account_number: 3911, box: '08' }, { account_number: 3911, box: '40' }],
+      [{ account_number: 2611, box: '08' }],
+      [{ account_number: 3911, box: '05' }],
+      [{ account_number: 3911, box: '10' }],
+    ];
+    for (const accounts of ogiltiga) {
+      const res = await api.post(`${c()}/actions/set_vat_box_accounts`).set(a()).send({ accounts });
+      expect(res.status, `${JSON.stringify(accounts)}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body.error).toBe('validation_error');
+    }
+    expect(await koposter()).toBe(fore);
+  });
+
+  it('L7 grannbolaget når varken åtgärden eller tabellen', async () => {
+    const granne = await registerUser('vat-lista-granne-45');
+    await createCompany(granne.token, 'Grannbolag AB');
+    const res = await api.post(`${c()}/actions/set_vat_box_accounts`)
+      .set({ Authorization: `Bearer ${granne.token}` }).send({ accounts: [] });
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Grannens identitet men Kontolista AB i kontexten, som om koden glömt
+      // medlemskapskollen: RLS ska ändå stänga tabellen.
+      await client.query(
+        "SELECT set_config('app.user_id', $1, true), set_config('app.company_id', $2, true)",
+        [granne.userId, cid],
+      );
+      const rader = await client.query('SELECT * FROM vat_box_accounts WHERE company_id = $1', [cid]);
+      expect(rader.rowCount).toBe(0);
+      await expect(
+        client.query("INSERT INTO vat_box_accounts (company_id, account_number, box) VALUES ($1, 3305, '40')", [cid]),
+      ).rejects.toThrow(/row-level security/);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('S1 tabellnamnet står bara i tjänsten; en planterad fil fälls', () => {
+    // Tabellnamnet som helt ord: åtgärden set_vat_box_accounts och auditraden
+    // tax.vat_box_accounts_set får nämnas i registret och förslagskortet.
+    const filerMedTabellnamnet = (kallor: Map<string, string>): string[] =>
+      [...kallor].filter(([, text]) => /\bvat_box_accounts\b/.test(text)).map(([fil]) => fil).sort();
+    const dir = fileURLToPath(new URL('../src/', import.meta.url));
+    const kallor = new Map(readdirSync(dir, { recursive: true })
+      .filter((p): p is string => typeof p === 'string' && p.endsWith('.ts'))
+      .map((p) => [p, readFileSync(`${dir}/${p}`, 'utf8')]));
+    expect(filerMedTabellnamnet(kallor)).toEqual(['services/vatDeclaration.ts']);
+    // Negativ kontroll: en andra fil som läser tabellen fälls.
+    const planterat = new Map(kallor);
+    planterat.set('http/view/planterad.ts', 'SELECT * FROM vat_box_accounts');
+    expect(filerMedTabellnamnet(planterat)).toEqual(['http/view/planterad.ts', 'services/vatDeclaration.ts']);
+  });
+
+  it('L8 en tom lista tar bort listan efter godkännandet', async () => {
+    const req = await api.post(`${c()}/actions/set_vat_box_accounts`).set(a()).send({ accounts: [] });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const res = await api.post(`${c()}/approvals/${req.body.approval.id}/approve`).set(a()).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await listan()).toEqual([]);
+    expect(await auditrader()).toHaveLength(2);
+  });
+});
+
+// Story 4.5 (FR-19) genom hela stacken: med en bokning på vart och ett av kontona i
+// listan var tio rutor ändå 0, ruta 05 bar också uttag, vinstmarginal och hyror, och
+// alla omvända inköp hamnade i ruta 21. Tvilling AB har samma bokningar i tredje
+// kvartalet men ingen kontolista, så att beräkningen utan lista jämförs med ett
+// bolag i stället för att räknas upp för hand.
+describe('4.5 kontolistan för momsrutorna (deklarationen)', () => {
+  type Ruta = { code: string; amount_ore: number };
+  type Deklaration = {
+    sales: Ruta[]; output_vat: Ruta[]; reverse_purchases: Ruta[]; reverse_output_vat: Ruta[];
+    exempt_sales: Ruta[]; input_vat: Ruta; net: Ruta;
+  };
+  let u: TestUser; let momsrutor: string; let tvilling: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const LISTA_K: VatBoxAccount[] = [
+    { account_number: 3401, box: '06' },
+    { account_number: 3020, box: '07' },
+    { account_number: 3911, box: '08' },
+    { account_number: 4056, box: '20' },
+    { account_number: 4531, box: '21' },
+    { account_number: 4532, box: '22' },
+    { account_number: 4426, box: '23' },
+    { account_number: 4425, box: '24' },
+    { account_number: 4059, box: '37' },
+    { account_number: 3108, box: '38' },
+    { account_number: 3305, box: '40' },
+  ];
+  const rutor = (d: Deklaration): Ruta[] => [
+    ...d.sales, ...d.output_vat, ...d.reverse_purchases, ...d.reverse_output_vat, ...d.exempt_sales, d.input_vat, d.net,
+  ];
+  const period = async (cid: string, from: string, to: string) => {
+    const res = await api.post(`/api/companies/${cid}/actions/vat_declaration`).set(a()).send({ from, to });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.result;
+  };
+  const postAndApprove = async (cid: string, fyId: string, voucher_date: string, lines: Record<string, number>[]) => {
+    const v = await api.post(`/api/companies/${cid}/actions/post_voucher`).set(a())
+      .send({ fiscal_year_id: fyId, voucher_date, description: `4.5 ${voucher_date}`, lines });
+    expect(v.status, JSON.stringify(v.body)).toBe(202);
+    const ok = await api.post(`/api/companies/${cid}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  };
+  const D = (account_number: number, debit_ore: number) => ({ account_number, debit_ore });
+  const K = (account_number: number, credit_ore: number) => ({ account_number, credit_ore });
+
+  beforeAll(async () => {
+    u = await registerUser('vat-rutor-45');
+    momsrutor = await createCompany(u.token, 'Momsrutor AB');
+    tvilling = await createCompany(u.token, 'Tvilling AB');
+    const ar = { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' };
+    const fyM = (await createFiscalYear(momsrutor, a(), ar)).id;
+    const fyT = (await createFiscalYear(tvilling, a(), ar)).id;
+    // Tabell K: kontona som inte finns i standardkontoplanen, och två konton utanför listan.
+    const nyaKonton: [number, string, string][] = [
+      [3401, 'Uttag av varor och tjänster', 'revenue'],
+      [3020, 'Försäljning med vinstmarginalbeskattning', 'revenue'],
+      [3911, 'Hyresintäkter, frivillig skattskyldighet', 'revenue'],
+      [4532, 'Inköp av tjänster från land utanför EU', 'expense'],
+      [4426, 'Inköp av varor i Sverige, omvänd skattskyldighet', 'expense'],
+      [4425, 'Övriga inköp av tjänster, omvänd skattskyldighet', 'expense'],
+      [4059, 'Mellanmans inköp vid trepartshandel', 'expense'],
+      [3108, 'Mellanmans försäljning vid trepartshandel', 'revenue'],
+      [3305, 'Försäljning av tjänster utanför EU', 'revenue'],
+      [2624, 'Utgående moms omvänd skattskyldighet, 12 %', 'liability'],
+      [4545, 'Inköp med omvänd skattskyldighet utanför listan', 'expense'],
+    ];
+    for (const [account_number, name, account_type] of nyaKonton) {
+      const res = await api.post(`/api/companies/${momsrutor}/accounting/accounts`).set(a())
+        .send({ account_number, name, account_type });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+    }
+    const forslag = await api.post(`/api/companies/${momsrutor}/actions/set_vat_box_accounts`).set(a())
+      .send({ accounts: LISTA_K });
+    expect(forslag.status, JSON.stringify(forslag.body)).toBe(202);
+    const ja = await api.post(`/api/companies/${momsrutor}/approvals/${forslag.body.approval.id}/approve`).set(a()).send({});
+    expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+
+    // Tabell D, andra kvartalet: en bokning på vart och ett av listans elva konton.
+    await postAndApprove(momsrutor, fyM, '2026-04-02', [D(1930, 125000), K(3001, 100000), K(2611, 25000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-03', [D(1930, 12500), K(3401, 10000), K(2611, 2500)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-06', [D(1930, 25000), K(3020, 20000), K(2611, 5000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-07', [D(1930, 37500), K(3911, 30000), K(2611, 7500)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-08', [D(4056, 40000), D(2645, 10000), K(1930, 40000), K(2614, 10000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-09', [D(4531, 50000), D(2645, 12500), K(1930, 50000), K(2614, 12500)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-10', [D(4532, 60000), D(2645, 15000), K(1930, 60000), K(2614, 15000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-13', [D(4426, 70000), D(2645, 17500), K(1930, 70000), K(2614, 17500)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-14', [D(4425, 80000), D(2645, 9600), K(1930, 80000), K(2624, 9600)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-15', [D(4059, 90000), K(1930, 90000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-16', [D(1930, 110000), K(3108, 110000)]);
+    await postAndApprove(momsrutor, fyM, '2026-04-17', [D(1930, 120000), K(3305, 120000)]);
+    // Tredje kvartalet, samma bokningar i båda bolagen: inget konto i listan.
+    for (const [cid, fy] of [[momsrutor, fyM], [tvilling, fyT]] as const) {
+      await postAndApprove(cid, fy, '2026-08-05', [D(1930, 12500), K(3001, 10000), K(2611, 2500)]);
+      await postAndApprove(cid, fy, '2026-08-06', [D(1930, 30000), K(3308, 30000)]);
+    }
+    // Fjärde kvartalet: ett omvänt inköp på ett konto utanför listan.
+    await postAndApprove(momsrutor, fyM, '2026-11-03', [D(4545, 20000), D(2645, 5000), K(1930, 20000), K(2614, 5000)]);
+  });
+
+  it('D1 varje ruta visar beloppet ur bokföringen, och ruta 05 bär inte 06–08', async () => {
+    const d = await period(momsrutor, '2026-04-01', '2026-06-30');
+    const vantat: Record<string, number> = {
+      '05': 100000, '06': 10000, '07': 20000, '08': 30000,
+      '10': 40000, '11': 0, '12': 0,
+      '20': 40000, '21': 50000, '22': 60000, '23': 70000, '24': 80000,
+      '30': 55000, '31': 9600, '32': 0,
+      '35': 0, '36': 0, '37': 90000, '38': 110000, '39': 0, '40': 120000, '41': 0, '42': 0,
+      '48': 64600, '49': 40000,
+    };
+    const alla = rutor(d);
+    expect(alla.map((b) => b.code).sort()).toEqual(Object.keys(vantat).sort());
+    for (const [kod, belopp] of Object.entries(vantat)) expect(box(alla, kod), `ruta ${kod}`).toBe(belopp);
+    expect(d.warnings).toEqual([]);
+  });
+
+  it('D2 förbehållet om EU-tjänsteinköp står inte kvar när fördelningen görs', async () => {
+    const d = await period(momsrutor, '2026-04-01', '2026-06-30');
+    expect(d.disclaimer).not.toContain('antar EU-tjänsteinköp');
+    expect(d.disclaimer).toContain('kontolista för momsrutorna');
+    expect(d.box_accounts).toEqual(LISTA_K);
+    const t = await period(tvilling, '2026-04-01', '2026-06-30');
+    expect(t.disclaimer).toContain('antar EU-tjänsteinköp');
+    expect(t.box_accounts).toEqual([]);
+  });
+
+  it('D3 utan bokningar på kontona är de elva rutorna 0 och resten som utan lista', async () => {
+    const m = rutor(await period(momsrutor, '2026-07-01', '2026-09-30'));
+    const t = rutor(await period(tvilling, '2026-07-01', '2026-09-30'));
+    for (const kod of MAPPABLE_VAT_BOX_CODES) expect(box(m, kod), `ruta ${kod}`).toBe(0);
+    expect(m).toHaveLength(25);
+    expect(t).toHaveLength(25);
+    for (const r of t) expect(box(m, r.code), `ruta ${r.code}`).toBe(r.amount_ore);
+    expect(box(m, '05')).toBe(10000);
+    expect(box(m, '10')).toBe(2500);
+    expect(box(m, '39')).toBe(30000);
+    expect(box(m, '49')).toBe(2500);
+    expect((await period(momsrutor, '2026-07-01', '2026-09-30')).warnings).toEqual([]);
+    expect((await period(tvilling, '2026-07-01', '2026-09-30')).warnings).toEqual([]);
+  });
+
+  it('D4 ett omvänt inköp utanför listan försvinner inte tyst', async () => {
+    const d = await period(momsrutor, '2026-10-01', '2026-12-31');
+    for (const kod of ['20', '21', '22', '23', '24']) expect(box(d.reverse_purchases, kod), `ruta ${kod}`).toBe(0);
+    expect(box(d.reverse_output_vat, '30')).toBe(5000);
+    expect(d.input_vat.amount_ore).toBe(5000);
+    expect(d.net.amount_ore).toBe(0);
+    expect(d.warnings).toHaveLength(1);
+    expect(d.warnings[0]).toContain('Underlaget i ruta 20–24');
+    // Parentesen hör till kontrollen, eftersom «0,00 kr» också står i «200,00 kr».
+    expect(d.warnings[0]).toContain('(0,00 kr)');
+    expect(d.warnings[0]).toContain('200,00 kr');
   });
 });
