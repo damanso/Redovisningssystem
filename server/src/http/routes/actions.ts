@@ -1,4 +1,5 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { approveAction, executeAction, rejectApproval } from '../../actions/execute.js';
 import { actionManifest } from '../../actions/registry.js';
@@ -9,9 +10,43 @@ import { safeText } from '../../lib/validation.js';
 import { aiOcrReceipt } from '../../services/aiOcr.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { listApprovals } from '../../services/approvals.js';
+import { ATTACH_DOCUMENT_BODY_LIMIT_BYTES } from '../../services/documents.js';
 import { getActor, getUserId } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
+
+/** Åtgärden vars kropp bär ett helt dokument som base64 (FR-18). */
+export const ATTACH_DOCUMENT_ACTION = 'attach_document';
+
+const ATTACH_DOCUMENT_PATH = new RegExp(`^/api/companies/[^/]+/actions/${ATTACH_DOCUMENT_ACTION}/?$`);
+
+/**
+ * Tillåtelselistan för undantaget från den globala JSON-parsern i app.ts
+ * (AD-10): sann bara för POST till åtgärdsrutten för attach_document, med
+ * eller utan avslutande snedstreck, skiftlägeskänsligt. Ett anrop som den inte
+ * släpper igenom får den globala gränsen på 1 MB, vilket aldrig öppnar något.
+ */
+export function isAttachDocumentRequest(method: string, path: string): boolean {
+  return method === 'POST' && ATTACH_DOCUMENT_PATH.test(path);
+}
+
+const ATTACH_DOCUMENT_JSON_PARSER = express.json({ limit: ATTACH_DOCUMENT_BODY_LIMIT_BYTES });
+
+// Den stora parsern bor här och inte i app.ts: actionsRouter nås bara efter
+// authenticate och requireCompanyAccess, så en oautentiserad klient eller en
+// utan medlemskap i bolaget får aldrig en stor kropp tolkad (FR-18, AD-10).
+// Prejudikatet är bilagans express.raw i routes/receiptFiles.ts. Andra
+// åtgärder har redan fått sin kropp läst av den globala parsern (1 MB).
+// Parametertypen är rutten /actions/:action: en mellanvara på rutten avgör
+// typen på req.params också för handlern efter den, och standardtypen hade
+// gjort action till string | string[] där.
+function attachDocumentBody(req: Request<{ action: string }>, res: Response, next: NextFunction): void {
+  if (req.params.action === ATTACH_DOCUMENT_ACTION) {
+    ATTACH_DOCUMENT_JSON_PARSER(req, res, next);
+    return;
+  }
+  next();
+}
 
 export const actionsRouter = Router({ mergeParams: true });
 
@@ -22,7 +57,7 @@ actionsRouter.get('/actions', async (req, res) => {
 });
 
 // Kör en action. Känsliga hamnar i godkännandekö (status: pending_approval).
-actionsRouter.post('/actions/:action', async (req, res) => {
+actionsRouter.post('/actions/:action', attachDocumentBody, async (req, res) => {
   const userId = getUserId(req);
   const companyId = req.companyId!;
   const outcome = await executeAction({

@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 4.3, agenten kan bifoga dokument upp till 10 MB, FR-18):**
+  1. **Ändrat:** `server/src/services/documents.ts` exporterar bredvid
+     `MAX_DOCUMENT_BYTES` tre konstanter: `MAX_DOCUMENT_BASE64_CHARS`,
+     `DOCUMENT_JSON_ENVELOPE_MARGIN_BYTES` (16 KiB) och
+     `ATTACH_DOCUMENT_BODY_LIMIT_BYTES` (13 997 400 byte), den enda källan
+     för kroppsgränsen. `server/src/http/routes/actions.ts` har
+     tillåtelselistan `isAttachDocumentRequest` och den stora parsern, som
+     körs som mellanvara på `POST /actions/:action` bara för
+     `attach_document`, alltså först efter `authenticate` och
+     `requireCompanyAccess`. `server/src/http/app.ts` hoppar över den globala
+     parsern på 1 MB bara när `isAttachDocumentRequest` är sann; allt annat
+     har kvar 1 MB. Punkten om `attach_document` i `docs/MCP_ACTIONS.md`
+     säger detsamma.
+  2. **Prov:** R2, K1, F1 och A1–A5 i `server/test/documents.test.ts`. R2
+     bilägger PDF, PNG och JPG på alla fem posttyper, K1 binder gränsen till
+     `MAX_DOCUMENT_BYTES`, F1 prövar tillåtelselistan, A1 en PDF på 9,9 MB,
+     A2 och A3 gränserna med lagerläget före och efter, A4 att kroppen inte
+     tolkas före autentisering och bolagsåtkomst och A5 att andra rutter har
+     kvar 1 MB. De befintliga fallen i samma fil står oförändrade.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1b, 2a, 2b, 3a och
+     3b) — sessionens skal krävde godkännande för npm-kommandon och för git.
+     Att de nya fallen var röda före koden och är gröna efter den är alltså
+     inte uppmätt i den här sessionen. Kedjan kör `npm ci`, typecheck och
+     hela sviten efteråt.
+     **Omtag (kedjans typecheck föll):** `actions.ts(64,5)`, `req.params.action`
+     var `string | string[]` i handlern. Mellanvaran var typad med `Request`
+     utan parametrar, och en mellanvara på en rutt avgör `req.params` också
+     för handlern efter den (`ParamsDictionary` i Express 5-typerna). Lagat
+     genom att mellanvaran typas med rutten `/actions/:action`
+     (`Request<{ action: string }>`); handlern är orörd. Lärdom: en typad
+     mellanvara på en rutt med parametrar ska bära ruttens parametertyp.
+  4. **Baslinjen:** provvaktens adresskontraktet och crmintag står RÖD och
+     brieflankar, continuityvakt, kartan, redovisning_fortroende och
+     startsida_prov står KUNDE_INTE sedan före bygget; bygget rör inget de
+     mäter. Punkten står under rubriken och rör inte huvudet.
+  5. **Ingen migration**, ingen ny åtgärd, ingen ny rutt och ingen ändrad vy.
+  6. **Driftnot:** en omvänd proxy framför API:t, om en sådan finns, måste
+     släppa igenom kroppar upp till `ATTACH_DOCUMENT_BODY_LIMIT_BYTES`
+     (13 997 400 byte) för attach_document; annars ger den 413 innan appen
+     nås. Det prövas inte i repot.
+
 - **2026-10-20 (Story 4.2, lönespecen visar alla fem ackumulerade belopp, FR-16/FR-18):**
   1. **Ändrat:** `payrollYearSummary` i `server/src/services/payroll.ts` fick
      den valfria gränsen `through_period` och det typade svaret

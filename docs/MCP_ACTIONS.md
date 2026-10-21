@@ -201,7 +201,12 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 - `attach_document` (write) — filnamn + base64 (pdf/png/jpg, max 10 MB) +
   koppling till payslip/faktura/kvitto/leverantörsfaktura/verifikat. Samma
   validering som uppladdning (ändelse + magic bytes, UUID-namn utanför
-  webroten).
+  webroten). En fil över 10 MB ger 400 `too_large`. Åtgärdsrutten tar emot
+  en kompakt JSON-kropp upp till base64-storleken av 10 MB plus 16 KiB för
+  kuvertet (`ATTACH_DOCUMENT_BODY_LIMIT_BYTES`, räknad ur
+  `MAX_DOCUMENT_BYTES`), en större kropp ger 413, och den gränsen gäller
+  först efter inloggning och bolagsåtkomst; alla andra rutter har kvar 1 MB
+  för JSON (FR-18, AD-10).
 - `list_documents` / `get_document` (read; `include_content` returnerar
   innehållet som base64). Webbvyn visar bilagor på raden och Dokument-flikens
   uppladdning kan koppla direkt.
