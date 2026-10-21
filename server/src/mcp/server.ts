@@ -20,6 +20,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { TIMEOUT_MS, KarnanNasInte, anropaKarnan, karnfel, type Karnsvar } from './karnanrop.js';
 
 interface ManifestEntry {
   name: string;
@@ -116,36 +117,19 @@ async function selfCheck(): Promise<Record<string, unknown>> {
   };
 }
 
-// Hård timeout på ALLA utgående anrop. Den 21 september 2026 hängde
-// create_receipt i fyra minuter utan att skapa något utkast (rotorsaken låg
-// utanför koden: MCP-klienten pekade på en port där /api aldrig proxats). Ett
-// verktyg som tyst hänger är värre än ett som säger nej på en gång — utan
-// timeout finns ingen övre gräns alls, för fetch har ingen som standard.
-const TIMEOUT_MS = 60_000;
-
-async function hamta(url: string, init?: RequestInit): Promise<Response> {
-  try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (err) {
-    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new Error(
-        `anropet till ${url} svarade inte inom ${TIMEOUT_MS / 1000} s och avbröts — ` +
-          'är API:t igång och pekar REDOVISNING_API_URL på rätt adress? (kör self_check)',
-      );
-    }
-    throw err;
-  }
+// Tidsgränsen och felomslaget för ALLA utgående anrop bor i karnanrop.ts (AD-11).
+async function hamta(url: string, init?: RequestInit): Promise<Karnsvar> {
+  return anropaKarnan(fetch, url, init);
 }
 
 async function api(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
-  const res = await hamta(`${API_URL}${path}`, {
+  const svar = await hamta(`${API_URL}${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
   let body: unknown = null;
-  const text = await res.text();
-  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-  return { status: res.status, body };
+  try { body = svar.text ? JSON.parse(svar.text) : null; } catch { body = svar.text; }
+  return { status: svar.status, body };
 }
 
 async function fetchManifest(): Promise<ManifestEntry[]> {
@@ -218,7 +202,8 @@ async function main(): Promise<void> {
       }
       return textResult(JSON.stringify(body, null, 2));
     } catch (err) {
-      return textResult(`Kunde inte nå kärnan: ${err instanceof Error ? err.message : String(err)}`, true);
+      const fel = err instanceof KarnanNasInte ? err : karnfel(API_URL, err, TIMEOUT_MS);
+      return textResult(fel.message, true);
     }
   });
 
