@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 4.7, leverantörsreskontran stämmer för ett historiskt datum, FR-29):**
+  1. **Ändrat:** `accountsPayableAging` i `server/src/services/reports.ts`
+     avgränsar med `as_of` både fakturorna (verifikatets datum, bokföringen
+     eller baklänkningen, senast `as_of`) och betalningarna
+     (betalningsverifikat daterade efter `as_of` läggs tillbaka på
+     återstoden); utan `as_of` är urval och belopp som förut. Ny punkt om
+     `accounts_payable_aging` i `docs/MCP_ACTIONS.md`.
+  2. **Prov:** H1–H4 och P1–P5 i `server/test/supplier-invoices.test.ts`, i
+     ett eget block med eget bolag; P5 visar att reskontran är lika med
+     saldot på 2440 på två datum, och H4 jämför utan `as_of` med dagens
+     definition ur databasen. De befintliga fallen i filen står oförändrade.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a och 2b) —
+     sessionens skal krävde godkännande för npm, tsc och git. Att de nya
+     fallen var röda före koden och är gröna efter den är alltså inte
+     uppmätt i den här sessionen; fallistan är genomgången statiskt mot
+     frågan. Kedjan kör `npm ci`, typecheck och hela sviten efteråt.
+  4. **Baslinjen:** provvaktens continuityvakt står KUNDE_INTE sedan före
+     bygget; punkten står under rubriken och rör inte huvudet, som det
+     provet läser.
+  5. **Ingen migration**, ingen ny åtgärd, ingen ny rutt och ingen ändrad vy;
+     vyn och CSV-exporten läser reskontran utan datum som förut.
+
 - **2026-10-21 (Story 4.4, momsvakten varnar för varje inköp utan ingående moms, FR-19):**
   1. **Ändrat:** den rena, exporterade regeln `inputVatCompletenessWarning` i
      `server/src/services/vatDeclaration.ts` ger varningen när ruta 48 är 0

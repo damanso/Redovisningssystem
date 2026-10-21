@@ -286,18 +286,40 @@ export async function dashboard(
 export interface ApAgingRow { supplier_id: string; supplier_name: string; not_due_ore: Ore; d1_30_ore: Ore; d31_60_ore: Ore; d61_90_ore: Ore; d90_plus_ore: Ore; total_ore: Ore }
 export interface ApAging { as_of: string; rows: ApAgingRow[]; totals: Omit<ApAgingRow, 'supplier_id' | 'supplier_name'> }
 
-/** Leverantörsreskontra med åldersanalys — utestående (bokförda, ej annullerade)
- *  leverantörsfakturor per leverantör och förfalloålder. Belopp = total − betalt. */
+/** Leverantörsreskontra med åldersanalys — utestående (ej annullerade)
+ *  leverantörsfakturor per leverantör och förfalloålder. Med `as_of` visar den
+ *  skulden den dagen (FR-29, Story 4.7), så att den stämmer mot 2440 och
+ *  kontoutdraget för samma dag:
+ *  - en faktura ingår när dess verifikat (bokföringen eller baklänkningen) är
+ *    daterat senast `as_of`;
+ *  - en betalning räknas från betalningsverifikatets datum: det som betalats
+ *    efter `as_of` läggs tillbaka på återstoden;
+ *  - en betalmarkering via baklänkning har inget betalningsverifikat och räknas
+ *    från det kopplade verifikatets datum, som också är fakturans bokföring.
+ *  Åldern räknas från förfallodagen till `as_of` som förut. Utan `as_of` gäller
+ *  dagens urval och belopp (total − betalt), mot dagens datum. */
 export async function accountsPayableAging(client: PoolClient, companyId: string, asOf?: string): Promise<ApAging> {
   const result = await client.query<{
     supplier_id: string; supplier_name: string; not_due: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number; total: number; as_of: string;
   }>(
     `WITH ref AS (SELECT COALESCE($2::date, CURRENT_DATE) AS d),
+     later_pay AS (
+       SELECT v.source_id, sum(vl.debit_ore)::bigint AS paid_after
+       FROM vouchers v
+       JOIN voucher_lines vl ON vl.voucher_id = v.id AND vl.company_id = v.company_id
+       WHERE v.company_id = $1 AND v.source_type = 'payment'
+         AND $2::date IS NOT NULL AND v.voucher_date > $2::date
+       GROUP BY v.source_id
+     ),
      open_si AS (
-       SELECT si.supplier_id, si.due_date, (si.total_ore - si.paid_amount_ore) AS outstanding
+       SELECT si.supplier_id, si.due_date,
+              (si.total_ore - si.paid_amount_ore + COALESCE(lp.paid_after, 0)) AS outstanding
        FROM supplier_invoices si
+       JOIN vouchers v ON v.id = si.voucher_id AND v.company_id = si.company_id
+       LEFT JOIN later_pay lp ON lp.source_id = si.id::text
        WHERE si.company_id = $1 AND si.voucher_id IS NOT NULL
-         AND si.status <> 'cancelled' AND si.total_ore > si.paid_amount_ore
+         AND si.status <> 'cancelled'
+         AND ($2::date IS NULL OR v.voucher_date <= $2::date)
      )
      SELECT o.supplier_id, s.name AS supplier_name,
        sum(CASE WHEN o.due_date >= (SELECT d FROM ref) THEN o.outstanding ELSE 0 END) AS not_due,
@@ -307,6 +329,7 @@ export async function accountsPayableAging(client: PoolClient, companyId: string
        sum(CASE WHEN (SELECT d FROM ref) - o.due_date > 90 THEN o.outstanding ELSE 0 END) AS d90_plus,
        sum(o.outstanding) AS total, (SELECT d FROM ref)::text AS as_of
      FROM open_si o JOIN suppliers s ON s.id = o.supplier_id
+     WHERE o.outstanding > 0
      GROUP BY o.supplier_id, s.name
      ORDER BY total DESC, s.name`,
     [companyId, asOf ?? null],
