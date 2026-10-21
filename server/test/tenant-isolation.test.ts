@@ -4,8 +4,8 @@
 // läsa A:s fakturor, kunder och omsättning med HTTP 200.
 import jwt from 'jsonwebtoken';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { pool } from '../src/db/pool.js';
-import { api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { assertAppRoleEnforcesRls, pool } from '../src/db/pool.js';
+import { api, createCompany, registerUser, type TestUser, withAdmin } from './helpers.js';
 
 let userA: TestUser;
 let userB: TestUser;
@@ -137,5 +137,116 @@ describe('lager 2: RLS i Postgres (simulerar att app-koden glömt medlemskapskol
   it('helt utan kontext: SELECT på companies ger 0 rader', async () => {
     const result = await pool.query('SELECT * FROM companies');
     expect(result.rowCount).toBe(0);
+  });
+});
+
+// FR-26 (Story 5.4): varje bolagsrutt går genom requireCompanyAccess, som är
+// registrerad före alla rutter under /:companyId i
+// server/src/http/routes/companies.ts. Blocket prövar varje monteringspunkt
+// där för läsning och skrivning. A:s eget anrop är kontrollen att rutten
+// finns: appens fångstrutt svarar 404 för varje okänd adress, så en 404 utan
+// kontroll bevisar ingenting.
+describe('5.4 varje bolagsrutt kräver medlemskap', () => {
+  let userC: TestUser;
+  let userD: TestUser;
+  let companyC: string;
+  let companyD: string;
+
+  const bearer = (u: TestUser): Record<string, string> => ({ Authorization: `Bearer ${u.token}` });
+
+  // Läsrutterna R1–R7, med monteringspunkten i companies.ts.
+  const reads = [
+    { id: 'R1', path: '/accounting/accounts' }, // rad 223
+    { id: 'R2', path: '/accounting/fiscal-years' }, // rad 223
+    { id: 'R3', path: '/invoices' }, // rad 224
+    { id: 'R4', path: '/receipts' }, // rad 225
+    { id: 'R5', path: '/actions' }, // rad 226
+    { id: 'R6', path: '/approvals' }, // rad 226
+    { id: 'R7', path: '/customers' }, // rad 227
+  ];
+
+  // Skrivrutterna W1–W6. En tom kropp får ge 400 för A; det som prövas är att
+  // B aldrig når hanteraren och att A:s rutt finns.
+  const writes = [
+    {
+      id: 'W1',
+      path: '/accounting/fiscal-years', // rad 223
+      body: { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' },
+    },
+    { id: 'W2', path: '/invoices', body: {} }, // rad 224
+    { id: 'W3', path: '/receipts', body: {} }, // rad 225
+    { id: 'W4', path: '/actions/create_customer', body: { name: 'Kapad AB' } }, // rad 226
+    { id: 'W5', path: '/customers', body: { name: 'Kapad AB' } }, // rad 227
+    { id: 'W6', path: '/agent-tokens', body: {} }, // rad 200
+  ];
+
+  beforeAll(async () => {
+    userC = await registerUser('cora');
+    userD = await registerUser('dan');
+    companyC = await createCompany(userC.token, 'Coras Bolag AB');
+    // Dan är ägare till ett eget bolag: spärren prövas mot en riktig medlem
+    // av ett annat bolag, inte mot en användare utan bolag.
+    companyD = await createCompany(userD.token, 'Dans Bolag AB');
+  });
+
+  it('T0 API:t ansluter som app, utan superuser och utan BYPASSRLS', async () => {
+    const { rows } = await pool.query<{ anvandare: string; rolsuper: boolean; rolbypassrls: boolean }>(
+      'SELECT current_user AS anvandare, r.rolsuper, r.rolbypassrls FROM pg_roles r WHERE r.rolname = current_user',
+    );
+    expect(rows[0]).toEqual({ anvandare: 'app', rolsuper: false, rolbypassrls: false });
+    await expect(assertAppRoleEnforcesRls()).resolves.toBeUndefined();
+  });
+
+  it('T1 B:s läsning i A:s bolag ger 403 eller 404 på varje läsrutt, A:s egen ger 200', async () => {
+    for (const r of reads) {
+      const url = `/api/companies/${companyC}${r.path}`;
+      const dan = await api.get(url).set(bearer(userD));
+      expect([403, 404], `${r.id} GET ${r.path}: ${dan.status} ${JSON.stringify(dan.body)}`).toContain(
+        dan.status,
+      );
+      const cora = await api.get(url).set(bearer(userC));
+      expect(cora.status, `${r.id} GET ${r.path}: ${JSON.stringify(cora.body)}`).toBe(200);
+    }
+  });
+
+  it('T2 B:s skrivning i A:s bolag ger 403 eller 404 på varje skrivrutt, och ingen rad skrivs', async () => {
+    for (const w of writes) {
+      const res = await api
+        .post(`/api/companies/${companyC}${w.path}`)
+        .set(bearer(userD))
+        .send(w.body);
+      expect([403, 404], `${w.id} POST ${w.path}: ${res.status} ${JSON.stringify(res.body)}`).toContain(
+        res.status,
+      );
+    }
+
+    // Ägarrollen ser alla rader, så en nolla här betyder att ingen skrivning skedde.
+    const antal = await withAdmin(async (client) => {
+      const rakna = async (sql: string): Promise<number | undefined> =>
+        (await client.query<{ n: number }>(sql, [companyC])).rows[0]?.n;
+      return {
+        customers: await rakna('SELECT count(*)::int AS n FROM customers WHERE company_id = $1'),
+        fiscal_years: await rakna('SELECT count(*)::int AS n FROM fiscal_years WHERE company_id = $1'),
+        invoices: await rakna('SELECT count(*)::int AS n FROM invoices WHERE company_id = $1'),
+        receipts: await rakna('SELECT count(*)::int AS n FROM receipts WHERE company_id = $1'),
+        agent_token_minted: await rakna(
+          "SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1 AND action = 'agent_token.minted'",
+        ),
+      };
+    });
+    expect(antal).toEqual({ customers: 0, fiscal_years: 0, invoices: 0, receipts: 0, agent_token_minted: 0 });
+  });
+
+  // Står efter T2, så att T2:s räkning inte ser A:s egna rader.
+  it('T3 A:s egna skrivanrop når rutten: varken 404 eller 5xx', async () => {
+    for (const w of writes) {
+      const res = await api
+        .post(`/api/companies/${companyC}${w.path}`)
+        .set(bearer(userC))
+        .send(w.body);
+      const msg = `${w.id} POST ${w.path}: ${res.status} ${JSON.stringify(res.body)}`;
+      expect(res.status, msg).not.toBe(404);
+      expect(res.status, msg).toBeLessThan(500);
+    }
   });
 });

@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 5.4, varje tabell bevisas ha RLS med FORCE, FR-26):**
+  1. **Ändrat:** nytt katalogprov `server/test/rls-katalog.test.ts` (AD-13)
+     över varje tabell i `public` och `crm`: en enda läsning av `pg_class`
+     och en sluten regel A1–A7, med listan över övriga tabeller (policy och
+     skäl: `companies`, `email_outbox`) och listan «saknar RLS och FORCE —
+     åtgärdas i Story 5.5» (`users`, `schema_migrations`). Nytt block sist i
+     `server/test/tenant-isolation.test.ts` för varje bolagsrutt och
+     appens roll. Ingen ändring i `server/src/` eller `server/migrations/`.
+  2. **Prov:** K1–K3 och N1–N5 i katalogprovet (planterade tabeller i
+     transaktioner som rullas tillbaka, och ändrade kopior av listorna), T0–T3
+     i `tenant-isolation` (B får 403 eller 404 på varje monteringspunkt för
+     läsning och skrivning, A:s eget anrop är kontrollen, ingen rad skrivs).
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a, 2b, 3a
+     och 3b) — sessionens skal krävde godkännande för npm och för git. Att
+     N1–N5 var röda före regeln och att alla fall är gröna efter den är alltså
+     inte uppmätt i den här sessionen; fallistan är genomgången statiskt mot
+     reglerna och routerfilen. Kedjan kör `npm ci`, typecheck och hela sviten
+     efteråt.
+  4. **Står rött utanför bygget:** inget, utom provvaktens continuityvakt,
+     som står KUNDE_INTE sedan före bygget; punkten står under rubriken och
+     rör inte huvudet, som det provet läser.
+  5. **Nästa:** Story 5.5 tömmer listan; när den är tom gäller kravets «varje
+     tabell» utan undantag.
+
 - **2026-10-21 (Story 4.7, leverantörsreskontran stämmer för ett historiskt datum, FR-29):**
   1. **Ändrat:** `accountsPayableAging` i `server/src/services/reports.ts`
      avgränsar med `as_of` både fakturorna (verifikatets datum, bokföringen
