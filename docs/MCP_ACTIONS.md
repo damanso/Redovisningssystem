@@ -228,6 +228,12 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 - `set_vat_method` (write) — faktura-/kontantmetod som bolagsinställning.
   Momsmetodvakten varnar (notis + audit, blockerar inte) när ett nytt
   verifikat bryter mot metoden; SIE-import och rättelser undantas.
+- `vat_declaration` (read) — momsdeklarationens uppställning med rutorna
+  05–49 för perioden `from`–`to`, ett beräknat underlag ur momskontona och
+  ett fåtal försäljningskonton; rutorna 06–08, 20, 22–24, 37–38 och 40 är
+  i dag alltid 0. `warnings` bär kompletthetsvaktens varning när ruta 48 är
+  0 trots inköp på konton 5000–6999, oavsett belopp och med beloppet;
+  varningen stoppar ingenting (FR-19).
 
 ### Kvittobilagor — tre steg, där steg 2 inte är ett MCP-anrop (beslut #178)
 

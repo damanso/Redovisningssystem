@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 4.4, momsvakten varnar för varje inköp utan ingående moms, FR-19):**
+  1. **Ändrat:** den rena, exporterade regeln `inputVatCompletenessWarning` i
+     `server/src/services/vatDeclaration.ts` ger varningen när ruta 48 är 0
+     och inköpen på 5000–6999 är större än 0, med beloppet i kronor och ören
+     via `formatOre`, och annars null. `vatDeclaration` anropar den en gång,
+     och tröskeln på 5 000 kr är borttagen utan ersättare. Textens början
+     «Ingående moms (ruta 48) är 0» står kvar. Ny punkt om `vat_declaration`
+     i `docs/MCP_ACTIONS.md`, som säger att de nollsatta rutorna i dag är 0.
+  2. **Prov:** F1–F6 (regeln utan databas), V1–V4 (genom hela stacken, ett
+     eget bolag med inköp på 100 kr och på ett öre), K1 (konstantens namn
+     borta ur källtexten, med planterat namn som negativ kontroll) och R1
+     (auditraden `tax.vat_method_set`, som inget prov läste förut) i
+     `server/test/vat-declaration.test.ts`. De befintliga fallen i samma fil
+     och i `server/test/voucher-links.test.ts` står oförändrade.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a och 2b) —
+     sessionens skal krävde godkännande för npm-kommandon och för git. Att
+     de nya fallen var röda före koden och är gröna efter den är alltså inte
+     uppmätt i den här sessionen. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt.
+  4. **Baslinjen:** provvaktens continuityvakt står KUNDE_INTE sedan före
+     bygget; punkten står under rubriken och rör inte huvudet, som det
+     provet läser.
+  5. **Ingen migration**, ingen ny åtgärd, ingen ny rutt och ingen ändrad vy;
+     vyns ruta «att kontrollera» visar samma `warnings` som förut.
+
 - **2026-10-21 (Story 4.3, agenten kan bifoga dokument upp till 10 MB, FR-18):**
   1. **Ändrat:** `server/src/services/documents.ts` exporterar bredvid
      `MAX_DOCUMENT_BYTES` tre konstanter: `MAX_DOCUMENT_BASE64_CHARS`,
