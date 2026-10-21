@@ -11,7 +11,7 @@
 // varor/land utanför EU. Kontrollera mot Skatteverkets blankett innan inlämning.
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
-import { assertSafeOre } from '../domain/money.js';
+import { assertSafeOre, formatOre } from '../domain/money.js';
 import { accountSums, type AccountLine } from './reports.js';
 
 export interface VatBox { code: string; label: string; amount_ore: Ore }
@@ -42,6 +42,22 @@ function debit(rows: AccountLine[], min: number, max: number): number {
 // (25 % = 250). Avrundas till hela ören (deklarationen rapporteras ändå i kronor).
 function baseFromVat(vatOre: number, permille: number): number {
   return vatOre === 0 ? 0 : Math.round((vatOre * 1000) / permille);
+}
+
+/**
+ * Kompletthetsvakten för ruta 48 (FR-19): ger varningstexten när ingående moms är 0
+ * trots inköp på konton 5000–6999, annars null. Den varnar oavsett belopp, så att en
+ * deklaration som underrapporterar avdraget aldrig ser komplett ut, och beloppet står
+ * i kronor och ören så att också ett inköp under en krona syns. Regeln är en ren
+ * funktion så att den kan prövas utan databas.
+ */
+export function inputVatCompletenessWarning(inputVatOre: Ore, purchasesOre: Ore): string | null {
+  if (inputVatOre === 0 && purchasesOre > 0) {
+    return `Ingående moms (ruta 48) är 0 trots kostnadsförda inköp på ${formatOre(purchasesOre, { currency: true })} `
+      + 'på konton 5000–6999. Kontrollera att ingående moms bokförts — bruttoimporterade utlägg fångas '
+      + 'inte automatiskt (kör kvittogenomgång/momsomföring).';
+  }
+  return null;
 }
 
 /**
@@ -96,17 +112,12 @@ export async function vatDeclaration(client: PoolClient, companyId: string, from
   // 2640) ger annars en deklaration som ser komplett ut men underrapporterar avdraget —
   // exakt felet som dolde H1 2026:s ingående moms tills en manuell kvittogenomgång. Konton
   // 5000–6999 (övriga externa kostnader) bär normalt svensk ingående moms; om ruta 48 = 0
-  // medan de har inköp över tröskeln flaggas det för genomgång.
+  // medan de har inköp flaggas det för genomgång, oavsett belopp (FR-19, Story 4.4; den
+  // tidigare tröskeln på 5 000 kr lät mindre inköp passera tyst).
   const deductibleCostDebit = debit(rows, 5000, 6999);
   const warnings: string[] = [];
-  const INPUT_VAT_ALERT_THRESHOLD_ORE = 5000_00;
-  if (inVat === 0 && deductibleCostDebit >= INPUT_VAT_ALERT_THRESHOLD_ORE) {
-    warnings.push(
-      `Ingående moms (ruta 48) är 0 trots kostnadsförda inköp på ${Math.round(deductibleCostDebit / 100)} kr `
-      + 'på konton 5000–6999. Kontrollera att ingående moms bokförts — bruttoimporterade utlägg fångas '
-      + 'inte automatiskt (kör kvittogenomgång/momsomföring).',
-    );
-  }
+  const inputVatWarning = inputVatCompletenessWarning(inVat, deductibleCostDebit);
+  if (inputVatWarning !== null) warnings.push(inputVatWarning);
 
   return {
     from, to,

@@ -1,9 +1,11 @@
 // Fas C5: momsdeklaration (skattedeklaration för moms) — alla rutor 05–49 beräknade
 // ur bokföringen. Utgående moms per sats (10–12), ingående moms (48), moms att betala
 // (49), underlag (05) och undantagen försäljning (35/39/42). Beräknat underlag.
+import { readFileSync } from 'node:fs';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { inputVatCompletenessWarning } from '../src/services/vatDeclaration.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -185,5 +187,137 @@ describe('kompletthetsvakt: ingående moms 0 trots inköp (regressionsskydd)', (
     const d = await declFor();
     expect(d.input_vat.amount_ore).toBe(4198_00);        // ruta 48 ifylld
     expect(d.warnings).toEqual([]);                      // ingen varning kvar
+  });
+});
+
+// Story 4.4 (FR-19): en tröskel på 5 000 kr lät mindre inköp med ruta 48 = 0 passera
+// tyst, så att en deklaration som underrapporterade avdraget såg komplett ut. Regeln
+// prövas här utan databas: varning exakt när ruta 48 är 0 och inköpen är större än 0.
+describe('4.4 kompletthetsvakten utan tröskel (regeln)', () => {
+  it('F1 ingående moms 0 och inköp 1 öre ger varning med beloppet', () => {
+    const text = inputVatCompletenessWarning(0, 1);
+    expect(text).not.toBeNull();
+    expect(text).toContain('Ingående moms (ruta 48) är 0');
+    expect(text).toContain('0,01 kr');
+  });
+
+  it('F2 ingående moms 0 och inköp 100 kr ger varning med «100,00 kr»', () => {
+    expect(inputVatCompletenessWarning(0, 10000)).toContain('100,00 kr');
+  });
+
+  it('F3 ingående moms 0 och inköp ett öre under den gamla tröskeln ger varning', () => {
+    const text = inputVatCompletenessWarning(0, 499999);
+    expect(text).not.toBeNull();
+    expect(text).toContain('Ingående moms (ruta 48) är 0');
+  });
+
+  it('F4 ingående moms 0 och inga inköp ger ingen varning', () => {
+    expect(inputVatCompletenessWarning(0, 0)).toBeNull();
+  });
+
+  it('F5 ingående moms 0 och kreditsaldo på 5000–6999 ger ingen varning', () => {
+    expect(inputVatCompletenessWarning(0, -10000)).toBeNull();
+  });
+
+  it('F6 ingående moms 1 öre och inköp 100 kr ger ingen varning', () => {
+    expect(inputVatCompletenessWarning(1, 10000)).toBeNull();
+  });
+});
+
+// Story 4.4 (FR-19) genom hela stacken: med tröskeln gav ett inköp på 100 kr eller ett
+// öre med ruta 48 = 0 ingen varning, och deklarationen såg komplett ut. Blocket har egen
+// användare och eget bolag, så att filens andra bolag inte berörs.
+describe('4.4 kompletthetsvakten utan tröskel (deklarationen)', () => {
+  let u: TestUser; let cid: string; let fyId: string;
+  const a = () => ({ Authorization: `Bearer ${u.token}` });
+  const c = () => `/api/companies/${cid}`;
+  const postAndApprove = async (body: Record<string, unknown>) => {
+    const v = await api.post(`${c()}/actions/post_voucher`).set(a()).send(body);
+    expect(v.status, JSON.stringify(v.body)).toBe(202);
+    const ok = await api.post(`${c()}/approvals/${v.body.approval.id}/approve`).set(a()).send({});
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  };
+  const kvartal = async (from: string, to: string) => {
+    const res = await api.post(`${c()}/actions/vat_declaration`).set(a()).send({ from, to });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.result;
+  };
+
+  beforeAll(async () => {
+    u = await registerUser('vat-guard-44');
+    cid = await createCompany(u.token, 'Momsvakt AB');
+    fyId = (await createFiscalYear(cid, a(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' })).id;
+    // V1: inköp på 100 kr bokfört brutto, utan 2640-rad (första kvartalet).
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-02-10', description: '4.4 inköp 100 kr bruttobokfört',
+      lines: [{ account_number: 5410, debit_ore: 10000 }, { account_number: 1930, credit_ore: 10000 }],
+    });
+    // V3: bara en försäljning i andra kvartalet. Momsmetodvakten ger notis, men stoppar inget.
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-05-05', description: '4.4 försäljning',
+      lines: [
+        { account_number: 1930, debit_ore: 12500 },
+        { account_number: 3001, credit_ore: 10000 },
+        { account_number: 2611, credit_ore: 2500 },
+      ],
+    });
+    // V4: inköp på ett öre, utan 2640-rad (tredje kvartalet).
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-08-01', description: '4.4 inköp ett öre',
+      lines: [{ account_number: 5410, debit_ore: 1 }, { account_number: 1930, credit_ore: 1 }],
+    });
+  });
+
+  it('V1 inköp 100 kr med ruta 48 = 0 ger en varning med beloppet', async () => {
+    const d = await kvartal('2026-01-01', '2026-03-31');
+    expect(d.input_vat.amount_ore).toBe(0);
+    expect(d.warnings).toHaveLength(1);
+    expect(d.warnings[0]).toContain('Ingående moms (ruta 48) är 0');
+    expect(d.warnings[0]).toContain('100,00 kr');
+  });
+
+  it('V2 varningen försvinner när momsen lyfts till 2640', async () => {
+    await postAndApprove({
+      fiscal_year_id: fyId, voucher_date: '2026-03-31', description: '4.4 momsomföring',
+      lines: [{ account_number: 2640, debit_ore: 2000 }, { account_number: 5410, credit_ore: 2000 }],
+    });
+    const d = await kvartal('2026-01-01', '2026-03-31');
+    expect(d.input_vat.amount_ore).toBe(2000);
+    expect(d.warnings).toEqual([]);
+  });
+
+  it('V3 en period utan inköp på 5000–6999 ger ingen varning', async () => {
+    const d = await kvartal('2026-04-01', '2026-06-30');
+    expect(box(d.output_vat, '10')).toBe(2500);   // perioden har bokningar
+    expect(d.input_vat.amount_ore).toBe(0);
+    expect(d.warnings).toEqual([]);
+  });
+
+  it('V4 inköp på ett öre med ruta 48 = 0 ger en varning med «0,01 kr»', async () => {
+    const d = await kvartal('2026-07-01', '2026-09-30');
+    expect(d.input_vat.amount_ore).toBe(0);
+    expect(d.warnings).toHaveLength(1);
+    expect(d.warnings[0]).toContain('0,01 kr');
+  });
+
+  it('K1 tröskelkonstanten är borttagen ur tjänsten', () => {
+    const text = readFileSync(new URL('../src/services/vatDeclaration.ts', import.meta.url), 'utf8');
+    const harTroskel = (s: string) => s.includes('INPUT_VAT_ALERT_THRESHOLD_ORE');
+    expect(harTroskel(text)).toBe(false);
+    // Negativ kontroll: ett återinfört namn fälls.
+    expect(harTroskel(`${text}\nconst INPUT_VAT_ALERT_THRESHOLD_ORE = 1;\n`)).toBe(true);
+    // Läsningen träffar rätt fil.
+    expect(text).toContain('inputVatCompletenessWarning');
+  });
+
+  it('R1 set_vat_method skriver auditraden tax.vat_method_set', async () => {
+    const rader = () => withAdmin(async (admin) => (await admin.query(
+      "SELECT details->>'vat_method' AS m FROM audit_log WHERE company_id = $1 AND action = 'tax.vat_method_set'",
+      [cid],
+    )).rows);
+    expect(await rader()).toEqual([]);
+    const res = await api.post(`${c()}/actions/set_vat_method`).set(a()).send({ vat_method: 'invoice' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await rader()).toEqual([{ m: 'invoice' }]);
   });
 });
