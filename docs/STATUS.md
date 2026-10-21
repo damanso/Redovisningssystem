@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-21 (Story 5.6, agentens fel säger alltid var och varför, FR-28):**
+  1. **Ändrat:** ny modul `server/src/mcp/karnanrop.ts` (AD-11) med
+     `TIMEOUT_MS`, `anropaKarnan` (nätanropet och läsningen av kroppen under
+     en tidsgräns och i ett omslag) och `karnfel` (felets enda form,
+     «Kunde inte nå kärnan på {adress}: {orsak} — kör self_check»). `hamta`,
+     `api` och verktygshanterarens fångst i `server/src/mcp/server.ts`
+     använder den; ett HTTP-fel med kropp återges som förut. Ny punkt i
+     `docs/MCP_ACTIONS.md`.
+  2. **Prov:** P0–P6 (felets form), F1–F6 (hela anropet mot en stubbe:
+     vägrad anslutning, inget svar, kroppen stannar, kroppen bryts, 400 och
+     409) och E0–E3 (källtexten och MCP-servern som barnprocess) i
+     `server/test/mcp-felomslag.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a, 2b, 3a
+     och 3b) — sessionens skal krävde godkännande för npm, och det gick inte
+     att ge. Att de nya fallen var röda före koden och är gröna efter den är
+     alltså inte uppmätt i den här sessionen; fallistan är genomgången
+     statiskt mot avbildningen och anropet. Kedjan kör `npm ci`, typecheck
+     och hela sviten efteråt.
+  4. **Står rött utanför bygget:** Hermes prov som redan stod rött eller
+     KUNDE_INTE i provvaktens senaste körning före bygget (beslutsslutet och
+     adresskontraktet RÖD; continuityvakt, startsida_prov och modulprov
+     KUNDE_INTE). Bygget rör inget som de mäter, och punkten rör inte huvudet
+     i `docs/STATUS.md`.
+  5. **Nästa:** David når den nya felformen i sin Claude Desktop först när
+     hans lokala kopia är uppdaterad och byggd (`npm run build`), eftersom
+     konfigurationen pekar på serverns byggda fil (`docs/KOM_IGANG.md`,
+     avsnittet «Bygg MCP-servern en gång»).
+
 - **2026-10-21 (Story 5.4, varje tabell bevisas ha RLS med FORCE, FR-26):**
   1. **Ändrat:** nytt katalogprov `server/test/rls-katalog.test.ts` (AD-13)
      över varje tabell i `public` och `crm`: en enda läsning av `pg_class`

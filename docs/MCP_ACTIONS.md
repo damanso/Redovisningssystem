@@ -429,6 +429,10 @@ Tid lagras som **heltal minuter** (0,42 h = 25 min), utlägg som **heltal ören*
   `POST .../agent-tokens`) — de kan bara begära, aldrig godkänna.
 - MCP-verktyget `self_check` rapporterar API-nåbarhet, tokengiltighet och
   tokenutgång (+ varning vid start när < 14 dagar återstår).
+- Ett anrop som inte når kärnan (anslutningen vägras, inget svar inom 60 s,
+  eller svaret stannar eller bryts mitt i) ger felet
+  «Kunde inte nå kärnan på {adress}: {orsak} — kör self_check» (FR-28). Ett
+  HTTP-fel med kropp återges som «Fel (HTTP {status}): {kropp}».
 
 ### Tidspostens livscykel (PRD_TIDSRAPPORTERING §9 steg 1)
 
