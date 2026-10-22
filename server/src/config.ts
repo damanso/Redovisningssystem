@@ -48,6 +48,23 @@ const EnvSchema = z.object({
   // och i drift ligger den under /opt/redovisning-app/shared/ så den överlever
   // en release.
   RECEIPT_FILES_DIR: z.string().min(1).default('data/receipt-files'),
+  // Var kvittobilagornas bytes ligger. Valet står uttryckligen i miljön så att
+  // ingen kan tro att bilagorna ligger någon annanstans: Davids beslut
+  // 2026-10-16 (FR-15) är lokal volym, med kopian utanför maskinen. Det enda
+  // giltiga värdet är `lokal`, och ett annat värde stoppar starten i stället
+  // för att tystas. En ny drivrutin kräver konto, nycklar, en S3-klient och
+  // redovisningens första utgående anrop — alla är beslut för David
+  // (arkitekturen rad 187 och 685), inget som ett miljövärde kan slå på.
+  RECEIPT_STORAGE_DRIVER: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z
+      .enum(['lokal'], {
+        message:
+          'bara lokal lagring är byggd (värdet lokal eller inget värde). Kvittobilagorna ligger på lokal ' +
+          'volym enligt Davids beslut 2026-10-16 (FR-15), och någon S3-driver finns inte.',
+      })
+      .default('lokal'),
+  ),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),

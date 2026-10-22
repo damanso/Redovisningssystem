@@ -280,6 +280,17 @@ Läsvägen: `get_receipt_file_url` (write) ger en signerad GET med kort TTL (5
 min) plus filnamn, mime-typ, storlek och sha256. `list_receipts` bär
 `attachments`, `attachment_count` och `primary_attachment_id` per kvitto.
 
+Lagringen: bilagorna ligger på lokal volym, och valet står uttryckligen i
+`RECEIPT_STORAGE_DRIVER` (bara `lokal`; FR-15, Davids beslut 2026-10-16). Kan
+lagringen inte användas svarar PUT, `confirm_receipt_file` och nedladdningen
+503 `storage_unavailable` med `details.lagring` och `details.operation`. Efter
+en sådan PUT eller bekräftelse förblir bilagan obekräftad och steget kan göras
+om; en bilaga som redan är bekräftad förblir bekräftad när nedladdningen
+svarar 503. Ett objekt som saknas ger 409 `object_missing` med
+`details.lagring`, både vid bekräftelsen och vid nedladdningen, och ett objekt
+som redan finns skrivs aldrig över (409 `object_exists`). Varje lagringsfel
+ger också en rad i driftloggen med bara koder, aldrig lagringens sökväg.
+
 Livscykeln: en bilaga får bifogas **både** före och efter `book_receipt`. På ett
 BOKFÖRT kvitto är bilagan oföränderlig — den går varken att skriva över eller
 radera (RLS-policy + trigger i migration 0075); en felaktig bilaga rättas genom

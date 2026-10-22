@@ -153,6 +153,68 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (Story 7.2, omtag efter kodgranskningen: sex fynd, FR-15):**
+  1. **En väg till varje lagringsfel:** `lagringsfel` i
+     `server/src/services/objektlagring.ts` bygger nu varje
+     `storage_unavailable`, `object_missing` och `object_exists`, också
+     bekräftelsens saknade objekt i `server/src/services/receiptFiles.ts`
+     (som därför ändrats på en rad). Felet namnger lagringen ur gränssnittets
+     `namn`, och samma funktion skriver driftloggens rad
+     `[objektlagring] lagringsfel <lagring> <operation> <kod> <Node-kod>`
+     med bara koder. errorHandler loggar inte ett AppError, så utan raden
+     lämnade full disk eller ett försvunnet objekt inget spår. Node-koden
+     släpps bara igenom i formen av en felkod, annars `okänd`.
+  2. **Ingen halv fil:** ett skrivfel efter att `wx` skapat filen tar bort
+     filen innan 503 kastas, så att samma länk fungerar igen i stället för
+     att ge `object_exists` tills TTL-städningen.
+  3. **Samma läge, samma svar:** `las` och `storlek` klassar «saknas» med
+     samma lista (ENOENT, ENOTDIR). Gränssnittets JSDoc anger exakt vilka
+     lägen som är «saknas» och vilka som är lagringsfel. Kvar står ett
+     medvetet undantag: en katalog på objektets plats ger null i `storlek`
+     men 503 i `las` (berättelsens L2 och L3).
+  4. **Prov:** L1–L7 i `server/test/kvittobilagor-lagring.test.ts`
+     prövar driftloggens rad (exakt en, utan lagringsroten); L1 prövar
+     ENOTDIR i `storlek` och `las`; L2 prövar `details.lagring`; nya L8
+     planterar ett skrivfel mitt i skrivningen, med en felkod och med en
+     kod som bär en sökväg.
+  5. **Dokumentet:** stycket «Lagringen:» i `docs/MCP_ACTIONS.md` kopplar
+     «förblir obekräftad» bara till PUT och bekräftelsen, och nämner
+     `details.lagring` och driftloggen.
+  6. **Inte kört:** typecheck och vitest. npm och tsc krävde godkännande i
+     sessionen, och det gick inte att ge; kedjan kör dem efteråt.
+
+- **2026-10-22 (Story 7.2, kvittobilagornas lagring är ett uttryckligt val och felen namnger lagringen, FR-15):**
+  1. **Ändrat:** `RECEIPT_STORAGE_DRIVER` (bara `lokal`; tomt eller inget
+     värde ger `lokal`, allt annat stoppar starten) i `server/src/config.ts`;
+     namnet (`namn`, `Lagringsnamn`), valet i `objektlagring()` och
+     felöversättningen i `server/src/services/objektlagring.ts` (503
+     `storage_unavailable` med `details` `{ lagring, operation }`, 409
+     `object_missing` och 409 `object_exists`; aldrig Node-felets
+     `message`, som bär sökvägen); subklassen `ServiceUnavailableError` (503)
+     i `server/src/lib/errors.ts`; stycket «Lagringen:» under Kvittobilagor i
+     `docs/MCP_ACTIONS.md`. `server/src/services/receiptFiles.ts` är orörd.
+  2. **Beslutet:** ingen S3-driver och inget flyttkommando, eftersom Davids
+     svar 2026-10-16 låter bilagorna ligga kvar på servern (inget konto, inga
+     nycklar och inget beroende). Epikens kriterier för 7.2 i
+     `_bmad-output/planning-artifacts/epics.md` förutsätter S3 och behöver en
+     correct-course i planen.
+  3. **Prov:** R1 och den gränssnittsbundna existensprövningen
+     (`objektFinns`) i `server/test/kvittobilagor.test.ts`; G1, V1, V2 och
+     L1–L7 i `server/test/kvittobilagor-lagring.test.ts`; K1–K4 i
+     `server/test/failfast.test.ts`.
+  4. **Inte kört:** typecheck, build och vitest (Körning 1b, 2a, 2b, 3a och
+     3b) — sessionen hade inget skal: varje kommando, också `git status`,
+     krävde godkännande, och det gick inte att ge. Att de nya fallen var röda
+     före koden och är gröna efter den är alltså inte uppmätt i den här
+     sessionen; fallistan är genomgången statiskt mot koden. Kedjan kör
+     `npm ci`, typecheck och hela sviten efteråt.
+  5. **Baslinjen:** provvaktens continuityvakt och redovisning_fortroende
+     stod KUNDE_INTE före bygget; bygget rör inget de mäter. Punkten står
+     under rubriken och rör inte huvudet som continuityvakt läser.
+  6. **Ingen migration**, ingen ny åtgärd, ingen ny rutt och inget nytt
+     beroende. `RECEIPT_STORAGE_DRIVER` är ny, så en miljöfil utan den
+     startar appen med lokal lagring som i dag.
+
 - **2026-10-22 (Story 4.5, omtag efter kodgranskningen: fyra fynd, FR-19):**
   1. **Ändrat:** förslagskortet för `set_vat_box_accounts` i
      `server/src/services/approvalSummary.ts` tar vad varje ruta blir ur den

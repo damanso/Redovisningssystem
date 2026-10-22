@@ -56,3 +56,14 @@ export class BadRequestError extends AppError {
     super(400, code, message, details);
   }
 }
+
+/**
+ * En tjänst som systemet beror på går inte att använda just nu, till exempel
+ * kvittobilagornas lagring. `details` bär bara data som är säker att visa (se
+ * AppError).
+ */
+export class ServiceUnavailableError extends AppError {
+  constructor(code = 'service_unavailable', message?: string, details?: unknown) {
+    super(503, code, message, details);
+  }
+}

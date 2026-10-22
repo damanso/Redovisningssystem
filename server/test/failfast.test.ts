@@ -116,3 +116,46 @@ describe('fail-fast vid start', () => {
     expect(result.stdout).toContain('API lyssnar');
   });
 });
+
+// Story 7.2 (FR-15, Davids beslut 2026-10-16): kvittobilagorna ligger på lokal
+// volym, och valet står uttryckligen i miljön. Ett annat val än `lokal` stoppar
+// starten i stället för att tystas — ingen ska kunna tro att bilagorna ligger
+// någon annanstans. killOnListen i alla fyra: ett rött K1/K2 ger code null
+// direkt i stället för att vänta ut tidsgränsen.
+describe('7.2 lagringsvalet (FR-15): bara lokal lagring är byggd', () => {
+  const miljo = (driver: string) => ({
+    DATABASE_URL: process.env.DATABASE_URL!,
+    JWT_SECRET: process.env.JWT_SECRET!,
+    PORT: '0',
+    NODE_ENV: 'test',
+    RECEIPT_STORAGE_DRIVER: driver,
+  });
+
+  it('7.2 K1 s3: processen vägrar starta och namnger variabeln', async () => {
+    const result = await startServer(miljo('s3'), { killOnListen: true });
+    expect(result.code, result.stdout + result.stderr).toBe(1);
+    expect(result.stderr).toContain('RECEIPT_STORAGE_DRIVER');
+    expect(result.stderr).toContain('lokal');
+    expect(result.stderr).toContain('FR-15');
+    expect(result.stdout).not.toContain('API lyssnar');
+  });
+
+  it('7.2 K2 minio: processen vägrar starta och namnger variabeln', async () => {
+    const result = await startServer(miljo('minio'), { killOnListen: true });
+    expect(result.code, result.stdout + result.stderr).toBe(1);
+    expect(result.stderr).toContain('RECEIPT_STORAGE_DRIVER');
+    expect(result.stderr).toContain('lokal');
+    expect(result.stderr).toContain('FR-15');
+    expect(result.stdout).not.toContain('API lyssnar');
+  });
+
+  it('7.2 K3 lokal: servern startar', async () => {
+    const result = await startServer(miljo('lokal'), { killOnListen: true });
+    expect(result.stdout, result.stderr).toContain('API lyssnar');
+  });
+
+  it('7.2 K4 tomt värde: servern startar med lokal lagring', async () => {
+    const result = await startServer(miljo(''), { killOnListen: true });
+    expect(result.stdout, result.stderr).toContain('API lyssnar');
+  });
+});

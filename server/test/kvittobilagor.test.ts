@@ -5,12 +5,15 @@
 // att bytesen passerar ett MCP-anrop, bilaga före OCH efter book_receipt,
 // oföränderlighet på bokfört kvitto, sha256 som matchar vid nedladdning, flera
 // bilagor, tenant-isolering, utgången och återanvänd signatur.
+//
+// Sviten prövar FR-12 genom gränssnittet `Objektlagring`, aldrig genom den
+// lokala katalogens sökvägar (Story 7.2, FR-15).
 import { createHash } from 'node:crypto';
-import { access } from 'node:fs/promises';
-import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { publikApiBas, signeraBilagelank } from '../src/lib/bilagesignatur.js';
+import { objektlagring } from '../src/services/objektlagring.js';
+import { MAX_BILAGA_BYTES } from '../src/services/receiptFiles.js';
 import { linkAndUnlink } from './voucherLinkHelper.js';
 
 let user: TestUser;
@@ -33,6 +36,15 @@ function heic(bytes = 2048): Buffer {
   const body = Buffer.alloc(bytes, 0x11);
   body.write('ftypheic', 4, 'latin1');
   return body;
+}
+
+/**
+ * Finns objektet i lagringen? Sviten prövar FR-12 genom gränssnittet, inte
+ * genom den lokala katalogens sökvägar — gränssnittet är det en annan lagring
+ * ska läggas bakom (FR-15).
+ */
+async function objektFinns(nyckel: string): Promise<boolean> {
+  return (await objektlagring().storlek(nyckel)) !== null;
 }
 
 /** Den signerade URL:en pekar på PUBLIC_API_URL — supertest kör appen in-process. */
@@ -162,6 +174,47 @@ describe('trestegsvägen in för originalkvittot', () => {
     expect(rad.attachments[1].mime_type).toBe('image/heic');
     expect(rad.attachments.map((b: { sha256: string }) => b.sha256)).toEqual([forsta.sha256, andra.sha256]);
   });
+
+  it('7.2 R1 PNG och PDF bifogas, taket är exakt 25 MB, och länkarna gäller 15 respektive högst 5 minuter', async () => {
+    const receiptId = await skapaKvitto('Kvitto med PNG och PDF');
+    const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+
+    const png = Buffer.alloc(4_096, 0x33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0);
+    const pngBilaga = await bifoga(receiptId, png, 'nota.png', 'image/png');
+    expect(pngBilaga.sha256).toBe(sha(png));
+
+    const pdf = Buffer.alloc(4_096, 0x20);
+    pdf.write('%PDF-1.7\n', 0, 'latin1');
+    const pdfBilaga = await bifoga(receiptId, pdf, 'nota.pdf', 'application/pdf');
+    expect(pdfBilaga.sha256).toBe(sha(pdf));
+
+    // Taket: exakt MAX_BILAGA_BYTES ger en länk, en byte till avvisas av registrets schema.
+    const vidTaket = await api.post(`${co()}/actions/create_receipt_upload_url`).set(auth())
+      .send({ receipt_id: receiptId, filename: 'stor.pdf', mime_type: 'application/pdf', size_bytes: MAX_BILAGA_BYTES });
+    expect(vidTaket.status, JSON.stringify(vidTaket.body)).toBe(200);
+    expect(vidTaket.body.result.upload_url).toContain('https://redovisning.test/api/receipt-files/');
+    const overTaket = await api.post(`${co()}/actions/create_receipt_upload_url`).set(auth())
+      .send({ receipt_id: receiptId, filename: 'stor.pdf', mime_type: 'application/pdf', size_bytes: MAX_BILAGA_BYTES + 1 });
+    expect(overTaket.status, JSON.stringify(overTaket.body)).toBe(400);
+    expect(overTaket.body.error).toBe('validation_error');
+
+    // Uppladdningslänken gäller 15 minuter (bifoga returnerar inte expires_at, så ett eget steg 1).
+    const steg1 = await api.post(`${co()}/actions/create_receipt_upload_url`).set(auth())
+      .send({ receipt_id: receiptId, filename: 'giltighet.png', mime_type: 'image/png', size_bytes: 4_096 });
+    expect(steg1.status, JSON.stringify(steg1.body)).toBe(200);
+    const uppladdningKvar = new Date(steg1.body.result.expires_at).getTime() - Date.now();
+    expect(uppladdningKvar).toBeGreaterThan(14 * 60_000);
+    expect(uppladdningKvar).toBeLessThan(16 * 60_000);
+
+    // Läslänken gäller högst 5 minuter.
+    const lank = await api.post(`${co()}/actions/get_receipt_file_url`).set(auth())
+      .send({ file_id: pngBilaga.fileId });
+    expect(lank.status, JSON.stringify(lank.body)).toBe(200);
+    const lasningKvar = new Date(lank.body.result.expires_at).getTime() - Date.now();
+    expect(lasningKvar).toBeGreaterThan(0);
+    expect(lasningKvar).toBeLessThanOrEqual(5 * 60_000 + 10_000);
+  });
 });
 
 describe('livscykel och oföränderlighet', () => {
@@ -244,8 +297,7 @@ describe('livscykel och oföränderlighet', () => {
     const nyckel = await withAdmin(async (admin) => (await admin.query<{ storage_key: string }>(
       'SELECT storage_key FROM receipt_files WHERE id = $1', [bilaga.fileId],
     )).rows[0]!.storage_key);
-    const full = path.resolve(process.env.RECEIPT_FILES_DIR!, nyckel);
-    await expect(access(full)).resolves.toBeUndefined();
+    expect(await objektFinns(nyckel)).toBe(true);
 
     const res = await api.post(`${co()}/actions/delete_draft_receipt`).set(auth()).send({ receipt_id: receiptId });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -255,7 +307,7 @@ describe('livscykel och oföränderlighet', () => {
       'SELECT 1 FROM receipt_files WHERE id = $1', [bilaga.fileId],
     )).rowCount);
     expect(kvar).toBe(0);
-    await expect(access(full)).rejects.toThrow();
+    expect(await objektFinns(nyckel)).toBe(false);
   });
 
   it('K2 delete_draft_receipt på ett BOKFÖRT kvitto ger 409 — bilagan, kvittot och objektet finns kvar', async () => {
@@ -265,7 +317,6 @@ describe('livscykel och oföränderlighet', () => {
     const nyckel = await withAdmin(async (admin) => (await admin.query<{ storage_key: string }>(
       'SELECT storage_key FROM receipt_files WHERE id = $1', [bilaga.fileId],
     )).rows[0]!.storage_key);
-    const full = path.resolve(process.env.RECEIPT_FILES_DIR!, nyckel);
 
     const res = await api.post(`${co()}/actions/delete_draft_receipt`).set(auth()).send({ receipt_id: receiptId });
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -280,7 +331,7 @@ describe('livscykel och oföränderlighet', () => {
       'SELECT 1 FROM receipts WHERE id = $1 AND company_id = $2', [receiptId, companyId],
     )).rowCount);
     expect(kvittorad).toBe(1);
-    await expect(access(full)).resolves.toBeUndefined();
+    expect(await objektFinns(nyckel)).toBe(true);
   });
 
   it('K1 ett kvitto som kopplats och lossats ger 409 — båda bilagorna och objekten finns kvar', async () => {
@@ -301,7 +352,7 @@ describe('livscykel och oföränderlighet', () => {
     expect(rader).toHaveLength(2);
     expect(rader.map((r) => r.status)).toEqual(['active', 'active']);
     for (const rad of rader) {
-      await expect(access(path.resolve(process.env.RECEIPT_FILES_DIR!, rad.storage_key))).resolves.toBeUndefined();
+      expect(await objektFinns(rad.storage_key)).toBe(true);
     }
   });
 });
@@ -441,8 +492,7 @@ describe('lat städning (ingen scheduler)', () => {
         'SELECT storage_key FROM receipt_files WHERE id = $1', [fileId],
       )).rows[0]!.storage_key;
     });
-    const full = path.resolve(process.env.RECEIPT_FILES_DIR!, nyckel);
-    await expect(access(full)).resolves.toBeUndefined();
+    expect(await objektFinns(nyckel)).toBe(true);
 
     // Nästa anrop i tjänsten städar.
     const nasta = await api.post(`${co()}/actions/create_receipt_upload_url`).set(auth())
@@ -453,7 +503,7 @@ describe('lat städning (ingen scheduler)', () => {
       'SELECT 1 FROM receipt_files WHERE id = $1', [fileId],
     )).rowCount);
     expect(kvar).toBe(0);
-    await expect(access(full)).rejects.toThrow();
+    expect(await objektFinns(nyckel)).toBe(false);
 
     // En bekräftelse på en städad rad är ett rent 404, aldrig ett 500.
     const sent = await api.post(`${co()}/actions/confirm_receipt_file`).set(auth()).send({ file_id: fileId });

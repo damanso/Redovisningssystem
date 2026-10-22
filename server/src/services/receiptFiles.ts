@@ -18,7 +18,7 @@ import { signeraBilagelank, type SignaturInnehall } from '../lib/bilagesignatur.
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 import { matcharMagicBytes } from './fileStorage.js';
-import { nyLagringsnyckel, objektlagring } from './objektlagring.js';
+import { lagringsfel, nyLagringsnyckel, objektlagring } from './objektlagring.js';
 
 // Tak och typer ur kravbilden. Skilt från MAX_UPLOAD_BYTES (multipart-vägens
 // gräns) därför att det här är en annan väg med en annan gräns.
@@ -225,7 +225,8 @@ export async function bekraftaBilaga(
 
   const lagring = objektlagring();
   const storlek = await lagring.storlek(bilaga.storage_key);
-  if (storlek === null) throw new ConflictError('object_missing', 'objektet saknas i lagringen');
+  // Samma väg och samma form som lagringens egna fel: details namnger lagringen.
+  if (storlek === null) throw lagringsfel(lagring, 'storlek', 'object_missing');
   if (storlek !== bilaga.size_bytes) {
     throw new ConflictError('size_mismatch', 'objektets storlek stämmer inte med den begärda');
   }
