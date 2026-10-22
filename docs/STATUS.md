@@ -153,6 +153,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (Story 7.2, omtag efter kodgranskningen: sex fynd, FR-15):**
+  1. **En väg till varje lagringsfel:** `lagringsfel` i
+     `server/src/services/objektlagring.ts` bygger nu varje
+     `storage_unavailable`, `object_missing` och `object_exists`, också
+     bekräftelsens saknade objekt i `server/src/services/receiptFiles.ts`
+     (som därför ändrats på en rad). Felet namnger lagringen ur gränssnittets
+     `namn`, och samma funktion skriver driftloggens rad
+     `[objektlagring] lagringsfel <lagring> <operation> <kod> <Node-kod>`
+     med bara koder. errorHandler loggar inte ett AppError, så utan raden
+     lämnade full disk eller ett försvunnet objekt inget spår. Node-koden
+     släpps bara igenom i formen av en felkod, annars `okänd`.
+  2. **Ingen halv fil:** ett skrivfel efter att `wx` skapat filen tar bort
+     filen innan 503 kastas, så att samma länk fungerar igen i stället för
+     att ge `object_exists` tills TTL-städningen.
+  3. **Samma läge, samma svar:** `las` och `storlek` klassar «saknas» med
+     samma lista (ENOENT, ENOTDIR). Gränssnittets JSDoc anger exakt vilka
+     lägen som är «saknas» och vilka som är lagringsfel. Kvar står ett
+     medvetet undantag: en katalog på objektets plats ger null i `storlek`
+     men 503 i `las` (berättelsens L2 och L3).
+  4. **Prov:** L1–L7 i `server/test/kvittobilagor-lagring.test.ts`
+     prövar driftloggens rad (exakt en, utan lagringsroten); L1 prövar
+     ENOTDIR i `storlek` och `las`; L2 prövar `details.lagring`; nya L8
+     planterar ett skrivfel mitt i skrivningen, med en felkod och med en
+     kod som bär en sökväg.
+  5. **Dokumentet:** stycket «Lagringen:» i `docs/MCP_ACTIONS.md` kopplar
+     «förblir obekräftad» bara till PUT och bekräftelsen, och nämner
+     `details.lagring` och driftloggen.
+  6. **Inte kört:** typecheck och vitest. npm och tsc krävde godkännande i
+     sessionen, och det gick inte att ge; kedjan kör dem efteråt.
+
 - **2026-10-22 (Story 7.2, kvittobilagornas lagring är ett uttryckligt val och felen namnger lagringen, FR-15):**
   1. **Ändrat:** `RECEIPT_STORAGE_DRIVER` (bara `lokal`; tomt eller inget
      värde ger `lokal`, allt annat stoppar starten) i `server/src/config.ts`;

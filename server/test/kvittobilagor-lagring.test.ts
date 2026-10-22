@@ -6,13 +6,14 @@
 //
 // Lagren: konfigurationen (valet och fabriken), tillåtelselistan över hela
 // server/src som en ren kontroll med planterade brott, och tjänstelagret genom
-// HTTP mot den riktiga lagringskatalogen för testmiljön.
+// HTTP mot den riktiga lagringskatalogen för testmiljön — med driftloggens rad
+// för varje lagringsfel, eftersom errorHandler inte loggar ett AppError.
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { config } from '../src/config.js';
 import { lagringsrot, nyLagringsnyckel, objektlagring } from '../src/services/objektlagring.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -185,6 +186,26 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     return res;
   }
 
+  /** Driftloggens rader (console.error) medan anropet körs; spionen tas alltid bort. */
+  async function driftlogg<T>(anrop: () => PromiseLike<T>): Promise<{ svar: T; rader: unknown[][] }> {
+    const logg = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const svar = await anrop();
+      return { svar, rader: logg.mock.calls.map((rad) => [...rad]) };
+    } finally {
+      logg.mockRestore();
+    }
+  }
+
+  /**
+   * Exakt en rad i driftloggen, byggd av bara koder: lagringen, operationen,
+   * svarets kod och Node-felets kod — aldrig sökvägen eller Node-felets message.
+   */
+  function enLoggrad(rader: unknown[][], operation: string, kod: string, nodkod: string): void {
+    expect(JSON.stringify(rader)).not.toContain(lagringsrot());
+    expect(rader).toEqual([['[objektlagring] lagringsfel', 'lokal', operation, kod, nodkod]]);
+  }
+
   beforeAll(async () => {
     user = await registerUser('lagringsfel');
     companyId = await createCompany(user.token, 'Lagringsfel AB');
@@ -201,16 +222,32 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     const blockering = path.join(lagringsrot(), companyId.toLowerCase());
     await writeFile(blockering, 'ingen katalog');
     try {
-      const put = await api.put(url).set('Content-Type', 'image/jpeg').send(jpeg(6_000));
+      const { svar: put, rader: putRader } = await driftlogg(
+        () => api.put(url).set('Content-Type', 'image/jpeg').send(jpeg(6_000)),
+      );
       expect(put.status, JSON.stringify(put.body)).toBe(503);
       expect(put.body.error).toBe('storage_unavailable');
       expect(put.body.details).toEqual({ lagring: 'lokal', operation: 'skriv' });
       expect(JSON.stringify(put.body)).not.toContain(lagringsrot());
+      enLoggrad(putRader, 'skriv', 'storage_unavailable', 'EEXIST');
       expect(await status(fileId)).toBe('awaiting_upload');
 
-      const fel = await felet(objektlagring().skriv(nyLagringsnyckel(companyId, randomUUID(), 'jpg'), jpeg(6_000)));
-      expect(fel).toMatchObject({ status: 503, code: 'storage_unavailable' });
-      expect(fel.message).not.toContain(lagringsrot());
+      const skriv = await driftlogg(
+        () => felet(objektlagring().skriv(nyLagringsnyckel(companyId, randomUUID(), 'jpg'), jpeg(6_000))),
+      );
+      expect(skriv.svar).toMatchObject({ status: 503, code: 'storage_unavailable' });
+      expect(skriv.svar.message).not.toContain(lagringsrot());
+      enLoggrad(skriv.rader, 'skriv', 'storage_unavailable', 'EEXIST');
+
+      // Under blockeringen kan objektets plats inte finnas (ENOTDIR). storlek och
+      // las svarar då likadant: objektet saknas.
+      const underBlockeringen = nyLagringsnyckel(companyId, randomUUID(), 'jpg');
+      const storlek = await driftlogg(() => objektlagring().storlek(underBlockeringen));
+      expect(storlek.svar).toBeNull();
+      expect(storlek.rader).toEqual([]);
+      const las = await driftlogg(() => felet(objektlagring().las(underBlockeringen)));
+      expect(las.svar).toMatchObject({ status: 409, code: 'object_missing', details: { lagring: 'lokal' } });
+      enLoggrad(las.rader, 'las', 'object_missing', 'ENOTDIR');
     } finally {
       await rm(blockering, { force: true });
     }
@@ -229,9 +266,15 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     await rm(objekt);
     await mkdir(objekt);
 
-    const res = await api.post(`${co()}/actions/confirm_receipt_file`).set(auth()).send({ file_id: fileId });
+    const { svar: res, rader } = await driftlogg(
+      () => api.post(`${co()}/actions/confirm_receipt_file`).set(auth()).send({ file_id: fileId }),
+    );
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.error).toBe('object_missing');
+    // Samma form som object_missing ur las: lagringens namn i details.
+    expect(res.body.details).toEqual({ lagring: 'lokal' });
+    // storlek svarade null utan något Node-fel, så felkoden är tom ('-').
+    enLoggrad(rader, 'storlek', 'object_missing', '-');
     expect(await status(fileId)).toBe('uploaded');
   });
 
@@ -242,15 +285,17 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     await rm(objektsokvag(nyckel));
     await mkdir(objektsokvag(nyckel));
 
-    const res = await hamta(fileId);
+    const { svar: res, rader } = await driftlogg(() => hamta(fileId));
     expect(res.status, JSON.stringify(res.body)).toBe(503);
     expect(res.body.error).toBe('storage_unavailable');
     expect(res.body.details).toEqual({ lagring: 'lokal', operation: 'las' });
     expect(JSON.stringify(res.body)).not.toContain(lagringsrot());
+    enLoggrad(rader, 'las', 'storage_unavailable', 'EISDIR');
 
-    const fel = await felet(objektlagring().las(nyckel));
-    expect(fel).toMatchObject({ status: 503, code: 'storage_unavailable' });
-    expect(fel.message).not.toContain(lagringsrot());
+    const las = await driftlogg(() => felet(objektlagring().las(nyckel)));
+    expect(las.svar).toMatchObject({ status: 503, code: 'storage_unavailable' });
+    expect(las.svar.message).not.toContain(lagringsrot());
+    enLoggrad(las.rader, 'las', 'storage_unavailable', 'EISDIR');
   });
 
   it('7.2 L4 objektet borttaget vid nedladdningen: 409 object_missing som namnger lagringen', async () => {
@@ -258,10 +303,12 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     const fileId = await bifoga(receiptId, jpeg(6_000));
     await rm(objektsokvag(await nyckelFor(fileId)));
 
-    const res = await hamta(fileId);
+    // Ett försvunnet objekt för en bekräftad bilaga lämnar ett spår i driften.
+    const { svar: res, rader } = await driftlogg(() => hamta(fileId));
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.error).toBe('object_missing');
     expect(res.body.details).toEqual({ lagring: 'lokal' });
+    enLoggrad(rader, 'las', 'object_missing', 'ENOENT');
   });
 
   it('7.2 L5 ingen överskrivning: andra skrivningen av samma nyckel ger 409 object_exists, och de första bytesen ligger kvar', async () => {
@@ -270,9 +317,10 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     const b = Buffer.alloc(6_000, 0x11);
     await objektlagring().skriv(nyckel, a);
 
-    const fel = await felet(objektlagring().skriv(nyckel, b));
+    const { svar: fel, rader } = await driftlogg(() => felet(objektlagring().skriv(nyckel, b)));
     expect(fel).toMatchObject({ status: 409, code: 'object_exists' });
     expect(fel.details).toEqual({ lagring: 'lokal' });
+    enLoggrad(rader, 'skriv', 'object_exists', 'EEXIST');
     expect((await objektlagring().las(nyckel)).equals(a)).toBe(true);
   });
 
@@ -284,16 +332,20 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
     await rm(objekt);
     await symlink(objekt, objekt);
     try {
-      const res = await api.post(`${co()}/actions/confirm_receipt_file`).set(auth()).send({ file_id: fileId });
+      const { svar: res, rader } = await driftlogg(
+        () => api.post(`${co()}/actions/confirm_receipt_file`).set(auth()).send({ file_id: fileId }),
+      );
       expect(res.status, JSON.stringify(res.body)).toBe(503);
       expect(res.body.error).toBe('storage_unavailable');
       expect(res.body.details).toEqual({ lagring: 'lokal', operation: 'storlek' });
       expect(JSON.stringify(res.body)).not.toContain(lagringsrot());
+      enLoggrad(rader, 'storlek', 'storage_unavailable', 'ELOOP');
       expect(await status(fileId)).toBe('uploaded');
 
-      const fel = await felet(objektlagring().storlek(nyckel));
-      expect(fel).toMatchObject({ status: 503, code: 'storage_unavailable' });
-      expect(fel.message).not.toContain(lagringsrot());
+      const storlek = await driftlogg(() => felet(objektlagring().storlek(nyckel)));
+      expect(storlek.svar).toMatchObject({ status: 503, code: 'storage_unavailable' });
+      expect(storlek.svar.message).not.toContain(lagringsrot());
+      enLoggrad(storlek.rader, 'storlek', 'storage_unavailable', 'ELOOP');
     } finally {
       await rm(objekt, { force: true });
     }
@@ -301,10 +353,46 @@ describe('7.2 lagringsfelen (FR-15): varje fel namnger lagringen och visar aldri
 
   it('7.2 L7 städningen är tyst: radera löser sig för ett saknat objekt och för en katalog (regression)', async () => {
     const saknas = nyLagringsnyckel(companyId, randomUUID(), 'jpg');
-    await expect(objektlagring().radera(saknas)).resolves.toBeUndefined();
-
     const katalog = nyLagringsnyckel(companyId, randomUUID(), 'jpg');
     await mkdir(objektsokvag(katalog), { recursive: true });
-    await expect(objektlagring().radera(katalog)).resolves.toBeUndefined();
+
+    const { rader } = await driftlogg(async () => {
+      await expect(objektlagring().radera(saknas)).resolves.toBeUndefined();
+      await expect(objektlagring().radera(katalog)).resolves.toBeUndefined();
+    });
+    expect(rader).toEqual([]);
+  });
+
+  it('7.2 L8 en skrivning som faller mitt i lämnar ingen halv fil: 503 storage_unavailable (skriv), och samma nyckel går att skriva igen', async () => {
+    // Full disk eller ett I/O-fel mitt i skrivningen går inte att plantera med
+    // filtyper. En datakälla som faller efter första biten tar samma väg genom
+    // Node: wx har skapat filen, bytes är skrivna, och sedan faller skrivningen.
+    // Felet bär en sökväg i message, som Node-felen gör.
+    const a = jpeg(6_000);
+    const fall = [
+      { nodfel: 'EIO', loggad: 'EIO' },
+      // En kod som inte är en felkod (här en sökväg) förs aldrig vidare.
+      { nodfel: path.join(lagringsrot(), 'ENOSPC'), loggad: 'okänd' },
+    ];
+    for (const { nodfel, loggad } of fall) {
+      const nyckel = nyLagringsnyckel(companyId, randomUUID(), 'jpg');
+      function* fallerMittI(): Generator<Buffer> {
+        yield a.subarray(0, 3_000);
+        throw Object.assign(new Error(`${nodfel}: write '${objektsokvag(nyckel)}'`), { code: nodfel });
+      }
+
+      const { svar: fel, rader } = await driftlogg(
+        () => felet(objektlagring().skriv(nyckel, fallerMittI() as unknown as Buffer)),
+      );
+      expect(fel, nodfel).toMatchObject({ status: 503, code: 'storage_unavailable' });
+      expect(fel.details, nodfel).toEqual({ lagring: 'lokal', operation: 'skriv' });
+      expect(fel.message, nodfel).not.toContain(lagringsrot());
+      enLoggrad(rader, 'skriv', 'storage_unavailable', loggad);
+      // Den halva filen är borta, så ett nytt försök vägras inte med object_exists.
+      expect(await objektlagring().storlek(nyckel), nodfel).toBeNull();
+
+      await objektlagring().skriv(nyckel, a);
+      expect((await objektlagring().las(nyckel)).equals(a), nodfel).toBe(true);
+    }
   });
 });

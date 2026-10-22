@@ -25,24 +25,43 @@ import { BadRequestError, ConflictError, ServiceUnavailableError } from '../lib/
 /** Namnen på de lagringar som är byggda — samma värden som konfigurationen godtar. */
 export type Lagringsnamn = typeof config.RECEIPT_STORAGE_DRIVER;
 
+/**
+ * Varje drivrutin svarar likadant på samma läge på objektets plats:
+ *
+ * - **Saknas** — ingenting ligger på platsen, eller platsen kan inte finnas
+ *   eftersom en del av vägen dit inte är en katalog. `las` kastar 409
+ *   `object_missing`, `storlek` ger null.
+ * - **Något annat än ett objekt ligger på platsen** (en katalog, till exempel).
+ *   `storlek` ger null: frågan är om ett objekt finns, och lagringen har svarat
+ *   nej. `las` kastar 503 `storage_unavailable`: bytesen den ombads leverera går
+ *   inte att läsa.
+ * - **Något ligger redan på platsen**, vad det än är: `skriv` kastar 409
+ *   `object_exists` och skriver aldrig över.
+ * - **Allt annat är ett lagringsfel** (503 `storage_unavailable`), också att
+ *   `skriv` inte kan skapa platsen.
+ *
+ * Varje fel byggs av `lagringsfel` och namnger lagringen i `details.lagring`.
+ */
 export interface Objektlagring {
   /** Lagringens namn. Står i varje lagringsfel, så att felet säger vilken lagring som felar. */
   readonly namn: Lagringsnamn;
   /**
    * Skriver ett nytt objekt. Vägrar skriva över ett befintligt (409
    * `object_exists`); kastar 503 `storage_unavailable` när lagringen inte går
-   * att använda.
+   * att använda, och lämnar då inget halvskrivet objekt efter sig.
    */
   skriv(nyckel: string, data: Buffer): Promise<void>;
   /**
    * Läser hela objektet. Kastar 409 `object_missing` när objektet saknas och
-   * 503 `storage_unavailable` när lagringen inte går att använda.
+   * 503 `storage_unavailable` när det som ligger på platsen inte går att läsa
+   * (lägena ovan).
    */
   las(nyckel: string): Promise<Buffer>;
   /**
-   * Objektets storlek i bytes, eller null när objektet saknas. Kastar 503
-   * `storage_unavailable` när lagringen inte går att använda — aldrig null för
-   * ett objekt som inte går att läsa av.
+   * Objektets storlek i bytes, eller null när objektet saknas eller platsen
+   * har något annat än ett objekt (lägena ovan). Kastar 503
+   * `storage_unavailable` när lagringen inte kan svara — aldrig null för ett
+   * objekt som inte går att läsa av.
    */
   storlek(nyckel: string): Promise<number | null>;
   /** Idempotent städning — ett objekt som redan är borta är inget fel. */
@@ -83,34 +102,57 @@ function nyckelTillSokvag(nyckel: string): string {
 }
 
 type Lagringsoperation = 'skriv' | 'las' | 'storlek';
+type Lagringsfelkod = 'storage_unavailable' | 'object_missing' | 'object_exists';
 
-/** Node-felets kod (till exempel `EISDIR`), eller `okänd`. */
+/**
+ * Node-felets kod (till exempel `EISDIR`), eller `okänd`. Bara en sträng i
+ * formen av en felkod släpps igenom, så att varken felet eller driftloggen kan
+ * få fritext eller en sökväg den vägen.
+ */
 function felkod(fel: unknown): string {
   const kod = typeof fel === 'object' && fel !== null ? (fel as { code?: unknown }).code : undefined;
-  return typeof kod === 'string' ? kod : 'okänd';
+  return typeof kod === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(kod) ? kod : 'okänd';
 }
 
 /**
- * Lagringen kunde inte utföra operationen. Felet byggs av ett fast fältset —
- * lagringens namn, operationen och Node-felets kod — och aldrig av Node-felets
- * message, som bär lagringens sökväg.
+ * Den enda vägen till ett lagringsfel: varje fel en drivrutin kastar, och
+ * bekräftelsens saknade objekt (receiptFiles.ts), byggs här. Felet och
+ * driftloggens rad byggs av samma fasta fältset — lagringens namn, operationen,
+ * svarets kod och Node-felets kod (`-` när inget Node-fel finns) — och aldrig av
+ * Node-felets message, som bär lagringens sökväg.
+ *
+ * Raden behövs eftersom errorHandler svarar på ett AppError utan att logga:
+ * utan den lämnade full disk eller ett försvunnet objekt för en bokförd bilaga
+ * inget spår i driften. Formen är verkställighetens (actions/execute.ts): ett
+ * fast prefix och bara koder (lärdom 10).
  */
-function lagringsfel(lagring: Lagringsnamn, operation: Lagringsoperation, fel: unknown): ServiceUnavailableError {
-  return new ServiceUnavailableError(
-    'storage_unavailable',
-    `kvittobilagornas lagring (${lagring}) kunde inte utföra ${operation} (${felkod(fel)})`,
-    { lagring, operation },
-  );
+export function lagringsfel(
+  lagring: Objektlagring, operation: Lagringsoperation, kod: Lagringsfelkod, orsak?: unknown,
+): ConflictError | ServiceUnavailableError {
+  const nodkod = orsak === undefined ? '-' : felkod(orsak);
+  console.error('[objektlagring] lagringsfel', lagring.namn, operation, kod, nodkod);
+  switch (kod) {
+    case 'storage_unavailable':
+      return new ServiceUnavailableError(
+        kod,
+        `kvittobilagornas lagring (${lagring.namn}) kunde inte utföra ${operation} (${nodkod})`,
+        { lagring: lagring.namn, operation },
+      );
+    case 'object_missing':
+      return new ConflictError(kod, `objektet saknas i lagringen (${lagring.namn})`, { lagring: lagring.namn });
+    case 'object_exists':
+      return new ConflictError(
+        kod, `objektet finns redan i lagringen (${lagring.namn}) — lagringen skriver aldrig över`,
+        { lagring: lagring.namn },
+      );
+  }
 }
 
-function saknatObjekt(lagring: Lagringsnamn): ConflictError {
-  return new ConflictError('object_missing', 'objektet saknas i lagringen', { lagring });
-}
-
-const LOKAL: Lagringsnamn = 'lokal';
+/** Felkoderna som betyder att objektet saknas — samma lista för las och storlek. */
+const SAKNAS = new Set(['ENOENT', 'ENOTDIR']);
 
 const lokalKatalog: Objektlagring = {
-  namn: LOKAL,
+  namn: 'lokal',
   async skriv(nyckel, data) {
     const full = nyckelTillSokvag(nyckel);
     try {
@@ -118,15 +160,20 @@ const lokalKatalog: Objektlagring = {
     } catch (fel) {
       // Varje fel här är lagringens, också EEXIST: det ger mkdir när bolagets
       // katalog är en vanlig fil.
-      throw lagringsfel(LOKAL, 'skriv', fel);
+      throw lagringsfel(lokalKatalog, 'skriv', 'storage_unavailable', fel);
     }
     try {
       await writeFile(full, data, { flag: 'wx' }); // wx: vägra skriva över
     } catch (fel) {
-      if (felkod(fel) === 'EEXIST') {
-        throw new ConflictError('object_exists', 'objektet finns redan — lagringen skriver aldrig över', { lagring: LOKAL });
-      }
-      throw lagringsfel(LOKAL, 'skriv', fel);
+      if (felkod(fel) === 'EEXIST') throw lagringsfel(lokalKatalog, 'skriv', 'object_exists', fel);
+      // Varje annat fel kan komma efter att wx skapat filen (full disk mitt i
+      // skrivningen). En halv fil på nyckeln fick varje nytt försök att svara
+      // object_exists, så den tas bort innan felet kastas. Filen är det här
+      // anropets: wx vägrar en fil som redan fanns, och bilagans rad är låst.
+      await unlink(full).catch(() => {
+        // Ingen fil att ta bort: felet kom innan wx skapade den.
+      });
+      throw lagringsfel(lokalKatalog, 'skriv', 'storage_unavailable', fel);
     }
   },
   async las(nyckel) {
@@ -134,23 +181,21 @@ const lokalKatalog: Objektlagring = {
     try {
       return await readFile(full);
     } catch (fel) {
-      if (felkod(fel) === 'ENOENT') throw saknatObjekt(LOKAL);
-      throw lagringsfel(LOKAL, 'las', fel);
+      throw lagringsfel(lokalKatalog, 'las', SAKNAS.has(felkod(fel)) ? 'object_missing' : 'storage_unavailable', fel);
     }
   },
   async storlek(nyckel) {
     const full = nyckelTillSokvag(nyckel);
     try {
       const info = await stat(full);
-      // En katalog (eller något annat än en vanlig fil) på objektets plats är
-      // inget objekt.
+      // Något annat än en vanlig fil på objektets plats (en katalog, till
+      // exempel) är inget objekt: lagringen har svarat, och svaret är nej.
       return info.isFile() ? info.size : null;
     } catch (fel) {
-      const kod = felkod(fel);
-      if (kod === 'ENOENT' || kod === 'ENOTDIR') return null;
+      if (SAKNAS.has(felkod(fel))) return null;
       // Ett objekt som inte går att läsa av är ett lagringsfel, inte ett
       // saknat objekt: "går inte att läsa" och "finns inte" har olika koder.
-      throw lagringsfel(LOKAL, 'storlek', fel);
+      throw lagringsfel(lokalKatalog, 'storlek', 'storage_unavailable', fel);
     }
   },
   async radera(nyckel) {
