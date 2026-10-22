@@ -2782,7 +2782,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         source_ref: safeText(300).optional(),
       })
       .strict(),
-    handler: (ctx, i) => recordInteraction(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => recordInteraction(ctx.client, ctx.companyId, ctx.userId, i as never, { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'record_crm_commitment',
@@ -2800,7 +2800,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         source_ref: safeText(300).optional(),
       })
       .strict(),
-    handler: (ctx, i) => recordCommitment(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => recordCommitment(ctx.client, ctx.companyId, ctx.userId, i as never, { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'set_crm_commitment_status',
@@ -2808,7 +2808,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'write',
     inputSchema: z.object({ commitment_id: UuidSchema, status: z.enum(['open', 'done', 'dropped']) }).strict(),
     handler: (ctx, i: { commitment_id: string; status: 'open' | 'done' | 'dropped' }) =>
-      setCommitmentStatus(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.status),
+      setCommitmentStatus(ctx.client, ctx.companyId, ctx.userId, i.commitment_id, i.status, { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'log_contact',
@@ -2823,7 +2823,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       summary: safeText(2000).optional(),
       occurred_at: IsoDateTimeSchema.optional(),
     }).strict(),
-    handler: (ctx, i) => logContact(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => logContact(ctx.client, ctx.companyId, ctx.userId, i as never, { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'snooze_crm_commitment',

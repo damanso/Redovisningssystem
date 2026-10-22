@@ -138,6 +138,29 @@ Filtreringen redovisas i `kept_human_fields` (`"Nordic Vision Retail AB:
 org_number"`). En synk som tyst kastar bort en del av sin egen skrivning ser ut
 som en synk som lyckades helt.
 
+Kontaktpunktens tidpunkt (`occurred_at`), kanal, riktning och sammanfattning
+bär ursprung per fält och skyddas var för sig. Detsamma gäller löftets riktning,
+text (`body`), förfallodatum, status och löftestid (`occurred_at`). Intaget
+skriver `sync` med `source_system` och `source_ref` för de fält som faktiskt
+anges; ett nytt löftes standardstatus `open` får inget påhittat ursprung.
+Statusens ursprung sätts genom `set_crm_commitment_status`. Personens
+kortlänk (`external_ref`) och anteckning (`notes`) omfattas också.
+
+Stoppade händelsefält redovisas i `kept_human_fields` på formen:
+`"<organisation>: <källnyckel> <fält>"`
+Exempel:
+`"Nordic Vision Retail AB: linear:LOC-412 due_date"`
+
+Prefixet är organisationens namn på raden skrivningen landade på, även efter
+omstyrning genom ett alias. En händelse utan organisation har personens namn
+som prefix. Organisationens och personens egna poster behåller formen
+`"<namn>: <fält>"`. En befintlig händelse räknas i `*_unchanged` också när
+något fält skyddats. Fält som människan inte satt följer fortfarande källan.
+Ett utelämnat förfallodatum lämnas oförändrat.
+
+Ett värde utan ursprungsrad låses inte retroaktivt: äldre värden är oskyddade
+tills en människa satt eller bekräftat dem. Ingen bakåtfyllnad görs.
+
 | Åtgärd | Gör |
 | :---- | :---- |
 | `get_crm_organization` | Returnerar `provenance` — ursprunget per fält, för organisationen och för varje person |

@@ -153,6 +153,140 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (CRM Story 8.4, sändvägsprovet — stoppad i uppgift 3):**
+  Nya `server/test/sandvagHelper.ts` och `server/test/crm-sandvag.test.ts`
+  med grafkontroller, 36 kommenterade tillåtna moduler och handlersvep.
+  Fem fall skrivna: N1/S1/S2 täcker AC1 och N2/S3 avser AC2/AC3.
+  Separata rena kontroller visade rött med skelett/tom lista, därefter grönt
+  för N1/S1/S2 och N2 (17 planteringar inklusive tre extra grenkontroller).
+  S3 förblir rött: berättelsens fasta log_contact-ankare kräver två moduler,
+  medan befintliga `sourceForActor(ctx.actor)` på registry.ts:2826 också
+  pekar på crmProvenance.ts. Handlersvepet hittar inga sändande CRM-moduler.
+  Fallet lämnas orört enligt berättelsen; ingen produktionskod ändras.
+  Beslut om det låsta ankaret behövs innan uppgift 3 kan godkännas.
+  Uppgift 4 (N3, D1–D3, KV/AC4) är inte påbörjad; status in-progress.
+  Typecheck exit 0 efter varje utförd röd/grön fas. `npm test` försökt i
+  varje fas men stoppas före fallen med `connect EPERM 127.0.0.1:5433`.
+  Ingen grön full regression påstås. Build, Hermes-prov och driftkontroll
+  inte körda; kedjan kör fulla grindar. Tidigare externa röda prov har inte
+  omprövats. Dagsytans formspråk och fokusordning bevaras.
+
+- **2026-10-22 (CRM Story 8.3, en GDPR-raderad källa återuppstår inte):**
+  Ny `server/test/crm-gdpr-replay.test.ts` med 16 fall: R0–R4 täcker AC1:s
+  godkända radering och omsändning, exakt GDPR-skäl, intern felkod och
+  radantal i fyra tabeller som ägare/app; G1–G3 täcker AC3:s fyra tillåtna
+  kolumner, exakta källpar och append-only; N1–N3 täcker AC2/AC3:s nya nyckel,
+  annat källsystem och fortsatt spärr; K/KV och T1–T3 täcker AC4:s negativa
+  kontroll med borttagna gravstenar och tenant-isolering via HTTP/RLS.
+  Ingen produktionskod, migration, åtgärd, rutt, kontrakt eller formgivning
+  ändrad i denna story. Befintliga regressionsfiler lästa och orörda.
+  Rött-först skrivet med nollräknare före SQL och K/KV före planteringen;
+  T-fallen skrivna före grannfixturen gav TS2454 i typecheck.
+  `npm test` försökt i varje fas men stoppas före fallen i globalSetup med
+  `connect EPERM 127.0.0.1:5433`; varken nya fall eller befintlig regression
+  har exekverats. Kedjan kör fulla grindar efter leveransen enligt uppdraget.
+  Slutlig typecheck/build samt diffkontroll exit 0; punktvis DoD med
+  databasundantag finns i berättelsens Dev Agent Record. Berättelse och
+  sprintstatus: review. Inga Hermes-prov eller driftkontroller körda; externa
+  röda prov från föregående sessionsrad har inte omprövats.
+
+- **2026-10-22 (CRM Story 4.4, kadensens regressionsprov):**
+  `server/test/crm-cadence-merge-search.test.ts` utökad med 20 fall:
+  K1–K5/KV jämför senaste kontakt, tystnad och kontaktantal genom API/vy,
+  kräver tre auditrader och avslöjar inställning plus kontakt; S1–S6 prövar
+  standardens 29/30/31-gräns, rapporten och formulärets hint; O1–O4 prövar
+  0/5000/text med synligt fel och kvarvarande kadens samt giltigt värde;
+  T1–T4 prövar tenant-isolering genom API, vy och läsningar.
+  Bara provfilen ändras i koden; ingen produktionskod, formgivning, kontrakt,
+  migration eller beroende ändras. De 19 befintliga fallen är oförändrade.
+  Rött/grönt för den verkliga rena klockjämföraren verifierat separat.
+  Typecheck exit 0 efter varje uppgift; röd fas före fixturuppläggning
+  i uppgift 2–4. Avslutande build exit 0 och git diff --check exit 0.
+  `npm test` försökt i varje fas men stoppas i globalSetup med
+  `connect EPERM 127.0.0.1:5433`, före testfallen. Ingen grön HTTP-svit
+  påstås; kedjan kör typecheck, build och hela sviten efter leveransen.
+  DoD prövad punktvis: 23 godkända, två körningsgrindar med databasundantag,
+  en ej tillämplig; berättelse och sprintstatus review.
+  Inga Hermes-prov eller driftkontroller körda. Föregående sessions noterade
+  externa röda prov (adresskontraktet, bmadglidning, crmintag) har inte omprövats.
+
+- **2026-10-22 (CRM Story 1.3, ursprung och Stämmer på relationssidan):**
+  K1 är en gemensam renderingsväg i `routes.ts` för Uppgifter och Personer,
+  inklusive status och personens namn/telefon. Human står omärkt, bokföring
+  märks som faktum, sync/ai/import med tillgänglig ✦ och källnamn/nyckel;
+  äldre värden visar ursprung okänt och tomma värden saknar märke/knapp.
+  Personens gren i befintlig bekräftelserutt prövar bolag/relation genom
+  `assertPersonInOrganization` i `crmRelations.ts` före samma befintliga action.
+  Ingen ny rutt, åtgärd, migration, kontraktsändring eller beroende.
+  `crm-views.test.ts`: 21 nya fall U1–U8, V1–V2, S1–S3, P1–P6 och A1–A2.
+  Rött: 9/28 respektive 6/34; riktat slutläge 36/36 gröna.
+  Full regression före kryssning: uppgift 1 **173 filer / 2764 tester**,
+  uppgift 2 **173 filer / 2770 tester**. Typecheck och build exit 0.
+  Uppgift 3: **173 filer / 2772 tester**, 750,74 s, exit 0.
+  Sparad avslutande regression: **173 filer / 2772 tester**, 748,58 s.
+  Återupptagningen kontrollerade kod/prov och nio regressionsfiler utan
+  kodändring; ny typecheck och build exit 0. Ny `npm test` stoppades i
+  globalSetup av **connect EPERM 127.0.0.1:5433**, före testfallen.
+  Enligt uppdragets databasundantag fortsätter leveransen med denna
+  begränsning dokumenterad; kedjan kör hela sviten efteråt. DoD prövad
+  punktvis (26 punkter, databasundantaget särredovisat); status review.
+  Sandlådan nekade först databasen med EPERM; automatisk behörighetskontroll
+  godkände testerna mot stående testdatabas. Inga Hermes-prov eller
+  driftkontroller körda. Enligt berättelsens baslinje var adresskontraktet,
+  bmadglidning och crmintag röda av andra skäl (ruttkontrakt, BMAD-artefakter
+  respektive intagets statefil i drift); inga nya rutter införs här.
+  Stilval: husets Daglig liggare, Public Sans/IBM Plex Mono, befintliga
+  faktakort/tokens och fokusmarkering ger igenkänning; riktiga formulärknappar
+  följer dokumentets fokusordning. Tomt läge och felnotis behålls, och
+  serverrenderingen kommer färdig utan separat laddningsindikator.
+
+- **2026-10-22 (CRM Story 1.1, omtag efter två High-fynd):**
+  Personens e-post- och namnmatchning tar nu radlås före ursprungskontrollen.
+  Därmed ser vakten människans committade värde och ursprung vid överlappande
+  synk/agent, och även namnreservvärdet kommer från den låsta raden.
+  `crm-event-provenance.test.ts` har tio nya samtidighetsfall: åtta kombinationer
+  av matchning, external_ref/notes och sync/ai samt två negativa kontroller.
+  Låsväntan beläggs med pg_blocking_pids, utan tidsbaserad startgissning.
+  Rött: **8 failed | 38 passed (46)**. Grönt med befintlig proveniensregression:
+  **2 filer / 59 tester**, 18,16 s. Slutlig typecheck och build exit 0;
+  full regression exit 0: **173 filer / 2751 tester**, 740,66 s.
+  Båda High-fynden kvitterade efter denna regression. Steg 9:s avslutande
+  `npm test`: exit 0, **173 filer / 2751 tester**, 742,11 s. Punktvis DoD
+  genomförd: **PASS, 26/26 behandlade** (en ej tillämplig), 19/19 kryss.
+  Kontrollkatalogen rensad, berättelse och sprintstatus **review**. Sandlådan nekade först databasåtkomsten
+  med EPERM; samma provkommando godkändes automatiskt för testdatabasen.
+  Inga Hermes-prov eller driftkontroller körda; crmintag var rött i baslinjen
+  enligt berättelsens underlag av andra skäl (intagets statefil i drift).
+
+- **2026-10-22 (CRM Story 1.1, ursprung och människoskydd per händelsefält):**
+  Migration 0087 utvidgar `crm.field_provenance` med kontaktpunkter och löften,
+  sammansatta FK, kaskad och partiella unika index, utan bakåtfyllnad.
+  `crmProvenance.ts`, `crmRelations.ts`, `crmIngest.ts` och registret skriver
+  ursprung med aktören, skyddar varje människosatt fält och redovisar det som
+  stoppats. Personens `external_ref` och `notes` omfattas också. Intagets
+  händelseposter har formen `"<organisation>: <källnyckel> <fält>"` (personens
+  namn utan organisation); API-kontraktet och MCP-dokumentationen är uppdaterade.
+  Den befintliga ocommittade implementationen har bevarats och verifierats
+  genom rött/grönt i berättelsens ordning i en separat kontrollkopia:
+  1a: 4 röda/3 stoppade; 1b: 12 gröna med migrationsregression.
+  2a: 6 röda/7 gröna och typfel för de nya målen; 2b: 26 gröna.
+  3a: 13 röda/15 gröna; 3b: 115 gröna i sju CRM-filer.
+  4a: 7 röda/29 gröna; 4b: 49 gröna inklusive organisationsregression.
+  Provfilen innehåller M1–M7, P1–P6, H1–H15, I1–I6 och I1a/I1b (36 fall).
+  `npm run typecheck` och `npm run build` exit 0. Full regression i den
+  bevarade arbetskopian: **173 filer / 2741 tester gröna** (735,96 s).
+  Kontrollkopians slutläge är identiskt med kod- och provfilerna i leveransen.
+  Steg 9:s avslutande `npm test`: exit 0, **173 filer / 2741 tester gröna**
+  (724,57 s). DoD: PASS, 26 punkter prövade (två ej tillämpliga), 17/17 kryss.
+  Berättelsen och sprintens berättelserad är satta till **review**.
+  Sandlådans första `npm test` stoppades före testfall med
+  `EPERM 127.0.0.1:5433`; automatisk behörighetskontroll godkände åtkomsten.
+  Inga Hermes-prov eller driftkontroller körda; crmintag var rött i baslinjen
+  enligt berättelsens underlag av andra skäl (intagets statefil i drift).
+  Stilval: befintliga Daglig liggare med Public Sans, IBM Plex Mono och husets
+  fokusmarkering behålls, så att statusgreppen känns igen och nås på samma sätt.
+  Berättelsen tillför ursprung och skydd bakom de befintliga formulären.
+
 - **2026-10-22 (Story 7.2, omtag efter kodgranskningen: sex fynd, FR-15):**
   1. **En väg till varje lagringsfel:** `lagringsfel` i
      `server/src/services/objektlagring.ts` bygger nu varje

@@ -60,7 +60,8 @@ import {
 } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
-import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { assertPersonInOrganization, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
 import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPersonnamn,
@@ -6645,7 +6646,7 @@ const orgStatusChip = (status: string): Raw =>
   status === 'customer' ? chip('Kund', 'ok')
     : status === 'prospect' ? chip('Prospekt', 'info')
     : status === 'partner' ? chip('Partner', 'muted')
-    : chip(status, 'muted');
+    : chip(orgStatusText(status), 'muted');
 
 // ---------------------------------------------------------------------------
 // F4: ursprunget, utskrivet.
@@ -6658,22 +6659,55 @@ const orgStatusChip = (status: string): Raw =>
 // Bara det osäkra kostar uppmärksamhet.
 // ---------------------------------------------------------------------------
 interface ProvenanceView {
-  source: string; reason: string | null; source_system: string | null; source_ref: string | null;
+  source: ProvenanceSource; reason: string | null; source_system: string | null; source_ref: string | null;
 }
 
 function ursprungsMark(p: ProvenanceView | undefined): Raw {
-  if (!p || p.source === 'human') return html``;
-  if (p.source === 'accounting') {
-    return html` <span class="prov prov--fact" title="Härlett ur bokföringen${p.reason ? ` · ${p.reason}` : ''}">ur bokföringen</span>`;
+  if (!p) {
+    return html` <span class="prov prov--fact" title="Skrevs innan ursprung började sparas — inte bekräftat av dig">ursprung okänt</span>`;
   }
-  const varifran = p.source_system ? `${p.source_system}${p.source_ref ? ` · ${p.source_ref}` : ''}` : 'AI:ts tolkning';
-  return html` <span class="prov prov--guess" title="Inte bekräftad av dig · ${p.reason ?? varifran}">✦</span>`;
+  switch (p.source) {
+    case 'human': return html``;
+    case 'accounting':
+      return html` <span class="prov prov--fact" title="Härlett ur bokföringen${p.reason ? ` · ${p.reason}` : ''}">ur bokföringen</span>`;
+    case 'sync':
+    case 'ai':
+    case 'import': {
+      const reserv = p.source === 'ai' ? 'AI:ts tolkning' : p.source === 'sync' ? 'synken' : 'importen';
+      const varifran = p.source_system
+        ? `${kanalKalla(p.source_system)}${p.source_ref ? ` · ${p.source_ref}` : ''}`
+        : p.reason ?? reserv;
+      return html` <span class="prov prov--guess" role="img" aria-label="Inte bekräftad av dig" title="Inte bekräftad av dig · ${varifran}">✦</span>`;
+    }
+    default: {
+      // Ett nytt ursprung måste få en uttrycklig form innan det kan visas.
+      const uttomt: never = p.source;
+      return uttomt;
+    }
+  }
 }
 
 /** Behöver uppgiften bekräftas? Ett faktum ur bokföringen gör det inte — det är
- *  redan verifierbart mot kundregistret. En gissning gör det. */
+ *  redan verifierbart mot kundregistret. Gissningar och okänt ursprung gör det. */
 const behoverBekraftas = (p: ProvenanceView | undefined): boolean =>
-  Boolean(p) && p!.source !== 'human' && p!.source !== 'accounting';
+  p?.source !== 'human' && p?.source !== 'accounting';
+
+/** En K1-form för värde, ursprung och bekräftelse. Tomma värden påstår ingenting. */
+function ursprungsfalt(
+  klass: string, value: Raw, finns: boolean, provenance: ProvenanceView | undefined,
+  mal: { action: string; personId?: string }, field: string, back: string,
+): Raw {
+  if (!finns) return html`<span class="${klass}">${value}</span>`;
+  return html`<span class="${klass}">${value}${ursprungsMark(provenance)}</span>
+    ${behoverBekraftas(provenance)
+      ? html`<form method="post" action="${mal.action}">
+          <input type="hidden" name="back" value="${back}">
+          <input type="hidden" name="field" value="${field}">
+          ${mal.personId ? html`<input type="hidden" name="person_id" value="${mal.personId}">` : ''}
+          <button class="btn btn--ghost btn--sm" type="submit" title="Bekräfta uppgiften — då skriver ingen synk över den">Stämmer</button>
+        </form>`
+      : ''}`;
+}
 
 // ---------------------------------------------------------------------------
 // Dagsytan (F2). Landningen för relationsdelen.
@@ -6997,15 +7031,17 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const back = `/app/c/${companyId}/relations/${o.id}`;
     const oppna = o.commitments.filter((c) => c.status === 'open').length;
 
-    // Fyra uppgifter som kan komma varsomifrån — därför bär de sitt ursprung.
-    const uppgifter: Array<{ field: string; label: string; value: Raw }> = [
-      { field: 'name', label: 'Namn', value: html`${o.name}` },
-      { field: 'org_number', label: 'Org.nr', value: html`${o.org_number ?? '—'}` },
-      { field: 'website', label: 'Webbplats', value: html`${o.website ?? '—'}` },
+    // Fem uppgifter: även status kan komma från en synk eller agent (lucka 12).
+    const uppgifter: Array<{ field: string; label: string; value: Raw; finns: boolean }> = [
+      { field: 'name', label: 'Namn', value: html`${o.name}`, finns: true },
+      { field: 'org_number', label: 'Org.nr', value: html`${o.org_number ?? '—'}`, finns: o.org_number !== null },
+      { field: 'website', label: 'Webbplats', value: html`${o.website ?? '—'}`, finns: o.website !== null },
+      { field: 'status', label: 'Status', value: orgStatusChip(o.status), finns: true },
       {
         field: 'customer_id',
         label: 'Kund i registret',
         value: entityLink(companyId, 'customer', o.customer_id, o.customer_name ?? (o.customer_id ? 'Kundkortet' : '—')),
+        finns: o.customer_id !== null,
       },
     ];
 
@@ -7054,19 +7090,13 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
 
           ${/* F4: uppgifterna om bolaget — med sitt ursprung. Här, och inte i
                nyckeltalen ovanför, för att nyckeltalen ALLTID är härledda ur
-               bokföringen; de här fyra kan komma varsomifrån. */ ''}
+               bokföringen; de här fem kan komma varsomifrån. */ ''}
           <div class="factcard">
             <div class="factcard__head">Uppgifter</div>
             ${uppgifter.map((u) => html`<div class="uppgift">
               <span class="k">${u.label}</span>
-              <span class="v">${u.value}${ursprungsMark(o.provenance[u.field])}</span>
-              ${behoverBekraftas(o.provenance[u.field])
-                ? html`<form method="post" action="/app/c/${companyId}/relations/${o.id}/confirm">
-                    <input type="hidden" name="back" value="${back}">
-                    <input type="hidden" name="field" value="${u.field}">
-                    <button class="btn btn--ghost btn--sm" type="submit" title="Bekräfta uppgiften — då skriver ingen synk över den">Stämmer</button>
-                  </form>`
-                : ''}
+              ${ursprungsfalt('v', u.value, u.finns, o.provenance[u.field],
+                { action: `${back}/confirm` }, u.field, back)}
             </div>`)}
             <details class="rattaform">
               <summary>Rätta uppgifter</summary>
@@ -7088,9 +7118,14 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               o.people.length === 0
                 ? html`<p class="muted" style="font-size:13px;margin:0">Inga personer ännu. De läggs upp av synken när ett mail kommer in.</p>`
                 : o.people.map((p) => html`<div class="person">
-                    <span class="person__n">${p.name}</span>
-                    ${p.role_title ? html`<span class="person__r">${p.role_title}${ursprungsMark(p.provenance?.role_title)}</span>` : ''}
-                    ${p.email ? html`<span class="person__e">${p.email}${ursprungsMark(p.provenance?.email)}</span>` : ''}</div>`)
+                    ${ursprungsfalt('person__n', html`${p.name}`, true, p.provenance.name,
+                      { action: `${back}/confirm`, personId: p.id }, 'name', back)}
+                    ${p.role_title ? ursprungsfalt('person__r', html`${p.role_title}`, true, p.provenance.role_title,
+                      { action: `${back}/confirm`, personId: p.id }, 'role_title', back) : ''}
+                    ${p.email ? ursprungsfalt('person__e', html`${p.email}`, true, p.provenance.email,
+                      { action: `${back}/confirm`, personId: p.id }, 'email', back) : ''}
+                    ${p.phone ? ursprungsfalt('person__e', html`${p.phone}`, true, p.provenance.phone,
+                      { action: `${back}/confirm`, personId: p.id }, 'phone', back) : ''}</div>`)
             }
           </div>
 
@@ -7456,6 +7491,19 @@ viewRouter.post('/c/:companyId/relations/:id/confirm', page(async (req, res) => 
   const companyId = parseCompanyId(req.params.companyId);
   const id = UuidSchema.parse(req.params.id);
   const field = String((req.body as { field?: unknown }).field ?? '');
+  const person = (req.body as { person_id?: unknown }).person_id;
+  if (person !== undefined && person !== '') {
+    const parsed = UuidSchema.safeParse(person);
+    if (!parsed.success) throw new NotFoundError('person');
+    const personId = parsed.data;
+    // Läsprövningen och åtgärden har varsin tenanttransaktion. Åtgärden prövar
+    // bolaget igen; mellan dem kan personen bara flyttas inom det egna bolaget.
+    await withTenantTransaction(getUserId(req), companyId,
+      (client) => assertPersonInOrganization(client, companyId, id, personId));
+    await runViewAction(req, res, companyId, 'confirm_crm_value',
+      { person_id: personId, field }, backToCrm(req, companyId, `relations/${id}`));
+    return;
+  }
   await runViewAction(req, res, companyId, 'confirm_crm_value',
     { organization_id: id, field }, backToCrm(req, companyId, `relations/${id}`));
 }));

@@ -2147,3 +2147,23 @@ begärdes, och bandet *Väntar på dig* får raden *Ny bedömning begärd* med
 **Bedöm** (bara på ett aktivt uppdrag). På ett stängt uppdrag säger kortet att
 begäran inte längre kan besvaras, utan knapp. Bedömning-sidan säger före
 formuläret att bedömningen besvarar begäran.
+
+## Händelsernas ursprung per fält (CRM 1.1)
+
+`record_crm_interaction`, `record_crm_commitment`, `set_crm_commitment_status`
+och `log_contact` skriver ursprung i samma transaktion som värdet: `human`
+för en människa och `ai` för ett agent-token. Intaget skriver `sync` med
+källsystem och källnyckel. Bara fält som faktiskt skrivs får ett ursprung;
+ett nytt löftes standardstatus `open` märks inte vid skapandet.
+
+`record_crm_*` och `set_crm_commitment_status` redovisar människosatta fält
+som inte skrevs i `result.kept_human_fields` (en sorterad lista med fältnamn).
+En agent kan exempelvis inte öppna ett löfte vars status en människa satt:
+svaret innehåller den kvarvarande statusen och `kept_human_fields: ["status"]`.
+Människans egna ändringar tillåts. `log_contact` returnerar också
+`kept_human_fields` (tom vid en ny kontaktpunkt).
+
+`upsert_crm_person` skyddar nu också `external_ref` och `notes`. Intagets
+kvitto använder `"<organisation>: <källnyckel> <fält>"` för händelsefält,
+med personens namn som prefix när organisation saknas. Se
+[API-kontraktet](crm/API_KONTRAKT.md#människan-vinner) för hela svarsformen.
