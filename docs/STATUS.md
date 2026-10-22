@@ -153,6 +153,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (beslut #197 / LOC-576 — testspärr, delvis genomfört):**
+  `server/test/env.ts`: `applyTestEnv` löser först upp samtliga tre
+  databas-URL:er och prövar dem före tilldelning och före pg i globalSetup,
+  setup och migrate. Endast Postgres-URL:er med exakt 127.0.0.1:5433 tillåts;
+  även frågeparametrarna host/port prövas. Fel namnger variabel och skäl,
+  utan URL, användardel, lösenord eller ursprungligt URL-fel.
+  Nya `server/test/env.test.ts` prövar standardmiljön och alla fem TEST_*-vägar
+  i barnprocesser som bara importerar miljöfunktionen och aldrig pg.
+  `scripts/faktura-regress.mjs` läser nu `/opt/redovisning-app/shared/.env`;
+  endast sökvägen ändrades. Inget API-kontrakt eller gränssnitt ändrades.
+  **Återstår enligt uppdragets slutregler:** `.env*`, hemligheter och filer
+  utanför repot får inte röras, och inga systemändrande kommandon, npm eller
+  tester får köras. Därför har inga nycklar flyttats (berörda namn:
+  DATABASE_URL, DATABASE_ADMIN_URL och villkorligt JWT_SECRET), inga
+  `.env*`-kopior flyttats och ENVFIL i den externa
+  `~/.hermes/skills/export_entitetsregister.py` inte omdirigerats
+  (`setup_entitetsroll.sh` återanvänder den).
+  **Avstämning ej körd:** (a) saknade auditrader = ej mätt;
+  (b) avvikande auditrader = ej mätt; (c) driftens auditpekare utan användare
+  = ej mätt; (d) dumpens auditrader vars användare rensats = ej mätt.
+  Dumpåterläsningen kräver CREATE/RESTORE/DROP på 5433 och har därför inte
+  körts. Ingen anslutning eller skrivning har gjorts mot :5434.
+  **Verifiering ej körd:** npm test, build, negativa startprov, miljöfilernas
+  innehåll, /health, fakturaprovet och entitetsexporten. Ingen grön
+  acceptansutdata finns från denna session; verifieringsskriptet tar vid.
+  Läsgranskning: `git diff --check` gav ingen utdata. `git status --short`
+  visar fortsatt den redan befintliga ospårade
+  `.env.fore-losen-20260921-123718`; acceptanskravet om inga `.env*` i status
+  är därför inte uppfyllt.
+  KRAV-4–5, externa delen av KRAV-6 och KRAV-7–8 återstår.
+
 - **2026-10-22 (Story 7.2, omtag efter kodgranskningen: sex fynd, FR-15):**
   1. **En väg till varje lagringsfel:** `lagringsfel` i
      `server/src/services/objektlagring.ts` bygger nu varje

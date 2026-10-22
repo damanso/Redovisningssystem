@@ -9,7 +9,7 @@ const INVOICE_ID = process.argv[2];
 if (!INVOICE_ID) { console.error('användning: node faktura_regress.mjs <invoice_id>'); process.exit(2); }
 
 const env = Object.fromEntries(
-  fs.readFileSync('/opt/redovisning/.env', 'utf8')
+  fs.readFileSync('/opt/redovisning-app/shared/.env', 'utf8')
     .split('\n').filter(l => l.includes('=') && !l.trim().startsWith('#'))
     .map(l => { const i = l.indexOf('='); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^["']|["']$/g, '')]; })
 );
