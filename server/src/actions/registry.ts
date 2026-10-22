@@ -86,7 +86,7 @@ import { taxPlanning } from '../services/taxPlanning.js';
 import { bookDepreciation, createFixedAsset, getFixedAsset, listFixedAssets } from '../services/fixedAssets.js';
 import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, listTaxAdjustments, setAccountNonDeductible } from '../services/ink2.js';
-import { vatDeclaration } from '../services/vatDeclaration.js';
+import { MAPPABLE_VAT_BOX_CODES, setVatBoxAccounts, vatDeclaration, type VatBoxAccount } from '../services/vatDeclaration.js';
 import { generateInk2Sru } from '../services/sruExport.js';
 import { generateK2Ixbrl } from '../services/ixbrlExport.js';
 import { agiDeclaration, generateAgiXml } from '../services/agi.js';
@@ -768,6 +768,47 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ from: IsoDateSchema, to: IsoDateSchema }).strict(),
     handler: (ctx, i: { from: string; to: string }) => vatDeclaration(ctx.client, ctx.companyId, i.from, i.to),
+  }),
+  def({
+    name: 'set_vat_box_accounts',
+    title: 'Ställ in konton för momsdeklarationens rutor',
+    // Känslig enligt Davids svar 2026-10-16 (FR-19): listan styr vad filen till
+    // Skatteverket innehåller, och David godkänner den en gång i Att göra.
+    sensitivity: 'sensitive',
+    // MCP-spec kräver type:"object" på toppnivån i tools/list — därför ETT objekt
+    // med superRefine. Kontonumret är husets AccountNumberSchema och tillåtelselistan
+    // för rutorna kommer ur tjänsten, så att ingen regel står i en egen kopia här.
+    inputSchema: z
+      .object({
+        accounts: z.array(z.object({
+          account_number: AccountNumberSchema,
+          box: z.enum(MAPPABLE_VAT_BOX_CODES),
+        }).strict()).max(100),
+      })
+      .strict()
+      .superRefine((v, ctx) => {
+        const sedda = new Set<number>();
+        for (const a of v.accounts) {
+          if (sedda.has(a.account_number)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `konto ${a.account_number} står mer än en gång; ett konto räknas i exakt en ruta`,
+              path: ['accounts'],
+            });
+          }
+          sedda.add(a.account_number);
+          // Momskontona bär rutorna 10–12, 30–32 och 48 genom sina intervall.
+          if (a.account_number >= 2600 && a.account_number <= 2699) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `konto ${a.account_number} är ett momskonto och kan inte stå i kontolistan`,
+              path: ['accounts'],
+            });
+          }
+        }
+      }),
+    handler: (ctx, i: { accounts: VatBoxAccount[] }) =>
+      setVatBoxAccounts(ctx.client, ctx.companyId, ctx.userId, i.accounts),
   }),
   def({
     name: 'ink2r_schema',

@@ -12,7 +12,9 @@ import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
+import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
+import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 const SEP = ' · ';
 
@@ -300,6 +302,61 @@ export async function explainApproval(
       },
       why: 'Gallring enligt bolagets lagringsperiod. Raderingen går inte att ångra, och källhänvisningarna till det som gallras bort rensas samtidigt.',
       source: { label: 'Relationer', href: `${base}/relations` },
+    };
+  }
+
+  // Kontolistan för momsrutorna (FR-19, Story 4.5): David godkänner listan en gång,
+  // så kortet visar den före och efter i klartext, med kontonas namn. Vad varje ruta
+  // blir tas ur tjänstens vatBoxSources, samma regel som deklarationen räknar med,
+  // så att kortet aldrig säger något annat om filen till Skatteverket än den
+  // innehåller: ruta 21 utan konto för 20–24 räknas ur den utgående momsen, och en
+  // ruta som går till 0 från ett belopp «blir 0» i stället för att «förbli» det.
+  // Indatat läses defensivt med husets kontonummerschema; en post som inte håller
+  // utelämnas.
+  if (action === 'set_vat_box_accounts') {
+    if (!Array.isArray(input.accounts)) return none;
+    const efter: VatBoxAccount[] = [];
+    for (const p of input.accounts as unknown[]) {
+      const post: Record<string, unknown> = typeof p === 'object' && p !== null ? p as Record<string, unknown> : {};
+      const konto = AccountNumberSchema.safeParse(post.account_number);
+      const ruta = MAPPABLE_VAT_BOX_CODES.find((b) => b === post.box);
+      if (konto.success && ruta) efter.push({ account_number: konto.data, box: ruta });
+    }
+    const fore = await listVatBoxAccounts(client, companyId);
+    // Bolagets eget konto före standardkontot med samma nummer (som accountSums).
+    const namn = new Map((await client.query<{ account_number: number; name: string }>(
+      `SELECT DISTINCT ON (account_number) account_number, name FROM accounts
+       WHERE account_number = ANY($2::int[]) AND (company_id = $1 OR company_id IS NULL)
+       ORDER BY account_number, company_id NULLS LAST`,
+      [companyId, [...new Set([...fore, ...efter].map((a) => a.account_number))]],
+    )).rows.map((r) => [r.account_number, r.name]));
+    const ruta21UrMomsen = 'ruta 21 räknas ur den utgående momsen';
+    // Listan beskrivs mot listan före: en ruta utan konto som redan var 0 förblir 0,
+    // och en som hade konto eller räknades ur momsen blir 0.
+    const beskriv = (lista: VatBoxAccount[], jamfor: VatBoxAccount[]): string => {
+      if (lista.length === 0) {
+        return `Ingen kontolista: rutorna 06–08, 20, 22–24, 37–38 och 40 är 0, och ${ruta21UrMomsen}`;
+      }
+      const regel = vatBoxSources(lista);
+      const tidigare = vatBoxSources(jamfor);
+      const poster = [...lista]
+        .sort((x, y) => Number(x.box) - Number(y.box) || x.account_number - y.account_number)
+        .map((a) => {
+          const kontonamn = namn.get(a.account_number);
+          return `Ruta ${a.box}: ${a.account_number}${kontonamn ? ` ${kontonamn}` : ''}`;
+        });
+      const nollor = MAPPABLE_VAT_BOX_CODES.filter((b) => regel[b] === 'zero');
+      const blir = nollor.filter((b) => tidigare[b] !== 'zero');
+      const forblir = nollor.filter((b) => tidigare[b] === 'zero');
+      if (blir.length > 0) poster.push(`Utan konto, blir 0: ${blir.join(', ')}`);
+      if (forblir.length > 0) poster.push(`Utan konto, förblir 0: ${forblir.join(', ')}`);
+      if (regel['21'] === 'reconstructed') poster.push(`Utan konto för 20–24: ${ruta21UrMomsen}`);
+      return poster.join(SEP);
+    };
+    return {
+      change: { from: beskriv(fore, fore), to: beskriv(efter, fore) },
+      why: 'Momsdeklarationen räknar rutorna ur kontona i listan för alla perioder från nästa läsning. Ett konto räknas i exakt en ruta och lämnar de intervall det annars hade räknats i. Ingenting bokförs.',
+      source: { label: 'Momsdeklaration', href: `${base}/vat` },
     };
   }
 

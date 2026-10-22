@@ -153,6 +153,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (Story 4.5, omtag efter kodgranskningen: fyra fynd, FR-19):**
+  1. **Ändrat:** förslagskortet för `set_vat_box_accounts` i
+     `server/src/services/approvalSummary.ts` tar vad varje ruta blir ur den
+     nya regeln `vatBoxSources` i `server/src/services/vatDeclaration.ts`,
+     som deklarationen också läser för ruta 21. Utan konto för 20–24 säger
+     kortet att ruta 21 räknas ur den utgående momsen, inte att den förblir
+     0, och en ruta som går till 0 från ett belopp «blir 0».
+     `setVatBoxAccounts` tar ett transaktionslås per bolag före DELETE, så
+     att två samtidiga godkännanden varken ger en union av listorna eller en
+     krock i primärnyckeln. Registrets schema och kortets läsning av
+     kontonumret använder `AccountNumberSchema`. Filhuvudet och kommentarerna
+     i `vatDeclaration.ts` beskriver beräkningen med kontolistan.
+  2. **Prov:** M10, L9a–L9d, L10 och L11 i
+     `server/test/vat-declaration.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal krävde
+     godkännande för npm, och det gick inte att ge. Kedjan kör `npm ci`,
+     typecheck och hela sviten efteråt.
+  4. **Baslinjen:** oförändrad sedan punkten nedan; omtaget rör inte
+     provvaktens källor eller huvudet i `docs/STATUS.md`.
+
+- **2026-10-22 (Story 4.5, momsdeklarationens nollsatta rutor räknas ur bokföringen, FR-19):**
+  1. **Ändrat:** migration 0086 (`vat_box_accounts`, bolagets kontolista för
+     momsrutorna, med RLS och FORCE; app har SELECT, INSERT och DELETE),
+     den känsliga åtgärden `set_vat_box_accounts` i registret, reglerna
+     (`MAPPABLE_VAT_BOX_CODES`, `mappedBoxAmounts`, `withoutMappedAccounts`,
+     `reverseIsDistributed`, `reverseBaseWarning`, `vatDisclaimer`) och
+     läsningen och skrivningen i `server/src/services/vatDeclaration.ts`.
+     `vatDeclaration` räknar nu rutorna 06–08, 20–24, 37–38 och 40 ur listan,
+     drar 06–08 från ruta 05, varnar när underlaget i 20–24 inte stämmer med
+     momsen i 30–32 och svarar med `box_accounts`. Förslagskortets gren står i
+     `server/src/services/approvalSummary.ts`, och punkterna om
+     `vat_declaration` och `set_vat_box_accounts` i `docs/MCP_ACTIONS.md`.
+  2. **Prov:** M1–M9, L1–L8, S1 och D1–D4 i
+     `server/test/vat-declaration.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest (Körning 1a, 1b, 2a, 2b, 3a
+     och 3b) — sessionens skal krävde godkännande för npm och git, och det
+     gick inte att ge. Att de nya fallen var röda före koden och är gröna
+     efter den är alltså inte uppmätt i den här sessionen; fallistan är
+     genomgången statiskt mot koden. Kedjan kör `npm ci`, typecheck och hela
+     sviten efteråt, med 0086 i testdatabasens migrationskedja.
+  4. **Efter driftsättningen** (inte gjort i bygget): Locollabs har ingen
+     kontolista, så deklarationen räknas som förut tills Hermes lagt
+     förslaget med `set_vat_box_accounts` och David godkänt det i Att göra
+     (Davids svar 2026-10-16).
+  5. **Baslinjen:** provvaktens crmintag står RÖD och continuityvakt
+     KUNDE_INTE sedan före bygget. Bygget rör inte deras källor, och punkten
+     rör inte huvudet i `docs/STATUS.md`.
+
 - **2026-10-21 (Story 5.6, agentens fel säger alltid var och varför, FR-28):**
   1. **Ändrat:** ny modul `server/src/mcp/karnanrop.ts` (AD-11) med
      `TIMEOUT_MS`, `anropaKarnan` (nätanropet och läsningen av kroppen under
