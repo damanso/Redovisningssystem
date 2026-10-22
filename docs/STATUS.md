@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (Story 8.4, sändvägsprovet vaktar kundspärren, FR-23):**
+  Nya `server/test/crm-sandvag.test.ts` med tolv fall (N1–N4, S1–S4,
+  D1–D3, KV) och `server/test/sandvagHelper.ts` med rena kontroller över
+  källtext, återanvända importläsare och 21 föreskrivna planteringar samt
+  fem extra (v–z) för import- och deklarationsformer. AC1 vaktas av
+  N1/S1/S2 och N4/S4 (importgraf samt SQL utan import), AC2 av N2/S3
+  och N3:s direkta köanrop, AC3 av N1–N4/KV, AC4 av N3/D1–D3.
+  Sändvägslistan har 36 moduler, kölistan tre filer; CRM-svepet hämtar
+  namnen ur ACTIONS (27 i trädet). Ingen produktionskod ändrad.
+  Rött/grönt observerat för N1, S1, N4, N2 och N3 via rena Node-körningar;
+  de tio kontroller som bara kräver källtext går grönt där. Typecheck
+  och build går grönt. Hela `npm test` försökt i varje fas men stoppas före fallen
+  i globalSetup: `connect EPERM 127.0.0.1:5433`; HTTP-fallet D1,
+  kontrollvakten KV och regressionerna är därför inte körda i sandlådan.
+  Kedjan kör ordinarie svit. Continuityvakt/bakvag var GRÖNA enligt
+  berättelsens baslinje, har inte körts här; huvudets tal och S0.1-raden
+  är orörda. API-kontraktet och dagsytans formspråk är oförändrade.
+
 - **2026-10-22 (Story 7.2, omtag efter kodgranskningen: sex fynd, FR-15):**
   1. **En väg till varje lagringsfel:** `lagringsfel` i
      `server/src/services/objektlagring.ts` bygger nu varje
