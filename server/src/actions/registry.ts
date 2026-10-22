@@ -776,11 +776,12 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Skatteverket innehåller, och David godkänner den en gång i Att göra.
     sensitivity: 'sensitive',
     // MCP-spec kräver type:"object" på toppnivån i tools/list — därför ETT objekt
-    // med superRefine. Tillåtelselistan för rutorna kommer ur tjänsten.
+    // med superRefine. Kontonumret är husets AccountNumberSchema och tillåtelselistan
+    // för rutorna kommer ur tjänsten, så att ingen regel står i en egen kopia här.
     inputSchema: z
       .object({
         accounts: z.array(z.object({
-          account_number: z.number().int().min(1000).max(9999),
+          account_number: AccountNumberSchema,
           box: z.enum(MAPPABLE_VAT_BOX_CODES),
         }).strict()).max(100),
       })

@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (Story 4.5, omtag efter kodgranskningen: fyra fynd, FR-19):**
+  1. **Ändrat:** förslagskortet för `set_vat_box_accounts` i
+     `server/src/services/approvalSummary.ts` tar vad varje ruta blir ur den
+     nya regeln `vatBoxSources` i `server/src/services/vatDeclaration.ts`,
+     som deklarationen också läser för ruta 21. Utan konto för 20–24 säger
+     kortet att ruta 21 räknas ur den utgående momsen, inte att den förblir
+     0, och en ruta som går till 0 från ett belopp «blir 0».
+     `setVatBoxAccounts` tar ett transaktionslås per bolag före DELETE, så
+     att två samtidiga godkännanden varken ger en union av listorna eller en
+     krock i primärnyckeln. Registrets schema och kortets läsning av
+     kontonumret använder `AccountNumberSchema`. Filhuvudet och kommentarerna
+     i `vatDeclaration.ts` beskriver beräkningen med kontolistan.
+  2. **Prov:** M10, L9a–L9d, L10 och L11 i
+     `server/test/vat-declaration.test.ts`.
+  3. **Inte kört:** typecheck, build och vitest — sessionens skal krävde
+     godkännande för npm, och det gick inte att ge. Kedjan kör `npm ci`,
+     typecheck och hela sviten efteråt.
+  4. **Baslinjen:** oförändrad sedan punkten nedan; omtaget rör inte
+     provvaktens källor eller huvudet i `docs/STATUS.md`.
+
 - **2026-10-22 (Story 4.5, momsdeklarationens nollsatta rutor räknas ur bokföringen, FR-19):**
   1. **Ändrat:** migration 0086 (`vat_box_accounts`, bolagets kontolista för
      momsrutorna, med RLS och FORCE; app har SELECT, INSERT och DELETE),

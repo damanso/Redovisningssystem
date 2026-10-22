@@ -8,10 +8,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import {
   MAPPABLE_VAT_BOX_CODES, VAT_BOX_SIDES, inputVatCompletenessWarning, mappedBoxAmounts, reverseBaseWarning,
-  reverseIsDistributed, vatDisclaimer, withoutMappedAccounts, type VatBoxAccount,
+  reverseIsDistributed, setVatBoxAccounts, vatBoxSources, vatDisclaimer, withoutMappedAccounts,
+  type VatBoxAccount, type VatBoxSource,
 } from '../src/services/vatDeclaration.js';
 import type { AccountLine } from '../src/services/reports.js';
 import { pool } from '../src/db/pool.js';
+import { getAction } from '../src/actions/registry.js';
+import { AccountNumberSchema } from '../src/lib/validation.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -413,6 +416,26 @@ describe('4.5 kontolistan för momsrutorna (reglerna)', () => {
     );
     expect(kvar.map((r) => r.account_number)).toEqual([3001, 3308]);
   });
+
+  // Regeln som både deklarationen och förslagskortet läser. Varje lista prövar en
+  // annan väg till ruta 21: ur momsen utan konto för 20–24, 0 med fördelning utan
+  // eget konto, och ur sitt konto.
+  it('M10 regeln per ruta: konto ger kontona, utan konto 0, och ruta 21 ur momsen bara utan fördelning', () => {
+    const fall: [VatBoxAccount[], Partial<Record<string, VatBoxSource>>][] = [
+      [[], { '21': 'reconstructed' }],
+      [[{ account_number: 3911, box: '08' }], { '08': 'accounts', '21': 'reconstructed' }],
+      [[{ account_number: 4056, box: '20' }], { '20': 'accounts' }],
+      [[{ account_number: 4531, box: '21' }], { '21': 'accounts' }],
+      [[{ account_number: 4425, box: '24' }, { account_number: 3108, box: '38' }], { '24': 'accounts', '38': 'accounts' }],
+    ];
+    for (const [lista, avvikande] of fall) {
+      const regel = vatBoxSources(lista);
+      expect(Object.keys(regel).sort(), JSON.stringify(lista)).toEqual([...ELVA]);
+      for (const r of ELVA) expect(regel[r], `${JSON.stringify(lista)} ruta ${r}`).toBe(avvikande[r] ?? 'zero');
+      // Samma villkor som förbehållet och varningen läser.
+      expect(regel['21'] === 'reconstructed', JSON.stringify(lista)).toBe(!reverseIsDistributed(lista));
+    }
+  });
 });
 
 // Story 4.5 (FR-19, Davids svar 2026-10-16): kontolistan styr vad filen till
@@ -563,6 +586,183 @@ describe('4.5 kontolistan för momsrutorna (åtgärden)', () => {
     const grans = new Map(kallor);
     grans.set('actions/planterad.ts', "name: 'set_vat_box_accounts'");
     expect(filerMedTabellnamnet(grans)).toEqual(['services/vatDeclaration.ts']);
+  });
+
+  // Kortet får aldrig säga något annat om en ruta än det deklarationen räknar: båda
+  // läser vatBoxSources. Fallen prövar varje övergång som kortet kan beskriva fel:
+  // ruta 21 ur momsen utan konto för 20–24, ruta 21 som blir 0 med fördelning, en
+  // ruta som tappar sitt konto och en fördelning som upphör. Varje fall har ett eget
+  // bolag med ett enda väntande förslag och ett omvänt inköp på 4056 (underlag
+  // 40 000 öre, moms 10 000 öre på 2614). Efter godkännandet visar deklarationen det
+  // som kortet sade om rutorna.
+  const KORTFALL: {
+    id: string; titel: string; fore: VatBoxAccount[]; efter: VatBoxAccount[];
+    fran: string[]; till: string[]; inteTill: RegExp[]; rutor: Record<string, number>;
+  }[] = [
+    {
+      id: 'L9a',
+      titel: 'en lista utan konto för 20–24: ruta 21 räknas ur momsen och står inte bland nollrutorna',
+      fore: [],
+      efter: [{ account_number: 3001, box: '08' }],
+      fran: ['Ingen kontolista'],
+      till: [
+        'Ruta 08: 3001',
+        'Utan konto, förblir 0: 06, 07, 20, 22, 23, 24, 37, 38, 40',
+        'Utan konto för 20–24: ruta 21 räknas ur den utgående momsen',
+      ],
+      inteTill: [/blir 0:[^·]*\b21\b/],
+      rutor: { '08': 0, '20': 0, '21': 40000 },
+    },
+    {
+      id: 'L9b',
+      titel: 'en lista med konto för 20 men inte för 21: ruta 21 blir 0',
+      fore: [],
+      efter: [{ account_number: 4056, box: '20' }],
+      fran: ['Ingen kontolista'],
+      till: ['Ruta 20: 4056', 'Utan konto, blir 0: 21', 'Utan konto, förblir 0: 06, 07, 08, 22, 23, 24, 37, 38, 40'],
+      inteTill: [/förblir 0:[^·]*\b21\b/, /räknas ur den utgående momsen/],
+      rutor: { '20': 40000, '21': 0 },
+    },
+    {
+      id: 'L9c',
+      titel: 'en ruta som tappar sitt konto blir 0, och ruta 21 som redan var 0 förblir 0',
+      fore: [{ account_number: 3001, box: '08' }, { account_number: 4056, box: '20' }],
+      efter: [{ account_number: 4056, box: '20' }],
+      fran: ['Ruta 08: 3001', 'Ruta 20: 4056', 'Utan konto, förblir 0: 06, 07, 21, 22, 23, 24, 37, 38, 40'],
+      till: ['Ruta 20: 4056', 'Utan konto, blir 0: 08', 'Utan konto, förblir 0: 06, 07, 21, 22, 23, 24, 37, 38, 40'],
+      inteTill: [/förblir 0:[^·]*\b08\b/, /räknas ur den utgående momsen/],
+      rutor: { '08': 0, '20': 40000, '21': 0 },
+    },
+    {
+      id: 'L9d',
+      titel: 'när fördelningen upphör blir ruta 20 0 och ruta 21 räknas ur momsen igen',
+      fore: [{ account_number: 4056, box: '20' }],
+      efter: [{ account_number: 3001, box: '08' }],
+      fran: ['Ruta 20: 4056', 'Utan konto, förblir 0: 06, 07, 08, 21, 22, 23, 24, 37, 38, 40'],
+      till: [
+        'Ruta 08: 3001',
+        'Utan konto, blir 0: 20',
+        'Utan konto, förblir 0: 06, 07, 22, 23, 24, 37, 38, 40',
+        'Utan konto för 20–24: ruta 21 räknas ur den utgående momsen',
+      ],
+      inteTill: [/blir 0:[^·]*\b21\b/],
+      rutor: { '08': 0, '20': 0, '21': 40000 },
+    },
+  ];
+
+  for (const fall of KORTFALL) {
+    it(`${fall.id} kortet följer deklarationens regel: ${fall.titel}`, async () => {
+      const bolag = await createCompany(u.token, `Kort ${fall.id} AB`);
+      const b = `/api/companies/${bolag}`;
+      const koa = async (action: string, body: Record<string, unknown>): Promise<string> => {
+        const res = await api.post(`${b}/actions/${action}`).set(a()).send(body);
+        expect(res.status, JSON.stringify(res.body)).toBe(202);
+        return res.body.approval.id;
+      };
+      const godkann = async (id: string) => {
+        const res = await api.post(`${b}/approvals/${id}/approve`).set(a()).send({});
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+      };
+      const ar = await createFiscalYear(bolag, a(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+      await godkann(await koa('post_voucher', {
+        fiscal_year_id: ar.id, voucher_date: '2026-04-08', description: `4.5 ${fall.id}`,
+        lines: [
+          { account_number: 4056, debit_ore: 40000 }, { account_number: 2645, debit_ore: 10000 },
+          { account_number: 1930, credit_ore: 40000 }, { account_number: 2614, credit_ore: 10000 },
+        ],
+      }));
+      if (fall.fore.length > 0) await godkann(await koa('set_vat_box_accounts', { accounts: fall.fore }));
+      const forslag = await koa('set_vat_box_accounts', { accounts: fall.efter });
+
+      const ua = supertest.agent(app);
+      await ua.post('/app/login').type('form').send({ email: u.email, password: PASSWORD });
+      const sida = await ua.get(`/app/c/${bolag}/approvals`);
+      expect(sida.status).toBe(200);
+      const spann = (klass: string): string[] =>
+        (sida.text.match(new RegExp(`<span class="${klass}">[^<]*</span>`, 'g')) ?? []).map((s) => s.replace(/<[^>]+>/g, ''));
+      const fran = spann('andring__f');
+      const till = spann('andring__t');
+      // Bolaget har ett enda väntande förslag, alltså ett enda kort.
+      expect(till).toHaveLength(1);
+      expect(fran).toHaveLength(1);
+      for (const text of fall.fran) expect(fran[0], text).toContain(text);
+      for (const text of fall.till) expect(till[0], text).toContain(text);
+      for (const monster of fall.inteTill) expect(till[0]).not.toMatch(monster);
+
+      await godkann(forslag);
+      const res = await api.post(`${b}/actions/vat_declaration`).set(a()).send({ from: '2026-04-01', to: '2026-06-30' });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const d = res.body.result;
+      for (const [kod, belopp] of Object.entries(fall.rutor)) {
+        expect(box([...d.sales, ...d.reverse_purchases], kod), `ruta ${kod}`).toBe(belopp);
+      }
+      expect(d.warnings).toEqual([]);
+    });
+  }
+
+  // Två godkännanden av olika listor samtidigt. Det andra ska vänta in det första och
+  // ersätta dess lista. Utan bolagets lås ser det andra inte det förstas ännu
+  // oincheckade rader, och listan blir en union som ingen godkänt (disjunkta listor)
+  // eller en krock i primärnyckeln (samma konto). Tjänsten körs med två anslutningar
+  // som app-rollen, i var sitt nytt bolag per fall.
+  it('L10 två samtidiga ersättningar ger den senast godkända listan, aldrig en union eller en krock', async () => {
+    const lasfall: [string, VatBoxAccount[], VatBoxAccount[]][] = [
+      ['disjunkta listor', [{ account_number: 4056, box: '20' }], [{ account_number: 3001, box: '08' }]],
+      ['samma konto', [{ account_number: 3001, box: '08' }], [{ account_number: 3001, box: '40' }]],
+    ];
+    for (const [namn, forsta, andra] of lasfall) {
+      const bolag = await createCompany(u.token, `Samtidig ${namn} AB`);
+      const ka = await pool.connect();
+      const kb = await pool.connect();
+      let andraKlar: Promise<unknown> = Promise.resolve();
+      let utfall = '';
+      try {
+        for (const k of [ka, kb]) {
+          await k.query('BEGIN');
+          await k.query(
+            "SELECT set_config('app.user_id', $1, true), set_config('app.company_id', $2, true)", [u.userId, bolag],
+          );
+        }
+        await setVatBoxAccounts(ka, bolag, u.userId, forsta);
+        andraKlar = setVatBoxAccounts(kb, bolag, u.userId, andra);
+        // Det andra får inte bli klart medan det första är oincheckat.
+        utfall = await Promise.race([
+          andraKlar.then(() => 'klar', () => 'fel'),
+          new Promise<string>((r) => { setTimeout(() => r('väntar'), 300); }),
+        ]);
+        await ka.query('COMMIT');
+        await andraKlar;
+        await kb.query('COMMIT');
+      } finally {
+        await ka.query('ROLLBACK');
+        await andraKlar.catch(() => undefined);
+        await kb.query('ROLLBACK');
+        ka.release();
+        kb.release();
+      }
+      expect(utfall, namn).toBe('väntar');
+      const rader = await withAdmin(async (admin) => (await admin.query(
+        'SELECT account_number, box FROM vat_box_accounts WHERE company_id = $1 ORDER BY box, account_number', [bolag],
+      )).rows);
+      expect(rader, namn).toEqual(andra);
+      const audit = await withAdmin(async (admin) => (await admin.query(
+        "SELECT details FROM audit_log WHERE company_id = $1 AND action = 'tax.vat_box_accounts_set' ORDER BY id", [bolag],
+      )).rows);
+      expect(audit, namn).toEqual([{ details: { accounts: forsta } }, { details: { accounts: andra } }]);
+    }
+  });
+
+  it('L11 schemat tar kontonumret ur husets AccountNumberSchema och rutorna ur tjänstens tillåtelselista', () => {
+    const def = getAction('set_vat_box_accounts');
+    expect(def).toBeDefined();
+    // superRefine ger ett ZodEffects runt objektet; fältens scheman ska vara husets
+    // egna objekt, inte kopior med samma gränser.
+    const schema = def!.inputSchema as unknown as {
+      innerType(): { shape: { accounts: { element: { shape: { account_number: unknown; box: { options: readonly string[] } } } } } };
+    };
+    const falt = schema.innerType().shape.accounts.element.shape;
+    expect(falt.account_number).toBe(AccountNumberSchema);
+    expect([...falt.box.options]).toEqual([...MAPPABLE_VAT_BOX_CODES]);
   });
 
   // Står sist: den tomma listan tar bort det som fallen ovan läser.
