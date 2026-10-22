@@ -12,6 +12,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, app, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { DEFAULT_SILENCE_DAYS } from '../src/services/crmDerivations.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -283,5 +284,339 @@ describe('söksidan och relationskortet i vyn', () => {
     expect(res.text).toContain('Slå ihop en annan relation hit');
     expect(res.text).not.toContain('<script');
     expect(res.text).not.toContain('onclick=');
+  });
+});
+
+// FR-19: klockan nollställs bara av kontakt, aldrig av en kadensinställning.
+const PROV_DAG = '2026-09-30';
+type Klocka = {
+  last_contact_at: string | null;
+  days_silent: number | null;
+  interactions: number;
+};
+const KLOCKFALT: (keyof Klocka)[] = ['last_contact_at', 'days_silent', 'interactions'];
+let kadensklockanId: string;
+let kadensfeletId: string;
+let klockbildFore: Klocka;
+let negativKordes: boolean = false;
+let trettioettId: string;
+let trettioId: string;
+let tjugonioId: string;
+let ogiltigId: string;
+let granne: TestUser;
+let grannbolagId: string;
+let grannUa: ReturnType<typeof supertest.agent>;
+
+async function kontaktDen(orgId: string, iso: string): Promise<void> {
+  const r = await act('record_crm_interaction', {
+    organization_id: orgId, occurred_at: iso, channel: 'email', direction: 'outbound',
+    summary: 'Avstämning.', source_system: 'manual',
+  });
+  expect(r.status, JSON.stringify(r.body)).toBe(200);
+}
+
+async function klocka(orgId: string): Promise<Klocka> {
+  const r = await act('crm_relation_state', { as_of: PROV_DAG });
+  expect(r.status, JSON.stringify(r.body)).toBe(200);
+  const rad = (r.body.result as (Klocka & { organization_id: string })[])
+    .find((x) => x.organization_id === orgId);
+  expect(rad, 'relationen måste finnas för att klockan ska kunna jämföras').toBeDefined();
+  const interactions = await withAdmin(async (a) => (await a.query<{ n: number }>(
+    'SELECT count(*)::int AS n FROM crm.interactions WHERE organization_id = $1', [orgId])).rows[0]!.n);
+  return { last_contact_at: rad!.last_contact_at, days_silent: rad!.days_silent, interactions };
+}
+
+function klockavvikelser(fore: Klocka, efter: Klocka): (keyof Klocka)[] {
+  return KLOCKFALT.filter((falt) => fore[falt] !== efter[falt]);
+}
+
+describe('kadensens regressionsprov (FR-19)', () => {
+  describe('klockan', () => {
+    beforeAll(async () => {
+      kadensklockanId = await nyOrg('Kadensklockan AB');
+      kadensfeletId = await nyOrg('Kadensfelet AB');
+      await kontaktDen(kadensklockanId, '2026-08-21T12:00:00Z');
+      await kontaktDen(kadensfeletId, '2026-08-21T12:00:00Z');
+    });
+
+    it('K1 — åtgärden sätter 20 utan att flytta klockan', async () => {
+      klockbildFore = await klocka(kadensklockanId);
+      expect(klockbildFore).toEqual({ last_contact_at: '2026-08-21T12:00:00.000Z', days_silent: 40, interactions: 1 });
+      const r = await act('set_crm_relation_nudge', { organization_id: kadensklockanId, cadence_days: 20 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.cadence_days).toBe(20);
+      expect(klockavvikelser(klockbildFore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('K2 — vyn sätter 90 utan att flytta klockan', async () => {
+      const fore = await klocka(kadensklockanId);
+      const r = await ua.post(`/app/c/${companyId}/relations/${kadensklockanId}/cadence`)
+        .type('form').send({ cadence_days: '90' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      expect(r.headers.location).not.toContain('fel=');
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [kadensklockanId])).rows[0]);
+      expect(rad.cadence_days).toBe(90);
+      expect(klockavvikelser(fore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('K3 — tomt i vyn återställer standarden utan att flytta klockan', async () => {
+      const fore = await klocka(kadensklockanId);
+      const r = await ua.post(`/app/c/${companyId}/relations/${kadensklockanId}/cadence`)
+        .type('form').send({ cadence_days: '' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      expect(r.headers.location).not.toContain('fel=');
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [kadensklockanId])).rows[0]);
+      expect(rad.cadence_days).toBeNull();
+      expect(klockavvikelser(fore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('K4 — hela följden lämnar klockan orörd och tre auditrader', async () => {
+      const efter = await klocka(kadensklockanId);
+      expect(klockavvikelser(klockbildFore, efter)).toEqual([]);
+      expect(efter).toEqual({ last_contact_at: '2026-08-21T12:00:00.000Z', days_silent: 40, interactions: 1 });
+      const audit = await withAdmin(async (a) => (await a.query<{ cadence_days: number | null }>(
+        `SELECT details->'cadence_days' AS cadence_days FROM crm.audit_log
+         WHERE company_id = $1 AND entity_id = $2 AND action = 'crm.relation_nudge_set'`,
+        [companyId, kadensklockanId])).rows);
+      expect(audit).toHaveLength(3);
+      expect(new Set(audit.map((x) => x.cadence_days))).toEqual(new Set([20, 90, null]));
+    });
+
+    it('K5 — negativ kontroll: inställning plus kontakt avslöjas på alla tre fält', async () => {
+      const fore = await klocka(kadensfeletId);
+      const satt = await act('set_crm_relation_nudge', { organization_id: kadensfeletId, cadence_days: 20 });
+      expect(satt.status, JSON.stringify(satt.body)).toBe(200);
+      const kontakt = await act('log_contact', { organization_id: kadensfeletId, occurred_at: '2026-09-30T12:00:00Z' });
+      expect(kontakt.status, JSON.stringify(kontakt.body)).toBe(200);
+      const efter = await klocka(kadensfeletId);
+      expect(klockavvikelser(fore, efter)).toEqual(['last_contact_at', 'days_silent', 'interactions']);
+      expect(efter.days_silent).toBe(0);
+      expect(efter.interactions).toBe(2);
+      negativKordes = true;
+    });
+
+    it('KV — den negativa kontrollen kördes till slut', () => {
+      expect(negativKordes).toBe(true);
+    });
+  });
+
+  describe('standardgränsen', () => {
+    beforeAll(async () => {
+      trettioettId = await nyOrg('Tystnad Trettioett AB');
+      trettioId = await nyOrg('Tystnad Trettio AB');
+      tjugonioId = await nyOrg('Tystnad Tjugonio AB');
+      await kontaktDen(trettioettId, '2026-08-30T12:00:00Z');
+      await kontaktDen(trettioId, '2026-08-31T12:00:00Z');
+      await kontaktDen(tjugonioId, '2026-09-01T12:00:00Z');
+    });
+
+    it('S1 — 31 dagar utan egen kadens ger tystnadsskälet', async () => {
+      const r = await act('crm_contact_suggestions', { as_of: PROV_DAG });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const forslag = (r.body.result.suggestions as { organization_id: string; days_silent: number; reasons: string[] }[])
+        .find((x) => x.organization_id === trettioettId);
+      expect(forslag).toBeDefined();
+      expect(forslag!.days_silent).toBe(31);
+      expect(forslag!.reasons).toContain('tyst i 31 dagar');
+      expect(forslag!.reasons.some((skal) => skal.includes('kadensen är'))).toBe(false);
+      const state = await act('crm_relation_state', { as_of: PROV_DAG });
+      expect(state.status, JSON.stringify(state.body)).toBe(200);
+      const rad = (state.body.result as { organization_id: string; cadence_days: number | null }[])
+        .find((x) => x.organization_id === trettioettId);
+      expect(rad).toBeDefined();
+      expect(rad!.cadence_days).toBeNull();
+    });
+
+    it('S2 — 29 dagars tystnad ger inget förslag', async () => {
+      const r = await act('crm_contact_suggestions', { as_of: PROV_DAG });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect((r.body.result.suggestions as { organization_id: string }[])
+        .some((x) => x.organization_id === tjugonioId)).toBe(false);
+    });
+
+    it('S3 — gränsens 30 dagar är inkluderade', async () => {
+      const r = await act('crm_contact_suggestions', { as_of: PROV_DAG });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const forslag = (r.body.result.suggestions as { organization_id: string; days_silent: number; reasons: string[] }[])
+        .find((x) => x.organization_id === trettioId);
+      expect(forslag).toBeDefined();
+      expect(forslag!.days_silent).toBe(30);
+      expect(forslag!.reasons).toContain('tyst i 30 dagar');
+    });
+
+    it('S4 — rapporten använder standardens 30 och utesluter 29 dagar', async () => {
+      const r = await act('crm_silence_report', { as_of: PROV_DAG });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.silence_days).toBe(30);
+      const rows = r.body.result.rows as { organization_id: string; threshold_days: number; cadence_days: number | null }[];
+      const rad = rows.find((x) => x.organization_id === trettioettId);
+      expect(rad).toBeDefined();
+      expect(rad!.threshold_days).toBe(30);
+      expect(rad!.cadence_days).toBeNull();
+      expect(rows.some((x) => x.organization_id === tjugonioId)).toBe(false);
+    });
+
+    it('S5 — konstanten och kadensformuläret visar den beslutade standarden', async () => {
+      expect(DEFAULT_SILENCE_DAYS, 'Davids besked 2026-10-16').toBe(30);
+      const r = await ua.get(`/app/c/${companyId}/relations/${tjugonioId}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const form = r.text.match(/<form\b[^>]*class="kadens"[^>]*>[\s\S]*?<\/form>/)?.[0];
+      expect(form).toBeDefined();
+      expect(form).toMatch(/name="cadence_days"[^>]*placeholder="30"/);
+      expect(form).toContain('Tomt = bolagets standard (30 dagar)');
+    });
+
+    it('S6 — negativ kontroll: gränsen 28 släpper fram samma 29 dagar', async () => {
+      const r = await act('crm_contact_suggestions', { as_of: PROV_DAG, silence_days: 28 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const forslag = (r.body.result.suggestions as { organization_id: string; days_silent: number; reasons: string[] }[])
+        .find((x) => x.organization_id === tjugonioId);
+      expect(forslag).toBeDefined();
+      expect(forslag!.days_silent).toBe(29);
+      expect(forslag!.reasons).toContain('tyst i 29 dagar');
+    });
+  });
+
+  describe('ogiltiga kadenser', () => {
+    beforeAll(async () => {
+      ogiltigId = await nyOrg('Ogiltig Kadens AB');
+      await kontaktDen(ogiltigId, '2026-08-21T12:00:00Z');
+      const r = await act('set_crm_relation_nudge', { organization_id: ogiltigId, cadence_days: 90 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.cadence_days).toBe(90);
+    });
+
+    it('O1 — 0 avvisas synligt och lämnar kadens och klocka orörda', async () => {
+      const fore = await klocka(ogiltigId);
+      const r = await ua.post(`/app/c/${companyId}/relations/${ogiltigId}/cadence`)
+        .type('form').send({ cadence_days: '0' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      const location = r.headers.location!;
+      expect(decodeURIComponent(location)).toContain('fel=');
+      const sida = await ua.get(location);
+      expect(sida.status, JSON.stringify(sida.body)).toBe(200);
+      expect(sida.text).toContain('class="notice"');
+      expect(sida.text).toContain('gick inte att spara');
+      expect(sida.text).toMatch(/name="cadence_days"[^>]*value="90"/);
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [ogiltigId])).rows[0]);
+      expect(rad.cadence_days).toBe(90);
+      expect(klockavvikelser(fore, await klocka(ogiltigId))).toEqual([]);
+    });
+
+    it('O2 — 5000 avvisas synligt och lämnar kadens och klocka orörda', async () => {
+      const fore = await klocka(ogiltigId);
+      const r = await ua.post(`/app/c/${companyId}/relations/${ogiltigId}/cadence`)
+        .type('form').send({ cadence_days: '5000' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      const location = r.headers.location!;
+      expect(decodeURIComponent(location)).toContain('fel=');
+      const sida = await ua.get(location);
+      expect(sida.status, JSON.stringify(sida.body)).toBe(200);
+      expect(sida.text).toContain('class="notice"');
+      expect(sida.text).toContain('gick inte att spara');
+      expect(sida.text).toMatch(/name="cadence_days"[^>]*value="90"/);
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [ogiltigId])).rows[0]);
+      expect(rad.cadence_days).toBe(90);
+      expect(klockavvikelser(fore, await klocka(ogiltigId))).toEqual([]);
+    });
+
+    it('O3 — tio avvisas synligt och lämnar kadens och klocka orörda', async () => {
+      const fore = await klocka(ogiltigId);
+      const r = await ua.post(`/app/c/${companyId}/relations/${ogiltigId}/cadence`)
+        .type('form').send({ cadence_days: 'tio' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      const location = r.headers.location!;
+      expect(decodeURIComponent(location)).toContain('fel=');
+      const sida = await ua.get(location);
+      expect(sida.status, JSON.stringify(sida.body)).toBe(200);
+      expect(sida.text).toContain('class="notice"');
+      expect(sida.text).toContain('gick inte att spara');
+      expect(sida.text).toMatch(/name="cadence_days"[^>]*value="90"/);
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [ogiltigId])).rows[0]);
+      expect(rad.cadence_days).toBe(90);
+      expect(klockavvikelser(fore, await klocka(ogiltigId))).toEqual([]);
+    });
+
+    it('O4 — negativ kontroll: en giltig kadens 45 skrivs faktiskt', async () => {
+      const r = await ua.post(`/app/c/${companyId}/relations/${ogiltigId}/cadence`)
+        .type('form').send({ cadence_days: '45' });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+      expect(r.headers.location).toBeDefined();
+      expect(r.headers.location).not.toContain('fel=');
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [ogiltigId])).rows[0]);
+      expect(rad.cadence_days).toBe(45);
+    });
+  });
+
+  describe('tenant-isolering', () => {
+    beforeAll(async () => {
+      granne = await registerUser('kadensgranne');
+      grannbolagId = await createCompany(granne.token, 'Grannbolaget Kadens AB');
+      grannUa = supertest.agent(app);
+      const r = await grannUa.post('/app/login').type('form')
+        .send({ email: granne.email, password: PASSWORD });
+      expect(r.status, JSON.stringify(r.body)).toBe(302);
+    });
+
+    it('T1 — grannen når inte vår relation genom sitt eget bolag', async () => {
+      const r = await api.post(`/api/companies/${grannbolagId}/actions/set_crm_relation_nudge`)
+        .set({ Authorization: `Bearer ${granne.token}` })
+        .send({ organization_id: kadensklockanId, cadence_days: 7 });
+      expect(r.status, JSON.stringify(r.body)).toBe(404);
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [kadensklockanId])).rows[0]);
+      expect(rad.cadence_days).toBeNull();
+      expect(klockavvikelser(klockbildFore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('T2 — grannen når inte åtgärden under vårt bolag', async () => {
+      const r = await api.post(`/api/companies/${companyId}/actions/set_crm_relation_nudge`)
+        .set({ Authorization: `Bearer ${granne.token}` })
+        .send({ organization_id: kadensklockanId, cadence_days: 7 });
+      expect(r.status, JSON.stringify(r.body)).toBe(404);
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [kadensklockanId])).rows[0]);
+      expect(rad.cadence_days).toBeNull();
+      expect(klockavvikelser(klockbildFore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('T3 — grannens inloggade vy får en 404-sida och lämnar relationen orörd', async () => {
+      const r = await grannUa.post(`/app/c/${companyId}/relations/${kadensklockanId}/cadence`)
+        .type('form').send({ cadence_days: '7' });
+      expect(r.status, JSON.stringify(r.body)).toBe(404);
+      expect(r.type).toBe('text/html');
+      expect(r.text).toContain('Hittades inte eller ingen åtkomst.');
+      const rad = await withAdmin(async (a) => (await a.query(
+        'SELECT cadence_days FROM crm.organizations WHERE id = $1', [kadensklockanId])).rows[0]);
+      expect(rad.cadence_days).toBeNull();
+      expect(klockavvikelser(klockbildFore, await klocka(kadensklockanId))).toEqual([]);
+    });
+
+    it('T4 — grannens relationsläge och förslag visar ingen av våra relationer', async () => {
+      const state = await api.post(`/api/companies/${grannbolagId}/actions/crm_relation_state`)
+        .set({ Authorization: `Bearer ${granne.token}` }).send({ as_of: PROV_DAG });
+      expect(state.status, JSON.stringify(state.body)).toBe(200);
+      const stateIds = (state.body.result as { organization_id: string }[]).map((x) => x.organization_id);
+      expect(stateIds).not.toContain(kadensklockanId);
+      expect(stateIds).not.toContain(trettioettId);
+      const forslag = await api.post(`/api/companies/${grannbolagId}/actions/crm_contact_suggestions`)
+        .set({ Authorization: `Bearer ${granne.token}` }).send({ as_of: PROV_DAG });
+      expect(forslag.status, JSON.stringify(forslag.body)).toBe(200);
+      const forslagIds = (forslag.body.result.suggestions as { organization_id: string }[])
+        .map((x) => x.organization_id);
+      expect(forslagIds).not.toContain(kadensklockanId);
+      expect(forslagIds).not.toContain(trettioettId);
+    });
   });
 });
