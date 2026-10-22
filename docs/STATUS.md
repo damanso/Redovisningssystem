@@ -153,6 +153,17 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-22 (beslut #197 / LOC-576 — granskningsfynd kvarstår):**
+  **UNDERKÄND:** KRAV-4–8 och föreskriven acceptansverifiering är fortfarande
+  ofullständiga. Uppdragets slutregler förbjuder ändring av `.env*`,
+  hemligheter och externa filer samt systemändrande kommandon och tester.
+  Därmed kan miljöfilsrensningen, backupflyttarna, extern ENVFIL och
+  dumpåterläsningen på 5433 inte genomföras inom denna sessions mandat.
+  `scripts/faktura-regress.mjs` läser redan `/opt/redovisning-app/shared/.env`.
+  Endast denna statusnotering har ändrats. Inga nya auditmätningar eller
+  acceptanskörningar har gjorts; (a)–(d) nedan är fortsatt ej mätta.
+  Ingen anslutning eller skrivning har gjorts mot driften i denna session.
+
 - **2026-10-22 (beslut #197 / LOC-576 — testspärr, delvis genomfört):**
   `server/test/env.ts`: `applyTestEnv` löser först upp samtliga tre
   databas-URL:er och prövar dem före tilldelning och före pg i globalSetup,
