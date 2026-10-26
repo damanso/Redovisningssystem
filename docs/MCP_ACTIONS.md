@@ -1496,14 +1496,25 @@ avstått svep prövar inga förslag.
 **Svaret** bär `uppdrag[]` (per uppdrag `nycklar`, `skrivna`, `borttagna`,
 `referenser_verifierade`, `okanda_leverabelkoder`), `hoppade[]`,
 `hoppade_kopior[]`, `tackning[]`, `ovrigt` och `arbetslista`: `referenser` (`extern_id`, `extern_kalla`, `hash_vid_lankning`,
-`status`, `senast_verifierad`), `drive_ko` ur `hamta_drive_ko` och
-`ovrigt_kandidater` (Story 1.14).
+`status`, `senast_verifierad`), `drive_ko` ur `hamta_drive_ko`,
+`ovrigt_kandidater` (Story 1.14) och `arbetslista.oppna_utkast[]` (Story 1.19).
 
 - `arbetslista.ovrigt_kandidater[]` är `{ id, contract_id, text, datum }` för
   varje markerad Övrigt-rad i bolagets öppna avtal som saknar köpost (i någon
   status) och beslutsrad i radens eget avtal, också när avtalet inte står i
   indatat. `datum` är radens kalenderdag. Ordningen är avtalets och sedan radens
   skapandeordning.
+- `arbetslista.oppna_utkast[]` är `{ utkast_typ, utkast_id, mottagare, amne, text, markor, byggd_nar }`
+  för varje nej-utkast i bolaget, också i stängda uppdrag. Typen är
+  `'beslut' | 'eskalering' | 'rapport'`, en sluten lista, och listan bär i dag bara
+  nej-utkasten (typen beslut). Fälten kopieras ordagrant ur beslutsraden: utkastets
+  id är beslutsradens id, mottagare, ämne och text är det frysta utkastet, markören
+  är dess korrelationsmarkör, och mottagaren är null när kundkortet saknade en
+  giltig adress när nejet registrerades. Tiden är när beslutsraden skrevs, i UTC med
+  mikrosekunder (`YYYY-MM-DDTHH:MI:SS.ffffffZ`). Ordningen är radernas, och listan
+  läses efter att mottagna beslut verkställts. Läsningen skriver ingenting, och
+  svepets indata är oförändrat. Redovisningen skickar inget: Hermes lägger utkasten
+  i Gmails utkastmapp (Story 1.20).
 - `ovrigt` är `{ koade, redan_koade, avvisade }` och står alltid med, med tomma
   listor när inget förslag kom. `koade[]` är `{ anteckning_id, approval_id,
   atgard }`, `redan_koade[]` är radernas id (raden hade redan en köpost eller
@@ -1975,7 +1986,10 @@ syns som driftpost.
 **Beslut och utkast** och skickar själv genom `mailto:`-länken ”Öppna utkastet i din
 e-post”, som öppnar hans egen e-postklient. Referensen i ämnet är det som gör att
 utskicket känns igen. Hermes kan läsa utkastet genom `las_uppdragslage`
-(`beslut.registrerade[].utkast` och `utkast_markor`). Provet ”Davids utskick”
+(`beslut.registrerade[].utkast` och `utkast_markor`) och sedan Story 1.19 i svepets
+arbetslista (`arbetslista.oppna_utkast[]`). Länken i panelen är reserv sedan Davids
+svar 2026-10-07 om Gmails utkastmapp: Hermes lägger utkastet där (Story 1.20), och
+David skickar själv. Provet ”Davids utskick”
 (`uppdragsytan-utskick.test.ts`) håller tillåtelselistor över nätets utgångar,
 paketlistan och e-postköns importörer i hela `server/src`.
 

@@ -139,12 +139,12 @@ describe('K kandidaterna i arbetslistan', () => {
     expect(kandidatId(await svepa(granne, {}))).toEqual([grannrad]);
   }, LANG);
 
-  it('K7 svaret behåller de tidigare nycklarna, och arbetslistan har exakt tre', async () => {
+  it('K7 svaret behåller de tidigare nycklarna, och arbetslistan har exakt fyra', async () => {
     const b = await nyttBolag('Övrigt K7');
     await nyttUppdrag(b, 'K7');
     const svar = await svepa(b, {});
     expect(Object.keys(svar)).toEqual(expect.arrayContaining(['lage', 'mottagna_beslut', 'uppdrag', 'hoppade', 'hoppade_kopior', 'tackning', 'arbetslista']));
-    expect(Object.keys(svar.arbetslista).sort()).toEqual(['drive_ko', 'ovrigt_kandidater', 'referenser']);
+    expect(Object.keys(svar.arbetslista).sort()).toEqual(['drive_ko', 'oppna_utkast', 'ovrigt_kandidater', 'referenser']);
   }, LANG);
 
   it('K8 svepet ändrar inte en enda rad i uppdrag_anteckning', async () => {

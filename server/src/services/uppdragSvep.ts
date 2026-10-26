@@ -12,6 +12,8 @@
 // redovisningen ringer aldrig ut).
 // Täckningssteget (B-3, Story 1.6) läser bara egna tabeller och går därför
 // över alla öppna avtal, även dem Hermes inte lämnat observationer för.
+// Story 1.19 (B-5) lägger nej-utkasten i arbetslistan (`oppna_utkast`), lästa ur
+// de frysta beslutsraderna med en fråga, utan att något skrivs, byggs om eller skickas.
 import type { PoolClient } from 'pg';
 import { KALLA_REDOVISNING } from '../lib/lasvarde.js';
 import { beraknaTackning, MANDATKALLOR, TACKNINGSNYCKEL, type Mandatkalla } from './uppdragUndantag.js';
@@ -284,6 +286,62 @@ function hoppat(rad: Uppdragsrad): Hoppat {
   return { contract_id: rad.contract_id, project_id: rad.project_id, projektstatus: rad.projektstatus };
 }
 
+/**
+ * Utkastens typer: en sluten lista, som B-5 namnger. Story 7.1 (eskalering) och
+ * 12.5 (rapport) lägger till sina källor i `listaOppnaUtkast`; ett nytt värde
+ * kräver en ändring här och ingen annanstans.
+ */
+export const UTKAST_TYPER = ['beslut', 'eskalering', 'rapport'] as const;
+export type Utkasttyp = (typeof UTKAST_TYPER)[number];
+
+/**
+ * Ett öppet utkast i arbetslistan. Formen är arbetslistans kontrakt med Hermes
+ * (Story 1.20), och värdena är den frysta radens: inget byggs om här.
+ */
+export interface Oppetutkast {
+  utkast_typ: Utkasttyp;
+  /** Beslutsradens id: utkastets identitet i redovisningen. */
+  utkast_id: string;
+  /** null när kundkortet saknade en giltig adress när nejet registrerades. */
+  mottagare: string | null;
+  amne: string;
+  text: string;
+  /** Korrelationsmarkören i ämnet (0084): identiteten i Gmail. */
+  markor: string;
+  /** När beslutsraden och utkastet skrevs, i UTC med mikrosekunder. */
+  byggd_nar: string;
+}
+
+/**
+ * Bolagets nej-utkast, lästa ur de frysta beslutsraderna med en fråga. Skriver
+ * ingenting. Varje fält kopieras ur raden; ämnet och texten byggs aldrig om, och
+ * kundkortet läses inte, så en mottagare som saknades vid nejet står kvar som null.
+ * Listan gäller hela bolaget, också stängda uppdrag, och kapas aldrig.
+ */
+export async function listaOppnaUtkast(client: PoolClient, companyId: string): Promise<Oppetutkast[]> {
+  const r = await client.query<{
+    utkast_id: string; mottagare: string | null; amne: string; text: string; markor: string; byggd_nar: string;
+  }>(
+    `SELECT b.id::text AS utkast_id, b.utkast->>'mottagare' AS mottagare, b.utkast->>'amne' AS amne,
+            b.utkast->>'text' AS text, b.utkast_markor AS markor,
+            to_char(b.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS byggd_nar
+       FROM uppdrag_beslut b
+      WHERE b.company_id = $1 AND b.utfall = 'nej' AND b.utkast IS NOT NULL
+      ORDER BY b.created_at, b.id`,
+    [companyId],
+  );
+  // Fält för fält och utan spread, som `hoppat`: posten bär exakt kontraktets sju fält.
+  return r.rows.map((rad): Oppetutkast => ({
+    utkast_typ: 'beslut',
+    utkast_id: rad.utkast_id,
+    mottagare: rad.mottagare,
+    amne: rad.amne,
+    text: rad.text,
+    markor: rad.markor,
+    byggd_nar: rad.byggd_nar,
+  }));
+}
+
 export interface SvepTackning {
   contract_id: string; kalla: Mandatkalla; lage: 'last' | 'fel'; saknas: string[];
 }
@@ -303,7 +361,11 @@ export type Svepsvar =
     tackning: SvepTackning[];
     /** Övrigt-förslagen i den här körningen; alltid med, med tomma listor utan förslag. */
     ovrigt: Ovrigtutfall;
-    arbetslista: { referenser: Arbetsreferens[]; drive_ko: Kopost[]; ovrigt_kandidater: Ovrigtkandidat[] };
+    arbetslista: {
+      referenser: Arbetsreferens[]; drive_ko: Kopost[]; ovrigt_kandidater: Ovrigtkandidat[];
+      /** Bolagets nej-utkast, ordagrant ur beslutsraderna (Story 1.19). */
+      oppna_utkast: Oppetutkast[];
+    };
   };
 
 /** Observationen och vad verifieringen gav — parat, så härledningen slipper slå upp. */
@@ -809,6 +871,7 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  * `actor` är anroparens aktör. Den styr inte svepets förslag: kostnadsbindningarna
  * köas alltid med actor `agent` (architecture.md, Kommunikationsmönster).
+ * Sist läses nej-utkasten för arbetslistan, utan att något skrivs (Story 1.19).
  */
 export async function korUppdragssvep(
   client: PoolClient, companyId: string, userId: string, actor: Actor, indata: SvepIndata, verkstallMottagna?: MottagnaBeslutssteg,
@@ -917,6 +980,10 @@ export async function korUppdragssvep(
     [companyId, oppna],
   );
   const ko = (await hamtaDriveKo(client, companyId)).filter((k) => oppna.includes(k.contract_id));
+  // Story 1.19 (B-5): nej-utkasten läses efter att mottagna beslut verkställts, så
+  // att ett nej som verkställts i den här körningen redan står med. Listan gäller
+  // hela bolaget och inte bara öppna uppdrag: ett nej strax före stängningen ska med.
+  const oppnaUtkast = await listaOppnaUtkast(client, companyId);
 
   return {
     lage: 'svep_kort',
@@ -926,6 +993,6 @@ export async function korUppdragssvep(
     hoppade_kopior: hoppadeKopior,
     tackning,
     ovrigt,
-    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko, ovrigt_kandidater: ovrigtKandidater },
+    arbetslista: { referenser: attVerifiera.rows, drive_ko: ko, ovrigt_kandidater: ovrigtKandidater, oppna_utkast: oppnaUtkast },
   };
 }

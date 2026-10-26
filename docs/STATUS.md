@@ -153,6 +153,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-10-25 (Story 1.19, varje nej-utkast når Hermes med mottagare, ämne och text, FR-42):**
+  `server/src/services/uppdragSvep.ts` får den slutna listan `UTKAST_TYPER`,
+  typen `Utkasttyp`, gränssnittet `Oppetutkast` och läsningen
+  `listaOppnaUtkast`, en SELECT ur de frysta beslutsraderna, och
+  `kor_uppdragssvep` lägger listan sist i arbetslistan som `oppna_utkast`.
+  `server/test/uppdragsytan-utskick.test.ts` får fallen O1–O6, A1 och A2 i
+  tre nya block efter U-blocket, som står orört.
+  `server/test/uppdragsytan-ovrigt.test.ts`: K7 kräver nu fyra nycklar i
+  arbetslistan. `docs/MCP_ACTIONS.md` (Svaret, punkten om fältet och
+  Utskicksgränsen) och `docs/ARKITEKTUR.md` (svepets hemvist) beskriver fältet.
+  Proven:
+  - O1–O6 (a): funktionen direkt (ordagranna fält, nej utan utkast, ja och
+    ersatt köpost utanför, mottagare null, grannbolaget och RLS, utgångarna);
+  - O1–O5 (b): svepets svar (samma lista, två svep skriver ingenting och
+    lämnar panelen orörd, grannen, indatat oförändrat);
+  - A2: avsnittet Uppdragsytan har fältets tre kodspann och inga ensamma.
+  Inte kört i sessionen: sandlådan nekade `npx vitest run` och
+  `npm run typecheck` (`This command requires approval`), så rött och grönt
+  är förutsagt, inte observerat. Kedjan kör typecheck och hela `npm test`.
+  Driftnotiser:
+  1. Ingen migration och ingen åtgärd. Huvudet säger fortfarande 206 actions.
+  2. Hermes svepskript sparar arbetslistan i sin tillståndsfil utan
+     `ovrigt_kandidater` men med alla andra nycklar. Tills Story 1.20 är
+     driftsatt står därför nej-utkastens mottagare och text också i Hermes
+     tillståndsfil för svepet, på samma server. Inget skickas. Story 1.20
+     (G9) tar bort fältet ur tillståndet.
+  3. Davids svar 2026-10-07 om Gmails utkastmapp: redovisningens halva finns
+     nu. Gmail-steget är Story 1.20, och till dess är `mailto:`-länken på
+     Läget Davids skickväg.
+
 - **2026-10-22 (Story 8.4, sändvägsprovet vaktar kundspärren, FR-23):**
   Nya `server/test/crm-sandvag.test.ts` med tolv fall (N1–N4, S1–S4,
   D1–D3, KV) och `server/test/sandvagHelper.ts` med rena kontroller över
