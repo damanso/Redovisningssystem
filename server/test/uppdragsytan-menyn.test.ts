@@ -207,10 +207,19 @@ function generatorsForm(k: Kontraktet): Kontraktet {
   });
   for (const [yta] of SNABBYTORNA) g.surfaces[yta] = [...(g.surfaces[yta] ?? []), 'uppdrag'];
   for (const r of rutter(g, 'GET', '/c/:companyId/uppdrag')) r.owner_id = 'uppdrag';
-  g.routes.push(
-    { service: 'redovisning', method: 'GET', router_pattern: '/c/:companyId/uppdrag/lista', owner_id: 'uppdrag' },
-    { service: 'redovisning', method: 'POST', router_pattern: '/c/:companyId/uppdrag', owner_id: 'uppdrag' },
-  );
+  // Listan och POST: en rad som kopian redan har får ingången som ägare, och bara
+  // en rad som saknas läggs till. Före synken står båda redan i kopian, med
+  // projects_list som ägare (FEL #61); läggs de till igen står de två gånger, och
+  // K-e fäller generatorns egen form.
+  for (const [metod, monster] of [
+    ['GET', '/c/:companyId/uppdrag/lista'], ['POST', '/c/:companyId/uppdrag'],
+  ] as const) {
+    const rader = rutter(g, metod, monster);
+    for (const r of rader) r.owner_id = 'uppdrag';
+    if (rader.length === 0) {
+      g.routes.push({ service: 'redovisning', method: metod, router_pattern: monster, owner_id: 'uppdrag' });
+    }
+  }
   return g;
 }
 

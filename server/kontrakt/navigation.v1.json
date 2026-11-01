@@ -1484,6 +1484,24 @@
     },
     {
       "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/halsa",
+      "public_pattern": "/halsa",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/utkast",
+      "public_pattern": "/utkast",
+      "category": "e",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
       "method": "POST",
       "router_pattern": "/privat/kop",
       "public_pattern": "/privat/kop",
@@ -1541,6 +1559,33 @@
       "method": "POST",
       "router_pattern": "/svara",
       "public_pattern": "/svara",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/utkast",
+      "public_pattern": "/utkast",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/insatssvar",
+      "public_pattern": "/insatssvar",
+      "category": "c",
+      "owner_id": null,
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "POST",
+      "router_pattern": "/dagslista",
+      "public_pattern": "/dagslista",
       "category": "c",
       "owner_id": null,
       "verification": "source"
@@ -2270,6 +2315,24 @@
       "method": "GET",
       "router_pattern": "/c/:companyId/uppdrag",
       "public_pattern": "/app/c/:companyId/uppdrag",
+      "category": "b",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/uppdrag",
+      "public_pattern": "/app/c/:companyId/uppdrag",
+      "category": "c",
+      "owner_id": "projects_list",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/uppdrag/lista",
+      "public_pattern": "/app/c/:companyId/uppdrag/lista",
       "category": "b",
       "owner_id": "projects_list",
       "verification": "source"
