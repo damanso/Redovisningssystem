@@ -16,9 +16,19 @@
 // landar på Översikten, som bär samma tolv månader. Provdata är valda så att
 // kontosaldo och reskontra SKILJER SIG (manuella verifikat utan faktura) och
 // så att trendens tolv månader korsar två räkenskapsår.
+//
+// DAGEN ÄR APPENS (FEL #80, 2026-11-02). Trendens tolv månader och
+// reskontrornas ålder räknas ur databasens CURRENT_DATE, och Översikten tar
+// ingen as_of. En falsk klocka i vitest når inte databasen, så provet kan inte
+// frysa dagen. Det läser i stället databasens dag en gång och lägger
+// räkenskapsåren och verifikaten relativt den: det senaste året börjar fem
+// månader före innevarande månad, så att fönstret alltid korsar årsskiftet med
+// bokföring på båda sidor, också i december. Provet krävde förut 2025-11 och
+// föll när fönstret gick förbi den månaden 2026-11-01.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { app, api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { pool } from '../src/db/pool.js';
+import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
 import { formatOre } from '../src/domain/money.js';
 import { amount, esc } from '../src/http/view/html.js';
 
@@ -27,10 +37,31 @@ const BOLAG = 'Landning AB';
 let user: TestUser;
 let companyId: string;
 let fyId: string;
-let fy26Id: string;
+let fyNyId: string;
 let ua: ReturnType<typeof supertest.agent>;
 const auth = () => ({ Authorization: `Bearer ${user.token}` });
 const co = () => `/api/companies/${companyId}`;
+
+// KALENDERN, räknad ur databasens dag i beforeAll. Månader som 'YYYY-MM'.
+function manad(ym: string, n: number): string {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y!, m! - 1 + n, 1)).toISOString().slice(0, 7);
+}
+const dag = (ym: string, d: number) => `${ym}-${String(d).padStart(2, '0')}`;
+function sistaDagen(ym: string): string {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y!, m!, 0)).toISOString().slice(0, 10);
+}
+/** Räkenskapsåret om tolv månader som börjar med månaden `forsta`. */
+function rakenskapsar(forsta: string) {
+  const sista = manad(forsta, 11);
+  const label = forsta.slice(0, 4) === sista.slice(0, 4) ? forsta.slice(0, 4) : `${forsta.slice(0, 4)}/${sista.slice(2, 4)}`;
+  return { label, start_date: dag(forsta, 1), end_date: sistaDagen(sista) };
+}
+let fonster: string[]; // trendens tolv månader t.o.m. databasens dag
+let arsskifte: string; // det senaste räkenskapsårets första månad, mitt i fönstret
+const fore = (n: number) => manad(arsskifte, -n); // n månader före årsskiftet: det föregående året
+const efter = (n: number) => manad(arsskifte, n); // n månader efter: det senaste året
 
 async function godkand(name: string, body: Record<string, unknown>) {
   const req = await api.post(`${co()}/actions/${name}`).set(auth()).send(body);
@@ -46,20 +77,24 @@ async function handling(name: string, body: Record<string, unknown> = {}) {
 }
 
 beforeAll(async () => {
+  // Appens dag: samma CURRENT_DATE som trenden och reskontrorna räknas ur.
+  const idag = (await pool.query<{ d: string }>("SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS d")).rows[0]!.d;
+  const nu = idag.slice(0, 7);
+  fonster = Array.from({ length: 12 }, (_, i) => manad(nu, i - 11));
+  arsskifte = manad(nu, -5);
+
   user = await registerUser('landning');
   companyId = await createCompany(user.token, BOLAG);
-  const fy = await api.post(`${co()}/accounting/fiscal-years`).set(auth())
-    .send({ label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
-  fyId = fy.body.fiscal_year.id;
+  fyId = (await createFiscalYear(companyId, auth(), rakenskapsar(manad(arsskifte, -12)))).id;
   const cust = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Landningskund' });
   // En bokförd, obetald kundfaktura med passerad förfallodag → förfallen fordran.
   const inv = await api.post(`${co()}/invoices`).set(auth())
-    .send({ customer_id: cust.body.customer.id, invoice_date: '2025-03-10', due_date: '2025-04-09', lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 80_000, vat_rate: 25 }] });
+    .send({ customer_id: cust.body.customer.id, invoice_date: dag(fore(6), 10), due_date: dag(fore(5), 9), lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 80_000, vat_rate: 25 }] });
   await api.post(`${co()}/invoices/${inv.body.invoice.id}/book`).set(auth()).send({ fiscal_year_id: fyId });
   // En bokförd, obetald leverantörsfaktura med passerad förfallodag.
   const sup = await api.post(`${co()}/suppliers`).set(auth()).send({ name: 'Landningsleverantör AB' });
   const si = await api.post(`${co()}/actions/create_supplier_invoice`).set(auth()).send({
-    supplier_id: sup.body.supplier.id, supplier_ref: 'L-1', invoice_date: '2025-05-01', due_date: '2025-05-31',
+    supplier_id: sup.body.supplier.id, supplier_ref: 'L-1', invoice_date: dag(fore(4), 1), due_date: sistaDagen(fore(4)),
     net_ore: 30_000, vat_rate: 25, expense_account: 6110,
   });
   await godkand('book_supplier_invoice', { supplier_invoice_id: si.body.result.id, fiscal_year_id: fyId });
@@ -67,29 +102,27 @@ beforeAll(async () => {
   // och ett banksaldo på 1930 — så att balansräkningen och reskontrorna
   // visar OLIKA tal, och provet kan se vilken sida som bär vilket mått.
   await godkand('post_voucher', {
-    fiscal_year_id: fyId, voucher_date: '2025-06-01', description: 'Kostnad utan faktura',
+    fiscal_year_id: fyId, voucher_date: dag(fore(3), 1), description: 'Kostnad utan faktura',
     lines: [{ account_number: 6110, debit_ore: 100_000, credit_ore: 0 }, { account_number: 2440, debit_ore: 0, credit_ore: 100_000 }],
   });
   await godkand('post_voucher', {
-    fiscal_year_id: fyId, voucher_date: '2025-06-02', description: 'Fordran utan faktura',
+    fiscal_year_id: fyId, voucher_date: dag(fore(3), 2), description: 'Fordran utan faktura',
     lines: [{ account_number: 1510, debit_ore: 20_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 20_000 }],
   });
   await godkand('post_voucher', {
-    fiscal_year_id: fyId, voucher_date: '2025-06-03', description: 'Insättning',
+    fiscal_year_id: fyId, voucher_date: dag(fore(3), 3), description: 'Insättning',
     lines: [{ account_number: 1930, debit_ore: 50_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 50_000 }],
   });
   // TVÅ RÄKENSKAPSÅR: trendens tolv månader (t.o.m. i dag) korsar årsskiftet,
   // resultatet räknar bara det senaste året.
-  const fy26 = await api.post(`${co()}/accounting/fiscal-years`).set(auth())
-    .send({ label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
-  fy26Id = fy26.body.fiscal_year.id;
+  fyNyId = (await createFiscalYear(companyId, auth(), rakenskapsar(arsskifte))).id;
   await godkand('post_voucher', {
-    fiscal_year_id: fy26Id, voucher_date: '2026-03-15', description: 'Intäkt i det nya året',
+    fiscal_year_id: fyNyId, voucher_date: dag(efter(2), 15), description: 'Intäkt i det nya året',
     lines: [{ account_number: 1930, debit_ore: 30_000, credit_ore: 0 }, { account_number: 3001, debit_ore: 0, credit_ore: 30_000 }],
   });
   // Ett AI-förslag lämnas obeslutat i kön: det är "insatsen" Hem pekar på.
   const vantar = await api.post(`${co()}/actions/register_supplier_payment`).set(auth())
-    .send({ supplier_invoice_id: si.body.result.id, fiscal_year_id: fyId, payment_date: '2025-06-10' });
+    .send({ supplier_invoice_id: si.body.result.id, fiscal_year_id: fyId, payment_date: dag(fore(3), 10) });
   expect(vantar.status, JSON.stringify(vantar.body)).toBe(202);
 
   ua = supertest.agent(app);
@@ -195,8 +228,10 @@ describe('Hems länkar landar på rätt bolag, rätt sida och rätt urval', () =
 
   it('Årets resultat: Rapporter visar samma resultat för samma period (bara det senaste året)', async () => {
     const d = await handling('dashboard');
-    expect(d.period).toEqual({ from: '2026-01-01', to: '2026-12-31' });
-    expect(d.result_ore).toBe(30_000); // 2025 års intäkter och kostnader räknas inte
+    const nytt = rakenskapsar(arsskifte);
+    expect(d.period).toEqual({ from: nytt.start_date, to: nytt.end_date });
+    // Det föregående årets intäkter och kostnader räknas inte, fast de ligger i trendens fönster.
+    expect(d.result_ore).toBe(30_000);
     const rap = await ua.get(`/app/c/${companyId}/reports`);
     expect(rap.text).toContain(`Period: ${d.period.from} – ${d.period.to}`);
     expect(rap.text).toContain(`<span>Resultat</span>${amount(d.result_ore, { signed: true }).value}`);
@@ -206,8 +241,14 @@ describe('Hems länkar landar på rätt bolag, rätt sida och rätt urval', () =
     const mr = await handling('monthly_revenue');
     expect(mr.months).toHaveLength(12);
     const ym = mr.months.map((m: { ym: string }) => m.ym);
-    expect(ym).toContain('2025-11');
-    expect(ym).toContain('2026-03'); // fönstret korsar årsskiftet
+    // Exakt de tolv månaderna t.o.m. databasens dag: ett fönster förskjutet en månad fälls.
+    expect(ym).toEqual(fonster);
+    // Fönstret korsar årsskiftet, med bokföring på båda sidor om det.
+    expect(ym).toContain(fore(1));
+    expect(ym).toContain(arsskifte);
+    const manaden = (x: string) => mr.months.find((m: { ym: string }) => m.ym === x);
+    expect(manaden(fore(3))).toMatchObject({ revenue_ore: 70_000, expense_ore: 100_000 }); // de manuella verifikaten
+    expect(manaden(efter(2))).toMatchObject({ revenue_ore: 30_000, expense_ore: 0 }); // intäkten i det nya året
     const ov = await ua.get(`/app/c/${companyId}`);
     expect(ov.status).toBe(200);
     expect(ov.text).toContain(esc(BOLAG));
