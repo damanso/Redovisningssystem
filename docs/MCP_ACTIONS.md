@@ -2161,3 +2161,96 @@ begärdes, och bandet *Väntar på dig* får raden *Ny bedömning begärd* med
 **Bedöm** (bara på ett aktivt uppdrag). På ett stängt uppdrag säger kortet att
 begäran inte längre kan besvaras, utan knapp. Bedömning-sidan säger före
 formuläret att bedömningen besvarar begäran.
+
+### Dokumentförteckningen (S10.10, FR-43)
+
+Samma hållning som svepet: Hermes läser Drive och valvet och pushar in hela
+projektets förteckning, och appen lagrar den som **CACHE** och ritar den.
+Migration **0076** ger två CACHE-tabeller. `uppdrag_dokument` bär projektets
+icke-raderade dokument som Hermes läste dem ur Drive och valvet: namn, länk,
+datum och storlek, aldrig innehåll. `uppdrag_dokumentrot` bär projektets
+rotmapp i Drive: namnet, länken och lästidpunkten. Varje rad går att räkna om
+ur källsystemen, och tabellerna får tömmas utan att något förloras utom fart.
+
+**Repot öppnar aldrig Drive eller valvet själv** (ADR-4). Tjänsten
+(`services/uppdragDokument.ts`) har ingen Drive-klient och inget utgående
+anrop: förteckningen kommer in som validerad indata genom
+`skriv_dokumentforteckning`. Det som skriver är Hermes skill
+`dokumentforteckning.py`, varje timme.
+
+**`skriv_dokumentforteckning` (write)** — "Skriv projektets
+dokumentförteckning (ersätter hela förteckningen)". Ingen `kravManniska`, av
+samma skäl som `kor_uppdragssvep`: det är källsystemets fakta om vilka filer
+som finns, inte ett omdöme. En människa i vägen hade betytt att förteckningen
+aldrig uppdaterades av sig själv. Schemat `DokumentforteckningSchema` bor i
+tjänsten (prejudikat `SvepIndataSchema`): det är samma strikta form som
+funktionen parsar. Indata, strikt:
+
+- `project_id` (uuid) — projektet. Det ska finnas i bolaget.
+- `rot` — `{ namn, lank }`, strikt: rotmappens namn (1–300 tecken) och länk
+  (1–2 000 tecken, `https://`).
+- `dokument[]` — högst 5 000 rader. Taket är avsiktligt högt men ändligt: en
+  push är HELA sanningen, så ett tak som klipper hade tystat bort dokument i
+  stället för att fälla anropet. Varje rad är strikt:
+  - `kalla` — `drive` eller `valv`, en sluten uppräkning som 0076:s CHECK;
+  - `extern_id` — källsystemets eget id (Drive-id, valvets sökväg), 1–300
+    tecken;
+  - `namn` — 1–500 tecken;
+  - `mime` (valfri) — 1–200 tecken;
+  - `andrad` (valfri) — källsystemets ändringstidpunkt, ISO 8601 med tidszon.
+    Saknas den sorteras raden SIST, aldrig som om den var nyast;
+  - `lank` — 1–2 000 tecken, `https://` och inget annat;
+  - `sokvag` (valfri) — mappvägen relativt roten. `''` är roten själv, och det
+    är också värdet när fältet saknas;
+  - `storlek` (valfri) — ett heltal, noll eller större.
+
+**Skrivningen ERSÄTTER projektets hela förteckning, den växer inte.** En push
+är hela projektets sanning. Raderna som kom upsertas på (`company_id`,
+`project_id`, `kalla`, `extern_id`), 0076:s `uppdrag_dokument_uk`, projektets
+övriga rader tas bort och roten upsertas, i SAMMA transaktion. Det som inte
+kommer med tas alltså bort, och en tom `dokument[]` tömmer projektets
+förteckning: det är det svaret källsystemet gav, och en tom mapp ska visas som
+tom. Det är så "inte raderad" hålls sann; en tabell som bara kunde växa hade
+visat papperskorgen som om den var Drive. Därför skickar
+`dokumentforteckning.py` aldrig en källa som inte gick att läsa: en tom lista
+efter ett Drive-fel hade raderat hela förteckningen i ytan. Projektet hoppas
+då över och körningen blir RÖD. Samma indata två gånger ger samma rader och
+`borttagna: 0`.
+
+**Fel.** Samma dokument (`kalla` och `extern_id`) två gånger i en push ger 400
+`dubblerat_dokument`: upserten hade tagit det sista och svarat med ett `antal`
+som inte stämmer med raderna. En länk som inte börjar med `https://`, på roten
+eller på en rad, ger 400 `invalid_link_url`. Kontrollen står i tjänsten och som
+CHECK i 0076. Fel form, också fler än 5 000 rader, ger 400 `validation_error`.
+Ett okänt projekt, eller ett projekt i ett annat bolag, ger 404 `not_found`,
+aldrig en tyst tom förteckning.
+
+**Svaret** är `{ project_id, antal, borttagna, last_nar }`: antalet rader som
+kom, hur många som togs bort och när förteckningen lästes. `last_nar` är den
+enda kolumn som ändras av en oförändrad push, och den säger NÄR förteckningen
+lästes, inte vad den innehåller.
+
+**`las_dokumentforteckning` (read, ingen `kravManniska`)** — "Projektets
+dokument grupperade per mapp, senaste versionen först". Indata är bara
+`project_id`, strikt, och ett okänt projekt ger 404 `not_found` som vid
+skrivningen. Grupperingen görs i tjänsten, så vyn, REST och MCP får exakt samma
+familjer i samma ordning (FR-23).
+
+- Svaret är `rot` (`{ namn, lank }` eller `null`), `last_nar` (eller `null`),
+  `antal` och grupperingen: `mappar[]` med Drive-raderna, en post
+  `{ sokvag, familjer[] }` per mapp i bokstavsordning med roten först, och
+  `valv[]` med valvets familjer utan mappindelning.
+- En familj är `{ nyckel, senaste, tidigare[] }`. Samma `kalla`, samma
+  `sokvag` och samma nyckel ur `familjenyckel` är en familj. Nyckeln tar bort
+  led som BARA säger vilken version av samma sak raden är (version, datum,
+  status, kopia, löpnummer), och bara när de står som egna led.
+- Nyast först inom en familj: störst `andrad`, sedan högst versionsnummer,
+  sedan namnet.
+
+**"Aldrig läst" är inte en tom mapp.** `rot` som är `null` och `antal` 0
+betyder att förteckningen aldrig lästs. En rot utan rader betyder att mappen
+var tom när den lästes. Rotens närvaro i `uppdrag_dokumentrot` är svaret på om
+förteckningen HAR lästs, och `last_nar` är `null` bara när den aldrig lästs.
+Saknas roten men inte raderna, dateras förteckningen med radernas senaste
+läsning. "Vi vet inte" och "det finns inget" är två olika besked, och en
+gemensam nolla hade sagt det senare om det första.
