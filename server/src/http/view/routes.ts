@@ -238,6 +238,8 @@ const OMRADESMAL: Record<string, string> = {
   ekonomi: '',
   projekt: 'projects',
   crm: 'relations',
+  // Min sida (9/11): /app/g/min är adressen som läggs på telefonens hemskärm.
+  min: 'min-sida',
 };
 
 /**
@@ -10140,4 +10142,219 @@ viewRouter.get('/c/:companyId/audit', pageFor('audit', 'Revisionslogg', async (c
               e.entity_type ? html`<span class="muted">${e.entity_type} ${(e.entity_id ?? '').slice(0, 8)}</span>` : ''
             }</div></div>`)}</div>`
     }`;
+}));
+
+// ---------------------------------------------------------------------------
+// Min sida (beställning 9/11: "Min sida byggs nu och ersätter Påminnelser").
+//
+// Davids att-göra-yta. EN källa: CRM-åtagandena. Sidan läser dem, och
+// avbockning går genom samma handgrepp som Åtaganden-sidan
+// (set_crm_commitment_status via runViewAction) — ingen synk, inget andra
+// system. Mobil först: kort, stora knappar, inga skript (CSP script-src 'none').
+//
+// Grupperna är räknade, inte lagrade: Idag = förfallet + i dag, sedan veckan,
+// senare, utan datum. Uppskjutet (snoozed_until > i dag) ligger utanför Idag
+// tills dagen kommer. Väntar på = det andra lovat oss (they_owe).
+// ---------------------------------------------------------------------------
+
+/** Första meningen, högst 140 tecken — kortets rubrik. Resten finns under "Mer". */
+function minRubrik(body: string): string {
+  const ren = body.replace(/\\"/g, '"').replace(/\s+/g, ' ').trim();
+  const forsta = ren.split(/(?<=[.!?])\s/)[0] ?? ren;
+  const kort = forsta.length > 140 ? `${forsta.slice(0, 137).trimEnd()}…` : forsta;
+  return kort.replace(/[.:]$/, '');
+}
+
+/** Länkar till underlaget: mejltråden ur source_ref och webbadresser i texten. */
+function minUnderlag(c: Record<string, unknown>): { href: string; label: string }[] {
+  const ut: { href: string; label: string }[] = [];
+  const ref = typeof c.source_ref === 'string' ? c.source_ref : '';
+  const gm = /^gmail:([0-9a-f]+)/i.exec(ref);
+  if (gm) ut.push({ href: `https://mail.google.com/mail/u/0/#all/${gm[1]}`, label: 'Mejltråden' });
+  const body = typeof c.body === 'string' ? c.body : '';
+  const sett = new Set<string>();
+  for (const m of body.matchAll(/https:\/\/[^\s)"'<>\]]+/g)) {
+    const u = m[0].replace(/[.,;]+$/, '');
+    if (sett.has(u)) continue;
+    sett.add(u);
+    const label = u.includes('docs.google.com/document') ? 'Dokument'
+      : u.includes('docs.google.com/spreadsheets') ? 'Kalkylark'
+        : u.includes('docs.google.com/presentation') ? 'Presentation'
+          : u.includes('mail.google.com') ? 'Mejl'
+            : u.includes('calendar.google.com') ? 'Kalender'
+              : u.includes('claude.ai/') ? 'Underlag (Claude)'
+                : 'Länk';
+    ut.push({ href: u, label });
+    if (ut.length >= 4) break;
+  }
+  return ut;
+}
+
+const MIN_KORTID = (id: string): string => id.slice(0, 8);
+
+function minKort(companyId: string, c: Record<string, unknown>, idag: string, back: string): Raw {
+  const id = c.id as string;
+  const body = (c.body as string) ?? '';
+  const due = (c.due_date as string | null) ?? null;
+  const forfallet = due !== null && due < idag;
+  const uppskjutet = typeof c.snoozed_until === 'string' && (c.snoozed_until as string) > idag;
+  const lankar = minUnderlag(c);
+  const vantar = c.direction === 'they_owe';
+  return html`<article class="ms-kort${forfallet ? ' ms-kort--sen' : ''}" id="k-${MIN_KORTID(id)}">
+    <div class="ms-kort__topp">
+      ${vantar ? '' : html`<form method="post" action="/app/c/${companyId}/commitments/${id}/done" class="ms-bock">
+        <input type="hidden" name="back" value="${back}">
+        <button type="submit" class="ms-bock__knapp" aria-label="Klar" title="Klar — stänger åtagandet i CRM">✓</button>
+      </form>`}
+      <div class="ms-kort__text">
+        <div class="ms-kort__rubrik">${minRubrik(body)}</div>
+        <div class="ms-kort__meta">
+          ${c.organization_name ? html`<span class="ms-tagg">${c.organization_name as string}</span>` : ''}
+          ${due ? html`<span class="ms-tagg${forfallet ? ' ms-tagg--sen' : ''}">${forfallet ? 'förföll ' : ''}${due}</span>` : ''}
+          ${uppskjutet ? html`<span class="ms-tagg">uppskjutet t.o.m. ${c.snoozed_until as string}</span>` : ''}
+          <span class="ms-id">#${MIN_KORTID(id)}</span>
+        </div>
+      </div>
+    </div>
+    <details class="ms-mer"><summary>Mer</summary>
+      <p class="ms-body">${body.replace(/\\"/g, '"')}</p>
+      <p class="ms-lankar">
+        ${lankar.map((l) => html`<a href="${l.href}" target="_blank" rel="noopener">${l.label} ↗</a>`)}
+        ${c.organization_id ? html`<a href="/app/c/${companyId}/relations/${c.organization_id as string}">${(c.organization_name as string) ?? 'Relationen'} →</a>` : ''}
+        <span class="muted">${c.source_ref ? String(c.source_ref) : ''}</span>
+      </p>
+      <div class="ms-knappar">
+        ${vantar ? rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Har kommit', { primary: true, back }) : ''}
+        ${rowAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'I morgon', { fields: { days: '1' }, back })}
+        ${rowAction(`/app/c/${companyId}/commitments/${id}/snooze`, 'Nästa vecka', { fields: { days: '7' }, back })}
+        ${rowAction(`/app/c/${companyId}/commitments/${id}/drop`, 'Stryk', { back })}
+      </div>
+    </details>
+  </article>`;
+}
+
+const MIN_STIL = html`<style>
+  .ms { max-width: 760px; margin: 0 auto; }
+  .ms-ny { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 18px; }
+  .ms-ny input[type=text] { flex: 1 1 260px; min-height: 44px; font-size: 16px; padding: 8px 12px; }
+  .ms-ny input[type=date], .ms-ny select { min-height: 44px; font-size: 16px; }
+  .ms-ny button { min-height: 44px; }
+  .ms-sok { display: flex; gap: 8px; margin-bottom: 12px; }
+  .ms-sok input { flex: 1; min-height: 40px; font-size: 16px; padding: 6px 10px; }
+  .ms-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .ms-filter a { font-size: 13px; padding: 4px 10px; border: 1px solid var(--line, #ddd); border-radius: 999px; text-decoration: none; color: inherit; }
+  .ms-filter a.on { background: var(--ink, #222); color: var(--paper, #fff); }
+  .ms-grupp { margin: 18px 0 6px; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; opacity: .7; }
+  .ms-kort { border: 1px solid var(--line, #e3e3e3); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: var(--card, transparent); }
+  .ms-kort--sen { border-left: 4px solid #c0392b; }
+  .ms-kort__topp { display: flex; gap: 12px; align-items: flex-start; }
+  .ms-bock { margin: 0; }
+  .ms-bock__knapp { width: 44px; height: 44px; border-radius: 50%; border: 2px solid currentColor; background: transparent; font-size: 20px; cursor: pointer; opacity: .55; }
+  .ms-bock__knapp:hover, .ms-bock__knapp:focus { opacity: 1; }
+  .ms-kort__text { flex: 1; min-width: 0; }
+  .ms-kort__rubrik { font-size: 16px; line-height: 1.35; }
+  .ms-kort__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
+  .ms-tagg { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,.14); }
+  .ms-tagg--sen { background: rgba(192,57,43,.15); color: #c0392b; }
+  .ms-id { font-size: 12px; opacity: .55; font-family: ui-monospace, monospace; }
+  .ms-mer summary { cursor: pointer; font-size: 13px; opacity: .7; margin-top: 6px; }
+  .ms-body { white-space: pre-wrap; font-size: 14px; }
+  .ms-lankar { display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .ms-knappar { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ms-knappar form { margin: 0; }
+  .ms-knappar .btn { min-height: 40px; }
+  details.ms-sektion > summary { cursor: pointer; }
+</style>`;
+
+viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (client, companyId, req) => {
+  const idag = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
+  const vecka = new Date(Date.now() + 7 * 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().replace(/^#/, '') : '';
+  const org = typeof req.query.org === 'string' ? req.query.org : '';
+  const alla = await listCommitments(client, companyId, { status: 'open' });
+  const orgs = [...new Map(alla
+    .filter((c) => c.organization_id && c.direction === 'we_owe')
+    .map((c) => [c.organization_id as string, (c.organization_name as string) ?? '—'])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], 'sv'));
+  const rader = alla.filter((c) => {
+    if (org && c.organization_id !== org) return false;
+    if (!q) return true;
+    return (c.id as string).startsWith(q) || String(c.body ?? '').toLowerCase().includes(q)
+      || String(c.organization_name ?? '').toLowerCase().includes(q);
+  });
+  const vi = rader.filter((c) => c.direction === 'we_owe');
+  const de = rader.filter((c) => c.direction === 'they_owe');
+  const uppskj = (c: Record<string, unknown>) => typeof c.snoozed_until === 'string' && (c.snoozed_until as string) > idag;
+  const due = (c: Record<string, unknown>) => (c.due_date as string | null) ?? null;
+  const idagLista = vi.filter((c) => !uppskj(c) && due(c) !== null && due(c)! <= idag);
+  // Prioritering v1, samma som morgonnotisen (min_sida_morgon.py): det som
+  // förfaller i dag först, sedan det senast förfallna överst.
+  idagLista.sort((a, b) => (due(a) === idag ? 0 : 1) - (due(b) === idag ? 0 : 1) || due(b)!.localeCompare(due(a)!));
+  const veckan = vi.filter((c) => !uppskj(c) && due(c) !== null && due(c)! > idag && due(c)! <= vecka);
+  const senare = vi.filter((c) => !uppskj(c) && due(c) !== null && due(c)! > vecka);
+  const utan = vi.filter((c) => !uppskj(c) && due(c) === null);
+  const skjutna = vi.filter(uppskj);
+  const qs = new URLSearchParams();
+  // backToCrm släpper bara igenom [a-z0-9/?=&-]; en fritextsökning med
+  // mellanslag följer därför inte med tillbaka efter en avbockning.
+  if (q && /^[a-z0-9-]+$/.test(q)) qs.set('q', q);
+  if (org) qs.set('org', org);
+  const back = `/app/c/${companyId}/min-sida${qs.toString() ? `?${qs.toString()}` : ''}`;
+  const kort = (l: Record<string, unknown>[]) => l.map((c) => minKort(companyId, c, idag, back));
+  const internt = orgs.find(([, n]) => /locollabs/i.test(n))?.[0] ?? orgs[0]?.[0] ?? '';
+
+  return html`${MIN_STIL}<div class="ms">
+    <div class="page-head"><div>${eyebrow('Min sida')}<h1>Det du ska göra</h1>
+      <p class="lede">${String(idagLista.length)} i dag · ${String(veckan.length)} i veckan · ${String(de.length)} väntar på andra. Bocka av här, så är det klart i CRM.</p></div></div>
+    ${felNotis(req)}
+    <form method="post" action="/app/c/${companyId}/min-sida/ny" class="ms-ny">
+      <input type="hidden" name="back" value="${back}">
+      <input type="text" name="text" required maxlength="2000" placeholder="Ny sak att göra…" autocomplete="off">
+      <input type="date" name="datum" value="${idag}" aria-label="Datum">
+      <select name="org" aria-label="Hör till">
+        ${orgs.map(([id, n]) => html`<option value="${id}" ${id === (org || internt) ? 'selected' : ''}>${n}</option>`)}
+      </select>
+      <button class="btn btn--primary" type="submit">Lägg till</button>
+    </form>
+    <form method="get" action="/app/c/${companyId}/min-sida" class="ms-sok">
+      ${org ? html`<input type="hidden" name="org" value="${org}">` : ''}
+      <input type="search" name="q" value="${q}" placeholder="Sök på ord eller #id">
+      <button class="btn btn--ghost btn--sm" type="submit">Sök</button>
+    </form>
+    <nav class="ms-filter">
+      <a href="/app/c/${companyId}/min-sida" class="${org ? '' : 'on'}">Allt</a>
+      ${orgs.map(([id, n]) => html`<a href="/app/c/${companyId}/min-sida?org=${id}" class="${id === org ? 'on' : ''}">${n}</a>`)}
+    </nav>
+    <h2 class="ms-grupp">Idag${idagLista.some((c) => due(c)! < idag) ? ' · inkl. förfallet' : ''} (${String(idagLista.length)})</h2>
+    ${idagLista.length ? kort(idagLista) : html`<p class="muted">Inget förfaller i dag.</p>`}
+    <h2 class="ms-grupp">Den här veckan (${String(veckan.length)})</h2>
+    ${veckan.length ? kort(veckan) : html`<p class="muted">Inget mer den här veckan.</p>`}
+    ${senare.length ? html`<h2 class="ms-grupp">Senare (${String(senare.length)})</h2>${kort(senare)}` : ''}
+    <details class="ms-sektion"><summary class="ms-grupp">Utan datum — någon gång (${String(utan.length)})</summary>${kort(utan)}</details>
+    <details class="ms-sektion"><summary class="ms-grupp">Väntar på andra (${String(de.length)})</summary>${kort(de)}</details>
+    ${skjutna.length ? html`<details class="ms-sektion"><summary class="ms-grupp">Uppskjutet (${String(skjutna.length)})</summary>${kort(skjutna)}</details>` : ''}
+  </div>`;
+}));
+
+viewRouter.post('/c/:companyId/min-sida/ny', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
+  const text = typeof b.text === 'string' ? b.text.trim() : '';
+  const datum = typeof b.datum === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.datum) ? b.datum : undefined;
+  const orgId = typeof b.org === 'string' && /^[0-9a-f-]{36}$/i.test(b.org) ? b.org : undefined;
+  const back = backToCrm(req, companyId, 'min-sida');
+  if (!text || !orgId) {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent('Skriv vad som ska göras och välj vad det hör till.')}`);
+    return;
+  }
+  await runViewAction(req, res, companyId, 'record_crm_commitment', {
+    organization_id: orgId,
+    direction: 'we_owe',
+    body: text,
+    ...(datum ? { due_date: datum } : {}),
+    occurred_at: new Date().toISOString(),
+    source_system: 'manual',
+    source_ref: `min-sida:${randomUUID()}`,
+  }, back);
 }));
