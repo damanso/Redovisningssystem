@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-18 (CRM privat och företag, steg 2: granskningens fynd, ytan, kundregistret —
+  uppdrag crmsfar2, gren `crm-sfar` ovanpå main `d70d649`, ej committad):**
+  Migration `0088_crm_privat_via_personen.sql` (additiv, inga data): triggern
+  `crm.privat_utanfor_bokforingen()` prövar nu också åtagandets person (ett privat
+  åtagande ligger aldrig på en kundkopplad organisation, varken direkt eller via sin
+  person), organisationens personer vid kundkoppling, och personflytt (ny trigger
+  `people_privat_utanfor_bokforingen`). Raderna läses med `FOR SHARE`, låsta på id,
+  så att två samtidiga skrivningar inte tillsammans öppnar vägen. Tjänstelagret har samma
+  regler (ny regel `privat_atagande_kundkopplad_person`; `privata_ataganden_kundkoppling`
+  också för personflytt och sammanslagningar), `mergePeople` får `sfar_conflict`.
+  Kundkortets relationsdel döljer privata personer; `crm_today` räknar och citerar bara
+  löften i relationens egen sfär; auditloggen bär `roll` och personens `sfar`.
+  Vyn: märket Privat/Företag och filtret Alla/Företag/Privat på Åtaganden och Min sida;
+  vald filterknapp är ifylld och bär `aria-current` (Davids fel 18/11); kundkortet har
+  Inaktivera/Aktivera via `update_customer`. Prov: `crm-sfar.test.ts` (40, nya V, R, S,
+  där S1 sveper varje privat id i varje tabell i `public`; enda tillåtna träff är
+  godkännandekön, och där bara CRM-sammanslagningar) och nya `crm-sfar-yta.test.ts` (13).
+  Hela `npm test`: 178 filer, 2850 tester gröna, exitkod 0; `npm run build` ren.
+  Inte gjort: steg 3 (migreringslistan, Svealand, «Privat (David)»), grindarna
+  `/code-review` och `/security-review`, ommätning av huvudets siffror. Detaljer, vägval,
+  röda prov och öppna punkter: `BYGGRAPPORT-crm-sfar-2.md` i arbetskopians rot.
+
 - **2026-11-18 (CRM privat och företag, steg 1: data och MCP — Davids order 9/11,
   leads beslut 18/11, gren `crm-sfar`, ej committad):**
   Migration `0087_crm_sfar_och_roll.sql`: `sfar` (`foretag`|`privat`, NOT NULL,

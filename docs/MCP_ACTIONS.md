@@ -869,13 +869,14 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   på raden. Villkoret gäller **godkännandet**: *Faktureras ej* går igenom även
   utan vald avtalsdel (orsak krävs som förut). Kön grindar aldrig fakturan.
 
-## CRM: privat och företag (beställning 9/11, steg 1)
+## CRM: privat och företag (beställning 9/11, steg 1 och 2)
 
 Davids order 9/11: allt han ska göra, som företagsledare och som privatperson,
 i samma CRM. Varje organisation, person och åtagande hör till en **sfär**,
 `foretag` eller `privat` (migration `0087_crm_sfar_och_roll.sql`). Alla rader som
-fanns före migrationen är `foretag`. Steg 1 är data och MCP; märkningen på Min
-sida och i briefen, filterknapparna och migreringslistan kommer i steg 2 och 3.
+fanns före migrationen är `foretag`. Steg 1 är data och MCP. Steg 2 stänger
+granskningens fynd (personvägen, migration 0088) och lägger märkningen och
+filterknapparna i vyn; migreringslistan kommer i steg 3.
 
 **Läsverktygen** tar `sfar: 'privat' | 'foretag' | 'alla'`, standard `alla`. Ett
 anrop utan `sfar` ger samma rader som förut; svaren har fått fälten `sfar` (och
@@ -916,19 +917,72 @@ läser åtagandena genom den), och den är stängd för det privata:
 | privat organisation med `customer_id`, eller kundkopplad organisation till `privat` | 400 `privat_bokforingsgrans`, `details.regel = privat_organisation_kundkoppling` |
 | privat organisation med `status: 'customer'` | 400 `privat_bokforingsgrans`, `details.regel = privat_organisation_kundstatus` |
 | privat åtagande på en kundkopplad organisation (nytt eller flyttat) | 400 `privat_bokforingsgrans`, `details.regel = privat_atagande_kundkopplad_organisation` |
-| `customer_id` på en organisation med privata åtaganden | 400 `privat_bokforingsgrans`, `details.regel = privata_ataganden_kundkoppling` |
+| privat åtagande på en **person** hos en kundkopplad organisation, med eller utan egen organisation (nytt eller flyttat; steg 2) | 400 `privat_bokforingsgrans`, `details.regel = privat_atagande_kundkopplad_person` |
+| `customer_id` på en organisation med privata åtaganden, direkt eller på någon av dess personer | 400 `privat_bokforingsgrans`, `details.regel = privata_ataganden_kundkoppling` |
+| `upsert_crm_person` som flyttar en person med privata åtaganden till en kundkopplad organisation (steg 2) | 400 `privat_bokforingsgrans`, `details.regel = privata_ataganden_kundkoppling` |
 | `merge_crm_organizations` mellan privat och företag | 400 `sfar_conflict` vid godkännandet |
-| `merge_crm_organizations` där resultatet blir kundkopplat med privata åtaganden | 400 `privat_bokforingsgrans` vid godkännandet |
+| `merge_crm_organizations` där resultatet blir kundkopplat med privata åtaganden, direkt eller via personerna | 400 `privat_bokforingsgrans` vid godkännandet |
+| `merge_crm_people` mellan en privat och en företagsperson (steg 2) | 400 `sfar_conflict` vid godkännandet |
+| `merge_crm_people` där den kvarvarande personen hamnar på en kundkopplad organisation med privata åtaganden (steg 2) | 400 `privat_bokforingsgrans` vid godkännandet |
 
 `details.skal` säger i klartext vad som slog till och vad man gör i stället
 (meddelandet i övrigt stannar på servern). Synken fälls aldrig av gränsen: en
 organisation med privata åtaganden kopplas helt enkelt inte och redovisas som okopplad.
+En händelse som skulle flytta en person med privata åtaganden till en kundkopplad
+organisation hoppas över och står i `skipped` med skälet; resten av batchen går igenom.
 Databasen bär samma spärrar: CHECK-villkoret
 `organizations_privat_utanfor_bokforingen_ck` och triggern
-`crm.privat_utanfor_bokforingen()` på organisationer och åtaganden (P0001, 409
-`rule_violation`). Provet `server/test/crm-sfar.test.ts` sveper dessutom varje
-tabell i schemat `public` och SIE-exporten efter den privata posten, och fäller om
-en främmande nyckel mellan `crm` och bokföringen tillkommer.
+`crm.privat_utanfor_bokforingen()` på organisationer, åtaganden och (sedan 0088)
+personer (P0001, 409 `rule_violation`). Triggern låser de rader den läser med
+`FOR SHARE`, så att två samtidiga skrivningar inte tillsammans kan öppna vägen.
+
+**Varför personen räknas (steg 2, migration `0088_crm_privat_via_personen.sql`).**
+Kundrelationens kronologi (`get_crm_thread`) och GDPR-raderingen läser åtagandena
+också via organisationens personer. Ett privat åtagande på en person hos kunden
+hamnade därför bredvid kundens fakturor och betalningar, fast det inte bar
+kundens organisation. Regeln är nu: ett privat åtagande ligger aldrig på en
+kundkopplad organisation, varken direkt eller via sin person.
+
+**Privata personer på en kundkopplad organisation** är tillåtna (en privat
+kontakt kan arbeta hos en kund), men kundkortet i vyn visar dem inte och räknar
+inte deras kontakt som kundens senaste kontakt. På relationskortet
+(`get_crm_organization`) syns de, märkta med sin sfär.
+
+**Proven.** `server/test/crm-sfar.test.ts`: B (gränsen), V (personvägen i tjänsten,
+databasen och under samtidiga skrivningar) och S1, ett svep över varje tabell i
+schemat `public` efter varje privat id som filen skapat. Påståendet som svepet
+bär: *inget privat id finns i någon tabell i `public`, utom i godkännandekön
+(`action_approvals`), och där bara i en begärd sammanslagning av CRM-poster
+(`merge_crm_organizations`, `merge_crm_people`)*. Kön är Att göra, inte
+räkenskapsinformation: inget verifikat, ingen faktura, rapport, momsunderlag,
+K2-del eller export läser dess indata. SIE-exporten prövas separat (B9). B8 fäller
+om en främmande nyckel mellan `crm` och bokföringen tillkommer.
+
+**`crm_today` (steg 2).** En relations skäl räknar och citerar bara löften i
+relationens egen sfär, med eller utan filter. Ett privat löfte på en
+företagsorganisation står alltså inte som «vi lovade: …» under ett kort märkt
+`foretag`; det står i löfteshögen med `sfar: 'privat'`. Varje kort i båda
+högarna bär `sfar`, så att briefen kan skilja dem. `crm_relation_state`,
+`crm_silence_report` och `crm_contact_suggestions` räknar som förut (alla löften
+på organisationen).
+
+**Auditloggen (steg 2).** `crm.organization_created` och `crm.organization_updated`
+bär `sfar` och `roll`; `crm.person_created` och `crm.person_updated` bär `sfar`.
+Båda är låsta värden, aldrig fritext.
+
+**Vyn (steg 2).** Åtaganden (`/app/c/:id/commitments`) och Min sida
+(`/app/c/:id/min-sida`) märker varje åtagande Privat eller Företag och har
+filtret Alla / Företag / Privat (`?sfar=foretag|privat`, utelämnat = alla). På
+Åtaganden kombineras det med statusen (`?status=open|done|dropped`); den valda
+knappen i varje rad är ifylld (`btn--primary`) och bär `aria-current="page"`, och
+varje länk behåller det andra filtret. Min sida kombinerar sfären med
+organisationsfiltret på samma sätt (`.on` och `aria-current`).
+
+**Kundkortet (steg 2).** Knappen *Inaktivera kund* / *Aktivera kund* sätter
+`is_active` via `update_customer` (samma allowlista och revisionsspår,
+`customer.updated` med `fields: ['is_active']`). En inaktiv kund erbjuds inte när
+en faktura eller ett projekt skapas och står inte i `list_customers` utan
+`include_inactive`; bokförda fakturor, reskontran och momsrapporten påverkas inte.
 
 ## Uppdragsytan
 

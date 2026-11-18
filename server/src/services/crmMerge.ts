@@ -82,12 +82,16 @@ export async function mergeOrganizations(
     );
   }
   // Bokföringsgränsen (migration 0087): efter sammanslagningen bär den kvarvarande
-  // raden kundkopplingen om någon av dem gjorde det, och alla åtaganden från båda.
-  // Ett privat åtagande får inte hamna under en kundkopplad organisation.
+  // raden kundkopplingen om någon av dem gjorde det, och alla åtaganden och
+  // personer från båda. Ett privat åtagande får inte hamna under en kundkopplad
+  // organisation, varken direkt eller via en av dess personer (0088).
   if (keep.customer_id || gone.customer_id) {
     const privata = await client.query(
       `SELECT 1 FROM crm.commitments
-       WHERE company_id = $1 AND organization_id = ANY($2::uuid[]) AND sfar = 'privat' LIMIT 1`,
+       WHERE company_id = $1 AND sfar = 'privat'
+         AND (organization_id = ANY($2::uuid[])
+              OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))
+       LIMIT 1`,
       [companyId, [keepId, mergeId]]);
     if (privata.rows[0]) {
       throw privatGransFel('privata_ataganden_kundkoppling',
@@ -241,7 +245,7 @@ export async function mergeOrganizations(
 
 async function loadPerson(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const r = await client.query(
-    `SELECT id, name, email, phone, role_title, external_ref, notes, organization_id
+    `SELECT id, name, email, phone, role_title, external_ref, notes, organization_id, sfar
      FROM crm.people WHERE id = $1 AND company_id = $2 FOR UPDATE`,
     [id, companyId],
   );
@@ -268,6 +272,31 @@ export async function mergePeople(
 
   if (keep.email && gone.email && String(keep.email).toLowerCase() !== String(gone.email).toLowerCase()) {
     throw new BadRequestError('email_conflict', 'de två personerna har olika e-postadresser — det är sannolikt två personer');
+  }
+  // Samma regel som för organisationerna: två rader i olika sfärer är två beslut
+  // som säger emot varandra, och vilket som gäller ska inte avgöras av vilken rad
+  // som råkade bli kvar.
+  if (keep.sfar !== gone.sfar) {
+    throw new BadRequestError(
+      'sfar_conflict',
+      'den ena personen är privat och den andra företag — byt sfär på den ena först om de är samma',
+    );
+  }
+  // Bokföringsgränsen (0088): den kvarvarande personen behåller sin organisation
+  // eller ärver den inslagnas, och tar över båda personernas åtaganden. Hamnar
+  // hon på en kundkopplad organisation får inget av dem vara privat.
+  const organisationEfter = (keep.organization_id ?? gone.organization_id) as string | null;
+  if (organisationEfter) {
+    const privata = await client.query(
+      `SELECT 1 FROM crm.organizations o
+       WHERE o.company_id = $1 AND o.id = $2 AND o.customer_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM crm.commitments c
+                      WHERE c.company_id = $1 AND c.person_id = ANY($3::uuid[]) AND c.sfar = 'privat')`,
+      [companyId, organisationEfter, [keepId, mergeId]]);
+    if (privata.rows[0]) {
+      throw privatGransFel('privata_ataganden_kundkoppling',
+        'personerna har privata åtaganden, och den sammanslagna personen hör till en organisation som är kopplad till kundregistret — flytta åtagandena först');
+    }
   }
 
   const filled: string[] = [];
