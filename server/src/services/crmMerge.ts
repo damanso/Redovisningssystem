@@ -17,6 +17,7 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import { writeCrmAudit } from './crmRelations.js';
+import { privatGransFel, sfarParameter, type Sfar, type SfarFilter } from './crmSfar.js';
 
 export interface MergeResult {
   kept_id: string;
@@ -38,7 +39,7 @@ const PERSON_FILLABLE = ['email', 'phone', 'role_title', 'external_ref', 'notes'
 
 async function loadOrg(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {
   const r = await client.query(
-    `SELECT id, name, org_number, website, notes, cadence_days, customer_id, status
+    `SELECT id, name, org_number, website, notes, cadence_days, customer_id, status, sfar
      FROM crm.organizations WHERE id = $1 AND company_id = $2 FOR UPDATE`,
     [id, companyId],
   );
@@ -70,6 +71,28 @@ export async function mergeOrganizations(
       'customer_conflict',
       'de två organisationerna pekar på olika kunder i redovisningen — det är inte en dubblett',
     );
+  }
+  // Sfären är ett beslut om raden, precis som kundkopplingen. Två rader i olika
+  // sfärer är två beslut som säger emot varandra, och vilket som gäller ska inte
+  // avgöras av vilken rad som råkade bli kvar.
+  if (keep.sfar !== gone.sfar) {
+    throw new BadRequestError(
+      'sfar_conflict',
+      'den ena organisationen är privat och den andra företag — byt sfär på den ena först om de är samma',
+    );
+  }
+  // Bokföringsgränsen (migration 0087): efter sammanslagningen bär den kvarvarande
+  // raden kundkopplingen om någon av dem gjorde det, och alla åtaganden från båda.
+  // Ett privat åtagande får inte hamna under en kundkopplad organisation.
+  if (keep.customer_id || gone.customer_id) {
+    const privata = await client.query(
+      `SELECT 1 FROM crm.commitments
+       WHERE company_id = $1 AND organization_id = ANY($2::uuid[]) AND sfar = 'privat' LIMIT 1`,
+      [companyId, [keepId, mergeId]]);
+    if (privata.rows[0]) {
+      throw privatGransFel('privata_ataganden_kundkoppling',
+        'organisationerna har privata åtaganden, och den sammanslagna raden blir kopplad till kundregistret — flytta åtagandena först');
+    }
   }
 
   // Kundkopplingen först, och i rätt ordning: unik-indexet på (company_id,
@@ -350,6 +373,8 @@ export interface SearchHit {
   /** Vart man ska klicka. Ett sökresultat som inte går att öppna är en återvändsgränd. */
   href_id: string;
   organization_id: string | null;
+  /** Kund- och leverantörsregistret är bokföringens och därmed alltid 'foretag'. */
+  sfar: Sfar;
 }
 
 /**
@@ -366,7 +391,7 @@ export interface SearchHit {
  * underhålla för en vinst som inte finns i den här skalan.
  */
 export async function searchCrm(
-  client: PoolClient, companyId: string, query: string, limit = 20,
+  client: PoolClient, companyId: string, query: string, limit = 20, opts: { sfar?: SfarFilter } = {},
 ): Promise<SearchHit[]> {
   const q = query.trim();
   if (q.length < 2) return [];
@@ -376,14 +401,14 @@ export async function searchCrm(
     `WITH hits AS (
        SELECT 'organization'::text AS kind, o.id, o.name AS title,
               CASE WHEN o.org_number IS NOT NULL THEN 'Org.nr ' || o.org_number ELSE NULL END AS subtitle,
-              o.id AS href_id, o.id AS organization_id, 0 AS rang
+              o.id AS href_id, o.id AS organization_id, 0 AS rang, o.sfar
        FROM crm.organizations o
        WHERE o.company_id = $1 AND (o.name ILIKE $2 ESCAPE '\\' OR o.org_number ILIKE $2 ESCAPE '\\')
 
        UNION ALL
        SELECT 'person', p.id, p.name,
               NULLIF(concat_ws(' · ', org.name, p.role_title, p.email), ''),
-              p.id, p.organization_id, 1
+              p.id, p.organization_id, 1, p.sfar
        FROM crm.people p
        LEFT JOIN crm.organizations org ON org.id = p.organization_id AND org.company_id = p.company_id
        WHERE p.company_id = $1 AND (p.name ILIKE $2 ESCAPE '\\' OR p.email ILIKE $2 ESCAPE '\\')
@@ -391,23 +416,24 @@ export async function searchCrm(
        UNION ALL
        SELECT 'customer', c.id, c.name,
               NULLIF(concat_ws(' · ', 'Kund ' || c.customer_number::text, c.org_number), ''),
-              c.id, NULL, 2
+              c.id, NULL, 2, 'foretag'
        FROM customers c
        WHERE c.company_id = $1 AND (c.name ILIKE $2 ESCAPE '\\' OR c.org_number ILIKE $2 ESCAPE '\\')
 
        UNION ALL
        SELECT 'supplier', s.id, s.name,
               NULLIF(concat_ws(' · ', 'Leverantör', s.org_number), ''),
-              s.id, NULL, 3
+              s.id, NULL, 3, 'foretag'
        FROM suppliers s
        WHERE s.company_id = $1 AND (s.name ILIKE $2 ESCAPE '\\' OR s.org_number ILIKE $2 ESCAPE '\\')
      )
-     SELECT kind, id, title, subtitle, href_id, organization_id FROM hits
+     SELECT kind, id, title, subtitle, href_id, organization_id, sfar FROM hits
+     WHERE ($6::text IS NULL OR sfar = $6)
      -- Exakt träff först, sedan prefix, sedan register i tur och ordning: den
      -- som skriver hela namnet ska inte behöva läsa förbi tio delträffar.
      ORDER BY (lower(title) = lower($3)) DESC, (title ILIKE $4 ESCAPE '\\') DESC, rang, title
      LIMIT $5`,
-    [companyId, like, q, `${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`, limit],
+    [companyId, like, q, `${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`, limit, sfarParameter(opts.sfar)],
   );
   return r.rows;
 }

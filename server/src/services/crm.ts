@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
+import { sfarParameter, type SfarFilter } from './crmSfar.js';
 
 // Rikare CRM: kontaktpersoner, anteckningar och taggar på kunder/leverantörer.
 // party_type styr vilken parttabell existensen valideras mot (allowlist, aldrig
@@ -173,10 +174,22 @@ export async function setTags(
   return { tags: clean };
 }
 
-export async function getPartyCrm(client: PoolClient, companyId: string, partyType: PartyType, partyId: string): Promise<{
-  contacts: Contact[]; notes: Note[]; tags: string[];
+/**
+ * Partens CRM-bild: kontakter, anteckningar och taggar.
+ *
+ * Parten är en kund eller leverantör i bokföringen och hör därför alltid till
+ * sfären 'foretag' — en privat post når aldrig de registren (migration 0087).
+ * Sfären står i svaret så att det syns, och filtret 'privat' ger samma form med
+ * tomma listor: det finns inget privat att visa om en part i bokföringen. Parten
+ * prövas ändå först, så att en okänd part fortfarande ger 404 och inte ett tomt svar.
+ */
+export async function getPartyCrm(
+  client: PoolClient, companyId: string, partyType: PartyType, partyId: string, opts: { sfar?: SfarFilter } = {},
+): Promise<{
+  sfar: 'foretag'; contacts: Contact[]; notes: Note[]; tags: string[];
 }> {
   await assertParty(client, companyId, partyType, partyId);
+  if (sfarParameter(opts.sfar) === 'privat') return { sfar: 'foretag', contacts: [], notes: [], tags: [] };
   const table = PARTY_TABLE[partyType];
   // Sekventiellt: alla tre går på SAMMA anslutning, och pg kan inte köra
   // parallella frågor på en klient — den köar dem och varnar (bort i pg@9).
@@ -185,5 +198,5 @@ export async function getPartyCrm(client: PoolClient, companyId: string, partyTy
   const notes = await readNotes(client, companyId, partyType, partyId);
   const tagRow = await client.query<{ tags: string[] }>(
     `SELECT tags FROM ${table} WHERE id = $1 AND company_id = $2`, [partyId, companyId]);
-  return { contacts, notes, tags: tagRow.rows[0]?.tags ?? [] };
+  return { sfar: 'foretag', contacts, notes, tags: tagRow.rows[0]?.tags ?? [] };
 }
