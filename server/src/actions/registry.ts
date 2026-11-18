@@ -18,6 +18,8 @@ import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 import { ORG_ROLLER, SFARER, SFARFILTER, type SfarFilter } from '../services/crmSfar.js';
+import { setCrmSfar } from '../services/crmSfarByte.js';
+import { privataForslag, sakerstallPrivatIntern } from '../services/crmPrivat.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
 // Privat och företag i samma CRM (beställning 9/11). Skrivverktygen tar en sfär,
 // läsverktygen ett filter där 'alla' är standard: utelämnat ger samma svar som förr.
@@ -159,6 +161,10 @@ export interface ActionDef<I = unknown> {
   // det med 409 `koas_av_svepet` före kön och utan mutation (Story 1.14).
   // Deklarativt som `kraverNyVersion`.
   koasAvSvepet?: (input: I) => boolean;
+  // Rättningsvarv 3b (krav 8): agentens anrop köas för en människas beslut när
+  // tjänsten kastar KraverGodkannandeError (före första skrivningen). executeAction
+  // rullar då tillbaka och skapar en köpost; en människas anrop körs direkt.
+  koasForAgent?: boolean;
   // För sensitive: committa människans beslut före verkställigheten så att
   // ett tekniskt fel aldrig kräver en ny kvittens (B-2, FR-41 punkt 4).
   tvafas?: boolean;
@@ -2815,9 +2821,29 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         source_ref: safeText(300).optional(),
         // Utelämnad: ärvs från organisationen, annars personen, annars 'foretag'.
         sfar: SfarSchema.optional(),
+        // Steg 3 (krav 5): lägg åtagandet på «Privat (<förnamn>)», bolagets privata
+        // intern-organisation, för ett privat ärende utan motpart. Den skapas i
+        // samma transaktion första gången den behövs. I stället för organization_id.
+        privat_intern: z.literal(true).optional(),
       })
-      .strict(),
-    handler: (ctx, i) => recordCommitment(ctx.client, ctx.companyId, ctx.userId, i as never),
+      .strict()
+      .superRefine((v, ctx) => {
+        if (v.privat_intern && v.organization_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'ange privat_intern eller organization_id, inte båda',
+            path: ['privat_intern'],
+          });
+        }
+      }),
+    handler: async (ctx, i) => {
+      const { privat_intern: privatIntern, ...atagande } = i as { privat_intern?: true } & Record<string, unknown>;
+      const org = privatIntern
+        ? (await sakerstallPrivatIntern(ctx.client, ctx.companyId, ctx.userId, sourceForActor(ctx.actor))).id
+        : undefined;
+      return recordCommitment(ctx.client, ctx.companyId, ctx.userId,
+        { ...atagande, ...(org ? { organization_id: org } : {}) } as never, sourceForActor(ctx.actor));
+    },
   }),
   def({
     name: 'set_crm_commitment_status',
@@ -2923,6 +2949,71 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     }).strict(),
     handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter }) =>
       listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before, sfar: i.sfar }),
+  }),
+  // Steg 3 (B, leads beslut 18/11): byt sfär på en organisation, en person eller
+  // ett åtagande. Gränsen mot bokföringen gäller också bytet, klara och avskrivna
+  // åtaganden rörs aldrig, och en organisations öppna åtaganden följer med bara
+  // när anropet säger det uttryckligen. Vyns «Rätta uppgifter» går hit.
+  //
+  // Rättningsvarv 3b (krav 8, «David godkänner listan innan något flyttas»): en
+  // agents byte på en befintlig post verkställs inte direkt. Tjänsten prövar det
+  // och kastar KraverGodkannandeError före första skrivningen, och förslaget läggs
+  // i Att göra. En människa (vyn, en människas token, ett godkänt förslag) byter
+  // direkt. Ett anrop som inte ändrar något, och en vägran, köas inte.
+  def({
+    name: 'set_crm_sfar',
+    title: 'Byt sfär (privat/företag) på en organisation, person eller ett åtagande — en agents byte väntar på godkännande i Att göra',
+    sensitivity: 'write',
+    koasForAgent: true,
+    // Ett objekt med superRefine, inte z.union: MCP kräver type:"object" överst.
+    inputSchema: z
+      .object({
+        organization_id: UuidSchema.optional(),
+        person_id: UuidSchema.optional(),
+        commitment_id: UuidSchema.optional(),
+        sfar: SfarSchema,
+        // Bara för en organisation. Utelämnad = åtagandena stannar i sin sfär.
+        cascade_open_commitments: z.boolean().optional(),
+        // Bara för en organisation (3b): rollen byts i samma beslut, som för
+        // Svealand (privat + leverantör). Utelämnad = oförändrad. En agent byter
+        // inte sfär eller roll på en befintlig organisation med upsert; den hänvisas hit.
+        roll: OrgRollSchema.optional(),
+      })
+      .strict()
+      .superRefine((v, ctx) => {
+        if ([v.organization_id, v.person_id, v.commitment_id].filter(Boolean).length !== 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'ange exakt en av organization_id, person_id och commitment_id',
+            path: ['organization_id'],
+          });
+        }
+        if (v.cascade_open_commitments !== undefined && !v.organization_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'cascade_open_commitments gäller bara en organisation',
+            path: ['cascade_open_commitments'],
+          });
+        }
+        if (v.roll !== undefined && !v.organization_id) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'roll gäller bara en organisation',
+            path: ['roll'],
+          });
+        }
+      }),
+    handler: (ctx, i) => setCrmSfar(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
+  }),
+  // Steg 3 (D, krav 8): förslaget på poster som ser privata ut, med skälet per
+  // rad. BARA läsning. Flytten är Davids: den görs med knappen i vyn, som kräver
+  // en inloggad ägare, och ingen åtgärd verkställer listan.
+  def({
+    name: 'list_crm_privata_forslag',
+    title: 'Förslag: poster som ser privata ut (läsning; flytten gör David i vyn)',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => privataForslag(ctx.client, ctx.companyId),
   }),
   // --- CRM E4: API-kontraktet och härledningsjobben -------------------------
   // Källorna (mailindex, kalender, Linear) ligger utanför systemet. Det här

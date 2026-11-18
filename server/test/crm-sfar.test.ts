@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { privataId, svepaBokforingen } from './crm-sfar-svep.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Rad = Record<string, any>;
@@ -63,10 +64,14 @@ const MIGRATIONEN = readFileSync(
   fileURLToPath(new URL('../migrations/0087_crm_sfar_och_roll.sql', import.meta.url)), 'utf8');
 const MIGRATIONEN_0088 = readFileSync(
   fileURLToPath(new URL('../migrations/0088_crm_privat_via_personen.sql', import.meta.url)), 'utf8');
+const MIGRATIONEN_0089 = readFileSync(
+  fileURLToPath(new URL('../migrations/0089_crm_privat_person_utanfor_kunden.sql', import.meta.url)), 'utf8');
 
-// Exakt det 0087 och 0088 lägger till, baklänges. Rader som skrivs före ångrandet
-// står därefter som rader skrivna före migrationen — utan kolumnen sfar.
+// Exakt det 0087, 0088 och 0089 lägger till, baklänges. Rader som skrivs före
+// ångrandet står därefter som rader skrivna före migrationen — utan kolumnen sfar.
 const ANGRA_0087 = `
+  DROP TRIGGER interactions_privat_utanfor_bokforingen ON crm.interactions;
+  DROP TRIGGER people_sfar_privat_utanfor_bokforingen ON crm.people;
   DROP TRIGGER people_privat_utanfor_bokforingen ON crm.people;
   DROP TRIGGER commitments_privat_utanfor_bokforingen ON crm.commitments;
   DROP TRIGGER organizations_privat_utanfor_bokforingen ON crm.organizations;
@@ -102,9 +107,10 @@ describe('M migrationen 0087', () => {
         expect(kvar.rows, 'före migrationen finns ingen sfär').toEqual([]);
 
         await admin.query(MIGRATIONEN);
-        // 0088 spelas upp ovanpå: den rör inga data, och ska gå att köra mot
-        // rader som redan finns.
+        // 0088 och 0089 spelas upp ovanpå: de rör inga data, och ska gå att köra
+        // mot rader som redan finns.
         await admin.query(MIGRATIONEN_0088);
+        await admin.query(MIGRATIONEN_0089);
 
         const org = await admin.query(
           'SELECT sfar, roll FROM crm.organizations WHERE company_id = $1 ORDER BY name', [companyId]);
@@ -218,7 +224,10 @@ describe('F filtret privat/foretag/alla på de fem läsverktygen', () => {
   });
 
   it('F4 crm_today: båda högarna filtreras, relationerna på organisationens sfär', async () => {
-    const r = await fyraSatt('crm_today', { as_of: '2026-11-18' });
+    // Steg 3 (E): en privat relation får inte skälen «ingen registrerad kontakt
+    // alls» eller prospekt, som var Svealands enda skäl den 18/11. Dagen är därför
+    // den 20/11, när elavtalet har förfallit och relationen har ett eget skäl.
+    const r = await fyraSatt('crm_today', { as_of: '2026-11-20' });
     expect(r.utan).toEqual(r.alla);
     const hogar = (v: Rad) => ({
       relationer: v.relations.map((x: Rad) => `${x.organization}:${x.sfar}`).sort(),
@@ -390,39 +399,8 @@ describe('P en privat organisation kräver bara namn', () => {
 // B: bokföringsgränsen
 // ---------------------------------------------------------------------------
 
-/**
- * Varje privat id i relationsdatan: organisationer, personer och åtaganden.
- *
- * Testdatabasen återskapas ur mallen före varje testfil (test/setup.ts), så det
- * som finns här är exakt det den här filen har skapat fram till anropet.
- */
-async function privataId(admin: pg.Client): Promise<{ slag: string; id: string }[]> {
-  const r = await admin.query<{ slag: string; id: string }>(
-    `SELECT 'organisation' AS slag, id::text AS id FROM crm.organizations WHERE sfar = 'privat'
-     UNION ALL SELECT 'person', id::text FROM crm.people WHERE sfar = 'privat'
-     UNION ALL SELECT 'atagande', id::text FROM crm.commitments WHERE sfar = 'privat'
-     ORDER BY 1, 2`);
-  return r.rows;
-}
-
-/** Varje tabell i public där någon av markörerna förekommer, i någon kolumn. */
-async function svepaBokforingen(admin: pg.Client, markorer: string[]): Promise<string[]> {
-  const tabeller = await admin.query<{ tablename: string }>(
-    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename");
-  expect(tabeller.rows.length, 'svepet måste faktiskt se bokföringens tabeller').toBeGreaterThan(50);
-  expect(markorer.length, 'ett svep utan markörer hittar ingenting').toBeGreaterThan(0);
-  const monster = markorer.map((m) => `%${m}%`);
-  const traffar: string[] = [];
-  for (const { tablename } of tabeller.rows) {
-    // Tabellnamnet kommer ur katalogen, inte ur indata. Hela raden som text: en ny
-    // kolumn i en ny tabell sveps utan att provet behöver veta att den finns.
-    const r = await admin.query<{ antal: number }>(
-      `SELECT count(*)::int AS antal FROM public."${tablename.replace(/"/g, '""')}" t WHERE t::text LIKE ANY($1::text[])`,
-      [monster]);
-    if (r.rows[0]!.antal > 0) traffar.push(tablename);
-  }
-  return traffar;
-}
+// privataId och svepaBokforingen står i crm-sfar-svep.ts sedan steg 3: samma svep
+// körs också efter en flytt till Privat (crm-sfar-3.test.ts).
 
 describe('B bokföringsgränsen: en privat post når aldrig bokföringen', () => {
   let act: ReturnType<typeof bolaget>;
@@ -579,8 +557,10 @@ describe('B bokföringsgränsen: en privat post når aldrig bokföringen', () =>
     expect(sparrar.rows.map((r) => r.namn)).toEqual([
       'check:organizations_privat_utanfor_bokforingen_ck',
       'trigger:commitments_privat_utanfor_bokforingen',
+      'trigger:interactions_privat_utanfor_bokforingen',
       'trigger:organizations_privat_utanfor_bokforingen',
       'trigger:people_privat_utanfor_bokforingen',
+      'trigger:people_sfar_privat_utanfor_bokforingen',
     ]);
   });
 
@@ -651,7 +631,6 @@ describe('V personvägen: ett privat åtagande når aldrig kunden via sin person
   let companyId: string;
   let kundOrg: string;
   let kontakten: string;
-  let privatKontakt: string;
   let privatOrg: string;
   let vannen: string;
   let vannensAtagande: string;
@@ -666,11 +645,9 @@ describe('V personvägen: ett privat åtagande når aldrig kunden via sin person
     const kundId = ok(await act('create_customer', { name: 'Kundkopplad AB' })).id;
     kundOrg = ok(await act('upsert_crm_organization', { name: 'Kundkopplad AB', customer_id: kundId })).id;
     kontakten = ok(await act('upsert_crm_person', { name: 'Kim Kontakt', organization_id: kundOrg })).id;
-    // En privat person får ligga på kundens organisation (kundkortet döljer
-    // henne, se crm-sfar-yta) — men hennes privata åtaganden får inte följa med.
-    privatKontakt = ok(await act('upsert_crm_person', {
-      name: 'Pia Privatkontakt', organization_id: kundOrg, sfar: 'privat',
-    })).id;
+    // Steg 2 lade här en privat person på kundens organisation. Sedan steg 3
+    // (leads beslut A, migration 0089) är det förbjudet; det prövas i
+    // crm-sfar-3.test.ts (A-blocket).
     privatOrg = ok(await act('upsert_crm_organization', { name: 'Hemförsäkringen', sfar: 'privat' })).id;
     vannen = ok(await act('upsert_crm_person', { name: 'Vän Vännsson', email: 'van@example.se' })).id;
     vannensAtagande = ok(await act('record_crm_commitment', atagande({
@@ -687,12 +664,11 @@ describe('V personvägen: ett privat åtagande når aldrig kunden via sin person
 
   const privataBodies = async () => ok(await act('list_crm_commitments', { sfar: 'privat' })).map((c: Rad) => c.body);
 
-  it('V1 tjänsten: ett privat åtagande på en person hos kunden avvisas — uttryckligt, ärvt från personen eller från organisationen', async () => {
+  it('V1 tjänsten: ett privat åtagande på en person hos kunden avvisas — uttryckligt eller ärvt från organisationen', async () => {
     grans(await act('record_crm_commitment', atagande({ person_id: kontakten, sfar: 'privat', body: 'V1 uttryckligt' })),
       'privat_atagande_kundkopplad_person');
-    // Utan sfar ärvs personens: den privata personen på kundens organisation.
-    grans(await act('record_crm_commitment', atagande({ person_id: privatKontakt, body: 'V1 ärvt från personen' })),
-      'privat_atagande_kundkopplad_person');
+    // Steg 2 prövade här också arvet från en privat person på kundens
+    // organisation. Den personen kan inte finnas sedan steg 3 (0089, P1).
     // Organisationen är privat och går före i arvet, men personen bär åtagandet
     // in i kundens kronologi ändå.
     grans(await act('record_crm_commitment', atagande({

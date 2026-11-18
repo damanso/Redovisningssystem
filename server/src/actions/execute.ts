@@ -1,7 +1,7 @@
 import { baselineburnaFalt } from '../lib/baselinekolumner.js';
 import type { PoolClient } from 'pg';
 import { fetchMembership, withTenantTransaction, type CompanyRole } from '../db/tx.js';
-import { AppError, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import { AppError, BadRequestError, ConflictError, ForbiddenError, KraverGodkannandeError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
 import {
@@ -78,50 +78,65 @@ export async function executeAction(params: {
     throw new ConflictError('koas_av_svepet', 'Ett förslag ur Övrigt-raden räknas och köas bara av svepet.');
   }
 
-  if (action.sensitivity === 'sensitive') {
-    const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
+  if (action.sensitivity === 'sensitive') return koaForslaget(params, action.name, input);
+
+  try {
+    const result = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
       assertActionAllowed(role);
-      const created = await createApproval(
-        client,
-        params.companyId,
-        params.userId,
-        params.actor,
-        action.name,
-        input,
+      const value = await action.handler(
+        { client, companyId: params.companyId, userId: params.userId, role, actor: params.actor },
+        input as never,
       );
-      // K4: beroendet beräknas redan när förslaget köas, så begäraren (och
-      // kön) ser ordningen i förväg — inte först vid godkännandeklicket.
-      const dep = await checkApprovalDependency(client, params.companyId, action.name, input as Record<string, unknown>);
       await writeAudit(client, {
         companyId: params.companyId,
         userId: params.userId,
-        action: 'action.approval_requested',
-        entityType: 'approval',
-        entityId: created.id,
-        details: { action: action.name, actor: params.actor, ...(dep ? { dependency: dep.message } : {}) },
+        action: 'action.executed',
+        entityType: 'action',
+        entityId: action.name,
+        details: { sensitivity: action.sensitivity, actor: params.actor },
       });
-      return { approval: created, dependency: dep };
+      return value;
     });
-    return { status: 'pending_approval', action: action.name, approval, ...(dependency ? { dependency } : {}) };
+    return { status: 'ok', action: action.name, result };
+  } catch (err) {
+    // Rättningsvarv 3b (krav 8): tjänsten sa att agentens anrop ändrar något en
+    // människa beslutar. Transaktionen är tillbakarullad (felet kastas före första
+    // skrivningen, och allt i den rullas tillbaka ändå); förslaget köas i en ny.
+    if (action.koasForAgent && params.actor !== 'human' && err instanceof KraverGodkannandeError) {
+      return koaForslaget(params, action.name, input);
+    }
+    throw err;
   }
+}
 
-  const result = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
+/** Lägger anropet i godkännandekön med auditrad, i en egen transaktion. Körs aldrig här. */
+async function koaForslaget(
+  params: { companyId: string; userId: string; actor: Actor }, actionName: string, input: unknown,
+): Promise<ActionResult> {
+  const { approval, dependency } = await withTenantTransaction(params.userId, params.companyId, async (client, role) => {
     assertActionAllowed(role);
-    const value = await action.handler(
-      { client, companyId: params.companyId, userId: params.userId, role, actor: params.actor },
-      input as never,
+    const created = await createApproval(
+      client,
+      params.companyId,
+      params.userId,
+      params.actor,
+      actionName,
+      input,
     );
+    // K4: beroendet beräknas redan när förslaget köas, så begäraren (och
+    // kön) ser ordningen i förväg — inte först vid godkännandeklicket.
+    const dep = await checkApprovalDependency(client, params.companyId, actionName, input as Record<string, unknown>);
     await writeAudit(client, {
       companyId: params.companyId,
       userId: params.userId,
-      action: 'action.executed',
-      entityType: 'action',
-      entityId: action.name,
-      details: { sensitivity: action.sensitivity, actor: params.actor },
+      action: 'action.approval_requested',
+      entityType: 'approval',
+      entityId: created.id,
+      details: { action: actionName, actor: params.actor, ...(dep ? { dependency: dep.message } : {}) },
     });
-    return value;
+    return { approval: created, dependency: dep };
   });
-  return { status: 'ok', action: action.name, result };
+  return { status: 'pending_approval', action: actionName, approval, ...(dependency ? { dependency } : {}) };
 }
 
 /**

@@ -17,7 +17,9 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import { writeCrmAudit } from './crmRelations.js';
-import { privatGransFel, sfarParameter, type Sfar, type SfarFilter } from './crmSfar.js';
+import {
+  arKundkopplad, harPrivataPersoner, privatGransFel, PRIVAT_PERSON_SKAL, sfarParameter, type Sfar, type SfarFilter,
+} from './crmSfar.js';
 
 export interface MergeResult {
   kept_id: string;
@@ -96,6 +98,12 @@ export async function mergeOrganizations(
     if (privata.rows[0]) {
       throw privatGransFel('privata_ataganden_kundkoppling',
         'organisationerna har privata åtaganden, och den sammanslagna raden blir kopplad till kundregistret — flytta åtagandena först');
+    }
+    // Steg 3 (0089, P1 och P2): inte heller en privat person, eller en post med
+    // en privat person, hamnar under den kundkopplade raden.
+    if (await harPrivataPersoner(client, companyId, [keepId, mergeId])) {
+      throw privatGransFel('privat_person_kundkoppling',
+        'organisationerna har privata personer, och den sammanslagna raden blir kopplad till kundregistret — flytta personerna först');
     }
   }
 
@@ -296,6 +304,11 @@ export async function mergePeople(
     if (privata.rows[0]) {
       throw privatGransFel('privata_ataganden_kundkoppling',
         'personerna har privata åtaganden, och den sammanslagna personen hör till en organisation som är kopplad till kundregistret — flytta åtagandena först');
+    }
+    // Steg 3 (0089, P1): två privata personer slås inte ihop till en privat person
+    // hos en kund. Sfären är densamma för båda (sfar_conflict ovan).
+    if (keep.sfar === 'privat' && await arKundkopplad(client, companyId, organisationEfter)) {
+      throw privatGransFel('privat_person_kundkopplad_organisation', PRIVAT_PERSON_SKAL.organisation);
     }
   }
 

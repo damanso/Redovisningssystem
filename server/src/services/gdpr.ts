@@ -23,7 +23,7 @@
 // kräver mänskligt godkännande; den som godkänner måste själv kontrollera att
 // parten inte förekommer i manuella verifikat innan namn/org.nr raderas.
 import type { PoolClient } from 'pg';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
 import { removeStoredFile } from './fileStorage.js';
 
@@ -173,6 +173,42 @@ async function purgeUnbookedInvoicePdfs(client: PoolClient, companyId: string, c
   await client.query('DELETE FROM files WHERE company_id = $1 AND id = ANY($2::uuid[])', [companyId, fileIds]);
   for (const r of rows.rows) await removeStoredFile(companyId, r.stored_name);
   return rows.rows.length;
+}
+
+/**
+ * Är parten anonymiserad enligt GDPR?
+ *
+ * Auditloggen är den enda säkra markören: raderingen behåller namnet när parten
+ * har bokförda transaktioner, så "Raderad (GDPR)" i namnet säger inget säkert.
+ * Raden `gdpr.party_anonymized` skrivs i samma transaktion som raderingen och
+ * går inte att ta bort (append-only).
+ */
+export async function arGdprRaderad(
+  client: PoolClient, companyId: string, partyType: PartyType, partyId: string,
+): Promise<boolean> {
+  const r = await client.query(
+    `SELECT 1 FROM audit_log
+     WHERE company_id = $1 AND action = 'gdpr.party_anonymized' AND entity_type = $2 AND entity_id = $3
+     LIMIT 1`,
+    [companyId, partyType, partyId]);
+  return Boolean(r.rows[0]);
+}
+
+/**
+ * En anonymiserad part aktiveras inte igen (granskningen av steg 2, leads beslut
+ * A 18/11). Raderingen sätter is_active = false; en aktiv "Raderad (GDPR)" hade
+ * erbjudits i faktura- och projektformulären. Återkommer relationen läggs en ny
+ * part upp: den gamla identiteten är borta.
+ */
+export async function assertKanAktiveras(
+  client: PoolClient, companyId: string, partyType: PartyType, partyId: string, input: Record<string, unknown>,
+): Promise<void> {
+  if (input.is_active !== true) return;
+  if (await arGdprRaderad(client, companyId, partyType, partyId)) {
+    throw new ConflictError('gdpr_raderad', partyType === 'customer'
+      ? 'Kunden är raderad enligt GDPR och kan inte aktiveras igen. Lägg upp en ny kund om relationen återupptas.'
+      : 'Leverantören är raderad enligt GDPR och kan inte aktiveras igen. Lägg upp en ny leverantör om relationen återupptas.');
+  }
 }
 
 /**

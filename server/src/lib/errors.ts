@@ -51,6 +51,19 @@ export class ConflictError extends AppError {
   }
 }
 
+/**
+ * Agentens skrivning ändrar något som en människa beslutar (rättningsvarv 3b,
+ * krav 8: sfären på en befintlig post). Tjänsten kastar det efter prövningarna
+ * och före första skrivningen. För en åtgärd märkt `koasForAgent` rullar
+ * executeAction tillbaka och lägger anropet i godkännandekön i stället. Når felet
+ * ett svar någon annan väg blir det 409, aldrig en tyst skrivning.
+ */
+export class KraverGodkannandeError extends ConflictError {
+  constructor(message = 'ändringen beslutas av en människa och läggs i Att göra') {
+    super('kraver_godkannande', message);
+  }
+}
+
 export class BadRequestError extends AppError {
   constructor(code = 'bad_request', message?: string, details?: unknown) {
     super(400, code, message, details);

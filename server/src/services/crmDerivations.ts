@@ -303,9 +303,16 @@ export async function contactSuggestions(
         : `${r.overdue_commitments} förfallet åtagande — vi har lovat något som passerat sitt datum`);
       priority += 100 * r.overdue_commitments;
     }
+    // Steg 3 (leads beslut E): en privat relation är elbolaget, tandläkaren och
+    // grannen. Att den saknar registrerad kontakt är inget skäl att höra av sig,
+    // och den är aldrig ett prospekt som ska vårdas. Den kan fortfarande komma med
+    // för ett förfallet löfte, eller för att den varit tyst längre än gränsen.
+    const privat = r.sfar === 'privat';
     if (r.days_silent === null) {
-      reasons.push('ingen registrerad kontakt alls');
-      priority += 40;
+      if (!privat) {
+        reasons.push('ingen registrerad kontakt alls');
+        priority += 40;
+      }
     } else if (r.days_silent >= grans) {
       reasons.push(r.cadence_days
         ? `tyst i ${r.days_silent} dagar — kadensen är ${r.cadence_days}`
@@ -320,7 +327,7 @@ export async function contactSuggestions(
       reasons.push(`bär ${Math.round((r.revenue_share_permille ?? 0) / 10)} % av omsättningen senaste 12 mån`);
       priority += Math.round((r.revenue_share_permille ?? 0) / 2);
     }
-    if (r.status === 'prospect') {
+    if (r.status === 'prospect' && !privat) {
       reasons.push('prospekt — affären finns bara så länge dialogen finns');
       priority += 25;
     }
