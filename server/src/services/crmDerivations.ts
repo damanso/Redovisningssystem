@@ -12,12 +12,15 @@
 //
 // Spärr: systemet FÖRESLÅR. Ingenting skickas till någon kund härifrån.
 import type { PoolClient } from 'pg';
+import { sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
 
 export interface RelationRow {
   organization_id: string;
   name: string;
   status: string;
   customer_id: string | null;
+  sfar: Sfar;
+  roll: OrganizationRoll | null;
   last_contact_at: string | null;
   days_silent: number | null;
   open_commitments: number;
@@ -115,7 +118,7 @@ export async function relationState(
        WHERE te.company_id = $1 AND te.billable AND NOT te.invoiced AND p.customer_id IS NOT NULL
        GROUP BY p.customer_id
      )
-     SELECT o.id AS organization_id, o.name, o.status, o.customer_id,
+     SELECT o.id AS organization_id, o.name, o.status, o.customer_id, o.sfar, o.roll,
             o.snoozed_until::text, o.muted, o.cadence_days,
             ct.last_contact_at,
             CASE WHEN ct.last_contact_at IS NULL THEN NULL
@@ -206,6 +209,8 @@ export interface ContactSuggestion {
   organization_id: string;
   organization: string;
   status: string;
+  sfar: Sfar;
+  roll: OrganizationRoll | null;
   person: { id: string; name: string; email: string | null } | null;
   reasons: string[];
   days_silent: number | null;
@@ -315,6 +320,8 @@ export async function contactSuggestions(
       organization_id: r.organization_id,
       organization: r.name,
       status: r.status,
+      sfar: r.sfar,
+      roll: r.roll,
       person: p ? { id: p.id, name: p.name, email: p.email } : null,
       reasons,
       days_silent: r.days_silent,
@@ -345,15 +352,21 @@ export interface TodayView {
  * Två avslutbara högar och inget mer. Uppskjutet och tystat filtreras bort,
  * annars går listan aldrig att beta av — och en lista som aldrig kan bli tom
  * slutar man öppna.
+ *
+ * Sfären filtrerar båda högarna FÖRE kapet: "dagens privata" ska vara fem privata
+ * kort, inte de privata som råkade hamna bland dagens fem. Relationerna filtreras
+ * på organisationens sfär, löftena på sin egen.
  */
 export async function todayView(
   client: PoolClient, companyId: string,
-  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number } = {},
+  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter } = {},
 ): Promise<TodayView> {
   const asOf = opts.as_of ?? new Date().toISOString().slice(0, 10);
   const limit = opts.limit ?? DEFAULT_TODAY_LIMIT;
+  const sfar = sfarParameter(opts.sfar);
 
-  const rows = await relationState(client, companyId, { as_of: asOf });
+  const alla = await relationState(client, companyId, { as_of: asOf });
+  const rows = sfar ? alla.filter((r) => r.sfar === sfar) : alla;
   const { suggestions } = await contactSuggestions(client, companyId, {
     as_of: asOf, silence_days: opts.silence_days, rows,
   });
@@ -368,7 +381,7 @@ export async function todayView(
   const horizon = opts.horizon_days ?? 7;
   const commitments = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
-            c.source_system, c.source_ref, c.organization_id,
+            c.source_system, c.source_ref, c.organization_id, c.sfar,
             p.name AS person_name, o.name AS organization_name,
             (c.due_date < $2::date) AS overdue
      FROM crm.commitments c
@@ -378,9 +391,10 @@ export async function todayView(
        AND c.due_date IS NOT NULL
        AND c.due_date <= $2::date + make_interval(days => $3::int)
        AND (c.snoozed_until IS NULL OR c.snoozed_until < $2::date)
+       AND ($5::text IS NULL OR c.sfar = $5)
      ORDER BY c.due_date, c.occurred_at
      LIMIT $4`,
-    [companyId, asOf, horizon, limit],
+    [companyId, asOf, horizon, limit, sfar],
   );
 
   const relations = suggestions.slice(0, limit);

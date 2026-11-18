@@ -17,7 +17,13 @@ import { contactSuggestions, relationState, silenceReport, todayView } from '../
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
+import { ORG_ROLLER, SFARER, SFARFILTER, type SfarFilter } from '../services/crmSfar.js';
 const PartyTypeSchema = z.enum(['customer', 'supplier']);
+// Privat och företag i samma CRM (beställning 9/11). Skrivverktygen tar en sfär,
+// läsverktygen ett filter där 'alla' är standard: utelämnat ger samma svar som förr.
+const SfarSchema = z.enum(SFARER);
+const SfarFilterSchema = z.enum(SFARFILTER);
+const OrgRollSchema = z.enum(ORG_ROLLER);
 import { createCustomer, createSupplier, getCustomer, getSupplier, listCustomers, listSuppliers, updateCustomer, updateSupplier } from '../services/parties.js';
 import { createInvoice, bookInvoice, getInvoice, listInvoices, recordInvoicePayment } from '../services/invoices.js';
 import { bookReceipt, createReceipt, listReceipts } from '../services/receipts.js';
@@ -2633,9 +2639,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'get_party_crm',
     title: 'Hämta partens CRM-bild (kontakter, anteckningar, taggar)',
     sensitivity: 'read',
-    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema }).strict(),
-    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string }) =>
-      getPartyCrm(ctx.client, ctx.companyId, i.party_type, i.party_id),
+    // Parten finns i bokföringen och är alltid 'foretag'; 'privat' ger tomma listor.
+    inputSchema: z.object({ party_type: PartyTypeSchema, party_id: UuidSchema, sfar: SfarFilterSchema.optional() }).strict(),
+    handler: (ctx, i: { party_type: 'customer' | 'supplier'; party_id: string; sfar?: SfarFilter }) =>
+      getPartyCrm(ctx.client, ctx.companyId, i.party_type, i.party_id, { sfar: i.sfar }),
   }),
   def({
     name: 'get_customer',
@@ -2672,6 +2679,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         status: z.enum(['prospect', 'customer', 'partner', 'former', 'archived']).optional(),
         source: safeText(200).optional(),
         notes: safeText(2000).optional(),
+        // Utelämnad: ny rad blir 'foretag', befintlig behåller sin. En privat
+        // organisation kräver bara namn och kopplas aldrig till kundregistret.
+        sfar: SfarSchema.optional(),
+        // Vad organisationen är för oss, skild från status.
+        roll: OrgRollSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => upsertOrganization(ctx.client, ctx.companyId, ctx.userId, i as never,
@@ -2683,9 +2695,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({
       status: z.enum(['prospect', 'customer', 'partner', 'former', 'archived']).optional(),
+      sfar: SfarFilterSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { status?: 'prospect' | 'customer' | 'partner' | 'former' | 'archived' }) =>
-      listOrganizations(ctx.client, ctx.companyId, { status: i.status }),
+    handler: (ctx, i: { status?: 'prospect' | 'customer' | 'partner' | 'former' | 'archived'; sfar?: SfarFilter }) =>
+      listOrganizations(ctx.client, ctx.companyId, { status: i.status, sfar: i.sfar }),
   }),
   def({
     name: 'get_crm_organization',
@@ -2752,6 +2765,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // Personkortet i brain-vaulten. CRM:et äger inte omdömet — det pekar på det.
         external_ref: safeText(300).optional(),
         notes: safeText(2000).optional(),
+        // Utelämnad: ny person blir 'foretag', befintlig behåller sin.
+        sfar: SfarSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never,
@@ -2798,6 +2813,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         occurred_at: IsoDateTimeSchema,
         source_system: z.enum(['gmail', 'calendar', 'linear', 'manual']),
         source_ref: safeText(300).optional(),
+        // Utelämnad: ärvs från organisationen, annars personen, annars 'foretag'.
+        sfar: SfarSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => recordCommitment(ctx.client, ctx.companyId, ctx.userId, i as never),
@@ -2889,9 +2906,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'search_crm',
     title: 'Sök i relationer, personer, kunder och leverantörer',
     sensitivity: 'read',
-    inputSchema: z.object({ query: safeText(120), limit: z.number().int().min(1).max(50).optional() }).strict(),
-    handler: (ctx, i: { query: string; limit?: number }) =>
-      searchCrm(ctx.client, ctx.companyId, i.query, i.limit),
+    inputSchema: z.object({
+      query: safeText(120), limit: z.number().int().min(1).max(50).optional(), sfar: SfarFilterSchema.optional(),
+    }).strict(),
+    handler: (ctx, i: { query: string; limit?: number; sfar?: SfarFilter }) =>
+      searchCrm(ctx.client, ctx.companyId, i.query, i.limit, { sfar: i.sfar }),
   }),
   def({
     name: 'list_crm_commitments',
@@ -2900,9 +2919,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({
       status: z.enum(['open', 'done', 'dropped']).optional(),
       due_before: IsoDateSchema.optional(),
+      sfar: SfarFilterSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string }) =>
-      listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before }),
+    handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter }) =>
+      listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before, sfar: i.sfar }),
   }),
   // --- CRM E4: API-kontraktet och härledningsjobben -------------------------
   // Källorna (mailindex, kalender, Linear) ligger utanför systemet. Det här
@@ -2981,8 +3001,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       silence_days: z.number().int().min(1).max(3650).optional(),
       limit: z.number().int().min(1).max(50).optional(),
       horizon_days: z.number().int().min(0).max(365).optional(),
+      sfar: SfarFilterSchema.optional(),
     }).strict(),
-    handler: (ctx, i: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number }) =>
+    handler: (ctx, i: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter }) =>
       todayView(ctx.client, ctx.companyId, i),
   }),
   def({

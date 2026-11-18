@@ -869,6 +869,67 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   på raden. Villkoret gäller **godkännandet**: *Faktureras ej* går igenom även
   utan vald avtalsdel (orsak krävs som förut). Kön grindar aldrig fakturan.
 
+## CRM: privat och företag (beställning 9/11, steg 1)
+
+Davids order 9/11: allt han ska göra, som företagsledare och som privatperson,
+i samma CRM. Varje organisation, person och åtagande hör till en **sfär**,
+`foretag` eller `privat` (migration `0087_crm_sfar_och_roll.sql`). Alla rader som
+fanns före migrationen är `foretag`. Steg 1 är data och MCP; märkningen på Min
+sida och i briefen, filterknapparna och migreringslistan kommer i steg 2 och 3.
+
+**Läsverktygen** tar `sfar: 'privat' | 'foretag' | 'alla'`, standard `alla`. Ett
+anrop utan `sfar` ger samma rader som förut; svaren har fått fälten `sfar` (och
+`roll` där organisationen visas).
+
+| Verktyg | Vad filtret gäller |
+|---|---|
+| `list_crm_organizations` | organisationens sfär (kombineras med `status`) |
+| `list_crm_commitments` | åtagandets egen sfär |
+| `search_crm` | relationer och personer efter sin sfär; kund- och leverantörsregistret är bokföringens och alltid `foretag` |
+| `crm_today` | båda högarna, FÖRE kapet: relationerna på organisationens sfär, löftena på sin egen |
+| `get_party_crm` | parten är en kund eller leverantör och alltid `foretag`; `privat` ger samma form med tomma listor (`{sfar:'foretag', contacts:[], notes:[], tags:[]}`), en okänd part är fortfarande 404 |
+
+**Skrivverktygen:**
+- `upsert_crm_organization` tar `sfar` och `roll`
+  (`kund | leverantor | partner | myndighet | intern`, valfri, skild från
+  `status`). Utelämnad sfär: en ny rad blir `foretag`, en befintlig behåller sin.
+  En privat organisation kräver **bara namn**, och slås aldrig upp mot
+  kundregistret, inte ens om en kund heter likadant. Rollen kan bytas men inte
+  nollas i steg 1.
+- `upsert_crm_person` tar `sfar`. Utelämnad: ny person `foretag`, befintlig oförändrad.
+- `record_crm_commitment` tar `sfar`. Utelämnad **ärver** ett nytt åtagande sin
+  organisations sfär, annars personens, annars `foretag`; organisationen går före
+  personen när de skiljer sig. Arvet sker när raden skrivs. Samma källa igen
+  (`source_system` + `source_ref`) utan `sfar` behåller åtagandets sfär. Byter en
+  organisation sfär senare följer redan skrivna åtaganden inte med.
+- Sfär och roll bär ursprung som övriga fält (F4): en agent kan inte flytta en
+  rad som en människa satt sfär på; fältet redovisas i `kept_human_fields`.
+- `ingest_crm_events` tar ingen sfär. En händelse som träffar en privat
+  organisation lämnar den privat och okopplad (den står i `unlinked_organizations`).
+
+**Bokföringsgränsen.** En privat post når aldrig Locollabs bokföring. Relationsdatans
+enda väg dit är kopplingen `crm.organizations.customer_id` mot kundregistret (kundkortet
+läser åtagandena genom den), och den är stängd för det privata:
+
+| Försök | Svar |
+|---|---|
+| privat organisation med `customer_id`, eller kundkopplad organisation till `privat` | 400 `privat_bokforingsgrans`, `details.regel = privat_organisation_kundkoppling` |
+| privat organisation med `status: 'customer'` | 400 `privat_bokforingsgrans`, `details.regel = privat_organisation_kundstatus` |
+| privat åtagande på en kundkopplad organisation (nytt eller flyttat) | 400 `privat_bokforingsgrans`, `details.regel = privat_atagande_kundkopplad_organisation` |
+| `customer_id` på en organisation med privata åtaganden | 400 `privat_bokforingsgrans`, `details.regel = privata_ataganden_kundkoppling` |
+| `merge_crm_organizations` mellan privat och företag | 400 `sfar_conflict` vid godkännandet |
+| `merge_crm_organizations` där resultatet blir kundkopplat med privata åtaganden | 400 `privat_bokforingsgrans` vid godkännandet |
+
+`details.skal` säger i klartext vad som slog till och vad man gör i stället
+(meddelandet i övrigt stannar på servern). Synken fälls aldrig av gränsen: en
+organisation med privata åtaganden kopplas helt enkelt inte och redovisas som okopplad.
+Databasen bär samma spärrar: CHECK-villkoret
+`organizations_privat_utanfor_bokforingen_ck` och triggern
+`crm.privat_utanfor_bokforingen()` på organisationer och åtaganden (P0001, 409
+`rule_violation`). Provet `server/test/crm-sfar.test.ts` sveper dessutom varje
+tabell i schemat `public` och SIE-exporten efter den privata posten, och fäller om
+en främmande nyckel mellan `crm` och bokföringen tillkommer.
+
 ## Uppdragsytan
 
 Modulens första åtgärd (S1.3, våg 1) och stängningen av bakvägarna till

@@ -13,6 +13,7 @@ import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance,
   type ProvenanceSource, type ProvenanceWrite,
 } from './crmProvenance.js';
+import { privatGransFel, sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
 import { gallraForslagsResonemang } from './timeProposals.js';
 
 export type SourceSystem = 'gmail' | 'calendar' | 'linear' | 'manual';
@@ -44,9 +45,10 @@ export async function writeCrmAudit(
 export interface Organization {
   id: string; name: string; org_number: string | null; website: string | null;
   customer_id: string | null; status: OrganizationStatus; source: string | null; notes: string | null;
+  sfar: Sfar; roll: OrganizationRoll | null;
 }
 
-const ORG_COLUMNS = 'id, name, org_number, website, customer_id, status, source, notes';
+const ORG_COLUMNS = 'id, name, org_number, website, customer_id, status, source, notes, sfar, roll';
 
 export interface UpsertOrganizationInput {
   /**
@@ -63,6 +65,10 @@ export interface UpsertOrganizationInput {
   status?: OrganizationStatus;
   source?: string;
   notes?: string;
+  /** Utelämnad: en ny rad blir 'foretag', en befintlig behåller sin sfär. */
+  sfar?: Sfar;
+  /** Vad organisationen är för oss. Utelämnad: oförändrad. */
+  roll?: OrganizationRoll;
 }
 
 /**
@@ -76,9 +82,15 @@ export interface WriteOrigin {
   source_ref?: string;
 }
 
-/** Fälten vars ursprung vi håller reda på. Resten är metadata om raden, inte påståenden om världen. */
-const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes'] as const;
-const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id'] as const;
+/**
+ * Fälten vars ursprung vi håller reda på. Resten är metadata om raden, inte påståenden om världen.
+ *
+ * Sfären och rollen är med: att Svealand är privat och leverantör är ett beslut
+ * David fattar, och en agent som gissar annorlunda nästa gång ska inte kunna
+ * flytta tillbaka raden i tysthet.
+ */
+const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes', 'sfar', 'roll'] as const;
+const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id', 'sfar'] as const;
 
 /** Ursprungsposter för de fält anroparen faktiskt fyllde i — tomma fält påstår ingenting. */
 function provenanceFor(
@@ -160,6 +172,47 @@ function normaliseraOrgnummer(v: string | undefined): string | undefined {
   return digits.length === 10 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : t;
 }
 
+/** Raden en upsert landar på, med det som gränsen mot bokföringen behöver veta. */
+interface OrgHit { id: string; name: string; customer_id: string | null; sfar: Sfar; status: OrganizationStatus }
+
+async function harPrivataAtaganden(client: PoolClient, companyId: string, organizationId: string): Promise<boolean> {
+  const r = await client.query(
+    `SELECT 1 FROM crm.commitments WHERE company_id = $1 AND organization_id = $2 AND sfar = 'privat' LIMIT 1`,
+    [companyId, organizationId]);
+  return Boolean(r.rows[0]);
+}
+
+/**
+ * Bokföringsgränsen för en organisation, prövad på de värden raden får EFTER
+ * skrivningen.
+ *
+ * Den enda vägen från relationsdatan in i bokföringen är kopplingen mot
+ * kundregistret; kundkortet läser åtagandena genom just den. En privat
+ * organisation får därför ingen koppling och ingen kundstatus, och en
+ * organisation med privata åtaganden kopplas inte dit. Databasen bär samma
+ * spärrar (migration 0087) — det här ger felet ett begripligt namn.
+ */
+function assertOrganisationInomGransen(rad: {
+  sfar: Sfar; customer_id: string | null; status: string;
+  /** Sant när skrivningen själv sätter kopplingen, falskt när den redan fanns. */
+  nyKoppling: boolean;
+  privataAtaganden: boolean;
+}): void {
+  if (rad.sfar === 'privat') {
+    if (rad.customer_id) {
+      throw privatGransFel('privat_organisation_kundkoppling', rad.nyKoppling
+        ? 'en privat organisation kan inte kopplas till kundregistret — privata poster hålls utanför bokföringen'
+        : 'organisationen är kopplad till kundregistret och kan därför inte bli privat — privata poster hålls utanför bokföringen');
+    }
+    if (rad.status === 'customer') {
+      throw privatGransFel('privat_organisation_kundstatus',
+        'en privat organisation kan inte ha status customer — välj en annan status och beskriv vad den är för dig med roll');
+    }
+  } else if (rad.nyKoppling && rad.privataAtaganden) {
+    throw privatGransFel('privata_ataganden_kundkoppling', 'organisationen har privata åtaganden och kan därför inte kopplas till kundregistret');
+  }
+}
+
 /**
  * Prospekt och kund är SAMMA rad. Den dag affären vinns pekas raden mot
  * kundregistret — relationshistoriken bryts inte, och kunduppgifterna kopieras
@@ -181,11 +234,11 @@ export async function upsertOrganization(
   }
 
   const found = input.organization_id
-    ? await client.query<{ id: string; name: string; customer_id: string | null }>(
-        'SELECT id, name, customer_id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
+    ? await client.query<OrgHit>(
+        'SELECT id, name, customer_id, sfar, status FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
         [companyId, input.organization_id])
-    : await client.query<{ id: string; name: string; customer_id: string | null }>(
-        'SELECT id, name, customer_id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+    : await client.query<OrgHit>(
+        'SELECT id, name, customer_id, sfar, status FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
         [companyId, name]);
   if (input.organization_id && !found.rows[0]) throw new NotFoundError('organization');
 
@@ -201,8 +254,8 @@ export async function upsertOrganization(
   // rörs ingenting), bara synken styrs om (en människas uttryckliga upsert
   // träffar alltid raden hon pekat ut), och omstyrningen redovisas i svaret.
   const alias = !found.rows[0] && !input.organization_id && origin.source === 'sync'
-    ? await client.query<{ id: string; name: string; customer_id: string | null }>(
-        `SELECT o.id, o.name, o.customer_id
+    ? await client.query<OrgHit>(
+        `SELECT o.id, o.name, o.customer_id, o.sfar, o.status
          FROM crm.organization_name_aliases a
          JOIN crm.organizations o ON o.id = a.organization_id AND o.company_id = a.company_id
          WHERE a.company_id = $1 AND lower(a.name) = lower($2)
@@ -231,15 +284,28 @@ export async function upsertOrganization(
 
   // Uppslaget görs bara när kopplingen saknas. En befintlig koppling ska aldrig
   // flyttas av en synk — det är ett beslut för en människa.
-  const matched = hit?.customer_id ? null : await matchCustomer(client, companyId, writeName, input.org_number, hit?.id);
+  //
+  // Och bara för en organisation som är och förblir 'foretag', utan privata
+  // åtaganden. En privat organisation kräver bara ett namn och har ingen koppling
+  // till kundregistret; heter den som en kund ska den ändå inte bli kunden. Byter
+  // raden sfär i samma skrivning väntar uppslaget till nästa: det är billigare att
+  // missa en koppling en gång (den redovisas som okopplad) än att gissa åt fel håll.
+  const matchable = !hit?.customer_id
+    && (input.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
+    && (hit?.sfar ?? 'foretag') === 'foretag'
+    && !(hit && await harPrivataAtaganden(client, companyId, hit.id));
+  const matched = matchable ? await matchCustomer(client, companyId, writeName, input.org_number, hit?.id) : null;
   const customerId = input.customer_id ?? matched;
 
   if (!hit) {
+    const sfar = input.sfar ?? 'foretag';
+    const status = input.status ?? (customerId ? 'customer' : 'prospect');
+    assertOrganisationInomGransen({ sfar, customer_id: customerId, status, nyKoppling: Boolean(customerId), privataAtaganden: false });
     const r = await client.query<Organization>(
-      `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${ORG_COLUMNS}`,
+      `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by, sfar, roll)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${ORG_COLUMNS}`,
       [companyId, writeName, input.org_number ?? null, input.website ?? null, customerId,
-        input.status ?? (customerId ? 'customer' : 'prospect'), input.source ?? null, input.notes ?? null, userId],
+        status, input.source ?? null, input.notes ?? null, userId, sfar, input.roll ?? null],
     );
     const link = customerLinkProvenance(matched, input.org_number);
     await recordProvenance(client, companyId, userId, { organization_id: r.rows[0]!.id }, [
@@ -248,7 +314,10 @@ export async function upsertOrganization(
     ]);
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.organization_created', entityType: 'organization', entityId: r.rows[0]!.id,
-      details: { status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source },
+      details: {
+        status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, linked_customer: Boolean(r.rows[0]!.customer_id),
+        source: origin.source,
+      },
     });
     return { ...r.rows[0]!, created: true, kept_human_fields: [], redirected_from: null };
   }
@@ -264,6 +333,19 @@ export async function upsertOrganization(
     { ...input, name: redirectedFrom ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
   );
 
+  // Gränsen prövas på det som faktiskt skrivs: efter att människans fält plockats
+  // bort, och med statusen som följer med en ny koppling (samma regel som i SQL:en).
+  const nyKoppling = Boolean(patch.customer_id) && patch.customer_id !== hit.customer_id;
+  const sfarEfter = (patch.sfar as Sfar | undefined) ?? hit.sfar;
+  assertOrganisationInomGransen({
+    sfar: sfarEfter,
+    customer_id: (patch.customer_id as string | undefined) ?? hit.customer_id,
+    status: (patch.status as OrganizationStatus | undefined)
+      ?? (patch.customer_id && hit.status === 'prospect' ? 'customer' : hit.status),
+    nyKoppling,
+    privataAtaganden: sfarEfter === 'foretag' && nyKoppling && await harPrivataAtaganden(client, companyId, hit.id),
+  });
+
   const r = await client.query<Organization>(
     `UPDATE crm.organizations SET
        name        = $3,
@@ -274,11 +356,14 @@ export async function upsertOrganization(
        -- kopplingen, annars står den kvar som "prospekt" med en kund bakom sig.
        status      = COALESCE($7, CASE WHEN $6::uuid IS NOT NULL AND status = 'prospect' THEN 'customer' ELSE status END),
        source      = COALESCE($8, source),
-       notes       = COALESCE($9, notes)
+       notes       = COALESCE($9, notes),
+       sfar        = COALESCE($10, sfar),
+       roll        = COALESCE($11, roll)
      WHERE id = $1 AND company_id = $2 RETURNING ${ORG_COLUMNS}`,
     [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
       patch.org_number ?? null, patch.website ?? null, patch.customer_id ?? null,
-      patch.status ?? null, input.source ?? null, patch.notes ?? null],
+      patch.status ?? null, input.source ?? null, patch.notes ?? null,
+      patch.sfar ?? null, patch.roll ?? null],
   );
   // Kopplingen som systemet självt slog upp bär sitt eget ursprung; övriga fält
   // bär skrivarens.
@@ -292,7 +377,8 @@ export async function upsertOrganization(
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organization_updated', entityType: 'organization', entityId: hit.id,
     details: {
-      status: r.rows[0]!.status, linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
+      status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, linked_customer: Boolean(r.rows[0]!.customer_id),
+      source: origin.source,
       // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
       ...(blocked.length ? { kept_human_fields: blocked } : {}),
       // Att skrivningen landade på en annan rad än avsändaren trodde ska synas i
@@ -324,7 +410,7 @@ function customerLinkProvenance(matchedCustomerId: string | null, orgNumber?: st
 }
 
 export async function listOrganizations(
-  client: PoolClient, companyId: string, opts: { status?: OrganizationStatus } = {},
+  client: PoolClient, companyId: string, opts: { status?: OrganizationStatus; sfar?: SfarFilter } = {},
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT o.${ORG_COLUMNS.split(', ').join(', o.')},
@@ -342,8 +428,9 @@ export async function listOrganizations(
      FROM crm.organizations o
      LEFT JOIN customers c ON c.id = o.customer_id AND c.company_id = o.company_id
      WHERE o.company_id = $1 AND ($2::text IS NULL OR o.status = $2)
+       AND ($3::text IS NULL OR o.sfar = $3)
      ORDER BY o.status, o.name`,
-    [companyId, opts.status ?? null],
+    [companyId, opts.status ?? null, sfarParameter(opts.sfar)],
   );
   return r.rows;
 }
@@ -375,7 +462,7 @@ export async function getOrganization(
   // Personernas ursprung hämtas i SAMMA fråga. En läsning per person hade gett
   // en fråga per rad i ett kort som ofta har tio.
   const people = await client.query(
-    `SELECT p.id, p.name, p.email, p.phone, p.role_title, p.external_ref,
+    `SELECT p.id, p.name, p.email, p.phone, p.role_title, p.external_ref, p.sfar,
             COALESCE((SELECT jsonb_object_agg(fp.field, jsonb_build_object(
                         'source', fp.source, 'reason', fp.reason,
                         'source_system', fp.source_system, 'source_ref', fp.source_ref))
@@ -393,7 +480,8 @@ export async function getOrganization(
             OR i.person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = $2))
      ORDER BY i.occurred_at DESC LIMIT 50`, [companyId, id]);
   const commitments = await client.query(
-    `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref, p.name AS person_name
+    `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
+            c.sfar, p.name AS person_name
      FROM crm.commitments c LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
      WHERE c.company_id = $1 AND c.organization_id = $2 ORDER BY c.status, c.due_date NULLS LAST`, [companyId, id]);
 
@@ -460,9 +548,10 @@ export async function confirmCrmValue(
 export interface Person {
   id: string; name: string; email: string | null; phone: string | null;
   role_title: string | null; organization_id: string | null; external_ref: string | null; notes: string | null;
+  sfar: Sfar;
 }
 
-const PERSON_COLUMNS = 'id, name, email, phone, role_title, organization_id, external_ref, notes';
+const PERSON_COLUMNS = 'id, name, email, phone, role_title, organization_id, external_ref, notes, sfar';
 
 export interface UpsertPersonInput {
   name: string;
@@ -472,6 +561,8 @@ export interface UpsertPersonInput {
   organization_id?: string;
   external_ref?: string;
   notes?: string;
+  /** Utelämnad: en ny person blir 'foretag', en befintlig behåller sin sfär. */
+  sfar?: Sfar;
 }
 
 /**
@@ -514,16 +605,17 @@ export async function upsertPerson(
 
   if (!hit) {
     const r = await client.query<Person>(
-      `INSERT INTO crm.people (company_id, name, email, phone, role_title, organization_id, external_ref, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${PERSON_COLUMNS}`,
+      `INSERT INTO crm.people (company_id, name, email, phone, role_title, organization_id, external_ref, notes, created_by, sfar)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${PERSON_COLUMNS}`,
       [companyId, name, input.email ?? null, input.phone ?? null, input.role_title ?? null,
-        input.organization_id ?? null, input.external_ref ?? null, input.notes ?? null, userId],
+        input.organization_id ?? null, input.external_ref ?? null, input.notes ?? null, userId,
+        input.sfar ?? 'foretag'],
     );
     await recordProvenance(client, companyId, userId, { person_id: r.rows[0]!.id },
       provenanceFor(PERSON_PROVENANCE_FIELDS, { ...input, name }, origin));
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.person_created', entityType: 'person', entityId: r.rows[0]!.id,
-      details: { source: origin.source },
+      details: { source: origin.source, sfar: r.rows[0]!.sfar },
     });
     return { ...r.rows[0]!, created: true, kept_human_fields: [] };
   }
@@ -542,7 +634,8 @@ export async function upsertPerson(
        role_title      = COALESCE($6, role_title),
        organization_id = COALESCE($7, organization_id),
        external_ref    = COALESCE($8, external_ref),
-       notes           = COALESCE($9, notes)
+       notes           = COALESCE($9, notes),
+       sfar            = COALESCE($10, sfar)
      WHERE id = $1 AND company_id = $2 RETURNING ${PERSON_COLUMNS}`,
     // ALLA värden ur `patch`, inte ur `input`: external_ref och notes saknar
     // ursprung i dag och filtreras därför inte, men den dagen de får det skulle
@@ -551,7 +644,7 @@ export async function upsertPerson(
     // samma sats, precis det modulen finns för att omöjliggöra.
     [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
       patch.email ?? null, patch.phone ?? null, patch.role_title ?? null,
-      patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null],
+      patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null, patch.sfar ?? null],
   );
   await recordProvenance(client, companyId, userId, { person_id: hit.id },
     provenanceFor(PERSON_PROVENANCE_FIELDS, patch, origin));
@@ -758,9 +851,46 @@ export interface RecordCommitmentInput {
   occurred_at: string;
   source_system: SourceSystem;
   source_ref?: string;
+  /**
+   * Utelämnad: ett nytt åtagande ärver sin organisations sfär, annars personens,
+   * annars 'foretag'. Ett befintligt (samma källa igen) behåller sin.
+   */
+  sfar?: Sfar;
 }
 
-/** Vem lovade vad, när det sades och VAR — utan källan går löftet inte att styrka. */
+/**
+ * Motpartens sfär, och om organisationen är kopplad till kundregistret.
+ *
+ * Organisationen går före personen: den är motparten, personen är vem man talade
+ * med där. Bara den som behövs läses. Raderna finns — assertTarget har prövat dem.
+ */
+async function atagandetsMotpart(
+  client: PoolClient, companyId: string, organizationId: string | null, personId: string | null,
+): Promise<{ sfar: Sfar | null; kundkopplad: boolean }> {
+  if (organizationId) {
+    const o = await client.query<{ sfar: Sfar; customer_id: string | null }>(
+      'SELECT sfar, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2',
+      [organizationId, companyId]);
+    return { sfar: o.rows[0]?.sfar ?? null, kundkopplad: Boolean(o.rows[0]?.customer_id) };
+  }
+  if (personId) {
+    const p = await client.query<{ sfar: Sfar }>(
+      'SELECT sfar FROM crm.people WHERE id = $1 AND company_id = $2', [personId, companyId]);
+    return { sfar: p.rows[0]?.sfar ?? null, kundkopplad: false };
+  }
+  return { sfar: null, kundkopplad: false };
+}
+
+const COMMITMENT_RETURNING = 'id, direction, body, due_date::text, status, occurred_at, source_system, source_ref, sfar';
+
+/**
+ * Vem lovade vad, när det sades och VAR — utan källan går löftet inte att styrka.
+ *
+ * Sfären ärvs när den inte anges, och arvet sker när raden skrivs: därefter bär
+ * åtagandet sitt eget värde. Byter organisationen sfär senare följer redan
+ * skrivna åtaganden alltså inte med av sig själva — det privata ärendet hos en
+ * företagskontakt ska inte flyttas av att kontakten flyttas.
+ */
 export async function recordCommitment(
   client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput,
 ): Promise<Record<string, unknown> & { created: boolean }> {
@@ -768,40 +898,53 @@ export async function recordCommitment(
   await assertTarget(client, companyId, input);
 
   const existing = input.source_ref
-    ? await client.query<{ id: string }>(
-        `SELECT id FROM crm.commitments
+    ? await client.query<{ id: string; sfar: Sfar; organization_id: string | null; person_id: string | null }>(
+        `SELECT id, sfar, organization_id, person_id FROM crm.commitments
          WHERE company_id = $1 AND source_system = $2 AND source_ref = $3`,
         [companyId, input.source_system, input.source_ref])
     : null;
+  const befintlig = existing?.rows[0];
 
-  if (existing?.rows[0]) {
+  // Samma COALESCE-regel som SQL:en nedan: det som skrivs är indata, annars det som står.
+  const motpart = await atagandetsMotpart(client, companyId,
+    input.organization_id ?? befintlig?.organization_id ?? null, input.person_id ?? befintlig?.person_id ?? null);
+  const sfar: Sfar = input.sfar ?? befintlig?.sfar ?? motpart.sfar ?? 'foretag';
+  // Bokföringsgränsen. Kundkortet läser åtagandena genom organisationens koppling
+  // till kundregistret, så ett privat åtagande där hade hamnat i bokföringens vy.
+  if (sfar === 'privat' && motpart.kundkopplad) {
+    throw privatGransFel('privat_atagande_kundkopplad_organisation',
+      'ett privat åtagande kan inte ligga på en organisation som är kopplad till kundregistret — lägg det på en privat organisation eller på en person');
+  }
+
+  if (befintlig) {
     const r = await client.query(
       `UPDATE crm.commitments SET
          person_id = COALESCE($3, person_id), organization_id = COALESCE($4, organization_id),
-         direction = $5, body = $6, due_date = COALESCE($7, due_date), occurred_at = $8
+         direction = $5, body = $6, due_date = COALESCE($7, due_date), occurred_at = $8,
+         sfar = $9
        WHERE id = $1 AND company_id = $2
-       RETURNING id, direction, body, due_date::text, status, occurred_at, source_system, source_ref`,
-      [existing.rows[0].id, companyId, input.person_id ?? null, input.organization_id ?? null,
-        input.direction, input.body, input.due_date ?? null, input.occurred_at],
+       RETURNING ${COMMITMENT_RETURNING}`,
+      [befintlig.id, companyId, input.person_id ?? null, input.organization_id ?? null,
+        input.direction, input.body, input.due_date ?? null, input.occurred_at, sfar],
     );
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment',
-      entityId: existing.rows[0].id, details: { source_system: input.source_system },
+      entityId: befintlig.id, details: { source_system: input.source_system, sfar },
     });
     return { ...r.rows[0], created: false };
   }
 
   const r = await client.query(
     `INSERT INTO crm.commitments (company_id, person_id, organization_id, direction, body, due_date,
-                                  occurred_at, source_system, source_ref, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-     RETURNING id, direction, body, due_date::text, status, occurred_at, source_system, source_ref`,
+                                  occurred_at, source_system, source_ref, created_by, sfar)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     RETURNING ${COMMITMENT_RETURNING}`,
     [companyId, input.person_id ?? null, input.organization_id ?? null, input.direction, input.body,
-      input.due_date ?? null, input.occurred_at, input.source_system, input.source_ref ?? null, userId],
+      input.due_date ?? null, input.occurred_at, input.source_system, input.source_ref ?? null, userId, sfar],
   );
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.commitment_recorded', entityType: 'commitment', entityId: r.rows[0]!.id as string,
-    details: { direction: input.direction, source_system: input.source_system },
+    details: { direction: input.direction, source_system: input.source_system, sfar },
   });
   return { ...r.rows[0], created: true };
 }
@@ -825,11 +968,11 @@ export async function setCommitmentStatus(
 
 export async function listCommitments(
   client: PoolClient, companyId: string,
-  opts: { status?: 'open' | 'done' | 'dropped'; due_before?: string } = {},
+  opts: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter } = {},
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
-            c.snoozed_until::text, c.organization_id,
+            c.snoozed_until::text, c.organization_id, c.sfar,
             p.name AS person_name, o.name AS organization_name
      FROM crm.commitments c
      LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
@@ -837,8 +980,9 @@ export async function listCommitments(
      WHERE c.company_id = $1
        AND ($2::text IS NULL OR c.status = $2)
        AND ($3::date IS NULL OR c.due_date <= $3)
+       AND ($4::text IS NULL OR c.sfar = $4)
      ORDER BY c.status, c.due_date NULLS LAST, c.occurred_at DESC`,
-    [companyId, opts.status ?? null, opts.due_before ?? null],
+    [companyId, opts.status ?? null, opts.due_before ?? null, sfarParameter(opts.sfar)],
   );
   return r.rows;
 }

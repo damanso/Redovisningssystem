@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-18 (CRM privat och företag, steg 1: data och MCP — Davids order 9/11,
+  leads beslut 18/11, gren `crm-sfar`, ej committad):**
+  Migration `0087_crm_sfar_och_roll.sql`: `sfar` (`foretag`|`privat`, NOT NULL,
+  standard `foretag`) på `crm.organizations`, `crm.people` och `crm.commitments`,
+  och `roll` (`kund`|`leverantor`|`partner`|`myndighet`|`intern`, valfri) på
+  organisationer. Befintliga rader blir `foretag`. Bokföringsgränsen i databasen:
+  CHECK `organizations_privat_utanfor_bokforingen_ck` (privat = ingen
+  `customer_id`, aldrig status `customer`) och triggern
+  `crm.privat_utanfor_bokforingen()` (privat åtagande aldrig på kundkopplad
+  organisation, åt båda hållen). Ny lövmodul `services/crmSfar.ts` (typer, filter,
+  felet `privat_bokforingsgrans` med `details.regel`/`details.skal`).
+  `list_crm_organizations`, `list_crm_commitments`, `search_crm`, `crm_today`,
+  `get_party_crm` tar `sfar` (`privat|foretag|alla`, standard `alla`);
+  `upsert_crm_organization` (`sfar`, `roll`), `upsert_crm_person` och
+  `record_crm_commitment` (`sfar`, annars arv: organisationen, personen,
+  `foretag`). Sfär och roll bär ursprung (människan vinner). Privata
+  organisationer slås aldrig upp mot kundregistret; korsande sammanslagning ger
+  `sfar_conflict`. Prov: `server/test/crm-sfar.test.ts` (29 fall: M migrationen
+  spelas upp mot befintliga rader, F filtret på de fem verktygen, A arvet, P bara
+  namn, B gränsen inkl. svep över varje tabell i `public` och SIE-exporten).
+  Dokumentation: `docs/MCP_ACTIONS.md`, avsnittet *CRM: privat och företag*.
+  Ingen ny åtgärd (fortfarande 206). Inte gjort: steg 2 och 3, sfär på
+  kontaktpunkter, byte av sfär på ett befintligt åtagande utan `source_ref`.
+  Detaljer, vägval och testutdata: `BYGGRAPPORT-crm-sfar-1.md` i arbetskopians rot.
+  Driftnotis: ett outmergat utkast (`cto/prd-crm-8-4-…-9268`, commit `7a531a0`)
+  bär också en `0087_…`; den som mergar sist numrerar om.
+
 - **2026-10-25 (Story 1.19, varje nej-utkast når Hermes med mottagare, ämne och text, FR-42):**
   `server/src/services/uppdragSvep.ts` får den slutna listan `UTKAST_TYPER`,
   typen `Utkasttyp`, gränssnittet `Oppetutkast` och läsningen
