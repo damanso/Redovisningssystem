@@ -13,7 +13,11 @@ import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance,
   type ProvenanceSource, type ProvenanceWrite,
 } from './crmProvenance.js';
-import { privatGransFel, sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
+import {
+  arKundkopplad, bytMedSetCrmSfar, harPrivataPersoner, lasOrganisationer, nagonKundkopplad, personensPostOrganisationer,
+  privatGransFel, PRIVAT_PERSON_SKAL, sfarParameter,
+  type OrganizationRoll, type Sfar, type SfarFilter,
+} from './crmSfar.js';
 import { gallraForslagsResonemang } from './timeProposals.js';
 
 export type SourceSystem = 'gmail' | 'calendar' | 'linear' | 'manual';
@@ -172,8 +176,10 @@ function normaliseraOrgnummer(v: string | undefined): string | undefined {
   return digits.length === 10 ? `${digits.slice(0, 6)}-${digits.slice(6)}` : t;
 }
 
-/** Raden en upsert landar på, med det som gränsen mot bokföringen behöver veta. */
-interface OrgHit { id: string; name: string; customer_id: string | null; sfar: Sfar; status: OrganizationStatus }
+/** Raden en upsert landar på, med det som gränsen mot bokföringen (och 3b) behöver veta. */
+interface OrgHit {
+  id: string; name: string; customer_id: string | null; sfar: Sfar; status: OrganizationStatus; roll: OrganizationRoll | null;
+}
 
 /**
  * Har organisationen privata åtaganden, direkt eller via någon av sina personer?
@@ -208,6 +214,8 @@ function assertOrganisationInomGransen(rad: {
   /** Sant när skrivningen själv sätter kopplingen, falskt när den redan fanns. */
   nyKoppling: boolean;
   privataAtaganden: boolean;
+  /** Steg 3 (0089): privata personer på organisationen, eller på dess poster. */
+  privataPersoner?: boolean;
 }): void {
   if (rad.sfar === 'privat') {
     if (rad.customer_id) {
@@ -221,6 +229,9 @@ function assertOrganisationInomGransen(rad: {
     }
   } else if (rad.nyKoppling && rad.privataAtaganden) {
     throw privatGransFel('privata_ataganden_kundkoppling', 'organisationen har privata åtaganden och kan därför inte kopplas till kundregistret');
+  } else if (rad.nyKoppling && rad.privataPersoner) {
+    throw privatGransFel('privat_person_kundkoppling',
+      'organisationen har privata personer, eller kontaktpunkter och åtaganden med en privat person, och kan därför inte kopplas till kundregistret');
   }
 }
 
@@ -246,10 +257,10 @@ export async function upsertOrganization(
 
   const found = input.organization_id
     ? await client.query<OrgHit>(
-        'SELECT id, name, customer_id, sfar, status FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
+        'SELECT id, name, customer_id, sfar, status, roll FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
         [companyId, input.organization_id])
     : await client.query<OrgHit>(
-        'SELECT id, name, customer_id, sfar, status FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+        'SELECT id, name, customer_id, sfar, status, roll FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
         [companyId, name]);
   if (input.organization_id && !found.rows[0]) throw new NotFoundError('organization');
 
@@ -266,7 +277,7 @@ export async function upsertOrganization(
   // träffar alltid raden hon pekat ut), och omstyrningen redovisas i svaret.
   const alias = !found.rows[0] && !input.organization_id && origin.source === 'sync'
     ? await client.query<OrgHit>(
-        `SELECT o.id, o.name, o.customer_id, o.sfar, o.status
+        `SELECT o.id, o.name, o.customer_id, o.sfar, o.status, o.roll
          FROM crm.organization_name_aliases a
          JOIN crm.organizations o ON o.id = a.organization_id AND o.company_id = a.company_id
          WHERE a.company_id = $1 AND lower(a.name) = lower($2)
@@ -301,10 +312,14 @@ export async function upsertOrganization(
   // till kundregistret; heter den som en kund ska den ändå inte bli kunden. Byter
   // raden sfär i samma skrivning väntar uppslaget till nästa: det är billigare att
   // missa en koppling en gång (den redovisas som okopplad) än att gissa åt fel håll.
+  //
+  // Samma sak för en organisation med privata personer (steg 3, 0089): synken ska
+  // inte försöka koppla den och fällas, den lämnar den okopplad och säger det.
   const matchable = !hit?.customer_id
     && (input.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
     && (hit?.sfar ?? 'foretag') === 'foretag'
-    && !(hit && await harPrivataAtaganden(client, companyId, hit.id));
+    && !(hit && await harPrivataAtaganden(client, companyId, hit.id))
+    && !(hit && await harPrivataPersoner(client, companyId, [hit.id]));
   const matched = matchable ? await matchCustomer(client, companyId, writeName, input.org_number, hit?.id) : null;
   const customerId = input.customer_id ?? matched;
 
@@ -344,6 +359,15 @@ export async function upsertOrganization(
     { ...input, name: redirectedFrom ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
   );
 
+  // Rättningsvarv 3b (krav 8): en agent byter inte sfär eller roll på en befintlig
+  // organisation här. Det gick förbi Davids beslut; set_crm_sfar lägger bytet i Att
+  // göra. Prövat på det som skulle skrivas (en människas fält är redan bortplockade,
+  // och då är det kept_human_fields som förut) mot raden, som är låst FOR UPDATE ovan.
+  if (origin.source !== 'human'
+    && ((patch.sfar !== undefined && patch.sfar !== hit.sfar) || (patch.roll !== undefined && patch.roll !== hit.roll))) {
+    throw bytMedSetCrmSfar('organisation');
+  }
+
   // Gränsen prövas på det som faktiskt skrivs: efter att människans fält plockats
   // bort, och med statusen som följer med en ny koppling (samma regel som i SQL:en).
   const nyKoppling = Boolean(patch.customer_id) && patch.customer_id !== hit.customer_id;
@@ -355,6 +379,7 @@ export async function upsertOrganization(
       ?? (patch.customer_id && hit.status === 'prospect' ? 'customer' : hit.status),
     nyKoppling,
     privataAtaganden: sfarEfter === 'foretag' && nyKoppling && await harPrivataAtaganden(client, companyId, hit.id),
+    privataPersoner: sfarEfter === 'foretag' && nyKoppling && await harPrivataPersoner(client, companyId, [hit.id]),
   });
 
   const r = await client.query<Organization>(
@@ -599,14 +624,16 @@ export async function upsertPerson(
   if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.organization_id) await assertOrganization(client, companyId, input.organization_id);
 
+  type PersonHit = { id: string; name: string; organization_id: string | null; sfar: Sfar };
   const byEmail = input.email
-    ? await client.query<{ id: string; name: string }>(
-        'SELECT id, name FROM crm.people WHERE company_id = $1 AND lower(email) = lower($2)', [companyId, input.email])
+    ? await client.query<PersonHit>(
+        'SELECT id, name, organization_id, sfar FROM crm.people WHERE company_id = $1 AND lower(email) = lower($2)',
+        [companyId, input.email])
     : null;
   const byName = byEmail?.rows[0]
     ? null
-    : await client.query<{ id: string; name: string }>(
-        `SELECT id, name FROM crm.people
+    : await client.query<PersonHit>(
+        `SELECT id, name, organization_id, sfar FROM crm.people
          WHERE company_id = $1
            AND organization_id IS NOT DISTINCT FROM $2::uuid
            AND lower(name) = lower($3)
@@ -618,6 +645,14 @@ export async function upsertPerson(
   const hit = byEmail?.rows[0] ?? byName?.rows[0];
 
   if (!hit) {
+    // Steg 3 (0089, P1): en privat person ligger aldrig på en kundkopplad
+    // organisation. Organisationen låses först, samma ordning som triggern.
+    if ((input.sfar ?? 'foretag') === 'privat' && input.organization_id) {
+      await lasOrganisationer(client, companyId, [input.organization_id]);
+      if (await arKundkopplad(client, companyId, input.organization_id)) {
+        throw privatGransFel('privat_person_kundkopplad_organisation', PRIVAT_PERSON_SKAL.organisation);
+      }
+    }
     const r = await client.query<Person>(
       `INSERT INTO crm.people (company_id, name, email, phone, role_title, organization_id, external_ref, notes, created_by, sfar)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING ${PERSON_COLUMNS}`,
@@ -639,6 +674,30 @@ export async function upsertPerson(
   const { input: patch, blocked } = await guardHumanFields(
     client, companyId, { person_id: hit.id }, origin.source, { ...input, name } as Record<string, unknown>,
   );
+
+  // Steg 3 (0089): en privat person ligger aldrig hos kunden (P1), och en person
+  // som står på poster hos en kund blir inte privat (P2). Organisationerna låses
+  // före personen, samma ordning som sammanslagningen.
+  const orgEfter = (patch.organization_id as string | undefined) ?? hit.organization_id;
+  const sfarEfter = (patch.sfar as Sfar | undefined) ?? hit.sfar;
+  const blirPrivat = sfarEfter === 'privat' && hit.sfar !== 'privat';
+  const posternas = blirPrivat ? await personensPostOrganisationer(client, companyId, hit.id) : [];
+  await lasOrganisationer(client, companyId, [orgEfter, ...posternas]);
+  // Rättningsvarv 3b (krav 8): en agent byter inte sfär på en befintlig person här;
+  // set_crm_sfar lägger bytet i Att göra. Prövat mot raden låst efter
+  // organisationerna (samma ordning som ovan), så ett samtidigt byte inte slinker
+  // igenom mellan läsningen och skrivningen.
+  if (origin.source !== 'human' && patch.sfar !== undefined) {
+    const nu = (await client.query<{ sfar: Sfar }>(
+      'SELECT sfar FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, hit.id])).rows[0];
+    if (nu && nu.sfar !== patch.sfar) throw bytMedSetCrmSfar('person');
+  }
+  if (sfarEfter === 'privat' && await arKundkopplad(client, companyId, orgEfter)) {
+    throw privatGransFel('privat_person_kundkopplad_organisation', PRIVAT_PERSON_SKAL.organisation);
+  }
+  if (blirPrivat && await nagonKundkopplad(client, companyId, posternas)) {
+    throw privatGransFel('privat_person_kundkopplad_post', PRIVAT_PERSON_SKAL.blirPrivat);
+  }
 
   // Bokföringsgränsen åt andra hållet (steg 2, migration 0088): en person med
   // privata åtaganden flyttas inte till en kundkopplad organisation. Kundens
@@ -816,6 +875,29 @@ export async function assertNotErased(
   }
 }
 
+/**
+ * Steg 3 (migration 0089, P2): en kontaktpunkt eller ett åtagande som bär en
+ * kundkopplad organisation bär aldrig en privat person. Kundens kronologi läser
+ * båda, och GDPR-raderingen tar dem med kunden.
+ *
+ * Organisationerna låses först och personen sist, samma ordning som triggern och
+ * sammanslagningen.
+ */
+async function assertIngenPrivatPersonHosKund(
+  client: PoolClient, companyId: string, organizationId: string | null, personId: string | null,
+): Promise<void> {
+  if (!organizationId || !personId) return;
+  const p = await client.query<{ organization_id: string | null }>(
+    'SELECT organization_id FROM crm.people WHERE company_id = $1 AND id = $2', [companyId, personId]);
+  await lasOrganisationer(client, companyId, [organizationId, p.rows[0]?.organization_id]);
+  const r = await client.query(
+    `SELECT 1 FROM crm.people p, crm.organizations o
+     WHERE p.company_id = $1 AND p.id = $2 AND p.sfar = 'privat'
+       AND o.company_id = $1 AND o.id = $3 AND o.customer_id IS NOT NULL`,
+    [companyId, personId, organizationId]);
+  if (r.rows[0]) throw privatGransFel('privat_person_kundkopplad_post', PRIVAT_PERSON_SKAL.post);
+}
+
 async function assertTarget(
   client: PoolClient, companyId: string, input: { person_id?: string; organization_id?: string },
 ): Promise<void> {
@@ -845,11 +927,17 @@ export async function recordInteraction(
   await assertTarget(client, companyId, input);
 
   const existing = input.source_ref
-    ? await client.query<{ id: string }>(
-        `SELECT id FROM crm.interactions
+    ? await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
+        `SELECT id, person_id, organization_id FROM crm.interactions
          WHERE company_id = $1 AND source_system = $2 AND source_ref = $3`,
         [companyId, input.source_system, input.source_ref])
     : null;
+
+  // Steg 3 (0089, P2): en privat person står aldrig på en post hos en kund.
+  // Samma COALESCE-regel som SQL:en nedan: indata, annars det som står.
+  await assertIngenPrivatPersonHosKund(client, companyId,
+    input.organization_id ?? existing?.rows[0]?.organization_id ?? null,
+    input.person_id ?? existing?.rows[0]?.person_id ?? null);
 
   if (existing?.rows[0]) {
     const r = await client.query(
@@ -944,7 +1032,7 @@ const COMMITMENT_RETURNING = 'id, direction, body, due_date::text, status, occur
  * företagskontakt ska inte flyttas av att kontakten flyttas.
  */
 export async function recordCommitment(
-  client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput,
+  client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput, source: ProvenanceSource,
 ): Promise<Record<string, unknown> & { created: boolean }> {
   await assertNotErased(client, companyId, input.source_system, input.source_ref);
   await assertTarget(client, companyId, input);
@@ -972,21 +1060,33 @@ export async function recordCommitment(
     throw privatGransFel('privat_atagande_kundkopplad_person',
       'ett privat åtagande kan inte ligga på en person hos en organisation som är kopplad till kundregistret — lägg det på en privat organisation utan den personen');
   }
+  // Steg 3 (0089, P2): också ett företagsåtagande hos kunden bär aldrig en privat person.
+  await assertIngenPrivatPersonHosKund(client, companyId,
+    input.organization_id ?? befintlig?.organization_id ?? null, input.person_id ?? befintlig?.person_id ?? null);
 
   if (befintlig) {
+    // Rättningsvarv 3b (krav 8): en agent byter inte sfär på ett befintligt åtagande
+    // genom att skicka det igen; set_crm_sfar lägger bytet i Att göra. Prövat mot den
+    // låsta raden. Utan sfär i indata behåller raden den sfär den har när satsen
+    // körs (COALESCE), inte den som lästes ovan: ett byte däremellan skrivs inte över.
+    if (source !== 'human' && input.sfar !== undefined) {
+      const nu = (await client.query<{ sfar: Sfar }>(
+        'SELECT sfar FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, befintlig.id])).rows[0];
+      if (nu && nu.sfar !== input.sfar) throw bytMedSetCrmSfar('atagande');
+    }
     const r = await client.query(
       `UPDATE crm.commitments SET
          person_id = COALESCE($3, person_id), organization_id = COALESCE($4, organization_id),
          direction = $5, body = $6, due_date = COALESCE($7, due_date), occurred_at = $8,
-         sfar = $9
+         sfar = COALESCE($9, sfar)
        WHERE id = $1 AND company_id = $2
        RETURNING ${COMMITMENT_RETURNING}`,
       [befintlig.id, companyId, input.person_id ?? null, input.organization_id ?? null,
-        input.direction, input.body, input.due_date ?? null, input.occurred_at, sfar],
+        input.direction, input.body, input.due_date ?? null, input.occurred_at, input.sfar ?? null],
     );
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment',
-      entityId: befintlig.id, details: { source_system: input.source_system, sfar },
+      entityId: befintlig.id, details: { source_system: input.source_system, sfar: r.rows[0]!.sfar as Sfar },
     });
     return { ...r.rows[0], created: false };
   }
@@ -1030,7 +1130,10 @@ export async function listCommitments(
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
             c.snoozed_until::text, c.organization_id, c.sfar,
-            p.name AS person_name, o.name AS organization_name
+            p.name AS person_name, o.name AS organization_name,
+            -- Steg 3 (krav 9): Min sida länkar ett privat ärende hos en leverantör
+            -- till hushållets budget. Rollen läses, den kopieras inte.
+            o.roll AS organization_roll
      FROM crm.commitments c
      LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
      LEFT JOIN crm.organizations o ON o.id = c.organization_id AND o.company_id = c.company_id

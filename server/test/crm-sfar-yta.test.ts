@@ -1,6 +1,7 @@
 // Privat och företag i samma CRM, steg 2: ytan (Davids beställning 9/11).
 //
-//   Y  kundkortets relationsdel visar inga privata personer (granskningens fynd, A3)
+//   Y  kundkortets relationsdel visar inga privata personer (granskningens fynd, A3;
+//      sedan steg 3 kan en privat person inte ligga där alls)
 //   B  märket Privat/Företag på varje åtagande, på Min sida och i åtagandelistan,
 //      och filtret Alla/Företag/Privat på båda
 //   C  Davids fel 18/11: den valda filterknappen är ifylld och bär aria-current,
@@ -110,24 +111,24 @@ beforeAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe('Y kundkortets relationsdel visar inga privata personer', () => {
-  it('Y1 företagspersonen syns, den privata personen på samma organisation gör det inte, och räknas inte', async () => {
+  // Steg 2 lät den privata personen ligga på kundens organisation och dolde henne
+  // här. Sedan steg 3 (leads beslut A, migration 0089) kommer hon aldrig dit;
+  // kundkortets filter står kvar som ett andra skydd.
+  it('Y1 företagspersonen syns; en privat person kan inte läggas på kundens organisation, så kortet bär bara företagspersonen', async () => {
     const kund = await ok(act('create_customer', { name: 'Kundkortet AB' }));
     const org = (await ok(act('upsert_crm_organization', { name: 'Kundkortet AB', customer_id: kund.id }))).id;
     await ok(act('upsert_crm_person', { name: 'Fia Företagskontakt', organization_id: org }));
-    const privat = (await ok(act('upsert_crm_person', { name: 'Pelle Privatperson', organization_id: org, sfar: 'privat' }))).id;
-    // Den privata personens kontakt ska inte bli kundens "senaste kontakt".
-    await ok(act('log_contact', { person_id: privat, summary: 'Privat samtal', occurred_at: '2026-11-17T12:00:00Z' }));
+    const vagran = await act('upsert_crm_person', { name: 'Pelle Privatperson', organization_id: org, sfar: 'privat' });
+    expect(vagran.status, JSON.stringify(vagran.body)).toBe(400);
+    expect(vagran.body.details?.regel).toBe('privat_person_kundkopplad_organisation');
 
     const res = await ua.get(`/app/c/${companyId}/customers/${kund.id}`);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Fia Företagskontakt');
     expect(res.text).not.toContain('Pelle Privatperson');
     expect(res.text).toMatch(/<h2>Kontaktpersoner<\/h2><span class="muted" style="font-size:12.5px">1 st<\/span>/);
-    expect(res.text).not.toContain('Senaste kontakt');
-    // Kontrollen: relationskortet (CRM-sidan) visar henne, märkt med sin sfär.
     const kort = await ok(act('get_crm_organization', { organization_id: org }));
-    expect(kort.people.map((p: Rad) => [p.name, p.sfar]).sort())
-      .toEqual([['Fia Företagskontakt', 'foretag'], ['Pelle Privatperson', 'privat']]);
+    expect(kort.people.map((p: Rad) => [p.name, p.sfar])).toEqual([['Fia Företagskontakt', 'foretag']]);
   });
 });
 

@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
+import { assertKanAktiveras } from './gdpr.js';
 import { nextDocumentNumber } from './accounting/numbering.js';
 
 // Kund, leverantör och artikel delar mönster. company_id kommer alltid från
@@ -55,6 +56,8 @@ export async function getCustomer(client: PoolClient, companyId: string, id: str
 export async function updateCustomer(
   client: PoolClient, companyId: string, userId: string, id: string, input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  // En kund som raderats enligt GDPR aktiveras inte igen (crmsfar3, A).
+  await assertKanAktiveras(client, companyId, 'customer', id, input);
   const update = buildAllowlistedUpdate(CUSTOMER_UPDATE, input);
   if (!update) return getCustomer(client, companyId, id);
   const result = await client.query(
@@ -108,6 +111,8 @@ export async function getSupplier(client: PoolClient, companyId: string, id: str
 export async function updateSupplier(
   client: PoolClient, companyId: string, userId: string, id: string, input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  // Samma regel som för kunden: en raderad leverantör aktiveras inte igen.
+  await assertKanAktiveras(client, companyId, 'supplier', id, input);
   const update = buildAllowlistedUpdate(SUPPLIER_UPDATE, input);
   if (!update) return getSupplier(client, companyId, id);
   const result = await client.query(

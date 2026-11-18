@@ -169,7 +169,7 @@ export async function ingestCrmEvents(
           person_id: personId, organization_id: organizationId,
           direction: e.commitment_direction, body: e.body, due_date: e.due_date,
           occurred_at: e.occurred_at, source_system: e.source_system, source_ref: e.source_ref,
-        });
+        }, 'sync');
         if (r.created) result.commitments_created += 1; else result.commitments_unchanged += 1;
       }
       await client.query('RELEASE SAVEPOINT crm_event');

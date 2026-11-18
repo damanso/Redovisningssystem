@@ -63,7 +63,12 @@ import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
-import { SFARFILTER, type SfarFilter } from '../../services/crmSfar.js';
+import { ORG_ROLLER, SFARFILTER, type SfarFilter } from '../../services/crmSfar.js';
+import {
+  angraFelText, angraPrivatFlytt, flyttaTillPrivat, flyttFelText, lasPrivatFlytt, lasPrivatIntern, NYCKEL as FLYTT_NYCKEL,
+  privataForslag, type FlyttRad,
+} from '../../services/crmPrivat.js';
+import { arGdprRaderad } from '../../services/gdpr.js';
 import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPersonnamn,
   slaIhopPersoner, stadbild, type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
@@ -6713,7 +6718,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
               <div class="today__head">
                 ${entityLink(companyId, 'relation', s.organization_id, s.organization, { class: 'today__who' })}
                 ${s.overdue_commitments > 0 ? chip(`${s.overdue_commitments} förfallet löfte`, 'neg', '!') : ''}
-                ${s.status === 'prospect' ? chip('Prospekt', 'info') : ''}
+                ${s.status === 'prospect' && s.sfar !== 'privat' ? chip('Prospekt', 'info') : ''}
                 ${(s.revenue_share_permille ?? 0) >= 200 ? chip(`${pct(s.revenue_share_permille)} av omsättningen`, 'muted') : ''}
                 ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${kronor(s.revenue_12m_ore)}</span>` : ''}
               </div>
@@ -6819,7 +6824,8 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
   const suggestions = await contactSuggestions(client, companyId, { rows: state });
   const policy = await getRetention(client, companyId);
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
-      <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div></div>
+      <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations/privata-forslag">Förslag: privata poster →</a></div></div>
     ${/* Utan notisen försvinner varje fel från handgreppen som landar här —
          formuläret ser ut att inte ha gjort någonting alls. Exakt den tystnad
          som gjorde de tidigare felen svåra att upptäcka. */ ''}
@@ -6967,6 +6973,180 @@ viewRouter.post('/c/:companyId/relations/create', page(async (req, res) => {
   }, `/app/c/${companyId}/relations`);
 }));
 
+// ---------------------------------------------------------------------------
+// Förslag: privata poster (steg 3, D; beställningen 9/11, krav 8).
+//
+// "David godkänner listan innan något flyttas." Sidan LÄSER förslaget (samma
+// funktion som list_crm_privata_forslag) och skriver ingenting, inte ens
+// «Privat (<förnamn>)». Två POST-vägar skriver: flytten och ångra. Båda kräver
+// samma ursprung, en cookie-session (en agent når aldrig vyns POST-vägar,
+// auth.ts) och ägarrollen i bolaget, och ingen åtgärd anropar dem. Vägarna står
+// före /relations/:orgId, som annars hade fångat "privata-forslag" som ett id.
+// ---------------------------------------------------------------------------
+
+/** Ägaren i en människas session. Underkonsult, medlem och administratör får se men inte flytta. */
+function assertAgarensSession(req: Request, role: string): void {
+  if (req.auth?.actor !== 'human') throw new ForbiddenError('human_required', 'Flytten görs av en människa i webbläsaren.');
+  if (role !== 'owner') throw new ForbiddenError('only_owner', 'Bara bolagets ägare kan flytta poster till Privat.');
+}
+
+// Rättningsvarv 3b: ingen fritext i adressen. Felet går till sidan som sin kod och
+// radens nyckel (slag:id); sidan ritar texten ur crmPrivat och namnet ur
+// databasen. Ett namn eller ett åtagandes text i adressen hamnar annars i
+// åtkomstloggar och i webbläsarens historik. Allt annat i ?fel= ritas inte.
+const FELKOD = /^[a-z_]{1,64}$/;
+
+/** Omdirigeringen efter ett fel: bara koden, och radens nyckel när den är känd. */
+function privatFelAdress(tillbaka: string, err: BadRequestError | ConflictError, rad: unknown): string {
+  const kod = FELKOD.test(err.code) ? err.code : 'okant_fel';
+  return `${tillbaka}?fel=${kod}${typeof rad === 'string' && FLYTT_NYCKEL.test(rad) ? `&rad=${rad}` : ''}`;
+}
+
+/** Felkoden och radnyckeln ur adressen, eller null. */
+function privatFelKod(req: Request): { kod: string; nyckel: string | null; slag: 'organisation' | 'atagande' | null } | null {
+  const kod = req.query.fel;
+  if (typeof kod !== 'string' || !FELKOD.test(kod)) return null;
+  const rad = typeof req.query.rad === 'string' ? FLYTT_NYCKEL.exec(req.query.rad) : null;
+  return { kod, nyckel: rad ? rad[0] : null, slag: rad ? rad[1] as 'organisation' | 'atagande' : null };
+}
+
+viewRouter.get('/c/:companyId/relations/privata-forslag', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client, role) => {
+    const company = await loadCompany(client, companyId);
+    const f = await privataForslag(client, companyId);
+    const agare = role === 'owner' && req.auth?.actor === 'human';
+    const fel = privatFelKod(req);
+    const b = html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Förslag: privata poster</h1>
+        <p class="lede">Poster som ser privata ut, och varför. Ingenting flyttas förrän du kryssar i och trycker på knappen.
+          <a href="/app/c/${companyId}/relations">← Relationer</a></p></div></div>
+      ${fel ? html`<p class="notice">${flyttFelText(fel.kod, f, fel.nyckel)}</p>` : ''}
+      ${
+        f.rader.length === 0
+          ? html`<div class="empty"><div class="big">Inga förslag</div>
+              Inget ser privat ut just nu. Svealands Elbolag, organisationer som anteckningen markerar som privata och
+              privata ärenden under den interna organisationen dyker upp här.</div>`
+          : html`<form method="post" action="/app/c/${companyId}/relations/privata-forslag/flytta">
+              <div class="table-wrap"><table>
+                <thead><tr><th>Flytta</th><th>Post</th><th>Varför den ser privat ut</th><th>Förslag</th></tr></thead>
+                <tbody>${f.rader.map((r, i) => html`<tr>
+                  <td><input type="checkbox" name="val" value="${r.nyckel}" id="pf-${String(i)}"${
+                    r.forkryssad ? html` checked` : ''}${r.hinder || !agare ? html` disabled` : ''}></td>
+                  <td><label for="pf-${String(i)}">${r.slag === 'organisation' ? chip('Organisation', 'info') : chip('Åtagande', 'muted')}
+                    ${r.slag === 'organisation'
+                      ? entityLink(companyId, 'relation', r.id, r.namn)
+                      : html`${minRubrik(r.namn)}`}</label>${
+                    r.organisation ? html` <span class="muted">· ${r.organisation}</span>` : ''}</td>
+                  <td>${r.skal}</td>
+                  <td>${r.forslag}${r.hinder ? html`<div class="hint">${chip('Går inte', 'warn', '!')} ${r.hinder}.</div>` : ''}</td>
+                </tr>`)}</tbody>
+              </table></div>
+              ${agare
+                ? html`<div class="quick" style="margin-top:14px">
+                    <button class="btn btn--primary" type="submit">Flytta de valda till Privat</button></div>`
+                : html`<p class="notice">Bara bolagets ägare kan flytta poster till Privat.</p>`}
+              <p class="hint">Allt du kryssat i flyttas i en och samma omgång, och ingenting annat. Efteråt får du ett kvitto
+                med vad som flyttades och en ångra-länk per rad. Klara och avskrivna åtaganden rörs inte.</p>
+            </form>`
+      }`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: 'Förslag: privata poster', companyId, companyName: name, active: 'relations', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/relations/privata-forslag/flytta', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const raw = (req.body as { val?: unknown }).val;
+  const valda = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).filter((v): v is string => typeof v === 'string');
+  const tillbaka = `/app/c/${companyId}/relations/privata-forslag`;
+  try {
+    const utfall = await withTenantTransaction(userId, companyId, async (client, role) => {
+      assertAgarensSession(req, role);
+      return flyttaTillPrivat(client, companyId, userId, valda);
+    });
+    res.redirect(303, `${tillbaka}/kvitto/${utfall.flytt_id}`);
+  } catch (err) {
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(303, privatFelAdress(tillbaka, err, (err.details as { nyckel?: unknown } | undefined)?.nyckel));
+      return;
+    }
+    throw err;
+  }
+}));
+
+/** En rad i kvittot, i ord. */
+function flyttRadText(r: FlyttRad): Raw {
+  if (r.slag === 'organisation') {
+    const roll = (r.fran.roll ?? null) !== (r.till.roll ?? null)
+      ? html`, roll ${r.fran.roll ? rollText(r.fran.roll) : '—'} → ${r.till.roll ? rollText(r.till.roll) : '—'}` : '';
+    return html`${r.namn ?? 'Organisationen finns inte längre'}: ${sfarEtikett(r.fran.sfar)} → ${sfarEtikett(r.till.sfar)}${roll}${
+      r.foljde_med > 0 ? html` · ${r.foljde_med === 1 ? '1 öppet åtagande' : `${String(r.foljde_med)} öppna åtaganden`} följde med` : ''}`;
+  }
+  return html`${r.namn ? minRubrik(r.namn) : 'Åtagandet finns inte längre'}: ${r.fran.organisation ?? '—'} → ${
+    r.till.organisation ?? '—'}, ${sfarEtikett(r.fran.sfar)} → ${sfarEtikett(r.till.sfar)}`;
+}
+
+viewRouter.get('/c/:companyId/relations/privata-forslag/kvitto/:flyttId', page(async (req, res) => {
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const flyttId = parseApprovalId(req.params.flyttId); // UUID-validering (404 vid ogiltigt)
+  const { name, body } = await withTenantTransaction(userId, companyId, async (client, role) => {
+    const company = await loadCompany(client, companyId);
+    const k = await lasPrivatFlytt(client, companyId, flyttId);
+    const agare = role === 'owner' && req.auth?.actor === 'human';
+    const angrad = typeof req.query.angrad === 'string';
+    const fel = privatFelKod(req);
+    const b = html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Kvitto: flyttat till Privat</h1>
+        <p class="lede">${String(k.rader.length)} ${k.rader.length === 1 ? 'rad flyttades' : 'rader flyttades'} ${k.nar.slice(0, 10)}.
+          <a href="/app/c/${companyId}/relations/privata-forslag">← Förslagen</a></p></div></div>
+      ${fel ? html`<p class="notice">${angraFelText(fel.kod, fel.slag)}</p>` : ''}
+      ${angrad ? html`<p class="notice" style="${KLAR_STIL}">Raden är ångrad.</p>` : ''}
+      <div class="table-wrap"><table>
+        <thead><tr><th>Vad som flyttades</th><th></th></tr></thead>
+        <tbody>${k.rader.map((r) => html`<tr>
+          <td>${r.slag === 'organisation' ? chip('Organisation', 'info') : chip('Åtagande', 'muted')} ${flyttRadText(r)}</td>
+          <td>${r.angrad
+            ? chip('Ångrad', 'muted')
+            : agare
+              ? html`<form method="post" action="/app/c/${companyId}/relations/privata-forslag/angra" style="margin:0">
+                  <input type="hidden" name="flytt_id" value="${k.flytt_id}">
+                  <input type="hidden" name="nyckel" value="${r.nyckel}">
+                  <button class="btn btn--ghost btn--sm" type="submit">Ångra</button></form>`
+              : ''}</td>
+        </tr>`)}</tbody>
+      </table></div>
+      <p class="hint">Ångra sätter tillbaka sfär, roll och organisation som de stod före flytten — om ingen har ändrat posten sedan dess.</p>`;
+    return { name: company.name, body: b };
+  });
+  res.type('html').send(layout({ title: 'Kvitto: flyttat till Privat', companyId, companyName: name, active: 'relations', body }).value);
+}));
+
+viewRouter.post('/c/:companyId/relations/privata-forslag/angra', page(async (req, res) => {
+  assertSameOrigin(req);
+  const userId = getUserId(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const b = req.body as Record<string, unknown>;
+  const flyttId = parseApprovalId(b.flytt_id); // UUID-validering (404 vid ogiltigt)
+  const nyckel = typeof b.nyckel === 'string' ? b.nyckel : '';
+  const kvitto = `/app/c/${companyId}/relations/privata-forslag/kvitto/${flyttId}`;
+  try {
+    await withTenantTransaction(userId, companyId, async (client, role) => {
+      assertAgarensSession(req, role);
+      return angraPrivatFlytt(client, companyId, userId, flyttId, nyckel);
+    });
+    res.redirect(303, `${kvitto}?angrad=1`);
+  } catch (err) {
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(303, privatFelAdress(kvitto, err, nyckel));
+      return;
+    }
+    throw err;
+  }
+}));
+
 viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -6977,11 +7157,12 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const o = await getOrganization(client, companyId, orgId) as {
       id: string; name: string; status: string; customer_id: string | null; customer_name: string | null;
       org_number: string | null; website: string | null; source: string | null; notes: string | null;
+      sfar: string; roll: string | null;
       people: Array<{
         id: string; name: string; email: string | null; phone: string | null; role_title: string | null;
-        provenance: Record<string, ProvenanceView>;
+        sfar: string; provenance: Record<string, ProvenanceView>;
       }>;
-      commitments: Array<{ direction: string; body: string; due_date: string | null; status: string }>;
+      commitments: Array<{ id: string; direction: string; body: string; due_date: string | null; status: string; sfar: string }>;
       last_contact_at: string | null;
       provenance: Record<string, ProvenanceView>;
       name_aliases: Array<{ name: string }>;
@@ -7071,6 +7252,10 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                   </form>`
                 : ''}
             </div>`)}
+            ${/* Sfär och roll (steg 3). Utan "Stämmer": bekräftelsen gäller
+                 kortets fyra uppgifter, och sfären ändras under Rätta uppgifter. */ ''}
+            <div class="uppgift"><span class="k">Sfär</span><span class="v">${sfarMarke(o.sfar)}${ursprungsMark(o.provenance.sfar)}</span></div>
+            <div class="uppgift"><span class="k">Roll</span><span class="v">${o.roll ? rollText(o.roll) : '—'}${ursprungsMark(o.provenance.roll)}</span></div>
             <details class="rattaform">
               <summary>Rätta uppgifter</summary>
               <form method="post" action="/app/c/${companyId}/relations/${o.id}/edit">
@@ -7079,9 +7264,32 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
                 <label>Webbplats<input type="text" name="website" maxlength="200" value="${o.website ?? ''}"></label>
                 <label>Status<select name="status">${(['prospect', 'customer', 'partner', 'former', 'archived'] as const).map((s) => html`<option value="${s}"${s === o.status ? html` selected` : ''}>${orgStatusText(s)}</option>`)}</select></label>
+                <label>Roll<select name="roll">
+                  <option value=""${o.roll ? '' : html` selected`}>— inte angiven —</option>
+                  ${ORG_ROLLER.map((r) => html`<option value="${r}"${r === o.roll ? html` selected` : ''}>${rollText(r)}</option>`)}
+                </select></label>
                 <button class="btn btn--primary btn--sm" type="submit">Spara</button>
                 <p class="hint">Det du sparar här räknas som ditt beslut. Ingen synk skriver över det efteråt.</p>
               </form>
+              ${/* B (leads beslut 18/11): sfären byts med set_crm_sfar. De öppna
+                   åtagandena följer med bara när rutan är ikryssad, och klara och
+                   avskrivna rörs aldrig. */ ''}
+              <form method="post" action="/app/c/${companyId}/relations/${o.id}/sfar">
+                <input type="hidden" name="back" value="${back}">
+                <input type="hidden" name="mal" value="organisation">
+                <label>Sfär<select name="sfar">
+                  ${(['foretag', 'privat'] as const).map((s) => html`<option value="${s}"${s === o.sfar ? html` selected` : ''}>${sfarEtikett(s)}</option>`)}
+                </select></label>
+                <label><input type="checkbox" name="cascade" value="1"> De öppna åtagandena följer med</label>
+                <button class="btn btn--ghost btn--sm" type="submit">Byt sfär</button>
+                <p class="hint">Klara och avskrivna åtaganden stannar i sin sfär. En privat organisation kan inte vara kopplad till kundregistret.</p>
+              </form>
+              ${o.people.length === 0 && !o.commitments.some((c) => c.status === 'open') ? '' : html`<div class="sfarbyten">
+                <p class="hint">Sfär per person och per öppet åtagande:</p>
+                ${o.people.map((p) => sfarByteRad(companyId, o.id, back, 'person', p.id, p.name, p.sfar))}
+                ${o.commitments.filter((c) => c.status === 'open').map((c) =>
+                  sfarByteRad(companyId, o.id, back, 'atagande', c.id, minRubrik(c.body), c.sfar))}
+              </div>`}
             </details>
           </div>
 
@@ -7342,6 +7550,32 @@ function sfarMarke(sfar: unknown): Raw {
   return chip(sfarEtikett(sfar), 'muted');
 }
 
+/** Rollen som den heter för en människa (0087: kund, leverantor, partner, myndighet, intern). */
+function rollText(roll: string): string {
+  return roll === 'kund' ? 'Kund' : roll === 'leverantor' ? 'Leverantör' : roll === 'partner' ? 'Partner'
+    : roll === 'myndighet' ? 'Myndighet' : roll === 'intern' ? 'Intern' : roll;
+}
+
+/**
+ * En rad under «Rätta uppgifter» som byter sfär på en person eller ett öppet
+ * åtagande (steg 3, B). Formuläret bär målvärdet, inte "växla": ett dubbelklick
+ * vrider inte tillbaka det man just gjorde.
+ */
+function sfarByteRad(
+  companyId: string, orgId: string, back: string, mal: 'person' | 'atagande', id: string, namn: string, sfar: string,
+): Raw {
+  const till = sfar === 'privat' ? 'foretag' : 'privat';
+  return html`<form method="post" action="/app/c/${companyId}/relations/${orgId}/sfar" class="uppgift">
+    <input type="hidden" name="back" value="${back}">
+    <input type="hidden" name="mal" value="${mal}">
+    <input type="hidden" name="mal_id" value="${id}">
+    <input type="hidden" name="sfar" value="${till}">
+    <span class="k">${mal === 'person' ? 'Person' : 'Åtagande'}</span>
+    <span class="v">${namn} ${sfarMarke(sfar)}</span>
+    <button class="btn btn--ghost btn--sm" type="submit">Gör ${sfarEtikett(till).toLowerCase()}</button>
+  </form>`;
+}
+
 // ---------------------------------------------------------------------------
 // Handgreppen (F1). Vyn hade 47 POST-rutter för fakturor och lön men NOLL för
 // relationer — varje handgrepp, även "markera klar", krävde AI eller API. Det
@@ -7514,13 +7748,33 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
     return typeof v === 'string' && v.trim() ? v.trim() : undefined;
   };
   const status = text('status');
+  const roll = text('roll');
   await runViewAction(req, res, companyId, 'upsert_crm_organization', {
     organization_id: id,
     name: text('name') ?? '',
     ...(text('org_number') ? { org_number: text('org_number') } : {}),
     ...(text('website') ? { website: text('website') } : {}),
     ...(status && ['prospect', 'customer', 'partner', 'former', 'archived'].includes(status) ? { status } : {}),
+    // Tom roll = oförändrad, samma regel som de andra fälten. Ett okänt värde
+    // skickas vidare och avvisas av schemat, så att notisen syns.
+    ...(roll ? { roll } : {}),
   }, backToCrm(req, companyId, `relations/${id}`));
+}));
+
+// Steg 3 (B): byt sfär på organisationen, en av dess personer eller ett av dess
+// öppna åtaganden. Samma åtgärd som AI:t använder (set_crm_sfar), som människa.
+// De öppna åtagandena följer med bara när rutan är ikryssad.
+viewRouter.post('/c/:companyId/relations/:id/sfar', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.parse(req.params.id);
+  const b = req.body as Record<string, unknown>;
+  const sfar = typeof b.sfar === 'string' ? b.sfar : '';
+  const malId = typeof b.mal_id === 'string' ? b.mal_id : '';
+  const input = b.mal === 'person' ? { person_id: malId, sfar }
+    : b.mal === 'atagande' ? { commitment_id: malId, sfar }
+      : { organization_id: id, sfar, ...(b.cascade === '1' ? { cascade_open_commitments: true } : {}) };
+  await runViewAction(req, res, companyId, 'set_crm_sfar', input, backToCrm(req, companyId, `relations/${id}`));
 }));
 
 // ---------------------------------------------------------------------------
@@ -8923,6 +9177,8 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
       // Personerna som kommit in via API-kontraktet bor i relationen, inte i
       // kundregistret. De ska synas HÄR, där man naturligt letar efter dem.
       const rel = partyType === 'customer' ? await customerRelationSummary(client, companyId, partyId) : null;
+      // Steg 3 (A): en kund som raderats enligt GDPR erbjuds inte Aktivera.
+      const raderad = partyType === 'customer' && await arGdprRaderad(client, companyId, 'customer', partyId);
       const backrefs = await partyBackrefs(client, companyId, partyType, partyId);
       const backLabel = partyType === 'customer' ? 'Kunder' : 'Leverantörer';
       // Affären först, kartoteket sedan. Den som öppnar ett kundkort frågar i
@@ -8930,7 +9186,7 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
       // kontaktuppgifter är svaret på en annan, ovanligare fråga.
       const b = html`<div class="page-head"><div>${eyebrow(backLabel)}<h1>${party.name as string}</h1>
           <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div>
-          ${partyType === 'customer' ? kundAktivForm(companyId, partyId, party.is_active === true) : ''}</div>
+          ${partyType === 'customer' ? kundAktivForm(companyId, partyId, party.is_active === true, raderad) : ''}</div>
         ${felNotis(req)}
         ${backrefs}
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
@@ -9127,7 +9383,14 @@ viewRouter.post('/c/:companyId/suppliers/:partyId/update', updatePartyRoute('sup
  * använder (update_customer), alltså samma allowlista, behörighet och
  * revisionsspår ('customer.updated').
  */
-function kundAktivForm(companyId: string, customerId: string, aktiv: boolean): Raw {
+function kundAktivForm(companyId: string, customerId: string, aktiv: boolean, gdprRaderad: boolean): Raw {
+  // Steg 3 (A): en kund som raderats enligt GDPR aktiveras inte igen, och
+  // knappen visas inte. Åtgärden vägrar också (parties.ts), så en gammal flik
+  // eller ett handbyggt anrop går inte förbi.
+  if (gdprRaderad && !aktiv) {
+    return html`<div class="actions">${registerCell('is_active', aktiv)}
+      <span class="hint" style="margin:0">Raderad enligt GDPR — kan inte aktiveras. Lägg upp en ny kund om relationen återupptas.</span></div>`;
+  }
   return html`<div class="actions">
     ${registerCell('is_active', aktiv)}
     <form method="post" action="/app/c/${companyId}/customers/${customerId}/aktiv" style="margin:0">
@@ -10265,6 +10528,21 @@ function minUnderlag(c: Record<string, unknown>): { href: string; label: string 
 
 const MIN_KORTID = (id: string): string => id.slice(0, 8);
 
+/** Snabbrutans val för «Privat (<förnamn>)» innan den finns. Ett ord, aldrig ett id. */
+const PRIVAT_INTERN_VAL = 'privat-intern';
+
+/**
+ * Krav 9 (beställningen 9/11): privata ärenden med ekonomisk koppling, som
+ * elavtalet, kan länka till hushållets budget på /privat — men ingen
+ * dubbelregistrering. Kopplingen här är rollen: ett privat ärende hos en
+ * organisation som är leverantör till dig. Ytan /privat ligger i Hermes, på
+ * samma ingång som vyn (märket i sidhuvudet länkar till /), och ingenting kopieras
+ * dit eller därifrån: länken är hela kopplingen.
+ */
+function harHushallskoppling(c: Record<string, unknown>): boolean {
+  return c.sfar === 'privat' && c.organization_roll === 'leverantor';
+}
+
 function minKort(companyId: string, c: Record<string, unknown>, idag: string, back: string): Raw {
   const id = c.id as string;
   const body = (c.body as string) ?? '';
@@ -10294,6 +10572,7 @@ function minKort(companyId: string, c: Record<string, unknown>, idag: string, ba
       <p class="ms-body">${body.replace(/\\"/g, '"')}</p>
       <p class="ms-lankar">
         ${lankar.map((l) => html`<a href="${l.href}" target="_blank" rel="noopener">${l.label} ↗</a>`)}
+        ${harHushallskoppling(c) ? html`<a href="/privat" target="_blank" rel="noopener">Hushållets budget ↗</a>` : ''}
         ${c.organization_id ? html`<a href="/app/c/${companyId}/relations/${c.organization_id as string}">${(c.organization_name as string) ?? 'Relationen'} →</a>` : ''}
         <span class="muted">${c.source_ref ? String(c.source_ref) : ''}</span>
       </p>
@@ -10403,17 +10682,26 @@ viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (
   };
   const kort = (l: Record<string, unknown>[]) => l.map((c) => minKort(companyId, c, idag, back));
   const internt = allaOrgs.find(([, n]) => /locollabs/i.test(n))?.[0] ?? allaOrgs[0]?.[0] ?? '';
+  // Steg 3 (C, krav 5): i Privat-läget är «Privat (<förnamn>)» förvald. Sidan
+  // skriver ingenting: finns raden inte än står den som ett val med namnet den
+  // får, och snabbrutan skapar den när något läggs där (POST nedan).
+  const privatIntern = await lasPrivatIntern(client, companyId);
+  const horTill: [string, string][] = [...allaOrgs];
+  if (privatIntern.id && !horTill.some(([id]) => id === privatIntern.id)) horTill.push([privatIntern.id, privatIntern.namn]);
+  if (!privatIntern.id) horTill.push([PRIVAT_INTERN_VAL, privatIntern.namn]);
+  const forval = org || (sfar === 'privat' ? (privatIntern.id ?? PRIVAT_INTERN_VAL) : internt);
 
   return html`${MIN_STIL}<div class="ms">
     <div class="page-head"><div>${eyebrow('Min sida')}<h1>Det du ska göra</h1>
-      <p class="lede">${String(idagLista.length)} i dag · ${String(veckan.length)} i veckan · ${String(de.length)} väntar på andra. Bocka av här, så är det klart i CRM.</p></div></div>
+      <p class="lede">${String(idagLista.length)} i dag · ${String(veckan.length)} i veckan · ${String(de.length)} väntar på andra. Bocka av här, så är det klart i CRM.</p></div>
+      <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations/privata-forslag">Förslag: privata poster →</a></div></div>
     ${felNotis(req)}
     <form method="post" action="/app/c/${companyId}/min-sida/ny" class="ms-ny">
       <input type="hidden" name="back" value="${back}">
       <input type="text" name="text" required maxlength="2000" placeholder="Ny sak att göra…" autocomplete="off">
       <input type="date" name="datum" value="${idag}" aria-label="Datum">
       <select name="org" aria-label="Hör till">
-        ${allaOrgs.map(([id, n]) => html`<option value="${id}" ${id === (org || internt) ? 'selected' : ''}>${n}</option>`)}
+        ${horTill.map(([id, n]) => html`<option value="${id}" ${id === forval ? 'selected' : ''}>${n}</option>`)}
       </select>
       <button class="btn btn--primary" type="submit">Lägg till</button>
     </form>
@@ -10451,14 +10739,17 @@ viewRouter.post('/c/:companyId/min-sida/ny', page(async (req, res) => {
   const b = (typeof req.body === 'object' && req.body !== null ? req.body : {}) as Record<string, unknown>;
   const text = typeof b.text === 'string' ? b.text.trim() : '';
   const datum = typeof b.datum === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.datum) ? b.datum : undefined;
+  const privatIntern = b.org === PRIVAT_INTERN_VAL;
   const orgId = typeof b.org === 'string' && /^[0-9a-f-]{36}$/i.test(b.org) ? b.org : undefined;
   const back = backToCrm(req, companyId, 'min-sida');
-  if (!text || !orgId) {
+  if (!text || (!orgId && !privatIntern)) {
     res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent('Skriv vad som ska göras och välj vad det hör till.')}`);
     return;
   }
+  // «Privat (<förnamn>)» skapas första gången något läggs där (steg 3, C), av
+  // samma åtgärd och i samma transaktion som åtagandet (privat_intern).
   await runViewAction(req, res, companyId, 'record_crm_commitment', {
-    organization_id: orgId,
+    ...(privatIntern ? { privat_intern: true } : { organization_id: orgId }),
     direction: 'we_owe',
     body: text,
     ...(datum ? { due_date: datum } : {}),

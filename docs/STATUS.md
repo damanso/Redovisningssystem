@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-18 (CRM privat och företag, rättningsvarv 3b — uppdrag crmsfar3b, leads beslut 18/11 efter
+  `crmsfar3_granskning1.ut`, samma gren `crm-sfar` ovanpå main `fe99c4c`, ej committad):**
+  Krav 8: en agents `set_crm_sfar` som skulle ändra sfär (eller roll) på en befintlig organisation,
+  person eller ett åtagande verkställs inte utan läggs i Att göra (`action_approvals`; nytt
+  `koasForAgent` i `ActionDef`, tjänsten kastar `KraverGodkannandeError` före första skrivningen,
+  `executeAction` köar). En människa byter direkt; godkänt verkställs med ursprung `human` och auditrad.
+  Omvägarna vägras med 409 `byt_med_set_crm_sfar` och hänvisning dit: `upsert_crm_organization` (sfär,
+  roll), `upsert_crm_person` (sfär) och ett omsänt `record_crm_commitment` med annan sfär. `set_crm_sfar`
+  tar `roll` för en organisation. Förslagssidan och kvittot skickar bara felkod och radnyckel i adressen
+  och ritar texten ur databasen. Kaskaden och ångra låser de valda åtagandena och skriver bara öppna
+  (statusvillkor i satsen). Rapportens påståenden om låsordningen och svepet är omskrivna efter koden.
+  Ingen migration, inga nya åtgärder (208). Prov: 9 nya i `crm-sfar-3.test.ts` (45), B5/D6–D9/S1
+  ändrade. Hela `npm test`: 179 filer, 2895 tester gröna, exitkod 0; `npm run build` ren. Inte gjort:
+  grindarna, läsfrågan mot driften. Detaljer: avsnittet «Rättningsvarv 3b» i `BYGGRAPPORT-crm-sfar-3.md`.
+
+- **2026-11-18 (CRM privat och företag, steg 3 av 3: gränsen färdig, byta sfär, «Privat (David)»,
+  migreringslistan — uppdrag crmsfar3, leads beslut 18/11, gren `crm-sfar` ovanpå main `fe99c4c`,
+  ej committad):**
+  Migration `0089_crm_privat_person_utanfor_kunden.sql` (additiv, ingen DROP, `SET LOCAL lock_timeout =
+  '5s'`): en privat person ligger aldrig på en kundkopplad organisation (P1) och står aldrig på en
+  kontaktpunkt eller ett åtagande där (P2); nya triggrar på `crm.people` (INSERT, UPDATE OF sfar) och
+  `crm.interactions`. Låsordningen är nu organisation före person, samma som `mergeOrganizations`
+  (granskningens fynd om 0088). Tjänsten har samma regler (`privat_person_kundkopplad_organisation`,
+  `_post`, `privat_person_kundkoppling`), också för synken och båda sammanslagningarna. Kundkortet
+  visar inte Aktivera för en GDPR-raderad kund, och `update_customer`/`update_supplier` vägrar (409
+  `gdpr_raderad`). Nya åtgärder: `set_crm_sfar` (öppna åtaganden följer en organisation bara med
+  `cascade_open_commitments: true`, klara och avskrivna rörs aldrig, gränsen gäller) och
+  `list_crm_privata_forslag` (läsning); `record_crm_commitment` tar `privat_intern: true`. 206 → 208
+  åtgärder. «Privat (<förnamn>)» (privat, roll intern) skapas av tjänsten första gången den behövs och är
+  förvald på Min sida i Privat-läget. Förslagssidan `/relations/privata-forslag`: bara kryssade rader
+  flyttas, i en transaktion med auditrad per rad, bara av ägaren i en webbsession; kvitto med ångra per
+  rad; ingen åtgärd flyttar listan. Dagsytan ger aldrig en privat relation prospektskäl eller «ingen
+  registrerad kontakt alls». Krav 9: privat ärende hos en leverantör länkar till `/privat` på Min sida;
+  det som återstår i Hermes-ytan står i rapporten. Prov: nya `crm-sfar-3.test.ts` (36), steg 1/2-filerna
+  följer beslutet (V-blocket, F4, B8, M1, Y1). Hela `npm test`: 179 filer, 2886 tester gröna,
+  exitkod 0; `npm run build` ren. Inte gjort: läsfrågan mot driften före driftsättning, grindarna
+  `/code-review` och `/security-review`, krav 9 i Hermes-ytan, ommätning av huvudets siffror. Detaljer,
+  vägval, röda kontroller, läsfrågan och öppna punkter: `BYGGRAPPORT-crm-sfar-3.md` i arbetskopians rot.
+
 - **2026-11-18 (CRM privat och företag, steg 2: granskningens fynd, ytan, kundregistret —
   uppdrag crmsfar2, gren `crm-sfar` ovanpå main `d70d649`, ej committad):**
   Migration `0088_crm_privat_via_personen.sql` (additiv, inga data): triggern

@@ -142,8 +142,9 @@ export async function describeApproval(
 // rå fältlista — action-namn, uuid:n och belopp — vilket är vad systemet vet,
 // inte vad beslutet handlar om.
 //
-// Bara känsliga åtgärder når kön (allt annat körs direkt), så det är dem den
-// här funktionen beskriver. Saknas en beskrivning faller kortet tillbaka på
+// Bara känsliga åtgärder når kön (allt annat körs direkt), och en agents
+// sfärbyte på en befintlig post (rättningsvarv 3b), så det är dem den här
+// funktionen beskriver. Saknas en beskrivning faller kortet tillbaka på
 // fältlistan; en påhittad förklaring vore värre än ingen.
 // ---------------------------------------------------------------------------
 export interface ApprovalExplanation {
@@ -153,6 +154,9 @@ export interface ApprovalExplanation {
 }
 
 const kr = (ore: number): string => formatOre(ore, { currency: true });
+
+/** En organisations roll i ord (0087: kund, leverantor, partner, myndighet, intern). */
+const ROLL_ORD = { kund: 'Kund', leverantor: 'Leverantör', partner: 'Partner', myndighet: 'Myndighet', intern: 'Intern' } as const;
 
 export async function explainApproval(
   client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, base: string,
@@ -265,6 +269,66 @@ export async function explainApproval(
       why: 'Bruttolön, preliminärskatt och arbetsgivaravgift bokförs. Skatten och avgiften ska sedan betalas till Skatteverket.',
       source: { label: 'Lön', href: `${base}/payroll` },
     };
+  }
+
+  // Rättningsvarv 3b (krav 8): en agents sfärbyte på en befintlig post väntar här
+  // på Davids beslut. Kortet säger vilken post, från vad till vad (med rollen när
+  // förslaget bär den), och om de öppna åtagandena följer med. Allt läses ur
+  // relationsdatan; ur indata används bara id:n och de låsta värdena.
+  if (action === 'set_crm_sfar') {
+    const till = input.sfar === 'privat' || input.sfar === 'foretag' ? input.sfar : null;
+    if (!till) return none;
+    const sfarOrd = (s: unknown): string => (s === 'privat' ? 'Privat' : 'Företag');
+    const relation = (orgId: string | null) => (orgId
+      ? { label: 'Öppna relationen', href: `${base}/relations/${orgId}` }
+      : { label: 'Relationer', href: `${base}/relations` });
+    const orgId = asUuid(input.organization_id);
+    if (orgId) {
+      const o = await one<{ name: string; sfar: string; roll: string | null; oppna: number }>(client,
+        `SELECT o.name, o.sfar, o.roll,
+                (SELECT count(*)::int FROM crm.commitments c
+                  WHERE c.company_id = o.company_id AND c.organization_id = o.id AND c.status = 'open' AND c.sfar <> $3) AS oppna
+         FROM crm.organizations o WHERE o.id = $1 AND o.company_id = $2`, [orgId, companyId, till]);
+      if (!o) return none;
+      const roll = typeof input.roll === 'string' && Object.hasOwn(ROLL_ORD, input.roll) ? input.roll : null;
+      const rollOrd = (r: string | null): string => (r && Object.hasOwn(ROLL_ORD, r) ? ROLL_ORD[r as keyof typeof ROLL_ORD] : '—');
+      const kaskad = input.cascade_open_commitments === true;
+      return {
+        change: {
+          from: `${o.name}: ${sfarOrd(o.sfar)}${roll ? `, roll ${rollOrd(o.roll)}` : ''}`,
+          to: `${o.name}: ${sfarOrd(till)}${roll ? `, roll ${rollOrd(roll)}` : ''}`,
+        },
+        why: !kaskad || o.oppna === 0
+          ? 'Åtagandena stannar i den sfär de har.'
+          : `${o.oppna === 1 ? 'Det öppna åtagandet följer med' : `De ${o.oppna} öppna åtagandena följer med`}; klara och avskrivna rörs inte.`,
+        source: relation(orgId),
+      };
+    }
+    const personId = asUuid(input.person_id);
+    if (personId) {
+      const p = await one<{ name: string; sfar: string; organization_id: string | null }>(client,
+        'SELECT name, sfar, organization_id FROM crm.people WHERE id = $1 AND company_id = $2', [personId, companyId]);
+      if (!p) return none;
+      return {
+        change: { from: `${p.name}: ${sfarOrd(p.sfar)}`, to: `${p.name}: ${sfarOrd(till)}` },
+        why: 'Personen byter sfär. Kontaktpunkter och åtaganden med personen stannar där de är.',
+        source: relation(p.organization_id),
+      };
+    }
+    const atagandeId = asUuid(input.commitment_id);
+    if (atagandeId) {
+      const c = await one<{ body: string; sfar: string; organization_id: string | null }>(client,
+        'SELECT body, sfar, organization_id FROM crm.commitments WHERE id = $1 AND company_id = $2', [atagandeId, companyId]);
+      if (!c) return none;
+      const text = c.body.replace(/\s+/g, ' ').trim();
+      const kort = text.length > 80 ? `${text.slice(0, 77).trimEnd()}…` : text;
+      return {
+        change: { from: `«${kort}»: ${sfarOrd(c.sfar)}`, to: `«${kort}»: ${sfarOrd(till)}` },
+        why: 'Åtagandet byter sfär och stannar hos sin organisation.',
+        source: relation(c.organization_id),
+      };
+    }
+    return none;
   }
 
   if (action === 'merge_crm_organizations') {

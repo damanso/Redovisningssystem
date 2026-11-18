@@ -869,14 +869,16 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   på raden. Villkoret gäller **godkännandet**: *Faktureras ej* går igenom även
   utan vald avtalsdel (orsak krävs som förut). Kön grindar aldrig fakturan.
 
-## CRM: privat och företag (beställning 9/11, steg 1 och 2)
+## CRM: privat och företag (beställning 9/11, steg 1–3)
 
 Davids order 9/11: allt han ska göra, som företagsledare och som privatperson,
 i samma CRM. Varje organisation, person och åtagande hör till en **sfär**,
 `foretag` eller `privat` (migration `0087_crm_sfar_och_roll.sql`). Alla rader som
 fanns före migrationen är `foretag`. Steg 1 är data och MCP. Steg 2 stänger
 granskningens fynd (personvägen, migration 0088) och lägger märkningen och
-filterknapparna i vyn; migreringslistan kommer i steg 3.
+filterknapparna i vyn. Steg 3 gör gränsen färdig (en privat person ligger aldrig
+hos en kund, migration 0089), lägger till `set_crm_sfar`, «Privat (<förnamn>)» och
+migreringslistan (se *Steg 3* sist i avsnittet).
 
 **Läsverktygen** tar `sfar: 'privat' | 'foretag' | 'alla'`, standard `alla`. Ett
 anrop utan `sfar` ger samma rader som förut; svaren har fått fälten `sfar` (och
@@ -905,6 +907,13 @@ anrop utan `sfar` ger samma rader som förut; svaren har fått fälten `sfar` (o
   organisation sfär senare följer redan skrivna åtaganden inte med.
 - Sfär och roll bär ursprung som övriga fält (F4): en agent kan inte flytta en
   rad som en människa satt sfär på; fältet redovisas i `kept_human_fields`.
+- **Sedan rättningsvarv 3b** byter en agent inte sfär eller roll på en
+  **befintlig** post med de här verktygen alls: `upsert_crm_organization` (sfär
+  eller roll), `upsert_crm_person` (sfär) och `record_crm_commitment` med samma
+  källa igen och en annan `sfar` svarar 409 `byt_med_set_crm_sfar` med
+  `details.atgard = 'set_crm_sfar'` och `details.skal`, och ingenting skrivs. Bytet
+  görs med `set_crm_sfar`, som lägger det i Att göra (nedan). En **ny** post som
+  privat går som förut, liksom samma sfär igen och en människas byte.
 - `ingest_crm_events` tar ingen sfär. En händelse som träffar en privat
   organisation lämnar den privat och okopplad (den står i `unlinked_organizations`).
 
@@ -924,6 +933,9 @@ läser åtagandena genom den), och den är stängd för det privata:
 | `merge_crm_organizations` där resultatet blir kundkopplat med privata åtaganden, direkt eller via personerna | 400 `privat_bokforingsgrans` vid godkännandet |
 | `merge_crm_people` mellan en privat och en företagsperson (steg 2) | 400 `sfar_conflict` vid godkännandet |
 | `merge_crm_people` där den kvarvarande personen hamnar på en kundkopplad organisation med privata åtaganden (steg 2) | 400 `privat_bokforingsgrans` vid godkännandet |
+| privat person på en kundkopplad organisation: ny, flyttad eller företagsperson hos kunden som byter till `privat` (steg 3) | 400 `privat_bokforingsgrans`, `details.regel = privat_person_kundkopplad_organisation` |
+| kontaktpunkt eller åtagande (oavsett sfär) som bär en kundkopplad organisation och en privat person, och en person med sådana poster som byter till `privat` (steg 3) | 400 `privat_bokforingsgrans`, `details.regel = privat_person_kundkopplad_post` |
+| `customer_id` på en organisation med privata personer, eller med poster som bär en privat person; `merge_crm_organizations` med samma utfall (steg 3) | 400 `privat_bokforingsgrans`, `details.regel = privat_person_kundkoppling` |
 
 `details.skal` säger i klartext vad som slog till och vad man gör i stället
 (meddelandet i övrigt stannar på servern). Synken fälls aldrig av gränsen: en
@@ -932,8 +944,8 @@ En händelse som skulle flytta en person med privata åtaganden till en kundkopp
 organisation hoppas över och står i `skipped` med skälet; resten av batchen går igenom.
 Databasen bär samma spärrar: CHECK-villkoret
 `organizations_privat_utanfor_bokforingen_ck` och triggern
-`crm.privat_utanfor_bokforingen()` på organisationer, åtaganden och (sedan 0088)
-personer (P0001, 409 `rule_violation`). Triggern låser de rader den läser med
+`crm.privat_utanfor_bokforingen()` på organisationer, åtaganden, personer (sedan
+0088) och kontaktpunkter (sedan 0089) (P0001, 409 `rule_violation`). Triggern låser de rader den läser med
 `FOR SHARE`, så att två samtidiga skrivningar inte tillsammans kan öppna vägen.
 
 **Varför personen räknas (steg 2, migration `0088_crm_privat_via_personen.sql`).**
@@ -943,17 +955,17 @@ hamnade därför bredvid kundens fakturor och betalningar, fast det inte bar
 kundens organisation. Regeln är nu: ett privat åtagande ligger aldrig på en
 kundkopplad organisation, varken direkt eller via sin person.
 
-**Privata personer på en kundkopplad organisation** är tillåtna (en privat
-kontakt kan arbeta hos en kund), men kundkortet i vyn visar dem inte och räknar
-inte deras kontakt som kundens senaste kontakt. På relationskortet
-(`get_crm_organization`) syns de, märkta med sin sfär.
+**Privata personer på en kundkopplad organisation** var tillåtna i steg 2 och är
+förbjudna sedan steg 3 (leads beslut 18/11, migration 0089): se tabellen ovan.
+Kundkortets filter mot privata personer står kvar som ett andra skydd.
 
 **Proven.** `server/test/crm-sfar.test.ts`: B (gränsen), V (personvägen i tjänsten,
 databasen och under samtidiga skrivningar) och S1, ett svep över varje tabell i
-schemat `public` efter varje privat id som filen skapat. Påståendet som svepet
+schemat `public` efter varje id som är privat när svepet körs. Påståendet som svepet
 bär: *inget privat id finns i någon tabell i `public`, utom i godkännandekön
 (`action_approvals`), och där bara i en begärd sammanslagning av CRM-poster
-(`merge_crm_organizations`, `merge_crm_people`)*. Kön är Att göra, inte
+(`merge_crm_organizations`, `merge_crm_people`) eller, sedan rättningsvarv 3b, i en
+agents begärda sfärbyte (`set_crm_sfar`, som bara bär id:n och låsta värden)*. Kön är Att göra, inte
 räkenskapsinformation: inget verifikat, ingen faktura, rapport, momsunderlag,
 K2-del eller export läser dess indata. SIE-exporten prövas separat (B9). B8 fäller
 om en främmande nyckel mellan `crm` och bokföringen tillkommer.
@@ -983,6 +995,77 @@ organisationsfiltret på samma sätt (`.on` och `aria-current`).
 `customer.updated` med `fields: ['is_active']`). En inaktiv kund erbjuds inte när
 en faktura eller ett projekt skapas och står inte i `list_customers` utan
 `include_inactive`; bokförda fakturor, reskontran och momsrapporten påverkas inte.
+Sedan steg 3 visas knappen *Aktivera kund* inte för en kund som raderats enligt
+GDPR, och `update_customer` / `update_supplier` med `is_active: true` för en part
+med `gdpr.party_anonymized` i auditloggen svarar 409 `gdpr_raderad`.
+
+### Steg 3: byta sfär, «Privat (<förnamn>)» och migreringslistan
+
+**`set_crm_sfar`** (write). Exakt en av `organization_id`, `person_id` och
+`commitment_id`, och `sfar: 'foretag' | 'privat'`. För en organisation finns
+`cascade_open_commitments: true`: då följer organisationens **öppna** åtaganden
+med. Utelämnad eller `false` betyder att åtagandena stannar i sin sfär. Klara och
+avskrivna åtaganden rörs aldrig, varken av kaskaden eller direkt (ett klart eller
+avskrivet åtagande ger 400 `atagandet_ar_stangt`); kaskaden låser de valda
+åtagandena och prövar dem igen, så ett som stängs under tiden står kvar (3b). För en
+organisation finns också `roll` (sedan 3b): rollen byts i samma beslut, utelämnad
+= oförändrad. Bytet prövas mot hela gränsen ovan och vägras med samma
+`privat_bokforingsgrans` och `details.regel`. En sfär eller roll som en människa
+bestämt (ursprung `human`) byts inte av en agent: 409 `manniskans_beslut`. Svaret:
+`{ mal, id, sfar_fran, sfar, andrad, foljde_med }`. Auditraden `crm.sfar_set`
+(fran, till, cascade, foljde_med, source, och `roll: { fran, till }` när anropet
+bar rollen) skrivs i samma transaktion, och bara när något ändrades. I vyn:
+relationskortets *Rätta uppgifter* (sfär med kryssrutan *De öppna åtagandena följer
+med*, och en rad per person och öppet åtagande), samma åtgärd som människa.
+
+**En agents byte väntar på David (rättningsvarv 3b, krav 8).** När en agent anropar
+`set_crm_sfar` och anropet skulle ändra sfären (eller rollen) på en befintlig post,
+eller flytta något öppet åtagande, verkställs det inte: svaret är 202
+`pending_approval` med köposten, och förslaget syns i Att göra med före → efter.
+Posten är orörd tills en människa godkänner; då körs bytet som en människas beslut
+(ursprung `human`, `crm.sfar_set` och `action.approved_executed`). Ett avvisat
+förslag ändrar ingenting. Ett anrop som inte ändrar något körs direkt, och en
+vägran (gränsen, `manniskans_beslut`) är fortfarande en vägran och köas inte. En
+människa (vyn, en människas token) byter direkt som förut.
+
+**«Privat (<förnamn>)»** är bolagets privata intern-organisation: sfär `privat`,
+roll `intern`, status `partner`. Den känns igen på sfär och roll och skapas av
+tjänsten första gången den behövs, inte av en migration: av
+`record_crm_commitment` med `privat_intern: true` (i stället för `organization_id`,
+i samma transaktion som åtagandet; snabbrutan på Min sida använder den, och där är
+den förvald i Privat-läget) och av flytten nedan. Förnamnet är bolagsägarens
+(den som blev ägare först). Heter redan en annan organisation så: 409
+`privat_intern_namn_upptaget`, ingen gissning.
+
+**`list_crm_privata_forslag`** (read). Förslaget på poster som ser privata ut,
+räknat fram utan modellanrop, med skälet per rad: Svealands Elbolag (privat + roll
+leverantör, öppna åtaganden följer med, den enda förkryssade raden),
+organisationer utan kund- eller leverantörskoppling som anteckningen markerar som
+privata (öppna åtaganden följer med), och öppna åtaganden under den interna
+organisationen vars text pekar på hus, familj, hälsa eller privatekonomi (flyttas
+till «Privat (<förnamn>)»). Svaret: `{ privat_intern: { id, namn }, rader: [{ nyckel,
+slag, id, namn, organisation, regel, skal, forslag, oppna_ataganden, forkryssad,
+hinder }] }`.
+
+**Ingen åtgärd verkställer listan.** Flytten görs av David i vyn
+(`/app/c/:id/relations/privata-forslag`, länkad från Relationer och Min sida): bara
+kryssade rader, i en transaktion, med auditraden `crm.privat_flytt` per rad och ett
+kvitto med en ångra-länk per rad. Vägen kräver en webbsession (ett agent-token når
+aldrig vyns POST-vägar) och ägarrollen i bolaget. Ångra sätter tillbaka sfär, roll
+och organisation enligt auditloggen, en gång, och bara om posten står som flytten
+lämnade den. Ett åtagande som inte längre är öppet rörs inte av ångra (3b): de som
+följde med en organisation och har stängts står kvar, och ett enskilt åtagande som
+stängts ger 409 `atagandet_ar_stangt`. Ett fel på sidan och kvittot skickas som en
+kod och en radnyckel i adressen (`?fel=forslaget_har_hinder&rad=atagande:<id>`),
+aldrig som text; sidan ritar texten ur databasen.
+
+**Dagsytan (steg 3).** En privat relation får aldrig skälen «ingen registrerad
+kontakt alls» eller prospekt, i `crm_today` och `crm_contact_suggestions`; den kan
+komma med för ett förfallet löfte eller för tystnad.
+
+**`list_crm_commitments`** bär sedan steg 3 också `organization_roll` (rollen läses
+ur organisationen). Min sida länkar ett privat ärende hos en organisation med roll
+leverantör till hushållets budget på `/privat` (krav 9); inget kopieras dit.
 
 ## Uppdragsytan
 
