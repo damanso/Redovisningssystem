@@ -63,7 +63,10 @@ export async function relationState(
   // dem, men kortet man uttryckligen öppnat måste kunna visa sina egna tal;
   // annars står nyckeltalen på "—" och kadensfältet tomt, och att spara det
   // tomma fältet raderade den kadens som fanns.
-  opts: { as_of?: string; organization_id?: string } = {},
+  //
+  // `ataganden_i_egen_sfar` räknar bara åtaganden i organisationens egen sfär
+  // (dagsytan, steg 2). Utan den räknas alla, som förut.
+  opts: { as_of?: string; organization_id?: string; ataganden_i_egen_sfar?: boolean } = {},
 ): Promise<RelationRow[]> {
   const r = await client.query<RelationRow & {
     revenue_12m_ore: string; open_receivable_ore: string; unbilled_time_ore: string;
@@ -84,7 +87,9 @@ export async function relationState(
               count(*) FILTER (WHERE c.status = 'open') AS open_count,
               count(*) FILTER (WHERE c.status = 'open' AND c.due_date IS NOT NULL
                                  AND c.due_date < (SELECT d FROM asof)) AS overdue_count
-       FROM crm.commitments c WHERE c.company_id = $1 AND c.organization_id IS NOT NULL
+       FROM crm.commitments c
+       JOIN crm.organizations co ON co.id = c.organization_id AND co.company_id = c.company_id
+       WHERE c.company_id = $1 AND (NOT $4::boolean OR c.sfar = co.sfar)
        GROUP BY c.organization_id
      ),
      revenue AS (
@@ -143,7 +148,7 @@ export async function relationState(
        AND ($3::uuid IS NULL OR o.id = $3::uuid)
        AND ($3::uuid IS NOT NULL OR o.status <> 'archived')
      ORDER BY COALESCE(rv.net_ore, 0) DESC, ct.last_contact_at ASC NULLS FIRST, o.name`,
-    [companyId, opts.as_of ?? null, opts.organization_id ?? null],
+    [companyId, opts.as_of ?? null, opts.organization_id ?? null, opts.ataganden_i_egen_sfar ?? false],
   );
   return r.rows.map((x) => ({
     ...x,
@@ -235,7 +240,10 @@ export async function contactSuggestions(
   // det. Relationsvyn visar både tabellen och förslagen, och utan detta kördes
   // den tunga aggregeringen (kontaktpunkter, åtaganden, 12 månaders fakturor)
   // två gånger per sidladdning.
-  opts: { as_of?: string; silence_days?: number; rows?: RelationRow[] } = {},
+  //
+  // `ataganden_i_egen_sfar`: samma regel som i relationState, för det citerade
+  // löftet. Den som skickar in `rows` ska ha räknat dem med samma värde.
+  opts: { as_of?: string; silence_days?: number; rows?: RelationRow[]; ataganden_i_egen_sfar?: boolean } = {},
 ): Promise<{ as_of: string; silence_days: number; suggestions: ContactSuggestion[] }> {
   const days = opts.silence_days ?? DEFAULT_SILENCE_DAYS;
   const rows = opts.rows ?? await relationState(client, companyId, opts);
@@ -262,10 +270,12 @@ export async function contactSuggestions(
   const overdue = await client.query<{ organization_id: string; body: string; due_date: string }>(
     `SELECT DISTINCT ON (c.organization_id) c.organization_id, c.body, c.due_date::text
      FROM crm.commitments c
-     WHERE c.company_id = $1 AND c.status = 'open' AND c.organization_id IS NOT NULL
+     JOIN crm.organizations co ON co.id = c.organization_id AND co.company_id = c.company_id
+     WHERE c.company_id = $1 AND c.status = 'open'
        AND c.due_date IS NOT NULL AND c.due_date < $2::date
+       AND (NOT $3::boolean OR c.sfar = co.sfar)
      ORDER BY c.organization_id, c.due_date`,
-    [companyId, asOf],
+    [companyId, asOf, opts.ataganden_i_egen_sfar ?? false],
   );
   const overdueByOrg = new Map(overdue.rows.map((o) => [o.organization_id, o]));
 
@@ -356,6 +366,12 @@ export interface TodayView {
  * Sfären filtrerar båda högarna FÖRE kapet: "dagens privata" ska vara fem privata
  * kort, inte de privata som råkade hamna bland dagens fem. Relationerna filtreras
  * på organisationens sfär, löftena på sin egen.
+ *
+ * Skälen följer samma linje (steg 2): en relations skäl räknar och citerar bara
+ * löften i relationens egen sfär, med eller utan filter. Annars stod ett privat
+ * "vi lovade: …" under ett kort märkt Företag, och briefen kunde inte skilja dem.
+ * Ett privat löfte på en företagsorganisation syns i stället i löfteshögen, med
+ * sin egen sfär.
  */
 export async function todayView(
   client: PoolClient, companyId: string,
@@ -365,10 +381,10 @@ export async function todayView(
   const limit = opts.limit ?? DEFAULT_TODAY_LIMIT;
   const sfar = sfarParameter(opts.sfar);
 
-  const alla = await relationState(client, companyId, { as_of: asOf });
+  const alla = await relationState(client, companyId, { as_of: asOf, ataganden_i_egen_sfar: true });
   const rows = sfar ? alla.filter((r) => r.sfar === sfar) : alla;
   const { suggestions } = await contactSuggestions(client, companyId, {
-    as_of: asOf, silence_days: opts.silence_days, rows,
+    as_of: asOf, silence_days: opts.silence_days, rows, ataganden_i_egen_sfar: true,
   });
 
   // Löften inom horisonten. Sju dagar framåt som standard: tillräckligt nära för

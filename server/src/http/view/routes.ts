@@ -63,6 +63,7 @@ import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js
 import { customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
+import { SFARFILTER, type SfarFilter } from '../../services/crmSfar.js';
 import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPersonnamn,
   slaIhopPersoner, stadbild, type StadPerson, type Utfall } from '../../services/crmStadning.js';
 import { steeringOverview } from '../../services/steering.js';
@@ -7246,14 +7247,24 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
   const filter = typeof req.query.status === 'string' && ['open', 'done', 'dropped'].includes(req.query.status)
     ? req.query.status as 'open' | 'done' | 'dropped'
     : 'open';
-  const rows = await listCommitments(client, companyId, { status: filter });
+  const sfar = sfarFilterFran(req.query.sfar);
+  const rows = await listCommitments(client, companyId, { status: filter, sfar });
   const today = new Date().toISOString().slice(0, 10);
+  // Varje länk bär båda filtren, så att ett byte av det ena inte nollställer det andra.
+  const lank = (status: string, s: SfarFilter) =>
+    `/app/c/${companyId}/commitments?status=${status}${s === 'alla' ? '' : `&sfar=${s}`}`;
+  const back = lank(filter, sfar);
   return html`<div class="page-head"><div>${eyebrow('Åtaganden')}<h1>Vem har lovat vad</h1>
       <p class="lede">Löften åt båda håll, med datum och källa — så att det går att styrka var något sades, inte bara att det sades.</p></div>
       <div class="actions">
-        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=open">Öppna</a>
-        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=done">Klara</a>
-        <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/commitments?status=dropped">Avskrivna</a>
+        <span class="actions" role="group" aria-label="Status">
+          ${filterKnapp(lank('open', sfar), 'Öppna', filter === 'open')}
+          ${filterKnapp(lank('done', sfar), 'Klara', filter === 'done')}
+          ${filterKnapp(lank('dropped', sfar), 'Avskrivna', filter === 'dropped')}
+        </span>
+        <span class="actions" role="group" aria-label="Sfär">
+          ${SFARVAL.map(([s, label]) => filterKnapp(lank(filter, s), label, s === sfar))}
+        </span>
       </div></div>
     ${felNotis(req)}
     ${
@@ -7261,15 +7272,15 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
         ? html`<div class="empty"><div class="big">Inga åtaganden här</div>
             Löften fångas ur mail, möten och ärenden — ingen behöver komma ihåg att registrera dem.
             ${filter === 'open'
-              ? html`Är listan tom är den avbetad. Se <a href="/app/c/${companyId}/commitments?status=done">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.`
-              : html`Gå tillbaka till <a href="/app/c/${companyId}/commitments?status=open">de öppna</a>.`}</div>`
+              ? html`Är listan tom är den avbetad. Se <a href="${lank('done', sfar)}">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.`
+              : html`Gå tillbaka till <a href="${lank('open', sfar)}">de öppna</a>.`}</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Riktning</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
+            <thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
             <tbody>${rows.map((c) => {
               const id = c.id as string;
-              const back = `/app/c/${companyId}/commitments?status=${filter}`;
               return html`<tr>
               <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
+              <td>${sfarMarke(c.sfar)}</td>
               <td>${c.body as string}</td>
               ${/* "Vem" var tidigare en död sträng — personens namn om det fanns,
                     annars bolagets. Personen har ingen egen sida (hon nås via
@@ -7303,6 +7314,33 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
             </tbody></table></div>`
     }`;
 }));
+
+/**
+ * En filterknapp. Den valda är ifylld och bär aria-current, så att valet både
+ * syns och läses upp. Davids fel 18/11: «när jag väljer mellan öppna klara och
+ * avskrivna så ser jag inte att ett filter har valts, den behöver bli ifylld när
+ * filtret är valt.» Samma mönster som årsväljaren på årsredovisningen.
+ */
+function filterKnapp(href: string, label: string, vald: boolean): Raw {
+  return html`<a class="btn ${vald ? 'btn--primary' : 'btn--ghost'} btn--sm" href="${href}"${
+    vald ? html` aria-current="page"` : ''}>${label}</a>`;
+}
+
+/** Sfärfiltrets knappar, i ordningen Alla, Företag, Privat (beställning 9/11, krav 6). */
+const SFARVAL: readonly (readonly [SfarFilter, string])[] = [['alla', 'Alla'], ['foretag', 'Företag'], ['privat', 'Privat']];
+
+/** ?sfar= ur adressen. Allt annat än ett känt värde är 'alla', standardläget. */
+function sfarFilterFran(v: unknown): SfarFilter {
+  return typeof v === 'string' && (SFARFILTER as readonly string[]).includes(v) ? v as SfarFilter : 'alla';
+}
+
+/** Märket på varje åtagande. Orden bär skillnaden, inte en ny färg. */
+function sfarEtikett(sfar: unknown): string {
+  return sfar === 'privat' ? 'Privat' : 'Företag';
+}
+function sfarMarke(sfar: unknown): Raw {
+  return chip(sfarEtikett(sfar), 'muted');
+}
 
 // ---------------------------------------------------------------------------
 // Handgreppen (F1). Vyn hade 47 POST-rutter för fakturor och lön men NOLL för
@@ -8891,7 +8929,9 @@ function partyDetailPage(active: string, partyType: PartyType, load: (c: PoolCli
       // regel "vad har vi gjort, och vad är utestående" — taggar och
       // kontaktuppgifter är svaret på en annan, ovanligare fråga.
       const b = html`<div class="page-head"><div>${eyebrow(backLabel)}<h1>${party.name as string}</h1>
-          <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div></div>
+          <p class="lede">${(party.org_number as string) ? html`Org.nr ${party.org_number as string} · ` : ''}<a href="/app/c/${companyId}/${active}">← ${backLabel}</a></p></div>
+          ${partyType === 'customer' ? kundAktivForm(companyId, partyId, party.is_active === true) : ''}</div>
+        ${felNotis(req)}
         ${backrefs}
         <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Taggar</h2></div><div class="panel__body" style="padding:14px 16px">
           ${crm.tags.length ? crm.tags.map((t) => html`${chip(t, 'info')} `) : html`<span class="muted">Inga taggar.</span>`}</div></div>
@@ -9077,6 +9117,39 @@ function updatePartyRoute(kind: 'customers' | 'suppliers') {
 }
 viewRouter.post('/c/:companyId/customers/:partyId/update', updatePartyRoute('customers'));
 viewRouter.post('/c/:companyId/suppliers/:partyId/update', updatePartyRoute('suppliers'));
+
+/**
+ * Inaktivera eller aktivera en kund från kundkortet (Davids fråga 18/11: «kan
+ * jag inaktivera en kund själv?» — tidigare gick det bara via agenten).
+ *
+ * Formuläret bär målvärdet, inte "växla": ett dubbelklick eller en gammal flik
+ * ska inte vrida tillbaka det man just gjorde. Vägen är samma action som AI:t
+ * använder (update_customer), alltså samma allowlista, behörighet och
+ * revisionsspår ('customer.updated').
+ */
+function kundAktivForm(companyId: string, customerId: string, aktiv: boolean): Raw {
+  return html`<div class="actions">
+    ${registerCell('is_active', aktiv)}
+    <form method="post" action="/app/c/${companyId}/customers/${customerId}/aktiv" style="margin:0">
+      <input type="hidden" name="is_active" value="${aktiv ? 'false' : 'true'}">
+      <button class="btn btn--ghost btn--sm" type="submit"
+        title="En inaktiv kund erbjuds inte när du skapar en faktura eller ett projekt. Fakturor, bokföring och rapporter påverkas inte.">${
+          aktiv ? 'Inaktivera kund' : 'Aktivera kund'}</button>
+    </form></div>`;
+}
+
+viewRouter.post('/c/:companyId/customers/:partyId/aktiv', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const partyId = parseApprovalId(req.params.partyId);
+  const v = typeof req.body === 'object' && req.body !== null ? (req.body as Record<string, unknown>).is_active : undefined;
+  const tillbaka = `/app/c/${companyId}/customers/${partyId}`;
+  if (v !== 'true' && v !== 'false') {
+    res.redirect(`${tillbaka}?fel=1`);
+    return;
+  }
+  await runViewAction(req, res, companyId, 'update_customer', { customer_id: partyId, is_active: v === 'true' }, tillbaka);
+}));
 
 // Betalningsmottagare: egen rutt, egen action, sensitivity 'sensitive'.
 // Landar i godkannandekon precis som GDPR-anonymiseringen - manniska i loopen
@@ -10209,6 +10282,7 @@ function minKort(companyId: string, c: Record<string, unknown>, idag: string, ba
       <div class="ms-kort__text">
         <div class="ms-kort__rubrik">${minRubrik(body)}</div>
         <div class="ms-kort__meta">
+          <span class="ms-tagg ms-tagg--sfar">${sfarEtikett(c.sfar)}</span>
           ${c.organization_name ? html`<span class="ms-tagg">${c.organization_name as string}</span>` : ''}
           ${due ? html`<span class="ms-tagg${forfallet ? ' ms-tagg--sen' : ''}">${forfallet ? 'förföll ' : ''}${due}</span>` : ''}
           ${uppskjutet ? html`<span class="ms-tagg">uppskjutet t.o.m. ${c.snoozed_until as string}</span>` : ''}
@@ -10255,6 +10329,7 @@ const MIN_STIL = html`<style>
   .ms-kort__rubrik { font-size: 16px; line-height: 1.35; }
   .ms-kort__meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
   .ms-tagg { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(127,127,127,.14); }
+  .ms-tagg--sfar { font-weight: 600; }
   .ms-tagg--sen { background: rgba(192,57,43,.15); color: #c0392b; }
   .ms-id { font-size: 12px; opacity: .55; font-family: ui-monospace, monospace; }
   .ms-mer summary { cursor: pointer; font-size: 13px; opacity: .7; margin-top: 6px; }
@@ -10271,11 +10346,24 @@ viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (
   const vecka = new Date(Date.now() + 7 * 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
   const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase().replace(/^#/, '') : '';
   const org = typeof req.query.org === 'string' ? req.query.org : '';
-  const alla = await listCommitments(client, companyId, { status: 'open' });
-  const orgs = [...new Map(alla
+  // Krav 7 i beställningen 9/11: privat och företag i EN lista, filtret gäller
+  // samma lista. Standard är alla.
+  const sfar = sfarFilterFran(req.query.sfar);
+  const oppna = await listCommitments(client, companyId, { status: 'open' });
+  const alla = sfar === 'alla' ? oppna : oppna.filter((c) => c.sfar === sfar);
+  const orgerI = (lista: Record<string, unknown>[]) => [...new Map(lista
     .filter((c) => c.organization_id && c.direction === 'we_owe')
     .map((c) => [c.organization_id as string, (c.organization_name as string) ?? '—'])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1], 'sv'));
+  // Snabbrutans "Hör till" erbjuder alla organisationer, oavsett sfärfilter.
+  // Filterraden visar bara dem som har något i den valda sfären — och den valda
+  // organisationen, så att valet aldrig försvinner ur raden.
+  const allaOrgs = orgerI(oppna);
+  const orgs = orgerI(alla);
+  if (org && !orgs.some(([id]) => id === org)) {
+    const vald = allaOrgs.find(([id]) => id === org);
+    if (vald) orgs.push(vald);
+  }
   const rader = alla.filter((c) => {
     if (org && c.organization_id !== org) return false;
     if (!q) return true;
@@ -10299,9 +10387,22 @@ viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (
   // mellanslag följer därför inte med tillbaka efter en avbockning.
   if (q && /^[a-z0-9-]+$/.test(q)) qs.set('q', q);
   if (org) qs.set('org', org);
+  if (sfar !== 'alla') qs.set('sfar', sfar);
   const back = `/app/c/${companyId}/min-sida${qs.toString() ? `?${qs.toString()}` : ''}`;
+  // Filterlänkarna behåller de andra filtren: sfären följer med vid byte av
+  // organisation, och organisationen och sökningen vid byte av sfär. Ett byte av
+  // organisation nollställer sökningen, som förut.
+  const minLank = (andra: { org?: string; sfar?: SfarFilter }) => {
+    const p = new URLSearchParams();
+    if (andra.org === undefined && q && /^[a-z0-9-]+$/.test(q)) p.set('q', q);
+    const o = andra.org ?? org;
+    if (o) p.set('org', o);
+    const s = andra.sfar ?? sfar;
+    if (s !== 'alla') p.set('sfar', s);
+    return `/app/c/${companyId}/min-sida${p.toString() ? `?${p.toString()}` : ''}`;
+  };
   const kort = (l: Record<string, unknown>[]) => l.map((c) => minKort(companyId, c, idag, back));
-  const internt = orgs.find(([, n]) => /locollabs/i.test(n))?.[0] ?? orgs[0]?.[0] ?? '';
+  const internt = allaOrgs.find(([, n]) => /locollabs/i.test(n))?.[0] ?? allaOrgs[0]?.[0] ?? '';
 
   return html`${MIN_STIL}<div class="ms">
     <div class="page-head"><div>${eyebrow('Min sida')}<h1>Det du ska göra</h1>
@@ -10312,18 +10413,26 @@ viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (
       <input type="text" name="text" required maxlength="2000" placeholder="Ny sak att göra…" autocomplete="off">
       <input type="date" name="datum" value="${idag}" aria-label="Datum">
       <select name="org" aria-label="Hör till">
-        ${orgs.map(([id, n]) => html`<option value="${id}" ${id === (org || internt) ? 'selected' : ''}>${n}</option>`)}
+        ${allaOrgs.map(([id, n]) => html`<option value="${id}" ${id === (org || internt) ? 'selected' : ''}>${n}</option>`)}
       </select>
       <button class="btn btn--primary" type="submit">Lägg till</button>
     </form>
     <form method="get" action="/app/c/${companyId}/min-sida" class="ms-sok">
       ${org ? html`<input type="hidden" name="org" value="${org}">` : ''}
+      ${sfar !== 'alla' ? html`<input type="hidden" name="sfar" value="${sfar}">` : ''}
       <input type="search" name="q" value="${q}" placeholder="Sök på ord eller #id">
       <button class="btn btn--ghost btn--sm" type="submit">Sök</button>
     </form>
-    <nav class="ms-filter">
-      <a href="/app/c/${companyId}/min-sida" class="${org ? '' : 'on'}">Allt</a>
-      ${orgs.map(([id, n]) => html`<a href="/app/c/${companyId}/min-sida?org=${id}" class="${id === org ? 'on' : ''}">${n}</a>`)}
+    ${/* Två filterrader, samma regel som på Åtaganden: det valda är ifyllt
+         (.on) och bär aria-current. */ ''}
+    <nav class="ms-filter" aria-label="Sfär">
+      ${SFARVAL.map(([s, label]) => html`<a href="${minLank({ sfar: s })}" class="${s === sfar ? 'on' : ''}"${
+        s === sfar ? html` aria-current="page"` : ''}>${label}</a>`)}
+    </nav>
+    <nav class="ms-filter" aria-label="Organisation">
+      <a href="${minLank({ org: '' })}" class="${org ? '' : 'on'}"${org ? '' : html` aria-current="page"`}>Allt</a>
+      ${orgs.map(([id, n]) => html`<a href="${minLank({ org: id })}" class="${id === org ? 'on' : ''}"${
+        id === org ? html` aria-current="page"` : ''}>${n}</a>`)}
     </nav>
     <h2 class="ms-grupp">Idag${idagLista.some((c) => due(c)! < idag) ? ' · inkl. förfallet' : ''} (${String(idagLista.length)})</h2>
     ${idagLista.length ? kort(idagLista) : html`<p class="muted">Inget förfaller i dag.</p>`}

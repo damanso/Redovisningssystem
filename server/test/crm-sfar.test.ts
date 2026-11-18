@@ -6,12 +6,20 @@
 //      utan sfar ger samma svar som 'alla' (bakåtkompatibelt)
 //   A  arvet: ett åtagande utan sfär ärver organisationens, annars personens
 //   P  en privat organisation kräver bara namn och kopplas aldrig till kundregistret
-//   B  bokföringsgränsen: tydliga fel i tjänstelagret, databasens spärrar, och ett
-//      svep över varje tabell i bokföringens schema som fäller om en privat post
-//      når dit
+//   B  bokföringsgränsen: tydliga fel i tjänstelagret, databasens spärrar och
+//      SIE-exporten
+//
+// Och det steg 2 kräver (granskningens fynd från steg 1):
+//   V  personvägen (A1): ett privat åtagande når aldrig en kundkopplad
+//      organisation via sin person — i tjänsten, i databasen och under samtidiga
+//      skrivningar
+//   R  resten av A3: dagsytans skäl följer åtagandets sfär, personer slås inte
+//      ihop över sfärgränsen, och auditloggen bär sfär och roll
+//   S  svepet (A2), sist i filen: varje privat id som filen skapat, i varje
+//      tabell i public
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type pg from 'pg';
+import pg from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
@@ -53,10 +61,13 @@ beforeAll(async () => {
 
 const MIGRATIONEN = readFileSync(
   fileURLToPath(new URL('../migrations/0087_crm_sfar_och_roll.sql', import.meta.url)), 'utf8');
+const MIGRATIONEN_0088 = readFileSync(
+  fileURLToPath(new URL('../migrations/0088_crm_privat_via_personen.sql', import.meta.url)), 'utf8');
 
-// Exakt det 0087 lägger till, baklänges. Rader som skrivs före ångrandet står
-// därefter som rader skrivna före migrationen — utan kolumnen sfar.
+// Exakt det 0087 och 0088 lägger till, baklänges. Rader som skrivs före ångrandet
+// står därefter som rader skrivna före migrationen — utan kolumnen sfar.
 const ANGRA_0087 = `
+  DROP TRIGGER people_privat_utanfor_bokforingen ON crm.people;
   DROP TRIGGER commitments_privat_utanfor_bokforingen ON crm.commitments;
   DROP TRIGGER organizations_privat_utanfor_bokforingen ON crm.organizations;
   DROP FUNCTION crm.privat_utanfor_bokforingen();
@@ -91,6 +102,9 @@ describe('M migrationen 0087', () => {
         expect(kvar.rows, 'före migrationen finns ingen sfär').toEqual([]);
 
         await admin.query(MIGRATIONEN);
+        // 0088 spelas upp ovanpå: den rör inga data, och ska gå att köra mot
+        // rader som redan finns.
+        await admin.query(MIGRATIONEN_0088);
 
         const org = await admin.query(
           'SELECT sfar, roll FROM crm.organizations WHERE company_id = $1 ORDER BY name', [companyId]);
@@ -376,11 +390,27 @@ describe('P en privat organisation kräver bara namn', () => {
 // B: bokföringsgränsen
 // ---------------------------------------------------------------------------
 
-/** Varje tabell i bokföringens schema där någon av markörerna förekommer, i någon kolumn. */
+/**
+ * Varje privat id i relationsdatan: organisationer, personer och åtaganden.
+ *
+ * Testdatabasen återskapas ur mallen före varje testfil (test/setup.ts), så det
+ * som finns här är exakt det den här filen har skapat fram till anropet.
+ */
+async function privataId(admin: pg.Client): Promise<{ slag: string; id: string }[]> {
+  const r = await admin.query<{ slag: string; id: string }>(
+    `SELECT 'organisation' AS slag, id::text AS id FROM crm.organizations WHERE sfar = 'privat'
+     UNION ALL SELECT 'person', id::text FROM crm.people WHERE sfar = 'privat'
+     UNION ALL SELECT 'atagande', id::text FROM crm.commitments WHERE sfar = 'privat'
+     ORDER BY 1, 2`);
+  return r.rows;
+}
+
+/** Varje tabell i public där någon av markörerna förekommer, i någon kolumn. */
 async function svepaBokforingen(admin: pg.Client, markorer: string[]): Promise<string[]> {
   const tabeller = await admin.query<{ tablename: string }>(
     "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename");
   expect(tabeller.rows.length, 'svepet måste faktiskt se bokföringens tabeller').toBeGreaterThan(50);
+  expect(markorer.length, 'ett svep utan markörer hittar ingenting').toBeGreaterThan(0);
   const monster = markorer.map((m) => `%${m}%`);
   const traffar: string[] = [];
   for (const { tablename } of tabeller.rows) {
@@ -550,18 +580,19 @@ describe('B bokföringsgränsen: en privat post når aldrig bokföringen', () =>
       'check:organizations_privat_utanfor_bokforingen_ck',
       'trigger:commitments_privat_utanfor_bokforingen',
       'trigger:organizations_privat_utanfor_bokforingen',
+      'trigger:people_privat_utanfor_bokforingen',
     ]);
   });
 
-  it('B9 svepet: efter alla försök finns den privata posten i ingen tabell i bokföringen och inte i SIE-exporten', async () => {
-    const markorer = [svealand.id as string, 'Svealands Elbolag', privatAtagande.id as string, 'Avtalskopior fran Svealand'];
-    // Den privata posten finns: svepet letar efter något som verkligen existerar.
-    const iCrm = await withAdmin((admin) => admin.query(
-      `SELECT (SELECT count(*)::int FROM crm.organizations WHERE id = $1) AS org,
-              (SELECT count(*)::int FROM crm.commitments WHERE id = $2) AS atagande`, [svealand.id, privatAtagande.id]));
-    expect(iCrm.rows[0]).toEqual({ org: 1, atagande: 1 });
-
-    expect(await withAdmin((admin) => svepaBokforingen(admin, markorer))).toEqual([]);
+  // Steg 1 svepte här bara Svealands fyra markörer och kallade det «den privata
+  // posten finns i ingen tabell i bokföringen». Granskningen visade att det var
+  // sant bara för att markörerna valts snävt: B6 lägger en privat organisations
+  // id i godkännandekön. Tabellsvepet över VARJE privat id ligger nu sist i filen
+  // (S1), efter alla block som skapar privata poster; här prövas exporten.
+  it('B9 SIE-exporten bär inget privat id och inget av Svealands namn', async () => {
+    const privata = await withAdmin((admin) => privataId(admin));
+    expect(privata.map((p) => p.id)).toEqual(expect.arrayContaining([svealand.id, privatAtagande.id]));
+    const markorer = [...privata.map((p) => p.id), 'Svealands Elbolag', 'Avtalskopior fran Svealand'];
 
     const fy = await createFiscalYear(companyId, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
     const sie = await api.get(`/api/companies/${companyId}/accounting/fiscal-years/${fy.id}/sie`).set(auth())
@@ -587,5 +618,384 @@ describe('B bokföringsgränsen: en privat post når aldrig bokföringen', () =>
       }
     });
     expect(hittat).toEqual(['customers']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V: personvägen (steg 2, granskningens fynd A1)
+// ---------------------------------------------------------------------------
+
+/** Godkänn en känslig åtgärd (sammanslagningen) direkt, och lämna svaret på godkännandet. */
+function godkannare(companyId: string) {
+  return async (name: string, body: Record<string, unknown>): Promise<Svar> => {
+    const res = await api.post(`/api/companies/${companyId}/actions/${name}`).set(auth()).send(body);
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    return api.post(`/api/companies/${companyId}/approvals/${res.body.approval.id}/approve`)
+      .set(auth()).send({}) as unknown as Promise<Svar>;
+  };
+}
+
+/** En SQL-sats direkt som ägarrollen: databasens felkod, eller 'gick igenom'. */
+const direkt = (sql: string, params: unknown[]) => withAdmin(async (admin) => {
+  try {
+    await admin.query(sql, params);
+    return 'gick igenom';
+  } catch (err) {
+    return (err as { code?: string }).code;
+  }
+});
+
+describe('V personvägen: ett privat åtagande når aldrig kunden via sin person', () => {
+  let act: ReturnType<typeof bolaget>;
+  let godkann: ReturnType<typeof godkannare>;
+  let companyId: string;
+  let kundOrg: string;
+  let kontakten: string;
+  let privatKontakt: string;
+  let privatOrg: string;
+  let vannen: string;
+  let vannensAtagande: string;
+  let blivandeKund: string;
+  let blivandeKundId: string;
+  let utanAtaganden: string;
+
+  beforeAll(async () => {
+    companyId = await createCompany(user.token, 'Personvägen AB');
+    act = bolaget(companyId);
+    godkann = godkannare(companyId);
+    const kundId = ok(await act('create_customer', { name: 'Kundkopplad AB' })).id;
+    kundOrg = ok(await act('upsert_crm_organization', { name: 'Kundkopplad AB', customer_id: kundId })).id;
+    kontakten = ok(await act('upsert_crm_person', { name: 'Kim Kontakt', organization_id: kundOrg })).id;
+    // En privat person får ligga på kundens organisation (kundkortet döljer
+    // henne, se crm-sfar-yta) — men hennes privata åtaganden får inte följa med.
+    privatKontakt = ok(await act('upsert_crm_person', {
+      name: 'Pia Privatkontakt', organization_id: kundOrg, sfar: 'privat',
+    })).id;
+    privatOrg = ok(await act('upsert_crm_organization', { name: 'Hemförsäkringen', sfar: 'privat' })).id;
+    vannen = ok(await act('upsert_crm_person', { name: 'Vän Vännsson', email: 'van@example.se' })).id;
+    vannensAtagande = ok(await act('record_crm_commitment', atagande({
+      person_id: vannen, sfar: 'privat', body: 'Lämna tillbaka släpvagnen',
+    }))).id;
+    blivandeKund = ok(await act('upsert_crm_organization', { name: 'Blivande Kund AB' })).id;
+    const anstalld = ok(await act('upsert_crm_person', { name: 'Anna Anställd', organization_id: blivandeKund })).id;
+    ok(await act('record_crm_commitment', atagande({ person_id: anstalld, sfar: 'privat', body: 'Privat middag' })));
+    // Kunden läggs upp efter organisationen, så att kopplingen bara kan uppstå
+    // genom ett senare uppslag eller en uttrycklig skrivning (samma grepp som B5).
+    blivandeKundId = ok(await act('create_customer', { name: 'Blivande Kund AB' })).id;
+    utanAtaganden = ok(await act('upsert_crm_person', { name: 'Ulf Utan', email: 'ulf@example.se' })).id;
+  });
+
+  const privataBodies = async () => ok(await act('list_crm_commitments', { sfar: 'privat' })).map((c: Rad) => c.body);
+
+  it('V1 tjänsten: ett privat åtagande på en person hos kunden avvisas — uttryckligt, ärvt från personen eller från organisationen', async () => {
+    grans(await act('record_crm_commitment', atagande({ person_id: kontakten, sfar: 'privat', body: 'V1 uttryckligt' })),
+      'privat_atagande_kundkopplad_person');
+    // Utan sfar ärvs personens: den privata personen på kundens organisation.
+    grans(await act('record_crm_commitment', atagande({ person_id: privatKontakt, body: 'V1 ärvt från personen' })),
+      'privat_atagande_kundkopplad_person');
+    // Organisationen är privat och går före i arvet, men personen bär åtagandet
+    // in i kundens kronologi ändå.
+    grans(await act('record_crm_commitment', atagande({
+      organization_id: privatOrg, person_id: kontakten, body: 'V1 ärvt från organisationen',
+    })), 'privat_atagande_kundkopplad_person');
+    expect(await privataBodies()).not.toEqual(expect.arrayContaining([expect.stringMatching(/^V1/)]));
+    // Kontrollen: samma person med ett företagsåtagande går igenom.
+    expect(ok(await act('record_crm_commitment', atagande({ person_id: kontakten, body: 'V1 kontroll' }))).sfar)
+      .toBe('foretag');
+  });
+
+  it('V2 tjänsten: ett befintligt privat åtagande flyttas inte till en person hos kunden', async () => {
+    const forst = ok(await act('record_crm_commitment', atagande({
+      organization_id: privatOrg, body: 'Förnya hemförsäkringen', source_system: 'gmail', source_ref: 'gmail:v2',
+    })));
+    expect(forst.sfar).toBe('privat');
+    grans(await act('record_crm_commitment', atagande({
+      organization_id: privatOrg, person_id: kontakten, body: 'Förnya hemförsäkringen',
+      source_system: 'gmail', source_ref: 'gmail:v2',
+    })), 'privat_atagande_kundkopplad_person');
+    const rad = await withAdmin((admin) => admin.query(
+      'SELECT person_id, organization_id, sfar FROM crm.commitments WHERE id = $1', [forst.id]));
+    expect(rad.rows[0]).toEqual({ person_id: null, organization_id: privatOrg, sfar: 'privat' });
+  });
+
+  it('V3 tjänsten: en person med privata åtaganden flyttas inte till kunden — av en människa eller av synken', async () => {
+    grans(await act('upsert_crm_person', { name: 'Vän Vännsson', email: 'van@example.se', organization_id: kundOrg }),
+      'privata_ataganden_kundkoppling');
+    // Synken fälls inte: händelsen hoppas över och säger varför.
+    const svar = ok(await act('ingest_crm_events', {
+      events: [{
+        kind: 'interaction', organization: { name: 'Kundkopplad AB' }, person: { name: 'Vän Vännsson', email: 'van@example.se' },
+        occurred_at: NAR, source_system: 'gmail', source_ref: 'gmail:v3', channel: 'email', summary: 'Hej',
+      }],
+    }));
+    expect(svar.skipped).toHaveLength(1);
+    expect(svar.skipped[0].reason).toMatch(/kundregistret/);
+    const rad = await withAdmin((admin) => admin.query('SELECT organization_id FROM crm.people WHERE id = $1', [vannen]));
+    expect(rad.rows[0]).toEqual({ organization_id: null });
+    // Kontrollen: en person utan privata åtaganden flyttar (samma rad, matchad på e-post).
+    expect(ok(await act('upsert_crm_person', { name: 'Ulf Utan', email: 'ulf@example.se', organization_id: kundOrg })))
+      .toMatchObject({ id: utanAtaganden, organization_id: kundOrg, created: false });
+  });
+
+  it('V4 tjänsten: en organisation vars person har privata åtaganden kopplas inte till kundregistret, uttryckligen eller av synken', async () => {
+    grans(await act('upsert_crm_organization', { name: 'Blivande Kund AB', customer_id: blivandeKundId }),
+      'privata_ataganden_kundkoppling');
+    const svar = ok(await act('ingest_crm_events', {
+      events: [{
+        kind: 'interaction', organization: { name: 'Blivande Kund AB' }, occurred_at: NAR,
+        source_system: 'gmail', source_ref: 'gmail:v4', channel: 'email', summary: 'Hej',
+      }],
+    }));
+    expect(svar).toMatchObject({ interactions_created: 1, skipped: [], unlinked_organizations: ['Blivande Kund AB'] });
+    expect(ok(await act('get_crm_organization', { organization_id: blivandeKund })).customer_id).toBeNull();
+  });
+
+  it('V5 sammanslagningarna: personens åtaganden räknas, och personer slås inte ihop över sfärgränsen', async () => {
+    // Organisationen vars person har ett privat åtagande, in i den kundkopplade.
+    grans(await godkann('merge_crm_organizations', { keep_id: kundOrg, merge_id: blivandeKund }), 'privata_ataganden_kundkoppling');
+    // Vännen (företagsperson utan organisation, med ett privat åtagande) in i
+    // kontakten på kundens organisation.
+    grans(await godkann('merge_crm_people', { keep_id: kontakten, merge_id: vannen }), 'privata_ataganden_kundkoppling');
+    // Åt andra hållet: kontakten in i vännen. Vännen ärver kundens organisation.
+    grans(await godkann('merge_crm_people', { keep_id: vannen, merge_id: kontakten }), 'privata_ataganden_kundkoppling');
+    // Sfärgränsen, samma regel som för organisationer (granskningens fynd).
+    const privatPerson = ok(await act('upsert_crm_person', { name: 'Syster Privat', sfar: 'privat' })).id;
+    const konflikt = await godkann('merge_crm_people', { keep_id: utanAtaganden, merge_id: privatPerson });
+    expect(konflikt.status, JSON.stringify(konflikt.body)).toBe(400);
+    expect(konflikt.body.error).toBe('sfar_conflict');
+    const kvar = await withAdmin((admin) => admin.query(
+      'SELECT count(*)::int AS n FROM crm.people WHERE id = ANY($1::uuid[])', [[kontakten, vannen, privatPerson, utanAtaganden]]));
+    expect(kvar.rows[0].n, 'ingen person försvann').toBe(4);
+  });
+
+  it('V6 databasen: varje väg från samma regel, direkt i SQL', async () => {
+    const insert = `INSERT INTO crm.commitments (company_id, organization_id, person_id, direction, body, occurred_at, source_system, sfar)
+                    VALUES ($1, $2, $3, 'we_owe', 'Smugglat', now(), 'manual', 'privat')`;
+    // Åtagandet: bara personen, och personen bredvid en privat organisation.
+    expect(await direkt(insert, [companyId, null, kontakten])).toBe('P0001');
+    expect(await direkt(insert, [companyId, privatOrg, kontakten])).toBe('P0001');
+    // Åtagandet flyttas till personen, eller blir privat hos henne.
+    expect(await direkt('UPDATE crm.commitments SET person_id = $1 WHERE id = $2', [kontakten, vannensAtagande])).toBe('P0001');
+    const foretagsAtagande = ok(await act('record_crm_commitment', atagande({ person_id: kontakten, body: 'V6 företag' }))).id;
+    expect(await direkt("UPDATE crm.commitments SET sfar = 'privat' WHERE id = $1", [foretagsAtagande])).toBe('P0001');
+    // Personen flyttas till kunden.
+    expect(await direkt('UPDATE crm.people SET organization_id = $1 WHERE id = $2', [kundOrg, vannen])).toBe('P0001');
+    // Organisationen vars person har ett privat åtagande kopplas till kunden.
+    expect(await direkt('UPDATE crm.organizations SET customer_id = $1 WHERE id = $2', [blivandeKundId, blivandeKund])).toBe('P0001');
+    // Kontrollen: samma flytt för en person utan privata åtaganden går igenom
+    // (i en transaktion som rullas tillbaka).
+    const kontroll = await withAdmin(async (admin) => {
+      await admin.query('BEGIN');
+      try {
+        const ny = await admin.query(
+          `INSERT INTO crm.people (company_id, name) VALUES ($1, 'Kontrollen') RETURNING id`, [companyId]);
+        await admin.query('UPDATE crm.people SET organization_id = $1 WHERE id = $2', [kundOrg, ny.rows[0].id]);
+        return 'gick igenom';
+      } catch (err) {
+        return (err as { code?: string }).code;
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    });
+    expect(kontroll).toBe('gick igenom');
+    const rad = await withAdmin((admin) => admin.query(
+      'SELECT c.person_id, p.organization_id FROM crm.commitments c JOIN crm.people p ON p.id = $2 WHERE c.id = $1',
+      [vannensAtagande, vannen]));
+    expect(rad.rows[0], 'inget av försöken blev kvar').toEqual({ person_id: vannen, organization_id: null });
+  });
+
+  it('V7 databasen: två samtidiga skrivningar kan inte tillsammans öppna vägen (radlåset)', async () => {
+    const kandidat = async (namn: string) => {
+      const org = ok(await act('upsert_crm_organization', { name: namn })).id;
+      const kund = ok(await act('create_customer', { name: `${namn} kundregistret` })).id;
+      return { org, kund };
+    };
+    /**
+     * Första skrivningen hålls öppen, den andra startas och ska då VÄNTA på
+     * radlåset. När den första committas prövas den andra mot det som blev kvar.
+     * Utan FOR SHARE i triggern väntar den andra inte, ser inte den förstas
+     * okommittade rad, och båda går igenom.
+     */
+    const kapplopning = async (forsta: [string, unknown[]], andra: [string, unknown[]]) => {
+      const t1 = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
+      const t2 = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
+      await t1.connect();
+      await t2.connect();
+      try {
+        const pid = (await t2.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        await t1.query('BEGIN');
+        await t1.query(...forsta);
+        await t2.query('BEGIN');
+        const utfall = t2.query(...andra).then(() => 'gick igenom', (err: { code?: string }) => err.code);
+        let vantade = false;
+        for (let i = 0; i < 100 && !vantade; i++) {
+          const r = await withAdmin((admin) => admin.query<{ w: string | null }>(
+            'SELECT wait_event_type AS w FROM pg_stat_activity WHERE pid = $1', [pid]));
+          vantade = r.rows[0]?.w === 'Lock';
+          if (!vantade) await new Promise((klar) => setTimeout(klar, 20));
+        }
+        await t1.query('COMMIT');
+        const svar = await utfall;
+        await t2.query('ROLLBACK');
+        return { vantade, svar };
+      } finally {
+        await t1.end();
+        await t2.end();
+      }
+    };
+    const privatPa = `INSERT INTO crm.commitments (company_id, organization_id, person_id, direction, body, occurred_at, source_system, sfar)
+                      VALUES ($1, $2, $3, 'we_owe', 'Kapplöpning', now(), 'manual', 'privat')`;
+    const koppla = 'UPDATE crm.organizations SET customer_id = $1 WHERE id = $2';
+
+    // a) Åtagandet först, kopplingen sedan.
+    const a = await kandidat('Kapplöpning A AB');
+    expect(await kapplopning([privatPa, [companyId, a.org, null]], [koppla, [a.kund, a.org]]))
+      .toEqual({ vantade: true, svar: 'P0001' });
+    // b) Kopplingen först, åtagandet sedan.
+    const b = await kandidat('Kapplöpning B AB');
+    expect(await kapplopning([koppla, [b.kund, b.org]], [privatPa, [companyId, b.org, null]]))
+      .toEqual({ vantade: true, svar: 'P0001' });
+    // c) Personvägen: åtagandet på en person på organisationen, kopplingen sedan.
+    const c = await kandidat('Kapplöpning C AB');
+    const person = ok(await act('upsert_crm_person', { name: 'Kapplöparen', organization_id: c.org })).id;
+    expect(await kapplopning([privatPa, [companyId, null, person]], [koppla, [c.kund, c.org]]))
+      .toEqual({ vantade: true, svar: 'P0001' });
+    // Efteråt: ingen av de tre organisationerna är kopplad samtidigt som den bär
+    // ett privat åtagande, direkt eller via sin person.
+    const brott = await withAdmin((admin) => admin.query(
+      `SELECT o.name FROM crm.organizations o
+       WHERE o.company_id = $1 AND o.customer_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM crm.commitments cm
+                      WHERE cm.company_id = o.company_id AND cm.sfar = 'privat'
+                        AND (cm.organization_id = o.id
+                             OR cm.person_id IN (SELECT p.id FROM crm.people p WHERE p.organization_id = o.id)))`,
+      [companyId]));
+    expect(brott.rows).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R: resten av granskningens fynd (A3)
+// ---------------------------------------------------------------------------
+
+describe('R dagsytans skäl, och sfär och roll i auditloggen', () => {
+  let act: ReturnType<typeof bolaget>;
+  let companyId: string;
+
+  beforeAll(async () => {
+    companyId = await createCompany(user.token, 'Skälbolaget AB');
+    act = bolaget(companyId);
+    const foretaget = ok(await act('upsert_crm_organization', { name: 'Företaget AB' })).id;
+    const hemmet = ok(await act('upsert_crm_organization', { name: 'Hemmet Privat', sfar: 'privat' })).id;
+    // Varje organisation får ett förfallet löfte i sin egen sfär och ett ÄLDRE
+    // i den andra. Det äldsta förfallna citeras i skälet, så utan regeln hade
+    // det andra sfärens löfte stått där.
+    for (const [org, body, due, sfar] of [
+      [foretaget, 'Skicka fakturaunderlag', '2026-11-01', 'foretag'],
+      [foretaget, 'Hämta paketet åt grannen', '2026-10-25', 'privat'],
+      [hemmet, 'Byt elavtal', '2026-11-05', 'privat'],
+      [hemmet, 'Lämna kvitto till bokföringen', '2026-10-20', 'foretag'],
+    ] as const) {
+      ok(await act('record_crm_commitment', atagande({ organization_id: org, body, due_date: due, sfar })));
+    }
+  });
+
+  it('R1 crm_today: en relations skäl räknar och citerar bara löften i relationens sfär, med och utan filter', async () => {
+    const dag = (sfar?: string) => act('crm_today', { as_of: '2026-11-18', ...(sfar ? { sfar } : {}) }).then(ok);
+    const skal = (v: Rad) => Object.fromEntries(v.relations.map((r: Rad) =>
+      [r.organization, { sfar: r.sfar, forfallna: r.overdue_commitments, forsta: r.reasons[0] }]));
+    const loften = (v: Rad) => v.commitments.map((c: Rad) => `${c.body}:${c.sfar}`).sort();
+
+    const alla = await dag();
+    expect(skal(alla)).toEqual({
+      'Företaget AB': { sfar: 'foretag', forfallna: 1, forsta: 'vi lovade: Skicka fakturaunderlag — förföll 2026-11-01' },
+      'Hemmet Privat': { sfar: 'privat', forfallna: 1, forsta: 'vi lovade: Byt elavtal — förföll 2026-11-05' },
+    });
+    // Löftet ur den andra sfären försvinner inte: det står i löfteshögen med sin egen sfär.
+    expect(loften(alla)).toEqual([
+      'Byt elavtal:privat', 'Hämta paketet åt grannen:privat',
+      'Lämna kvitto till bokföringen:foretag', 'Skicka fakturaunderlag:foretag',
+    ]);
+    expect(await dag('alla')).toEqual(alla);
+
+    const foretag = await dag('foretag');
+    expect(skal(foretag)).toEqual({
+      'Företaget AB': { sfar: 'foretag', forfallna: 1, forsta: 'vi lovade: Skicka fakturaunderlag — förföll 2026-11-01' },
+    });
+    expect(loften(foretag)).toEqual(['Lämna kvitto till bokföringen:foretag', 'Skicka fakturaunderlag:foretag']);
+
+    const privat = await dag('privat');
+    expect(skal(privat)).toEqual({
+      'Hemmet Privat': { sfar: 'privat', forfallna: 1, forsta: 'vi lovade: Byt elavtal — förföll 2026-11-05' },
+    });
+    expect(loften(privat)).toEqual(['Byt elavtal:privat', 'Hämta paketet åt grannen:privat']);
+
+    // Briefens underlag: varje kort bär sin sfär.
+    for (const x of [...alla.relations, ...alla.commitments]) expect(['foretag', 'privat']).toContain(x.sfar);
+  });
+
+  it('R2 relationsläget i övrigt räknar som förut: alla löften på organisationen', async () => {
+    const lage = ok(await act('crm_relation_state', { as_of: '2026-11-18' }));
+    const forfallna = Object.fromEntries(lage.map((r: Rad) => [r.name, r.overdue_commitments]));
+    expect(forfallna).toEqual({ 'Företaget AB': 2, 'Hemmet Privat': 2 });
+  });
+
+  it('R3 auditloggen: person_updated bär sfären, organization_created och _updated bär rollen', async () => {
+    const org = ok(await act('upsert_crm_organization', { name: 'Elnätet', sfar: 'privat', roll: 'leverantor' })).id;
+    ok(await act('upsert_crm_organization', { name: 'Elnätet', roll: 'myndighet' }));
+    const person = ok(await act('upsert_crm_person', { name: 'Grannen' })).id;
+    ok(await act('upsert_crm_person', { name: 'Grannen', sfar: 'privat' }));
+    const logg = await withAdmin((admin) => admin.query<{ action: string; details: Rad }>(
+      `SELECT action, details FROM crm.audit_log
+       WHERE company_id = $1 AND entity_id = ANY($2::text[]) ORDER BY id`,
+      [companyId, [org, person]]));
+    const per = Object.fromEntries(logg.rows.map((r) => [r.action, r.details]));
+    expect(per['crm.organization_created']).toMatchObject({ sfar: 'privat', roll: 'leverantor' });
+    expect(per['crm.organization_updated']).toMatchObject({ sfar: 'privat', roll: 'myndighet' });
+    expect(per['crm.person_created']).toMatchObject({ sfar: 'foretag' });
+    expect(per['crm.person_updated']).toMatchObject({ sfar: 'privat' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S: svepet (steg 2, granskningens fynd A2). SIST i filen med flit: det ska se
+// varje privat id som något block ovan har skapat.
+// ---------------------------------------------------------------------------
+
+describe('S svepet över varje tabell i public', () => {
+  // Påståendet, så som det är sant:
+  //
+  //   Inget privat id (organisation, person, åtagande) som filen skapat finns i
+  //   någon tabell i public — utom i godkännandekön, och där bara i en begärd
+  //   sammanslagning av CRM-poster.
+  //
+  // Varför godkännandekön får bära id:t: action_approvals är Att göra, kön av
+  // känsliga åtgärder som väntar på en människa. En sammanslagning av två
+  // organisationer eller personer är känslig (den flyttar historik och går inte
+  // att ångra), så begäran ligger där med sina två id:n tills någon beslutar —
+  // utan id:na går den inte att verkställa. Kön är inte räkenskapsinformation:
+  // inget verifikat, ingen faktura, ingen rapport, inget momsunderlag, ingen
+  // K2-del och ingen export läser dess indata (rapporterna räknar bara antalet
+  // väntande på översikten). Därför prövar svepet kön i stället för att hoppa
+  // över den: varje träff där måste vara en CRM-sammanslagning, annars fäller det.
+  it('S1 ett privat id finns bara i godkännandekön, och där bara i en begärd CRM-sammanslagning', async () => {
+    const utfall = await withAdmin(async (admin) => {
+      const privata = await privataId(admin);
+      const ids = privata.map((p) => p.id);
+      const traffar = await svepaBokforingen(admin, ids);
+      const kon = await admin.query<{ action: string }>(
+        'SELECT DISTINCT t.action FROM action_approvals t WHERE t::text LIKE ANY($1::text[]) ORDER BY t.action',
+        [ids.map((id) => `%${id}%`)]);
+      const namn = await svepaBokforingen(admin, ['Svealands Elbolag', 'Avtalskopior fran Svealand']);
+      return { privata, traffar, kon: kon.rows.map((r) => r.action), namn };
+    });
+    // Svepet letar efter något som finns: filen skapar privata poster av alla tre slagen.
+    const slag = new Set(utfall.privata.map((p) => p.slag));
+    expect([...slag].sort()).toEqual(['atagande', 'organisation', 'person']);
+    expect(utfall.privata.length).toBeGreaterThan(20);
+
+    expect(utfall.traffar).toEqual(['action_approvals']);
+    expect(utfall.kon).toEqual(['merge_crm_organizations', 'merge_crm_people']);
+    expect(utfall.namn).toEqual([]);
   });
 });

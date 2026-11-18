@@ -175,9 +175,20 @@ function normaliseraOrgnummer(v: string | undefined): string | undefined {
 /** Raden en upsert landar på, med det som gränsen mot bokföringen behöver veta. */
 interface OrgHit { id: string; name: string; customer_id: string | null; sfar: Sfar; status: OrganizationStatus }
 
+/**
+ * Har organisationen privata åtaganden, direkt eller via någon av sina personer?
+ *
+ * Personerna räknas med (steg 2, migration 0088): kundrelationens kronologi och
+ * GDPR-raderingen läser åtagandena också via organisationens personer, så ett
+ * privat åtagande på en av dem hamnar annars hos kunden när organisationen kopplas.
+ */
 async function harPrivataAtaganden(client: PoolClient, companyId: string, organizationId: string): Promise<boolean> {
   const r = await client.query(
-    `SELECT 1 FROM crm.commitments WHERE company_id = $1 AND organization_id = $2 AND sfar = 'privat' LIMIT 1`,
+    `SELECT 1 FROM crm.commitments
+     WHERE company_id = $1 AND sfar = 'privat'
+       AND (organization_id = $2
+            OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = $2))
+     LIMIT 1`,
     [companyId, organizationId]);
   return Boolean(r.rows[0]);
 }
@@ -315,8 +326,8 @@ export async function upsertOrganization(
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.organization_created', entityType: 'organization', entityId: r.rows[0]!.id,
       details: {
-        status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, linked_customer: Boolean(r.rows[0]!.customer_id),
-        source: origin.source,
+        status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, roll: r.rows[0]!.roll,
+        linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       },
     });
     return { ...r.rows[0]!, created: true, kept_human_fields: [], redirected_from: null };
@@ -377,8 +388,11 @@ export async function upsertOrganization(
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organization_updated', entityType: 'organization', entityId: hit.id,
     details: {
-      status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, linked_customer: Boolean(r.rows[0]!.customer_id),
-      source: origin.source,
+      // Sfären och rollen står i loggen och inte bara i ursprunget: ursprunget
+      // raderas vid GDPR och sammanslagning, auditloggen är append-only. Båda är
+      // låsta värden (CHECK i 0087), aldrig fritext.
+      status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, roll: r.rows[0]!.roll,
+      linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
       ...(blocked.length ? { kept_human_fields: blocked } : {}),
       // Att skrivningen landade på en annan rad än avsändaren trodde ska synas i
@@ -626,6 +640,23 @@ export async function upsertPerson(
     client, companyId, { person_id: hit.id }, origin.source, { ...input, name } as Record<string, unknown>,
   );
 
+  // Bokföringsgränsen åt andra hållet (steg 2, migration 0088): en person med
+  // privata åtaganden flyttas inte till en kundkopplad organisation. Kundens
+  // kronologi läser åtagandena via organisationens personer, så flytten hade
+  // tagit med sig de privata åtagandena dit.
+  if (patch.organization_id) {
+    const kund = await client.query(
+      `SELECT 1 FROM crm.organizations o
+       WHERE o.company_id = $1 AND o.id = $2 AND o.customer_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM crm.commitments c
+                      WHERE c.company_id = $1 AND c.person_id = $3 AND c.sfar = 'privat')`,
+      [companyId, patch.organization_id, hit.id]);
+    if (kund.rows[0]) {
+      throw privatGransFel('privata_ataganden_kundkoppling',
+        'personen har privata åtaganden och kan därför inte flyttas till en organisation som är kopplad till kundregistret');
+    }
+  }
+
   const r = await client.query<Person>(
     `UPDATE crm.people SET
        name            = $3,
@@ -652,6 +683,8 @@ export async function upsertPerson(
     companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: hit.id,
     details: {
       matched_on: byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
+      // Samma skäl som för organisationen: ursprunget kan raderas, loggen inte.
+      sfar: r.rows[0]!.sfar,
       ...(blocked.length ? { kept_human_fields: blocked } : {}),
     },
   });
@@ -686,20 +719,30 @@ export async function customerRelationSummary(
   if (!org.rows[0]) return null;
   const { id, name, status } = org.rows[0];
 
+  // Kundkortet är bokföringens sida, och där syns inget privat (steg 2). En
+  // privat person på kundens organisation visas därför inte, och hennes
+  // kontaktpunkter räknas inte in i kundens senaste kontakt. Åtagandena räknas
+  // på sfär av samma skäl, fast databasen redan håller privata åtaganden borta
+  // från en kundkopplad organisation (0087, 0088).
   const people = await client.query(
     `SELECT p.id, p.name, p.email, p.phone, p.role_title,
             (SELECT max(i.occurred_at) FROM crm.interactions i
               WHERE i.company_id = p.company_id AND i.person_id = p.id) AS last_contact_at
-     FROM crm.people p WHERE p.company_id = $1 AND p.organization_id = $2 ORDER BY p.name`,
+     FROM crm.people p WHERE p.company_id = $1 AND p.organization_id = $2 AND p.sfar = 'foretag' ORDER BY p.name`,
     [companyId, id],
   );
   const meta = await client.query<{ last_contact_at: string | null; open_commitments: number }>(
     `SELECT (SELECT max(i.occurred_at) FROM crm.interactions i
               WHERE i.company_id = $1 AND (i.organization_id = $2
-                OR i.person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = $2))
+                OR i.person_id IN (SELECT id FROM crm.people
+                                    WHERE company_id = $1 AND organization_id = $2 AND sfar = 'foretag'))
+                -- Också när kontaktpunkten bär organisationen OCH en privat person.
+                AND NOT EXISTS (SELECT 1 FROM crm.people pp
+                                 WHERE pp.company_id = $1 AND pp.id = i.person_id AND pp.sfar = 'privat')
             ) AS last_contact_at,
             (SELECT count(*)::int FROM crm.commitments c
-              WHERE c.company_id = $1 AND c.organization_id = $2 AND c.status = 'open') AS open_commitments`,
+              WHERE c.company_id = $1 AND c.organization_id = $2 AND c.status = 'open'
+                AND c.sfar = 'foretag') AS open_commitments`,
     [companyId, id],
   );
 
@@ -859,26 +902,35 @@ export interface RecordCommitmentInput {
 }
 
 /**
- * Motpartens sfär, och om organisationen är kopplad till kundregistret.
+ * Motpartens sfär, och var åtagandet når kundregistret om det gör det.
  *
- * Organisationen går före personen: den är motparten, personen är vem man talade
- * med där. Bara den som behövs läses. Raderna finns — assertTarget har prövat dem.
+ * Organisationen går före personen i arvet: den är motparten, personen är vem man
+ * talade med där. Gränsen prövar däremot BÅDA (steg 2, migration 0088):
+ * kundrelationens kronologi och GDPR-raderingen läser åtagandena också via
+ * organisationens personer, så en person på en kundkopplad organisation tar med
+ * åtagandet dit även när det bär en annan organisation eller ingen alls.
+ * Raderna finns — assertTarget har prövat dem.
  */
 async function atagandetsMotpart(
   client: PoolClient, companyId: string, organizationId: string | null, personId: string | null,
-): Promise<{ sfar: Sfar | null; kundkopplad: boolean }> {
-  if (organizationId) {
-    const o = await client.query<{ sfar: Sfar; customer_id: string | null }>(
-      'SELECT sfar, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2',
-      [organizationId, companyId]);
-    return { sfar: o.rows[0]?.sfar ?? null, kundkopplad: Boolean(o.rows[0]?.customer_id) };
-  }
-  if (personId) {
-    const p = await client.query<{ sfar: Sfar }>(
-      'SELECT sfar FROM crm.people WHERE id = $1 AND company_id = $2', [personId, companyId]);
-    return { sfar: p.rows[0]?.sfar ?? null, kundkopplad: false };
-  }
-  return { sfar: null, kundkopplad: false };
+): Promise<{ sfar: Sfar | null; kundkopplad: 'organisationen' | 'personen' | null }> {
+  const o = organizationId
+    ? (await client.query<{ sfar: Sfar; customer_id: string | null }>(
+        'SELECT sfar, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2',
+        [organizationId, companyId])).rows[0]
+    : undefined;
+  const p = personId
+    ? (await client.query<{ sfar: Sfar; kundkopplad: boolean }>(
+        `SELECT p.sfar, (o.customer_id IS NOT NULL) AS kundkopplad
+         FROM crm.people p
+         LEFT JOIN crm.organizations o ON o.id = p.organization_id AND o.company_id = p.company_id
+         WHERE p.id = $1 AND p.company_id = $2`,
+        [personId, companyId])).rows[0]
+    : undefined;
+  return {
+    sfar: o?.sfar ?? p?.sfar ?? null,
+    kundkopplad: o?.customer_id ? 'organisationen' : p?.kundkopplad ? 'personen' : null,
+  };
 }
 
 const COMMITMENT_RETURNING = 'id, direction, body, due_date::text, status, occurred_at, source_system, source_ref, sfar';
@@ -910,10 +962,15 @@ export async function recordCommitment(
     input.organization_id ?? befintlig?.organization_id ?? null, input.person_id ?? befintlig?.person_id ?? null);
   const sfar: Sfar = input.sfar ?? befintlig?.sfar ?? motpart.sfar ?? 'foretag';
   // Bokföringsgränsen. Kundkortet läser åtagandena genom organisationens koppling
-  // till kundregistret, så ett privat åtagande där hade hamnat i bokföringens vy.
-  if (sfar === 'privat' && motpart.kundkopplad) {
+  // till kundregistret, och kundens kronologi dessutom genom dess personer, så ett
+  // privat åtagande där hade hamnat i bokföringens vy.
+  if (sfar === 'privat' && motpart.kundkopplad === 'organisationen') {
     throw privatGransFel('privat_atagande_kundkopplad_organisation',
-      'ett privat åtagande kan inte ligga på en organisation som är kopplad till kundregistret — lägg det på en privat organisation eller på en person');
+      'ett privat åtagande kan inte ligga på en organisation som är kopplad till kundregistret — lägg det på en privat organisation eller på en person utanför kunden');
+  }
+  if (sfar === 'privat' && motpart.kundkopplad === 'personen') {
+    throw privatGransFel('privat_atagande_kundkopplad_person',
+      'ett privat åtagande kan inte ligga på en person hos en organisation som är kopplad till kundregistret — lägg det på en privat organisation utan den personen');
   }
 
   if (befintlig) {
