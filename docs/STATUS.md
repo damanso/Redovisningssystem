@@ -153,6 +153,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-19 — Story 1.3, ursprunget syns för varje uppgift på relationssidan (FR-9, FR-10):**
+  Ursprungsmärket har `role="img"`, tillgänglig etikett och källans svenska namn
+  följt av nyckeln. Värden utan ursprungsrad visar *ursprung okänt* och kan bekräftas;
+  tomma värden får varken märke eller knapp. Status är en egen rad med svensk etikett.
+  Personernas namn, roll, e-post och telefon använder samma vyform med *Stämmer*.
+  Persongrenen i den befintliga bekräftelserutten använder `assertPersonInOrganization`
+  i tenant-transaktion; fel relation/bolag och ogiltigt/tomt person-id ger 404.
+  23 nya fall i `server/test/crm-views.test.ts`: U1–U8, Y1, S1–S4, V1–V2,
+  P1–P6 och A1–A2. Befintliga prov/fixturer och assertioner är bevarade.
+  Typecheck körd med exit 0 efter kodstegen. Hela `npm test` försökt före och efter
+  varje kodsteg men hindras före testerna av `connect EPERM 127.0.0.1:5433` i
+  globalSetup; inga databastester grönrapporteras. Befintliga rena sändvägs- och
+  paketkontroller, inklusive negativa N1–N4/U0, körda med exit 0 och 0 brister.
+  Slutlig typecheck, `npm run build` och `git diff --check` exit 0.
+  Ingen tjänst startad och ingen visuell webbläsarkontroll körd i sandlådan.
+  Ingen rutt, migration, åtgärd eller kontraktsändring tillkom. Sfär och Roll står
+  kvar utan *Stämmer* (fråga till David). Inga nya stilar, tokens eller beroenden.
+  Enligt berättelsens baslinje står adresskontraktet och bmadglidning röda utanför
+  repot sedan tidigare; Hermes-prov inte körda här. Kedjan kör hela sviten före
+  granskning och sköter drift efter godkänd granskning; ingen driftåtgärd utförd.
+
 - **2026-11-19 — Story 1.1, ursprung per fält för kontaktpunkter och löften (FR-8, FR-26):**
   Migration `0090_crm_event_provenance.sql` utökar ursprungstabellen till fyra mål,
   med bolagssäkra FK, kaskad och partiella unika index, utan bakåtfyllnad.
