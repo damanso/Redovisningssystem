@@ -2452,3 +2452,20 @@ förteckningen HAR lästs, och `last_nar` är `null` bara när den aldrig lästs
 Saknas roten men inte raderna, dateras förteckningen med radernas senaste
 läsning. "Vi vet inte" och "det finns inget" är två olika besked, och en
 gemensam nolla hade sagt det senare om det första.
+
+## Händelsernas ursprung (crm 1.1)
+
+`record_crm_interaction`, `record_crm_commitment` och `log_contact` skriver
+ursprung per fält i samma transaktion som händelsen: `human` för en människa,
+`ai` för en agent. Aktören hämtas ur sessionen eller agent-tokenet.
+`set_crm_commitment_status` skriver motsvarande ursprung för `status`.
+
+En agents skrivning ändrar inte ett fält som en människa satt eller bekräftat.
+Svaret redovisar de blockerade fältnamnen i `kept_human_fields`, till exempel
+`["body"]` eller `["status"]`; övriga inskickade fält skrivs som vanligt.
+Människans egen skrivning går igenom även när hon tidigare satt fältet.
+
+Kontaktpunkten bär ursprung för `occurred_at`, `channel`, `direction` och
+`summary`. Löftet bär ursprung för skrivna `direction`, `body`, `due_date` och
+`occurred_at`, och för `status` när statusåtgärden används. Löftets `sfar` är
+metadata och får inget ursprung här. Utelämnade fält får inget påhittat ursprung.
