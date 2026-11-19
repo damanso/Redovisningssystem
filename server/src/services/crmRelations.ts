@@ -9,8 +9,9 @@
 // körs om; en skrivning som inte tål att upprepas är en dubblettgenerator.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
-  confirmValue, guardHumanFields, readProvenance, recordProvenance,
+  confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
   type ProvenanceSource, type ProvenanceWrite,
 } from './crmProvenance.js';
 import {
@@ -95,6 +96,19 @@ export interface WriteOrigin {
  */
 const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes', 'sfar', 'roll'] as const;
 const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id', 'sfar'] as const;
+
+// Händelsens innehåll påstår något om världen. Mål och sfär är metadata;
+// löftets status är ett eget påstående som bara statusvägen skriver här.
+const INTERACTION_PROVENANCE_FIELDS = ['occurred_at', 'channel', 'direction', 'summary'] as const;
+const COMMITMENT_PROVENANCE_FIELDS = ['direction', 'body', 'due_date', 'status', 'occurred_at'] as const;
+const INTERACTION_UPDATE_FIELDS = {
+  person_id: 'person_id', organization_id: 'organization_id', occurred_at: 'occurred_at',
+  channel: 'channel', direction: 'direction', summary: 'summary',
+} as const;
+const COMMITMENT_UPDATE_FIELDS = {
+  person_id: 'person_id', organization_id: 'organization_id', direction: 'direction',
+  body: 'body', due_date: 'due_date', occurred_at: 'occurred_at', sfar: 'sfar',
+} as const;
 
 /** Ursprungsposter för de fält anroparen faktiskt fyllde i — tomma fält påstår ingenting. */
 function provenanceFor(
@@ -921,8 +935,8 @@ async function assertTarget(
  * spärren, den här kommentaren är bara skälet.
  */
 export async function recordInteraction(
-  client: PoolClient, companyId: string, userId: string, input: RecordInteractionInput,
-): Promise<Record<string, unknown> & { created: boolean }> {
+  client: PoolClient, companyId: string, userId: string, input: RecordInteractionInput, origin: WriteOrigin,
+): Promise<Record<string, unknown> & { created: boolean; kept_human_fields: string[] }> {
   await assertNotErased(client, companyId, input.source_system, input.source_ref);
   await assertTarget(client, companyId, input);
 
@@ -934,28 +948,42 @@ export async function recordInteraction(
     : null;
 
   // Steg 3 (0089, P2): en privat person står aldrig på en post hos en kund.
-  // Samma COALESCE-regel som SQL:en nedan: indata, annars det som står.
+  // Indatats mål, annars radens; UPDATE använder den låsta radens värden.
   await assertIngenPrivatPersonHosKund(client, companyId,
     input.organization_id ?? existing?.rows[0]?.organization_id ?? null,
     input.person_id ?? existing?.rows[0]?.person_id ?? null);
 
+  const values = {
+    occurred_at: input.occurred_at, channel: input.channel,
+    direction: input.direction ?? 'outbound', summary: input.summary,
+  };
   if (existing?.rows[0]) {
+    const id = existing.rows[0].id;
+    const locked = (await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
+      'SELECT id, person_id, organization_id FROM crm.interactions WHERE company_id = $1 AND id = $2 FOR UPDATE',
+      [companyId, id])).rows[0];
+    if (!locked) throw new NotFoundError('interaction');
+    const { input: patch, blocked } = await guardHumanFields(client, companyId, { interaction_id: id }, origin.source, values);
+    // Målkolumnerna står alltid i SET så att sfärens UPDATE OF-trigger prövar
+    // också en omsändning som bara ändrar sammanfattningen.
+    const u = buildAllowlistedUpdate(INTERACTION_UPDATE_FIELDS, {
+      ...patch, person_id: input.person_id ?? locked.person_id,
+      organization_id: input.organization_id ?? locked.organization_id,
+    })!;
     const r = await client.query(
-      `UPDATE crm.interactions SET
-         person_id = COALESCE($3, person_id), organization_id = COALESCE($4, organization_id),
-         occurred_at = $5, channel = $6, direction = $7, summary = $8
-       WHERE id = $1 AND company_id = $2
+      `UPDATE crm.interactions SET ${u.setSql}
+       WHERE id = $${u.values.length + 1} AND company_id = $${u.values.length + 2}
        RETURNING id, occurred_at, channel, direction, summary, source_system, source_ref`,
-      [existing.rows[0].id, companyId, input.person_id ?? null, input.organization_id ?? null,
-        input.occurred_at, input.channel, input.direction ?? 'outbound', input.summary],
+      [...u.values, id, companyId],
     );
-    // Även uppdateringen auditloggas. En omsänd händelse med ändrad text skriver
-    // om historiken, och en ändring utan spår är en ändring som inte hände.
+    await recordProvenance(client, companyId, userId, { interaction_id: id },
+      provenanceFor(INTERACTION_PROVENANCE_FIELDS, patch, origin));
+    // Omsändningar auditloggas också: ändrad historik ska alltid lämna spår.
     await writeCrmAudit(client, {
-      companyId, userId, action: 'crm.interaction_updated', entityType: 'interaction',
-      entityId: existing.rows[0].id, details: { source_system: input.source_system },
+      companyId, userId, action: 'crm.interaction_updated', entityType: 'interaction', entityId: id,
+      details: { source_system: input.source_system, ...(blocked.length ? { kept_human_fields: blocked } : {}) },
     });
-    return { ...r.rows[0], created: false };
+    return { ...r.rows[0], created: false, kept_human_fields: blocked };
   }
 
   const r = await client.query(
@@ -966,11 +994,13 @@ export async function recordInteraction(
     [companyId, input.person_id ?? null, input.organization_id ?? null, input.occurred_at, input.channel,
       input.direction ?? 'outbound', input.summary, input.source_system, input.source_ref ?? null, userId],
   );
+  await recordProvenance(client, companyId, userId, { interaction_id: r.rows[0]!.id as string },
+    provenanceFor(INTERACTION_PROVENANCE_FIELDS, values, origin));
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.interaction_recorded', entityType: 'interaction', entityId: r.rows[0]!.id as string,
     details: { source_system: input.source_system, channel: input.channel },
   });
-  return { ...r.rows[0], created: true };
+  return { ...r.rows[0], created: true, kept_human_fields: [] };
 }
 
 export interface RecordCommitmentInput {
@@ -1032,8 +1062,8 @@ const COMMITMENT_RETURNING = 'id, direction, body, due_date::text, status, occur
  * företagskontakt ska inte flyttas av att kontakten flyttas.
  */
 export async function recordCommitment(
-  client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput, source: ProvenanceSource,
-): Promise<Record<string, unknown> & { created: boolean }> {
+  client: PoolClient, companyId: string, userId: string, input: RecordCommitmentInput, origin: WriteOrigin,
+): Promise<Record<string, unknown> & { created: boolean; kept_human_fields: string[] }> {
   await assertNotErased(client, companyId, input.source_system, input.source_ref);
   await assertTarget(client, companyId, input);
 
@@ -1045,7 +1075,7 @@ export async function recordCommitment(
     : null;
   const befintlig = existing?.rows[0];
 
-  // Samma COALESCE-regel som SQL:en nedan: det som skrivs är indata, annars det som står.
+  // Gränskontrollen prövar indatats värden, annars de som redan står på raden.
   const motpart = await atagandetsMotpart(client, companyId,
     input.organization_id ?? befintlig?.organization_id ?? null, input.person_id ?? befintlig?.person_id ?? null);
   const sfar: Sfar = input.sfar ?? befintlig?.sfar ?? motpart.sfar ?? 'foretag';
@@ -1064,31 +1094,40 @@ export async function recordCommitment(
   await assertIngenPrivatPersonHosKund(client, companyId,
     input.organization_id ?? befintlig?.organization_id ?? null, input.person_id ?? befintlig?.person_id ?? null);
 
+  const values = {
+    direction: input.direction, body: input.body, due_date: input.due_date, occurred_at: input.occurred_at,
+  };
   if (befintlig) {
-    // Rättningsvarv 3b (krav 8): en agent byter inte sfär på ett befintligt åtagande
-    // genom att skicka det igen; set_crm_sfar lägger bytet i Att göra. Prövat mot den
-    // låsta raden. Utan sfär i indata behåller raden den sfär den har när satsen
-    // körs (COALESCE), inte den som lästes ovan: ett byte däremellan skrivs inte över.
-    if (source !== 'human' && input.sfar !== undefined) {
-      const nu = (await client.query<{ sfar: Sfar }>(
-        'SELECT sfar FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, befintlig.id])).rows[0];
-      if (nu && nu.sfar !== input.sfar) throw bytMedSetCrmSfar('atagande');
+    const locked = (await client.query<{ id: string; sfar: Sfar; person_id: string | null; organization_id: string | null }>(
+      'SELECT id, sfar, person_id, organization_id FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE',
+      [companyId, befintlig.id])).rows[0];
+    if (!locked) throw new NotFoundError('commitment');
+    // Agentens sfärbyte prövas mot den låsta raden och går fortsatt via Att göra.
+    if (origin.source !== 'human' && input.sfar !== undefined && locked.sfar !== input.sfar) {
+      throw bytMedSetCrmSfar('atagande');
     }
+    const { input: patch, blocked } = await guardHumanFields(
+      client, companyId, { commitment_id: locked.id }, origin.source, values);
+    // Mål och sfär står alltid i SET för sfärens UPDATE OF-trigger. Utelämnat
+    // behåller den låsta radens värde: ett samtidigt sfärbyte väntar på låset.
+    const u = buildAllowlistedUpdate(COMMITMENT_UPDATE_FIELDS, {
+      ...patch, person_id: input.person_id ?? locked.person_id,
+      organization_id: input.organization_id ?? locked.organization_id, sfar: input.sfar ?? locked.sfar,
+    })!;
     const r = await client.query(
-      `UPDATE crm.commitments SET
-         person_id = COALESCE($3, person_id), organization_id = COALESCE($4, organization_id),
-         direction = $5, body = $6, due_date = COALESCE($7, due_date), occurred_at = $8,
-         sfar = COALESCE($9, sfar)
-       WHERE id = $1 AND company_id = $2
+      `UPDATE crm.commitments SET ${u.setSql}
+       WHERE id = $${u.values.length + 1} AND company_id = $${u.values.length + 2}
        RETURNING ${COMMITMENT_RETURNING}`,
-      [befintlig.id, companyId, input.person_id ?? null, input.organization_id ?? null,
-        input.direction, input.body, input.due_date ?? null, input.occurred_at, input.sfar ?? null],
+      [...u.values, locked.id, companyId],
     );
+    await recordProvenance(client, companyId, userId, { commitment_id: locked.id },
+      provenanceFor(COMMITMENT_PROVENANCE_FIELDS, patch, origin));
     await writeCrmAudit(client, {
-      companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment',
-      entityId: befintlig.id, details: { source_system: input.source_system, sfar: r.rows[0]!.sfar as Sfar },
+      companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment', entityId: locked.id,
+      details: { source_system: input.source_system, sfar: r.rows[0]!.sfar as Sfar,
+        ...(blocked.length ? { kept_human_fields: blocked } : {}) },
     });
-    return { ...r.rows[0], created: false };
+    return { ...r.rows[0], created: false, kept_human_fields: blocked };
   }
 
   const r = await client.query(
@@ -1099,16 +1138,33 @@ export async function recordCommitment(
     [companyId, input.person_id ?? null, input.organization_id ?? null, input.direction, input.body,
       input.due_date ?? null, input.occurred_at, input.source_system, input.source_ref ?? null, userId, sfar],
   );
+  await recordProvenance(client, companyId, userId, { commitment_id: r.rows[0]!.id as string },
+    provenanceFor(COMMITMENT_PROVENANCE_FIELDS, values, origin));
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.commitment_recorded', entityType: 'commitment', entityId: r.rows[0]!.id as string,
     details: { direction: input.direction, source_system: input.source_system, sfar },
   });
-  return { ...r.rows[0], created: true };
+  return { ...r.rows[0], created: true, kept_human_fields: [] };
 }
 
 export async function setCommitmentStatus(
-  client: PoolClient, companyId: string, userId: string, id: string, status: 'open' | 'done' | 'dropped',
-): Promise<Record<string, unknown>> {
+  client: PoolClient, companyId: string, userId: string, id: string, status: 'open' | 'done' | 'dropped', actor: 'human' | 'agent',
+): Promise<Record<string, unknown> & { kept_human_fields: string[] }> {
+  const locked = await client.query(
+    'SELECT id FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, id]);
+  if (!locked.rows[0]) throw new NotFoundError('commitment');
+  const source = sourceForActor(actor);
+  const { blocked } = await guardHumanFields(client, companyId, { commitment_id: id }, source, { status });
+  if (blocked.length) {
+    const current = await client.query(
+      `SELECT id, direction, body, due_date::text, status, occurred_at FROM crm.commitments
+       WHERE id = $1 AND company_id = $2`, [id, companyId]);
+    await writeCrmAudit(client, {
+      companyId, userId, action: 'crm.commitment_status_set', entityType: 'commitment', entityId: id,
+      details: { status, kept_human_fields: blocked },
+    });
+    return { ...current.rows[0], kept_human_fields: blocked };
+  }
   const r = await client.query(
     `UPDATE crm.commitments
      SET status = $3, completed_at = CASE WHEN $3 = 'open' THEN NULL ELSE now() END
@@ -1117,10 +1173,11 @@ export async function setCommitmentStatus(
     [id, companyId, status],
   );
   if (!r.rows[0]) throw new NotFoundError('commitment');
+  await recordProvenance(client, companyId, userId, { commitment_id: id }, [{ field: 'status', source }]);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.commitment_status_set', entityType: 'commitment', entityId: id, details: { status },
   });
-  return r.rows[0];
+  return { ...r.rows[0], kept_human_fields: [] };
 }
 
 export async function listCommitments(
@@ -1220,6 +1277,7 @@ export async function setRelationNudge(
 export async function logContact(
   client: PoolClient, companyId: string, userId: string,
   input: { organization_id?: string; person_id?: string; channel?: 'email' | 'meeting' | 'call' | 'note'; summary?: string; occurred_at?: string },
+  actor: 'human' | 'agent',
 ): Promise<Record<string, unknown> & { created: boolean }> {
   return recordInteraction(client, companyId, userId, {
     organization_id: input.organization_id,
@@ -1229,7 +1287,7 @@ export async function logContact(
     direction: 'outbound',
     summary: input.summary?.trim() || 'Kontakt loggad för hand',
     source_system: 'manual',
-  });
+  }, { source: sourceForActor(actor) });
 }
 
 // ---------------------------------------------------------------------------

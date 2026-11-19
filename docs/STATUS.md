@@ -153,6 +153,22 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-19 — Story 1.1, ursprung per fält för kontaktpunkter och löften (FR-8, FR-26):**
+  Migration `0090_crm_event_provenance.sql` utökar ursprungstabellen till fyra mål,
+  med bolagssäkra FK, kaskad och partiella unika index, utan bakåtfyllnad.
+  Händelsernas skrivvägar skriver ursprung i samma transaktion; omsändningar tar
+  radlås före människovakten och bygger UPDATE med allowlist. Aktörens ursprung
+  följer record-åtgärderna, Logga kontakt och statusbytet. Intagets blockerade
+  händelsefält redovisas som organisation/person, källnyckel och fält.
+  39 nya fall i `server/test/crm-event-provenance.test.ts`: M1–M7, K1–K3,
+  P1–P6, H1–H15, E1–E2, S1–S2 och I1–I4. Typecheck körd grön efter varje kodsteg;
+  slutligt `npm run build` och `git diff --check` exit 0.
+  Hela `npm test` försökt i rött och grönt men stoppas före testerna av
+  `connect EPERM 127.0.0.1:5433` i globalSetup; inga databastester grönrapporteras.
+  Kedjan kör typecheck, build och hela sviten efter bygget. Sfären i 0087–0089
+  och vyn är oförändrade; personens `external_ref` och `notes` byggs i 1.9.
+  Inga nya paket, tjänster, åtgärder eller rutter. Ingen driftåtgärd utförd.
+
 - **2026-11-18 (CRM privat och företag, rättningsvarv 3b — uppdrag crmsfar3b, leads beslut 18/11 efter
   `crmsfar3_granskning1.ut`, samma gren `crm-sfar` ovanpå main `fe99c4c`, ej committad):**
   Krav 8: en agents `set_crm_sfar` som skulle ändra sfär (eller roll) på en befintlig organisation,

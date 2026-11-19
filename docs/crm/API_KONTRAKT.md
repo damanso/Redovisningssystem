@@ -138,6 +138,18 @@ Filtreringen redovisas i `kept_human_fields` (`"Nordic Vision Retail AB:
 org_number"`). En synk som tyst kastar bort en del av sin egen skrivning ser ut
 som en synk som lyckades helt.
 
+Även kontaktpunktens `occurred_at`, `channel`, `direction` och `summary`,
+och löftets `direction`, `body`, `due_date`, `status` och `occurred_at` bär
+ursprung per fält. Synken skriver inte över ett fält som en människa satt.
+Intaget skriver de fält som händelsen bär; löftets status skrivs av
+`set_crm_commitment_status` och ingår inte i intaget. Äldre värden utan
+ursprungsrad är oskyddade tills de skrivs på nytt; ingen bakåtfyllnad görs.
+
+Blockerade händelsefält redovisas i `kept_human_fields` med formen
+`"<organisation>: <källnyckel> <fält>"`.
+Exempel: `"Löftesbolaget AB: linear:LOC-1 body"`.
+En händelse utan organisation får personens namn som prefix.
+
 | Åtgärd | Gör |
 | :---- | :---- |
 | `get_crm_organization` | Returnerar `provenance` — ursprunget per fält, för organisationen och för varje person |

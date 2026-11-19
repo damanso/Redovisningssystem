@@ -16,8 +16,12 @@ import type { PoolClient } from 'pg';
 
 export type ProvenanceSource = 'human' | 'ai' | 'sync' | 'accounting' | 'import';
 
-/** Var i relationsdatan fältet sitter. Exakt en av dem, aldrig båda. */
-export type ProvenanceTarget = { organization_id: string } | { person_id: string };
+/** Var i relationsdatan fältet sitter. Exakt ett av fyra mål är satt. */
+export type ProvenanceTarget =
+  | { organization_id: string }
+  | { person_id: string }
+  | { interaction_id: string }
+  | { commitment_id: string };
 
 export interface ProvenanceEntry {
   field: string;
@@ -38,10 +42,16 @@ export interface ProvenanceWrite {
   source_ref?: string;
 }
 
-function targetColumns(target: ProvenanceTarget): { orgId: string | null; personId: string | null } {
-  return 'organization_id' in target
-    ? { orgId: target.organization_id, personId: null }
-    : { orgId: null, personId: target.person_id };
+function targetColumns(target: ProvenanceTarget): {
+  orgId: string | null; personId: string | null; interactionId: string | null; commitmentId: string | null;
+} {
+  const t: Partial<Record<'organization_id' | 'person_id' | 'interaction_id' | 'commitment_id', string>> = target;
+  return {
+    orgId: Object.hasOwn(t, 'organization_id') ? t.organization_id ?? null : null,
+    personId: Object.hasOwn(t, 'person_id') ? t.person_id ?? null : null,
+    interactionId: Object.hasOwn(t, 'interaction_id') ? t.interaction_id ?? null : null,
+    commitmentId: Object.hasOwn(t, 'commitment_id') ? t.commitment_id ?? null : null,
+  };
 }
 
 /**
@@ -59,14 +69,16 @@ export function sourceForActor(actor: 'human' | 'agent'): ProvenanceSource {
 export async function readProvenance(
   client: PoolClient, companyId: string, target: ProvenanceTarget,
 ): Promise<Map<string, ProvenanceEntry>> {
-  const { orgId, personId } = targetColumns(target);
+  const { orgId, personId, interactionId, commitmentId } = targetColumns(target);
   const r = await client.query<ProvenanceEntry>(
     `SELECT field, source, confidence, reason, source_system, source_ref, recorded_at
      FROM crm.field_provenance
      WHERE company_id = $1
        AND organization_id IS NOT DISTINCT FROM $2::uuid
-       AND person_id IS NOT DISTINCT FROM $3::uuid`,
-    [companyId, orgId, personId],
+       AND person_id IS NOT DISTINCT FROM $3::uuid
+       AND interaction_id IS NOT DISTINCT FROM $4::uuid
+       AND commitment_id IS NOT DISTINCT FROM $5::uuid`,
+    [companyId, orgId, personId, interactionId, commitmentId],
   );
   return new Map(r.rows.map((x) => [x.field, { ...x, confidence: x.confidence === null ? null : Number(x.confidence) }]));
 }
@@ -83,25 +95,30 @@ export async function recordProvenance(
   target: ProvenanceTarget, entries: readonly ProvenanceWrite[],
 ): Promise<void> {
   if (entries.length === 0) return;
-  const { orgId, personId } = targetColumns(target);
-  // Två färdiga satser i stället för en med inflätat kolumnnamn: partiella
+  const { orgId, personId, interactionId, commitmentId } = targetColumns(target);
+  // Fyra färdiga satser i stället för en med inflätat kolumnnamn: partiella
   // unik-index kräver sitt predikat i ON CONFLICT, och kolumnnamn ska aldrig
   // byggas ihop av strängar — inte ens av strängar vi själva äger.
   const SQL_HEAD = `INSERT INTO crm.field_provenance
-      (company_id, organization_id, person_id, field, source, confidence, reason, source_system, source_ref, recorded_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`;
+      (company_id, organization_id, person_id, interaction_id, commitment_id,
+       field, source, confidence, reason, source_system, source_ref, recorded_by)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`;
   const SQL_SET = `DO UPDATE SET source = EXCLUDED.source, confidence = EXCLUDED.confidence,
       reason = EXCLUDED.reason, source_system = EXCLUDED.source_system,
       source_ref = EXCLUDED.source_ref, recorded_by = EXCLUDED.recorded_by, recorded_at = now()`;
   const sql = orgId
     ? `${SQL_HEAD} ON CONFLICT (company_id, organization_id, field) WHERE organization_id IS NOT NULL ${SQL_SET}`
-    : `${SQL_HEAD} ON CONFLICT (company_id, person_id, field) WHERE person_id IS NOT NULL ${SQL_SET}`;
+    : personId
+      ? `${SQL_HEAD} ON CONFLICT (company_id, person_id, field) WHERE person_id IS NOT NULL ${SQL_SET}`
+      : interactionId
+        ? `${SQL_HEAD} ON CONFLICT (company_id, interaction_id, field) WHERE interaction_id IS NOT NULL ${SQL_SET}`
+        : `${SQL_HEAD} ON CONFLICT (company_id, commitment_id, field) WHERE commitment_id IS NOT NULL ${SQL_SET}`;
 
   // Sekventiellt: satserna delar EN anslutning och pg kan inte köra dem
   // parallellt. Fälten skrivs i samma transaktion som värdena de beskriver —
   // annars kan ett värde hinna finnas utan sitt ursprung.
   for (const e of entries) {
-    await client.query(sql, [companyId, orgId, personId, e.field, e.source, e.confidence ?? null,
+    await client.query(sql, [companyId, orgId, personId, interactionId, commitmentId, e.field, e.source, e.confidence ?? null,
       e.reason ?? null, e.source_system ?? null, e.source_ref ?? null, userId]);
   }
 }
