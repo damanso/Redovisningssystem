@@ -19,7 +19,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError } from '../lib/errors.js';
 import {
   recordCommitment, recordInteraction, upsertOrganization, upsertPerson, writeCrmAudit,
-  type SourceSystem,
+  type SourceSystem, type WriteOrigin,
 } from './crmRelations.js';
 
 export interface IngestEvent {
@@ -122,6 +122,8 @@ export async function ingestCrmEvents(
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
       }
 
+      const origin: WriteOrigin = { source: 'sync', source_system: e.source_system, source_ref: e.source_ref };
+      let prefix = '';
       let organizationId: string | undefined;
       if (e.organization) {
         const org = await upsertOrganization(client, companyId, userId, {
@@ -130,6 +132,7 @@ export async function ingestCrmEvents(
           website: e.organization.website,
         }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
         organizationId = org.id;
+        prefix = org.name;
         if (org.created) delta.organizations += 1;
         delta.kept.push(...org.kept_human_fields.map((f) => `${org.name}: ${f}`));
         // Namnet fanns bara som gravsten efter en sammanslagning — skrivningen
@@ -151,6 +154,7 @@ export async function ingestCrmEvents(
           organization_id: organizationId,
         }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
         personId = person.id;
+        if (!organizationId) prefix = person.name;
         if (person.created) delta.people += 1;
         delta.kept.push(...person.kept_human_fields.map((f) => `${person.name}: ${f}`));
       }
@@ -161,7 +165,8 @@ export async function ingestCrmEvents(
           person_id: personId, organization_id: organizationId,
           occurred_at: e.occurred_at, channel: e.channel, direction: e.direction,
           summary: e.summary, source_system: e.source_system, source_ref: e.source_ref,
-        });
+        }, origin);
+        delta.kept.push(...r.kept_human_fields.map((field) => `${prefix}: ${e.source_ref} ${field}`));
         if (r.created) result.interactions_created += 1; else result.interactions_unchanged += 1;
       } else {
         if (!e.commitment_direction || !e.body) throw new BadRequestError('invalid_event', 'åtagande kräver riktning och text');
@@ -169,7 +174,8 @@ export async function ingestCrmEvents(
           person_id: personId, organization_id: organizationId,
           direction: e.commitment_direction, body: e.body, due_date: e.due_date,
           occurred_at: e.occurred_at, source_system: e.source_system, source_ref: e.source_ref,
-        }, 'sync');
+        }, origin);
+        delta.kept.push(...r.kept_human_fields.map((field) => `${prefix}: ${e.source_ref} ${field}`));
         if (r.created) result.commitments_created += 1; else result.commitments_unchanged += 1;
       }
       await client.query('RELEASE SAVEPOINT crm_event');

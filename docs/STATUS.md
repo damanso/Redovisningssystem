@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-19 (Story 1.1, ursprung per fält för kontaktpunkter, löften och personens alla fält (FR-8, FR-26)):**
+  Migration `0090_crm_event_provenance.sql` utvidgar samma ursprungstabell till fyra mål,
+  med sammansatta FK, kaskad och partiella unika index, utan bakåtfyllnad. Händelserna
+  skriver ursprung per fält i samma transaktion; radlås före vakten och allowlist för
+  UPDATE skyddar människans värden. Aktören styr human/ai, intaget skriver sync och
+  redovisar blockerade händelsefält med källnyckeln. Personens external_ref/notes får
+  ursprung och vakt, organisationerna (också den personen lämnar) låses före personraden
+  och vakten. API_KONTRAKT och MCP_ACTIONS beskriver svaren. 44 nya fall i
+  `server/test/crm-event-provenance.test.ts`: M1–M7/K1–K3 (migration och bolagsisolering),
+  P1–P6 (fyra mål), H1–H15/E1–E2/S1–S2 (skrivvägar, samtidighet och triggerkolumner),
+  H16a–H16d/H17 (personfält/låsordning) och I1–I4 (idempotens, spärr och dokument).
+  `npm run typecheck` och `npm run build`: exit 0. Dokumentkontrollerna I3/I4 och
+  sändvägsprovets rena kontroller S1–S4/N1–N4 samt modulankarna: exit 0.
+  `npm test` försökt före och efter
+  varje uppgift men inga databasfall eller regressioner kördes: globalSetup nekas med
+  `connect EPERM 127.0.0.1:5433` (exit 1). Observerat rött för måltyperna före uppgift 2
+  och för dokumentkontrollerna före uppgift 5. Kedjan kör typecheck och hela sviten;
+  databasgrönt påstås inte här. Sfären i 0087–0089 och befintliga vyer är orörda.
+
+
 - **2026-11-18 (CRM privat och företag, rättningsvarv 3b — uppdrag crmsfar3b, leads beslut 18/11 efter
   `crmsfar3_granskning1.ut`, samma gren `crm-sfar` ovanpå main `fe99c4c`, ej committad):**
   Krav 8: en agents `set_crm_sfar` som skulle ändra sfär (eller roll) på en befintlig organisation,
