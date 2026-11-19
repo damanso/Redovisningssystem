@@ -27,6 +27,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Webbläsarproven (menyn-fonsterstorlekar, webbmeny, uppdragsytan-undantagsvyn-mobil) startar Chromium via
+      # Playwright. Utan det här steget finns ingen webbläsare på körmaskinen och CI har varit röd sedan proven kom.
+      - name: Playwright-webbläsare
+        run: npx playwright install --with-deps chromium
+        working-directory: server
       - name: Typecheck
         run: npm run typecheck -w server
       - name: Build
