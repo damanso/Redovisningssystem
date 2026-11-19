@@ -493,6 +493,17 @@ async function assertOrganization(client: PoolClient, companyId: string, id: str
   if (!r.rows[0]) throw new NotFoundError('organization');
 }
 
+/** Vyn får bara bekräfta en person från den relation där personen hör hemma. */
+export async function assertPersonInOrganization(
+  client: PoolClient, companyId: string, organizationId: string, personId: string,
+): Promise<void> {
+  const r = await client.query(
+    'SELECT 1 FROM crm.people WHERE company_id = $1 AND id = $2 AND organization_id = $3',
+    [companyId, personId, organizationId],
+  );
+  if (!r.rows[0]) throw new NotFoundError('person');
+}
+
 /**
  * Hela relationen kring en organisation. Kunduppgifterna JOINas ur
  * redovisningen i stället för att speglas — det finns bara en sanning om vad en
