@@ -74,9 +74,9 @@ function etikettbrister(actions: SchemaAction[]) {
 const human = (f: Fixtur) => ({ Authorization: `Bearer ${f.user.token}` });
 const agent = (f: Fixtur) => ({ Authorization: `Bearer ${f.agentToken}` });
 const co = (f: Fixtur) => `/api/companies/${f.bolag}`;
-async function byggFixtur() {
+async function byggFixtur(bolagsnamn = 'Klartext AB') {
   const user = await registerUser('klartext');
-  const bolag = await createCompany(user.token, 'Klartext AB');
+  const bolag = await createCompany(user.token, bolagsnamn);
   const auth = { Authorization: `Bearer ${user.token}` };
   const fiscalYear = await createFiscalYear(bolag, auth, { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
   const act = async (name: string, input: Record<string, unknown>) => {
@@ -101,7 +101,7 @@ async function byggFixtur() {
   expect(tok.status, JSON.stringify(tok.body)).toBe(201);
   const konton = await withAdmin(async (c) => (await c.query<{ account_number: number; name: string }>(
     'SELECT account_number, name FROM accounts WHERE company_id IS NULL AND account_number IN (1930,3001)')).rows);
-  return { user, bolag, fiscalYear, kund, leverantor, relation, uuidRelation, faktura,
+  return { user, bolag, bolagsnamn, fiscalYear, kund, leverantor, relation, uuidRelation, faktura,
     verifikat: voucherRes.body.voucher, projekt, avtal, agentToken: tok.body.token as string, konton };
 }
 type Fixtur = Awaited<ReturnType<typeof byggFixtur>>;
@@ -444,7 +444,7 @@ function kortPaSida(html: string, id: string): string {
   expect(card, `Kortet ${id} saknas`).toBeDefined(); return card!;
 }
 async function byggSida() {
-  const f = await byggFixtur();
+  const f = await byggFixtur(`Klartext ${slump()} & ${slump().toUpperCase()} AB`);
   const forslag = [];
   for (const def of koAtgarder()) {
     for (const actor of ['agent', 'human'] as const) {
@@ -473,10 +473,11 @@ describe('hela Att göra-sidan', () => {
     // Förutsättning: blir röd om fixturens egen fritext får JSON eller ett nyckelord.
     const texts = [...s.forslag, s.planted.P5].flatMap((a) => strangar(a.input))
       .filter((t) => !UuidSchema.safeParse(t).success && !/^\d{4}-\d{2}-\d{2}/.test(t));
-    texts.push('Klartext AB', s.kund.name, s.leverantor.name, s.relation.name, s.uuidRelation.name, s.projekt.name, s.avtal.name);
+    texts.push(s.bolagsnamn, s.kund.name, s.leverantor.name, s.relation.name, s.uuidRelation.name, s.projekt.name, s.avtal.name);
     for (const t of texts) expect(synligaBrister(t).filter((x) => x.slag !== 'uuid'), t).toEqual([]);
   });
   it('T4.2 alla väntande kort visas utan UUID, JSON eller nyckelnamn', () => {
+    expect(sida).toContain('<span class="co">Klartext (dold referens) &amp; (dold referens) AB</span>');
     expect(synligaBrister(sida)).toEqual([]);
     expect(s.forslag).toHaveLength(koAtgarder().length * 2 + 4);
     expect(sida.match(/<article class="ai-card">/g)).toHaveLength(s.forslag.length);
@@ -594,6 +595,103 @@ describe('uppfyllt beroende visar godkännandet', () => {
     for (const a of [b.pay, b.supplierPay]) {
       const card = kortPaSida(after.text, a.id);
       expect(card).toContain(`/approvals/${a.id}/approve`); expect(card).not.toContain('först ↑');
+    }
+  });
+});
+
+describe('sidramens textvägar', () => {
+  it('R1.1 tomt läge och felnotis maskar referenser och behåller escaping och adresser', async () => {
+    const user = await registerUser(`Klartext-${slump()}`);
+    const bolagsnamn = `Bolag <${slump()}> & ${slump().toUpperCase()}`;
+    const bolag = await createCompany(user.token, bolagsnamn);
+    const vy = supertest.agent(app);
+    const login = await vy.post('/app/login').type('form').send({ email: user.email, password: 'mycket-hemligt-losen-123' });
+    expect(login.status, login.text).toBe(302);
+    for (const fel of ['', `Kunde inte utföras: <${slump()}> & ${slump().toUpperCase()}`]) {
+      const res = await vy.get(`/app/c/${bolag}/approvals`).query(fel ? { fel } : {});
+      expect(res.status, res.text).toBe(200);
+      expect(res.text).toContain('Inget väntar');
+      expect(res.text).toContain('<span class="co">Bolag &lt;(dold referens)&gt; &amp; (dold referens)</span>');
+      expect(synligaBrister(res.text)).toEqual([]);
+      expect(res.text).toContain(`/app/c/${bolag}/sok`);
+      if (fel) expect(res.text).toContain('<p class="notice">Kunde inte utföras: &lt;(dold referens)&gt; &amp; (dold referens)</p>');
+      else expect(res.text).not.toContain('<p class="notice">');
+    }
+    // Samma namn i en annan vy behåller sitt ordinarie presentationskontrakt.
+    const annan = await vy.get(`/app/c/${bolag}/customers`);
+    expect(annan.status, annan.text).toBe(200);
+    expect(annan.text).toContain(bolagsnamn.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+  });
+});
+
+describe('beroenden utanför Att göras listfönster', () => {
+  let b: Beroendefixtur;
+  beforeAll(async () => {
+    b = await byggBeroende();
+    // Bokningarna hamnar utanför de 200 senaste medan båda betalningstyperna
+    // återkommer i fönstret. Flera kort delar mål och får inte dubblera det.
+    await iTransaktion(b, async (c) => {
+      for (let n = 0; n < 201; n++) {
+        await createApproval(c, b.bolag, b.user.userId, 'agent', 'run_recurring_invoices', { as_of: '2026-10-31' });
+      }
+    });
+  }, 120000);
+  it('R2.1 alla fragment får ett unikt fokuserbart målkort även över 200-gränsen', async () => {
+    const payments = [];
+    for (const [action, input] of [
+      ['register_invoice_payment', { invoice_id: b.faktura.id, payment_date: '2026-04-15' }],
+      ['register_supplier_payment', { supplier_invoice_id: b.leverantorsfaktura.id, payment_date: '2026-04-20' }],
+    ] as const) {
+      for (let n = 0; n < 2; n++) payments.push(await koa(b, action, input));
+    }
+    const list = await api.get(`${co(b)}/approvals?status=pending`).set(agent(b));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(list.body.approvals).toHaveLength(200);
+    for (const booking of [b.book, b.supplierBook]) {
+      expect(list.body.approvals.some((a: { id: string }) => a.id === booking.id)).toBe(false);
+    }
+    const res = await b.vy.get(`/app/c/${b.bolag}/approvals`);
+    expect(res.status, res.text).toBe(200);
+    const targets = [...res.text.matchAll(/id="(forslag-[^"]+)"/g)].map((m) => m[1]!);
+    const links = [...res.text.matchAll(/href="#(forslag-[^"]+)"/g)].map((m) => m[1]!);
+    expect(links.length).toBeGreaterThanOrEqual(payments.length * 2);
+    for (const target of new Set(links)) expect(targets.filter((id) => id === target), target).toHaveLength(1);
+    for (const booking of [b.book, b.supplierBook]) {
+      const card = kortPaSida(res.text, booking.id);
+      expect(card).toContain(`id="forslag-${booking.id}" tabindex="-1" role="heading"`);
+      expect(card).toContain(`/approvals/${booking.id}/approve`);
+    }
+    for (const pay of payments) {
+      const dep = list.body.approvals.find((a: { id: string }) => a.id === pay.id).dependency;
+      const card = kortPaSida(res.text, pay.id);
+      expect(card).toContain(`href="#forslag-${dep.pending_approval_id}"`);
+      expect(card).not.toContain(`/approvals/${pay.id}/approve`);
+      expect(card).toContain(`/approvals/${pay.id}/reject`);
+    }
+    // Samma oberoende textmätare gäller också de kompletterade korten.
+    expect(synligaBrister(res.text)).toEqual([]);
+    expect(res.text.match(/<article class="ai-card">/g)).toHaveLength(202);
+    // Ett mål som redan finns i listfönstret får inte läggas till en gång till.
+    const next = await koa(b, 'book_invoice', { invoice_id: b.faktura.id });
+    const again = await b.vy.get(`/app/c/${b.bolag}/approvals`);
+    expect(again.status, again.text).toBe(200);
+    expect(again.text.match(new RegExp(`id="forslag-${next.id}"`, 'g'))).toHaveLength(1);
+    expect(again.text.match(new RegExp(`id="forslag-${b.book.id}"`, 'g'))).toHaveLength(1);
+    // Avvisat mål ersätts av nästa väntande bokning, eller av vägledningen.
+    for (const booking of [b.book, b.supplierBook]) {
+      const rejected = await b.vy.post(`/app/c/${b.bolag}/approvals/${booking.id}/reject`).send({});
+      expect(rejected.status, rejected.text).toBe(302);
+    }
+    const after = await b.vy.get(`/app/c/${b.bolag}/approvals`);
+    expect(after.status, after.text).toBe(200);
+    for (const pay of payments) {
+      const card = kortPaSida(after.text, pay.id);
+      if (pay.action === 'register_invoice_payment') expect(card).toContain(`href="#forslag-${next.id}"`);
+      else {
+        expect(card).toContain('Be AI-assistenten föreslå bokföringen först.');
+        expect(card).not.toContain('href="#forslag-');
+      }
+      expect(card).not.toContain(`/approvals/${pay.id}/approve`);
     }
   });
 });

@@ -21,8 +21,8 @@ import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } 
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
-import { listApprovals, listRecentDecisions } from '../../services/approvals.js';
-import { forslagskort, avgjordRad } from '../../services/approvalSummary.js';
+import { getApproval, listApprovals, listRecentDecisions } from '../../services/approvals.js';
+import { forslagskort, avgjordRad, utanUuid } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
 import { vatReport } from '../../services/accounting/vatReport.js';
@@ -785,10 +785,10 @@ function timmar(minutes: number): string {
 }
 
 /** Felnotis (?fel=<text>) för sidor med formulär. Texten HTML-escapas av html``. */
-function felNotis(req: Request): Raw | '' {
+function felNotis(req: Request, formatText: (text: string) => string = (text) => text): Raw | '' {
   const fel = req.query.fel;
   if (typeof fel !== 'string' || !fel) return '';
-  return html`<p class="notice">${fel === '1' ? FORM_FEL : fel}</p>`;
+  return html`<p class="notice">${formatText(fel === '1' ? FORM_FEL : fel)}</p>`;
 }
 
 /**
@@ -827,7 +827,9 @@ function pageFor(
       const company = await loadCompany(client, companyId);
       return { name: company.name, body: await render(client, companyId, req) };
     });
-    res.type('html').send(layout({ title, companyId, companyName: name, active, ...sidan, body }).value);
+    // AC 2 omfattar också Att göras sidram. Bara visningstexten maskas.
+    const companyName = active === 'approvals' ? utanUuid(name) : name;
+    res.type('html').send(layout({ title, companyId, companyName, active, ...sidan, body }).value);
   });
 }
 
@@ -10291,9 +10293,25 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   // kan inte köra dem parallellt — den köar dem och varnar (borttaget i pg@9).
   // Samma regel som i crmRelations och crm.ts.
   const pending = [];
+  const visade = new Set(pendingRaw.map((a) => a.id));
   for (const a of pendingRaw) {
     const def = getAction(a.action);
-    const dep = await checkApprovalDependency(client, companyId, a.action, a.input);
+    let dep = await checkApprovalDependency(client, companyId, a.action, a.input);
+    // Ett beroende kan peka utanför de 200 senaste. Ta med just dess kort
+    // innan länken ritas, en gång per id, utan att ändra API-köns listfönster.
+    if (dep?.pending_approval_id && !visade.has(dep.pending_approval_id)) {
+      const mal = await getApproval(client, companyId, dep.pending_approval_id).catch((err: unknown) => {
+        if (err instanceof NotFoundError) return null;
+        throw err;
+      });
+      if (mal?.status === 'pending') {
+        pendingRaw.push(mal);
+        visade.add(mal.id);
+      } else {
+        // Posten kan ha avgjorts sedan beroendet lästes. Ingen länk utan mål.
+        dep = { ...dep, pending_approval_id: undefined };
+      }
+    }
     const kort = await forslagskort(client, companyId, a, {
       title: def?.title,
       dependency: dep,
@@ -10310,7 +10328,7 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   }
   return html`<div class="page-head"><div>${eyebrow('Att göra')}<h1>Väntar på din granskning</h1>
       <p class="lede">AI:t föreslår — du bestämmer. Känsliga åtgärder (bokföra, låsa period) bokförs aldrig automatiskt.</p></div></div>
-    ${felNotis(req)}
+    ${felNotis(req, utanUuid)}
     ${
       pending.length === 0
         ? html`<div class="empty"><div class="big">Inget väntar 🎉</div>Alla AI-förslag är hanterade. Nya förslag dyker upp här.</div>`
