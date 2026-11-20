@@ -10,6 +10,7 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
+import { linkStatusOutcome } from '../lib/crmRules.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
   type ProvenanceEntry, type ProvenanceSource, type ProvenanceTarget, type ProvenanceWrite,
@@ -439,14 +440,19 @@ export async function upsertOrganization(
   }
 
   // Gränsen prövas på det som faktiskt skrivs: efter att människans fält plockats
-  // bort, och med statusen som följer med en ny koppling (samma regel som i SQL:en).
+  // bort, och med samma räknade status som skrivningen får (A-5).
   const nyKoppling = Boolean(patch.customer_id) && patch.customer_id !== hit.customer_id;
+  const kopplingsstatus = nyKoppling && patch.status === undefined
+    ? linkStatusOutcome(hit.status, (await readProvenance(client, companyId, { organization_id: hit.id })).get('status')?.source ?? null)
+    : { status: hit.status, kept: false };
+  const statusEfter = (patch.status as OrganizationStatus | undefined) ?? kopplingsstatus.status;
+  const statusBytsAvKopplingen = patch.status === undefined && kopplingsstatus.status !== hit.status;
+  const keptHumanFields = [...new Set([...blocked, ...(kopplingsstatus.kept ? ['status'] : [])])].sort();
   const sfarEfter = (patch.sfar as Sfar | undefined) ?? hit.sfar;
   assertOrganisationInomGransen({
     sfar: sfarEfter,
     customer_id: (patch.customer_id as string | undefined) ?? hit.customer_id,
-    status: (patch.status as OrganizationStatus | undefined)
-      ?? (patch.customer_id && hit.status === 'prospect' ? 'customer' : hit.status),
+    status: statusEfter,
     nyKoppling,
     privataAtaganden: sfarEfter === 'foretag' && nyKoppling && await harPrivataAtaganden(client, companyId, hit.id),
     privataPersoner: sfarEfter === 'foretag' && nyKoppling && await harPrivataPersoner(client, companyId, [hit.id]),
@@ -460,9 +466,9 @@ export async function upsertOrganization(
        org_number  = COALESCE($4, org_number),
        website     = COALESCE($5, website),
        customer_id = COALESCE($6, customer_id),
-       -- Blir prospektet kund utan att någon säger till: statusen följer med
-       -- kopplingen, annars står den kvar som "prospekt" med en kund bakom sig.
-       status      = COALESCE($7, CASE WHEN $6::uuid IS NOT NULL AND status = 'prospect' THEN 'customer' ELSE status END),
+       -- Statusen följer kopplingen enligt statusAfterLink (A-5);
+       -- en människosatt status står kvar.
+       status      = COALESCE($7, status),
        source      = COALESCE($8, source),
        notes       = COALESCE($9, notes),
        sfar        = COALESCE($10, sfar),
@@ -470,7 +476,7 @@ export async function upsertOrganization(
      WHERE id = $1 AND company_id = $2 RETURNING ${ORG_COLUMNS}`,
     [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
       patch.org_number ?? null, patch.website ?? null, patch.customer_id ?? null,
-      patch.status ?? null, input.source ?? null, patch.notes ?? null,
+      patch.status ?? (statusBytsAvKopplingen ? kopplingsstatus.status : null), input.source ?? null, patch.notes ?? null,
       patch.sfar ?? null, patch.roll ?? null],
   );
   // Kopplingen som systemet självt slog upp bär sitt eget ursprung; övriga fält
@@ -481,6 +487,9 @@ export async function upsertOrganization(
   await recordProvenance(client, companyId, userId, { organization_id: hit.id }, [
     ...provenanceFor(ORG_PROVENANCE_FIELDS, link.length ? { ...patch, customer_id: undefined } : patch, origin),
     ...link,
+    ...(statusBytsAvKopplingen
+      ? (link.length ? link : provenanceFor(['customer_id'], patch, origin)).map((entry) => ({ ...entry, field: 'status' }))
+      : []),
   ]);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.organization_updated', entityType: 'organization', entityId: hit.id,
@@ -491,14 +500,14 @@ export async function upsertOrganization(
       status: r.rows[0]!.status, sfar: r.rows[0]!.sfar, roll: r.rows[0]!.roll,
       linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
-      ...(blocked.length ? { kept_human_fields: blocked } : {}),
+      ...(keptHumanFields.length ? { kept_human_fields: keptHumanFields } : {}),
       // Att skrivningen landade på en annan rad än avsändaren trodde ska synas i
       // efterhand — men bara som ett JA, aldrig som namnet: loggen är
       // append-only och en organisation kan vara en enskild firma.
       ...(redirectedFrom ? { redirected: true } : {}),
     },
   });
-  return { ...r.rows[0]!, created: false, kept_human_fields: blocked, redirected_from: redirectedFrom };
+  return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, redirected_from: redirectedFrom };
 }
 
 /**
@@ -713,7 +722,10 @@ export async function confirmCrmValue(
   if (Object.hasOwn(target, 'organization_id')) {
     entityType = 'organization';
     entityId = ids.organization_id!;
-    await assertOrganization(client, companyId, entityId);
+    // Samma radlås som synkens upsert, före ursprunget: en samtidig bekräftelse
+    // ska läsas efter väntan och får inte skrivas över av kopplingens ursprung.
+    const org = await client.query('SELECT 1 FROM crm.organizations WHERE id = $1 AND company_id = $2 FOR UPDATE', [entityId, companyId]);
+    if (!org.rows[0]) throw new NotFoundError('organization');
   } else if (Object.hasOwn(target, 'person_id')) {
     entityType = 'person';
     entityId = ids.person_id!;

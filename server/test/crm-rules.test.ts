@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -77,5 +77,75 @@ describe('organisationsformulärets rättelser och adressens formulär (story 1.
     for (const value of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'dubblett', '', 'UPPGIFTER', 'uppgifter ', ' uppgifter', undefined, null, 42, ['uppgifter'], { uppgifter: 'uppgifter' }]) {
       expect(parseOpenForm(value)).toBeNull();
     }
+  });
+});
+
+
+describe('statusregeln vid kundkoppling (story 1.6)', () => {
+  const statusfacit = [
+    ['prospect', 'human', 'prospect'],
+    ['prospect', 'sync', 'customer'],
+    ['prospect', 'ai', 'customer'],
+    ['prospect', 'import', 'customer'],
+    ['prospect', 'accounting', 'customer'],
+    ['prospect', null, 'customer'],
+    ['prospect', undefined, 'customer'],
+    ['customer', 'human', 'customer'],
+    ['customer', 'sync', 'customer'],
+    ['customer', 'ai', 'customer'],
+    ['customer', 'import', 'customer'],
+    ['customer', 'accounting', 'customer'],
+    ['customer', null, 'customer'],
+    ['customer', undefined, 'customer'],
+    ['partner', 'human', 'partner'],
+    ['partner', 'sync', 'partner'],
+    ['partner', 'ai', 'partner'],
+    ['partner', 'import', 'partner'],
+    ['partner', 'accounting', 'partner'],
+    ['partner', null, 'partner'],
+    ['partner', undefined, 'partner'],
+    ['former', 'human', 'former'],
+    ['former', 'sync', 'former'],
+    ['former', 'ai', 'former'],
+    ['former', 'import', 'former'],
+    ['former', 'accounting', 'former'],
+    ['former', null, 'former'],
+    ['former', undefined, 'former'],
+    ['archived', 'human', 'archived'],
+    ['archived', 'sync', 'archived'],
+    ['archived', 'ai', 'archived'],
+    ['archived', 'import', 'archived'],
+    ['archived', 'accounting', 'archived'],
+    ['archived', null, 'archived'],
+    ['archived', undefined, 'archived'],
+  ] as const;
+  const linkfacit = [
+    ['prospect', 'human', { status: 'prospect', kept: true }],
+    ['prospect', 'sync', { status: 'customer', kept: false }],
+    ['prospect', null, { status: 'customer', kept: false }],
+    ['partner', 'human', { status: 'partner', kept: false }],
+    ['partner', 'sync', { status: 'partner', kept: false }],
+    ['customer', 'human', { status: 'customer', kept: false }],
+  ] as const;
+  const K = '00000000-0000-4000-8000-000000000001';
+  const mergefacit = [
+    [{ status: 'prospect', customer_id: null }, { customer_id: K }, 'human', { linkMoves: true, from: 'prospect', to: 'prospect', kept: true }],
+    [{ status: 'prospect', customer_id: null }, { customer_id: K }, 'sync', { linkMoves: true, from: 'prospect', to: 'customer', kept: false }],
+    [{ status: 'prospect', customer_id: null }, { customer_id: K }, null, { linkMoves: true, from: 'prospect', to: 'customer', kept: false }],
+    [{ status: 'prospect', customer_id: K }, { customer_id: null }, 'sync', { linkMoves: false, from: 'prospect', to: 'prospect', kept: false }],
+    [{ status: 'prospect', customer_id: null }, { customer_id: null }, 'sync', { linkMoves: false, from: 'prospect', to: 'prospect', kept: false }],
+    [{ status: 'partner', customer_id: null }, { customer_id: K }, 'sync', { linkMoves: true, from: 'partner', to: 'partner', kept: false }],
+  ] as const;
+  it.each(statusfacit)('S1 %s med ursprung %s ger %s', (status, source, expected) => {
+    expect(statusAfterLink(status, source)).toBe(expected);
+  });
+  it.each(['HUMAN', '', 'manual'])('S2 exakt ursprungsjämförelse: %s', (source) => {
+    expect(statusAfterLink('prospect', source)).toBe('customer');
+  });
+  it.each(linkfacit)('L1 kopplingsutfallet för %s och %s', (status, source, expected) => {
+    expect(linkStatusOutcome(status, source)).toEqual(expected);
+  });
+  it.each(mergefacit)('M1 sammanslagningens utfall %#', (keep, gone, source, expected) => {
+    expect(mergeStatusOutcome(keep, gone, source)).toEqual(expected);
   });
 });

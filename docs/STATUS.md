@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.6, en människosatt status står kvar när kundkopplingen tillkommer eller flyttas (FR-12, FR-8):**
+  `statusAfterLink`, `linkStatusOutcome` och `mergeStatusOutcome` samlar regeln
+  i lib. `upsertOrganization` och `mergeOrganizations` skriver räknad status
+  utan CASE. Upserten ger en bytt status kopplingens ursprung och redovisar
+  stoppet; bekräftelsen låser organisationen före ursprunget. Sammanslagningens
+  svar har alltid `kept_human_fields`, och dess auditlogg bär listan vid stopp.
+  Att göra-kortets statusmening räknas med samma funktion som körningen;
+  relationssidans hint hänvisar dit. MCP_ACTIONS och API_KONTRAKT uppdaterade.
+  S1, S2, L1, M1, I1–I6, G1–G5, C1–C3 och D1 skrevs före respektive kod.
+  Typecheck före/efter uppgift 1: TS2305 respektive exit 0; därefter exit 0
+  vid varje uppgiftsgrind. npm test före/efter varje uppgift: exit 1 i
+  globalSetup, connect EPERM 127.0.0.1:5433. Inga databasfall har körts eller
+  grönrapporterats; kedjan kör hela sviten enligt användarens nätundantag.
+  Regressionerna läskontrollerade utan ändrade befintliga assertioner.
+  Slutgrind: build och diffkontroll exit 0; 50 rena regelfall, D1:s
+  dokumentkontroller och CRM:s rena sändvägskontroller passerar utan databas.
+  DoD:s 26 punkter prövade; berättelse och sprintstatus review med nätundantaget.
+  Daglig liggare behålls: befintliga tokens, Public Sans/IBM Plex Mono,
+  petrolaccent, tangentbordsordning och fokusmarkering; befintliga tom-/fel-
+  och serverrenderade laddade lägen används. Ingen ny CSS-klass eller yta.
+  Ingen rutt, migration, åtgärd, schemaändring eller beroende tillkom.
+  Ingen tjänstestart, webbläsarprovning eller driftsättning gjordes här.
+  Extern baslinje enligt berättelsen: adresskontraktet/bmadglidning kvarstår.
+
+
 - **2026-11-20 — Story 1.4, tre High-fynd om samtidiga kundkopplingar (AC2/AC3):**
   Gemensam rotorsak: bara uttryckligt kundval tog kundlåset; synkens FK-lås
   tillät en manuell förkontroll mot ett gammalt läge och sedan 500 från indexet.

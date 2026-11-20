@@ -73,3 +73,24 @@ export function parseOpenForm(value: unknown): OpenForm | null {
   return typeof value === 'string' && Object.hasOwn(OPEN_FORMS, value)
     ? OPEN_FORMS[value as keyof typeof OPEN_FORMS] : null;
 }
+
+/** En ny kundkoppling får bara ändra en status som ingen människa bestämt (A-5). */
+export function statusAfterLink<S extends string>(current: S, provenance: string | null | undefined): S | 'customer' {
+  return current === 'prospect' && provenance !== 'human' ? 'customer' : current;
+}
+
+/** Jämförelsen med oskyddat ursprung gör ett stoppat byte synligt utan en andra regel. */
+export function linkStatusOutcome<S extends string>(current: S, provenance: string | null | undefined): { status: S | 'customer'; kept: boolean } {
+  const status = statusAfterLink(current, provenance);
+  return { status, kept: status === current && statusAfterLink(current, null) !== current };
+}
+
+/** Kortet och körningen ska räkna samma följd av att kundkopplingen flyttas. */
+export function mergeStatusOutcome(
+  keep: { status: string; customer_id: string | null }, gone: { customer_id: string | null },
+  provenance: string | null | undefined,
+): { linkMoves: boolean; from: string; to: string; kept: boolean } {
+  const linkMoves = keep.customer_id === null && gone.customer_id !== null;
+  const outcome = linkMoves ? linkStatusOutcome(keep.status, provenance) : { status: keep.status, kept: false };
+  return { linkMoves, from: keep.status, to: outcome.status, kept: outcome.kept };
+}

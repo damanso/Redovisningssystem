@@ -11,6 +11,7 @@
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
+import { mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
@@ -334,14 +335,22 @@ export async function explainApproval(
   if (action === 'merge_crm_organizations') {
     const keep = asUuid(input.keep_id), gone = asUuid(input.merge_id);
     if (!keep || !gone) return none;
-    const a = await one<{ name: string }>(client,
-      'SELECT name FROM crm.organizations WHERE id = $1 AND company_id = $2', [keep, companyId]);
-    const b = await one<{ name: string }>(client,
-      'SELECT name FROM crm.organizations WHERE id = $1 AND company_id = $2', [gone, companyId]);
-    if (!a || !b) return none;
+    const a = await one<{ name: string; status: string; customer_id: string | null }>(client,
+      'SELECT name, status, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2', [keep, companyId]);
+    const b = await one<{ name: string; customer_id: string | null }>(client,
+      'SELECT name, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2', [gone, companyId]);
+    // En saknad ursprungsrad ger source null; ett läsfel får aldrig gissas vara oskyddat.
+    const provenance = await one<{ source: string | null }>(client,
+      `SELECT (SELECT source FROM crm.field_provenance
+        WHERE company_id = $1 AND organization_id = $2 AND field = 'status') AS source`, [companyId, keep]);
+    if (!a || !b || !provenance) return none;
+    const outcome = mergeStatusOutcome(a, b, provenance.source);
+    const statusText = outcome.to !== outcome.from
+      ? ' Tomma uppgifter fylls i. Status ändras från Prospekt till Kund eftersom kundkopplingen flyttas.'
+      : ` Tomma uppgifter fylls i, ifyllda rörs inte.${outcome.kept ? ' Status: Prospekt står kvar (ditt beslut).' : ''}`;
     return {
       change: { from: `Två relationer: ${a.name} och ${b.name}`, to: `En relation: ${a.name}` },
-      why: `Kontaktpunkter, löften och personer flyttas till ${a.name}. Tomma uppgifter fylls i, ifyllda rörs inte. ${b.name} upphör — det går inte att ångra.`,
+      why: `Kontaktpunkter, löften och personer flyttas till ${a.name}.${statusText} ${b.name} upphör — det går inte att ångra.`,
       source: { label: 'Öppna relationen', href: `${base}/relations/${keep}` },
     };
   }
