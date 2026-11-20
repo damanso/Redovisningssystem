@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (208
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (212
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-20 — Story 1.5, betalfakta via baklänkning (FR-35, FR-8, FR-29, AD-2):**
+  Två nya känsliga åtgärder, `link_voucher_and_mark_paid` och
+  `unlink_voucher_and_reset_payment`, köas före all verkan. `link_voucher`
+  avvisar `mark_paid: true` med 400 och `unlink_voucher` en betalmarkerad
+  faktura med 409; båda ger `payment_requires_approval` och `details.use_action`.
+  Återställningens kontroll ligger under radlåset efter ursprungskontrollen.
+  Förslagskortets text visar faktura, motpart, verifikat och före → efter.
+  Husets AI-ockra, typografi, knappar och fokusordning återanvänds. Inga nya
+  CSS-klasser eller rutter; tomt läge och felnotis återanvänds i samma SSR-yta.
+  Täckning skriven: R1–R7, S1–S6, M1, P1–P6, T6.1–T6.4 och D1.
+  `npm run typecheck` har passerat varje delgrind. `npm test` har försökt
+  före och efter kodändringarna men stoppas i globalSetup med
+  `connect EPERM 127.0.0.1:5433`; inga databasfall har körts och inga påstås
+  gröna. Kedjan måste verifiera hela sviten enligt uppdragets nätundantag.
+  Slutgrind: `npm run typecheck` exit 0, `npm run build` exit 0 och
+  `git diff --check` exit 0; full `npm test` försökt igen med samma EPERM.
+  Den rena betalspärren körd separat utan databas med exit 0 för true,
+  false och utelämnad flagga. DoD prövad punktvis med nätundantaget;
+  berättelsen överlämnas till review för kedjans kontroller.
+  Baslinjens röda/KUNDE_INTE-prov (adresskontraktet, chattvag_fr1,
+  continuityvakt, overlamningsregister_fr6) står oförändrade; provvakten har
+  inte körts här. Antalet registerposter är räknat till 212. Ingen migration
+  tillkommer. Agenter som skickar `mark_paid: true` till `link_voucher` får
+  400 och ska använda `link_voucher_and_mark_paid`. CRM-kontraktet ändras inte.
 
 - **2026-11-20 — Story 1.1, omtag efter fyra High-fynd (FR-27):**
   Två felklasser rättade i Att göra: bolagsnamn och felnotis går genom samma
