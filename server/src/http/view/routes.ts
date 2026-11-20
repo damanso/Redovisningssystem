@@ -61,7 +61,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -7304,6 +7304,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const kundval = (await listCustomers(client, companyId, { includeInactive: true }) as Array<{
       id: string; customer_number: number; name: string; is_active: boolean;
     }>).filter((c) => c.is_active || c.id === o.customer_id);
+    const kund = o.customer_id ? await getCustomer(client, companyId, o.customer_id) as KundkortetsKund : null;
     // EN rad, inte hela bolagets aggregering — och arkiverade relationer får
     // visa sina egna tal på det kort man uttryckligen öppnat.
     const [state] = await relationState(client, companyId, { organization_id: orgId });
@@ -7436,6 +7437,8 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               </div>`}
             </details>
           </div>
+
+          ${kund ? kundkortetsFaktakort(companyId, o.id, back, kund) : ''}
 
           <div class="factcard">
             <div class="factcard__head">Personer</div>
@@ -7738,6 +7741,59 @@ function sfarByteRad(
   </form>`;
 }
 
+type KundkortetsKund = {
+  id: string; customer_number: number; email: string | null; phone: string | null;
+  address: string | null; postal_code: string | null; city: string | null;
+  vat_number: string | null; payment_terms: number | null;
+};
+
+/** Saknade adressdelar hoppas över utan tomma skiljetecken. */
+function kundAdress(kund: Pick<KundkortetsKund, 'address' | 'postal_code' | 'city'>): string {
+  return [kund.address, [kund.postal_code, kund.city].filter(Boolean).join(' ')].filter(Boolean).join(', ') || '—';
+}
+
+/** Frånvarande villkor visas som saknat, inte som ett lagrat standardvärde. */
+function betalningsvillkorText(dagar: number | null): string {
+  return dagar === null ? '—' : `${dagar} ${dagar === 1 ? 'dag' : 'dagar'}`;
+}
+
+/** Kundregistret läses direkt; fakturauppgifterna har inget separat CRM-ursprung. */
+function kundkortetsFaktakort(companyId: string, orgId: string, back: string, kund: KundkortetsKund): Raw {
+  return html`<div class="factcard">
+    <div class="factcard__head">Kundkortet</div>
+    <div class="uppgift"><span class="k">Kundnummer</span><span class="v">${kund.customer_number}</span></div>
+    <div class="uppgift"><span class="k">Fakturamejl</span><span class="v">${kund.email || '—'}</span></div>
+    <div class="uppgift"><span class="k">Adress</span><span class="v">${kundAdress(kund)}</span></div>
+    <div class="uppgift"><span class="k">Momsreg.nr</span><span class="v">${kund.vat_number || '—'}</span></div>
+    <div class="uppgift"><span class="k">Betalningsvillkor</span><span class="v">${betalningsvillkorText(kund.payment_terms)}</span></div>
+    <div class="uppgift"><span class="k">Telefon</span><span class="v">${kund.phone || '—'}</span></div>
+    <p class="hint">Sparas i kundregistret — samma uppgifter som på fakturan.</p>
+    <details class="rattaform"><summary>Rätta fakturauppgifter</summary>
+      <form method="post" action="/app/c/${companyId}/relations/${orgId}/edit?handgrepp=kundkort">
+        <input type="hidden" name="back" value="${back}">
+        <input type="hidden" name="fore_customer_id" value="${kund.id}">
+        <label>Fakturamejl<input type="text" name="email" maxlength="254" value="${kund.email ?? ''}"></label>
+        <input type="hidden" name="fore_email" value="${kund.email ?? ''}">
+        <label>Telefon<input type="text" name="phone" maxlength="50" value="${kund.phone ?? ''}"></label>
+        <input type="hidden" name="fore_phone" value="${kund.phone ?? ''}">
+        <label>Adress<input type="text" name="address" maxlength="200" value="${kund.address ?? ''}"></label>
+        <input type="hidden" name="fore_address" value="${kund.address ?? ''}">
+        <label>Postnummer<input type="text" name="postal_code" maxlength="20" value="${kund.postal_code ?? ''}"></label>
+        <input type="hidden" name="fore_postal_code" value="${kund.postal_code ?? ''}">
+        <label>Ort<input type="text" name="city" maxlength="100" value="${kund.city ?? ''}"></label>
+        <input type="hidden" name="fore_city" value="${kund.city ?? ''}">
+        <label>Momsreg.nr<input type="text" name="vat_number" maxlength="20" value="${kund.vat_number ?? ''}"></label>
+        <input type="hidden" name="fore_vat_number" value="${kund.vat_number ?? ''}">
+        <label>Betalningsvillkor i dagar<input type="number" name="payment_terms" min="0" max="365" value="${kund.payment_terms ?? ''}"></label>
+        <input type="hidden" name="fore_payment_terms" value="${kund.payment_terms ?? ''}">
+        <button class="btn btn--primary btn--sm" type="submit">Spara</button>
+        <p class="hint">Ett tomt fält lämnas oförändrat — det raderar ingenting.</p>
+      </form>
+    </details>
+    <p class="hint"><a href="/app/c/${companyId}/customers/${kund.id}">Öppna kundkortet →</a></p>
+  </div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Handgreppen (F1). Vyn hade 47 POST-rutter för fakturor och lön men NOLL för
 // relationer — varje handgrepp, även "markera klar", krävde AI eller API. Det
@@ -7945,6 +8001,15 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
   const body = req.body as Record<string, unknown>;
   const targets = ['interaction_id', 'commitment_id'].filter((key) => Object.hasOwn(body, key));
   const back = backToCrm(req, companyId, `relations/${id}`);
+  const target = parseEditTarget(req.query.handgrepp);
+  if (target === null) {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
+    return;
+  }
+  if (target === 'kundkort') {
+    await rattaKundkortet(req, res, companyId, id, body, back);
+    return;
+  }
   if (targets.length > 1) {
     res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
     return;
@@ -7964,6 +8029,36 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
     ...correctedOrganizationFields(body), organization_id: id,
   }, back);
 }));
+
+/** Kunden hämtas ur relationen; före-id:t skyddar bara en gammal flik från att rätta fel kund. */
+async function rattaKundkortet(
+  req: Request, res: import('express').Response, companyId: string, id: string,
+  body: Record<string, unknown>, back: string,
+): Promise<void> {
+  const relation = await withTenantTransaction(getUserId(req), companyId, (client) => getOrganization(client, companyId, id));
+  const kundId = typeof relation.customer_id === 'string' ? relation.customer_id : null;
+  const fel = (text: string): void => {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(text)}`);
+  };
+  if (!kundId) {
+    fel('Relationen är inte kopplad till någon kund i registret. Välj kunden under Rätta uppgifter först. Inget sparades.');
+    return;
+  }
+  if (typeof body.fore_customer_id !== 'string' || body.fore_customer_id !== kundId) {
+    fel('Kundkopplingen har ändrats sedan sidan laddades. Ladda om sidan och försök igen. Inget sparades.');
+    return;
+  }
+  const corrected = correctedCustomerFields(body);
+  if (!corrected.ok) {
+    fel(corrected.error);
+    return;
+  }
+  if (Object.keys(corrected.fields).length === 0) {
+    fel('Inget att rätta: inget fält ändrades.');
+    return;
+  }
+  await runViewAction(req, res, companyId, 'update_customer', { ...corrected.fields, customer_id: kundId }, back);
+}
 
 // Steg 3 (B): byt sfär på organisationen, en av dess personer eller ett av dess
 // öppna åtaganden. Samma åtgärd som AI:t använder (set_crm_sfar), som människa.

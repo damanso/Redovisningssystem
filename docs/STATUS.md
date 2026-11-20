@@ -153,6 +153,73 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.5, kundkortets fakturauppgifter, omtag 2 (crm):**
+  Rättat testernas gemensamma kundradskontroll i `server/test/crm-views.test.ts`.
+  Kundtabellens trigger sätter `updated_at` vid varje UPDATE, även när
+  de skickade värdena redan finns; tidigare facit krävde felaktigt samma tid.
+  Vid skrivning tillåts nu tidsstämpeln utöver exakt de skickade fälten,
+  med kontroll av typ och att tiden inte går bakåt. Utan skrivning måste
+  hela raden fortfarande vara exakt lika. Samma fel sökt i hela storyändringen;
+  övriga kund-/CRM-jämförelser gäller orörda rader och behåller strikt likhet.
+  16 nya rena regressionsfall täcker alla sju fakturafält, flera/samma värden,
+  millisekundprecision, felaktig tid och planterade otillåtna kolumnändringar.
+  Exakt kontrollfunktion/testblock extraherat för fristående Vitest med
+  ordinarie crm-rules: först `Tests 8 failed | 91 passed (99)`, efter rättelse
+  och städning `Test Files 2 passed (2); Tests 99 passed (99)`.
+  `npm run typecheck`, `npm run build` och `git diff --check`: exit 0.
+  `npm test` före/efter rättelse och efter städning: exit 1 i globalSetup,
+  `connect EPERM 127.0.0.1:5433`. Inga databas-/HTTP-fall körda eller
+  grönrapporterade; kedjan kör fullsviten enligt användarens nätundantag.
+  Produktkoden och samtliga KV/KP-fall bibehållna; husets faktakort,
+  typografi, tokens och synliga fokus ger samma sammanhållna formspråk.
+  Storyns 26 DoD-punkter omprövade; status åter till review med nätundantag.
+  Ingen ny rutt, åtgärd, migration, schemaändring eller kontraktsändring;
+  update_customer/MCP_ACTIONS/API_KONTRAKT oförändrade. Externa baslinjefel
+  enligt storyn kvarstår. Inga tjänster startade eller driftsättning utförd.
+
+- **2026-11-20 — Story 1.5, kundkortets fakturauppgifter, omtag efter röda kontroller (crm):**
+  Båda audithjälparna i `server/test/crm-views.test.ts` sorterar nu på
+  `occurred_at DESC, id DESC` enligt migration 0003. De hade antagit
+  `created_at`, som inte finns i den publika auditloggen; SQL-strängarna
+  kontrolleras inte av TypeScript. Samma fel sökt i hela storyändringen:
+  två träffar, båda rättade. Två regressionsfall utövar båda läsarna mot
+  riktig databas med tom logg, flera tidsmässigt omkastade rader och lika
+  tidsstämplar. KP1–KP11:s kärna och assertioner behålls. Typecheck, build
+  och diffkontroll exit 0; fristående Vitest för crm-rules: 83/83 gröna.
+  `npm test` före/efter rättelsen exit 1 i globalSetup med
+  `connect EPERM 127.0.0.1:5433`. Databasfallen är inte körda här; kedjan
+  kör dem enligt nätundantaget. Tillfällig testkonfiguration borttagen.
+  Storyns 26 DoD-punkter omprövade och status åter till review med samma
+  nätundantag. Husets faktakort, tokens och fokusmarkering behålls för
+  enhetlig läsning och tangentbordsåtkomst. Inget kontrakt ändrat och ingen
+  produktkod ändrad i omtaget. Adresskontraktets externa baslinjefel kvarstår
+  enligt storyn. Ingen tjänst startad eller driftsättning utförd.
+
+- **2026-11-20 — Story 1.5, kundkortets fakturauppgifter rättas från relationssidan (crm, FR-10, FR-11):**
+  Faktakortet *Kundkortet* läser sex rader direkt ur kundregistret och har
+  *Rätta fakturauppgifter* med sju märkta fält. Befintlig `/edit` får grenen
+  `?handgrepp=kundkort`; målet hämtas ur relationen, gammal kundkoppling
+  avvisas, och bara ändrade fält skickas till `update_customer`.
+  `correctedCustomerFields` och `parseEditTarget` bär de rena reglerna.
+  FK1–FK6, GV1, KV1–KV4 och KP1–KP11 täcker kort, validering, tenant,
+  audit och hela CRM-schemats oförändrade innehåll med två negativa kontroller.
+  Regelproven kördes först röda (7 nya röda, 76 befintliga gröna), sedan
+  83/83 gröna med fristående Vitest utan databassets setup. Typkontrollen
+  körd grön efter uppgift 1–3. `npm test` körd före/efter varje koduppgift,
+  men globalSetup stoppas med `connect EPERM 127.0.0.1:5433` (exit 1).
+  Databasfallen och full regression har därför inte körts i sandlådan;
+  kedjan verifierar dem enligt uppdragets nätundantag. Sju rena kontroller
+  med befintliga sändvägs-/utskickshjälpare gav 0 brister över server/src.
+  Befintliga testfall och /edit-grenarnas rader har jämförts med git-basen
+  och är oförändrade. Husets faktakort, typografi, tokens och fokusmarkering
+  återanvänds; — är tomläge och notice är felläge, servern laddar hela sidan.
+  Ingen ny rutt, migration, åtgärd eller schemaändring. `update_customer`,
+  MCP_ACTIONS och API_KONTRAKT är oförändrade. Inga tjänster startade och
+  ingen driftsättning utförd. Slutgrind: typecheck, build och diffkontroll
+  exit 0; DoD:s 26 punkter prövade med två dokumenterade nätundantag.
+  Berättelsen och sprintstatusen står i review. Adresskontraktet står enligt berättelsens
+  baslinje rött utanför detta bygge; ingen navigationssynk krävs här.
+
 - **2026-11-20 — Story 6.2, likviditet per kalendermånad (FR-44):**
   Ren rullning i `domain/liquidity.ts` och `liquidityByMonth` i reports-tjänsten:
   tre kalendermånader, överfört saldo, förfallet, första underskott och behov,
