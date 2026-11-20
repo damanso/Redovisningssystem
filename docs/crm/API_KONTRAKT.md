@@ -101,6 +101,17 @@ projektkod; ingenting skrivs för den och övriga händelser skrivs som vanligt.
 och agent. Regeln gäller före namngravstenen. Befintliga organisationer med
 ett sådant namn rörs inte.
 
+**7. Kundkortets org.nr gäller för en kopplad relation.**
+För en organisation med `customer_id` satt gäller kundkortets org.nr, enligt
+Davids svar 2026-10-13 (FR-11). Ett `org_number` i en sådan händelse skrivs
+inte; händelsen skrivs i övrigt som vanligt och hamnar inte i `skipped`.
+Fältet redovisas i `kept_customer_fields` som `"<organisation>: org_number"`,
+inte i `kept_human_fields`, eftersom ingen människa blockerade det.
+För en okopplad organisation skrivs värdet som förut och används för kunduppslaget.
+`upsert_crm_organization` med `org_number` för en kopplad organisation svarar
+400 `org_number_on_customer` med `details.customer_id` och
+`details.update_action` = `update_customer`. Rätta då org.nr med `update_customer`.
+
 ## Svaret
 
 ```jsonc
@@ -118,6 +129,7 @@ ett sådant namn rörs inte.
     "organizations_linked": 1,
     "unlinked_organizations": [],
     "kept_human_fields": [],
+    "kept_customer_fields": [],
     "redirected_organizations": [],
     "skipped": []
   }
@@ -130,6 +142,9 @@ att synken är idempotent.
 
 `kept_human_fields` listar de fält som **inte** skrevs, för att en människa
 bestämt dem. Se nästa avsnitt.
+
+`kept_customer_fields` listar de fält som **inte** skrevs, för att kundregistret
+äger dem (`"<organisation>: org_number"`); se regel 7.
 
 `redirected_organizations` listar namn som styrts om till en organisation de
 slagits ihop med (`"Hermes → Hermes Bevakning AB"`). Se *Ett hopslaget namn

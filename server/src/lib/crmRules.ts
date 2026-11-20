@@ -74,8 +74,8 @@ export function parseOpenForm(value: unknown): OpenForm | null {
     ? OPEN_FORMS[value as keyof typeof OPEN_FORMS] : null;
 }
 
-/** Kundregistret äger fakturafälten; relationens identitet och koppling får inte skickas med. */
-const CUSTOMER_CORRECTION_FIELDS = ['customer_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
+/** Kundregistret äger fakturafälten, kundnumret och en kopplad relations org.nr; relationens identitet och koppling får inte skickas med. */
+const CUSTOMER_CORRECTION_FIELDS = ['customer_number', 'org_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
 
 /** Fast text håller ogiltig e-post synlig utan att återge formulärets indata. */
 export const CUSTOMER_EMAIL_ERROR = 'Fakturamejlet är ingen giltig e-postadress. Inget sparades.';

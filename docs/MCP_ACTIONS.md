@@ -2629,3 +2629,22 @@ Fakturorna bär inte kundnumret, så en redan ställd faktura ändras inte.
 Relationssidans *Rätta fakturauppgifter* har fältet Kundnummer; ett tomt eller
 oförändrat nummer skickas inte. Kundkortets formulär och REST-vägen för kunder
 tar inte fältet.
+
+## Kundkortets org.nr för en kopplad relation (crm 1.8)
+
+`upsert_crm_organization` med `org_number` för en organisation vars
+`customer_id` är satt svarar 400 `org_number_on_customer`, för både människa
+och agent. Felet bär `details: { customer_id, update_action: 'update_customer' }`
+och svensk text som hänvisar till kundkortet; API:t skickar kod och detaljer,
+och vyn visar texten. Ingenting skrivs. Rätta kundens org.nr med
+`update_customer` och `customer_id` ur detaljerna; `update_action` anger vägen.
+
+För en okopplad organisation skrivs `org_number` som förut. En ny organisation
+som skapas med org.nr och kopplas i samma anrop får också värdet som förut.
+`ingest_crm_events` lämnar org.nr orört för en kopplad organisation utan att
+händelsen avvisas. Fältet redovisas i svarets `kept_customer_fields`
+(`"<organisation>: org_number"`), inte i `kept_human_fields`.
+
+Relationssidans rad *Org.nr* visar kundkortets värde med hinten *Sparas i
+kundregistret*. *Rätta uppgifter* har ett eget org.nr-formulär som sparar via
+`update_customer`.

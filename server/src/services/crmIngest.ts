@@ -68,6 +68,8 @@ export interface IngestResult {
    * lyckades helt. Den som läser svaret ska kunna se vad som faktiskt hände.
    */
   kept_human_fields: string[];
+  /** Fält som inte skrevs för att kundregistret äger dem (regel 7), redovisade som människofälten. */
+  kept_customer_fields: string[];
   /**
    * Namn som styrdes om till en hopslagen organisation, som `"Hermes → Hermes AB"`.
    *
@@ -99,13 +101,14 @@ export async function ingestCrmEvents(
     interactions_created: 0, interactions_unchanged: 0,
     commitments_created: 0, commitments_unchanged: 0,
     organizations_created: 0, people_created: 0,
-    organizations_linked: 0, unlinked_organizations: [], kept_human_fields: [],
+    organizations_linked: 0, unlinked_organizations: [], kept_human_fields: [], kept_customer_fields: [],
     redirected_organizations: [],
     skipped: [],
   };
   const linked = new Set<string>();
   const unlinked = new Set<string>();
   const kept = new Set<string>();
+  const keptCustomer = new Set<string>();
   const redirected = new Set<string>();
 
   for (const [index, e] of events.entries()) {
@@ -116,7 +119,7 @@ export async function ingestCrmEvents(
     // Räknades det direkt i svaret rapporterades en organisation som skapad
     // även när savepointen rullade tillbaka den — och mottagarens avstämning
     // ("idel unchanged är kvittot") såg spökskapelser vid varje omkörning.
-    const delta = { organizations: 0, people: 0, linked: '', unlinked: '', redirected: '', kept: [] as string[] };
+    const delta = { organizations: 0, people: 0, linked: '', unlinked: '', redirected: '', kept: [] as string[], keptCustomer: [] as string[] };
     try {
       if (!e.organization && !e.person) {
         throw new BadRequestError('missing_target', 'händelsen saknar både organisation och person');
@@ -134,6 +137,7 @@ export async function ingestCrmEvents(
         prefix = org.name;
         if (org.created) delta.organizations += 1;
         delta.kept.push(...org.kept_human_fields.map((f) => `${org.name}: ${f}`));
+        delta.keptCustomer.push(...org.kept_customer_fields.map((f) => `${org.name}: ${f}`));
         // Namnet fanns bara som gravsten efter en sammanslagning — skrivningen
         // landade på den kvarvarande raden i stället för att skapa ett tomt
         // skal. Redovisas: avsändaren tror fortfarande att det är två bolag.
@@ -185,6 +189,7 @@ export async function ingestCrmEvents(
       if (delta.unlinked) unlinked.add(delta.unlinked);
       if (delta.redirected) redirected.add(delta.redirected);
       for (const k of delta.kept) kept.add(k);
+      for (const k of delta.keptCustomer) keptCustomer.add(k);
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
       result.skipped.push({ index, reason: err instanceof Error ? err.message : 'okänt fel' });
@@ -194,6 +199,7 @@ export async function ingestCrmEvents(
   result.organizations_linked = linked.size;
   result.unlinked_organizations = [...unlinked];
   result.kept_human_fields = [...kept].sort();
+  result.kept_customer_fields = [...keptCustomer].sort();
   result.redirected_organizations = [...redirected].sort();
 
   await writeCrmAudit(client, {
@@ -205,6 +211,7 @@ export async function ingestCrmEvents(
       linked: result.organizations_linked,
       unlinked: result.unlinked_organizations.length,
       kept_human_fields: result.kept_human_fields.length,
+      kept_customer_fields: result.kept_customer_fields.length,
       redirected: result.redirected_organizations.length,
       skipped: result.skipped.length,
     },

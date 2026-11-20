@@ -7441,7 +7441,9 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                bokföringen; de här fem, statusen inräknad, kan komma varsomifrån. */ ''}
           <div class="factcard">
             <div class="factcard__head">Uppgifter</div>
-            ${uppgifter.map((u) => html`<div class="uppgift">
+            ${uppgifter.map((u) => kund && u.field === 'org_number'
+              ? html`<div class="uppgift"><span class="k">Org.nr</span><span class="v">${kund.org_number ?? '—'} <span class="fact__sub">Sparas i kundregistret</span></span></div>`
+              : html`<div class="uppgift">
               <span class="k">${u.label}</span>
               ${ursprungsfalt({ klass: 'v', varde: u.value, harVarde: u.harVarde, p: o.provenance[u.field],
                 action: `/app/c/${companyId}/relations/${o.id}/confirm`, field: u.field, back })}
@@ -7456,8 +7458,8 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 <input type="hidden" name="back" value="${back}">
                 <label>Namn<input type="text" name="name" maxlength="200" value="${o.name}"></label>
                 <input type="hidden" name="fore_name" value="${o.name}">
-                <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
-                <input type="hidden" name="fore_org_number" value="${o.org_number ?? ''}">
+                ${kund ? '' : html`<label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
+                <input type="hidden" name="fore_org_number" value="${o.org_number ?? ''}">`}
                 <label>Webbplats<input type="text" name="website" maxlength="200" value="${o.website ?? ''}"></label>
                 <input type="hidden" name="fore_website" value="${o.website ?? ''}">
                 <label>Status<select name="status">${(['prospect', 'customer', 'partner', 'former', 'archived'] as const).map((s) => html`<option value="${s}"${s === o.status ? html` selected` : ''}>${orgStatusText(s)}</option>`)}</select></label>
@@ -7472,6 +7474,14 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 <button class="btn btn--primary btn--sm" type="submit">Spara</button>
                 <p class="hint">Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan.</p>
               </form>
+              ${kund ? html`<form method="post" action="/app/c/${companyId}/relations/${o.id}/edit?handgrepp=kundkort">
+                <input type="hidden" name="back" value="${back}">
+                <input type="hidden" name="fore_customer_id" value="${kund.id}">
+                <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${kund.org_number ?? ''}"></label>
+                <input type="hidden" name="fore_org_number" value="${kund.org_number ?? ''}">
+                <button class="btn btn--primary btn--sm" type="submit">Spara org.nr</button>
+                <p class="hint">Org.nr sparas på kundkortet i kundregistret och gäller för relationen. Ett tomt fält lämnas oförändrat.</p>
+              </form>` : ''}
               ${/* B (leads beslut 18/11): sfären byts med set_crm_sfar. De öppna
                    åtagandena följer med bara när rutan är ikryssad, och klara och
                    avskrivna rörs aldrig. */ ''}
@@ -7798,7 +7808,7 @@ function sfarByteRad(
 }
 
 type KundkortetsUppgifter = {
-  id: string; customer_number: number; email: string | null; phone: string | null;
+  id: string; customer_number: number; org_number: string | null; email: string | null; phone: string | null;
   address: string | null; postal_code: string | null; city: string | null;
   vat_number: string | null; payment_terms: number | null;
 };
