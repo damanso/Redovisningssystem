@@ -41,6 +41,9 @@ export const UuidSchema = z.string().uuid();
 export const VatRateSchema = z.union([z.literal(0), z.literal(6), z.literal(12), z.literal(25)]);
 export const OreSchema = z.number().int().nonnegative().safe();
 export const AccountNumberSchema = z.number().int().min(1000).max(9999);
+// Serien flyttas till numret + 1 och nästa nya kund till numret + 2;
+// båda måste rymmas i databasens heltalstyp.
+export const CustomerNumberSchema = z.number().int().min(1).max(2147483645);
 
 // Bankgironummer: 7 eller 8 siffror (skrivs NNN-NNNN respektive NNNN-NNNN)
 // där sista siffran är en mod-10-kontrollsiffra.

@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.7, kundnumret går att rätta från relationssidan (crm, FR-10):**
+  `update_customer` tar valfritt `customer_number` med delat `CustomerNumberSchema`
+  (1–2 147 483 645). `updateCustomer` låser kundserien före krockuppslaget och
+  UPDATE; upptaget nummer ger 409 `customer_number_taken` utan sparande.
+  Serien flyttas bara framåt med `customer.number_series_set` i samma transaktion.
+  `correctedCustomerFields` tolkar numret och utelämnar blankt/oförändrat; fältet
+  Kundnummer ligger först i *Rätta fakturauppgifter* med en förklarande hint.
+  Husets Daglig liggare behålls för igenkänning: samma etiketter, typografi,
+  tokens och synlig fokusring; native number-fält följer befintliga villkoret.
+  Okopplad relation behåller tomläget utan kundkort; fel visas i befintlig notis,
+  laddad sida visar registrets nummer. Serverrenderingen har inget nytt laddläge.
+  Nytt avsnitt i `docs/MCP_ACTIONS.md`; CRM-kontraktet är oförändrat.
+  KA1–KA7, KN1–KN3 och KR1–KR7 täcker åtgärd, serie, audit, tenantgräns,
+  oförändrat CRM/fakturaunderlag och formulär. FK2 och KV3 justeras enbart för
+  kundnumret som nu är tillåtet. Rött före kod per uppgift; rena KN1–KN3 föll
+  uppmätt före tolkningen, sedan 86/86 gröna i hela crm-rules utan DB-hookar.
+  `npm run typecheck` och `npm run build` passerar. Hela `npm test` i varje röd/grön fas stoppas före
+  testfall av `connect EPERM 127.0.0.1:5433`; databasfallen är inte uppmätt gröna
+  och körs av kedjan efteråt enligt uppdraget. Ingen tjänst startad, ingen ny
+  rutt, migration, åtgärd, tabell, CSS-klass eller beroende. Inget nytt känt rött
+  utanför repot; tidigare externa provstatusar är inte ommätta.
+
 - **2026-11-20 — Story 1.13, förtroendegränsen för agent, contractor och bokförda verifikat (FR-2, FR-3, FR-38):**
   Nio nya fall i `server/test/actions.test.ts`, i fem bolagsisolerade `describe`
   med lokal rigg. Ingen produktionskod ändrad. R1.1–R1.5 prövar beroende och
