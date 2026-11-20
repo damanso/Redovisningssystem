@@ -153,6 +153,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.3, omtag efter code-review (AC 6):**
+  Båda High-fynden gäller samma felklass: Imports väntande SIE-förslag kunde
+  ligga utanför Att göras 200 senaste poster, så kortlänken saknade mål.
+  Att göra kompletterar nu med bolagets hela väntande SIE-kö via samma
+  `listaVantandeKoposter` som Import, med unika id:n och stabil sortering.
+  R5.1 följer båda årens verkliga länkar med 198/199/200/240 nyare poster.
+  R5.2 kräver alla 207 SIE-kort och täcker dubbletter, främmande bolag,
+  avvisning och utebliven import-/auditmutation vid läsning.
+  Samma Daglig liggare-kort och fokuserbara ankare återanvänds för igenkänning;
+  befintliga tokens, typografi, knappar, fokusmarkering, tomläge och felnotis.
+  Sidorna renderas färdiga på servern; inget nytt laddningsläge tillkommer.
+  Proven skrevs före koden. `npm run typecheck` före/efter: exit 0;
+  `npm run build`: exit 0; `git diff --check`: exit 0.
+  Full `npm test` före/efter: **inte kört — `Error: connect EPERM
+  127.0.0.1:5433 - Local (undefined:undefined)`**, exit 1 i globalSetup.
+  Inga databasfall påstås gröna; kedjan kör dem efteråt enligt uppdraget.
+  Vyns SIE-import köas fortsatt; REST-listans fönster och CRM-kontraktet är
+  oförändrade. Ingen ny rutt, SQL i transporten, tjänst, CSS eller beroende.
+  Externa provstatusar (adresskontraktet, bmadglidning,
+  overlamningsregister_fr6, continuityvakt) är inte ommätta här.
+
 - **2026-11-20 — Story 1.3, SIE-import från vyn köas och Import visar sina fel (FR-39, FR-38, AD-1):**
   Vyns SIE-import går nu genom `runViewAction` till Att göra före varje konto
   och verifikat. Endast POST import/sie och import/bank undantas från den

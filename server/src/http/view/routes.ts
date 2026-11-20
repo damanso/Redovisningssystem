@@ -10343,6 +10343,16 @@ viewRouter.post('/c/:companyId/documents/upload', documentUpload, page(async (re
 // Att göra: AI-/agentförslag som väntar på mänskligt godkännande (read-only vy).
 viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', async (client, companyId, req) => {
   const pendingRaw = await listApprovals(client, companyId, 'pending');
+  const visade = new Set(pendingRaw.map((a) => a.id));
+  // Import länkar till hela den väntande SIE-kön (AC 6), också äldre kort.
+  // Samma läskälla som Import; komplettera utan att dubblera listfönstrets kort.
+  for (const a of await listaVantandeKoposter(client, companyId, ['import_sie'])) {
+    if (!visade.has(a.id)) {
+      pendingRaw.push(a);
+      visade.add(a.id);
+    }
+  }
+  pendingRaw.sort((a, b) => b.created_at.getTime() - a.created_at.getTime() || b.id.localeCompare(a.id));
   // K4: annotera varje förslag med sitt (färskt beräknade) beroende så att
   // ordningen syns i kön — "godkänn Bokför faktura X först" — i stället för
   // ett rött fel först vid godkännandeklicket.
@@ -10350,7 +10360,6 @@ viewRouter.get('/c/:companyId/approvals', pageFor('approvals', 'Att göra', asyn
   // kan inte köra dem parallellt — den köar dem och varnar (borttaget i pg@9).
   // Samma regel som i crmRelations och crm.ts.
   const pending = [];
-  const visade = new Set(pendingRaw.map((a) => a.id));
   for (const a of pendingRaw) {
     const def = getAction(a.action);
     let dep = await checkApprovalDependency(client, companyId, a.action, a.input);

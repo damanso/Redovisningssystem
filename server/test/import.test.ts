@@ -539,3 +539,96 @@ describe('Import-sidans SIE-panel (FR-39, UX K2)', () => {
     expect(waiting.sie).not.toContain('Räkenskapsåret är låst');
   });
 });
+
+// AC 6: Import läser hela SIE-kön. Följ dess renderade länkar genom vyn till
+// verkliga, unika och fokuserbara kort även när Att göras listfönster är fullt.
+describe('Import-länkar utanför Att göras listfönster (AI-review, AC 6)', () => {
+  async function queue(rig: Awaited<ReturnType<typeof importRig>>, fy: string) {
+    const res = await rig.view.post(`${rig.base}/import/sie`).type('form').send({
+      fiscal_year_id: fy, sie_content: SIE,
+    });
+    expect(res.status, res.text).toBe(302);
+    expect(res.headers.location).toBe(`${rig.base}/approvals`);
+  }
+
+  async function followLinks(rig: Awaited<ReturnType<typeof importRig>>) {
+    const expected = await pendingImports(rig.companyId);
+    for (const fy of rig.fys) {
+      const page = await rig.view.get(`${rig.base}/import?fy=${fy}`);
+      expect(page.status, page.text).toBe(200);
+      const links = [...page.text.matchAll(/href="([^"]*\/approvals#forslag-[^"]+)"/g)];
+      expect(links).toHaveLength(1);
+      const link = new URL(links[0]![1]!, 'http://vy');
+      const id = expected.find((a) => a.input.fiscal_year_id === fy)!.id;
+      expect(link.hash).toBe(`#forslag-${id}`);
+      expect(page.text).not.toContain(`action="${rig.base}/import/sie"`);
+      // Fragment skickas inte till servern. Kontrollera målet i GET-svaret.
+      const target = await rig.view.get(link.pathname + link.search);
+      expect(target.status, target.text).toBe(200);
+      const cards = target.text.match(/<article class="ai-card">[\s\S]*?<\/article>/g) ?? [];
+      const matching = cards.filter((card) => card.includes(`id="forslag-${id}"`));
+      expect(matching, link.href).toHaveLength(1);
+      expect(matching[0]).toContain(`id="forslag-${id}" tabindex="-1" role="heading"`);
+      expect(matching[0]).toContain(`action="${rig.base}/approvals/${id}/approve"`);
+      expect(matching[0]).toContain(`action="${rig.base}/approvals/${id}/reject"`);
+      const ids = [...target.text.matchAll(/id="(forslag-[^"]+)"/g)].map((m) => m[1]);
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  }
+
+  it('R5.1 kortlänkar når båda årens SIE-förslag inom, på och bortom 200-gränsen', async () => {
+    for (const newer of [198, 199, 200, 240]) {
+      const rig = await importRig(`Importlänkar ${newer} AB`, [2025, 2026]);
+      for (const fy of rig.fys) await queue(rig, fy);
+      await withAdmin(async (c) => {
+        await c.query(`INSERT INTO action_approvals
+          (company_id, requested_by, requested_actor, action, input, created_at)
+          SELECT $1, $2, 'agent', 'run_recurring_invoices', '{"as_of":"2026-10-31"}'::jsonb,
+            now() + n * interval '1 second' FROM generate_series(1, $3::int) AS n`,
+        [rig.companyId, rig.user.userId, newer]);
+      });
+      const before = await importState(rig.companyId);
+      await followLinks(rig);
+      expect(await importState(rig.companyId)).toEqual(before);
+      const apiList = await api.get(`${rig.co}/approvals?status=pending`).set(rig.auth);
+      expect(apiList.status, JSON.stringify(apiList.body)).toBe(200);
+      expect(apiList.body.approvals).toHaveLength(200);
+      if (newer >= 200) expect(apiList.body.approvals.some((a: { action: string }) => a.action === 'import_sie')).toBe(false);
+    }
+  }, 120_000);
+
+  it('R5.2 fler än 200 SIE-kort omfattas utan dubbletter, avgjorda eller främmande kort', async () => {
+    const rig = await importRig('Hela SIE-kön AB', [2025, 2026]);
+    for (const fy of rig.fys) await queue(rig, fy);
+    const foreign = await importRig('Främmande importkö AB');
+    await queue(foreign, foreign.fys[0]!);
+    const foreignId = (await pendingImports(foreign.companyId))[0]!.id;
+    await withAdmin(async (c) => {
+      await c.query(`INSERT INTO action_approvals
+        (company_id, requested_by, requested_actor, action, input, created_at)
+        SELECT $1, $2, 'human', 'import_sie', $3::jsonb,
+          now() + n * interval '1 second' FROM generate_series(1, 205) AS n`,
+      [rig.companyId, rig.user.userId, JSON.stringify({ fiscal_year_id: rig.fys[1], sie_content: SIE })]);
+    });
+    const imports = await pendingImports(rig.companyId);
+    expect(imports).toHaveLength(207);
+    const before = await importState(rig.companyId);
+    await followLinks(rig);
+    const page = await rig.view.get(`${rig.base}/approvals`);
+    expect(page.status, page.text).toBe(200);
+    const ids = [...page.text.matchAll(/id="forslag-([^"]+)"/g)].map((m) => m[1]);
+    expect(ids.sort()).toEqual(imports.map((a) => a.id).sort());
+    expect(page.text).not.toContain(`forslag-${foreignId}`);
+    expect(await importState(rig.companyId)).toEqual(before);
+    // Efter avvisning får ett gammalt kort inte återinföras av kompletteringen.
+    const old = imports.find((a) => a.input.fiscal_year_id === rig.fys[0])!;
+    const rejected = await rig.view.post(`${rig.base}/approvals/${old.id}/reject`).type('form').send({});
+    expect(rejected.status, rejected.text).toBe(302);
+    const after = await rig.view.get(`${rig.base}/approvals`);
+    expect(after.status, after.text).toBe(200);
+    expect(after.text).not.toContain(`id="forslag-${old.id}"`);
+    const panel = await rig.view.get(`${rig.base}/import?fy=${rig.fys[0]}`);
+    expect(panel.status, panel.text).toBe(200);
+    expect(panel.text).toContain(`action="${rig.base}/import/sie"`);
+  }, 120_000);
+});
