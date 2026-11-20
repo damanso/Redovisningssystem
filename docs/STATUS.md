@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.2, bokslutets bokningar som förslag (FR-22, FR-38, AD-1):**
+  Bokslutets avsättning, skatt och resultat går genom `runViewAction` till Att göra
+  före bokföringen. Alla fem formulär har en gemensam felredirect; låsta år och
+  nollavsättning ger synlig notis. Verksamhetsbeskrivningen använder samma
+  åtgärdsväg och audit som övriga skrivningar. Väntande åtgärd för valt år
+  ersätter sin knapp med länkat `statusChip('pending')`; knapparna har ellips
+  och sektionen hinten "kräver godkännande". Husets typografi, skala, ockra,
+  fokusmarkering och formulär återanvänds; beloppsfälten har tillgängliga namn.
+  Tomt läge, laddad sida och felnotis ligger i samma serverrenderade yta.
+  Täckning skriven: B1.1–B1.5, B2.1–B2.4 och B3.1–B3.3 i `bokslut.test.ts`.
+  Befintliga `fixed-assets`, `ink2`, `k2-annual`, `annual-management` och
+  `bokslut` läskontrollerade utan omskrivning av tidigare fall.
+  `npm run typecheck`: exit 0 (`tsc --noEmit && tsc --noEmit -p tsconfig.test.json`).
+  `npm run build`: exit 0 (`tsc`). `git diff --check`: exit 0.
+  Röd- och grönkörningar samt hela `npm test` har försökts men inga databasfall
+  har körts: globalSetup ger `Error: connect EPERM 127.0.0.1:5433`, exit 1
+  (Vitest skriver även "No test files found" när globalSetup avbryts).
+  Inga databasprov påstås gröna; kedjan verifierar dem enligt nätundantaget.
+  Vyns SIE-import anropar fortfarande tjänsten direkt tills Story 1.3 är byggd.
+  Inget nytt känt rött utanför repot; provvakten har inte körts här och
+  baslinjens externa provläge är oförändrat. CRM-kontraktet ändras inte.
+
 - **2026-11-20 — Story 1.5, betalfakta via baklänkning (FR-35, FR-8, FR-29, AD-2):**
   Två nya känsliga åtgärder, `link_voucher_and_mark_paid` och
   `unlink_voucher_and_reset_payment`, köas före all verkan. `link_voucher`
