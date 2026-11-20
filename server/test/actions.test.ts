@@ -2,8 +2,10 @@
 // audit + mänskligt godkännande, prompt-injection-skydd, AI-OCR som kräver
 // mänsklig granskning före bokföring.
 import { beforeAll, describe, expect, it } from 'vitest';
+import supertest from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { aiOcrReceipt, type VisionClient } from '../src/services/aiOcr.js';
-import { api, createCompany, registerUser, type TestUser } from './helpers.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 let owner: TestUser;
 let outsider: TestUser;
@@ -207,5 +209,333 @@ describe('prompt-injection-skydd (plan §4)', () => {
     // Ingen nyckel i testmiljön → tydligt fel, aldrig en bokning.
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('ai_disabled');
+  });
+});
+
+// Story 1.13 (FR-2, FR-3, FR-38): förtroendegränsen får inte släppa igenom
+// en agent, en contractor eller en ändring av ett bokfört verifikat.
+// Prövas genom åtgärdsrutten (executeAction), HTTP:s requireCompanyAccess,
+// transportlagrets requireHuman och den riktiga databasen.
+const LOSENORD = 'mycket-hemligt-losen-123';
+interface Grans {
+  agare: TestUser;
+  companyId: string;
+  fiscalYearId: string;
+  agentToken: string;
+}
+const agareAv = (b: Grans) => ({ Authorization: `Bearer ${b.agare.token}` });
+const agentAv = (b: Grans) => ({ Authorization: `Bearer ${b.agentToken}` });
+const bolagsbas = (b: Grans) => `/api/companies/${b.companyId}`;
+
+async function nyttBolag(prefix: string): Promise<Grans> {
+  const agare = await registerUser(prefix);
+  const bolag = await createCompany(agare.token, `${prefix} AB`);
+  const ar = await createFiscalYear(bolag, { Authorization: `Bearer ${agare.token}` }, {
+    label: '2026', start_date: '2026-01-01', end_date: '2026-12-31',
+  });
+  const token = await api.post(`/api/companies/${bolag}/agent-tokens`)
+    .set({ Authorization: `Bearer ${agare.token}` }).send({ name: 'Cowork' });
+  expect(token.status, JSON.stringify(token.body)).toBe(201);
+  return { agare, companyId: bolag, fiscalYearId: ar.id, agentToken: token.body.token };
+}
+
+async function nyFaktura(b: Grans): Promise<string> {
+  const kund = await api.post(`${bolagsbas(b)}/customers`).set(agareAv(b)).send({ name: 'Gränskund AB' });
+  expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+  const res = await api.post(`${bolagsbas(b)}/invoices`).set(agareAv(b)).send({
+    customer_id: kund.body.customer.id, invoice_date: '2026-04-01',
+    lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }],
+  });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return res.body.invoice.id;
+}
+
+async function nyttKvitto(b: Grans): Promise<string> {
+  const res = await api.post(`${bolagsbas(b)}/actions/create_receipt`).set(agareAv(b)).send({
+    receipt_date: '2026-03-10', description: 'Inköp', net_ore: 20000_00,
+    vat_rate: 25, expense_account: 5460, payment_account: 1930,
+  });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return res.body.result.id;
+}
+
+function balanseratVerifikat(b: Grans, datum = '2026-03-15') {
+  return {
+    fiscal_year_id: b.fiscalYearId, voucher_date: datum, description: 'Gränsverifikat',
+    lines: [
+      { account_number: 1930, debit_ore: 125000 },
+      { account_number: 3001, credit_ore: 100000 },
+      { account_number: 2611, credit_ore: 25000 },
+    ],
+  };
+}
+
+async function nyttVerifikat(b: Grans): Promise<string> {
+  const res = await api.post(`${bolagsbas(b)}/accounting/vouchers`).set(agareAv(b))
+    .send(balanseratVerifikat(b));
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return res.body.voucher.id;
+}
+
+async function arLast(b: Grans): Promise<boolean> {
+  const res = await api.get(`${bolagsbas(b)}/accounting/fiscal-years`).set(agareAv(b));
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  const ar = res.body.fiscal_years.find((rad: { id: string }) => rad.id === b.fiscalYearId);
+  expect(ar).toBeDefined();
+  return ar.is_locked;
+}
+
+async function aterforingar(verifikatId: string): Promise<number> {
+  return withAdmin(async (client) => {
+    const res = await client.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM vouchers WHERE reverses_voucher_id = $1', [verifikatId]);
+    return res.rows[0]!.n;
+  });
+}
+
+describe('förtroendegränsen: mätningen ser godkännandets verkan', () => {
+  let b: Grans;
+  let verifikatId: string;
+  beforeAll(async () => {
+    b = await nyttBolag('grans-godkannande');
+    verifikatId = await nyttVerifikat(b);
+  });
+
+  it('R1.5 godkänd återföring och periodlås har mätbar verkan', async () => {
+    const reverse = await api.post(`${bolagsbas(b)}/actions/reverse_voucher`).set(agentAv(b))
+      .send({ voucher_id: verifikatId });
+    expect(reverse.status, JSON.stringify(reverse.body)).toBe(202);
+    const lock = await api.post(`${bolagsbas(b)}/actions/lock_period`).set(agentAv(b))
+      .send({ fiscal_year_id: b.fiscalYearId, locked: true });
+    expect(lock.status, JSON.stringify(lock.body)).toBe(202);
+    // Rättelsen får originalets datum: godkänn den innan året låses.
+    for (const forslag of [reverse, lock]) {
+      const res = await api.post(`${bolagsbas(b)}/approvals/${forslag.body.approval.id}/approve`)
+        .set(agareAv(b)).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    }
+    expect(await aterforingar(verifikatId)).toBe(1);
+    expect(await arLast(b)).toBe(true);
+  });
+});
+
+describe('förtroendegränsen: agentens känsliga anrop blir förslag', () => {
+  let b: Grans;
+  let fakturaId: string;
+  let verifikatId: string;
+  beforeAll(async () => {
+    b = await nyttBolag('grans-agent');
+    fakturaId = await nyFaktura(b);
+    verifikatId = await nyttVerifikat(b);
+  });
+
+  it('R1.1 betalningsförslaget får beroende och auditrad vid köandet utan betalning', async () => {
+    const res = await api.post(`${bolagsbas(b)}/actions/register_invoice_payment`).set(agentAv(b))
+      .send({ invoice_id: fakturaId, payment_date: '2026-04-15' });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body.status).toBe('pending_approval');
+    expect(res.body.approval.action).toBe('register_invoice_payment');
+    expect(res.body.approval.status).toBe('pending');
+    expect(res.body.dependency.satisfied).toBe(false);
+    expect(res.body.dependency.depends_on_action).toBe('book_invoice');
+    expect(res.body.dependency.message).toContain('Fakturan');
+    const audit = await withAdmin(async (client) => client.query(
+      `SELECT action, details FROM audit_log
+        WHERE company_id = $1 AND entity_type = 'approval' AND entity_id = $2`,
+      [b.companyId, String(res.body.approval.id)],
+    ));
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.action).toBe('action.approval_requested');
+    expect(audit.rows[0]!.details.actor).toBe('agent');
+    expect(audit.rows[0]!.details.dependency).toBe(res.body.dependency.message);
+    const faktura = await api.get(`${bolagsbas(b)}/invoices/${fakturaId}`).set(agareAv(b));
+    expect(faktura.status, JSON.stringify(faktura.body)).toBe(200);
+    expect(Number(faktura.body.invoice.paid_amount_ore)).toBe(0);
+    expect(faktura.body.invoice.voucher_id).toBeNull();
+  });
+
+  it('R1.3 agentens periodlås och återföring ger 202 utan verkan', async () => {
+    const lock = await api.post(`${bolagsbas(b)}/actions/lock_period`).set(agentAv(b))
+      .send({ fiscal_year_id: b.fiscalYearId, locked: true });
+    expect(lock.status, JSON.stringify(lock.body)).toBe(202);
+    expect(lock.body.status).toBe('pending_approval');
+    const reverse = await api.post(`${bolagsbas(b)}/actions/reverse_voucher`).set(agentAv(b))
+      .send({ voucher_id: verifikatId });
+    expect(reverse.status, JSON.stringify(reverse.body)).toBe(202);
+    expect(reverse.body.status).toBe('pending_approval');
+    expect(await arLast(b)).toBe(false);
+    expect(await aterforingar(verifikatId)).toBe(0);
+  });
+});
+
+async function radantal(): Promise<Map<string, number>> {
+  return withAdmin(async (client) => {
+    const tabeller = await client.query<{ schemaname: string; tablename: string }>(
+      "SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('public', 'crm') ORDER BY 1, 2");
+    expect(tabeller.rows.length, 'bilden måste se databasens tabeller').toBeGreaterThan(50);
+    const bild = new Map<string, number>();
+    for (const { schemaname, tablename } of tabeller.rows) {
+      // Identifierarna kommer bara ur katalogen; citattecken dubbleras.
+      const res = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM "${schemaname.replace(/"/g, '""')}"."${tablename.replace(/"/g, '""')}"`);
+      bild.set(`${schemaname}.${tablename}`, res.rows[0]!.n);
+    }
+    expect(bild.has('public.audit_log')).toBe(true);
+    expect(bild.has('crm.organizations')).toBe(true);
+    return bild;
+  });
+}
+
+function andradeTabeller(fore: Map<string, number>, efter: Map<string, number>): string[] {
+  return [...new Set([...fore.keys(), ...efter.keys()])]
+    .filter((nyckel) => fore.get(nyckel) !== efter.get(nyckel)).sort();
+}
+
+async function bjudIn(b: Grans, epost: string, roll: string): Promise<void> {
+  const webblasare = supertest.agent(app);
+  const login = await webblasare.post('/app/login').type('form')
+    .send({ email: b.agare.email, password: LOSENORD });
+  expect(login.status, JSON.stringify(login.body)).toBe(302);
+  const res = await webblasare.post(`/app/c/${b.companyId}/team/invite`).type('form')
+    .send({ email: epost, role: roll });
+  expect(res.status, JSON.stringify(res.body)).toBe(302);
+}
+
+describe('förtroendegränsen: avvisningar skriver ingenting', () => {
+  let b: Grans;
+  let projektId: string;
+  let underkonsult: TestUser;
+  beforeAll(async () => {
+    b = await nyttBolag('grans-avvisning');
+    const projekt = await api.post(`${bolagsbas(b)}/actions/create_project`).set(agareAv(b))
+      .send({ name: 'Gränsprojektet' });
+    expect(projekt.status, JSON.stringify(projekt.body)).toBe(200);
+    projektId = projekt.body.result.id;
+    underkonsult = await registerUser('underkonsult');
+    await bjudIn(b, underkonsult.email, 'contractor');
+  });
+
+  it('R1.4 ögonblicksbilden ser en kundskrivning och dess auditrad', async () => {
+    const fore = await radantal();
+    const res = await api.post(`${bolagsbas(b)}/actions/create_customer`).set(agentAv(b))
+      .send({ name: 'Agentkund AB' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(andradeTabeller(fore, await radantal()))
+      .toEqual(expect.arrayContaining(['public.customers', 'public.audit_log']));
+  });
+
+  it('R1.2 avvisade anrop skriver ingen rad i någon tabell och ändrar inte projektet', async () => {
+    const fore = await radantal();
+    const agentRes = await api.post(`${bolagsbas(b)}/actions/set_project_status`).set(agentAv(b))
+      .send({ project_id: projektId, status: 'closed' });
+    expect(agentRes.status, JSON.stringify(agentRes.body)).toBe(403);
+    expect(agentRes.body.error).toBe('human_required');
+    const contractorRes = await api.post(`${bolagsbas(b)}/actions/create_customer`)
+      .set({ Authorization: `Bearer ${underkonsult.token}` }).send({ name: 'Smygkund AB' });
+    expect(contractorRes.status, JSON.stringify(contractorRes.body)).toBe(403);
+    expect(contractorRes.body.error).toBe('contractor_not_permitted');
+    expect(andradeTabeller(fore, await radantal())).toEqual([]);
+    // Ett UPDATE syns inte i radantalet: läs också det hotade värdet.
+    const projekt = await withAdmin(async (client) => client.query<{ status: string }>(
+      'SELECT status FROM projects WHERE id = $1', [projektId]));
+    expect(projekt.rows[0]!.status).toBe('active');
+  });
+});
+
+function transportrutter(
+  b: Grans, auth: Record<string, string>, fakturaId: string, kvittoId: string, verifikatId: string,
+) {
+  // Samma fem rutter och kroppar för båda aktörerna, med giltiga underlag.
+  return [
+    [api.post(`${bolagsbas(b)}/invoices/${fakturaId}/book`).set(auth)
+      .send({ fiscal_year_id: b.fiscalYearId }), 200],
+    [api.post(`${bolagsbas(b)}/receipts/${kvittoId}/book`).set(auth)
+      .send({ fiscal_year_id: b.fiscalYearId }), 200],
+    [api.patch(`${bolagsbas(b)}/accounting/fiscal-years/${b.fiscalYearId}`).set(auth)
+      .send({ locked: true }), 202],
+    [api.post(`${bolagsbas(b)}/accounting/vouchers`).set(auth)
+      .send(balanseratVerifikat(b, '2026-03-16')), 201],
+    [api.post(`${bolagsbas(b)}/accounting/vouchers/${verifikatId}/reverse`).set(auth).send({}), 202],
+  ] as const;
+}
+
+describe('förtroendegränsen: fem transportrutter kräver människa', () => {
+  let b: Grans;
+  let fakturaId: string;
+  let kvittoId: string;
+  let verifikatId: string;
+  beforeAll(async () => {
+    b = await nyttBolag('grans-transport');
+    fakturaId = await nyFaktura(b);
+    kvittoId = await nyttKvitto(b);
+    verifikatId = await nyttVerifikat(b);
+  });
+
+  it('A1.2 människan når alla fem rutter med giltiga kroppar', async () => {
+    // Eget underlag: bokföringarna får inte ändra agentfallets utkast.
+    const egenFaktura = await nyFaktura(b);
+    const egetKvitto = await nyttKvitto(b);
+    const egetVerifikat = await nyttVerifikat(b);
+    for (const [anrop, status] of transportrutter(b, agareAv(b), egenFaktura, egetKvitto, egetVerifikat)) {
+      const res = await anrop;
+      expect(res.status, JSON.stringify(res.body)).toBe(status);
+    }
+  });
+
+  it('A1.1 agenten nekas var och en av de fem rutterna utan skrivning', async () => {
+    const fore = await radantal();
+    for (const [anrop] of transportrutter(b, agentAv(b), fakturaId, kvittoId, verifikatId)) {
+      const res = await anrop;
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe('human_required');
+    }
+    expect(andradeTabeller(fore, await radantal())).toEqual([]);
+    const faktura = await api.get(`${bolagsbas(b)}/invoices/${fakturaId}`).set(agareAv(b));
+    expect(faktura.status, JSON.stringify(faktura.body)).toBe(200);
+    expect(faktura.body.invoice.voucher_id).toBeNull();
+  });
+});
+
+async function utforda(b: Grans, atgard: string) {
+  return withAdmin(async (client) => {
+    const res = await client.query<{ details: { sensitivity: string; actor: string } }>(
+      `SELECT details FROM audit_log
+        WHERE company_id = $1 AND action = 'action.executed' AND entity_id = $2 ORDER BY id`,
+      [b.companyId, atgard],
+    );
+    return res.rows;
+  });
+}
+
+describe('förtroendegränsen: revisionsloggen följer skrivåtgärdens transaktion', () => {
+  let b: Grans;
+  beforeAll(async () => {
+    b = await nyttBolag('grans-audit');
+  });
+
+  it('R2.2 ett skrivförsök som fälls i tjänsten lämnar ingen action.executed', async () => {
+    const fore = await utforda(b, 'set_project_status');
+    expect(fore).toHaveLength(0);
+    const res = await api.post(`${bolagsbas(b)}/actions/set_project_status`).set(agareAv(b))
+      .send({ project_id: randomUUID(), status: 'closed' });
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(await utforda(b, 'set_project_status')).toHaveLength(fore.length);
+  });
+
+  it('R2.1 en utförd skrivåtgärd ger exakt en action.executed och en kund', async () => {
+    const fore = await utforda(b, 'create_customer');
+    const res = await api.post(`${bolagsbas(b)}/actions/create_customer`).set(agentAv(b))
+      .send({ name: 'Auditkund AB' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe('ok');
+    const efter = await utforda(b, 'create_customer');
+    expect(efter).toHaveLength(fore.length + 1);
+    expect(efter[fore.length]!.details).toEqual({ sensitivity: 'write', actor: 'agent' });
+    const kund = await withAdmin(async (client) => client.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM customers WHERE company_id = $1 AND name = $2',
+      [b.companyId, 'Auditkund AB'],
+    ));
+    expect(kund.rows[0]!.n).toBe(1);
   });
 });

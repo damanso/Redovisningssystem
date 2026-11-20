@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.13, förtroendegränsen för agent, contractor och bokförda verifikat (FR-2, FR-3, FR-38):**
+  Nio nya fall i `server/test/actions.test.ts`, i fem bolagsisolerade `describe`
+  med lokal rigg. Ingen produktionskod ändrad. R1.1–R1.5 prövar beroende och
+  audit vid köandet, ingen verkan före ja, mätbar verkan efter ja samt avvisade
+  agent-/contractor-anrop utan nya rader i någon public-/crm-tabell och utan
+  ändrad projektstatus. A1.1–A1.2 prövar alla fem requireHuman-rutter för
+  agent och människa. R2.1–R2.2 prövar action.executed vid genomförd skrivning
+  och dess frånvaro vid ett tjänstefel. Motproven skrevs först per uppgift;
+  röd typkontroll visade saknade rigghjälpare innan de implementerades.
+  Läskontroll bekräftar befintliga fall i actions (nu rad 159),
+  audit-immutability (30/47/53/59/63), annual-management (77),
+  accounting (110/116/125/141/158/181) och k2-annual (131).
+  Inte kört: samtliga `npm test` och `npm run test -w server -- test/actions.test.ts`
+  i motprovs- och grönfaserna samt slutgrindarna stoppas i globalSetup av
+  `connect EPERM 127.0.0.1:5433`; inga databasfall kallas gröna. Kedjan kör dem
+  efter bygget enligt uppdraget; körningsrader och statiska resultat finns i
+  berättelsens Dev Agent Record. `npm run typecheck` och `npm run build`
+  passerade utan fel. Inget nytt rött utanför repot. Totalsiffran
+  för npm test i huvudet är inte uppdaterad med de nio fallen eftersom den
+  bara får ändras efter en verklig körning. Husets Daglig liggare behålls;
+  detta testbygge ändrar inga ytor, tokens, typografi eller fokusordning.
+
 - **2026-11-20 — Story 1.11, kön och besluten efter kortbytet (FR-27):**
   Ny regressionssvit `server/test/forslagskort-beslut.test.ts` med 14 fall,
   B1.1–B4.2, i sju isolerade bolagsriggar: åtgärdsrutt och MCP-kö,
