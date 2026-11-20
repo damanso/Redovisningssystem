@@ -1431,6 +1431,33 @@
     {
       "service": "hermes",
       "method": "GET",
+      "router_pattern": "/bygget",
+      "public_pattern": "/bygget",
+      "category": "b",
+      "owner_id": "intervention",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/uppdrag",
+      "public_pattern": "/uppdrag",
+      "category": "b",
+      "owner_id": "home",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
+      "router_pattern": "/uppdrag/*",
+      "public_pattern": "/uppdrag/*",
+      "category": "b",
+      "owner_id": "home",
+      "verification": "source"
+    },
+    {
+      "service": "hermes",
+      "method": "GET",
       "router_pattern": "/fil/*",
       "public_pattern": "/fil/*",
       "category": "d",
@@ -2205,6 +2232,33 @@
     {
       "service": "redovisning",
       "method": "GET",
+      "router_pattern": "/c/:companyId/relations/privata-forslag",
+      "public_pattern": "/app/c/:companyId/relations/privata-forslag",
+      "category": "b",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/relations/privata-forslag/kvitto/:flyttId",
+      "public_pattern": "/app/c/:companyId/relations/privata-forslag/kvitto/:flyttId",
+      "category": "b",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
+      "router_pattern": "/c/:companyId/min-sida",
+      "public_pattern": "/app/c/:companyId/min-sida",
+      "category": "b",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "GET",
       "router_pattern": "/c/:companyId/projects/:projectId",
       "public_pattern": "/app/c/:companyId/projects/:projectId",
       "category": "b",
@@ -2862,6 +2916,24 @@
     {
       "service": "redovisning",
       "method": "POST",
+      "router_pattern": "/c/:companyId/relations/privata-forslag/flytta",
+      "public_pattern": "/app/c/:companyId/relations/privata-forslag/flytta",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/relations/privata-forslag/angra",
+      "public_pattern": "/app/c/:companyId/relations/privata-forslag/angra",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
       "router_pattern": "/c/:companyId/relations/:id/log",
       "public_pattern": "/app/c/:companyId/relations/:id/log",
       "category": "c",
@@ -2943,6 +3015,15 @@
     {
       "service": "redovisning",
       "method": "POST",
+      "router_pattern": "/c/:companyId/relations/:id/sfar",
+      "public_pattern": "/app/c/:companyId/relations/:id/sfar",
+      "category": "c",
+      "owner_id": "relations",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
       "router_pattern": "/c/:companyId/commitments/:id/done",
       "public_pattern": "/app/c/:companyId/commitments/:id/done",
       "category": "c",
@@ -2972,6 +3053,24 @@
       "method": "POST",
       "router_pattern": "/c/:companyId/commitments/:id/snooze",
       "public_pattern": "/app/c/:companyId/commitments/:id/snooze",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/commitments/:id/confirm",
+      "public_pattern": "/app/c/:companyId/commitments/:id/confirm",
+      "category": "c",
+      "owner_id": "commitments",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/min-sida/ny",
+      "public_pattern": "/app/c/:companyId/min-sida/ny",
       "category": "c",
       "owner_id": "commitments",
       "verification": "source"
@@ -3089,6 +3188,15 @@
       "method": "POST",
       "router_pattern": "/c/:companyId/customers/:partyId/update",
       "public_pattern": "/app/c/:companyId/customers/:partyId/update",
+      "category": "c",
+      "owner_id": "customers",
+      "verification": "source"
+    },
+    {
+      "service": "redovisning",
+      "method": "POST",
+      "router_pattern": "/c/:companyId/customers/:partyId/aktiv",
+      "public_pattern": "/app/c/:companyId/customers/:partyId/aktiv",
       "category": "c",
       "owner_id": "customers",
       "verification": "source"
