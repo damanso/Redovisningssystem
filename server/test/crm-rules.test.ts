@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -36,5 +36,46 @@ describe('händelseformulärets rättelser', () => {
     }, now)).toEqual({ summary: 'Sammanfattning E1.', channel: 'email', direction: 'inbound', occurred_at: '2026-09-07T12:00:00Z' });
     expect(correctedEventFields('interaction', Object.create({ summary: 'Ärvt värde' }), now)).toEqual({});
     for (const body of [null, undefined, 'text', 42, []]) expect(correctedEventFields('interaction', body, now)).toEqual({});
+  });
+});
+
+
+describe('organisationsformulärets rättelser och adressens formulär (story 1.4)', () => {
+  const KUND_A = '00000000-0000-4000-8000-000000000001';
+  const KUND_B = '00000000-0000-4000-8000-000000000002';
+  const F = {
+    name: 'Bolaget AB', fore_name: 'Bolaget AB', org_number: '556914-0009', fore_org_number: '556914-0009',
+    website: '', fore_website: '', status: 'prospect', fore_status: 'prospect',
+    customer_id: '', fore_customer_id: '', roll: '', fore_roll: '',
+  };
+  it('R1 bara ändrat namn skickas, trimmat; blankt och oförändrat utelämnas', () => {
+    expect(correctedOrganizationFields(F)).toEqual({});
+    expect(correctedOrganizationFields({ ...F, name: '  Nytt Namn AB  ' })).toEqual({ name: 'Nytt Namn AB' });
+    expect(correctedOrganizationFields({ ...F, name: '   ' })).toEqual({});
+    expect(correctedOrganizationFields({ ...F, name: ' Bolaget AB ' })).toEqual({});
+  });
+  it('R2 tillåtelselistan släpper bara egna formulärfält och ignorerar andra kroppar', () => {
+    expect(correctedOrganizationFields({ ...F, status: 'partner', roll: 'kund', website: 'https://ny.example', org_number: '556914-0010' }))
+      .toEqual({ status: 'partner', roll: 'kund', website: 'https://ny.example', org_number: '556914-0010' });
+    expect(correctedOrganizationFields({ ...F, sfar: 'privat', notes: 'x', source: 'y', organization_id: KUND_B, customer_number: '7', fore_sfar: 'foretag' })).toEqual({});
+    expect(correctedOrganizationFields(Object.create({ name: 'Ärvt AB' }))).toEqual({});
+    for (const body of [null, undefined, 'text', 42, []]) expect(correctedOrganizationFields(body)).toEqual({});
+  });
+  it('R3 kundval skickas vid ändring; tomt utelämnas och ogiltiga värden lämnas åt schemat', () => {
+    expect(correctedOrganizationFields({ ...F, customer_id: KUND_A })).toEqual({ customer_id: KUND_A });
+    expect(correctedOrganizationFields({ ...F, customer_id: KUND_B, fore_customer_id: KUND_A })).toEqual({ customer_id: KUND_B });
+    expect(correctedOrganizationFields({ ...F, customer_id: '', fore_customer_id: KUND_A })).toEqual({});
+    expect(correctedOrganizationFields({ ...F, customer_id: [KUND_A, KUND_B] })).toEqual({ customer_id: [KUND_A, KUND_B] });
+    expect(correctedOrganizationFields({ ...F, status: 'ogiltig' })).toEqual({ status: 'ogiltig' });
+  });
+  it('R4 negativ kontroll: utan fore-fält skickas alla sex ifyllda fält', () => {
+    const alla = { name: 'Bolaget AB', org_number: '556914-0009', website: 'https://b.example', status: 'prospect', customer_id: KUND_A, roll: 'kund' };
+    expect(correctedOrganizationFields(alla)).toEqual(alla);
+  });
+  it('R5 bara uppgifter öppnas; prototypnycklar, okända och andra typer ignoreras', () => {
+    expect(parseOpenForm('uppgifter')).toBe('uppgifter');
+    for (const value of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'dubblett', '', 'UPPGIFTER', 'uppgifter ', ' uppgifter', undefined, null, 42, ['uppgifter'], { uppgifter: 'uppgifter' }]) {
+      expect(parseOpenForm(value)).toBeNull();
+    }
   });
 });

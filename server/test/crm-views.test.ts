@@ -9,6 +9,7 @@
 // varför, hur ligger vi till, vem har lovat vad och var det sades.
 //
 // Och det viktigaste: koncentrationsrisken ska synas, inte döljas.
+import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -1037,6 +1038,316 @@ describe('1.2 händelser i tråden och åtagandevyn', () => {
       expect((await v12Prov('commitment', row.id)).map((p) => [p.field, p.source]))
         .toEqual([['body', 'human'], ['direction', 'human'], ['due_date', 'human'], ['occurred_at', 'human']]);
       expect((await v12Audit('crm.commitment_corrected', row.id))?.details.fields).toEqual(['body', 'direction', 'due_date', 'occurred_at']);
+    });
+  });
+});
+
+// Story 1.4: riktiga vy- och actionanrop, med separata relationer per skrivfall.
+describe('1.4 kundkopplingen på relationssidan', () => {
+  let ett: string, tva: string, tre: string, fyra: string, fem: string, sex: string;
+  let vilande: string, avslutad: string, match: string, grannkund: string, grannrelation: string;
+  let N: string, N2: string, N3: string, B: string, B2: string, U: string, V: string;
+  let P: string, M: string, C: string, E: string, X: string, Y: string, R: string;
+
+  async function v14Kund(name: string): Promise<string> {
+    const r = await api.post(`${co()}/customers`).set(auth()).send({ name });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    return r.body.customer.id as string;
+  }
+  async function v14Form(id: string): Promise<Record<string, string>> {
+    const o = await lasK1Org(id);
+    const form: Record<string, string> = {};
+    for (const field of ['name', 'org_number', 'website', 'status', 'customer_id', 'roll']) {
+      form[field] = o[field] ?? '';
+      form[`fore_${field}`] = o[field] ?? '';
+    }
+    return form;
+  }
+  const v14Edit = (id: string, falt: Record<string, unknown>, bolag = companyId) =>
+    ua.post(`/app/c/${bolag}/relations/${id}/edit`).type('form')
+      .send({ ...falt, back: `/app/c/${bolag}/relations/${id}` });
+  const v14Audit = (id: string) => withAdmin(async (client) => {
+    const r = await client.query(`SELECT count(*)::int AS n FROM crm.audit_log
+      WHERE company_id = $1 AND entity_id = $2 AND action = 'crm.organization_updated'`, [companyId, id]);
+    return r.rows[0]!.n as number;
+  });
+  function v14Val(sidan: string): string {
+    const val = /<select name="customer_id">[\s\S]*?<\/select>/.exec(sidan)?.[0];
+    expect(val, 'kundvalet saknas').toBeDefined();
+    return val!;
+  }
+  function v14Alternativ(val: string): Array<{ value: string; selected: boolean; text: string }> {
+    return [...val.matchAll(/<option value="([^"]*)"([^>]*)>([\s\S]*?)<\/option>/g)]
+      .map((m) => ({ value: m[1]!, selected: /\bselected\b/.test(m[2]!), text: m[3]! }));
+  }
+  const v14Facit = (nuvarande: string | null) => withAdmin(async (client) => {
+    const r = await client.query<{ id: string }>(`SELECT id FROM customers
+      WHERE company_id = $1 AND (is_active OR id = $2) ORDER BY customer_number`, [companyId, nuvarande]);
+    return r.rows.map((c) => c.id);
+  });
+
+  beforeAll(async () => {
+    ett = await v14Kund('Kund Ett 14 AB');
+    tva = await v14Kund('Kund Två 14 AB');
+    tre = await v14Kund('Kund Tre 14 AB');
+    fyra = await v14Kund('Kund Fyra 14 AB');
+    fem = await v14Kund('Kund Fem 14 AB');
+    sex = await v14Kund('Kund Sex 14 AB');
+    vilande = await v14Kund('Vilande Kund 14 AB');
+    avslutad = await v14Kund('Avslutad Kund 14 AB');
+    N = await nyK1Org('Nykoppling 14 AB');
+    N2 = await nyK1Org('Okopplad 14 AB');
+    N3 = await nyK1Org('Huvudet 14 AB');
+    B = await nyK1Org('Bytesbolaget 14 AB', { customer_id: ett });
+    B2 = await nyK1Org('Bytes Två 14 AB', { customer_id: fem });
+    U = await nyK1Org('Upptagna 14 AB', { customer_id: tre });
+    V = await nyK1Org('Vilande 14 AB', { customer_id: vilande });
+    P = await nyK1Org('Privata 14', { sfar: 'privat' });
+    M = await nyK1Org('Namnbolaget 14 AB', { org_number: '556914-0001', website: 'https://namn14.example' });
+    C = await nyK1Org('Kontrollbolaget 14 AB');
+    E = await nyK1Org('Oförändrade 14 AB');
+    X = await nyK1Org('Utan Namn 14 AB');
+    Y = await nyK1Org('Ledig Relation 14 AB');
+    R = await nyK1Org('Matchkund 14 AB');
+    for (const customer_id of [vilande, avslutad]) {
+      const r = await act('update_customer', { customer_id, is_active: false });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+    }
+    match = await v14Kund('Matchkund 14 AB');
+    const granne = await createCompany(user.token, 'Grannbolaget 14 AB');
+    const kund = await api.post(`/api/companies/${granne}/customers`).set(auth()).send({ name: 'Grannkund 14 AB' });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    grannkund = kund.body.customer.id as string;
+    const relation = await api.post(`/api/companies/${granne}/actions/upsert_crm_organization`)
+      .set(auth()).send({ name: 'Grannrelation 14 AB' });
+    expect(relation.status, JSON.stringify(relation.body)).toBe(200);
+    grannrelation = relation.body.result.id as string;
+  });
+
+  describe('åtgärden (story 1.4)', () => {
+    it('A1 status utan namn ändrar inte namnets ursprung', async () => {
+      await plantera({ organization_id: X }, 'name', { source: 'sync', source_system: 'gmail', source_ref: 'gmail:a1' });
+      const r = await act('upsert_crm_organization', { organization_id: X, status: 'partner' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.name).toBe('Utan Namn 14 AB');
+      const o = await lasK1Org(X);
+      expect(o.status).toBe('partner');
+      expect(o.provenance.status.source).toBe('human');
+      expect(o.provenance.name).toMatchObject({ source: 'sync', source_ref: 'gmail:a1' });
+    });
+    it('A2 tom rättelse ger nothing_to_update utan ursprungs- eller auditrad', async () => {
+      const fore = await lasK1Org(X), audit = await v14Audit(X);
+      const r = await act('upsert_crm_organization', { organization_id: X });
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.error).toBe('nothing_to_update');
+      expect((await lasK1Org(X)).provenance).toEqual(fore.provenance);
+      expect(await v14Audit(X)).toBe(audit);
+    });
+    it('A3 namn krävs vid skapande och blankt namn avvisas även med id', async () => {
+      for (const input of [{}, { organization_id: X, name: '   ' }]) {
+        const r = await act('upsert_crm_organization', input);
+        expect(r.status, JSON.stringify(r.body)).toBe(400);
+        expect(r.body.error).toBe('invalid_name');
+      }
+      expect((await lasK1Org(X)).name).toBe('Utan Namn 14 AB');
+    });
+    it('A4 ett uttryckligt kundval med matchande namn får human', async () => {
+      const r = await act('upsert_crm_organization', { organization_id: R, name: 'Matchkund 14 AB', customer_id: match });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const o = await lasK1Org(R);
+      expect(o.customer_id).toBe(match);
+      expect(o.provenance.customer_id.source).toBe('human');
+    });
+    it('A5 upptagen kund avvisas med relationens id och utan skrivning', async () => {
+      const audit = await v14Audit(Y);
+      const r = await act('upsert_crm_organization', { organization_id: Y, name: 'Ledig Relation 14 AB', customer_id: tre });
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body).toEqual({ error: 'customer_already_linked', details: { organization_id: U } });
+      expect((await lasK1Org(Y)).customer_id).toBeNull();
+      expect(await v14Audit(Y)).toBe(audit);
+    });
+    it('A6 grannbolagets kund ger 404 utan koppling', async () => {
+      const r = await act('upsert_crm_organization', { organization_id: Y, name: 'Ledig Relation 14 AB', customer_id: grannkund });
+      expect(r.status, JSON.stringify(r.body)).toBe(404);
+      expect((await lasK1Org(Y)).customer_id).toBeNull();
+    });
+    it('A7 upptagen kund kan inte skapa en ny relation', async () => {
+      const r = await act('upsert_crm_organization', { name: 'Ny Relation 14 AB', customer_id: tre });
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error).toBe('customer_already_linked');
+      await withAdmin(async (client) => {
+        const found = await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND name = $2', [companyId, 'Ny Relation 14 AB']);
+        expect(found.rows).toEqual([]);
+      });
+    });
+    it('A8 ändrat actionkontrakt dokumenteras i eget avsnitt och Människan vinner', async () => {
+      const actions = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+      const rubrik = '## Kundkopplingen på relationssidan (crm 1.4)';
+      expect(actions.split(rubrik)).toHaveLength(2);
+      expect(actions.indexOf(rubrik)).toBeGreaterThan(actions.indexOf('## Rätta och bekräfta händelser (crm 1.2)'));
+      const avsnitt = actions.split(rubrik)[1]!.split(/\n## /)[0]!;
+      for (const namn of ['upsert_crm_organization', 'organization_id', 'customer_id', 'nothing_to_update', 'customer_already_linked', 'human']) {
+        expect(avsnitt).toContain('`' + namn + '`');
+      }
+      expect(avsnitt).not.toMatch(/^### /m);
+      const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+      expect(kontrakt.split('## Människan vinner')[1]!.split(/\n## /)[0]).toContain('customer_already_linked');
+    });
+  });
+
+  describe('vyn (story 1.4)', () => {
+    it('K1 kundvalets ordning, förval, inaktiv nuvarande kund och okopplat läge', async () => {
+      const kopplad = await sida(U);
+      const alternativ = v14Alternativ(v14Val(kopplad));
+      expect(alternativ.map((a) => a.value)).toEqual(await v14Facit(tre));
+      expect(alternativ.filter((a) => a.selected).map((a) => a.value)).toEqual([tre]);
+      expect(alternativ.map((a) => a.value)).not.toContain('');
+      expect(alternativ.map((a) => a.value)).not.toContain(avslutad);
+      expect(alternativ.map((a) => a.value)).not.toContain(grannkund);
+      expect(alternativ.findIndex((a) => a.value === ett)).toBeLessThan(alternativ.findIndex((a) => a.value === tva));
+      expect(alternativ.findIndex((a) => a.value === tva)).toBeLessThan(alternativ.findIndex((a) => a.value === tre));
+      expect(alternativ.find((a) => a.value === ett)?.text).toContain('Kund Ett 14 AB');
+      expect(kopplad).toContain(`name="fore_customer_id" value="${tre}"`);
+      const form = kopplad.split('<summary>Rätta uppgifter</summary>')[1]!.split('</form>')[0]!;
+      expect(form).toContain('Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan.');
+      expect(kopplad).not.toContain('Ingen synk skriver över det efteråt');
+      expect(form).toContain('<label>Kund i registret<select name="customer_id">');
+      expect(form).not.toMatch(/name="name"[^>]*required/);
+
+      const inaktiv = v14Alternativ(v14Val(await sida(V)));
+      expect(inaktiv.map((a) => a.value)).toEqual(await v14Facit(vilande));
+      expect(inaktiv.filter((a) => a.selected)).toEqual([{ value: vilande, selected: true, text: expect.stringContaining('Vilande Kund 14 AB (inaktiv)') }]);
+      expect(inaktiv.map((a) => a.value)).not.toContain(avslutad);
+      const okopplad = await sida(N3), val = v14Val(okopplad);
+      expect(val).toMatch(/<select name="customer_id">\s*<option value="" selected>Ingen koppling<\/option>/);
+      const utan = v14Alternativ(val);
+      expect(utan[0]).toEqual({ value: '', selected: true, text: 'Ingen koppling' });
+      expect(utan.slice(1).map((a) => a.value)).toEqual(await v14Facit(null));
+      expect(okopplad).toContain('name="fore_customer_id" value=""');
+    });
+    it('K2 vald kund kopplas med human och raden visas utan gissningsmärke', async () => {
+      for (const field of ['name', 'status']) await plantera({ organization_id: N }, field,
+        { source: 'sync', source_system: 'gmail', source_ref: 'gmail:k2' });
+      const r = await v14Edit(N, { ...await v14Form(N), customer_id: fyra });
+      expect(r.status, r.text).toBe(302);
+      expect(r.headers.location).toBe(relationsadress(N));
+      const o = await lasK1Org(N);
+      expect(o.customer_id).toBe(fyra);
+      expect(o.provenance.customer_id.source).toBe('human');
+      expect(o.provenance.name.source).toBe('sync');
+      expect(o.status).toBe('customer');
+      const sidan = await sida(N), kundrad = rad(kort(sidan, 'Uppgifter'), 'Kund i registret');
+      expect(kundrad).toContain('Kund Fyra 14 AB');
+      expect(kundrad).not.toContain('class="prov');
+      expect(stammerFalt(sidan, N)).not.toContain('customer_id');
+    });
+    it('K3 kundkrock syns som notis; främmande kund och relation ger 404 utan ändringar', async () => {
+      const fore = await lasK1Org(N2), form = await v14Form(N2);
+      const krock = await v14Edit(N2, { ...form, customer_id: tre });
+      expect(krock.status, krock.text).toBe(302);
+      expect(decodeURIComponent(krock.headers.location ?? '')).toContain('kunden är redan kopplad till relationen Upptagna 14 AB');
+      const notis = await ua.get(krock.headers.location!);
+      expect(notis.status, notis.text).toBe(200);
+      expect(notis.text).toMatch(/<p class="notice">kunden är redan kopplad till relationen Upptagna 14 AB/);
+      const kund = await v14Edit(N2, { ...form, customer_id: grannkund });
+      expect(kund.status, kund.text).toBe(404);
+      const relation = await v14Edit(grannrelation, { name: 'Kapad 14 AB', fore_name: 'Grannrelation 14 AB' });
+      expect(relation.status, relation.text).toBe(404);
+      const efter = await lasK1Org(N2);
+      expect(efter.customer_id).toBeNull();
+      expect(efter.provenance).toEqual(fore.provenance);
+      await withAdmin(async (client) => {
+        const r = await client.query('SELECT name FROM crm.organizations WHERE id = $1', [grannrelation]);
+        expect(r.rows[0]!.name).toBe('Grannrelation 14 AB');
+      });
+    });
+    it('K4 byte från A till B har samma statusväg som en ny koppling', async () => {
+      await plantera({ organization_id: B }, 'status', { source: 'sync', source_system: 'gmail', source_ref: 'gmail:k4' });
+      const r = await v14Edit(B, { ...await v14Form(B), customer_id: tva });
+      expect(r.status, r.text).toBe(302);
+      expect(r.headers.location).toBe(relationsadress(B));
+      const o = await lasK1Org(B);
+      expect(o.customer_id).toBe(tva);
+      expect(o.provenance.customer_id.source).toBe('human');
+      expect(o.status).toBe('customer');
+      const kundrad = rad(kort(await sida(B), 'Uppgifter'), 'Kund i registret');
+      expect(kundrad).toContain('Kund Två 14 AB');
+      expect(kundrad).not.toContain('class="prov');
+    });
+    it('K5 upptagen B lämnar kopplingen till A och dess ursprung kvar', async () => {
+      const fore = await lasK1Org(B2);
+      const r = await v14Edit(B2, { ...await v14Form(B2), customer_id: tre });
+      expect(r.status, r.text).toBe(302);
+      expect(decodeURIComponent(r.headers.location ?? '')).toContain('kunden är redan kopplad till relationen Upptagna 14 AB');
+      const efter = await lasK1Org(B2);
+      expect(efter.customer_id).toBe(fem);
+      expect(efter.provenance).toEqual(fore.provenance);
+    });
+    it('K6 bara ändrat namn blir human; orörda värden och ursprung står kvar', async () => {
+      for (const field of ['name', 'org_number', 'status']) await plantera({ organization_id: M }, field,
+        { source: 'sync', source_system: 'gmail', source_ref: 'gmail:k6' });
+      await plantera({ organization_id: M }, 'website', { source: 'ai' });
+      const fore = await lasK1Org(M);
+      const r = await v14Edit(M, { ...await v14Form(M), name: 'Namnbolaget 14 Ny AB' });
+      expect(r.status, r.text).toBe(302);
+      expect(r.headers.location).toBe(relationsadress(M));
+      const efter = await lasK1Org(M);
+      expect(efter.name).toBe('Namnbolaget 14 Ny AB');
+      expect(efter.provenance.name.source).toBe('human');
+      for (const field of ['org_number', 'website', 'status', 'customer_id']) expect(efter[field]).toBe(fore[field]);
+      for (const field of ['org_number', 'website', 'status']) expect(efter.provenance[field]).toEqual(fore.provenance[field]);
+      expect(efter.provenance.status.source).toBe('sync');
+      expect(efter.provenance.customer_id).toBeUndefined();
+      expect(efter.provenance.roll).toBeUndefined();
+    });
+    it('K7 privat relation avvisas av sfärgränsen utan koppling', async () => {
+      const r = await v14Edit(P, { ...await v14Form(P), customer_id: sex });
+      expect(r.status, r.text).toBe(302);
+      expect(decodeURIComponent(r.headers.location ?? '')).toContain('en privat organisation kan inte kopplas till kundregistret');
+      expect((await lasK1Org(P)).customer_id).toBeNull();
+    });
+    it('K8 negativ kontroll: utan fore-fält blir den orörda statusen human', async () => {
+      await plantera({ organization_id: C }, 'status', { source: 'sync', source_system: 'gmail', source_ref: 'gmail:k8' });
+      const r = await v14Edit(C, { name: 'Kontrollbolaget 14 AB', status: 'prospect' });
+      expect(r.status, r.text).toBe(302);
+      expect(r.headers.location).toBe(relationsadress(C));
+      expect((await lasK1Org(C)).provenance.status.source).toBe('human');
+    });
+    it('K9 oförändrat formulär ger begriplig notis utan ursprung eller auditrad', async () => {
+      const fore = await lasK1Org(E), audit = await v14Audit(E);
+      const r = await v14Edit(E, await v14Form(E));
+      expect(r.status, r.text).toBe(302);
+      expect(decodeURIComponent(r.headers.location ?? '')).toContain('Inget att rätta: inget fält ändrades.');
+      expect((await lasK1Org(E)).provenance).toEqual(fore.provenance);
+      expect(await v14Audit(E)).toBe(audit);
+    });
+  });
+
+  describe('sidhuvudet och adressen (story 1.4)', () => {
+    it('O1 sidhuvudets länk öppnar bara Rätta uppgifter via adressen', async () => {
+      const stangd = await sida(N3);
+      const lank = `<a href="${relationsadress(N3)}?oppna=uppgifter">`;
+      expect(stangd).toContain(lank);
+      expect(stangd.split(lank)[1]!.split('</a>')[0]).toContain('Ej i kundregistret');
+      expect(stangd).not.toContain('<details class="rattaform" open>');
+      const oppen = await ua.get(`${relationsadress(N3)}?oppna=uppgifter`);
+      expect(oppen.status, oppen.text).toBe(200);
+      expect(oppen.text.split('<details class="rattaform" open>')).toHaveLength(2);
+      const form = oppen.text.split('<details class="rattaform" open>')[1]!.split('</details>')[0]!;
+      expect(form).toContain(`action="${relationsadress(N3)}/edit"`);
+      expect(form).toContain('name="fore_customer_id"');
+    });
+    it('O2 kopplad relation har ingen Ej i kundregistret-länk', async () => {
+      const sidan = await sida(U);
+      expect(sidan).not.toContain('?oppna=uppgifter');
+      expect(sidan).not.toContain('Ej i kundregistret');
+    });
+    it('O3 nio okända adresser ger 200 och ett stängt formulär', async () => {
+      for (const fraga of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'dubblett', '', 'UPPGIFTER', 'uppgifter%20', 'uppgifter&oppna=uppgifter']) {
+        const r = await ua.get(`${relationsadress(N3)}?oppna=${fraga}`);
+        expect(r.status, r.text).toBe(200);
+        expect(r.text, fraga).not.toContain('<details class="rattaform" open>');
+      }
     });
   });
 });

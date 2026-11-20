@@ -159,7 +159,10 @@ En händelse utan organisation får personens namn som prefix.
 matchas namnet, och då går namnet inte att rätta — en ändring hade lagt upp en ny
 organisation bredvid den gamla. Krockar det nya namnet med en befintlig rad
 avvisas skrivningen med `name_taken`; två rader för samma bolag ska slås ihop
-(`merge_crm_organizations`), inte döpas om till varandra.
+(`merge_crm_organizations`), inte döpas om till varandra. Med `organization_id`
+får `name` utelämnas och betyder då oförändrat. Ett `customer_id` som redan
+hör till en annan organisation avvisas med 409 `customer_already_linked`
+i stället för ett indexfel.
 
 ## Kadens, dubbletter och sökning
 

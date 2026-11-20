@@ -2513,3 +2513,22 @@ visar *· rättad av dig*. Sidan återgår till samma filter och visar fel i not
 Ett löfte utan relation har *Stämmer* genom sin egen rutt
 `POST /app/c/:companyId/commitments/:id/confirm`. Det har ännu ingen *Rätta*
 i åtagandevyn; det kan rättas genom `update_crm_commitment`.
+
+
+## Kundkopplingen på relationssidan (crm 1.4)
+
+`upsert_crm_organization` med `organization_id` tar bara de fält som ska ändras.
+`name` får utelämnas: utelämnat betyder oförändrat och ger inget nytt ursprung.
+Utan `organization_id` krävs `name`; saknat eller blankt namn ger 400
+`invalid_name`. Ett anrop med `organization_id` utan ändringsfält ger 400
+`nothing_to_update` (”Inget att rätta: inget fält ändrades.”), utan skrivning.
+
+Ett uttryckligt `customer_id` slås aldrig upp i kundregistret och får skrivarens
+ursprung: `human` för en människa och `ai` för en agent. En kund som redan är
+kopplad till en annan relation ger 409 `customer_already_linked` med
+`details.organization_id`; ingenting skrivs. Kundens rad låses före prövningen.
+Ett byte av kund behandlar statusen som en ny koppling.
+
+Relationssidans *Rätta uppgifter* skickar bara ändrade fält, jämförda mot det
+visade värdet i de dolda `fore_`-fälten. Formuläret öppnas med
+`?oppna=uppgifter` från sidhuvudets *Ej i kundregistret*.
