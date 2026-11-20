@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.5, omtag efter röda auditprov (crm, FR-10, FR-11):**
+  Både v15Audit och v15Anrop i crm-views sorterar nu på audit_log:s verkliga
+  tidskolumn occurred_at och id. Rotorsaken var antaget created_at i två
+  testfrågor; övriga tillagda frågor genomgångna mot schemat. KP2 utökat med
+  postnummer, telefon och adress i följd: varje sparande kräver senaste
+  auditrad, exakt en ny rad i båda loggarna och oförändrat CRM. Befintliga
+  vyprov är oförändrade. Faktisk utdata: typecheck exit 0 före/efter, build
+  exit 0, rena crm-rules: Test Files 1 passed (1), Tests 83 passed (83).
+  npm test före/efter: exit 1, connect EPERM 127.0.0.1:5433 i globalSetup;
+  inga databasfall körda här. Kedjan måste verifiera KP-fallen och hela sviten.
+  Tillfällig konfiguration för de rena proven borttagen. DoD omprövad punkt
+  för punkt med nätundantaget; Status review. Husets befintliga kort,
+  typografi och fokusmarkeringar behålls. Inget API-kontrakt ändrat, ingen
+  ny produktkod, migration, rutt, åtgärd eller beroende. Ingen driftkontroll
+  utförd; adresskontraktet.py och bmadglidning är fortsatt baslinjens externa
+  röda enligt berättelsen, inte omkörda i detta omtag.
+
+- **2026-11-20 — Story 1.5, kundkortets fakturauppgifter rättas från relationssidan (crm, FR-10, FR-11):**
+  Faktakortet *Kundkortet* läser kundregistret vid varje sidladdning och har
+  *Rätta fakturauppgifter* med sju fält. Befintliga factcard/uppgift/rattaform
+  bevarar sidans typografi, textbrytning, tokens och fokusmarkeringar; tomma
+  värden visas som — och fel som sidans vanliga notis. Grenen
+  `?handgrepp=kundkort` i befintliga rättelserutten hämtar kundmålet ur
+  relationen och stoppar gamla flikar. `correctedCustomerFields` skickar bara
+  ändrade fält och prövar mejl/villkor; `parseEditTarget` stänger grenvalet.
+  FK1–FK6/GV1 körda rött (7 failed, 76 passed) före implementation och grönt
+  (83 passed) efter, med tillfällig vitest-konfiguration utan databassetup.
+  KV1–KV4 och KP1–KP11 skrivna genom hela stacken med CRM-ögonblicksbilder,
+  dubbla auditräknare och negativa kontroller. `npm test` före och efter
+  uppgifterna stoppas av `connect EPERM 127.0.0.1:5433` i globalSetup, exit 1;
+  databasfallen och full regression är därför inte körda i sandlådan.
+  Kedjan verifierar dem enligt uppdragets nätundantag. Rena sändvägs- och
+  importkontroller över källträdet: åtta kontroller med 0 brister samt U0 och
+  N1–N4 godkända. Ingen ny rutt, migration, åtgärd eller schemaändring;
+  `update_customer`, åtgärdsdokumentationen och CRM-kontraktet är oförändrade.
+  Slutgrind: typecheck, build och diffkontroll exit 0. Renderarens fyllda och
+  tomma värden samt escaping kontrollerade; Chromium stoppades av sandlådan
+  före visuell kontroll/tangentbordsprov. DoD prövad punkt för punkt med
+  nätundantaget dokumenterat; berättelsen och sprintstatusen står i review.
+  Inga tjänster startade och ingen driftsättning gjord.
+
 - **2026-11-20 — Story 6.2, likviditet per kalendermånad (FR-44):**
   Ren rullning i `domain/liquidity.ts` och `liquidityByMonth` i reports-tjänsten:
   tre kalendermånader, överfört saldo, förfallet, första underskott och behov,

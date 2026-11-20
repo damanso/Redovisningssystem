@@ -1556,3 +1556,295 @@ describe('1.4 kundkopplingen på relationssidan', () => {
     });
   });
 });
+
+describe('1.5 kundkortets fakturauppgifter', () => {
+  const v15Falt = ['email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
+  const v15Varden = {
+    email: 'faktura@fakturakund15.example', phone: '08-123 15 15', address: 'Kundgatan 15',
+    postal_code: '111 15', city: 'Stockholm', vat_number: 'SE556915001501', payment_terms: 30,
+  };
+  type V15Par = { org: string; kund: string };
+  let v15Full: V15Par, v15Tom: V15Par, v15En: V15Par, v15Okopplad: string;
+  async function v15Kund(name: string, falt: Record<string, unknown> = {}, bolag = companyId): Promise<string> {
+    const r = await api.post(`/api/companies/${bolag}/customers`).set(auth()).send({ name, ...falt });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    return r.body.customer.id as string;
+  }
+  async function v15Par(namn: string, falt: Record<string, unknown> = v15Varden): Promise<V15Par> {
+    const kund = await v15Kund(`Fakturakund ${namn} AB`, falt);
+    const org = await nyK1Org(`Fakturarelation ${namn} AB`, { customer_id: kund });
+    return { kund, org };
+  }
+  const v15Kundrad = (kundId: string) => withAdmin(async (client) => {
+    const r = await client.query('SELECT * FROM customers WHERE id = $1', [kundId]);
+    expect(r.rows).toHaveLength(1);
+    return r.rows[0] as Record<string, unknown>;
+  });
+  beforeAll(async () => {
+    v15Full = await v15Par('15');
+    v15Tom = await v15Par('Tom 15', {});
+    v15En = await v15Par('En Dag 15', { payment_terms: 1 });
+    v15Okopplad = await nyK1Org('Okopplad 15 AB');
+  });
+
+  describe('kortet (story 1.5)', () => {
+    it('KV1 kundregistrets sex rader står direkt efter Uppgifter utan ursprungsmärken', async () => {
+      const sidan = await sida(v15Full.org);
+      const uppgifter = sidan.indexOf('<div class="factcard__head">Uppgifter</div>');
+      const kundkort = sidan.indexOf('<div class="factcard__head">Kundkortet</div>');
+      const personer = sidan.indexOf('<div class="factcard__head">Personer</div>');
+      expect(uppgifter).toBeGreaterThanOrEqual(0);
+      expect(kundkort).toBeGreaterThan(uppgifter);
+      expect(personer).toBeGreaterThan(kundkort);
+      expect(sidan.slice(uppgifter, kundkort).match(/class="factcard__head"/g)).toHaveLength(1);
+      const k = kort(sidan, 'Kundkortet');
+      const facit = [
+        ['Kundnummer', String((await v15Kundrad(v15Full.kund)).customer_number)],
+        ['Fakturamejl', 'faktura@fakturakund15.example'], ['Adress', 'Kundgatan 15, 111 15 Stockholm'],
+        ['Momsreg.nr', 'SE556915001501'], ['Betalningsvillkor', '30 dagar'], ['Telefon', '08-123 15 15'],
+      ];
+      expect([...k.matchAll(/<span class="k">([^<]+)<\/span>/g)].map((m) => m[1])).toEqual(facit.map(([label]) => label));
+      for (const [label, value] of facit) expect(rad(k, label!)).toContain(`<span class="v">${value}</span>`);
+      expect(k).not.toContain('class="prov');
+      expect(k).not.toContain('✦');
+      expect(k).toContain('Sparas i kundregistret — samma uppgifter som på fakturan.');
+      expect(k).toContain(`<a href="/app/c/${companyId}/customers/${v15Full.kund}">Öppna kundkortet →</a>`);
+    });
+    it('KV2 okopplad relation saknar kort och fakturaformulär', async () => {
+      const sidan = await sida(v15Okopplad);
+      expect(sidan).not.toContain('factcard__head">Kundkortet');
+      expect(sidan).not.toContain('Rätta fakturauppgifter');
+    });
+    it('KV3 saknade värden visas som streck och formuläret har bara sju valfria fakturafält', async () => {
+      const tomt = kort(await sida(v15Tom.org), 'Kundkortet');
+      for (const label of ['Fakturamejl', 'Adress', 'Momsreg.nr', 'Betalningsvillkor', 'Telefon']) {
+        expect(rad(tomt, label)).toContain('<span class="v">—</span>');
+      }
+      const k = kort(await sida(v15Full.org), 'Kundkortet');
+      expect(k).toContain('<details class="rattaform"><summary>Rätta fakturauppgifter</summary>');
+      expect(k).toContain(`<form method="post" action="/app/c/${companyId}/relations/${v15Full.org}/edit?handgrepp=kundkort">`);
+      expect(k).toContain(`name="fore_customer_id" value="${v15Full.kund}"`);
+      expect(k).toContain(`name="back" value="${relationsadress(v15Full.org)}"`);
+      for (const field of v15Falt) {
+        const value = String(v15Varden[field]);
+        expect(k).toMatch(new RegExp(`<label>[^<]+<input[^>]+name="${field}"[^>]+value="${value}"`));
+        expect(k).toContain(`type="hidden" name="fore_${field}" value="${value}"`);
+      }
+      expect(k).toMatch(/type="number" name="payment_terms"[^>]*min="0"[^>]*max="365"/);
+      expect(k).not.toMatch(/\brequired\b|<details[^>]+\bopen\b/);
+      for (const field of ['name', 'org_number', 'customer_number', 'is_active', 'customer_id']) expect(k).not.toContain(`name="${field}"`);
+      expect(k).toContain('Ett tomt fält lämnas oförändrat — det raderar ingenting.');
+      expect(k).toContain('<button class="btn btn--primary btn--sm" type="submit">Spara</button>');
+    });
+    it('KV4 en dag böjs rätt och nästa läsning visar en rättelse i kundregistret', async () => {
+      expect(rad(kort(await sida(v15En.org), 'Kundkortet'), 'Betalningsvillkor')).toContain('>1 dag</span>');
+      const r = await act('update_customer', { customer_id: v15En.kund, phone: '08-nytt-15' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(rad(kort(await sida(v15En.org), 'Kundkortet'), 'Telefon')).toContain('>08-nytt-15</span>');
+    });
+  });
+
+  const v15Skriv: V15Par[] = [];
+  let v15Annan: string, v15NyKoppling: string, v15Granne: string, v15Grannpar: V15Par;
+  const v15TomText = 'Inget att rätta: inget fält ändrades.';
+  const v15MejlText = 'Fakturamejlet är ingen giltig e-postadress. Inget sparades.';
+  const v15VillkorText = 'Betalningsvillkoret anges i hela dagar från 0 till 365. Inget sparades.';
+  const v15KopplingText = 'Kundkopplingen har ändrats sedan sidan laddades. Ladda om sidan och försök igen. Inget sparades.';
+  const v15FormText = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
+  beforeAll(async () => {
+    for (let i = 0; i < 11; i++) v15Skriv.push(await v15Par(`Spara ${i + 1} 15`));
+    v15Annan = await v15Kund('Annan Kund 15 AB', v15Varden);
+    v15NyKoppling = await v15Kund('Ny Koppling 15 AB', v15Varden);
+    v15Granne = await createCompany(user.token, 'Grannbolaget 15 AB');
+    const kund = await v15Kund('Grannkund 15 AB', v15Varden, v15Granne);
+    const r = await api.post(`/api/companies/${v15Granne}/actions/upsert_crm_organization`).set(auth())
+      .send({ name: 'Grannrelation 15 AB', customer_id: kund });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    v15Grannpar = { kund, org: r.body.result.id as string };
+  });
+
+  async function v15Form(orgId: string, kundId: string): Promise<Record<string, string>> {
+    const kund = await v15Kundrad(kundId);
+    const form: Record<string, string> = { fore_customer_id: kundId, back: relationsadress(orgId) };
+    for (const field of v15Falt) {
+      form[field] = String(kund[field] ?? '');
+      form[`fore_${field}`] = form[field];
+    }
+    return form;
+  }
+  const v15Post = (orgId: string, kropp: Record<string, unknown>,
+    { bolag = companyId, handgrepp }: { bolag?: string; handgrepp?: string } = {}) =>
+    ua.post(`/app/c/${bolag}/relations/${orgId}/edit${handgrepp === undefined ? '?handgrepp=kundkort' : handgrepp}`)
+      .type('form').send(kropp);
+  const v15Audit = (kundId: string) => withAdmin(async (client) => {
+    const r = await client.query(`SELECT entity_id, details FROM audit_log
+      WHERE action = 'customer.updated' AND entity_id = $1 ORDER BY occurred_at DESC, id DESC`, [kundId]);
+    return { n: r.rowCount!, latest: r.rows[0] ?? null };
+  });
+  const v15Anrop = (bolag = companyId) => withAdmin(async (client) => {
+    const r = await client.query(`SELECT entity_id, details FROM audit_log
+      WHERE company_id = $1 AND action = 'action.executed' AND entity_id = 'update_customer'
+      ORDER BY occurred_at DESC, id DESC`, [bolag]);
+    return { n: r.rowCount!, latest: r.rows[0] ?? null };
+  });
+  const v15CrmBild = (bolag: string) => withAdmin(async (client) => {
+    const tables = await client.query<{ table_name: string }>(`SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'crm' AND table_type = 'BASE TABLE' ORDER BY table_name`);
+    const names = tables.rows.map((r) => r.table_name);
+    for (const name of ['audit_log', 'commitments', 'deals', 'erased_sources', 'field_provenance', 'interactions',
+      'organization_name_aliases', 'organizations', 'people', 'person_distinctions', 'retention_settings']) {
+      expect(names, `crm.${name} saknas`).toContain(name);
+    }
+    const bild: Record<string, { antal: number; hash: string }> = {};
+    for (const name of names) {
+      expect(name).toMatch(/^[a-z_]+$/);
+      const columns = await client.query(`SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'crm' AND table_name = $1 AND column_name = 'company_id'`, [name]);
+      expect(columns.rows, `crm.${name} saknar company_id`).toHaveLength(1);
+      // Namnen kommer ur katalogen och är prövade ovan; inga namn kommer ur formuläret.
+      const r = await client.query(`SELECT count(*)::int AS antal,
+        md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) AS hash
+        FROM crm.${name} t WHERE company_id = $1`, [bolag]);
+      bild[name] = r.rows[0]!;
+    }
+    return bild;
+  });
+  async function v15Tillstand(par: V15Par, bolag = companyId) {
+    return { kund: await v15Kundrad(par.kund), audit: await v15Audit(par.kund),
+      anrop: await v15Anrop(bolag), crm: await v15CrmBild(bolag) };
+  }
+  async function v15Spara(par: V15Par, kropp: Record<string, unknown>, falt: Record<string, unknown>) {
+    const fore = await v15Tillstand(par);
+    const r = await v15Post(par.org, kropp);
+    expect(r.status, r.text).toBe(302);
+    expect(r.headers.location).toBe(relationsadress(par.org));
+    const efter = await v15Tillstand(par);
+    // Registrets befintliga trigger uppdaterar tidsstämpeln vid varje rättelse.
+    expect(efter.kund).toEqual({ ...fore.kund, ...falt, updated_at: expect.any(Date) });
+    expect((efter.kund.updated_at as Date).getTime()).toBeGreaterThanOrEqual((fore.kund.updated_at as Date).getTime());
+    expect(efter.crm).toEqual(fore.crm);
+    expect(efter.audit.n).toBe(fore.audit.n + 1);
+    expect(efter.audit.latest).toEqual({ entity_id: par.kund, details: { fields: Object.keys(falt) } });
+    expect(efter.anrop.n).toBe(fore.anrop.n + 1);
+    expect(efter.anrop.latest).toEqual({ entity_id: 'update_customer', details: { actor: 'human', sensitivity: 'write' } });
+    return r;
+  }
+  async function v15Avvisa(par: V15Par, kropp: Record<string, unknown>, text: string,
+    handgrepp?: string) {
+    const fore = await v15Tillstand(par);
+    const r = await v15Post(par.org, kropp, handgrepp === undefined ? {} : { handgrepp });
+    expect(r.status, r.text).toBe(302);
+    expect(r.headers.location).toBeDefined();
+    expect(decodeURIComponent(r.headers.location!)).toContain(`fel=${text}`);
+    const sidan = await ua.get(r.headers.location!);
+    expect(sidan.status, sidan.text).toBe(200);
+    expect(sidan.text).toContain(`<p class="notice">${text}</p>`);
+    expect(await v15Tillstand(par)).toEqual(fore);
+  }
+
+  describe('sparandet (story 1.5)', () => {
+    it('KP1 bara adressen sparas och visas tillbaka', async () => {
+      const p = v15Skriv[0]!;
+      const form = await v15Form(p.org, p.kund);
+      await v15Spara(p, { ...form, address: 'Nya Kundgatan 1' }, { address: 'Nya Kundgatan 1' });
+      expect(rad(kort(await sida(p.org), 'Kundkortet'), 'Adress')).toContain('Nya Kundgatan 1, 111 15 Stockholm');
+    });
+    it('KP2 crm är orört och negativ kontroll upptäcker en planterad ändring', async () => {
+      const p = v15Skriv[1]!;
+      await v15Spara(p, { ...await v15Form(p.org, p.kund), postal_code: '222 22' }, { postal_code: '222 22' });
+      // Flera rättelser måste läsa den senaste kund- och åtgärdsraden varje gång.
+      for (const falt of [{ phone: '08-222 15' }, { address: 'Senaste Kundgatan 15' }]) {
+        await v15Spara(p, { ...await v15Form(p.org, p.kund), ...falt }, falt);
+      }
+      const fore = await v15CrmBild(companyId);
+      const org = await lasK1Org(p.org);
+      try {
+        await withAdmin((client) => client.query('UPDATE crm.organizations SET notes = $1 WHERE id = $2 AND company_id = $3',
+          ['Planterad negativ kontroll KP2', p.org, companyId]));
+        expect(await v15CrmBild(companyId)).not.toEqual(fore);
+      } finally {
+        await withAdmin((client) => client.query('UPDATE crm.organizations SET notes = $1 WHERE id = $2 AND company_id = $3',
+          [org.notes, p.org, companyId]));
+      }
+      expect((await lasK1Org(p.org)).notes).toBe(org.notes);
+    });
+    it('KP3 formulärets kund-id ignoreras både inom bolaget och över bolagsgränsen', async () => {
+      const p = v15Skriv[2]!;
+      for (const [customer_id, city] of [[v15Annan, 'Göteborg'], [v15Grannpar.kund, 'Malmö']] as const) {
+        const annan = await v15Kundrad(v15Annan);
+        const granne = await v15Tillstand(v15Grannpar, v15Granne);
+        await v15Spara(p, { ...await v15Form(p.org, p.kund), customer_id, city }, { city });
+        expect(await v15Kundrad(v15Annan)).toEqual(annan);
+        expect(await v15Tillstand(v15Grannpar, v15Granne)).toEqual(granne);
+      }
+    });
+    it('KP4 tomma och oförändrade fält skriver inget men ändrad telefon sparas ensam', async () => {
+      const p = v15Skriv[3]!;
+      const form = await v15Form(p.org, p.kund);
+      const tomt = { ...form, ...Object.fromEntries(v15Falt.map((f) => [f, ''])) };
+      await v15Avvisa(p, tomt, v15TomText);
+      await v15Avvisa(p, form, v15TomText);
+      await v15Spara(p, { ...tomt, phone: '08-444 15' }, { phone: '08-444 15' });
+    });
+    it('KP5 ogiltiga villkor, mejl och för lång ort ger synliga fel utan skrivning', async () => {
+      const p = v15Skriv[4]!;
+      const form = await v15Form(p.org, p.kund);
+      for (const payment_terms of ['366', '-1', 'abc']) await v15Avvisa(p, { ...form, payment_terms }, v15VillkorText);
+      await v15Avvisa(p, { ...form, email: 'inte-en-adress' }, v15MejlText);
+      await v15Avvisa(p, { ...form, city: 'x'.repeat(101) }, v15FormText);
+    });
+    it('KP6 okopplad relation ger en väg till kundvalet utan skrivning', async () => {
+      const p = { org: v15Okopplad, kund: v15Skriv[5]!.kund };
+      await v15Avvisa(p, { ...await v15Form(p.org, p.kund), address: 'Ny adress' },
+        'Relationen är inte kopplad till någon kund i registret. Välj kunden under Rätta uppgifter först. Inget sparades.');
+    });
+    it('KP7 grannbolagets relation genom testbolagets adress ger 404', async () => {
+      const fore = await v15Tillstand(v15Grannpar, v15Granne);
+      const lokal = await v15CrmBild(companyId);
+      const anrop = await v15Anrop();
+      const r = await v15Post(v15Grannpar.org, { ...await v15Form(v15Grannpar.org, v15Grannpar.kund), address: 'Intrång' });
+      expect(r.status, r.text).toBe(404);
+      expect(await v15Tillstand(v15Grannpar, v15Granne)).toEqual(fore);
+      expect(await v15CrmBild(companyId)).toEqual(lokal);
+      expect(await v15Anrop()).toEqual(anrop);
+    });
+    it('KP8 gammal kundkoppling eller saknad vakt kräver omladdning', async () => {
+      const p = v15Skriv[7]!;
+      const form = await v15Form(p.org, p.kund);
+      const r = await act('upsert_crm_organization', { organization_id: p.org, customer_id: v15NyKoppling });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const ny = await v15Kundrad(v15NyKoppling);
+      await v15Avvisa(p, { ...form, address: 'Gammal flik' }, v15KopplingText);
+      const utan: Record<string, string> = { ...await v15Form(p.org, v15NyKoppling), address: 'Utan vakt' };
+      delete utan.fore_customer_id;
+      await v15Avvisa(p, utan, v15KopplingText);
+      expect(await v15Kundrad(v15NyKoppling)).toEqual(ny);
+      expect(await v15Audit(v15NyKoppling)).toEqual({ n: 0, latest: null });
+    });
+    it('KP9 okända grenval avvisas innan någon skrivväg väljs', async () => {
+      const p = v15Skriv[8]!;
+      const org = await lasK1Org(p.org);
+      for (const value of ['KUNDKORT', '', 'constructor', '__proto__', 'toString', 'kundkort%20', 'kundkort&handgrepp=kundkort']) {
+        await v15Avvisa(p, { ...await v15Form(p.org, p.kund), address: 'Ny adress', name: 'Får inte skrivas' },
+          v15FormText, `?handgrepp=${value}`);
+        expect(await lasK1Org(p.org)).toEqual(org);
+      }
+    });
+    it('KP10 negativ kontroll utan före-fält skickar alla sju fakturafält', async () => {
+      const p = v15Skriv[9]!;
+      const form = await v15Form(p.org, p.kund);
+      const kropp = Object.fromEntries(Object.entries(form).filter(([k]) => !k.startsWith('fore_') || k === 'fore_customer_id'));
+      // Åtgärdens befintliga schema ger auditradens ordning, oberoende av formulärets ordning.
+      await v15Spara(p, kropp, { vat_number: 'SE556915001501', email: 'faktura@fakturakund15.example', phone: '08-123 15 15',
+        address: 'Kundgatan 15', postal_code: '111 15', city: 'Stockholm', payment_terms: 30 });
+    });
+    it('KP11 fel ursprung stoppas av samma-origin-skyddet utan skrivning', async () => {
+      const p = v15Skriv[10]!;
+      const fore = await v15Tillstand(p);
+      const r = await v15Post(p.org, { ...await v15Form(p.org, p.kund), address: 'Intrång' })
+        .set('Origin', 'https://angripare.example');
+      expect(r.status, r.text).toBe(403);
+      expect(await v15Tillstand(p)).toEqual(fore);
+    });
+  });
+});
