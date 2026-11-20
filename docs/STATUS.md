@@ -153,6 +153,92 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.2, två High-fynd efter code-review (AC3/FR-8):**
+  Gemensam rotorsak: händelsens bekräftelse skrev human utan samma radlås som
+  rättelse och synk. Båda händelsegrenarna i `confirmCrmValue` tar nu
+  `FOR UPDATE` före `confirmValue` och behåller låset till commit. Därmed kan
+  ingen konkurrerande skrivare läsa gammalt ursprung före vakten. Människospärr,
+  bolagsfilter, 404 och audit i samma transaktion står kvar. Inga nya mönster,
+  beroenden, migrationer eller sfärändringar. API_KONTRAKT.md berörs inte;
+  MCP_ACTIONS.md beskriver låsningen. Två granskningspunkter kryssade med
+  berättelsens uttryckliga läskontrollundantag; Status återförs till review.
+  Först skrevs 22 nya parameterfall i crm-event-provenance.test.ts: B7 väntan
+  på en pågående skrivning (2), B8 alla nio bekräftelsefält från två baslägen
+  inklusive null/status och obekräftade fält som negativ kontroll (18), B9
+  samtidiga omsändningar för båda händelseslagen (2). Grind och finally håller
+  transaktionerna under kontroll. Konkurrerande anrop går genom HTTP/actions;
+  ingen databas mockas. Alla äldre fixturer/assertioner är bytevis oförändrade.
+  `npm run typecheck` före/efter kod: exit 0. `npm run build`: exit 0.
+  `git diff --check`: exit 0. `npm test` före/efter: exit 1 i globalSetup,
+  `Error: connect EPERM 127.0.0.1:5433`; inga testfall körda här. Observerat
+  rött/grönt och full regression återstår för kedjan, inga gröna databasprov
+  påstås. Dev Agent Record och samtliga 26 DoD-punkter omprövade.
+  Befintliga Rätta/Stämmer-ytor och Daglig liggares typografi, tokens, fokus,
+  etiketter, fel-/tomlägen och serverrenderade laddade läge är lästa och
+  behålls; ändringen ligger bakom knappen. Ingen tjänst, webbläsarkontroll,
+  driftsättning eller Hermes-körning. Adresskontraktets generatorsynk och
+  de tidigare röda baslinjeproven kvarstår enligt föregående sessionsrad.
+
+- **2026-11-20 — Story 1.2, omtag efter fyra röda vyprov (K3/K6/K8/F2):**
+  Gemensam felklass i nya provhjälparen `v12TableRow`: exakt `<tr>` missade
+  husets befintliga `<tr role="row">` från `staplabaraTabeller`. Matchningen
+  accepterar nu radattribut och behåller gränsen vid radens slut. Fyra nya
+  parameterfall prövar två olika löften med/utan role, class och data-id,
+  före och efter riktig tabellrendering, samt kräver fel för en saknad rad.
+  Kärnassertionerna i de fyra rapporterade fallen är bevarade. Provhjälparen
+  och de nya fallen kördes isolerat i Vitest: `Tests 4 failed (4)` före
+  rättningen, `Tests 4 passed (4)` efter. Tillfälliga provfiler är borttagna.
+  Slutlig `npm run typecheck`, `npm run build` och `git diff --check`: exit 0.
+  `npm test` försökt före/efter rättningen, exit 1 i globalSetup med
+  `Error: connect EPERM 127.0.0.1:5433`; inga databastestfall körda här.
+  Kedjans omkörning av K3/K6/K8/F2 och hela sviten återstår enligt undantaget.
+  Husets tabellroller och formspråk bevaras för tillgänglighet och mobilvy.
+  Berättelsens Dev Agent Record, DoD och Change Log uppdaterade; Status review.
+  Adresskontraktet väntar fortsatt på generatorns synk enligt föregående rad;
+  Hermes-prov, driftsättning och visuell webbläsarkontroll har inte körts.
+
+- **2026-11-20 — Story 1.2, rätta och bekräfta kontaktpunkter och löften (FR-8, FR-9, FR-36):**
+  Två nya write-åtgärder `update_crm_interaction` och `update_crm_commitment`,
+  händelsemål i `confirm_crm_value`, radlås före människovakten, ursprung per
+  skickat fält och audit med bara fältnamn i samma transaktion. Vaktens valfria
+  `nullIsWrite` skyddar ett människosatt datum mot agentens uttryckliga null.
+  Tråden och åtagandevyn har *Rätta*, ✦ och *Stämmer* per gissat händelsefält,
+  även ett borttaget datum, samt *· rättad av dig* på rättade källhändelser.
+  Formulärets rena tolkning finns i `server/src/lib/crmRules.ts`: dolda fore-fält
+  håller oförändrade uppgifter utanför rättelsen; kalenderdatum valideras före
+  tidsomvandling och dagens löftestid blir Node-klockans nu. Befintligt formspråk,
+  etiketter, fokusmarkering, knappar, felnotis och tomlägen återanvänds utan nya
+  stilar eller JavaScript. Den laddade sidan är serverrenderad; ingen separat
+  laddningsvy införs. Ingen tjänst har startats eller visuell webbläsarprovning körts.
+  Ett relationslöst löfte bekräftas genom den enda nya rutten
+  `POST /app/c/:companyId/commitments/:id/confirm` men saknar ännu *Rätta* i
+  åtagandevyn; action-vägen kan rätta det. Navigationskontraktet är orört.
+  `adresskontraktet` står rött tills rutten synkats med generatorn i Davids valv.
+  Hermes-proven adresskontraktet, bmadglidning och crmintag var röda i baslinjen
+  av andra skäl enligt berättelsen; Hermes-prov har inte körts här.
+  Två motiverade avvikelser enligt berättelsen: vaktens nya valfria parameter
+  mot A-1:s ”oförändrat” behövs eftersom null i en rättelse är ett beslut;
+  standardbeteendet för befintliga anrop är bevarat. `assertEventInOrganization`
+  körs i egen tenant-transaktion före `runViewAction` i relationens confirm/edit,
+  som persongrenen redan gör; åtgärden prövar alltid bolaget igen i sin egen
+  transaktion, och mellanrummet kan bara flytta posten inom bolagets relationer.
+  Rättelserna skriver aldrig `sfar`, `organization_id` eller `person_id` och når
+  därför inte sfärens UPDATE OF-triggrar (A-1 punkt 6); ingen sfärlogik ändras.
+  42 nya fall: R1–R6, L1–L7, B1–B6, D1 i crm-event-provenance.test.ts,
+  K1–K8/F1–F10 i crm-views.test.ts och E1–E4 i crm-rules.test.ts. Befintliga
+  assertioner och fixturer är bevarade. Typecheck exit 0 efter kodstegen;
+  `npm test` försökt före och efter varje uppgift men stoppas i globalSetup av
+  `Error: connect EPERM 127.0.0.1:5433` (exit 1), så inga databastester
+  grönrapporteras. Separat Vitest-körning av rena regeln: `Test Files 1 passed (1)`,
+  `Tests 4 passed (4)`. Rena sändvägs-/utskickskontroller S1–S4/D3/U1–U3
+  och negativa kontroller N1–N4/U0: exit 0, `PASS, 0 brister`.
+  Extra kontroll av de faktiska vyhjälparnas rendering samt dokumentets D1-ord:
+  `PASS`. Slutlig `npm run build` och `git diff --check`: exit 0.
+  Berättelse och sprintstatus är `review`, med databastesterna uttryckligen
+  okörda enligt uppdragets undantag. Kedjan kör standardsviten efter bygget och
+  sköter drift efter godkänd granskning.
+
+
 - **2026-11-19 — Story 1.3, ursprunget syns för varje uppgift på relationssidan (FR-9, FR-10):**
   Ursprungsmärket har `role="img"`, tillgänglig etikett och källans svenska namn
   följt av nyckeln. Värden utan ursprungsrad visar *ursprung okänt* och kan bekräftas;

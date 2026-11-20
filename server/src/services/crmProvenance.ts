@@ -134,9 +134,11 @@ export async function recordProvenance(
  * Ett fält utan registrerat ursprung är oskyddat med flit: allt som skrevs före
  * F4 saknar ursprung, och att låsa det retroaktivt vore att påstå något om
  * uppgifter vi inte vet något om.
+ * Rättelser kan ange nullIsWrite: ett borttaget datum är då ett uttryckligt beslut.
  */
 export async function guardHumanFields<T extends Record<string, unknown>>(
   client: PoolClient, companyId: string, target: ProvenanceTarget, source: ProvenanceSource, input: T,
+  opts: { nullIsWrite?: boolean } = {},
 ): Promise<{ input: T; blocked: string[] }> {
   if (source === 'human') return { input, blocked: [] };
   const prov = await readProvenance(client, companyId, target);
@@ -144,7 +146,7 @@ export async function guardHumanFields<T extends Record<string, unknown>>(
   const out = { ...input };
   for (const [field, entry] of prov) {
     if (entry.source !== 'human') continue;
-    if (out[field] === undefined || out[field] === null) continue;
+    if (out[field] === undefined || (out[field] === null && !opts.nullIsWrite)) continue;
     delete out[field];
     blocked.push(field);
   }

@@ -2469,3 +2469,47 @@ Kontaktpunkten bär ursprung för `occurred_at`, `channel`, `direction` och
 `summary`. Löftet bär ursprung för skrivna `direction`, `body`, `due_date` och
 `occurred_at`, och för `status` när statusåtgärden används. Löftets `sfar` är
 metadata och får inget ursprung här. Utelämnade fält får inget påhittat ursprung.
+
+## Rätta och bekräfta händelser (crm 1.2)
+
+`update_crm_interaction` (write) tar `interaction_id` och valfria `summary`,
+`channel`, `direction`, `occurred_at`. `update_crm_commitment` (write) tar
+`commitment_id` och valfria `body`, `direction`, `due_date`, `occurred_at`.
+Bara skickade fält ändras; utelämnat betyder oförändrat. `due_date: null` tar
+uttryckligen bort förfallodatumet. `status` sätts separat genom
+`set_crm_commitment_status`. Mål, sfär och källmetadata kan inte rättas med dessa
+åtgärder; okända fält och blank text avvisas av strikta scheman.
+
+En rättelse utan fält ger 400 `nothing_to_update` (”Inget att rätta: inget fält
+ändrades.”). En löftestid efter nuet ger 400 `occurred_at_in_future` (”Ett löfte
+kan inte ha getts i framtiden.”). Ett mål utanför bolaget ger 404.
+
+En människas rättelse får ursprunget `human`, ett agent-tokens rättelse `ai`,
+per skickat fält. Raden låses före människovakten; en agents försök att ändra
+ett människosatt fält stoppas och redovisas i `kept_human_fields`, också när
+försöket är `due_date: null`. Övriga fält fortsätter följa källan. Ursprunget
+och auditraden (`crm.interaction_corrected` respektive
+`crm.commitment_corrected`, med bara fältnamn) skrivs i samma transaktion.
+
+`confirm_crm_value` tar nu också `interaction_id` med `field` ur
+`occurred_at`, `channel`, `direction`, `summary`, eller `commitment_id` med
+`field` ur `direction`, `body`, `due_date`, `status`, `occurred_at`. Exakt ett
+av de fyra målen `organization_id`, `person_id`, `interaction_id`,
+`commitment_id` ska anges. Organisationens och personens fältlistor är
+oförändrade. Bekräftelsen ändrar bara ursprunget till `human` med skälet
+”bekräftad av människa”, aldrig värdet. Agent-token ger 403
+`human_confirmation_required`. MCP-schemat är fortsatt ett objekt på toppnivån.
+För händelser tas samma radlås som vid rättelse och omsändning före
+bekräftelsen och hålls till transaktionens slut, så att en samtidig agent eller
+synk prövar människoskyddet först efter att bekräftelsen committats.
+
+I tråden och åtagandevyn finns hopfälld *Rätta* för kontaktpunkter och löften
+med relation. Tomma och oförändrade formulärfält lämnas orörda; *Inget
+förfallodatum* är det uttryckliga beslutet att ta bort datumet. ✦ och *Stämmer*
+visas per `ai`-/`import`-fält, även för ett borttaget datum. Synkade händelser
+och händelser utan ursprungsrad får inget gissningsmärke. En rättad källhändelse
+visar *· rättad av dig*. Sidan återgår till samma filter och visar fel i notisen.
+
+Ett löfte utan relation har *Stämmer* genom sin egen rutt
+`POST /app/c/:companyId/commitments/:id/confirm`. Det har ännu ingen *Rätta*
+i åtagandevyn; det kan rättas genom `update_crm_commitment`.

@@ -8,7 +8,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AccountNumberSchema, BankgiroSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
   confirmCrmValue, getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact,
-  purgeCrmData, recordCommitment, recordInteraction, setCommitmentStatus, setRelationNudge, setRetention,
+  purgeCrmData, recordCommitment, recordInteraction, updateInteraction, updateCommitment, setCommitmentStatus, setRelationNudge, setRetention,
   snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
@@ -219,6 +219,9 @@ const TillaggsorsakSchema = safeText(TILLAGGSORSAK_MAX).refine((v) => v.trim().l
 // Registret. Varje action är en väldefinierad, schemavaliderad ingång mot
 // KÄRNANS tjänster — samma serverpåtvingade regler (RLS, tenant, oföränderlighet)
 // som via HTTP-API:t. En AI-agent kan bara det som står här.
+// Rättelser får aldrig göra en blank text till ett beslut.
+const correctionText = () => safeText(2000).refine((value) => value.trim().length > 0, 'texten får inte vara tom');
+
 export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'list_customers',
@@ -2727,35 +2730,43 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       .object({
         organization_id: UuidSchema.optional(),
         person_id: UuidSchema.optional(),
+        interaction_id: UuidSchema.optional(),
+        commitment_id: UuidSchema.optional(),
         field: z.enum([
           'name', 'org_number', 'website', 'customer_id', 'status', 'notes',
           'email', 'phone', 'role_title', 'organization_id',
+          'occurred_at', 'channel', 'direction', 'summary', 'body', 'due_date',
         ]),
       })
       .strict()
       .superRefine((v, ctx) => {
         const orgFields = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes'];
         const personFields = ['name', 'email', 'phone', 'role_title', 'organization_id'];
-        if (!!v.organization_id === !!v.person_id) {
+        const interactionFields = ['occurred_at', 'channel', 'direction', 'summary'];
+        const commitmentFields = ['direction', 'body', 'due_date', 'status', 'occurred_at'];
+        if ([v.organization_id, v.person_id, v.interaction_id, v.commitment_id].filter(Boolean).length !== 1) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'ange exakt en av organization_id och person_id',
+            message: 'ange exakt ett av organization_id, person_id, interaction_id och commitment_id',
             path: ['organization_id'],
           });
           return;
         }
-        const allowed = v.organization_id ? orgFields : personFields;
+        const allowed = v.organization_id ? orgFields : v.person_id ? personFields : v.interaction_id ? interactionFields : commitmentFields;
         if (!allowed.includes(v.field)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: `field '${v.field}' är inte giltigt för ${v.organization_id ? 'organisation' : 'person'}`,
+            message: `field '${v.field}' är inte giltigt för det valda målet`,
             path: ['field'],
           });
         }
       }),
-    handler: (ctx, i: { organization_id?: string; person_id?: string; field: string }) =>
+    handler: (ctx, i: { organization_id?: string; person_id?: string; interaction_id?: string; commitment_id?: string; field: string }) =>
       confirmCrmValue(ctx.client, ctx.companyId, ctx.userId, ctx.actor,
-        i.organization_id ? { organization_id: i.organization_id } : { person_id: i.person_id! }, i.field),
+        Object.hasOwn(i, 'organization_id') ? { organization_id: i.organization_id! }
+          : Object.hasOwn(i, 'person_id') ? { person_id: i.person_id! }
+          : Object.hasOwn(i, 'interaction_id') ? { interaction_id: i.interaction_id! }
+          : { commitment_id: i.commitment_id! }, i.field),
   }),
   def({
     name: 'upsert_crm_person',
@@ -2844,6 +2855,32 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       return recordCommitment(ctx.client, ctx.companyId, ctx.userId,
         { ...atagande, ...(org ? { organization_id: org } : {}) } as never, { source: sourceForActor(ctx.actor) });
     },
+  }),
+  def({
+    name: 'update_crm_interaction',
+    title: 'Rätta en kontaktpunkt (bara fälten du skickar)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      interaction_id: UuidSchema,
+      summary: correctionText().optional(),
+      channel: z.enum(['email', 'meeting', 'call', 'issue', 'note']).optional(),
+      direction: z.enum(['inbound', 'outbound', 'internal']).optional(),
+      occurred_at: IsoDateTimeSchema.optional(),
+    }).strict(),
+    handler: (ctx, i) => updateInteraction(ctx.client, ctx.companyId, ctx.userId, i as never, { source: sourceForActor(ctx.actor) }),
+  }),
+  def({
+    name: 'update_crm_commitment',
+    title: 'Rätta ett åtagande (bara fälten du skickar)',
+    sensitivity: 'write',
+    inputSchema: z.object({
+      commitment_id: UuidSchema,
+      body: correctionText().optional(),
+      direction: z.enum(['we_owe', 'they_owe']).optional(),
+      due_date: IsoDateSchema.nullable().optional(),
+      occurred_at: IsoDateTimeSchema.optional(),
+    }).strict(),
+    handler: (ctx, i) => updateCommitment(ctx.client, ctx.companyId, ctx.userId, i as never, { source: sourceForActor(ctx.actor) }),
   }),
   def({
     name: 'set_crm_commitment_status',

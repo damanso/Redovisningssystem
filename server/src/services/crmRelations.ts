@@ -12,7 +12,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
-  type ProvenanceSource, type ProvenanceWrite,
+  type ProvenanceEntry, type ProvenanceSource, type ProvenanceTarget, type ProvenanceWrite,
 } from './crmProvenance.js';
 import {
   arKundkopplad, bytMedSetCrmSfar, harPrivataPersoner, lasOrganisationer, nagonKundkopplad, personensPostOrganisationer,
@@ -109,6 +109,27 @@ const COMMITMENT_UPDATE_FIELDS = {
   person_id: 'person_id', organization_id: 'organization_id', direction: 'direction',
   body: 'body', due_date: 'due_date', occurred_at: 'occurred_at', sfar: 'sfar',
 } as const;
+
+const INTERACTION_CORRECTION = {
+  occurred_at: 'occurred_at', channel: 'channel', direction: 'direction', summary: 'summary',
+} as const;
+
+const COMMITMENT_CORRECTION = {
+  direction: 'direction', body: 'body', due_date: 'due_date', occurred_at: 'occurred_at',
+} as const;
+
+/** En rättelses uttryckliga null är också ett beslut; skapandets tomregel gäller inte här. */
+function provenanceForKeys(
+  fields: readonly string[], patch: Record<string, unknown>, origin: WriteOrigin,
+): ProvenanceWrite[] {
+  return fields.filter((field) => Object.hasOwn(patch, field) && patch[field] !== undefined)
+    .map((field) => ({
+      field, source: origin.source,
+      ...(origin.source_system ? { source_system: origin.source_system } : {}),
+      ...(origin.source_ref ? { source_ref: origin.source_ref } : {}),
+      ...(origin.source === 'sync' && origin.source_system ? { reason: `hämtad från ${origin.source_system}` } : {}),
+    }));
+}
 
 /** Ursprungsposter för de fält anroparen faktiskt fyllde i — tomma fält påstår ingenting. */
 function provenanceFor(
@@ -504,6 +525,67 @@ export async function assertPersonInOrganization(
   if (!r.rows[0]) throw new NotFoundError('person');
 }
 
+export interface EventFields {
+  id: string; occurred_at: string; direction: string; source_system: string; relation_id: string | null;
+  summary?: string; channel?: string; body?: string; due_date?: string | null; status?: string;
+  provenance: Record<string, Pick<ProvenanceEntry, 'source' | 'reason' | 'source_system' | 'source_ref'>>;
+}
+
+/** Vyn läser innehåll och ursprung i två samlade frågor, aldrig en fråga per rad. */
+export async function getEventFields(
+  client: PoolClient, companyId: string, ids: { interaction_ids: string[]; commitment_ids: string[] },
+): Promise<{ interactions: Record<string, EventFields>; commitments: Record<string, EventFields> }> {
+  const interactions: Record<string, EventFields> = {};
+  const commitments: Record<string, EventFields> = {};
+  if (ids.interaction_ids.length) {
+    const result = await client.query<EventFields>(
+      `SELECT x.id, x.summary, x.channel, x.direction, x.source_system,
+         to_char(x.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS occurred_at,
+         COALESCE(x.organization_id, p.organization_id) AS relation_id,
+         COALESCE((SELECT jsonb_object_agg(fp.field, jsonb_build_object(
+           'source', fp.source, 'reason', fp.reason, 'source_system', fp.source_system, 'source_ref', fp.source_ref))
+           FROM crm.field_provenance fp WHERE fp.company_id = $1 AND fp.interaction_id = x.id), '{}'::jsonb) AS provenance
+       FROM crm.interactions x LEFT JOIN crm.people p ON p.id = x.person_id AND p.company_id = x.company_id
+       WHERE x.company_id = $1 AND x.id = ANY($2::uuid[])`, [companyId, ids.interaction_ids]);
+    for (const row of result.rows) interactions[row.id] = row;
+  }
+  if (ids.commitment_ids.length) {
+    const result = await client.query<EventFields>(
+      `SELECT x.id, x.body, x.direction, x.due_date::text, x.status, x.source_system,
+         to_char(x.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS occurred_at,
+         COALESCE(x.organization_id, p.organization_id) AS relation_id,
+         COALESCE((SELECT jsonb_object_agg(fp.field, jsonb_build_object(
+           'source', fp.source, 'reason', fp.reason, 'source_system', fp.source_system, 'source_ref', fp.source_ref))
+           FROM crm.field_provenance fp WHERE fp.company_id = $1 AND fp.commitment_id = x.id), '{}'::jsonb) AS provenance
+       FROM crm.commitments x LEFT JOIN crm.people p ON p.id = x.person_id AND p.company_id = x.company_id
+       WHERE x.company_id = $1 AND x.id = ANY($2::uuid[])`, [companyId, ids.commitment_ids]);
+    for (const row of result.rows) commitments[row.id] = row;
+  }
+  return { interactions, commitments };
+}
+
+/** Åtgärderna vet inget om relationen; vyn prövar samma medlemskap som tråden visar. */
+export async function assertEventInOrganization(
+  client: PoolClient, companyId: string, organizationId: string,
+  target: { interaction_id: string } | { commitment_id: string },
+): Promise<void> {
+  if (Object.hasOwn(target, 'interaction_id')) {
+    const result = await client.query(
+      `SELECT 1 FROM crm.interactions x WHERE x.id = $1 AND x.company_id = $2
+       AND (x.organization_id = $3 OR x.person_id IN
+         (SELECT id FROM crm.people WHERE company_id = $2 AND organization_id = $3))`,
+      [(target as { interaction_id: string }).interaction_id, companyId, organizationId]);
+    if (!result.rows[0]) throw new NotFoundError('interaction');
+  } else {
+    const result = await client.query(
+      `SELECT 1 FROM crm.commitments x WHERE x.id = $1 AND x.company_id = $2
+       AND (x.organization_id = $3 OR x.person_id IN
+         (SELECT id FROM crm.people WHERE company_id = $2 AND organization_id = $3))`,
+      [(target as { commitment_id: string }).commitment_id, companyId, organizationId]);
+    if (!result.rows[0]) throw new NotFoundError('commitment');
+  }
+}
+
 /**
  * Hela relationen kring en organisation. Kunduppgifterna JOINas ur
  * redovisningen i stället för att speglas — det finns bara en sanning om vad en
@@ -580,7 +662,7 @@ export async function getOrganization(
  */
 export async function confirmCrmValue(
   client: PoolClient, companyId: string, userId: string, actor: 'human' | 'agent',
-  target: { organization_id: string } | { person_id: string }, field: string,
+  target: ProvenanceTarget, field: string,
 ): Promise<{ field: string; source: ProvenanceSource }> {
   // Bekräftelsen är per definition en mänsklig handling. Utan den här spärren
   // kunde AI:t stämpla sin EGEN gissning som ett människobeslut och därmed låsa
@@ -588,18 +670,35 @@ export async function confirmCrmValue(
   if (actor !== 'human') {
     throw new ForbiddenError('human_confirmation_required', 'bara en människa kan bekräfta en uppgift');
   }
-  if ('organization_id' in target) {
-    await assertOrganization(client, companyId, target.organization_id);
-  } else {
-    const p = await client.query('SELECT 1 FROM crm.people WHERE id = $1 AND company_id = $2',
-      [target.person_id, companyId]);
+  const ids: Partial<Record<'organization_id' | 'person_id' | 'interaction_id' | 'commitment_id', string>> = target;
+  let entityType: string;
+  let entityId: string;
+  if (Object.hasOwn(target, 'organization_id')) {
+    entityType = 'organization';
+    entityId = ids.organization_id!;
+    await assertOrganization(client, companyId, entityId);
+  } else if (Object.hasOwn(target, 'person_id')) {
+    entityType = 'person';
+    entityId = ids.person_id!;
+    const p = await client.query('SELECT 1 FROM crm.people WHERE id = $1 AND company_id = $2', [entityId, companyId]);
     if (!p.rows[0]) throw new NotFoundError('person');
+  } else if (Object.hasOwn(target, 'interaction_id')) {
+    entityType = 'interaction';
+    entityId = ids.interaction_id!;
+    // Samma radlås som rättelse och omsändning, före ursprunget: annars kan
+    // deras vakt läsa gammalt ursprung medan människans bekräftelse är öppen.
+    const event = await client.query('SELECT 1 FROM crm.interactions WHERE id = $1 AND company_id = $2 FOR UPDATE', [entityId, companyId]);
+    if (!event.rows[0]) throw new NotFoundError('interaction');
+  } else {
+    entityType = 'commitment';
+    entityId = ids.commitment_id!;
+    const event = await client.query('SELECT 1 FROM crm.commitments WHERE id = $1 AND company_id = $2 FOR UPDATE', [entityId, companyId]);
+    if (!event.rows[0]) throw new NotFoundError('commitment');
   }
   await confirmValue(client, companyId, userId, target, field);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.value_confirmed',
-    entityType: 'organization_id' in target ? 'organization' : 'person',
-    entityId: 'organization_id' in target ? target.organization_id : target.person_id,
+    entityType, entityId,
     details: { field },
   });
   return { field, source: 'human' };
@@ -1156,6 +1255,79 @@ export async function recordCommitment(
     details: { direction: input.direction, source_system: input.source_system, sfar },
   });
   return { ...r.rows[0], created: true, kept_human_fields: [] };
+}
+
+/** Rättar bara skickat innehåll; radlåset gör att en samtidig människas beslut vinner. */
+export async function updateInteraction(
+  client: PoolClient, companyId: string, userId: string,
+  input: { interaction_id: string; summary?: string; channel?: string; direction?: string; occurred_at?: string },
+  origin: WriteOrigin,
+): Promise<Record<string, unknown> & { kept_human_fields: string[] }> {
+  const patch: Record<string, unknown> = {};
+  for (const field of Object.keys(INTERACTION_CORRECTION)) {
+    if (Object.hasOwn(input, field) && input[field as keyof typeof input] !== undefined) {
+      patch[field] = input[field as keyof typeof input];
+    }
+  }
+  if (typeof patch.summary === 'string') patch.summary = patch.summary.trim();
+  if (!Object.keys(patch).length) throw new BadRequestError('nothing_to_update', 'Inget att rätta: inget fält ändrades.');
+  const columns = 'id, occurred_at, channel, direction, summary, source_system, source_ref';
+  const locked = await client.query(`SELECT ${columns} FROM crm.interactions WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.interaction_id, companyId]);
+  if (!locked.rows[0]) throw new NotFoundError('interaction');
+  const guarded = origin.source === 'human' ? { input: patch, blocked: [] as string[] }
+    : await guardHumanFields(client, companyId, { interaction_id: input.interaction_id }, origin.source, patch);
+  const update = buildAllowlistedUpdate(INTERACTION_CORRECTION, guarded.input);
+  const row = update ? (await client.query(
+    `UPDATE crm.interactions SET ${update.setSql} WHERE id = $${update.values.length + 1}
+     AND company_id = $${update.values.length + 2} RETURNING ${columns}`,
+    [...update.values, input.interaction_id, companyId])).rows[0]! : locked.rows[0];
+  await recordProvenance(client, companyId, userId, { interaction_id: input.interaction_id },
+    provenanceForKeys(INTERACTION_PROVENANCE_FIELDS, guarded.input, origin));
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.interaction_corrected', entityType: 'interaction', entityId: input.interaction_id,
+    details: { fields: Object.keys(guarded.input).sort(),
+      ...(guarded.blocked.length ? { kept_human_fields: guarded.blocked } : {}) },
+  });
+  return { ...row, kept_human_fields: guarded.blocked };
+}
+
+/** Ett rättat datum kan tas bort uttryckligen; bara innehållet låses och skyddas per fält. */
+export async function updateCommitment(
+  client: PoolClient, companyId: string, userId: string,
+  input: { commitment_id: string; body?: string; direction?: string; due_date?: string | null; occurred_at?: string },
+  origin: WriteOrigin,
+): Promise<Record<string, unknown> & { kept_human_fields: string[] }> {
+  const patch: Record<string, unknown> = {};
+  for (const field of Object.keys(COMMITMENT_CORRECTION)) {
+    if (Object.hasOwn(input, field) && input[field as keyof typeof input] !== undefined) {
+      patch[field] = input[field as keyof typeof input];
+    }
+  }
+  if (typeof patch.body === 'string') patch.body = patch.body.trim();
+  if (!Object.keys(patch).length) throw new BadRequestError('nothing_to_update', 'Inget att rätta: inget fält ändrades.');
+  if (input.occurred_at !== undefined && Date.parse(input.occurred_at) > Date.now()) {
+    throw new BadRequestError('occurred_at_in_future', 'Ett löfte kan inte ha getts i framtiden.');
+  }
+  const locked = await client.query(
+    `SELECT ${COMMITMENT_RETURNING} FROM crm.commitments WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.commitment_id, companyId]);
+  if (!locked.rows[0]) throw new NotFoundError('commitment');
+  const guarded = origin.source === 'human' ? { input: patch, blocked: [] as string[] }
+    : await guardHumanFields(client, companyId, { commitment_id: input.commitment_id }, origin.source, patch, { nullIsWrite: true });
+  const update = buildAllowlistedUpdate(COMMITMENT_CORRECTION, guarded.input);
+  const row = update ? (await client.query(
+    `UPDATE crm.commitments SET ${update.setSql} WHERE id = $${update.values.length + 1}
+     AND company_id = $${update.values.length + 2} RETURNING ${COMMITMENT_RETURNING}`,
+    [...update.values, input.commitment_id, companyId])).rows[0]! : locked.rows[0];
+  await recordProvenance(client, companyId, userId, { commitment_id: input.commitment_id },
+    provenanceForKeys(COMMITMENT_PROVENANCE_FIELDS, guarded.input, origin));
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.commitment_corrected', entityType: 'commitment', entityId: input.commitment_id,
+    details: { fields: Object.keys(guarded.input).sort(),
+      ...(guarded.blocked.length ? { kept_human_fields: guarded.blocked } : {}) },
+  });
+  return { ...row, kept_human_fields: guarded.blocked };
 }
 
 export async function setCommitmentStatus(
