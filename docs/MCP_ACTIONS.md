@@ -2530,7 +2530,13 @@ Utelämnat `customer_id` lämnar kopplingen och dess ursprung orörda, även om 
 Ett uttryckligt `customer_id` slås aldrig upp i kundregistret och får skrivarens
 ursprung: `human` för en människa och `ai` för en agent. En kund som redan är
 kopplad till en annan relation ger 409 `customer_already_linked` med
-`details.organization_id`; ingenting skrivs. Kundens rad låses före prövningen.
+`details.organization_id`; ingenting skrivs. Varje ny koppling, även en automatiskt
+matchad, tar samma lås på kundens rad före krockprövningen. För befintliga
+relationer låses relationen först, sedan kunden. Krockprövningen läser på nytt
+efter eventuell väntan, så en samtidig synk också ger kundkrocksnotisen.
+Förlorar intagets automatiska matchning redovisas händelsen i `skipped` med
+kundkrockens text via den befintliga savepointen; en omsändning ser då kunden
+som upptagen och redovisar relationen i `unlinked_organizations`.
 Ett byte av kund behandlar statusen som en ny koppling.
 
 Relationssidans *Rätta uppgifter* skickar bara ändrade fält, jämförda mot det

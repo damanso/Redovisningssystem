@@ -271,10 +271,18 @@ function assertOrganisationInomGransen(rad: {
   }
 }
 
-/** Pröva en uttrycklig koppling före skrivning, medan kundens rad är låst. */
+/** Samordna alla nya kopplingar, även uppslagna, och pröva på nytt efter väntan. */
 async function assertCustomerFree(
   client: PoolClient, companyId: string, customerId: string, exceptOrganizationId: string | null,
 ): Promise<void> {
+  // Relationsraden är redan låst för en befintlig organisation. Alla vägar
+  // tar därefter kundlåset i samma ordning; FK-kontrollens lås räcker inte.
+  const customer = await client.query(
+    'SELECT 1 FROM customers WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
+    [customerId, companyId],
+  );
+  if (!customer.rows[0]) throw new NotFoundError('customer');
+  // En egen fråga efter låset ser också en koppling som committats under väntan.
   const taken = await client.query<{ id: string; name: string }>(
     `SELECT id, name FROM crm.organizations
      WHERE company_id = $1 AND customer_id = $2 AND id IS DISTINCT FROM $3::uuid LIMIT 1`,
@@ -303,7 +311,7 @@ export async function upsertOrganization(
   const name = input.name?.trim();
   if ((input.name !== undefined && !name) || (!input.organization_id && !name)) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.customer_id) {
-    const c = await client.query('SELECT 1 FROM customers WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE', [input.customer_id, companyId]);
+    const c = await client.query('SELECT 1 FROM customers WHERE id = $1 AND company_id = $2', [input.customer_id, companyId]);
     if (!c.rows[0]) throw new NotFoundError('customer');
   }
 
@@ -388,7 +396,7 @@ export async function upsertOrganization(
     const sfar = input.sfar ?? 'foretag';
     const status = input.status ?? (customerId ? 'customer' : 'prospect');
     assertOrganisationInomGransen({ sfar, customer_id: customerId, status, nyKoppling: Boolean(customerId), privataAtaganden: false });
-    if (input.customer_id) await assertCustomerFree(client, companyId, input.customer_id, null);
+    if (customerId) await assertCustomerFree(client, companyId, customerId, null);
     const r = await client.query<Organization>(
       `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by, sfar, roll)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${ORG_COLUMNS}`,

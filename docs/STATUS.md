@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.4, tre High-fynd om samtidiga kundkopplingar (AC2/AC3):**
+  Gemensam rotorsak: bara uttryckligt kundval tog kundlåset; synkens FK-lås
+  tillät en manuell förkontroll mot ett gammalt läge och sedan 500 från indexet.
+  Låset ligger nu i den gemensamma krockprövningen för både explicit och
+  automatisk koppling, i både INSERT- och UPDATE-grenen. Befintlig relation
+  låses före kunden i båda vägarna; en separat SELECT efter väntan ser vinnaren.
+  Synkens förlorande händelse redovisas genom befintligt skipped/savepoint,
+  och omsändningen redovisar okopplad relation. Kontraktsformen är oförändrad;
+  MCP_ACTIONS.md och API_KONTRAKT.md beskriver samtidighetsutfallet.
+  Först skrevs S1 (åtta fall: namn/nummer × ny/befintlig synkrelation ×
+  nykoppling/byte i vyn) och S2 (fyra fall i omvänd ordning med omsändning).
+  Riktiga transaktioner, grind, pg_blocking_pids och finally; inga databasmockar.
+  Befintliga fixturer och assertioner är oförändrade. Typecheck före/efter:
+  exit 0. npm test före/efter: exit 1 i globalSetup, connect EPERM mot
+  127.0.0.1:5433; inga databasfall körda eller grönrapporterade. Kedjan kör
+  hela sviten enligt användarens uttryckliga nätundantag.
+  Slutgrind: build och diffkontroll exit 0; fullsviten åter blockerad av EPERM.
+  Alla 26 DoD-punkter omprövade, tre fynd kryssade enligt nätundantaget;
+  berättelse och sprintstatus åter review.
+  Husets Daglig liggare med Public Sans/IBM Plex Mono, petrolaccent, native
+  select, fokusmarkering och befintliga tom-/fel-/laddade lägen följs.
+  Ingen ny yta, CSS-klass, rutt, åtgärd, migration, beroende eller statusregel.
+  Ingen tjänstestart, webbläsarprovning, drift eller Hermes-körning;
+  adresskontraktet/bmadglidning kvarstår som extern baslinje enligt berättelsen.
+
 - **2026-11-20 — Story 1.4, två High-fynd efter code-review (AC4/FR-8):**
   Båda fynden har samma rotorsak: kunduppslaget i tjänsten kunde lägga till
   utelämnad kundkoppling och därmed ändra status efter formulärets filtrering.

@@ -1387,6 +1387,147 @@ describe('1.4 kundkopplingen på relationssidan', () => {
     });
   });
 
+  describe('samtidig kundkoppling efter granskning (story 1.4)', () => {
+    // T1 skriver genom tjänsten som en riktig action, men hålls före commit.
+    // T2 går genom HTTP. Utan gemensamt kundlås passerar T2 SELECT-kontrollen
+    // på en gammal ögonblicksbild och får ett indexfel efter väntan.
+    async function v14UnderKoppling<T>(
+      hold: (db: import('pg').PoolClient) => Promise<void>, compete: () => Promise<T>,
+    ): Promise<T> {
+      const { withTenantTransaction } = await import('../src/db/tx.js');
+      let release!: () => void, ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<number>((resolve) => { ready = resolve; });
+      const first = withTenantTransaction(user.userId, companyId, async (db) => {
+        await hold(db);
+        ready((await db.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await gate;
+      });
+      let second: Promise<T> | undefined;
+      try {
+        const pid = await Promise.race([locked, first.then(() => { throw new Error('Kopplingen avslutades före grinden'); })]);
+        second = compete();
+        void second.catch(() => {});
+        let blocked = false;
+        for (let i = 0; i < 100; i++) {
+          blocked = await withAdmin(async (db) => (await db.query<{ blocked: boolean }>(
+            'SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked',
+            [pid])).rows[0]!.blocked);
+          if (blocked) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked, 'det konkurrerande anropet ska vänta på den öppna kopplingen').toBe(true);
+        release();
+        await first;
+        return await second;
+      } finally {
+        release();
+        await Promise.allSettled([first, second]);
+      }
+    }
+
+    const v14Konkurrensfall = (['name', 'org_number'] as const).flatMap((matchning) =>
+      [false, true].flatMap((befintlig) => [false, true].map((byte) => ({ matchning, befintlig, byte }))));
+    it.each(v14Konkurrensfall)(
+      'S1 synk först ($matchning, befintlig=$befintlig, byte=$byte): kundkrocksnotis utan ändring',
+      async ({ matchning, befintlig, byte }) => {
+        const { upsertOrganization } = await import('../src/services/crmRelations.js');
+        const tag = `${matchning}-${befintlig}-${byte}`;
+        const synknamn = `Synkvinnare ${tag} 14 AB`;
+        // Skapa den eventuella relationen före kunden så startläget är okopplat.
+        const synkId = befintlig ? await nyK1Org(synknamn) : undefined;
+        const kund = await v14Kund(matchning === 'name' ? synknamn : `Nummerkund ${tag} 14 AB`);
+        const nummer = `556915-${String(v14Konkurrensfall.findIndex((c) => c.matchning === matchning
+          && c.befintlig === befintlig && c.byte === byte)).padStart(4, '0')}`;
+        if (matchning === 'org_number') {
+          const updated = await act('update_customer', { customer_id: kund, org_number: nummer });
+          expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+        }
+        const tidigare = byte ? await v14Kund(`Tidigare kund ${tag} 14 AB`) : null;
+        const id = await nyK1Org(`Manuell förlorare ${tag} 14 AB`, tidigare ? { customer_id: tidigare } : {});
+        const fore = await lasK1Org(id), form = await v14Form(id), audit = await v14Audit(id);
+        let vinnare!: string;
+        const response = await v14UnderKoppling(async (db) => {
+          const linked = await upsertOrganization(db, companyId, user.userId, {
+            ...(synkId ? { organization_id: synkId } : {}), name: synknamn,
+            ...(matchning === 'org_number' ? { org_number: nummer } : {}),
+          }, { source: 'sync', source_system: 'gmail', source_ref: `gmail:s1-${tag}` });
+          expect(linked.customer_id).toBe(kund);
+          vinnare = linked.id;
+        }, async () => v14Edit(id, { ...form, customer_id: kund }));
+        expect(response.status, response.text).toBe(302);
+        const text = `kunden är redan kopplad till relationen ${synknamn}`;
+        expect(decodeURIComponent(response.headers.location ?? '')).toContain(text);
+        const notice = await ua.get(response.headers.location!);
+        expect(notice.status, notice.text).toBe(200);
+        expect(notice.text).toContain(`<p class="notice">${text}`);
+        const efter = await lasK1Org(id);
+        for (const field of ['customer_id', 'name', 'status']) expect(efter[field]).toEqual(fore[field]);
+        expect(efter.provenance).toEqual(fore.provenance);
+        expect(await v14Audit(id)).toBe(audit);
+        expect((await lasK1Org(vinnare)).provenance.customer_id.source).toBe('accounting');
+        await withAdmin(async (db) => {
+          const links = await db.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND customer_id = $2', [companyId, kund]);
+          expect(links.rows).toEqual([{ id: vinnare }]);
+        });
+      },
+    );
+
+    it.each((['name', 'org_number'] as const).flatMap((matchning) =>
+      [false, true].map((befintlig) => ({ matchning, befintlig }))))(
+      'S2 manuellt val först ($matchning, befintlig=$befintlig): synkens gamla matchning omprövas',
+      async ({ matchning, befintlig }) => {
+        const { upsertOrganization } = await import('../src/services/crmRelations.js');
+        const tag = `${matchning}-${befintlig}`;
+        const synknamn = `Synkförlorare ${tag} 14 AB`;
+        const synkId = befintlig ? await nyK1Org(synknamn) : undefined;
+        const kund = await v14Kund(matchning === 'name' ? synknamn : `Manuell nummerkund ${tag} 14 AB`);
+        const nummer = `556916-${matchning === 'name' ? '00' : '01'}${befintlig ? '01' : '00'}`;
+        if (matchning === 'org_number') {
+          const updated = await act('update_customer', { customer_id: kund, org_number: nummer });
+          expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+        }
+        const id = await nyK1Org(`Manuell vinnare ${tag} 14 AB`);
+        const fore = synkId ? await lasK1Org(synkId) : null;
+        const audit = synkId ? await v14Audit(synkId) : 0;
+        const event = {
+          kind: 'interaction', organization: { name: synknamn, ...(matchning === 'org_number' ? { org_number: nummer } : {}) },
+          occurred_at: '2026-11-01T12:00:00Z', channel: 'email', direction: 'inbound',
+          summary: 'Konkurrerande synk.', source_system: 'gmail', source_ref: `gmail:s2-${tag}`,
+        };
+        const response = await v14UnderKoppling(async (db) => {
+          const linked = await upsertOrganization(db, companyId, user.userId,
+            { organization_id: id, customer_id: kund }, { source: 'human' });
+          expect(linked.customer_id).toBe(kund);
+        }, async () => act('ingest_crm_events', { events: [event] }));
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        // Intagets befintliga savepoint redovisar krocken, aldrig ett indexfel.
+        expect(response.body.result.skipped).toEqual([{ index: 0,
+          reason: `kunden är redan kopplad till relationen Manuell vinnare ${tag} 14 AB — en kund hör bara till en relation` }]);
+        expect(response.body.result.interactions_created).toBe(0);
+        if (synkId) {
+          const efter = await lasK1Org(synkId);
+          expect(efter.customer_id).toBeNull();
+          expect(efter.provenance).toEqual(fore!.provenance);
+          expect(await v14Audit(synkId)).toBe(audit);
+        } else {
+          await withAdmin(async (db) => {
+            expect((await db.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND name = $2',
+              [companyId, synknamn])).rows).toEqual([]);
+          });
+        }
+        expect((await lasK1Org(id)).customer_id).toBe(kund);
+        expect((await lasK1Org(id)).provenance.customer_id.source).toBe('human');
+        // Efter omkörning ser uppslaget den upptagna kunden redan från början.
+        const retry = await act('ingest_crm_events', { events: [event] });
+        expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+        expect(retry.body.result.skipped).toEqual([]);
+        expect(retry.body.result.interactions_created).toBe(1);
+        expect(retry.body.result.unlinked_organizations).toEqual([synknamn]);
+      },
+    );
+  });
+
   describe('sidhuvudet och adressen (story 1.4)', () => {
     it('O1 sidhuvudets länk öppnar bara Rätta uppgifter via adressen', async () => {
       const stangd = await sida(N3);
