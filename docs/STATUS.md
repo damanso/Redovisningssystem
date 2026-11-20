@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 6.2, likviditet per kalendermånad (FR-44):**
+  Ren rullning i `domain/liquidity.ts` och `liquidityByMonth` i reports-tjänsten:
+  tre kalendermånader, överfört saldo, förfallet, första underskott och behov,
+  okänt med källa vid saknad kassa eller aldrig bokförd leverantörsfaktura.
+  Fyra delade SQL-konstanter och AGI-hjälparen behåller prognosens beteende;
+  den interpolerade frågan och den återinsatta funktionen jämfördes med basen.
+  Nya U1–U10, G0/G1, A1–A4 och O1/O2 i `steering-liquidity.test.ts`.
+  U1–U10 och G0 har körts gröna utan databassetup, liksom den befintliga
+  dubbelräkningsvakten (14 rena fall totalt). G0 föll först med stubben.
+  Typkontrollen kördes röd före nya exporter och grön efter uppgift 1–4.
+  `npm test` före/efter varje uppgift stoppas av `connect EPERM 127.0.0.1:5433`
+  i globalSetup, exit 1. Databasfallen och full regression är inte körda här;
+  kedjan verifierar dem enligt användarens nätundantag. S1 och U1/U2/U3:s
+  rena import- och nätkontroller körda över hela källträdet utan brister.
+  Kommandon har alltså körts enligt uppdraget, trots berättelsens äldre
+  antagande om en byggare utan körverktyg. Inget gränssnitt ändras: befintligt
+  formspråk bevaras. Det obelagda och läsåtgärden kommer i Story 6.5,
+  visningen i Story 6.3. Inget CRM-kontrakt ändras, inga tjänster startas och
+  ingen driftsättning görs. Slutgrind: typecheck, build och diffkontroll exit 0;
+  DoD prövad punkt för punkt (24 uppfyllda, två nätundantag). Berättelsen och
+  sprint-status står i review; full databasregression väntar på kedjan.
+
 - **2026-11-20 — Story 2.2, projektkoder blir aldrig organisationer och namnen normaliseras på ett ställe (FR-14, FR-30 b):**
   Migration 0091 lägger `crm.normalize_org_name`, genererad `name_norm` och
   ett icke-unikt index per bolag. Bolagsformslistan finns bara där.
