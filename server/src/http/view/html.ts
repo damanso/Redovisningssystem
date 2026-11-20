@@ -1004,6 +1004,8 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 }
 .ai-card__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 16px 4px; }
 .ai-card__title { font-weight: 600; }
+/* Fragmentets rubrik går att fokusera utan att lägga ett extra stopp i tabbordningen. */
+.ai-card__title:target { outline: 2.5px solid var(--focus); outline-offset: 2px; }
 /* AI-markningen (AI-forordningen art. 50). Den satt tidigare i en 3px
    kantremsa — dekor enligt designsvepets antimonster 7, och en farg gar
    varken att lasa hogt, soka efter eller se i svartvitt. Nu bar orden
@@ -1016,6 +1018,9 @@ details.kontering th, details.kontering td { padding: 8px 16px; }
 }
 .ai-markning__i { line-height: 1; }
 .ai-card__why { padding: 4px 16px 6px; color: var(--ink-2); font-size: 13px; }
+/* Samma ai-card__why-stil under ett namn som påstår beroende (UX K1 punkt 5).
+   AI-ockrans bläck ersätter den tidigare hårdkodade hexfärgen. */
+.ai-card__beroende { padding: 4px 16px 6px; color: var(--ai-ink); font-size: 13px; }
 /* Identifierande rad: vilken faktura/lön/verifikat förslaget gäller. */
 .ai-card__subject { padding: 2px 16px 0; font-size: 14.5px; color: var(--ink); }
 .ai-fields { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 6px 16px 12px; }

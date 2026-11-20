@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.1, förslagskort i klartext (FR-27):**
+  approvalSummary samlar svenska etiketter, värdetexter, bolagsavgränsade
+  id-/kontouppslag och kortmodellen med UUID-maskpass. Att göra visar alla
+  nästlade fält och svenska titlar, med teknisk åtgärd sist i detaljerna.
+  Beroenden pekar på bokningskortet och ersätter godkännandet med en länk;
+  saknas bokningen visas vägledning och Avvisa. Husets AI-ockra, typografi,
+  skala och fokusmarkering återanvänds. Tomt läge och felnotis bevaras;
+  sidan är serverrenderad utan separat laddningsvy. 31 nya fall T1.1–T5.3
+  i forslagskort-klartext täcker registret, tjänsten och vyn.
+  view-create-flows rad 248–250 läser nu id ur avvisningsformuläret och
+  prövar vägledningen före direkt POST, eftersom kortet i läge 3 saknar
+  godkännandeformulär. approveLatest och konflikt-/idempotensprovet kvarstår.
+  Slutgrind: npm run typecheck exit 0 och npm run build exit 0.
+  Databasfri kontroll grön: 36 åtgärder, 100 etiketter, 25 id-uppslag,
+  noll etikett-/schemafel; den planterade åtgärden ger exakt fem fynd.
+  UUID-masken och mätarens tre negativa kontroller är också godkända.
+  Vitest har inte kunnat köras: globalSetup nekas connect EPERM på
+  127.0.0.1:5433. Kedjan måste köra databasproven och hela regressionssviten.
+  Ingen migration, rutt, åtgärd eller nytt beroende tillkom; navigationskontraktet
+  är orört. Inget externt kontrakt ändrat. Story 1.10 och 1.11 bär de utdelade
+  kriterierna. Ingen driftsättning gjord.
+
+
 - **2026-11-20 — Story 1.5, omtag efter röda auditprov (crm, FR-10, FR-11):**
   Både v15Audit och v15Anrop i crm-views sorterar nu på audit_log:s verkliga
   tidskolumn occurred_at och id. Rotorsaken var antaget created_at i två

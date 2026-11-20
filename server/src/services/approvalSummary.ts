@@ -17,6 +17,21 @@ import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
+export const CARD_TEXT = {
+  dold: '(dold referens)', postenFinnsInte: 'Posten finns inte längre', tomt: '—', ja: 'Ja', nej: 'Nej',
+  okantFalt: 'Uppgift utan svensk etikett', okandAtgard: 'Okänd åtgärd', godkannForst: 'Godkänn först:',
+  beAssistenten: 'Be AI-assistenten föreslå bokföringen först.', annatForst: 'Ett annat förslag måste godkännas först.',
+  referensUtanTitel: 'Länkad referens utan titel', lagringsperioden: 'Relationsdata äldre än bolagets lagringsperiod',
+  sieFil: (rader: number) => `Inklistrad SIE-fil med ${rader} rader — visas inte här`,
+  kontraktstext: (tecken: number) => `Kontraktstext med ${tecken} tecken — visas på avtalets sida`,
+  kontoSaknas: (nr: number) => `${nr} (finns inte i kontoplanen)`,
+  inteBokford: (etikett: string, nr: number) => `${etikett} ${nr} är inte bokförd ännu.`,
+  postSaknas: (etikett: string) => `${etikett} finns inte längre i bolaget.`,
+  aterkommande: (datum: string) => `Återkommande fakturor till och med ${datum}`,
+  gallring: (manader: number) => `Relationsdata äldre än ${manader} månader`,
+  kontolista: (n: number) => `Kontolista för momsrutorna · ${n} ${n === 1 ? 'konto' : 'konton'}`,
+} as const;
+
 const SEP = ' · ';
 
 async function one<T extends Record<string, unknown>>(
@@ -31,7 +46,237 @@ async function one<T extends Record<string, unknown>>(
 }
 
 function asUuid(v: unknown): string | null {
-  return typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v) ? v : null;
+  return typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null;
+}
+
+// Grindarna stoppar felaktiga parametrar innan Postgres kan avbryta sidans transaktion.
+function kontonummer(v: unknown): number | null {
+  const parsed = AccountNumberSchema.safeParse(v);
+  return parsed.success ? parsed.data : null;
+}
+
+export type LinkKind = 'customer' | 'supplier' | 'project' | 'relation';
+export type FieldValue = { kind: 'text'; text: string } | { kind: 'amount'; ore: number }
+  | { kind: 'link'; text: string; link: { kind: LinkKind; id: string } };
+export interface FieldRow { label: string; value: FieldValue }
+
+export const FIELD_LABELS: Readonly<Record<string, string>> = {
+  account_number: 'Konto',
+  kalla: 'Källa',
+  accounts: 'Kontolista',
+  kallor: 'Källa',
+  active: 'Aktiv',
+  keep_id: 'Behålls',
+  actor_id: 'Aktör',
+  kod: 'Kod',
+  alternativ: 'Alternativ',
+  kontraktstext: 'Kontraktstext',
+  amount_ore: 'Belopp',
+  kvar_efter_minuter: 'Kvar efter (minuter)',
+  anteckning_datum: 'Anteckningens datum',
+  kvar_fore_minuter: 'Kvar före (minuter)',
+  anteckning_id: 'Anteckning',
+  last_nar: 'Läst',
+  as_of: 'Till och med',
+  lines: 'Rad',
+  assignments: 'Tilldelning',
+  locked: 'Låst',
+  avtal_namn: 'Avtalets namn',
+  merge_id: 'Slås ihop med',
+  avtal_signerat: 'Avtalet undertecknat',
+  minuter: 'Minuter',
+  avtalsdel_kod: 'Avtalsdelens kod',
+  name: 'Namn',
+  avtalsdel_namn: 'Avtalsdelens namn',
+  namn: 'Namn',
+  avtalsdelar: 'Avtalsdel',
+  next_invoice_number: 'Nästa fakturanummer',
+  bank_account: 'Bankkonto',
+  notes: 'Anteckningar',
+  bankgiro: 'Bankgiro',
+  nytt_tak_minuter: 'Nytt tak (minuter)',
+  belopp_ore: 'Belopp',
+  older_than_months: 'Äldre än (månader)',
+  beslutsunderlag: 'Beslutsunderlag',
+  organization_id: 'Organisation',
+  billable: 'Debiterbar',
+  parent_part_id: 'Överordnad avtalsdel',
+  box: 'Momsruta',
+  party_id: 'Part',
+  cap_amount_ore: 'Tak i kronor',
+  party_type: 'Typ av part',
+  cap_confirmed: 'Taket bekräftat',
+  payment_date: 'Betalningsdag',
+  cap_hours: 'Tak i timmar',
+  payment_terms_days: 'Betalningsvillkor (dagar)',
+  cascade_open_commitments: 'Öppna åtaganden följer med',
+  payslip_id: 'Lönebesked',
+  change_reason: 'Orsak till ändringen',
+  period: 'Period',
+  code: 'Kod',
+  person_id: 'Person',
+  commitment_id: 'Åtagande',
+  plusgiro: 'Plusgiro',
+  contract_id: 'Avtal',
+  project_id: 'Uppdrag',
+  contract_part_id: 'Avtalsdel',
+  receipt_id: 'Kvitto',
+  credit_ore: 'Kredit',
+  roll: 'Roll',
+  customer_id: 'Kund',
+  scopelinjer_innanfor: 'Scopelinjer innanför',
+  date_precision: 'Datumprecision',
+  scopelinjer_utanfor: 'Scopelinjer utanför',
+  debit_ore: 'Debet',
+  sfar: 'Sfär',
+  description: 'Beskrivning',
+  sie_content: 'SIE-fil',
+  end_date: 'Slutdatum',
+  signal_id: 'Scopesignal',
+  external_invoice_number: 'Kundens fakturanummer',
+  signed_date: 'Undertecknat',
+  fiscal_year_id: 'Räkenskapsår',
+  skal: 'Skäl',
+  fixed_asset_id: 'Anläggning',
+  sort_order: 'Sorteringsordning',
+  forbrukade_minuter: 'Förbrukat (minuter)',
+  source_file_id: 'Avtalshandling',
+  forslagstext: 'Förslagets text',
+  start_date: 'Startdatum',
+  giltig_fran: 'Gäller från',
+  supplier_id: 'Leverantör',
+  handelse_datum: 'Händelsedatum',
+  supplier_invoice_id: 'Leverantörsfaktura',
+  hourly_rate_ore: 'Timpris',
+  tak_bekraftat: 'Taket bekräftat',
+  id: 'Post',
+  tak_minuter: 'Tak (minuter)',
+  invoice_id: 'Faktura',
+  taxa_ore: 'Timtaxa',
+  through_date: 'Avskrivning till och med',
+  timmar: 'Timmar',
+  typ: 'Typ',
+  type: 'Typ',
+  user_id: 'Användarkonto',
+  valid_from: 'Gäller från',
+  voucher_date: 'Verifikationsdatum',
+  voucher_id: 'Verifikat',
+};
+export const VALUE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  type: { avsattning: 'Avsättning', aterforing: 'Återföring' },
+  party_type: { customer: 'Kund', supplier: 'Leverantör' },
+  date_precision: { ar: 'År', halvar: 'Halvår', kvartal: 'Kvartal', manad: 'Månad', dag: 'Dag' },
+  typ: { scopesignal: 'Scopesignal', anteckning: 'Anteckning', referens: 'Referens' },
+  alternativ: { tillagg: 'Tillägg', ryms: 'Ryms i avtalet' },
+  box: { '06': '06', '07': '07', '08': '08', '20': '20', '21': '21', '22': '22', '23': '23', '24': '24', '37': '37', '38': '38', '40': '40' },
+  sfar: { foretag: 'Företag', privat: 'Privat' },
+  roll: { kund: 'Kund', leverantor: 'Leverantör', partner: 'Partner', myndighet: 'Myndighet', intern: 'Intern' },
+};
+const text = (value: string): FieldValue => ({ kind: 'text', text: value });
+type IdLookup = (client: PoolClient, companyId: string, id: string, action: string, siblings: Record<string, unknown>) => Promise<FieldValue>;
+
+// Endast slutna SQL-uttryck väljs här; alla uppslagsvärden går som parametrar.
+function lookup(sql: string, link?: LinkKind): IdLookup {
+  return async (client, companyId, id) => {
+    const row = await one<{ text: string }>(client, sql, [id, companyId]);
+    return row ? (link ? { kind: 'link', text: row.text, link: { kind: link, id } } : text(row.text)) : text(CARD_TEXT.postenFinnsInte);
+  };
+}
+export const ID_LOOKUPS: Readonly<Record<string, IdLookup>> = {
+  customer_id: lookup('SELECT name AS text FROM customers WHERE id = $1 AND company_id = $2', 'customer'),
+  supplier_id: lookup('SELECT name AS text FROM suppliers WHERE id = $1 AND company_id = $2', 'supplier'),
+  party_id: (c, co, id, action, input) => ID_LOOKUPS[input.party_type === 'supplier' ? 'supplier_id' : 'customer_id']!(c, co, id, action, input),
+  invoice_id: lookup(`SELECT 'Faktura ' || i.effective_invoice_number || ' · ' || c.name AS text
+    FROM invoices i JOIN customers c ON c.id = i.customer_id AND c.company_id = i.company_id WHERE i.id = $1 AND i.company_id = $2`),
+  supplier_invoice_id: lookup(`SELECT 'Leverantörsfaktura ' || i.number || ' · ' || s.name AS text
+    FROM supplier_invoices i JOIN suppliers s ON s.id = i.supplier_id AND s.company_id = i.company_id WHERE i.id = $1 AND i.company_id = $2`),
+  voucher_id: lookup('SELECT series || number AS text FROM vouchers WHERE id = $1 AND company_id = $2'),
+  fiscal_year_id: lookup('SELECT label AS text FROM fiscal_years WHERE id = $1 AND company_id = $2'),
+  fixed_asset_id: lookup('SELECT name AS text FROM fixed_assets WHERE id = $1 AND company_id = $2'),
+  receipt_id: lookup("SELECT 'Kvitto ' || receipt_number || ' · ' || description AS text FROM receipts WHERE id = $1 AND company_id = $2"),
+  payslip_id: lookup(`SELECT 'Lön ' || p.period || ' · ' || e.name AS text FROM payslips p
+    JOIN employees e ON e.id = p.employee_id AND e.company_id = p.company_id WHERE p.id = $1 AND p.company_id = $2`),
+  contract_id: lookup('SELECT name AS text FROM contracts WHERE id = $1 AND company_id = $2'),
+  contract_part_id: lookup("SELECT code || ' ' || name AS text FROM contract_parts WHERE id = $1 AND company_id = $2"),
+  parent_part_id: (c, co, id, action, input) => ID_LOOKUPS.contract_part_id!(c, co, id, action, input),
+  source_file_id: lookup('SELECT original_name AS text FROM files WHERE id = $1 AND company_id = $2'),
+  project_id: lookup("SELECT number || ' ' || name AS text FROM projects WHERE id = $1 AND company_id = $2", 'project'),
+  actor_id: lookup('SELECT name AS text FROM work_actors WHERE id = $1 AND company_id = $2'),
+  user_id: lookup(`SELECT u.name AS text FROM users u JOIN company_members m ON m.user_id = u.id
+    WHERE u.id = $1 AND m.company_id = $2`),
+  keep_id: (c, co, id, action, input) => ID_LOOKUPS[action === 'merge_crm_people' ? 'person_id' : 'organization_id']!(c, co, id, action, input),
+  merge_id: (c, co, id, action, input) => ID_LOOKUPS.keep_id!(c, co, id, action, input),
+  organization_id: lookup('SELECT name AS text FROM crm.organizations WHERE id = $1 AND company_id = $2', 'relation'),
+  person_id: lookup('SELECT name AS text FROM crm.people WHERE id = $1 AND company_id = $2'),
+  commitment_id: async (c, co, id) => {
+    const r = await one<{ body: string }>(c, 'SELECT body FROM crm.commitments WHERE id = $1 AND company_id = $2', [id, co]);
+    if (!r) return text(CARD_TEXT.postenFinnsInte);
+    const body = r.body.replace(/\s+/g, ' ').trim();
+    return text(`«${body.length > 80 ? body.slice(0, 77).trimEnd() + '…' : body}»`);
+  },
+  signal_id: lookup('SELECT fras AS text FROM uppdrag_scopesignal WHERE id = $1 AND company_id = $2'),
+  anteckning_id: lookup("SELECT 'Anteckning ' || created_at::date::text AS text FROM uppdrag_anteckning WHERE id = $1 AND company_id = $2"),
+  id: (c, co, id, action, input) => {
+    if (input.typ === 'scopesignal') return ID_LOOKUPS.signal_id!(c, co, id, action, input);
+    if (input.typ === 'anteckning') return ID_LOOKUPS.anteckning_id!(c, co, id, action, input);
+    if (input.typ === 'referens') return (async () => {
+      const row = await one<{ titel_vid_lankning: string | null }>(c,
+        'SELECT titel_vid_lankning FROM uppdrag_referens WHERE id = $1 AND company_id = $2', [id, co]);
+      return text(row ? row.titel_vid_lankning || CARD_TEXT.referensUtanTitel : CARD_TEXT.postenFinnsInte);
+    })();
+    return Promise.resolve(text(CARD_TEXT.postenFinnsInte));
+  },
+};
+
+/** Varje eget fält blir en läsbar rad; objekt och listor har ingen längdgräns. */
+export async function describeFields(client: PoolClient, companyId: string, action: string, input: Record<string, unknown>): Promise<FieldRow[]> {
+  const rows: FieldRow[] = [];
+  async function value(key: string, v: unknown, siblings: Record<string, unknown>): Promise<FieldValue> {
+    if (v === null || v === undefined) return text(CARD_TEXT.tomt);
+    if (key === 'sie_content') return text(CARD_TEXT.sieFil(typeof v === 'string' ? v.split(/\r?\n/).length : 0));
+    if (key === 'kontraktstext') return text(CARD_TEXT.kontraktstext(typeof v === 'string' ? v.length : 0));
+    if (Object.hasOwn(ID_LOOKUPS, key)) {
+      const id = asUuid(v);
+      return id ? ID_LOOKUPS[key]!(client, companyId, id, action, siblings) : text(CARD_TEXT.postenFinnsInte);
+    }
+    if (key === 'account_number' || key === 'bank_account') {
+      const nr = kontonummer(v);
+      if (nr === null) return text(CARD_TEXT.postenFinnsInte);
+      const row = await one<{ name: string }>(client, `SELECT name FROM accounts
+        WHERE account_number = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY company_id NULLS LAST LIMIT 1`, [nr, companyId]);
+      return text(row ? `${nr} ${row.name}` : CARD_TEXT.kontoSaknas(nr));
+    }
+    if (typeof v === 'boolean') return text(v ? CARD_TEXT.ja : CARD_TEXT.nej);
+    if (key.endsWith('_ore') && typeof v === 'number' && Number.isSafeInteger(v)) return { kind: 'amount', ore: v };
+    if (Object.hasOwn(VALUE_LABELS, key) && typeof v === 'string' && Object.hasOwn(VALUE_LABELS[key]!, v)) return text(VALUE_LABELS[key]![v]!);
+    if (typeof v === 'number') return text(String(v).replace('.', ','));
+    if (typeof v === 'string') return text(/^\d{4}-\d{2}-\d{2}T/.test(v) ? v.slice(0, 16).replace('T', ' ') : v);
+    return text(CARD_TEXT.tomt);
+  }
+  async function walk(key: string, v: unknown, label: string, siblings: Record<string, unknown>): Promise<void> {
+    // Dolda fält och referenser behandlas före formen, även i äldre köposter.
+    if (key === 'sie_content' || key === 'kontraktstext' || Object.hasOwn(ID_LOOKUPS, key)) {
+      rows.push({ label, value: await value(key, v, siblings) });
+    } else if (Array.isArray(v)) {
+      if (v.every((x) => x === null || typeof x !== 'object')) {
+        const values: string[] = [];
+        for (const x of v) {
+          const fv = await value(key, x, siblings);
+          values.push(fv.kind === 'amount' ? formatOre(fv.ore, { currency: true }) : fv.text);
+        }
+        rows.push({ label, value: text(values.length ? values.join('; ') : CARD_TEXT.tomt) });
+      } else {
+        for (const [i, x] of v.entries()) await walk(key, x, `${label} ${i + 1}`, siblings);
+      }
+    } else if (v !== null && typeof v === 'object') {
+      for (const k of Object.keys(v)) {
+        const obj = v as Record<string, unknown>;
+        await walk(k, obj[k], `${label} · ${Object.hasOwn(FIELD_LABELS, k) ? FIELD_LABELS[k] : CARD_TEXT.okantFalt}`, obj);
+      }
+    } else rows.push({ label, value: await value(key, v, siblings) });
+  }
+  for (const key of Object.keys(input)) await walk(key, input[key], Object.hasOwn(FIELD_LABELS, key) ? FIELD_LABELS[key]! : CARD_TEXT.okantFalt, input);
+  return rows;
 }
 
 /**
@@ -39,8 +284,16 @@ function asUuid(v: unknown): string | null {
  * inte pekar på någon post (då räcker kortets fältlista).
  */
 export async function describeApproval(
-  client: PoolClient, companyId: string, input: Record<string, unknown>,
+  client: PoolClient, companyId: string, input: Record<string, unknown>, action?: string,
 ): Promise<string | null> {
+  if (action === 'run_recurring_invoices' && typeof input.as_of === 'string') return CARD_TEXT.aterkommande(input.as_of);
+  if (action === 'purge_crm_data') return typeof input.older_than_months === 'number' && Number.isInteger(input.older_than_months)
+    && input.older_than_months >= 1 && input.older_than_months <= 240
+    ? CARD_TEXT.gallring(input.older_than_months) : CARD_TEXT.lagringsperioden;
+  if (action === 'set_vat_box_accounts') {
+    const n = Array.isArray(input.accounts) ? input.accounts.length : 0;
+    return CARD_TEXT.kontolista(n);
+  }
   const parts: string[] = [];
 
   const invoiceId = asUuid(input.invoice_id);
@@ -131,6 +384,15 @@ export async function describeApproval(
   if (typeof input.period === 'string' && parts.length === 0) parts.push(`Period ${input.period}`);
   if (typeof input.amount_ore === 'number') parts.push(formatOre(input.amount_ore, { currency: true }));
 
+  if (parts.length === 0 && action !== undefined) {
+    for (const key of Object.keys(input)) {
+      if (input[key] == null || !Object.hasOwn(ID_LOOKUPS, key)) continue;
+      const id = asUuid(input[key]);
+      const v = id ? await ID_LOOKUPS[key]!(client, companyId, id, action, input) : text(CARD_TEXT.postenFinnsInte);
+      const label = Object.hasOwn(FIELD_LABELS, key) ? FIELD_LABELS[key]! : CARD_TEXT.okantFalt;
+      if (v.kind !== 'amount') parts.push(`${label}: ${v.text}`);
+    }
+  }
   return parts.length > 0 ? parts.join(SEP) : null;
 }
 
@@ -356,7 +618,8 @@ export async function explainApproval(
   }
 
   if (action === 'purge_crm_data') {
-    const månader = typeof input.older_than_months === 'number'
+    const månader = typeof input.older_than_months === 'number' && Number.isInteger(input.older_than_months)
+      && input.older_than_months >= 1 && input.older_than_months <= 240
       ? input.older_than_months
       : (await one<{ m: number }>(client,
           'SELECT retention_months AS m FROM crm.retention_settings WHERE company_id = $1', [companyId]))?.m ?? null;
@@ -456,4 +719,90 @@ export async function explainApproval(
   }
 
   return none;
+}
+
+// AD-8: tjänsten känner bara beroendets data, aldrig actions-registret.
+type Dependency = { satisfied: boolean; depends_on_action?: string; pending_approval_id?: string };
+export interface DependencyRow {
+  text: string;
+  first: { approvalId: string; linkText: string; title: string } | null;
+}
+
+/** Bygger beroendets klartext ur bolagets post, inte transportens tekniska meddelande. */
+export async function describeDependency(
+  client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, dependency: Dependency | null,
+  firstTitle: string | undefined,
+): Promise<DependencyRow | null> {
+  if (!dependency || dependency.satisfied) return null;
+  const firstId = asUuid(dependency.pending_approval_id);
+  const book = dependency.depends_on_action;
+  const supplier = book === 'book_supplier_invoice';
+  const label = supplier || action === 'register_supplier_payment' ? 'Leverantörsfakturan' : action === 'register_invoice_payment' || book === 'book_invoice' ? 'Fakturan' : 'Posten';
+  if (!book) return { text: CARD_TEXT.postSaknas(label), first: null };
+  if (book !== 'book_invoice' && book !== 'book_supplier_invoice') {
+    const title = firstTitle ?? CARD_TEXT.okandAtgard;
+    return { text: CARD_TEXT.annatForst, first: firstId ? { approvalId: firstId, linkText: title, title } : null };
+  }
+  const id = asUuid(supplier ? input.supplier_invoice_id : input.invoice_id);
+  const row = id ? await one<{ nr: number; part: string; total_ore: number }>(client, supplier
+    ? `SELECT i.number AS nr, s.name AS part, i.total_ore FROM supplier_invoices i
+       JOIN suppliers s ON s.id = i.supplier_id AND s.company_id = i.company_id WHERE i.id = $1 AND i.company_id = $2`
+    : `SELECT i.effective_invoice_number AS nr, c.name AS part, i.total_ore FROM invoices i
+       JOIN customers c ON c.id = i.customer_id AND c.company_id = i.company_id WHERE i.id = $1 AND i.company_id = $2`, [id, companyId]) : null;
+  if (!row) return { text: CARD_TEXT.postSaknas(label), first: null };
+  const title = firstTitle ?? (supplier ? 'Bokför leverantörsfaktura' : 'Bokför faktura');
+  return {
+    text: `${CARD_TEXT.inteBokford(label, row.nr)} ${firstId ? CARD_TEXT.godkannForst : CARD_TEXT.beAssistenten}`,
+    first: firstId ? { approvalId: firstId, linkText: `${title} ${row.nr}${SEP}${row.part}${SEP}${formatOre(row.total_ore, { currency: true })}`, title } : null,
+  };
+}
+
+export interface Forslagskort {
+  id: string;
+  atgard: string;
+  titel: string;
+  franAgent: boolean;
+  postbeteckning: string | null;
+  andringar: { fore: string; efter: string }[];
+  varfor: string | null;
+  kalla: { text: string; href: string } | null;
+  beroende: DependencyRow | null;
+  falt: FieldRow[];
+}
+export interface AvgjordRad { titel: string; postbeteckning: string | null }
+
+/** Maskar textens referenser; adresser och id:n i attribut går aldrig genom den. */
+export function utanUuid(value: string): string {
+  return value.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, CARD_TEXT.dold);
+}
+
+/** Kortets enda textväg till vyn. Maskpasset är uttryckligt över typens textfält. */
+export async function forslagskort(
+  client: PoolClient, companyId: string,
+  approval: { id: string; action: string; input: Record<string, unknown>; requested_actor: string },
+  opts: { title: string | undefined; dependency: Dependency | null; dependencyTitle: string | undefined; base: string },
+): Promise<Forslagskort> {
+  const post = await describeApproval(client, companyId, approval.input, approval.action);
+  const explanation = await explainApproval(client, companyId, approval.action, approval.input, opts.base);
+  const fields = await describeFields(client, companyId, approval.action, approval.input);
+  const dependency = await describeDependency(client, companyId, approval.action, approval.input, opts.dependency, opts.dependencyTitle);
+  return {
+    id: approval.id, atgard: utanUuid(approval.action), titel: utanUuid(opts.title ?? CARD_TEXT.okandAtgard),
+    franAgent: approval.requested_actor === 'agent', postbeteckning: post === null ? null : utanUuid(post),
+    andringar: explanation.change ? [{ fore: utanUuid(explanation.change.from), efter: utanUuid(explanation.change.to) }] : [],
+    varfor: explanation.why === null ? null : utanUuid(explanation.why),
+    kalla: explanation.source ? { text: utanUuid(explanation.source.label), href: explanation.source.href } : null,
+    beroende: dependency ? { text: utanUuid(dependency.text), first: dependency.first ? {
+      approvalId: dependency.first.approvalId, linkText: utanUuid(dependency.first.linkText), title: utanUuid(dependency.first.title),
+    } : null } : null,
+    falt: fields.map((r) => ({ label: utanUuid(r.label), value: r.value.kind === 'amount' ? r.value : { ...r.value, text: utanUuid(r.value.text) } })),
+  };
+}
+
+/** Samma textgräns för nyligen avgjorda förslag, utan ändringsblock eller knappar. */
+export async function avgjordRad(
+  client: PoolClient, companyId: string, decided: { action: string; input: Record<string, unknown> }, title: string | undefined,
+): Promise<AvgjordRad> {
+  const post = await describeApproval(client, companyId, decided.input, decided.action);
+  return { titel: utanUuid(title ?? CARD_TEXT.okandAtgard), postbeteckning: post === null ? null : utanUuid(post) };
 }
