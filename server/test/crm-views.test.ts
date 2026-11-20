@@ -2054,4 +2054,235 @@ describe('1.5 kundkortets fakturauppgifter', () => {
         .toEqual(['Kundnummer', 'Fakturamejl', 'Adress', 'Momsreg.nr', 'Betalningsvillkor', 'Telefon']);
     });
   });
+  describe('org.nr för en kopplad relation (story 1.8)', () => {
+    const v18Par: V15Par[] = [];
+    let v18Annan: string, v18Samma: string, v18Prospekt: string, v18NyKund: string;
+    let v18ProspektVy: string, v18Okopplad: string, v18Agent: string;
+    const v18Text = 'Relationen är kopplad till en kund i registret, och då gäller kundkortets org.nr. Rätta det med update_customer — på relationssidan under Rätta uppgifter. Inget sparades.';
+    const v18AgentAct = (name: string, input: Record<string, unknown>) =>
+      api.post(`${co()}/actions/${name}`).set('Authorization', `Bearer ${v18Agent}`).send(input);
+    const v18CrmRad = (org: string) => withAdmin(async (client) => {
+      const r = await client.query('SELECT org_number, website, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2', [org, companyId]);
+      expect(r.rows).toHaveLength(1);
+      return r.rows[0]!;
+    });
+    beforeAll(async () => {
+      await withAdmin(async (client) => {
+        for (const table of ['customers', 'crm.organizations']) {
+          const r = await client.query(`SELECT id FROM ${table} WHERE company_id = $1 AND org_number LIKE '556918-%'`, [companyId]);
+          expect(r.rows, `${table}: org.nr-fixturen måste vara ledig`).toHaveLength(0);
+        }
+      });
+      for (let n = 1; n <= 11; n++) {
+        const nn = String(n).padStart(2, '0');
+        const p = await v15Par(`Orgnr ${n} 18`, { ...v15Varden, org_number: `556918-01${nn}` });
+        v18Par.push(p);
+        await withAdmin((client) => client.query('UPDATE crm.organizations SET org_number = $1 WHERE id = $2 AND company_id = $3',
+          [`556918-02${nn}`, p.org, companyId]));
+        await plantera({ organization_id: p.org }, 'org_number', { source: 'sync', source_system: 'gmail', source_ref: `gmail:o18-${n}` });
+      }
+      v18Annan = await v15Kund('Annan Orgnr 18 AB', { org_number: '556918-0190' });
+      v18Prospekt = await nyK1Org('Prospekt Orgnr 18 AB');
+      v18Samma = await v15Kund('Samma Orgnr 18 AB', { org_number: '556918-0191' });
+      v18NyKund = await v15Kund('Nyskapad Kund Orgnr 18 AB', { org_number: '556918-0192' });
+      v18ProspektVy = await nyK1Org('Prospekt Vy Orgnr 18 AB', { org_number: '556918-0298' });
+      v18Okopplad = await nyK1Org('Okopplad Orgnr 18 AB', { org_number: '556918-0299' });
+      const r = await api.post(`${co()}/agent-tokens`).set(auth()).send({ name: 'agent 18' });
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      v18Agent = r.body.token;
+    });
+
+    it('OA1 människa med id avvisas utan skrivning', async () => {
+      const p = v18Par[0]!, fore = await v15Tillstand(p);
+      const r = await act('upsert_crm_organization', { organization_id: p.org, org_number: '556918-0301' });
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body).toEqual({ error: 'org_number_on_customer', details: { customer_id: p.kund, update_action: 'update_customer' } });
+      expect(await v15Tillstand(p)).toEqual(fore);
+      expect((await v18CrmRad(p.org)).org_number).toBe('556918-0201');
+    });
+    it('OA2 agent med id och med namn avvisas utan skrivning', async () => {
+      const p = v18Par[1]!, fore = await v15Tillstand(p);
+      for (const target of [{ organization_id: p.org }, { name: 'Fakturarelation Orgnr 2 18 AB' }]) {
+        const r = await v18AgentAct('upsert_crm_organization', { ...target, org_number: '556918-0302' });
+        expect(r.status, JSON.stringify(r.body)).toBe(400);
+        expect(r.body).toEqual({ error: 'org_number_on_customer', details: { customer_id: p.kund, update_action: 'update_customer' } });
+        expect(await v15Tillstand(p)).toEqual(fore);
+      }
+    });
+    it('OA3 andra fält i samma anrop skrivs inte heller', async () => {
+      const p = v18Par[2]!, fore = await v15Tillstand(p);
+      const r = await act('upsert_crm_organization', { organization_id: p.org, org_number: '556918-0303', website: 'https://orgnr3-18.example' });
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.error).toBe('org_number_on_customer');
+      expect(await v15Tillstand(p)).toEqual(fore);
+      expect((await v18CrmRad(p.org)).website).toBeNull();
+    });
+    it('OA4 intaget redovisar kundfältet och skriver händelsen utan att flytta kopplingen', async () => {
+      const p = v18Par[3]!, kundFore = await v15Kundrad(p.kund), annanFore = await v15Kundrad(v18Annan);
+      const r = await act('ingest_crm_events', { events: [{ kind: 'interaction',
+        organization: { name: 'Fakturarelation Orgnr 4 18 AB', org_number: '556918-0190', website: 'https://orgnr4-18.example' },
+        occurred_at: '2026-11-02T09:00:00Z', channel: 'email', direction: 'inbound',
+        summary: 'Intaget med en annan kunds org.nr.', source_system: 'gmail', source_ref: 'gmail:o18-a4' }] });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.skipped).toEqual([]);
+      expect(r.body.result.interactions_created).toBe(1);
+      expect(r.body.result.kept_human_fields.some((f: string) => f.endsWith(': org_number'))).toBe(false);
+      expect(r.body.result.kept_customer_fields).toEqual(['Fakturarelation Orgnr 4 18 AB: org_number']);
+      await withAdmin(async (client) => {
+        const org = await client.query(`SELECT details FROM crm.audit_log WHERE company_id = $1 AND action = 'crm.organization_updated'
+          AND entity_id = $2 ORDER BY occurred_at DESC, id DESC LIMIT 1`, [companyId, p.org]);
+        expect(org.rows[0]!.details.kept_customer_fields).toEqual(['org_number']);
+        const batch = await client.query(`SELECT details FROM crm.audit_log WHERE company_id = $1 AND action = 'crm.ingested'
+          ORDER BY occurred_at DESC, id DESC LIMIT 1`, [companyId]);
+        expect(batch.rows[0]!.details.kept_customer_fields).toBe(1);
+        const linked = await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND customer_id = $2', [companyId, v18Annan]);
+        expect(linked.rows).toHaveLength(0);
+      });
+      expect(await v18CrmRad(p.org)).toEqual({ org_number: '556918-0204', website: 'https://orgnr4-18.example', customer_id: p.kund });
+      const org = await lasK1Org(p.org);
+      expect(org.provenance.org_number).toMatchObject({ source: 'sync', source_system: 'gmail', source_ref: 'gmail:o18-4' });
+      expect(org.provenance.website.source).toBe('sync');
+      expect(await v15Kundrad(p.kund)).toEqual(kundFore);
+      expect(await v15Kundrad(v18Annan)).toEqual(annanFore);
+    });
+    it('OA5 prospektets org.nr skrivs och kan hittas av matchningen', async () => {
+      const fore = await v15Kundrad(v18Samma);
+      const r = await act('upsert_crm_organization', { organization_id: v18Prospekt, org_number: '556918-0191' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(await v18CrmRad(v18Prospekt)).toEqual({ org_number: '556918-0191', website: null, customer_id: null });
+      expect((await lasK1Org(v18Prospekt)).provenance.org_number.source).toBe('human');
+      expect(await v15Kundrad(v18Samma)).toEqual(fore);
+      await withAdmin(async (client) => {
+        const r = await client.query(`SELECT o.id FROM crm.organizations o WHERE o.company_id = $1 AND o.customer_id IS NULL
+          AND length(regexp_replace(coalesce(o.org_number, ''), '\\D', '', 'g')) >= 10
+          AND EXISTS (SELECT 1 FROM customers c WHERE c.company_id = o.company_id
+            AND regexp_replace(coalesce(c.org_number, ''), '\\D', '', 'g') = regexp_replace(o.org_number, '\\D', '', 'g'))`, [companyId]);
+        expect(r.rows.map((row) => row.id)).toContain(v18Prospekt);
+      });
+    });
+    it('OA6 en ny relation kopplas på org.nr i samma anrop', async () => {
+      const r = await act('upsert_crm_organization', { name: 'Nyskapad Orgnr 18 AB', org_number: '556918-0192' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.customer_id).toBe(v18NyKund);
+      expect(r.body.result.org_number).toBe('556918-0192');
+      expect((await lasK1Org(r.body.result.id)).provenance.customer_id).toMatchObject({ source: 'accounting', reason: 'matchad på organisationsnummer' });
+    });
+    it('OA7 dokumenten beskriver regeln och svarets redovisning', async () => {
+      const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+      const rubrik = '## Kundkortets org.nr för en kopplad relation (crm 1.8)';
+      expect(doc.split(rubrik)).toHaveLength(2);
+      expect(doc.indexOf(rubrik)).toBeGreaterThan(doc.indexOf('## Kundnumret på relationssidan (crm 1.7)'));
+      const avsnitt = doc.split(rubrik)[1]!.split('\n## ')[0]!;
+      for (const term of ['upsert_crm_organization', 'org_number', 'customer_id', 'update_customer', 'org_number_on_customer',
+        'update_action', 'ingest_crm_events', 'kept_human_fields', 'kept_customer_fields']) expect(avsnitt).toContain('`' + term + '`');
+      expect(avsnitt).not.toMatch(/^### /m);
+      const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+      const regler = kontrakt.split('## De fyra reglerna\n')[1]!.split('\n## ')[0]!;
+      expect(regler).toContain('**7. Kundkortets org.nr gäller för en kopplad relation.**');
+      for (const term of ['org_number_on_customer', 'update_customer', 'skipped', 'kept_customer_fields']) expect(regler).toContain('`' + term + '`');
+      const svar = kontrakt.split('## Svaret\n')[1]!.split('\n## ')[0]!;
+      expect(svar).toContain('"kept_customer_fields": []');
+      expect(svar).toContain('`kept_customer_fields`');
+    });
+    it('OA8 huvudgrenen visar den svenska hänvisningen utan skrivning', async () => {
+      const p = v18Par[4]!;
+      await v15Avvisa(p, { back: relationsadress(p.org), name: 'Fakturarelation Orgnr 5 18 AB',
+        fore_name: 'Fakturarelation Orgnr 5 18 AB', org_number: '556918-0305', fore_org_number: '' }, v18Text, '');
+      expect((await v18CrmRad(p.org)).org_number).toBe('556918-0205');
+    });
+    it('OA9 prospektets org.nr rättas genom huvudformuläret', async () => {
+      const r = await v15Post(v18ProspektVy, { back: relationsadress(v18ProspektVy), name: 'Prospekt Vy Orgnr 18 AB',
+        fore_name: 'Prospekt Vy Orgnr 18 AB', org_number: '556918-0397', fore_org_number: '556918-0298' }, { handgrepp: '' });
+      expect(r.status, r.text).toBe(302);
+      expect(r.headers.location).toBe(relationsadress(v18ProspektVy));
+      expect(await v18CrmRad(v18ProspektVy)).toEqual({ org_number: '556918-0397', website: null, customer_id: null });
+      expect((await lasK1Org(v18ProspektVy)).provenance.org_number.source).toBe('human');
+      await withAdmin(async (client) => {
+        const r = await client.query('SELECT id FROM customers WHERE company_id = $1 AND org_number = $2', [companyId, '556918-0397']);
+        expect(r.rows).toHaveLength(0);
+      });
+    });
+
+    async function v18Form(par: V15Par) {
+      const kund = await v15Kundrad(par.kund), org_number = String(kund.org_number ?? '');
+      return { back: relationsadress(par.org), fore_customer_id: par.kund, org_number, fore_org_number: org_number };
+    }
+    it('OR1 sparandet går till kunden med audit och orört crm', async () => {
+      const p = v18Par[5]!;
+      await v15Spara(p, { ...await v18Form(p), org_number: '556918-0306' }, { org_number: '556918-0306' });
+      expect(await v18CrmRad(p.org)).toEqual({ org_number: '556918-0206', website: null, customer_id: p.kund });
+    });
+    it('OR2 ett för långt org.nr ger formulärtext utan skrivning', async () => {
+      const p = v18Par[6]!;
+      await v15Avvisa(p, { ...await v18Form(p), org_number: '556918-0307-123456789' }, v15FormText);
+    });
+    it('OR3 oförändrat org.nr skickas inte', async () => {
+      const p = v18Par[7]!;
+      await v15Avvisa(p, { ...await v18Form(p), org_number: ' 556918-0108 ' }, v15TomText);
+    });
+
+    it('OV1 raden visar kundkortets org.nr med hint utan crm-ursprung', async () => {
+      const p = v18Par[8]!, sidan = await sida(p.org), r = rad(kort(sidan, 'Uppgifter'), 'Org.nr');
+      expect(r).toContain('<span class="v">556918-0109 <span class="fact__sub">Sparas i kundregistret</span></span>');
+      expect(r).not.toContain('class="prov');
+      expect(r).not.toContain('✦');
+      expect(stammerFalt(sidan, p.org)).not.toContain('org_number');
+      expect(sidan).not.toContain('556918-0209');
+      expect(sidan).not.toContain('Skiljer sig');
+      expect(rad(kort(await sida(v15Tom.org), 'Uppgifter'), 'Org.nr'))
+        .toContain('<span class="v">— <span class="fact__sub">Sparas i kundregistret</span></span>');
+    });
+    it('OV2 org.nr har ett eget formulär efter huvudformuläret och före sfären', async () => {
+      const p = v18Par[9]!, sidan = await sida(p.org);
+      const details = sidan.split('<summary>Rätta uppgifter</summary>')[1]!.split('</details>')[0]!;
+      const huvud = details.split('</form>')[0]!;
+      expect(huvud).not.toContain('name="org_number"');
+      expect(huvud).not.toContain('name="fore_org_number"');
+      const forms = [...details.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/g)].map((m) => m[0])
+        .filter((f) => f.includes(`action="${relationsadress(p.org)}/edit?handgrepp=kundkort"`));
+      expect(forms).toHaveLength(1);
+      const form = forms[0]!;
+      expect(form).toContain(`name="back" value="${relationsadress(p.org)}"`);
+      expect(form).toContain(`name="fore_customer_id" value="${p.kund}"`);
+      expect(form).toContain('<label>Org.nr<input type="text" name="org_number" maxlength="20" value="556918-0110"></label>');
+      expect(form).toContain('<input type="hidden" name="fore_org_number" value="556918-0110">');
+      expect(form).toContain('<button class="btn btn--primary btn--sm" type="submit">Spara org.nr</button>');
+      expect(form).toContain('Org.nr sparas på kundkortet i kundregistret och gäller för relationen. Ett tomt fält lämnas oförändrat.');
+      expect(details.indexOf(form)).toBeGreaterThan(details.indexOf('</form>'));
+      expect(details.indexOf(form)).toBeLessThan(details.indexOf('/sfar"'));
+      expect(details).not.toMatch(/\brequired\b/);
+      expect(sidan).not.toContain('556918-0210');
+    });
+    it('OV3 okopplad relation behåller raden och huvudformulärets org.nr', async () => {
+      const sidan = await sida(v18Okopplad), r = rad(kort(sidan, 'Uppgifter'), 'Org.nr');
+      expect(r).toContain('<span class="v">556918-0299</span>');
+      expect(r).not.toContain('fact__sub');
+      const huvud = sidan.split('<summary>Rätta uppgifter</summary>')[1]!.split('</form>')[0]!;
+      expect(huvud).toContain('<label>Org.nr<input type="text" name="org_number" maxlength="20" value="556918-0299"></label>');
+      expect(huvud).toContain('<input type="hidden" name="fore_org_number" value="556918-0299">');
+      for (const text of ['Spara org.nr', 'handgrepp=kundkort', 'Sparas i kundregistret']) expect(sidan).not.toContain(text);
+    });
+    it('OV4 avvikande crm-värde står kvar vid sparande och en felskrivning fäller kontrollen', async () => {
+      const p = v18Par[10]!;
+      expect((await v18CrmRad(p.org)).org_number).toBe('556918-0211');
+      expect((await v15Kundrad(p.kund)).org_number).toBe('556918-0111');
+      await v15Spara(p, { ...await v18Form(p), org_number: '556918-0311' }, { org_number: '556918-0311' });
+      expect((await v18CrmRad(p.org)).org_number).toBe('556918-0211');
+      const bild = await v15CrmBild(companyId), sidan = await sida(p.org);
+      expect(rad(kort(sidan, 'Uppgifter'), 'Org.nr'))
+        .toContain('<span class="v">556918-0311 <span class="fact__sub">Sparas i kundregistret</span></span>');
+      expect(sidan).not.toContain('556918-0211');
+      expect(sidan).not.toContain('Skiljer sig');
+      try {
+        await withAdmin((client) => client.query('UPDATE crm.organizations SET org_number = $1 WHERE id = $2 AND company_id = $3',
+          ['556918-0311', p.org, companyId]));
+        expect(await v15CrmBild(companyId)).not.toEqual(bild);
+        expect((await v18CrmRad(p.org)).org_number).not.toBe('556918-0211');
+      } finally {
+        await withAdmin((client) => client.query('UPDATE crm.organizations SET org_number = $1 WHERE id = $2 AND company_id = $3',
+          ['556918-0211', p.org, companyId]));
+      }
+      expect((await v18CrmRad(p.org)).org_number).toBe('556918-0211');
+    });
+  });
 });

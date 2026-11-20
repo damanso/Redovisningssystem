@@ -307,7 +307,7 @@ async function assertCustomerFree(
  */
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, rawInput: UpsertOrganizationInput, origin: WriteOrigin,
-): Promise<Organization & { created: boolean; kept_human_fields: string[]; redirected_from: string | null }> {
+): Promise<Organization & { created: boolean; kept_human_fields: string[]; kept_customer_fields: string[]; redirected_from: string | null }> {
   const input: UpsertOrganizationInput = { ...rawInput, org_number: normaliseraOrgnummer(rawInput.org_number) };
   const name = input.name?.trim();
   if ((input.name !== undefined && !name) || (!input.organization_id && !name)) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
@@ -361,6 +361,20 @@ export async function upsertOrganization(
   // Skrivningen fortsätter mot rätt rad, med rätt namn.
   const writeName = redirectedFrom ? hit!.name : (name ?? hit!.name);
 
+  // Kundkortets org.nr gäller för kopplade relationer (FR-11, Davids svar 2026-10-13).
+  // Intaget får fortsätta med övriga fält; andra skrivare hänvisas till kundregistret.
+  const keptCustomerFields: string[] = [];
+  if (hit?.customer_id && input.org_number !== undefined) {
+    if (origin.source !== 'sync') {
+      throw new BadRequestError('org_number_on_customer',
+        'Relationen är kopplad till en kund i registret, och då gäller kundkortets org.nr. Rätta det med update_customer — på relationssidan under Rätta uppgifter. Inget sparades.',
+        { customer_id: hit.customer_id, update_action: 'update_customer' });
+    }
+    keptCustomerFields.push('org_number');
+  }
+  const { org_number: customerOrgNumber, ...withoutCustomerOrgNumber } = input;
+  const writeInput: UpsertOrganizationInput = keptCustomerFields.length ? withoutCustomerOrgNumber : input;
+
   // Namnbyte: krocken fångas här i stället för som ett rått unik-indexfel, och
   // svaret pekar mot rätt åtgärd — två rader för samma bolag ska slås ihop, inte
   // döpas om till varandra.
@@ -389,29 +403,29 @@ export async function upsertOrganization(
   //
   // Samma sak för en organisation med privata personer (steg 3, 0089): synken ska
   // inte försöka koppla den och fällas, den lämnar den okopplad och säger det.
-  const matchable = (!input.organization_id || origin.source !== 'human')
+  const matchable = (!writeInput.organization_id || origin.source !== 'human')
     && !hit?.customer_id
-    && (input.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
+    && (writeInput.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
     && (hit?.sfar ?? 'foretag') === 'foretag'
     && !(hit && await harPrivataAtaganden(client, companyId, hit.id))
     && !(hit && await harPrivataPersoner(client, companyId, [hit.id]));
-  const matched = matchable && input.customer_id === undefined ? await matchCustomer(client, companyId, writeName, input.org_number, hit?.id) : null;
-  const customerId = input.customer_id ?? matched;
+  const matched = matchable && writeInput.customer_id === undefined ? await matchCustomer(client, companyId, writeName, writeInput.org_number, hit?.id) : null;
+  const customerId = writeInput.customer_id ?? matched;
 
   if (!hit) {
-    const sfar = input.sfar ?? 'foretag';
-    const status = input.status ?? (customerId ? 'customer' : 'prospect');
+    const sfar = writeInput.sfar ?? 'foretag';
+    const status = writeInput.status ?? (customerId ? 'customer' : 'prospect');
     assertOrganisationInomGransen({ sfar, customer_id: customerId, status, nyKoppling: Boolean(customerId), privataAtaganden: false });
     if (customerId) await assertCustomerFree(client, companyId, customerId, null);
     const r = await client.query<Organization>(
       `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by, sfar, roll)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${ORG_COLUMNS}`,
-      [companyId, writeName, input.org_number ?? null, input.website ?? null, customerId,
-        status, input.source ?? null, input.notes ?? null, userId, sfar, input.roll ?? null],
+      [companyId, writeName, writeInput.org_number ?? null, writeInput.website ?? null, customerId,
+        status, writeInput.source ?? null, writeInput.notes ?? null, userId, sfar, writeInput.roll ?? null],
     );
-    const link = customerLinkProvenance(matched, input.org_number);
+    const link = customerLinkProvenance(matched, writeInput.org_number);
     await recordProvenance(client, companyId, userId, { organization_id: r.rows[0]!.id }, [
-      ...provenanceFor(ORG_PROVENANCE_FIELDS, { ...input, name: writeName, customer_id: link.length ? undefined : input.customer_id }, origin),
+      ...provenanceFor(ORG_PROVENANCE_FIELDS, { ...writeInput, name: writeName, customer_id: link.length ? undefined : writeInput.customer_id }, origin),
       ...link,
     ]);
     await writeCrmAudit(client, {
@@ -421,7 +435,7 @@ export async function upsertOrganization(
         linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       },
     });
-    return { ...r.rows[0]!, created: true, kept_human_fields: [], redirected_from: null };
+    return { ...r.rows[0]!, created: true, kept_human_fields: [], kept_customer_fields: [], redirected_from: null };
   }
 
   // Människan vinner: fält hon bestämt plockas ur skrivningen innan den körs.
@@ -432,7 +446,7 @@ export async function upsertOrganization(
     // Vid omstyrning bär händelsen det GAMLA namnet. Det är inget påstående om
     // den kvarvarande raden, så det skrivs inte alls — och rapporteras därför
     // inte heller som ett stoppat människofält: synken bad aldrig om det.
-    { ...input, name: redirectedFrom || name === undefined ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
+    { ...writeInput, name: redirectedFrom || name === undefined ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
   );
 
   // Rättningsvarv 3b (krav 8): en agent byter inte sfär eller roll på en befintlig
@@ -481,13 +495,13 @@ export async function upsertOrganization(
      WHERE id = $1 AND company_id = $2 RETURNING ${ORG_COLUMNS}`,
     [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
       patch.org_number ?? null, patch.website ?? null, patch.customer_id ?? null,
-      patch.status ?? (statusBytsAvKopplingen ? kopplingsstatus.status : null), input.source ?? null, patch.notes ?? null,
+      patch.status ?? (statusBytsAvKopplingen ? kopplingsstatus.status : null), writeInput.source ?? null, patch.notes ?? null,
       patch.sfar ?? null, patch.roll ?? null],
   );
   // Kopplingen som systemet självt slog upp bär sitt eget ursprung; övriga fält
   // bär skrivarens.
   const link = patch.customer_id && patch.customer_id === matched
-    ? customerLinkProvenance(matched, input.org_number)
+    ? customerLinkProvenance(matched, writeInput.org_number)
     : [];
   await recordProvenance(client, companyId, userId, { organization_id: hit.id }, [
     ...provenanceFor(ORG_PROVENANCE_FIELDS, link.length ? { ...patch, customer_id: undefined } : patch, origin),
@@ -506,13 +520,14 @@ export async function upsertOrganization(
       linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       // Inte tyst: en skrivning som filtrerats bort ska gå att se i efterhand.
       ...(keptHumanFields.length ? { kept_human_fields: keptHumanFields } : {}),
+      ...(keptCustomerFields.length ? { kept_customer_fields: keptCustomerFields } : {}),
       // Att skrivningen landade på en annan rad än avsändaren trodde ska synas i
       // efterhand — men bara som ett JA, aldrig som namnet: loggen är
       // append-only och en organisation kan vara en enskild firma.
       ...(redirectedFrom ? { redirected: true } : {}),
     },
   });
-  return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, redirected_from: redirectedFrom };
+  return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, kept_customer_fields: keptCustomerFields, redirected_from: redirectedFrom };
 }
 
 /**

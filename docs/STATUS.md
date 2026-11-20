@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.8, kundkortets org.nr gäller för en kopplad relation (crm, FR-11, FR-10):**
+  `upsertOrganization` avvisar org.nr på en redan kopplad relation för människa
+  och agent med 400 `org_number_on_customer` och hänvisning till `update_customer`.
+  Intaget lämnar värdet och ursprunget orörda och redovisar `kept_customer_fields`
+  i svaret och audit; händelsen skrivs i övrigt. Kundkortets tillåtelselista har
+  `org_number`. Relationssidan visar kundkortets org.nr med hinten *Sparas i
+  kundregistret* och ett eget org.nr-formulär i *Rätta uppgifter*. Prospektens
+  fält och kunduppslaget består. Regel 7 och svarsexemplet i
+  `docs/crm/API_KONTRAKT.md` samt avsnittet i `docs/MCP_ACTIONS.md` beskriver regeln.
+  OA1–OA9, ON1–ON3, OR1–OR3 och OV1–OV4 täcker beteendet, inklusive negativ
+  kontroll av en felskrivning i crm; FK2:s avskaffade främmande org.nr-nyckel ströks.
+  Den rena `crm-rules.test.ts` kördes separat utan databashakar: före kodändringen
+  3 failed (ON1–ON3), 86 passed; efteråt 89 passed. Typkontrollerna för uppgift 1–2
+  och före uppgift 3 passerade. Källträdets åtta sändvägs-/importkontroller och
+  deras negativa kontroller passerade separat med node:assert.
+  Full `npm test` vid rött och grönt: **inte kört — globalSetup stoppas med
+  connect EPERM 127.0.0.1:5433**, exit 1 före fallen. Databasfallen har därför
+  inga påstådda gröna utfall; kedjan kör hela sviten enligt databasundantaget.
+  Slutlig `npm run typecheck`: exit 0; `npm run build`: exit 0;
+  `git diff --check`: exit 0.
+  Senast kända externa läge ur berättelsens baslinje: Hermes adresskontraktet
+  och bmadglidning RÖDA, continuityvakt KUNDE_INTE och overlamningsregister_fr6
+  RÖTT, av skäl utanför berättelsen; de har inte körts här.
+  Husets befintliga faktakort, hint, formulär och primärknapp ger samma tokens,
+  skala, Public Sans och synligt tangentbordsfokus. Saknat värde är —, fel visas
+  i befintlig notis och laddat värde serverrenderas utan separat laddningsläge.
+  Ingen rutt, migration, ny åtgärd, tabell, CSS-klass eller dependency tillkom.
+
 - **2026-11-20 — Story 1.12, härledda vakter för känsliga vyknappar (FR-38, AD-1):**
   Endast `server/test/vy-kansliga-knappar.test.ts` har byggts ut. VK1.1–VK1.3
   jämför 37 känsliga åtgärder med funktionstabellen och bevakar tjänsteimporter

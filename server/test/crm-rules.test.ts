@@ -179,7 +179,7 @@ describe('fakturauppgifternas formulär och grenvalet (story 1.5)', () => {
     }
   });
   it('FK2 tillåtelselistan läser bara egna fält och ignorerar främmande kroppar', () => {
-    expect(correctedCustomerFields({ ...F, name: 'x', org_number: 'x', customer_id: 'x',
+    expect(correctedCustomerFields({ ...F, name: 'x', customer_id: 'x',
       is_active: 'false', organization_id: 'x', fore_name: 'x' })).toEqual({ ok: true, fields: {} });
     expect(correctedCustomerFields(Object.create({ address: 'Ärvt' }))).toEqual({ ok: true, fields: {} });
     expect(correctedCustomerFields(Object.assign(Object.create({ fore_address: 'Ny' }), { address: 'Ny' })))
@@ -265,5 +265,36 @@ describe('kundnumret i fakturaformuläret (story 1.7)', () => {
     expect(utanFore).toEqual({ ok: true, fields: { ...alla, customer_number: 7, payment_terms: 30 } });
     if (utanFore.ok) expect(Object.keys(utanFore.fields))
       .toEqual(['customer_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms']);
+  });
+});
+
+
+describe('org.nr i kundkortsformuläret (story 1.8)', () => {
+  const G = { org_number: '556918-0001', fore_org_number: '556918-0001', address: 'Kundgatan 1', fore_address: 'Kundgatan 1' };
+  it('ON1 ändrat skickas trimmat utan normalisering, tomt och oförändrat utelämnas', () => {
+    for (const org_number of ['556918-0002', ' 556918-0002 ']) {
+      expect(correctedCustomerFields({ ...G, org_number })).toEqual({ ok: true, fields: { org_number: '556918-0002' } });
+    }
+    expect(correctedCustomerFields({ ...G, org_number: '5569180002' })).toEqual({ ok: true, fields: { org_number: '5569180002' } });
+    for (const org_number of ['556918-0001', ' 556918-0001 ', '', '   ']) {
+      expect(correctedCustomerFields({ ...G, org_number })).toEqual({ ok: true, fields: {} });
+    }
+    expect(correctedCustomerFields(G)).toEqual({ ok: true, fields: {} });
+  });
+  it('ON2 fälten skickas i tillåtelselistans ordning med negativ kontroll', () => {
+    const result = correctedCustomerFields({ ...G, customer_number: '8', fore_customer_number: '7', org_number: '556918-0002', address: 'Ny adress' });
+    expect(result).toEqual({ ok: true, fields: { customer_number: 8, org_number: '556918-0002', address: 'Ny adress' } });
+    if (result.ok) expect(Object.keys(result.fields)).toEqual(['customer_number', 'org_number', 'address']);
+    const alla = { customer_number: '7', org_number: '556918-0001', email: 'faktura@kund.example', phone: '08-123',
+      address: 'Kundgatan 1', postal_code: '111 11', city: 'Stockholm', vat_number: 'SE556915001501', payment_terms: '30' };
+    const utanFore = correctedCustomerFields(alla);
+    expect(utanFore).toEqual({ ok: true, fields: { ...alla, customer_number: 7, payment_terms: 30 } });
+    if (utanFore.ok) expect(Object.keys(utanFore.fields)).toEqual(['customer_number', 'org_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms']);
+  });
+  it('ON3 andra typer lämnas till schemat och främmande fält ignoreras', () => {
+    expect(correctedCustomerFields({ ...G, org_number: ['556918-0002', '556918-0003'] }))
+      .toEqual({ ok: true, fields: { org_number: ['556918-0002', '556918-0003'] } });
+    expect(correctedCustomerFields({ org_number: '556918-0002', name: 'x', customer_id: 'x', organization_id: 'x', is_active: 'false' }))
+      .toEqual({ ok: true, fields: { org_number: '556918-0002' } });
   });
 });
