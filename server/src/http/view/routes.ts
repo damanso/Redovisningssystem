@@ -60,7 +60,8 @@ import {
 } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
-import { assertPersonInOrganization, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
+import { correctedEventFields } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -75,7 +76,7 @@ import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPer
 import { steeringOverview } from '../../services/steering.js';
 import { contractUsageReport, unbilledTimeReport, type CapStatusLabel } from '../../services/timeReports.js';
 import { OSORTERAT } from '../../services/timeProposals.js';
-import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter } from '../../services/crmThread.js';
+import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter, type ThreadKind } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
@@ -6704,17 +6705,107 @@ const behoverBekraftas = (p: ProvenanceView | undefined): boolean =>
  *  Formuläret följer spannet, eftersom form inte får ligga inuti span. */
 function ursprungsfalt(f: {
   klass: string; varde: Raw; harVarde: boolean; p: ProvenanceView | undefined;
-  action: string; personId?: string; field: string; back: string;
+  action: string; dolt?: { namn: 'person_id' | 'interaction_id' | 'commitment_id'; id: string }; field: string; back: string;
 }): Raw {
   if (!f.harVarde) return html`<span class="${f.klass}">${f.varde}</span>`;
   return html`<span class="${f.klass}">${f.varde}${ursprungsMark(f.p, 'okant')}</span>${behoverBekraftas(f.p)
     ? html`<form method="post" action="${f.action}">
         <input type="hidden" name="back" value="${f.back}">
         <input type="hidden" name="field" value="${f.field}">
-        ${f.personId ? html`<input type="hidden" name="person_id" value="${f.personId}">` : ''}
+        ${f.dolt ? html`<input type="hidden" name="${f.dolt.namn}" value="${f.dolt.id}">` : ''}
         <button class="btn btn--ghost btn--sm" type="submit" title="Bekräfta uppgiften — då skriver ingen synk över den">Stämmer</button>
       </form>`
     : ''}`;
+}
+
+type Handelsemal = {
+  action: string; dolt?: { namn: 'interaction_id' | 'commitment_id'; id: string };
+};
+
+/** Källspeglingar och äldre händelser kräver inget rutinmässigt Stämmer. */
+function handelsenBehoverBekraftas(p: ProvenanceView | undefined): boolean {
+  if (!p) return false;
+  switch (p.source) {
+    case 'ai':
+    case 'import': return true;
+    case 'human':
+    case 'sync':
+    case 'accounting': return false;
+    default: {
+      const uttommande: never = p.source;
+      return uttommande;
+    }
+  }
+}
+
+/** Varje gissning bär sitt eget mål, även ett uttryckligen borttaget datum. */
+function handelsensGissningar(
+  sort: 'interaction' | 'commitment', falt: EventFields | undefined, mal: Handelsemal, back: string,
+): Raw {
+  if (!falt) return html``;
+  const lista: Array<[string, string, Raw]> = sort === 'interaction'
+    ? [
+      ['summary', 'Vad hände', html`${falt.summary ?? '—'}`],
+      ['channel', 'Kanal', html`${falt.channel ? kanalNamn(falt.channel) : '—'}`],
+      ['direction', 'Riktning', html`${falt.direction === 'inbound' ? 'Inkommande' : falt.direction === 'outbound' ? 'Utgående' : 'Intern'}`],
+      ['occurred_at', 'Datum', html`${dayOf(falt.occurred_at)}`],
+    ]
+    : [
+      ['body', 'Vad', html`${falt.body ?? '—'}`],
+      ['direction', 'Vem lovar', html`${falt.direction === 'we_owe' ? 'Vi lovade' : 'De lovade'}`],
+      ['due_date', 'Senast', html`${falt.due_date ?? '—'}`],
+      ['status', 'Status', statusChip(falt.status ?? '')],
+      ['occurred_at', 'Lovades', html`${dayOf(falt.occurred_at)}`],
+    ];
+  return html`${lista.map(([field, etikett, varde]) => handelsenBehoverBekraftas(falt.provenance[field])
+    ? html`<div class="uppgift"><span class="k">${etikett}</span>${ursprungsfalt({
+      klass: 'v', varde, harVarde: true, p: falt.provenance[field], ...mal, field, back,
+    })}</div>` : '')}`;
+}
+
+/** En människas ändring av en källhändelse syns utan att handvägen får dekoration. */
+function rattadAvDig(sourceSystem: string, provenance: EventFields['provenance']): boolean {
+  return sourceSystem !== 'manual' && Object.values(provenance).some((p) => p.source === 'human');
+}
+
+/** Samma hopfällda rättelseform på båda ytorna; utan relation finns inget formulärmål. */
+function rattaHandelse(
+  sort: ThreadKind, falt: EventFields | undefined, mal: Handelsemal | undefined, back: string, idag: string,
+): Raw {
+  let innehall: Raw;
+  if (!falt || !mal) return html``;
+  const fore = (field: string, value: string) => html`<input type="hidden" name="fore_${field}" value="${value}">`;
+  const val = (value: string, label: string, current: string) =>
+    html`<option value="${value}"${value === current ? html` selected` : ''}>${label}</option>`;
+  switch (sort) {
+    case 'interaction':
+      innehall = html`<label>Vad hände<input type="text" name="summary" maxlength="2000" value="${falt.summary ?? ''}"></label>${fore('summary', falt.summary ?? '')}
+        <label>Kanal<select name="channel">${['email', 'meeting', 'call', 'issue', 'note'].map((channel) => val(channel, kanalNamn(channel), falt.channel ?? ''))}</select></label>${fore('channel', falt.channel ?? '')}
+        <label>Riktning<select name="direction">${[['inbound', 'Inkommande'], ['outbound', 'Utgående'], ['internal', 'Intern']].map(([value, label]) => val(value!, label!, falt.direction))}</select></label>${fore('direction', falt.direction)}
+        <label>Datum<input type="date" name="occurred_at" value="${dayOf(falt.occurred_at)}"></label>${fore('occurred_at', dayOf(falt.occurred_at))}`;
+      break;
+    case 'commitment':
+      innehall = html`<label>Vad<input type="text" name="body" maxlength="2000" value="${falt.body ?? ''}"></label>${fore('body', falt.body ?? '')}
+        <label>Vem lovar<select name="direction">${val('we_owe', 'Vi lovade', falt.direction)}${val('they_owe', 'De lovade', falt.direction)}</select></label>${fore('direction', falt.direction)}
+        <label>Senast<input type="date" name="due_date" value="${falt.due_date ?? ''}"></label>${fore('due_date', falt.due_date ?? '')}
+        <label style="flex-direction:row;gap:9px;align-items:flex-start"><input type="checkbox" name="inget_forfallodatum" value="ja" style="width:auto;margin-top:2px"> Inget förfallodatum</label>
+        <label>Lovades<input type="date" name="occurred_at" max="${idag}" value="${dayOf(falt.occurred_at)}"></label>${fore('occurred_at', dayOf(falt.occurred_at))}`;
+      break;
+    case 'commitment_closed':
+    case 'invoice':
+    case 'payment': return html``;
+    default: {
+      const uttommande: never = sort;
+      return uttommande;
+    }
+  }
+  return html`<details class="rattaform"><summary>Rätta</summary><form method="post" action="${mal.action}">
+    <input type="hidden" name="back" value="${back}">
+    ${mal.dolt ? html`<input type="hidden" name="${mal.dolt.namn}" value="${mal.dolt.id}">` : ''}
+    ${innehall}
+    <button class="btn btn--primary btn--sm" type="submit">Spara</button>
+    <p class="hint">Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan.</p>
+  </form></details>`;
 }
 
 // Fast fältordning håller namn, roll och kontaktvägar under samma ursprungsregel.
@@ -7220,6 +7311,10 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const andra = (await listOrganizations(client, companyId))
       .filter((r) => r.id !== orgId) as Array<{ id: string; name: string }>;
     const thread = await relationThread(client, companyId, orgId, { filter });
+    const eventFields = await getEventFields(client, companyId, {
+      interaction_ids: thread.filter((e) => e.kind === 'interaction' && e.ref_id).map((e) => e.ref_id!),
+      commitment_ids: thread.filter((e) => e.kind === 'commitment' && e.ref_id).map((e) => e.ref_id!),
+    });
     const back = `/app/c/${companyId}/relations/${o.id}`;
     const oppna = o.commitments.filter((c) => c.status === 'open').length;
 
@@ -7339,7 +7434,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 : o.people.map((p) => html`<div class="person">
                     ${PERSONFALT.map(([field, klass]) => p[field] ? ursprungsfalt({
                       klass, varde: html`${p[field]}`, harVarde: true, p: p.provenance?.[field],
-                      action: `/app/c/${companyId}/relations/${o.id}/confirm`, personId: p.id, field, back,
+                      action: `/app/c/${companyId}/relations/${o.id}/confirm`, dolt: { namn: 'person_id', id: p.id }, field, back,
                     }) : '')}</div>`)
             }
           </div>
@@ -7461,7 +7556,10 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
             thread.length === 0
               ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
                   Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
-              : html`<ol class="thread">${thread.map((e) => html`<li class="thread__ev">
+              : html`<ol class="thread">${thread.map((e) => {
+                  const falt = e.ref_id ? e.kind === 'interaction' ? eventFields.interactions[e.ref_id]
+                    : e.kind === 'commitment' ? eventFields.commitments[e.ref_id] : undefined : undefined;
+                  return html`<li class="thread__ev">
                   <time class="thread__when" datetime="${String(e.at)}">${dayOf(e.at)}</time>
                   <div class="thread__what">
                     <div class="thread__title">${threadChip(e)}${e.title}${
@@ -7478,10 +7576,17 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                             e.who && e.source_system ? ' · ' : ''
                           }${e.source_system ? html`${kanalKalla(e.source_system)}` : ''}${
                             e.source_ref ? html` · <span class="thread__ref">${e.source_ref}</span>` : ''
-                          }</div>`
+                          }${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</div>`
                         : ''
                     }
-                  </div></li>`)}</ol>`
+                    ${falt && (e.kind === 'interaction' || e.kind === 'commitment')
+                      ? handelsensGissningar(e.kind, falt, {
+                        action: `${back}/confirm`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id! },
+                      }, `${back}?visa=${filter}`) : ''}
+                    ${rattaHandelse(e.kind, falt, {
+                      action: `${back}/edit`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id ?? '' },
+                    }, `${back}?visa=${filter}`, new Date().toISOString().slice(0, 10))}
+                  </div></li>`; })}</ol>`
           }
         </div>
       </div>`;
@@ -7496,6 +7601,7 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
     : 'open';
   const sfar = sfarFilterFran(req.query.sfar);
   const rows = await listCommitments(client, companyId, { status: filter, sfar });
+  const eventFields = await getEventFields(client, companyId, { interaction_ids: [], commitment_ids: rows.map((c) => c.id as string) });
   const today = new Date().toISOString().slice(0, 10);
   // Varje länk bär båda filtren, så att ett byte av det ena inte nollställer det andra.
   const lank = (status: string, s: SfarFilter) =>
@@ -7525,10 +7631,14 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
             <thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
             <tbody>${rows.map((c) => {
               const id = c.id as string;
+              const falt = eventFields.commitments[id];
+              const mal: Handelsemal = falt?.relation_id
+                ? { action: `/app/c/${companyId}/relations/${falt.relation_id}/confirm`, dolt: { namn: 'commitment_id', id } }
+                : { action: `/app/c/${companyId}/commitments/${id}/confirm` };
               return html`<tr>
               <td>${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}</td>
               <td>${sfarMarke(c.sfar)}</td>
-              <td>${c.body as string}</td>
+              <td>${c.body as string}${handelsensGissningar('commitment', falt, mal, back)}</td>
               ${/* "Vem" var tidigare en död sträng — personens namn om det fanns,
                     annars bolagets. Personen har ingen egen sida (hon nås via
                     sin relation), så namnet står kvar som text, men BOLAGET blir
@@ -7544,7 +7654,7 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
               }${
                 c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}</td>
+              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</td>
               <td><div class="quick">${
                 c.status === 'open'
                   ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}
@@ -7556,7 +7666,9 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
                         menuAction(`/app/c/${companyId}/commitments/${id}/drop`, 'Avskriv löftet', { back, neg: true }),
                       ])}`
                   : rowAction(`/app/c/${companyId}/commitments/${id}/reopen`, 'Öppna igen', { back })
-              }</div></td></tr>`;
+              }</div>${rattaHandelse('commitment', falt, falt?.relation_id
+                ? { action: `/app/c/${companyId}/relations/${falt.relation_id}/edit`, dolt: { namn: 'commitment_id', id } }
+                : undefined, back, today)}</td></tr>`;
             })}
             </tbody></table></div>`
     }`;
@@ -7667,6 +7779,17 @@ viewRouter.post('/c/:companyId/commitments/:id/snooze', page(async (req, res) =>
     backToCrm(req, companyId, 'commitments'));
 }));
 
+// Relationslösa löften behöver en egen adress för Stämmer, utan en påhittad relation.
+viewRouter.post('/c/:companyId/commitments/:id/confirm', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const id = UuidSchema.safeParse(req.params.id);
+  if (!id.success) throw new NotFoundError('commitment');
+  const field = String((req.body as { field?: unknown }).field ?? '');
+  await runViewAction(req, res, companyId, 'confirm_crm_value',
+    { commitment_id: id.data, field }, backToCrm(req, companyId, 'commitments'));
+}));
+
 viewRouter.post('/c/:companyId/relations/:id/log', page(async (req, res) => {
   assertSameOrigin(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -7770,6 +7893,23 @@ viewRouter.post('/c/:companyId/relations/:id/confirm', page(async (req, res) => 
   const id = UuidSchema.parse(req.params.id);
   const field = String((req.body as { field?: unknown }).field ?? '');
   const body = req.body as Record<string, unknown>;
+  const targets = ['person_id', 'interaction_id', 'commitment_id'].filter((key) => Object.hasOwn(body, key));
+  if (targets.length > 1) {
+    await runViewAction(req, res, companyId, 'confirm_crm_value',
+      { ...Object.fromEntries(targets.map((key) => [key, body[key]])), field }, backToCrm(req, companyId, `relations/${id}`));
+    return;
+  }
+  const key = targets[0];
+  if (key === 'interaction_id' || key === 'commitment_id') {
+    const handelseId = UuidSchema.safeParse(body[key]);
+    if (!handelseId.success) throw new NotFoundError(key === 'interaction_id' ? 'interaction' : 'commitment');
+    const target = key === 'interaction_id' ? { interaction_id: handelseId.data } : { commitment_id: handelseId.data };
+    // Prövningen läser relationen separat; åtgärdens egen transaktion prövar alltid bolaget igen.
+    await withTenantTransaction(getUserId(req), companyId, (client) => assertEventInOrganization(client, companyId, id, target));
+    await runViewAction(req, res, companyId, 'confirm_crm_value',
+      { ...target, field }, backToCrm(req, companyId, `relations/${id}`));
+    return;
+  }
   if (Object.hasOwn(body, 'person_id')) {
     const personId = UuidSchema.safeParse(body.person_id);
     if (!personId.success) throw new NotFoundError('person');
@@ -7794,6 +7934,23 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
   const companyId = parseCompanyId(req.params.companyId);
   const id = UuidSchema.parse(req.params.id);
   const body = req.body as Record<string, unknown>;
+  const targets = ['interaction_id', 'commitment_id'].filter((key) => Object.hasOwn(body, key));
+  const back = backToCrm(req, companyId, `relations/${id}`);
+  if (targets.length > 1) {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
+    return;
+  }
+  const key = targets[0];
+  if (key === 'interaction_id' || key === 'commitment_id') {
+    const handelseId = UuidSchema.safeParse(body[key]);
+    if (!handelseId.success) throw new NotFoundError(key === 'interaction_id' ? 'interaction' : 'commitment');
+    const target = key === 'interaction_id' ? { interaction_id: handelseId.data } : { commitment_id: handelseId.data };
+    // Åtgärden öppnar sin transaktion och prövar bolaget igen; här prövas bara relationens läsväg.
+    await withTenantTransaction(getUserId(req), companyId, (client) => assertEventInOrganization(client, companyId, id, target));
+    await runViewAction(req, res, companyId, key === 'interaction_id' ? 'update_crm_interaction' : 'update_crm_commitment',
+      { ...correctedEventFields(key === 'interaction_id' ? 'interaction' : 'commitment', body, new Date()), ...target }, back);
+    return;
+  }
   const text = (k: string): string | undefined => {
     const v = body[k];
     return typeof v === 'string' && v.trim() ? v.trim() : undefined;

@@ -12,6 +12,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { staplabaraTabeller } from '../src/http/view/html.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -625,5 +626,417 @@ describe('K1: bara en människa bekräftar (story 1.3)', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe('human_confirmation_required');
     expect((await lasK1Org(statusOrg)).provenance.status.source).toBe('ai');
+  });
+});
+
+// Story 1.2: händelsernas ursprung och rättelser, efter styrvyns omsättningsprov.
+describe('1.2 händelser i tråden och åtagandevyn', () => {
+  let v12Agent: string;
+  let v12Neighbor: TestUser;
+  let v12OtherCompany: string;
+  let v12Org: string;
+  let v12OtherOrg: string;
+  let v12AIInteraction: string;
+  let v12AICommitment: string;
+  let v12OtherCommitment: string;
+  let v12Orphan: string;
+  let v12Foreign: string;
+  const v12Base = () => `/app/c/${companyId}`;
+  const v12Relation = () => `${v12Base()}/relations/${v12Org}`;
+  async function v12Action(name: string, input: Record<string, unknown>, agent = false) {
+    const response = await api.post(`${co()}/actions/${name}`)
+      .set('Authorization', `Bearer ${agent ? v12Agent : user.token}`).send(input);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    return response.body.result;
+  }
+  async function v12Ingest(events: Record<string, unknown>[]) {
+    const result = await v12Action('ingest_crm_events', { events });
+    expect(result.skipped).toEqual([]);
+  }
+  const v12IEvent = (ref: string, summary: string, name = 'Händelseprovet AB') => ({
+    kind: 'interaction', organization: { name }, occurred_at: '2026-09-06T09:00:00Z',
+    channel: 'email', direction: 'inbound', summary, source_system: 'gmail', source_ref: ref,
+  });
+  const v12CEvent = (ref: string, body: string, name = 'Händelseprovet AB') => ({
+    kind: 'commitment', organization: { name }, occurred_at: '2026-09-06T09:05:00Z',
+    commitment_direction: 'we_owe', body, due_date: '2026-10-30', source_system: 'linear', source_ref: ref,
+  });
+  async function v12Find(kind: 'interaction' | 'commitment', ref: string, company = companyId) {
+    return withAdmin(async (db) => (await db.query(kind === 'interaction'
+      ? 'SELECT id, summary, channel, direction, occurred_at::text FROM crm.interactions WHERE company_id = $1 AND source_ref = $2'
+      : 'SELECT id, body, direction, due_date::text, occurred_at::text FROM crm.commitments WHERE company_id = $1 AND source_ref = $2',
+    [company, ref])).rows[0]!);
+  }
+  async function v12Prov(kind: 'interaction' | 'commitment', id: string, company = companyId) {
+    return withAdmin(async (db) => (await db.query(kind === 'interaction'
+      ? 'SELECT field, source, reason, source_system, source_ref FROM crm.field_provenance WHERE company_id = $1 AND interaction_id = $2 ORDER BY field'
+      : 'SELECT field, source, reason, source_system, source_ref FROM crm.field_provenance WHERE company_id = $1 AND commitment_id = $2 ORDER BY field', [company, id])).rows);
+  }
+  async function v12Audit(actionName: string, id: string) {
+    return withAdmin(async (db) => (await db.query(
+      'SELECT entity_type, details FROM crm.audit_log WHERE company_id = $1 AND entity_id = $2 AND action = $3 ORDER BY id DESC LIMIT 1',
+      [companyId, id, actionName])).rows[0]);
+  }
+  async function v12Page(path: string) {
+    const response = await ua.get(path);
+    expect(response.status, response.text).toBe(200);
+    return response.text;
+  }
+  function v12Event(pageText: string, text: string) {
+    const fragment = pageText.match(/<li class="thread__ev">[\s\S]*?<\/li>/g)?.find((part) => part.includes(text));
+    expect(fragment, `händelsen ${text}`).toBeDefined();
+    return fragment!;
+  }
+  function v12TableRow(pageText: string, text: string) {
+    // Husets tabellrendering lägger till radroller; attribut ändrar inte radens identitet.
+    const fragment = pageText.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)?.find((part) => part.includes(text));
+    expect(fragment, `raden ${text}`).toBeDefined();
+    return fragment!;
+  }
+  describe('radval i åtagandeproven', () => {
+    it.each(['', ' role="row"', ' class="vald"', ' data-id="lofte" role="row"'])('hittar rätt rad med attribut %s, före och efter husets tabellrendering', (attributes) => {
+      const rows = [
+        `<tr${attributes}><td>Vi lovade</td><td>Företag</td><td>Första löftet</td><td>Stämmer</td></tr>`,
+        `<tr${attributes}><td>De lovade</td><td>Privat</td><td>Andra löftet</td><td>Rätta</td></tr>`,
+      ];
+      const table = `<table><thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Handling</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+      for (const render of [(value: string) => value, staplabaraTabeller]) {
+        const pageText = render(table);
+        for (const [index, text] of ['Första löftet', 'Andra löftet'].entries()) {
+          // Rendera även facitraden, så cellernas etiketter och roller måste bevaras.
+          const expected = render(`<table><thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Handling</th></tr></thead><tbody>${rows[index]}</tbody></table>`)
+            .match(/<tbody\b[^>]*>([\s\S]*?)<\/tbody>/)![1];
+          expect(v12TableRow(pageText, text)).toBe(expected);
+        }
+        expect(() => v12TableRow(pageText, 'Saknat löfte')).toThrow('raden Saknat löfte');
+      }
+    });
+  });
+  function v12Fields(fragment: string, actionPath: string, key?: string, id?: string) {
+    return (fragment.match(/<form\b[\s\S]*?<\/form>/g) ?? []).filter((form) =>
+      form.includes(`action="${actionPath}"`) && (!key || form.includes(`name="${key}" value="${id}"`)))
+      .map((form) => form.match(/name="field" value="([^"]+)"/)?.[1]).filter(Boolean).sort();
+  }
+  const v12Confirm = (input: Record<string, unknown>, relation = v12Org, company = companyId) =>
+    ua.post(`/app/c/${company}/relations/${relation}/confirm`).type('form').send(input);
+  beforeAll(async () => {
+    const token = await api.post(`${co()}/agent-tokens`).set(auth()).send({ name: 'Händelseagenten' });
+    expect(token.status, JSON.stringify(token.body)).toBe(201);
+    v12Agent = token.body.token;
+    v12Neighbor = await registerUser('handelse-granne');
+    v12OtherCompany = await createCompany(v12Neighbor.token, 'Grannbolaget K AB');
+    await v12Ingest([
+      v12IEvent('gmail:k-sync', 'Synkat mail K.'), v12IEvent('gmail:k-tom', 'Mail utan ursprung K.'),
+      v12IEvent('gmail:k-ratt', 'Synkat mail som rättas K.'), v12IEvent('gmail:k-en', 'Synkat mail med en gissning K.'),
+      v12CEvent('linear:LOC-K1', 'Synkat löfte K1.'), v12CEvent('linear:LOC-K2', 'Synkat löfte som rättas K2.'),
+      v12CEvent('linear:LOC-K3', 'Synkat löfte utan datum K3.'),
+    ]);
+    v12Org = (await v12Action('upsert_crm_organization', { name: 'Händelseprovet AB' })).id;
+    const missing = await v12Find('interaction', 'gmail:k-tom');
+    const one = await v12Find('interaction', 'gmail:k-en');
+    await withAdmin(async (db) => {
+      await db.query('DELETE FROM crm.field_provenance WHERE company_id = $1 AND interaction_id = $2', [companyId, missing.id]);
+      await db.query(`UPDATE crm.field_provenance SET source = 'ai', reason = NULL, source_system = NULL, source_ref = NULL
+        WHERE company_id = $1 AND interaction_id = $2 AND field = 'summary'`, [companyId, one.id]);
+    });
+    const noDate = await v12Find('commitment', 'linear:LOC-K3');
+    await v12Action('update_crm_commitment', { commitment_id: noDate.id, due_date: null }, true);
+    v12AIInteraction = (await v12Action('record_crm_interaction', {
+      organization_id: v12Org, occurred_at: '2026-09-06T10:00:00Z', channel: 'note', direction: 'outbound',
+      summary: 'AI:ts anteckning K.', source_system: 'manual',
+    }, true)).id;
+    v12AICommitment = (await v12Action('record_crm_commitment', {
+      organization_id: v12Org, occurred_at: '2026-09-06T10:05:00Z', direction: 'we_owe',
+      body: 'AI:ts löfte K.', due_date: '2026-11-02', source_system: 'manual',
+    }, true)).id;
+    await v12Action('log_contact', { organization_id: v12Org, channel: 'call', summary: 'Handloggat samtal K.' });
+    v12OtherOrg = (await v12Action('upsert_crm_organization', { name: 'Annan Händelserelation AB' })).id;
+    v12OtherCommitment = (await v12Action('record_crm_commitment', {
+      organization_id: v12OtherOrg, occurred_at: '2026-09-06T10:10:00Z', direction: 'we_owe', body: 'Annat AI-löfte K.', source_system: 'manual',
+    }, true)).id;
+    const orphanPerson = (await v12Action('upsert_crm_person', { name: 'Relationslös Person K', email: 'relationslos@k.example' }, true)).id;
+    v12Orphan = (await v12Action('record_crm_commitment', {
+      person_id: orphanPerson, occurred_at: '2026-09-06T10:15:00Z', direction: 'we_owe',
+      body: 'Relationslöst AI-löfte K.', due_date: '2026-11-02', source_system: 'manual',
+    }, true)).id;
+    const foreign = await api.post(`/api/companies/${v12OtherCompany}/actions/ingest_crm_events`)
+      .set('Authorization', `Bearer ${v12Neighbor.token}`).send({ events: [v12IEvent('gmail:k-granne', 'Grannens mail K.', 'Grannens Händelserelation AB')] });
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(200);
+    expect(foreign.body.result.skipped).toEqual([]);
+    v12Foreign = (await v12Find('interaction', 'gmail:k-granne', v12OtherCompany)).id;
+  });
+  describe('märket på händelser', () => {
+    it('K1 varje AI-fält har tillgängligt märke och eget bekräftelseformulär i tråden', async () => {
+      const pageText = await v12Page(v12Relation());
+      const interaction = v12Event(pageText, 'AI:ts anteckning K.');
+      const commitment = v12Event(pageText, 'AI:ts löfte K.');
+      for (const fragment of [interaction, commitment]) {
+        expect(fragment).toContain('role="img"');
+        expect(fragment).toContain('aria-label="Inte bekräftad av dig"');
+      }
+      expect(v12Fields(interaction, `${v12Relation()}/confirm`, 'interaction_id', v12AIInteraction)).toEqual(['channel', 'direction', 'occurred_at', 'summary']);
+      expect(v12Fields(commitment, `${v12Relation()}/confirm`, 'commitment_id', v12AICommitment)).toEqual(['body', 'direction', 'due_date', 'occurred_at']);
+    });
+    it('K2 negativ kontroll: sync och saknat ursprung ger inga gissningsmärken', async () => {
+      const pageText = await v12Page(v12Relation());
+      for (const [kind, ref, text] of [
+        ['interaction', 'gmail:k-sync', 'Synkat mail K.'], ['commitment', 'linear:LOC-K1', 'Synkat löfte K1.'],
+        ['interaction', 'gmail:k-tom', 'Mail utan ursprung K.'],
+      ] as const) {
+        const fragment = v12Event(pageText, text);
+        expect(fragment).not.toContain('prov--guess');
+        expect(fragment).not.toContain('ursprung okänt');
+        expect(v12Fields(fragment, `${v12Relation()}/confirm`, `${kind}_id`, (await v12Find(kind, ref)).id)).toEqual([]);
+      }
+    });
+    it('K3 åtagandevyn visar bara gissningar på AI-löften', async () => {
+      const pageText = await v12Page(`${v12Base()}/commitments?status=open`);
+      const ai = v12TableRow(pageText, 'AI:ts löfte K.');
+      expect(ai).toContain('prov--guess');
+      expect(v12Fields(ai, `${v12Relation()}/confirm`, 'commitment_id', v12AICommitment)).toEqual(['body', 'direction', 'due_date', 'occurred_at']);
+      const sync = v12TableRow(pageText, 'Synkat löfte K1.');
+      expect(sync).not.toContain('prov--guess');
+      expect(v12Fields(sync, `${v12Relation()}/confirm`)).toEqual([]);
+    });
+    it('K4 Stämmer bekräftar bara valt fält, auditerar och återgår till samma läge', async () => {
+      const response = await v12Confirm({ commitment_id: v12AICommitment, field: 'body', back: v12Relation() });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).toBe(v12Relation());
+      expect((await v12Prov('commitment', v12AICommitment)).find((p) => p.field === 'body')).toMatchObject({ source: 'human', reason: 'bekräftad av människa' });
+      expect(await v12Audit('crm.value_confirmed', v12AICommitment)).toMatchObject({ entity_type: 'commitment', details: { field: 'body' } });
+      const fragment = v12Event(await v12Page(v12Relation()), 'AI:ts löfte K.');
+      expect(v12Fields(fragment, `${v12Relation()}/confirm`, 'commitment_id', v12AICommitment)).toEqual(['direction', 'due_date', 'occurred_at']);
+    });
+    it('K5 fel relation, bolag, id och flera mål ändrar inget ursprung', async () => {
+      const before = await v12Prov('commitment', v12OtherCommitment);
+      const own = await v12Prov('interaction', v12AIInteraction);
+      const foreign = await v12Prov('interaction', v12Foreign, v12OtherCompany);
+      for (const response of [
+        await v12Confirm({ commitment_id: v12OtherCommitment, field: 'body' }),
+        await v12Confirm({ interaction_id: v12AIInteraction, field: 'summary' }, v12Org, v12OtherCompany),
+        await v12Confirm({ interaction_id: v12Foreign, field: 'summary' }),
+        await v12Confirm({ interaction_id: 'inte-ett-id', field: 'summary' }),
+      ]) expect(response.status, response.text).toBe(404);
+      const multiple = await v12Confirm({ interaction_id: v12AIInteraction, commitment_id: v12OtherCommitment, field: 'direction' });
+      expect(multiple.status, multiple.text).toBe(302);
+      expect(multiple.headers.location).toContain('fel=');
+      expect(await v12Prov('commitment', v12OtherCommitment)).toEqual(before);
+      expect(await v12Prov('interaction', v12AIInteraction)).toEqual(own);
+      expect(await v12Prov('interaction', v12Foreign, v12OtherCompany)).toEqual(foreign);
+    });
+    it('K6 en rättad källhändelse får rättad av dig, handloggade och orörda får det inte', async () => {
+      const interaction = await v12Find('interaction', 'gmail:k-ratt');
+      const commitment = await v12Find('commitment', 'linear:LOC-K2');
+      await v12Action('update_crm_interaction', { interaction_id: interaction.id, summary: 'Rättad av David K.' });
+      await v12Action('update_crm_commitment', { commitment_id: commitment.id, body: 'Rättat löfte K2.' });
+      const pageText = await v12Page(v12Relation());
+      const source = (fragment: string) => fragment.match(/<div class="thread__src">([\s\S]*?)<\/div>/)?.[1] ?? '';
+      expect(source(v12Event(pageText, 'Rättad av David K.'))).toContain('· rättad av dig');
+      expect(source(v12Event(pageText, 'Synkat mail K.'))).not.toContain('rättad av dig');
+      expect(source(v12Event(pageText, 'Handloggat samtal K.'))).not.toContain('rättad av dig');
+      const list = await v12Page(`${v12Base()}/commitments?status=open`);
+      expect(v12TableRow(list, 'Rättat löfte K2.')).toContain('rättad av dig');
+      expect(v12TableRow(list, 'Synkat löfte K1.')).not.toContain('rättad av dig');
+    });
+    it('K7 ett AI-fält ger exakt ett märke, också när agenten tog bort datumet', async () => {
+      const pageText = await v12Page(v12Relation());
+      const one = v12Event(pageText, 'Synkat mail med en gissning K.');
+      expect(one.match(/prov--guess/g)).toHaveLength(1);
+      expect(v12Fields(one, `${v12Relation()}/confirm`, 'interaction_id', (await v12Find('interaction', 'gmail:k-en')).id)).toEqual(['summary']);
+      const noDate = v12Event(pageText, 'Synkat löfte utan datum K3.');
+      expect(noDate.match(/prov--guess/g)).toHaveLength(1);
+      expect(v12Fields(noDate, `${v12Relation()}/confirm`, 'commitment_id', (await v12Find('commitment', 'linear:LOC-K3')).id)).toEqual(['due_date']);
+      expect(noDate).toContain('<span class="k">Senast</span><span class="v">—');
+    });
+    it('K8 relationslösa löften har egen Stämmer, tenant-isolering och ingen Rätta', async () => {
+      const back = `${v12Base()}/commitments?status=open`;
+      const path = `${v12Base()}/commitments/${v12Orphan}/confirm`;
+      const fragment = v12TableRow(await v12Page(back), 'Relationslöst AI-löfte K.');
+      expect(fragment).toContain('prov--guess');
+      expect(fragment).toContain('role="img"');
+      expect(v12Fields(fragment, path)).toEqual(['body', 'direction', 'due_date', 'occurred_at']);
+      expect(fragment).not.toMatch(/<form[^>]*action="[^"]*\/relations\//);
+      expect(fragment).not.toContain('rattaform');
+      const response = await ua.post(path).type('form').send({ field: 'body', back });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).toBe(back);
+      expect((await v12Prov('commitment', v12Orphan)).find((p) => p.field === 'body')).toMatchObject({ source: 'human', reason: 'bekräftad av människa' });
+      expect(await v12Audit('crm.value_confirmed', v12Orphan)).toMatchObject({ entity_type: 'commitment', details: { field: 'body' } });
+      expect(v12Fields(v12TableRow(await v12Page(back), 'Relationslöst AI-löfte K.'), path)).toEqual(['direction', 'due_date', 'occurred_at']);
+      const before = await v12Prov('commitment', v12Orphan);
+      const other = await ua.post(`/app/c/${v12OtherCompany}/commitments/${v12Orphan}/confirm`).type('form').send({ field: 'direction' });
+      expect(other.status, other.text).toBe(404);
+      const invalidField = await ua.post(path).type('form').send({ field: 'summary', back });
+      expect(invalidField.status, invalidField.text).toBe(302);
+      expect(invalidField.headers.location).toContain('fel=');
+      const invalidId = await ua.post(`${v12Base()}/commitments/inte-ett-id/confirm`).type('form').send({ field: 'body' });
+      expect(invalidId.status, invalidId.text).toBe(404);
+      expect(await v12Prov('commitment', v12Orphan)).toEqual(before);
+    });
+  });
+
+  describe('Rätta händelser', () => {
+    let v12FOrg: string;
+    let v12F9: string;
+    const v12FRelation = () => `${v12Base()}/relations/${v12FOrg}`;
+    const v12Edit = (input: Record<string, unknown>, relation = v12FOrg, company = companyId) =>
+      ua.post(`/app/c/${company}/relations/${relation}/edit`).type('form').send(input);
+    const v12FForm = (body: string, dueDate = '2026-10-30') => ({
+      body, fore_body: body, direction: 'we_owe', fore_direction: 'we_owe', due_date: dueDate, fore_due_date: dueDate,
+      occurred_at: '2026-09-07', fore_occurred_at: '2026-09-07',
+    });
+    beforeAll(async () => {
+      const customer = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Rättaprovet AB' });
+      expect(customer.status, JSON.stringify(customer.body)).toBe(201);
+      const customerId = customer.body.customer.id;
+      await v12Ingest([
+        { ...v12IEvent('gmail:f1', 'Synkat mail F1.', 'Rättaprovet AB'), occurred_at: '2026-09-07T09:00:00Z' },
+        { ...v12IEvent('gmail:f7', 'Synkat mail F7.', 'Rättaprovet AB'), occurred_at: '2026-09-07T09:00:00Z' },
+        ...[
+          ['1', 'Synkat löfte F1.'], ['2', 'Löfte som blir klart F2.'], ['3', 'Löfte vars datum tas bort F3.'],
+          ['5', 'Löfte med framtida löftestid F5.'], ['6', 'Löfte lovat i dag F6.'], ['8', 'Oförändrat löfte F8.'], ['10', 'Löfte utan fore F10.'],
+        ].map(([n, text]) => ({ ...v12CEvent(`linear:LOC-F${n}`, text!, 'Rättaprovet AB'),
+          occurred_at: '2026-09-07T09:05:00Z', due_date: n === '3' ? '2026-10-31' : '2026-10-30' })),
+        v12CEvent('linear:LOC-F9', 'Annat löfte F9.', 'Annan Rättarelation AB'),
+      ]);
+      v12FOrg = (await v12Action('upsert_crm_organization', { name: 'Rättaprovet AB' })).id;
+      v12F9 = (await v12Find('commitment', 'linear:LOC-F9')).id;
+      const done = await ua.post(`${v12Base()}/commitments/${(await v12Find('commitment', 'linear:LOC-F2')).id}/done`).type('form').send({});
+      expect(done.status, done.text).toBe(302);
+      await bookedInvoice(customerId, '2026-09-07', 1);
+      const invoiceId = await withAdmin(async (db) => {
+        const invoices = await db.query('SELECT id FROM invoices WHERE company_id = $1 AND customer_id = $2', [companyId, customerId]);
+        expect(invoices.rows).toHaveLength(1);
+        return invoices.rows[0]!.id;
+      });
+      const payment = await act('register_invoice_payment', { invoice_id: invoiceId, payment_date: '2026-09-08' });
+      expect(payment.status, JSON.stringify(payment.body)).toBe(202);
+      const approved = await api.post(`${co()}/approvals/${payment.body.approval.id}/approve`).set(auth()).send({});
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    });
+    it('F1 bara kontaktpunkten och löftet får hopfälld Rätta med etiketter och hint', async () => {
+      const pageText = await v12Page(v12FRelation());
+      const interaction = v12Event(pageText, 'Synkat mail F1.');
+      const commitment = v12Event(pageText, 'Synkat löfte F1.');
+      for (const [fragment, key, id] of [
+        [interaction, 'interaction_id', (await v12Find('interaction', 'gmail:f1')).id],
+        [commitment, 'commitment_id', (await v12Find('commitment', 'linear:LOC-F1')).id],
+      ]) {
+        expect(fragment.match(/<details class="rattaform">/g)).toHaveLength(1);
+        expect(fragment).toContain('<summary>Rätta</summary>');
+        expect(fragment).toContain(`action="${v12FRelation()}/edit"`);
+        expect(fragment).toContain(`name="${key}" value="${id}"`);
+        expect(fragment).toContain('Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan.');
+      }
+      for (const label of ['<label>Vad hände<input', '<label>Kanal<select', '<label>Riktning<select', '<label>Datum<input type="date"']) expect(interaction).toContain(label);
+      for (const label of ['<label>Vad<input', '<label>Vem lovar<select', '<label>Senast<input type="date"', 'Inget förfallodatum', '<label>Lovades<input type="date"']) expect(commitment).toContain(label);
+      const events = pageText.match(/<li class="thread__ev">[\s\S]*?<\/li>/g) ?? [];
+      const closed = events.find((fragment) => fragment.includes('Löfte klart') && fragment.includes('Löfte som blir klart F2.'));
+      expect(closed).toBeDefined();
+      expect(closed).not.toContain('rattaform');
+      expect(closed).not.toContain('rättad av dig');
+      for (const text of ['Faktura ', 'Betalning · faktura']) expect(v12Event(pageText, text)).not.toContain('rattaform');
+    });
+    it('F2 Rätta finns i åtagandevyn under både Öppna och Klara', async () => {
+      for (const [status, text, ref] of [['open', 'Synkat löfte F1.', 'linear:LOC-F1'], ['done', 'Löfte som blir klart F2.', 'linear:LOC-F2']]) {
+        const fragment = v12TableRow(await v12Page(`${v12Base()}/commitments?status=${status}`), text!);
+        expect(fragment).toContain('<details class="rattaform">');
+        expect(fragment).toContain(`action="${v12FRelation()}/edit"`);
+        expect(fragment).toContain(`name="commitment_id" value="${(await v12Find('commitment', ref!)).id}"`);
+      }
+    });
+    it('F3 bara ändrad text skickas och back behåller trådens filter', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F1');
+      const back = `${v12FRelation()}?visa=loften`;
+      const response = await v12Edit({ ...v12FForm('Synkat löfte F1.'), body: 'Davids text F3.', commitment_id: row.id, back });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).toBe(back);
+      expect(await v12Find('commitment', 'linear:LOC-F1')).toEqual({ ...row, body: 'Davids text F3.' });
+      expect((await v12Prov('commitment', row.id)).map((p) => [p.field, p.source, p.source_ref]))
+        .toEqual([['body', 'human', null], ['direction', 'sync', 'linear:LOC-F1'], ['due_date', 'sync', 'linear:LOC-F1'], ['occurred_at', 'sync', 'linear:LOC-F1']]);
+      expect((await v12Audit('crm.commitment_corrected', row.id))?.details.fields).toEqual(['body']);
+    });
+    it('F4 Inget förfallodatum är ett uttryckligt beslut om bara datumet', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F3');
+      const response = await v12Edit({ ...v12FForm('Löfte vars datum tas bort F3.', '2026-10-31'), commitment_id: row.id, inget_forfallodatum: 'ja' });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).not.toContain('fel=');
+      expect((await v12Find('commitment', 'linear:LOC-F3')).due_date).toBeNull();
+      expect((await v12Prov('commitment', row.id)).find((p) => p.field === 'due_date')?.source).toBe('human');
+      expect((await v12Audit('crm.commitment_corrected', row.id))?.details.fields).toEqual(['due_date']);
+    });
+    it('F5 framtida löftestid ger svensk notis före första formuläret', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F5');
+      const back = `${v12Base()}/commitments?status=open`;
+      const response = await v12Edit({ commitment_id: row.id, occurred_at: '2099-01-01', fore_occurred_at: '2026-09-07', back });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location?.startsWith(back)).toBe(true);
+      expect(decodeURIComponent(response.headers.location ?? '')).toContain('Ett löfte kan inte ha getts i framtiden.');
+      const pageText = await v12Page(response.headers.location ?? '');
+      expect(pageText).toContain('<p class="notice">Ett löfte kan inte ha getts i framtiden.</p>');
+      expect(pageText.indexOf('<p class="notice">')).toBeLessThan(pageText.indexOf('<details class="rattaform">'));
+      expect(await v12Find('commitment', 'linear:LOC-F5')).toEqual(row);
+    });
+    it('F6 löftestid i dag godtas och ligger inte efter nuet', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F6');
+      const today = new Date().toISOString().slice(0, 10);
+      const response = await v12Edit({ commitment_id: row.id, occurred_at: today, fore_occurred_at: '2026-09-07' });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).not.toContain('fel=');
+      const timestamp = new Date((await v12Find('commitment', 'linear:LOC-F6')).occurred_at);
+      expect(timestamp.toISOString().slice(0, 10)).toBe(today);
+      expect(timestamp.getTime()).toBeLessThanOrEqual(Date.now());
+      expect((await v12Prov('commitment', row.id)).find((p) => p.field === 'occurred_at')?.source).toBe('human');
+    });
+    it('F7 bara kontaktpunktens kanal blir ett människobeslut', async () => {
+      const row = await v12Find('interaction', 'gmail:f7');
+      const response = await v12Edit({ interaction_id: row.id, summary: 'Synkat mail F7.', fore_summary: 'Synkat mail F7.',
+        channel: 'call', fore_channel: 'email', direction: 'inbound', fore_direction: 'inbound', occurred_at: '2026-09-07', fore_occurred_at: '2026-09-07' });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).not.toContain('fel=');
+      expect(await v12Find('interaction', 'gmail:f7')).toEqual({ ...row, channel: 'call' });
+      expect((await v12Prov('interaction', row.id)).map((p) => [p.field, p.source]))
+        .toEqual([['channel', 'human'], ['direction', 'sync'], ['occurred_at', 'sync'], ['summary', 'sync']]);
+      expect((await v12Audit('crm.interaction_corrected', row.id))?.details.fields).toEqual(['channel']);
+    });
+    it('F8 oförändrat formulär ger notis utan audit eller nytt ursprung', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F8');
+      const before = await v12Prov('commitment', row.id);
+      const response = await v12Edit({ ...v12FForm('Oförändrat löfte F8.'), commitment_id: row.id });
+      expect(response.status, response.text).toBe(302);
+      expect(decodeURIComponent(response.headers.location ?? '')).toContain('Inget att rätta: inget fält ändrades.');
+      expect(await v12Prov('commitment', row.id)).toEqual(before);
+      expect(await v12Audit('crm.commitment_corrected', row.id)).toBeUndefined();
+    });
+    it('F9 fel relation, bolag, id, flera mål och främmande Origin ger ingen skrivning', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F9');
+      const before = await v12Prov('commitment', v12F9);
+      for (const response of [
+        await v12Edit({ commitment_id: v12F9, body: 'Fel relation' }),
+        await v12Edit({ commitment_id: v12F9, body: 'Fel bolag' }, v12FOrg, v12OtherCompany),
+        await v12Edit({ commitment_id: 'inte-ett-id', body: 'Fel id' }),
+      ]) expect(response.status, response.text).toBe(404);
+      const two = await v12Edit({ commitment_id: v12F9, interaction_id: v12AIInteraction, body: 'Två mål' });
+      expect(two.status, two.text).toBe(302);
+      expect(two.headers.location).toContain('fel=');
+      const own = await v12Find('commitment', 'linear:LOC-F1');
+      const ownProv = await v12Prov('commitment', own.id);
+      const csrf = await ua.post(`${v12FRelation()}/edit`).set('Origin', 'https://angripare.example').type('form')
+        .send({ ...v12FForm('Davids text F3.'), commitment_id: own.id, body: 'Angriparens text' });
+      expect(csrf.status, csrf.text).toBe(403);
+      expect(await v12Find('commitment', 'linear:LOC-F9')).toEqual(row);
+      expect(await v12Prov('commitment', v12F9)).toEqual(before);
+      expect(await v12Find('commitment', 'linear:LOC-F1')).toEqual(own);
+      expect(await v12Prov('commitment', own.id)).toEqual(ownProv);
+    });
+    it('F10 negativ kontroll: utan fore-fälten skickas alla fyra fält', async () => {
+      const row = await v12Find('commitment', 'linear:LOC-F10');
+      const response = await v12Edit({ commitment_id: row.id, body: 'Löfte utan fore F10.', direction: 'we_owe', due_date: '2026-10-30', occurred_at: '2026-09-07' });
+      expect(response.status, response.text).toBe(302);
+      expect(response.headers.location).not.toContain('fel=');
+      expect((await v12Prov('commitment', row.id)).map((p) => [p.field, p.source]))
+        .toEqual([['body', 'human'], ['direction', 'human'], ['due_date', 'human'], ['occurred_at', 'human']]);
+      expect((await v12Audit('crm.commitment_corrected', row.id))?.details.fields).toEqual(['body', 'direction', 'due_date', 'occurred_at']);
+    });
   });
 });

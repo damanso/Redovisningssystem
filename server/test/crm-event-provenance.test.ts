@@ -798,3 +798,322 @@ describe('Idempotensen, människospärren och dokumentens kontrakt', () => {
     expect(section).toContain('`ai`');
   });
 });
+
+// Story 1.2: rättelser och bekräftelser genom action-lagret, med egna fixturer.
+describe('1.2 rätta och bekräfta händelser', () => {
+  let r12User: TestUser;
+  let r12Neighbor: TestUser;
+  let r12Company: string;
+  let r12OtherCompany: string;
+  let r12Agent: string;
+  const r12Call = (name: string, input: Record<string, unknown>, token = r12User.token, company = r12Company) =>
+    api.post(`/api/companies/${company}/actions/${name}`).set('Authorization', `Bearer ${token}`).send(input);
+  async function r12Ok(name: string, input: Record<string, unknown>, token = r12User.token) {
+    const response = await r12Call(name, input, token);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    return response.body.result;
+  }
+  async function r12Ingest(event: Record<string, unknown>) {
+    const result = await r12Ok('ingest_crm_events', { events: [event] });
+    expect(result.skipped).toEqual([]);
+    return result;
+  }
+  const r12Interaction = (n: string) => ({
+    kind: 'interaction', organization: { name: 'Rättelseprovet R AB' },
+    person: { name: 'Rättelsepersonen R', email: 'ratta-r@example.test' },
+    occurred_at: '2026-09-01T09:00:00Z', channel: 'email', direction: 'inbound',
+    summary: `Synkens sammanfattning R${n}.`, source_system: 'gmail', source_ref: `gmail:r${n}`,
+  });
+  async function r12Row(kind: 'interaction' | 'commitment', ref: string, company = r12Company) {
+    return withAdmin(async (db) => (await db.query(kind === 'interaction'
+      ? `SELECT id, organization_id, person_id, summary, channel, direction, occurred_at::text,
+          source_system, source_ref FROM crm.interactions WHERE company_id = $1 AND source_ref = $2`
+      : `SELECT id, organization_id, person_id, body, direction, due_date::text, status,
+          occurred_at::text, source_system, source_ref, sfar FROM crm.commitments WHERE company_id = $1 AND source_ref = $2`,
+    [company, ref])).rows[0]!);
+  }
+  async function r12Provenance(kind: 'interaction' | 'commitment', id: string, company = r12Company) {
+    return withAdmin(async (db) => (await db.query(kind === 'interaction'
+      ? `SELECT field, source, reason, source_system, source_ref FROM crm.field_provenance
+          WHERE company_id = $1 AND interaction_id = $2 ORDER BY field`
+      : `SELECT field, source, reason, source_system, source_ref FROM crm.field_provenance
+          WHERE company_id = $1 AND commitment_id = $2 ORDER BY field`, [company, id])).rows);
+  }
+  async function r12Audit(name: string, id: string) {
+    return withAdmin(async (db) => (await db.query(
+      `SELECT entity_type, details FROM crm.audit_log WHERE company_id = $1 AND action = $2 AND entity_id = $3
+       ORDER BY id DESC LIMIT 1`, [r12Company, name, id])).rows[0]);
+  }
+  beforeAll(async () => {
+    r12User = await registerUser('ratta12');
+    r12Neighbor = await registerUser('ratta12-granne');
+    r12Company = await createCompany(r12User.token, 'Rättelsebolaget AB');
+    r12OtherCompany = await createCompany(r12Neighbor.token, 'Grannbolaget R AB');
+    const token = await api.post(`/api/companies/${r12Company}/agent-tokens`)
+      .set('Authorization', `Bearer ${r12User.token}`).send({ name: 'Rättelseagenten' });
+    expect(token.status, JSON.stringify(token.body)).toBe(201);
+    r12Agent = token.body.token;
+    for (const n of ['1', '2', '3', '4', '5', '6']) await r12Ingest(r12Interaction(n));
+  });
+  describe('kontaktpunkten', () => {
+    it('R1 bara sammanfattningen rättas, får human och audit med enbart fältnamn', async () => {
+      const before = await r12Row('interaction', 'gmail:r1');
+      const result = await r12Ok('update_crm_interaction', { interaction_id: before.id, summary: 'Davids sammanfattning R1.' });
+      expect(await r12Row('interaction', 'gmail:r1')).toEqual({ ...before, summary: 'Davids sammanfattning R1.' });
+      const prov = await r12Provenance('interaction', before.id);
+      expect(prov.find((p) => p.field === 'summary')?.source).toBe('human');
+      expect(prov.filter((p) => p.field !== 'summary').map((p) => [p.field, p.source, p.source_ref]))
+        .toEqual([['channel', 'sync', 'gmail:r1'], ['direction', 'sync', 'gmail:r1'], ['occurred_at', 'sync', 'gmail:r1']]);
+      expect((await r12Audit('crm.interaction_corrected', before.id))?.details).toEqual({ fields: ['summary'] });
+      expect(result.kept_human_fields).toEqual([]);
+    });
+    it('R2 agentens kanal får ai medan övriga fält behåller sync', async () => {
+      const row = await r12Row('interaction', 'gmail:r2');
+      await r12Ok('update_crm_interaction', { interaction_id: row.id, channel: 'call' }, r12Agent);
+      expect((await r12Row('interaction', 'gmail:r2')).channel).toBe('call');
+      expect((await r12Provenance('interaction', row.id)).map((p) => [p.field, p.source]))
+        .toEqual([['channel', 'ai'], ['direction', 'sync'], ['occurred_at', 'sync'], ['summary', 'sync']]);
+    });
+    it('R3 okänt fält, blank text, tom rättelse och målkolumn avvisas utan verkan', async () => {
+      const row = await r12Row('interaction', 'gmail:r3');
+      const prov = await r12Provenance('interaction', row.id);
+      for (const patch of [{ source_ref: 'x' }, { summary: '   ' }, {}, { organization_id: row.organization_id, summary: 'Flytt R3.' }]) {
+        const response = await r12Call('update_crm_interaction', { interaction_id: row.id, ...patch });
+        expect(response.status, JSON.stringify(response.body)).toBe(400);
+        if (!Object.keys(patch).length) expect(response.body.error).toBe('nothing_to_update');
+      }
+      expect(await r12Row('interaction', 'gmail:r3')).toEqual(row);
+      expect(await r12Provenance('interaction', row.id)).toEqual(prov);
+      expect(await r12Audit('crm.interaction_corrected', row.id)).toBeUndefined();
+    });
+    it('R4 grannbolagets rättelse ger 404 men det egna bolagets går igenom', async () => {
+      const row = await r12Row('interaction', 'gmail:r4');
+      const prov = await r12Provenance('interaction', row.id);
+      const response = await r12Call('update_crm_interaction', { interaction_id: row.id, summary: 'Grannens text' }, r12Neighbor.token, r12OtherCompany);
+      expect(response.status, JSON.stringify(response.body)).toBe(404);
+      expect(await r12Row('interaction', 'gmail:r4')).toEqual(row);
+      expect(await r12Provenance('interaction', row.id)).toEqual(prov);
+      await r12Ok('update_crm_interaction', { interaction_id: row.id, summary: 'Egen text R4.' });
+    });
+    it('R5 agenten stoppas efter människans rättelse och stoppet auditeras', async () => {
+      const row = await r12Row('interaction', 'gmail:r5');
+      await r12Ok('update_crm_interaction', { interaction_id: row.id, summary: 'Människans R5.' });
+      const result = await r12Ok('update_crm_interaction', { interaction_id: row.id, summary: 'Agentens R5.' }, r12Agent);
+      expect((await r12Row('interaction', 'gmail:r5')).summary).toBe('Människans R5.');
+      expect((await r12Provenance('interaction', row.id)).find((p) => p.field === 'summary')?.source).toBe('human');
+      expect(result.kept_human_fields).toEqual(['summary']);
+      expect((await r12Audit('crm.interaction_corrected', row.id))?.details).toEqual({ fields: [], kept_human_fields: ['summary'] });
+    });
+    it('R6 negativ kontroll: agenten får rätta ett sync-fält', async () => {
+      const row = await r12Row('interaction', 'gmail:r6');
+      const result = await r12Ok('update_crm_interaction', { interaction_id: row.id, summary: 'Agentens R6.' }, r12Agent);
+      expect((await r12Row('interaction', 'gmail:r6')).summary).toBe('Agentens R6.');
+      expect((await r12Provenance('interaction', row.id)).find((p) => p.field === 'summary')?.source).toBe('ai');
+      expect(result.kept_human_fields).toEqual([]);
+    });
+  });
+
+  const r12Commitment = (n: string) => ({
+    kind: 'commitment', organization: { name: 'Rättelseprovet L AB' }, commitment_direction: 'we_owe',
+    body: `Ärendets text L${n}.`, due_date: '2026-10-30', occurred_at: '2026-09-02T09:00:00Z',
+    source_system: 'linear', source_ref: `linear:LOC-L${n}`,
+  });
+  describe('löftet', () => {
+    beforeAll(async () => {
+      for (const n of ['1', '2', '3', '4', '5', '6', '6b', '7']) await r12Ingest(r12Commitment(n));
+    });
+    it('L1 ett uttryckligt null tar bort datumet med human och audit', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L1');
+      await r12Ok('update_crm_commitment', { commitment_id: row.id, due_date: null });
+      expect(await r12Row('commitment', 'linear:LOC-L1')).toEqual({ ...row, due_date: null });
+      expect((await r12Provenance('commitment', row.id)).map((p) => [p.field, p.source]))
+        .toEqual([['body', 'sync'], ['direction', 'sync'], ['due_date', 'human'], ['occurred_at', 'sync']]);
+      expect((await r12Audit('crm.commitment_corrected', row.id))?.details).toEqual({ fields: ['due_date'] });
+    });
+    it('L2 bara texten rättas; datum, mål och sfär lämnas orörda', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L2');
+      const result = await r12Ok('update_crm_commitment', { commitment_id: row.id, body: 'Davids text L2.' });
+      expect(await r12Row('commitment', 'linear:LOC-L2')).toEqual({ ...row, body: 'Davids text L2.' });
+      expect(result.sfar).toBe('foretag');
+      expect((await r12Provenance('commitment', row.id)).find((p) => p.field === 'due_date'))
+        .toMatchObject({ source: 'sync', source_ref: 'linear:LOC-L2' });
+    });
+    it('L3 framtid, status, tom rättelse, annat bolag och sfär avvisas utan verkan', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L3');
+      const prov = await r12Provenance('commitment', row.id);
+      const future = await r12Call('update_crm_commitment', { commitment_id: row.id, occurred_at: '2099-01-01T12:00:00Z' });
+      expect(future.status, JSON.stringify(future.body)).toBe(400);
+      expect(future.body).toMatchObject({ error: 'occurred_at_in_future' });
+      for (const patch of [{ status: 'done' }, {}, { sfar: 'privat', body: 'Privat L3.' }]) {
+        const response = await r12Call('update_crm_commitment', { commitment_id: row.id, ...patch });
+        expect(response.status, JSON.stringify(response.body)).toBe(400);
+        if (!Object.keys(patch).length) expect(response.body.error).toBe('nothing_to_update');
+      }
+      const other = await r12Call('update_crm_commitment', { commitment_id: row.id, body: 'Grannens' }, r12Neighbor.token, r12OtherCompany);
+      expect(other.status, JSON.stringify(other.body)).toBe(404);
+      expect(await r12Row('commitment', 'linear:LOC-L3')).toEqual(row);
+      expect(await r12Provenance('commitment', row.id)).toEqual(prov);
+      expect(await r12Audit('crm.commitment_corrected', row.id)).toBeUndefined();
+    });
+    it('L4 rättad text och deadline står medan övriga fält följer intaget', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L4');
+      await r12Ok('update_crm_commitment', { commitment_id: row.id, body: 'Davids text L4.', due_date: '2026-11-15' });
+      const result = await r12Ingest({ ...r12Commitment('4'), body: 'Ärendets nya text L4.', due_date: '2026-12-01',
+        commitment_direction: 'they_owe', occurred_at: '2026-09-05T09:00:00Z' });
+      expect(await r12Row('commitment', 'linear:LOC-L4')).toMatchObject({ body: 'Davids text L4.', due_date: '2026-11-15', direction: 'they_owe' });
+      expect(new Date((await r12Row('commitment', 'linear:LOC-L4')).occurred_at).toISOString()).toBe('2026-09-05T09:00:00.000Z');
+      expect(result.kept_human_fields.filter((v: string) => v.includes(': linear:LOC-L4 ')).sort())
+        .toEqual(['Rättelseprovet L AB: linear:LOC-L4 body', 'Rättelseprovet L AB: linear:LOC-L4 due_date']);
+    });
+    it('L5 negativ kontroll: en rättelse märkt sync skrivs över av nästa intag', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L5');
+      await r12Ok('update_crm_commitment', { commitment_id: row.id, body: 'Davids text L5.', due_date: '2026-11-15' });
+      await withAdmin((db) => db.query(`UPDATE crm.field_provenance SET source = 'sync', source_system = 'linear', source_ref = 'linear:LOC-L5'
+        WHERE company_id = $1 AND commitment_id = $2 AND field IN ('body', 'due_date')`, [r12Company, row.id]));
+      const result = await r12Ingest({ ...r12Commitment('5'), body: 'Ärendets nya text L5.', due_date: '2026-12-01', commitment_direction: 'they_owe' });
+      expect(await r12Row('commitment', 'linear:LOC-L5')).toMatchObject({ body: 'Ärendets nya text L5.', due_date: '2026-12-01' });
+      expect(result.kept_human_fields.filter((v: string) => v.includes(': linear:LOC-L5 '))).toEqual([]);
+    });
+    it('L6 agentens null stoppas på human men tar bort ett sync-datum med ai', async () => {
+      const row = await r12Row('commitment', 'linear:LOC-L6');
+      await r12Ok('update_crm_commitment', { commitment_id: row.id, due_date: '2026-11-20' });
+      const result = await r12Ok('update_crm_commitment', { commitment_id: row.id, due_date: null }, r12Agent);
+      expect(result.kept_human_fields).toEqual(['due_date']);
+      expect((await r12Row('commitment', 'linear:LOC-L6')).due_date).toBe('2026-11-20');
+      expect((await r12Provenance('commitment', row.id)).find((p) => p.field === 'due_date')?.source).toBe('human');
+      const sync = await r12Row('commitment', 'linear:LOC-L6b');
+      const changed = await r12Ok('update_crm_commitment', { commitment_id: sync.id, due_date: null }, r12Agent);
+      expect(changed.kept_human_fields).toEqual([]);
+      expect((await r12Row('commitment', 'linear:LOC-L6b')).due_date).toBeNull();
+      expect((await r12Provenance('commitment', sync.id)).find((p) => p.field === 'due_date')?.source).toBe('ai');
+    });
+    it('L7 radlåset låter människans samtidiga rättelse vinna före vakten', async () => {
+      const { updateCommitment } = await import('../src/services/crmRelations.js');
+      const row = await r12Row('commitment', 'linear:LOC-L7');
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<number>((resolve) => { ready = resolve; });
+      const first = withTenantTransaction(r12User.userId, r12Company, async (db) => {
+        const pid = (await db.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        await updateCommitment(db, r12Company, r12User.userId, { commitment_id: row.id, body: 'Människans text L7.' }, { source: 'human' });
+        ready(pid);
+        await gate;
+      });
+      let second: Promise<unknown> | undefined;
+      try {
+        const pid = await Promise.race([locked, first.then(() => { throw new Error('T1 avslutades före grinden'); })]);
+        const agentWrite = withTenantTransaction(r12User.userId, r12Company, (db) =>
+          updateCommitment(db, r12Company, r12User.userId, { commitment_id: row.id, body: 'Agentens text L7.' }, { source: 'ai' }));
+        second = agentWrite;
+        let blocked = false;
+        for (let i = 0; i < 100; i++) {
+          blocked = await withAdmin(async (db) => (await db.query<{ blocked: boolean }>(
+            'SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked', [pid])).rows[0]!.blocked);
+          if (blocked) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        release();
+        await first;
+        const result = await agentWrite;
+        expect(blocked, 'agenten måste vänta på människans radlås').toBe(true);
+        expect(result.kept_human_fields).toEqual(['body']);
+        expect((await r12Row('commitment', 'linear:LOC-L7')).body).toBe('Människans text L7.');
+        expect((await r12Provenance('commitment', row.id)).find((p) => p.field === 'body')?.source).toBe('human');
+      } finally {
+        release();
+        await Promise.allSettled([first, second]);
+      }
+    });
+  });
+
+  describe('bekräftelsen', () => {
+    let r12BInteraction: string;
+    let r12BCommitment: string;
+    let r12BOrg: string;
+    let r12BPerson: string;
+    let r12ForeignInteraction: string;
+    beforeAll(async () => {
+      r12BOrg = (await r12Ok('upsert_crm_organization', { name: 'Bekräftelseprovet AB' })).id;
+      r12BPerson = (await r12Ok('upsert_crm_person', { name: 'Bekräftelsepersonen B', organization_id: r12BOrg })).id;
+      r12BInteraction = (await r12Ok('record_crm_interaction', {
+        organization_id: r12BOrg, occurred_at: '2026-09-04T10:00:00Z', channel: 'note', direction: 'outbound',
+        summary: 'AI:ts anteckning B.', source_system: 'manual',
+      }, r12Agent)).id;
+      r12BCommitment = (await r12Ok('record_crm_commitment', {
+        organization_id: r12BOrg, direction: 'we_owe', body: 'AI:ts löfte B.', due_date: '2026-11-01',
+        occurred_at: '2026-09-04T10:05:00Z', source_system: 'manual',
+      }, r12Agent)).id;
+      const neighbor = await r12Call('ingest_crm_events', { events: [{ ...r12Interaction('b-granne'),
+        organization: { name: 'Grannens Relation B AB' }, source_ref: 'gmail:b-granne' }] }, r12Neighbor.token, r12OtherCompany);
+      expect(neighbor.status, JSON.stringify(neighbor.body)).toBe(200);
+      expect(neighbor.body.result.skipped).toEqual([]);
+      r12ForeignInteraction = (await r12Row('interaction', 'gmail:b-granne', r12OtherCompany)).id;
+    });
+    it('B1 kontaktpunktens kanal bekräftas utan att värdet ändras', async () => {
+      await r12Ok('confirm_crm_value', { interaction_id: r12BInteraction, field: 'channel' });
+      expect((await r12Provenance('interaction', r12BInteraction)).map((p) => [p.field, p.source, p.reason]))
+        .toEqual([['channel', 'human', 'bekräftad av människa'], ['direction', 'ai', null], ['occurred_at', 'ai', null], ['summary', 'ai', null]]);
+      const value = await withAdmin(async (db) => (await db.query('SELECT channel FROM crm.interactions WHERE company_id = $1 AND id = $2', [r12Company, r12BInteraction])).rows[0]);
+      expect(value?.channel).toBe('note');
+      expect(await r12Audit('crm.value_confirmed', r12BInteraction)).toMatchObject({ entity_type: 'interaction', details: { field: 'channel' } });
+    });
+    it('B2 löftets datum och status bekräftas utan att värdena ändras', async () => {
+      for (const field of ['due_date', 'status']) await r12Ok('confirm_crm_value', { commitment_id: r12BCommitment, field });
+      expect((await r12Provenance('commitment', r12BCommitment)).filter((p) => ['due_date', 'status'].includes(p.field)).map((p) => [p.field, p.source, p.reason]))
+        .toEqual([['due_date', 'human', 'bekräftad av människa'], ['status', 'human', 'bekräftad av människa']]);
+      const value = await withAdmin(async (db) => (await db.query('SELECT due_date::text, status FROM crm.commitments WHERE company_id = $1 AND id = $2', [r12Company, r12BCommitment])).rows[0]);
+      expect(value).toEqual({ due_date: '2026-11-01', status: 'open' });
+      expect(await r12Audit('crm.value_confirmed', r12BCommitment)).toMatchObject({ entity_type: 'commitment', details: { field: 'status' } });
+    });
+    it('B3 flera mål och fält utanför målets lista avvisas', async () => {
+      const beforeI = await r12Provenance('interaction', r12BInteraction);
+      const beforeC = await r12Provenance('commitment', r12BCommitment);
+      for (const input of [
+        { interaction_id: r12BInteraction, commitment_id: r12BCommitment, field: 'direction' },
+        { interaction_id: r12BInteraction, field: 'body' }, { commitment_id: r12BCommitment, field: 'channel' },
+        { organization_id: r12BOrg, field: 'summary' }, { person_id: r12BPerson, field: 'due_date' },
+      ]) {
+        const response = await r12Call('confirm_crm_value', input);
+        expect(response.status, JSON.stringify(response.body)).toBe(400);
+      }
+      expect(await r12Provenance('interaction', r12BInteraction)).toEqual(beforeI);
+      expect(await r12Provenance('commitment', r12BCommitment)).toEqual(beforeC);
+    });
+    it('B4 agenten får aldrig bekräfta sin egen gissning', async () => {
+      const response = await r12Call('confirm_crm_value', { commitment_id: r12BCommitment, field: 'body' }, r12Agent);
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+      expect(response.body.error).toBe('human_confirmation_required');
+      expect((await r12Provenance('commitment', r12BCommitment)).find((p) => p.field === 'body')?.source).toBe('ai');
+    });
+    it('B5 bekräftelse av grannbolagets händelse ger 404 utan ändring', async () => {
+      const before = await r12Provenance('interaction', r12ForeignInteraction, r12OtherCompany);
+      const response = await r12Call('confirm_crm_value', { interaction_id: r12ForeignInteraction, field: 'summary' });
+      expect(response.status, JSON.stringify(response.body)).toBe(404);
+      expect(await r12Provenance('interaction', r12ForeignInteraction, r12OtherCompany)).toEqual(before);
+    });
+    it('B6 MCP-manifestet har ett objekt med båda händelsemålen', async () => {
+      const response = await api.get(`/api/companies/${r12Company}/actions`).set('Authorization', `Bearer ${r12User.token}`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const schema = response.body.actions.find((entry: { name: string }) => entry.name === 'confirm_crm_value').input_schema;
+      expect(schema.type).toBe('object');
+      expect(schema.properties).toHaveProperty('interaction_id');
+      expect(schema.properties).toHaveProperty('commitment_id');
+      expect(schema).not.toHaveProperty('anyOf');
+    });
+  });
+
+  it('D1 dokumentet beskriver rättelser, händelsemål och felkoder i ett eget avsnitt', async () => {
+    const document = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const heading = '## Rätta och bekräfta händelser (crm 1.2)';
+    const start = document.indexOf(heading);
+    expect(start, 'avsnittet crm 1.2 saknas').toBeGreaterThanOrEqual(0);
+    const rest = document.slice(start + heading.length);
+    const next = rest.search(/^#{2,3} /m);
+    const section = next < 0 ? rest : rest.slice(0, next);
+    for (const term of ['update_crm_interaction', 'update_crm_commitment', 'interaction_id', 'commitment_id',
+      'due_date: null', 'kept_human_fields', 'occurred_at_in_future', 'nothing_to_update']) {
+      expect(section, term).toContain(term);
+    }
+  });
+});
