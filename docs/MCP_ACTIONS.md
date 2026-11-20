@@ -2542,3 +2542,23 @@ Ett byte av kund behandlar statusen som en ny koppling.
 Relationssidans *Rätta uppgifter* skickar bara ändrade fält, jämförda mot det
 visade värdet i de dolda `fore_`-fälten. Formuläret öppnas med
 `?oppna=uppgifter` från sidhuvudets *Ej i kundregistret*.
+
+## Statusen vid kundkoppling och sammanslagning (crm 1.6)
+
+En kundkoppling som tillkommer gör `prospect` till `customer` bara när statusens
+ursprung inte är `human`. En status som en människa satt eller bekräftat står kvar.
+Regeln gäller `upsert_crm_organization` med uttryckligt `customer_id` från människa
+eller agent, intagets kunduppslag i `ingest_crm_events` och
+`merge_crm_organizations` när kopplingen flyttas från den inslagna relationen.
+Ett uttryckligt `status` i samma anrop gäller före regeln.
+
+Ett stoppat statusbyte redovisas i `kept_human_fields`: `upsert_crm_organization`
+med `"status"`, intaget med `"<organisation>: status"`, och
+`merge_crm_organizations` med `kept_human_fields: ["status"]`, som annars är `[]`.
+När kopplingen byter status i `upsert_crm_organization` eller intaget får statusen
+kopplingens ursprung: `accounting` med uppslagets skäl vid kunduppslag, annars
+skrivarens ursprung. Sammanslagningen ändrar inte statusens ursprung.
+
+Att göra-kortet för `merge_crm_organizations` använder samma regel som körningen
+och säger om statusen står kvar eller ändras. Påståendet ”ifyllda rörs inte”
+står bara när statusen står kvar.

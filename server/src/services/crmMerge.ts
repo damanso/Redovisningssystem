@@ -16,6 +16,8 @@
 //      sammanslagningen en väg runt regeln att människan vinner (F4).
 import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { mergeStatusOutcome } from '../lib/crmRules.js';
+import { readProvenance } from './crmProvenance.js';
 import { writeCrmAudit } from './crmRelations.js';
 import {
   arKundkopplad, harPrivataPersoner, privatGransFel, PRIVAT_PERSON_SKAL, sfarParameter, type Sfar, type SfarFilter,
@@ -26,6 +28,8 @@ export interface MergeResult {
   merged_id: string;
   moved: { people: number; interactions: number; commitments: number; deals: number };
   filled_fields: string[];
+  /** Organisationer sätter alltid listan; mergePeople har ingen status och utelämnar den. */
+  kept_human_fields?: string[];
   /**
    * Antal namn som nu pekar hit i stället för att skapa en ny rad — det egna
    * plus dem den inslagna raden redan bar. Redovisas därför att omstyrningen
@@ -107,17 +111,26 @@ export async function mergeOrganizations(
     }
   }
 
+  // Ursprung läses efter båda radlåsen, så en samtidig bekräftelse syns (A-5).
+  const provenance = await readProvenance(client, companyId, { organization_id: keepId });
+  const outcome = mergeStatusOutcome(
+    { status: String(keep.status), customer_id: (keep.customer_id as string | null) ?? null },
+    { customer_id: (gone.customer_id as string | null) ?? null },
+    provenance.get('status')?.source ?? null,
+  );
+  const keptHumanFields = outcome.kept ? ['status'] : [];
+
   // Kundkopplingen först, och i rätt ordning: unik-indexet på (company_id,
   // customer_id) tillåter inte att båda raderna bär samma kund ett ögonblick.
   const filled: string[] = [];
-  if (!keep.customer_id && gone.customer_id) {
+  if (outcome.linkMoves) {
     await client.query('UPDATE crm.organizations SET customer_id = NULL WHERE id = $1 AND company_id = $2',
       [mergeId, companyId]);
     await client.query(
       `UPDATE crm.organizations SET customer_id = $3,
-         status = CASE WHEN status = 'prospect' THEN 'customer' ELSE status END
+         status = $4
        WHERE id = $1 AND company_id = $2`,
-      [keepId, companyId, gone.customer_id],
+      [keepId, companyId, gone.customer_id, outcome.to],
     );
     filled.push('customer_id');
   }
@@ -246,9 +259,10 @@ export async function mergeOrganizations(
     companyId, userId, action: 'crm.organizations_merged', entityType: 'organization', entityId: keepId,
     // Antalet alias, aldrig namnen: se kommentaren ovan — ett namn i loggen
     // överlever den radering det var tänkt att träffas av.
-    details: { merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept },
+    details: { merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept,
+      ...(keptHumanFields.length ? { kept_human_fields: keptHumanFields } : {}) },
   });
-  return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept };
+  return { kept_id: keepId, merged_id: mergeId, moved, filled_fields: filled, aliases_kept: aliasesKept, kept_human_fields: keptHumanFields };
 }
 
 async function loadPerson(client: PoolClient, companyId: string, id: string): Promise<Record<string, unknown>> {

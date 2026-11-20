@@ -171,6 +171,12 @@ En människas rättelse med `organization_id` gör inget automatiskt kunduppslag
 utelämnat `customer_id` lämnar kopplingen, dess ursprung och en utelämnad status
 orörda även vid matchande namn eller org.nr. Synkens uppslag är oförändrat.
 
+En automatisk kundkoppling ändrar inte en status som en människa satt eller
+bekräftat. `prospect` står kvar och redovisas i `kept_human_fields` som
+`"<organisation>: status"`.
+Utan människosatt status blir `prospect` i stället `customer` med kopplingens
+ursprung (`accounting` med uppslagets skäl vid kunduppslag).
+
 ## Kadens, dubbletter och sökning
 
 | Åtgärd | Gör |
@@ -183,6 +189,12 @@ orörda även vid matchande namn eller org.nr. Synkens uppslag är oförändrat.
 Sammanslagningen följer två regler: **ingenting kastas** (kontaktpunkter, löften
 och personer flyttas över) och **tomma fält fylls, ifyllda rörs inte** — annars
 vore sammanslagningen en väg runt regeln att människan vinner.
+
+Statusen är undantaget som sammanslagningen kan ändra: flyttas kundkopplingen
+från den inslagna relationen blir en `prospect` som inte är människosatt
+`customer`, som förut. En människosatt eller bekräftad status står kvar och
+svaret redovisar det med `kept_human_fields: ["status"]` (annars `[]`).
+Statusens ursprung ändras inte av sammanslagningen.
 
 Två fall avvisas i stället för att gissas: organisationer som pekar på **olika**
 kunder i redovisningen (`customer_conflict`) och personer med **olika**

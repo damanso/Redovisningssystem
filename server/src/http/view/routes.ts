@@ -7497,7 +7497,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                   ${andra.map((a) => html`<option value="${a.id}">${a.name}</option>`)}
                 </select></label>
                 <button class="btn btn--ghost btn--sm" type="submit">Slå ihop</button>
-                <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i — ifyllda rörs inte. Går inte att ångra, så förslaget hamnar först i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>
+                <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i. Vad som händer med statusen står på kortet i <a href="/app/c/${companyId}/approvals">Att göra</a>, och sammanslagningen går inte att ångra.</p>
               </form>
             </details>
           </div>`}
