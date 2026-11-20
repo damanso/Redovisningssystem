@@ -125,20 +125,20 @@ describe('gravstenen: en hopslagen organisation återuppstår inte vid nästa sy
   });
 
   it('kedjan håller: A slås in i B, B in i C — "A" leder hela vägen till C', async () => {
-    await ingest([mailFran('NVR-001', 'gmail:nvr-1')]);
+    await ingest([mailFran('NVR-piloten', 'gmail:nvr-1')]);
     const a = (await act('list_crm_organizations', {})).body.result
-      .find((o: { name: string }) => o.name === 'NVR-001');
+      .find((o: { name: string }) => o.name === 'NVR-piloten');
     const b = await nyOrg('Nordic Vision Retail');
     const c = await nyOrg('Nordic Vision Retail AB');
 
     await slaIhop(b, a.id);
     const andra = await slaIhop(c, b);
-    expect(andra.aliases_kept, 'både "Nordic Vision Retail" och det ärvda "NVR-001"').toBe(2);
+    expect(andra.aliases_kept, 'både "Nordic Vision Retail" och det ärvda "NVR-piloten"').toBe(2);
 
-    const r = await ingest([mailFran('NVR-001', 'gmail:nvr-2')]);
-    expect(r.organizations_created, 'utan arvet hade NVR-001 återuppstått').toBe(0);
-    expect(r.redirected_organizations).toEqual(['NVR-001 → Nordic Vision Retail AB']);
-    expect(await orgNamn()).not.toContain('NVR-001');
+    const r = await ingest([mailFran('NVR-piloten', 'gmail:nvr-2')]);
+    expect(r.organizations_created, 'utan arvet hade NVR-piloten återuppstått').toBe(0);
+    expect(r.redirected_organizations).toEqual(['NVR-piloten → Nordic Vision Retail AB']);
+    expect(await orgNamn()).not.toContain('NVR-piloten');
   });
 });
 

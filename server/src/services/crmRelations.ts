@@ -10,7 +10,7 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
-import { linkStatusOutcome } from '../lib/crmRules.js';
+import { isProjectCode, linkStatusOutcome } from '../lib/crmRules.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
   type ProvenanceEntry, type ProvenanceSource, type ProvenanceTarget, type ProvenanceWrite,
@@ -311,6 +311,11 @@ export async function upsertOrganization(
   const input: UpsertOrganizationInput = { ...rawInput, org_number: normaliseraOrgnummer(rawInput.org_number) };
   const name = input.name?.trim();
   if ((input.name !== undefined && !name) || (!input.organization_id && !name)) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
+  // FR-14: före varje läsning, lås och skrivning, så inget skapas eller styrs om via alias.
+  // Bara skickat namn prövas; äldre projektkodsnamn kan rättas i andra fält och döpas om.
+  if (name !== undefined && isProjectCode(name)) {
+    throw new BadRequestError('project_code_as_name', `«${name}» är en projektkod, inte ett organisationsnamn — skriv bolagets namn.`);
+  }
   if (input.customer_id) {
     const c = await client.query('SELECT 1 FROM customers WHERE id = $1 AND company_id = $2', [input.customer_id, companyId]);
     if (!c.rows[0]) throw new NotFoundError('customer');
