@@ -1,5 +1,5 @@
 // CRM 1.2: jämför mot det visade värdet, så en samtidig synk inte blir ett människobeslut.
-import { IsoDateSchema } from './validation.js';
+import { EmailSchema, IsoDateSchema } from './validation.js';
 
 type CorrectableKind = 'interaction' | 'commitment';
 const CORRECTION_FIELDS = {
@@ -72,6 +72,56 @@ type OpenForm = typeof OPEN_FORMS[keyof typeof OPEN_FORMS];
 export function parseOpenForm(value: unknown): OpenForm | null {
   return typeof value === 'string' && Object.hasOwn(OPEN_FORMS, value)
     ? OPEN_FORMS[value as keyof typeof OPEN_FORMS] : null;
+}
+
+/** Kundregistret äger fakturafälten; relationens identitet och koppling får inte skickas med. */
+const CUSTOMER_CORRECTION_FIELDS = ['email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
+
+/** Fast text håller ogiltig e-post synlig utan att återge formulärets indata. */
+export const CUSTOMER_EMAIL_ERROR = 'Fakturamejlet är ingen giltig e-postadress. Inget sparades.';
+/** Villkoret måste kunna användas som hela fakturadagar. */
+export const CUSTOMER_TERMS_ERROR = 'Betalningsvillkoret anges i hela dagar från 0 till 365. Inget sparades.';
+
+/** Bara ändrat skickas; äldre orörda mejl får inte hindra en adressrättelse. */
+export function correctedCustomerFields(body: unknown):
+  { ok: true; fields: Record<string, unknown> } | { ok: false; error: string } {
+  const fields: Record<string, unknown> = {};
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return { ok: true, fields };
+  const values = body as Record<string, unknown>;
+  for (const field of CUSTOMER_CORRECTION_FIELDS) {
+    if (!Object.hasOwn(values, field)) continue;
+    const value = values[field];
+    if (typeof value !== 'string') {
+      if (field === 'payment_terms') return { ok: false, error: CUSTOMER_TERMS_ERROR };
+      fields[field] = value;
+      continue;
+    }
+    const previous = Object.hasOwn(values, `fore_${field}`) ? values[`fore_${field}`] : undefined;
+    const before = typeof previous === 'string' ? previous.trim() : '';
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === before) continue;
+    if (field === 'email') {
+      const email = EmailSchema.safeParse(trimmed);
+      if (!email.success) return { ok: false, error: CUSTOMER_EMAIL_ERROR };
+      fields[field] = email.data;
+    } else if (field === 'payment_terms') {
+      if (!/^\d{1,3}$/.test(trimmed) || Number(trimmed) > 365) return { ok: false, error: CUSTOMER_TERMS_ERROR };
+      fields[field] = Number(trimmed);
+    } else {
+      fields[field] = trimmed;
+    }
+  }
+  return { ok: true, fields };
+}
+
+/** En sluten mängd hindrar okända handgrepp från att välja en skrivväg. */
+const EDIT_TARGETS = Object.freeze({ kundkort: 'kundkort' } as const);
+
+/** Utan grenval bevaras organisations- och händelseformulärens befintliga väg. */
+export function parseEditTarget(value: unknown): 'organisation' | 'kundkort' | null {
+  if (value === undefined) return 'organisation';
+  return typeof value === 'string' && Object.hasOwn(EDIT_TARGETS, value)
+    ? EDIT_TARGETS[value as keyof typeof EDIT_TARGETS] : null;
 }
 
 /** En ny kundkoppling får bara ändra en status som ingen människa bestämt (A-5). */
