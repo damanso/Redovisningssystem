@@ -5,7 +5,7 @@ import type { CompanyRole } from '../db/tx.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { AccountNumberSchema, BankgiroSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
+import { AccountNumberSchema, BankgiroSchema, CustomerNumberSchema, EmailSchema, IsoDateSchema, IsoDateTimeSchema, OreSchema, safeText, UuidSchema, VatRateSchema } from '../lib/validation.js';
 import {
   confirmCrmValue, getOrganization, getRetention, listCommitments, listOrganizations, listPeople, logContact,
   purgeCrmData, recordCommitment, recordInteraction, updateInteraction, updateCommitment, setCommitmentStatus, setRelationNudge, setRetention,
@@ -1191,6 +1191,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z
       .object({
         customer_id: UuidSchema,
+        customer_number: CustomerNumberSchema.optional(),
         name: safeText(200).optional(),
         org_number: safeText(20).optional(),
         vat_number: safeText(20).optional(),

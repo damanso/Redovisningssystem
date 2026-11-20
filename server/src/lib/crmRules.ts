@@ -1,5 +1,5 @@
 // CRM 1.2: jämför mot det visade värdet, så en samtidig synk inte blir ett människobeslut.
-import { EmailSchema, IsoDateSchema } from './validation.js';
+import { CustomerNumberSchema, EmailSchema, IsoDateSchema } from './validation.js';
 
 type CorrectableKind = 'interaction' | 'commitment';
 const CORRECTION_FIELDS = {
@@ -75,12 +75,14 @@ export function parseOpenForm(value: unknown): OpenForm | null {
 }
 
 /** Kundregistret äger fakturafälten; relationens identitet och koppling får inte skickas med. */
-const CUSTOMER_CORRECTION_FIELDS = ['email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
+const CUSTOMER_CORRECTION_FIELDS = ['customer_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms'] as const;
 
 /** Fast text håller ogiltig e-post synlig utan att återge formulärets indata. */
 export const CUSTOMER_EMAIL_ERROR = 'Fakturamejlet är ingen giltig e-postadress. Inget sparades.';
 /** Villkoret måste kunna användas som hela fakturadagar. */
 export const CUSTOMER_TERMS_ERROR = 'Betalningsvillkoret anges i hela dagar från 0 till 365. Inget sparades.';
+/** Ett kundnummer ska vara ett giltigt heltal även när webbläsarens skydd kringgås. */
+export const CUSTOMER_NUMBER_ERROR = 'Kundnumret anges som ett heltal från 1. Inget sparades.';
 
 /** Bara ändrat skickas; äldre orörda mejl får inte hindra en adressrättelse. */
 export function correctedCustomerFields(body: unknown):
@@ -92,6 +94,7 @@ export function correctedCustomerFields(body: unknown):
     if (!Object.hasOwn(values, field)) continue;
     const value = values[field];
     if (typeof value !== 'string') {
+      if (field === 'customer_number') return { ok: false, error: CUSTOMER_NUMBER_ERROR };
       if (field === 'payment_terms') return { ok: false, error: CUSTOMER_TERMS_ERROR };
       fields[field] = value;
       continue;
@@ -100,7 +103,12 @@ export function correctedCustomerFields(body: unknown):
     const before = typeof previous === 'string' ? previous.trim() : '';
     const trimmed = value.trim();
     if (!trimmed || trimmed === before) continue;
-    if (field === 'email') {
+    if (field === 'customer_number') {
+      const number = CustomerNumberSchema.safeParse(Number(trimmed));
+      if (!/^\d{1,10}$/.test(trimmed) || !number.success) return { ok: false, error: CUSTOMER_NUMBER_ERROR };
+      if (/^\d{1,10}$/.test(before) && number.data === Number(before)) continue;
+      fields[field] = number.data;
+    } else if (field === 'email') {
       const email = EmailSchema.safeParse(trimmed);
       if (!email.success) return { ok: false, error: CUSTOMER_EMAIL_ERROR };
       fields[field] = email.data;

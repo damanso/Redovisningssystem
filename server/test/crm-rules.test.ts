@@ -179,7 +179,7 @@ describe('fakturauppgifternas formulär och grenvalet (story 1.5)', () => {
     }
   });
   it('FK2 tillåtelselistan läser bara egna fält och ignorerar främmande kroppar', () => {
-    expect(correctedCustomerFields({ ...F, name: 'x', org_number: 'x', customer_id: 'x', customer_number: '7',
+    expect(correctedCustomerFields({ ...F, name: 'x', org_number: 'x', customer_id: 'x',
       is_active: 'false', organization_id: 'x', fore_name: 'x' })).toEqual({ ok: true, fields: {} });
     expect(correctedCustomerFields(Object.create({ address: 'Ärvt' }))).toEqual({ ok: true, fields: {} });
     expect(correctedCustomerFields(Object.assign(Object.create({ fore_address: 'Ny' }), { address: 'Ny' })))
@@ -221,5 +221,49 @@ describe('fakturauppgifternas formulär och grenvalet (story 1.5)', () => {
     expect(parseEditTarget('kundkort')).toBe('kundkort');
     for (const value of ['', 'KUNDKORT', 'kundkort ', ' kundkort', 'constructor', '__proto__', 'toString',
       'hasOwnProperty', null, 42, ['kundkort'], { kundkort: 'kundkort' }]) expect(parseEditTarget(value)).toBeNull();
+  });
+});
+
+
+describe('kundnumret i fakturaformuläret (story 1.7)', () => {
+  const K = {
+    customer_number: '7', fore_customer_number: '7',
+    email: 'faktura@kund.example', fore_email: 'faktura@kund.example',
+    phone: '08-123', fore_phone: '08-123', address: 'Kundgatan 1', fore_address: 'Kundgatan 1',
+    postal_code: '111 11', fore_postal_code: '111 11', city: 'Stockholm', fore_city: 'Stockholm',
+    vat_number: 'SE556915001501', fore_vat_number: 'SE556915001501', payment_terms: '30', fore_payment_terms: '30',
+  };
+  const NUMBER_ERROR = 'Kundnumret anges som ett heltal från 1. Inget sparades.';
+  it('KN1 ändrat nummer blir ett tal och oförändrat utelämnas', () => {
+    for (const customer_number of ['1007', ' 1007 ', '2147483645']) {
+      expect(correctedCustomerFields({ ...K, customer_number }))
+        .toEqual({ ok: true, fields: { customer_number: Number(customer_number) } });
+    }
+    for (const customer_number of ['007', '7', '', '   ']) {
+      expect(correctedCustomerFields({ ...K, customer_number })).toEqual({ ok: true, fields: {} });
+    }
+    expect(correctedCustomerFields(K)).toEqual({ ok: true, fields: {} });
+  });
+  it('KN2 ogiltiga nummer ger fast feltext men orörda värden hindrar inte andra rättelser', () => {
+    for (const customer_number of ['0', '-1', 'abc', '1.5', '1e3', '12 3', '+5', '2147483646', '99999999999', ['5']]) {
+      expect(correctedCustomerFields({ ...K, customer_number })).toEqual({ ok: false, error: NUMBER_ERROR });
+    }
+    expect(correctedCustomerFields({ ...K, customer_number: ['7'], fore_customer_number: ['7'] }))
+      .toEqual({ ok: false, error: NUMBER_ERROR });
+    expect(correctedCustomerFields({ ...K, customer_number: '0', fore_customer_number: '0', address: 'Ny adress' }))
+      .toEqual({ ok: true, fields: { address: 'Ny adress' } });
+  });
+  it('KN3 kundnumret står först och negativ kontroll utan före-fält skickar alla åtta', () => {
+    const result = correctedCustomerFields({ ...K, customer_number: '1007', address: 'Ny adress' });
+    expect(result).toEqual({ ok: true, fields: { customer_number: 1007, address: 'Ny adress' } });
+    if (result.ok) expect(Object.keys(result.fields)).toEqual(['customer_number', 'address']);
+    expect(correctedCustomerFields({ ...K, customer_number: 'abc', email: 'inte-en-adress' }))
+      .toEqual({ ok: false, error: NUMBER_ERROR });
+    const alla = { customer_number: '7', email: 'faktura@kund.example', phone: '08-123', address: 'Kundgatan 1',
+      postal_code: '111 11', city: 'Stockholm', vat_number: 'SE556915001501', payment_terms: '30' };
+    const utanFore = correctedCustomerFields(alla);
+    expect(utanFore).toEqual({ ok: true, fields: { ...alla, customer_number: 7, payment_terms: 30 } });
+    if (utanFore.ok) expect(Object.keys(utanFore.fields))
+      .toEqual(['customer_number', 'email', 'phone', 'address', 'postal_code', 'city', 'vat_number', 'payment_terms']);
   });
 });

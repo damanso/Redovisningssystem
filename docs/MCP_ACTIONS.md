@@ -2610,3 +2610,22 @@ gemener, trimmade och hopslagna blanktecken och en avslutande bolagsform ur
 den slutna listan. Kolumnen syns inte i åtgärdernas svar; den är
 jämförelsenyckeln för bolagsformsvarianterna i 2.3 och dataprovet. Uppslaget
 på namn är fortfarande skiftlägesokänsligt på hela namnet.
+
+## Kundnumret på relationssidan (crm 1.7)
+
+`update_customer` tar ett valfritt `customer_number`, ett heltal från 1 till
+2 147 483 645. Ett nummer som en annan kund i bolaget bär ger 409
+`customer_number_taken` med svensk text: ”Kundnummer {N} används redan av en
+annan kund i bolaget. Inget sparades.” Ingenting skrivs vid avvisningen.
+Samma nummer i ett annat bolag är fritt.
+
+I samma transaktion låses bolagets kundserie i `number_sequences`
+(`kind = 'customer'`) före ändringen. Stod serien på eller under numret flyttas
+den till numret + 1, med auditraden `customer.number_series_set` och detaljerna
+`from_next_value`, `to_next_value`, `customer_id`, `customer_number`.
+Serien flyttas aldrig bakåt. `customer.updated` bär fältnamnet i `fields`.
+Fakturorna bär inte kundnumret, så en redan ställd faktura ändras inte.
+
+Relationssidans *Rätta fakturauppgifter* har fältet Kundnummer; ett tomt eller
+oförändrat nummer skickas inte. Kundkortets formulär och REST-vägen för kunder
+tar inte fältet.

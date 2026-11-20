@@ -9,9 +9,11 @@ import { nextDocumentNumber } from './accounting/numbering.js';
 // förtroendegränsen; kolumnnamn i UPDATE byggs via allowlist (aldrig från indata).
 
 // ---- Kunder ----
+const CUSTOMER_SEQUENCE = 'customer';
 const CUSTOMER_COLUMNS = `id, customer_number, name, org_number, vat_number, email, phone,
   address, postal_code, city, payment_terms, is_active, created_at`;
 const CUSTOMER_UPDATE = {
+  customer_number: 'customer_number',
   name: 'name', org_number: 'org_number', vat_number: 'vat_number', email: 'email', phone: 'phone',
   address: 'address', postal_code: 'postal_code', city: 'city',
   payment_terms: 'payment_terms', is_active: 'is_active',
@@ -20,7 +22,7 @@ const CUSTOMER_UPDATE = {
 export async function createCustomer(
   client: PoolClient, companyId: string, userId: string, input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const number = await nextDocumentNumber(client, companyId, 'customer');
+  const number = await nextDocumentNumber(client, companyId, CUSTOMER_SEQUENCE);
   const result = await client.query(
     `INSERT INTO customers (company_id, customer_number, name, org_number, vat_number, email, phone,
         address, postal_code, city, payment_terms)
@@ -53,6 +55,20 @@ export async function getCustomer(client: PoolClient, companyId: string, id: str
   return result.rows[0];
 }
 
+/** Skapa raden först: ett radlås på en saknad serie skyddar ingenting. */
+async function lockCustomerSequence(client: PoolClient, companyId: string): Promise<number> {
+  await client.query(
+    `INSERT INTO number_sequences (company_id, kind, next_value) VALUES ($1, $2, 1)
+     ON CONFLICT (company_id, kind) DO NOTHING`,
+    [companyId, CUSTOMER_SEQUENCE],
+  );
+  const result = await client.query<{ next_value: number }>(
+    'SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = $2 FOR UPDATE',
+    [companyId, CUSTOMER_SEQUENCE],
+  );
+  return result.rows[0]!.next_value;
+}
+
 export async function updateCustomer(
   client: PoolClient, companyId: string, userId: string, id: string, input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -60,12 +76,37 @@ export async function updateCustomer(
   await assertKanAktiveras(client, companyId, 'customer', id, input);
   const update = buildAllowlistedUpdate(CUSTOMER_UPDATE, input);
   if (!update) return getCustomer(client, companyId, id);
+  const customerNumber = typeof input.customer_number === 'number' ? input.customer_number : undefined;
+  let previousNext: number | undefined;
+  if (customerNumber !== undefined) {
+    // Samma lås som skapandet, före kundens UPDATE, undviker omvänd låsordning.
+    previousNext = await lockCustomerSequence(client, companyId);
+    const taken = await client.query(
+      'SELECT 1 FROM customers WHERE company_id = $1 AND customer_number = $2 AND id <> $3 LIMIT 1',
+      [companyId, customerNumber, id],
+    );
+    if (taken.rows[0]) {
+      throw new ConflictError('customer_number_taken',
+        `Kundnummer ${customerNumber} används redan av en annan kund i bolaget. Inget sparades.`);
+    }
+  }
   const result = await client.query(
     `UPDATE customers SET ${update.setSql} WHERE id=$${update.values.length + 1} AND company_id=$${update.values.length + 2}
      RETURNING ${CUSTOMER_COLUMNS}`,
     [...update.values, id, companyId],
   );
   if (!result.rows[0]) throw new NotFoundError('customer');
+  if (customerNumber !== undefined && previousNext !== undefined && previousNext <= customerNumber) {
+    await client.query(
+      'UPDATE number_sequences SET next_value = $3 WHERE company_id = $1 AND kind = $2',
+      [companyId, CUSTOMER_SEQUENCE, customerNumber + 1],
+    );
+    await writeAudit(client, {
+      companyId, userId, action: 'customer.number_series_set', entityType: 'company', entityId: companyId,
+      details: { from_next_value: previousNext, to_next_value: customerNumber + 1,
+        customer_id: id, customer_number: customerNumber },
+    });
+  }
   await writeAudit(client, { companyId, userId, action: 'customer.updated', entityType: 'customer', entityId: id, details: { fields: Object.keys(input) } });
   return result.rows[0];
 }

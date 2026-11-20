@@ -1615,7 +1615,7 @@ describe('1.5 kundkortets fakturauppgifter', () => {
       expect(sidan).not.toContain('factcard__head">Kundkortet');
       expect(sidan).not.toContain('Rätta fakturauppgifter');
     });
-    it('KV3 saknade värden visas som streck och formuläret har bara sju valfria fakturafält', async () => {
+    it('KV3 saknade värden visas som streck och formuläret har sju valfria fakturafält och kundnumret', async () => {
       const tomt = kort(await sida(v15Tom.org), 'Kundkortet');
       for (const label of ['Fakturamejl', 'Adress', 'Momsreg.nr', 'Betalningsvillkor', 'Telefon']) {
         expect(rad(tomt, label)).toContain('<span class="v">—</span>');
@@ -1632,7 +1632,7 @@ describe('1.5 kundkortets fakturauppgifter', () => {
       }
       expect(k).toMatch(/type="number" name="payment_terms"[^>]*min="0"[^>]*max="365"/);
       expect(k).not.toMatch(/\brequired\b|<details[^>]+\bopen\b/);
-      for (const field of ['name', 'org_number', 'customer_number', 'is_active', 'customer_id']) expect(k).not.toContain(`name="${field}"`);
+      for (const field of ['name', 'org_number', 'is_active', 'customer_id']) expect(k).not.toContain(`name="${field}"`);
       expect(k).toContain('Ett tomt fält lämnas oförändrat — det raderar ingenting.');
       expect(k).toContain('<button class="btn btn--primary btn--sm" type="submit">Spara</button>');
     });
@@ -1845,6 +1845,213 @@ describe('1.5 kundkortets fakturauppgifter', () => {
         .set('Origin', 'https://angripare.example');
       expect(r.status, r.text).toBe(403);
       expect(await v15Tillstand(p)).toEqual(fore);
+    });
+  });
+
+  describe('kundnumret (story 1.7)', () => {
+    const v17Par: V15Par[] = [];
+    let v17Upptagen: string, v17Faktura17: V15Par, v17Grannkund1: string, v17Grannkund2: string;
+    const v17Serie = (bolag = companyId) => withAdmin(async (client) => {
+      const r = await client.query<{ next_value: number }>(
+        "SELECT next_value FROM number_sequences WHERE company_id = $1 AND kind = 'customer'", [bolag]);
+      expect(r.rows).toHaveLength(1);
+      return r.rows[0]!.next_value;
+    });
+    const v17SerieAudit = (bolag = companyId) => withAdmin(async (client) => {
+      const r = await client.query(`SELECT entity_type, entity_id, details FROM audit_log
+        WHERE company_id = $1 AND action = 'customer.number_series_set' ORDER BY occurred_at DESC, id DESC`, [bolag]);
+      return { n: r.rowCount!, latest: r.rows[0] ?? null };
+    });
+    const v17Nummer = async (kundId: string) => (await v15Kundrad(kundId)).customer_number as number;
+    async function v17Form(orgId: string, kundId: string) {
+      const nummer = String(await v17Nummer(kundId));
+      return { ...await v15Form(orgId, kundId), customer_number: nummer, fore_customer_number: nummer };
+    }
+    const v17Las = async (par: V15Par) => ({ ...await v15Tillstand(par),
+      serie: await v17Serie(), serieAudit: await v17SerieAudit() });
+    const v17Ledigt = (nummer: number) => withAdmin(async (client) => {
+      const r = await client.query('SELECT id FROM customers WHERE company_id = $1 AND customer_number = $2', [companyId, nummer]);
+      expect(r.rows, `Kundnummer ${nummer} måste vara ledigt i testbolaget`).toHaveLength(0);
+    });
+    async function v17Faktura(kundId: string) {
+      const underlag = await withAdmin(async (client) => {
+        const fakturor = await client.query('SELECT * FROM invoices WHERE customer_id = $1 ORDER BY id', [kundId]);
+        expect(fakturor.rows.length).toBeGreaterThan(0);
+        const rader = await client.query('SELECT * FROM invoice_lines WHERE invoice_id = ANY($1::uuid[]) ORDER BY id',
+          [fakturor.rows.map((r) => r.id)]);
+        return { fakturor: fakturor.rows, rader: rader.rows };
+      });
+      const svar = [];
+      for (const faktura of underlag.fakturor) {
+        const r = await act('get_invoice', { invoice_id: faktura.id });
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        svar.push(r.body);
+      }
+      return { ...underlag, svar };
+    }
+    beforeAll(async () => {
+      for (let i = 1; i <= 13; i++) v17Par.push(await v15Par(`Nummer ${i} 17`));
+      v17Upptagen = await v15Kund('Upptagen Kund 17 AB');
+      v17Faktura17 = await v15Par('Faktura 17');
+      await bookedInvoice(v17Faktura17.kund, '2026-06-30', 1);
+      v17Grannkund1 = await v15Kund('Grannkund 1 17 AB', {}, v15Granne);
+      v17Grannkund2 = await v15Kund('Grannkund 2 17 AB', {}, v15Granne);
+      for (const [kund, nummer] of [[v17Grannkund1, 917017], [v17Grannkund2, 917027]] as const) {
+        await v17Ledigt(nummer);
+        await withAdmin((client) => client.query('UPDATE customers SET customer_number = $1 WHERE id = $2 AND company_id = $3',
+          [nummer, kund, v15Granne]));
+      }
+    });
+
+    it('KA1 åtgärden sparar numret i kundregistret och visar det utan CRM-skrivning', async () => {
+      const p = v17Par[0]!, N = await v17Serie() + 10;
+      const fore = await v15Tillstand(p);
+      const r = await act('update_customer', { customer_id: p.kund, customer_number: N });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result.customer_number).toBe(N);
+      const efter = await v15Tillstand(p);
+      expect(efter.kund).toEqual({ ...fore.kund, customer_number: N, updated_at: expect.any(Date) });
+      expect(efter.audit.n).toBe(fore.audit.n + 1);
+      expect(efter.audit.latest).toEqual({ entity_id: p.kund, details: { fields: ['customer_number'] } });
+      expect(efter.crm).toEqual(fore.crm);
+      expect(rad(kort(await sida(p.org), 'Kundkortet'), 'Kundnummer')).toContain(`>${N}</span>`);
+    });
+    it('KA2 schemat avvisar ogiltiga nummer utan ändring', async () => {
+      const p = v17Par[1]!;
+      for (const customer_number of [0, -1, 1.5, '7', 2147483646, null]) {
+        const fore = await v17Las(p);
+        const r = await act('update_customer', { customer_id: p.kund, customer_number });
+        expect(r.status, JSON.stringify(r.body)).toBe(400);
+        expect(await v17Las(p)).toEqual(fore);
+      }
+    });
+    it('KA3 krocken avvisas inom bolaget och bolagsgränsen håller', async () => {
+      const p = v17Par[2]!, fore = await v17Las(p), upptagen = await v15Kundrad(v17Upptagen);
+      const krock = await act('update_customer', { customer_id: p.kund, customer_number: await v17Nummer(v17Upptagen) });
+      expect(krock.status, JSON.stringify(krock.body)).toBe(409);
+      expect(krock.body.error).toBe('customer_number_taken');
+      expect(await v17Las(p)).toEqual(fore);
+      expect(await v15Kundrad(v17Upptagen)).toEqual(upptagen);
+      await v17Ledigt(917017);
+      const eget = await act('update_customer', { customer_id: p.kund, customer_number: 917017 });
+      expect(eget.status, JSON.stringify(eget.body)).toBe(200);
+      expect(await v17Nummer(p.kund)).toBe(917017);
+      const granne = await v15Kundrad(v17Grannkund1), serie = await v17Serie(), audit = await v17SerieAudit();
+      const felBolag = await act('update_customer', { customer_id: v17Grannkund1, customer_number: serie + 20 });
+      expect(felBolag.status, JSON.stringify(felBolag.body)).toBe(404);
+      expect(await v15Kundrad(v17Grannkund1)).toEqual(granne);
+      expect(await v17Serie()).toBe(serie);
+      expect(await v17SerieAudit()).toEqual(audit);
+    });
+    it('KA4 serien flyttas fram med audit och nästa kund får ett ledigt nummer', async () => {
+      const p = v17Par[3]!, q = v17Par[4]!, S = await v17Serie(), O = await v17Nummer(p.kund), N = S + 50;
+      const A = (await v17SerieAudit()).n;
+      const r = await act('update_customer', { customer_id: p.kund, customer_number: N });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(await v17Serie()).toBe(N + 1);
+      expect(await v17SerieAudit()).toEqual({ n: A + 1, latest: { entity_type: 'company', entity_id: companyId,
+        details: { from_next_value: S, to_next_value: N + 1, customer_id: p.kund, customer_number: N } } });
+      const ny = await v15Kund('Ny Efter Serien 17 AB');
+      expect(await v17Nummer(ny)).toBe(N + 1);
+      expect(await v17Serie()).toBe(N + 2);
+      const tillbaka = await act('update_customer', { customer_id: q.kund, customer_number: O });
+      expect(tillbaka.status, JSON.stringify(tillbaka.body)).toBe(200);
+      expect(await v17Serie()).toBe(N + 2);
+      expect((await v17SerieAudit()).n).toBe(A + 1);
+    });
+    it('KA5 negativ kontroll: ett planterat nummer utan serieflytt krockar', async () => {
+      const p = v17Par[5]!, S = await v17Serie(), O = await v17Nummer(p.kund);
+      await withAdmin((client) => client.query('UPDATE customers SET customer_number = $1 WHERE id = $2 AND company_id = $3',
+        [S, p.kund, companyId]));
+      try {
+        const r = await api.post(`${co()}/customers`).set(auth()).send({ name: 'Krock Utan Serie 17 AB' });
+        expect(r.status, JSON.stringify(r.body)).toBe(409);
+        expect(r.body.error).toBe('conflict');
+        await withAdmin(async (client) => {
+          const kunder = await client.query('SELECT id FROM customers WHERE company_id = $1 AND name = $2',
+            [companyId, 'Krock Utan Serie 17 AB']);
+          expect(kunder.rows).toHaveLength(0);
+        });
+        expect(await v17Serie()).toBe(S);
+      } finally {
+        await withAdmin((client) => client.query('UPDATE customers SET customer_number = $1 WHERE id = $2 AND company_id = $3',
+          [O, p.kund, companyId]));
+      }
+      expect(await v17Nummer(p.kund)).toBe(O);
+    });
+    it('KA6 en redan bokförd faktura och dess underlag är oförändrade', async () => {
+      const fore = await v17Faktura(v17Faktura17.kund);
+      const r = await act('update_customer', { customer_id: v17Faktura17.kund, customer_number: await v17Serie() + 30 });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(await v17Faktura(v17Faktura17.kund)).toEqual(fore);
+    });
+    it('KA7 dokumentet beskriver kundnumret i ett eget avsnitt', async () => {
+      const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+      const rubrik = '## Kundnumret på relationssidan (crm 1.7)';
+      expect(doc.split(rubrik)).toHaveLength(2);
+      expect(doc.indexOf(rubrik)).toBeGreaterThan(doc.indexOf('## Statusen vid kundkoppling och sammanslagning (crm 1.6)'));
+      const avsnitt = doc.split(rubrik)[1]!.split('\n## ')[0]!;
+      for (const term of ['update_customer', 'customer_number', 'customer_number_taken', 'number_sequences',
+        'customer.number_series_set', 'customer.updated']) expect(avsnitt).toContain('`' + term + '`');
+      expect(avsnitt).not.toMatch(/^### /m);
+    });
+
+    async function v17Avvisa(par: V15Par, kropp: Record<string, unknown>, text: string) {
+      const serie = await v17Serie(), audit = await v17SerieAudit(), upptagen = await v15Kundrad(v17Upptagen);
+      await v15Avvisa(par, kropp, text);
+      expect(await v17Serie()).toBe(serie);
+      expect(await v17SerieAudit()).toEqual(audit);
+      expect(await v15Kundrad(v17Upptagen)).toEqual(upptagen);
+    }
+    it('KR2 numret sparas genom formuläret och visas i kortet', async () => {
+      const p = v17Par[6]!, N = await v17Serie() + 10;
+      await v15Spara(p, { ...await v17Form(p.org, p.kund), customer_number: String(N) }, { customer_number: N });
+      expect(rad(kort(await sida(p.org), 'Kundkortet'), 'Kundnummer')).toContain(`>${N}</span>`);
+      expect(await v17Serie()).toBe(N + 1);
+    });
+    it('KR3 kundnummer och adress sparas i samma åtgärd', async () => {
+      const p = v17Par[7]!, N = await v17Serie() + 10;
+      await v15Spara(p, { ...await v17Form(p.org, p.kund), customer_number: String(N), address: 'Nummergatan 17' },
+        { customer_number: N, address: 'Nummergatan 17' });
+    });
+    it('KR4 krocken visas i notisen och grannbolagets nummer är fritt', async () => {
+      const p = v17Par[8]!, T = await v17Nummer(v17Upptagen);
+      await v17Avvisa(p, { ...await v17Form(p.org, p.kund), customer_number: String(T) },
+        `Kundnummer ${T} används redan av en annan kund i bolaget. Inget sparades.`);
+      await v17Ledigt(917027);
+      await v15Spara(p, { ...await v17Form(p.org, p.kund), customer_number: '917027' }, { customer_number: 917027 });
+    });
+    it('KR5 ogiltiga nummer visas i notisen utan någon skrivning', async () => {
+      const p = v17Par[9]!;
+      for (const customer_number of ['0', 'abc', '1.5', '2147483646']) {
+        await v17Avvisa(p, { ...await v17Form(p.org, p.kund), customer_number },
+          'Kundnumret anges som ett heltal från 1. Inget sparades.');
+      }
+    });
+    it('KR6 serien flyttas genom formuläret och nästa kund kan skapas', async () => {
+      const p = v17Par[10]!, S = await v17Serie(), N = S + 50;
+      await v15Spara(p, { ...await v17Form(p.org, p.kund), customer_number: String(N) }, { customer_number: N });
+      expect(await v17Serie()).toBe(N + 1);
+      const ny = await v15Kund('Ny Efter Formuläret 17 AB');
+      expect(await v17Nummer(ny)).toBe(N + 1);
+    });
+    it('KR7 ett oförändrat nummer skickas inte när telefonen rättas', async () => {
+      const p = v17Par[11]!, S = await v17Serie(), A = (await v17SerieAudit()).n;
+      await v15Spara(p, { ...await v17Form(p.org, p.kund), phone: '08-717 17' }, { phone: '08-717 17' });
+      expect(await v17Serie()).toBe(S);
+      expect((await v17SerieAudit()).n).toBe(A);
+    });
+
+    it('KR1 kundnumrets inmatning följer fakturaformulärets ordning och sex läsrader', async () => {
+      const p = v17Par[12]!, nr = await v17Nummer(p.kund), k = kort(await sida(p.org), 'Kundkortet');
+      expect(k).toContain(`<label>Kundnummer<input type="number" name="customer_number" min="1" max="2147483645" value="${nr}"></label>`);
+      expect(k).toContain(`<input type="hidden" name="fore_customer_number" value="${nr}">`);
+      expect(k.indexOf('name="customer_number"')).toBeGreaterThan(k.indexOf('name="fore_customer_id"'));
+      expect(k.indexOf('name="customer_number"')).toBeLessThan(k.indexOf('name="email"'));
+      expect(k).toContain('Ett nytt kundnummer måste vara ledigt i bolaget. Fakturor som redan är ställda ändras inte.');
+      expect(k).not.toMatch(/\brequired\b/);
+      expect([...k.matchAll(/<span class="k">([^<]+)<\/span>/g)].map((m) => m[1]))
+        .toEqual(['Kundnummer', 'Fakturamejl', 'Adress', 'Momsreg.nr', 'Betalningsvillkor', 'Telefon']);
     });
   });
 });

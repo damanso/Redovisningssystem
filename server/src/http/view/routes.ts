@@ -7817,6 +7817,8 @@ function kundkortetsFaktakort(companyId: string, orgId: string, back: string, ku
       <form method="post" action="/app/c/${companyId}/relations/${orgId}/edit?handgrepp=kundkort">
         <input type="hidden" name="back" value="${back}">
         <input type="hidden" name="fore_customer_id" value="${kund.id}">
+        <label>Kundnummer<input type="number" name="customer_number" min="1" max="2147483645" value="${kund.customer_number}"></label>
+        <input type="hidden" name="fore_customer_number" value="${kund.customer_number}">
         <label>Fakturamejl<input type="text" name="email" maxlength="254" value="${kund.email ?? ''}"></label>
         <input type="hidden" name="fore_email" value="${kund.email ?? ''}">
         <label>Telefon<input type="text" name="phone" maxlength="50" value="${kund.phone ?? ''}"></label>
@@ -7833,6 +7835,7 @@ function kundkortetsFaktakort(companyId: string, orgId: string, back: string, ku
         <input type="hidden" name="fore_payment_terms" value="${kund.payment_terms ?? ''}">
         <button class="btn btn--primary btn--sm" type="submit">Spara</button>
         <p class="hint">Ett tomt fält lämnas oförändrat — det raderar ingenting.</p>
+        <p class="hint">Ett nytt kundnummer måste vara ledigt i bolaget. Fakturor som redan är ställda ändras inte.</p>
       </form>
     </details>
     <p class="hint"><a href="/app/c/${companyId}/customers/${kund.id}">Öppna kundkortet →</a></p>
