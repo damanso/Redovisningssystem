@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.12, härledda vakter för känsliga vyknappar (FR-38, AD-1):**
+  Endast `server/test/vy-kansliga-knappar.test.ts` har byggts ut. VK1.1–VK1.3
+  jämför 37 känsliga åtgärder med funktionstabellen och bevakar tjänsteimporter
+  under http med tre filbundna requireHuman-undantag. VK2.1–VK2.2 bevakar de
+  två tillåtna grenraderna. VK3.1–VK3.4 härleder vyns anropsställen och kräver
+  samma tolv känsliga par som POSTFALL. Kontrollerna fäller planterade fel.
+  VK4.1 har en avsiktlig direktbokning i en lokal testapp; VK4.2 har tolv fall
+  över tretton riktiga vägar och mäter redirect, köpost, verifikat, konton och
+  audit före godkännandet. Story 1.3:s del är bevarad utom två tillåtna kommentarer.
+  Fallen skrevs före hjälparna; saknade hjälpare gav TS2304 i de röda stegen.
+  VK4.2 skrevs först med tom rigg och utan inloggning, därefter med full rigg.
+  `npm run typecheck` efter varje hjälpare och riggen: exit 0;
+  `npm run build`: exit 0; `git diff --check`: exit 0.
+  Kompletterande isolerad Node/TypeScript-kontroll med node:assert: nio rena
+  VK1–VK3-fall utan avvikelse. Det är ingen vitest- eller databaskörning.
+  Samtliga fokuserade vitestförsök och full `npm test` vid rött/grönt/grindarna:
+  **inte kört — globalSetup: `connect EPERM 127.0.0.1:5433`**, exit 1 före fallen.
+  Inga databasfall påstås röda eller gröna; kedjan kör hela sviten efteråt enligt
+  berättelsens uttryckliga grindundantag. Formspråket bevaras: ingen yta, token,
+  typografi, fokusordning, tomläge, felläge eller laddningshantering ändras.
+  Ingen produktionskod, rutt, åtgärd, migration, kontraktsändring eller beroende.
+  Inget nytt rött utanför repot orsakas av berättelsen; externa prov är inte ommätta.
+
 - **2026-11-20 — Story 1.3, omtag efter code-review (AC 6):**
   Båda High-fynden gäller samma felklass: Imports väntande SIE-förslag kunde
   ligga utanför Att göras 200 senaste poster, så kortlänken saknade mål.
