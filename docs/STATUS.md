@@ -153,6 +153,23 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.11, kön och besluten efter kortbytet (FR-27):**
+  Ny regressionssvit `server/test/forslagskort-beslut.test.ts` med 14 fall,
+  B1.1–B4.2, i sju isolerade bolagsriggar: åtgärdsrutt och MCP-kö,
+  exakt verktygslista med planterat motprov, agentens beslutsförbud i MCP,
+  REST och direktanrop, människans ja/nej, audit och verifikatkoppling,
+  tillbakarullning med synlig felnotis samt tyst `not_pending`.
+  Motproven skrevs först per uppgift enligt berättelsens regressionsregel.
+  Ingen produktionskod ändrad. Husets Daglig liggare behålls: befintliga
+  kort, kvittorader och notiser med samma tokens, typografi och fokusordning.
+  Alla vitest-försök i motprovs- och regressionsfaserna, den nya filen och
+  hela `npm test`: **inte kört — connect EPERM 127.0.0.1:5433** i globalSetup,
+  innan några fall kördes. Kedjan måste pröva databastesterna; inget av dem
+  kallas grönt här. `npm run typecheck`: exit 0 (`tsc --noEmit && tsc --noEmit
+  -p tsconfig.test.json`). `npm run build`: exit 0 (`tsc`). DoD genomgången
+  punkt för punkt med berättelsens «inte kört»-undantag för databasproven.
+  Inget nytt står rött utanför repot; ingen rutt eller något kontrakt ändrat.
+
 - **2026-11-20 — Story 1.2, bokslutets bokningar som förslag (FR-22, FR-38, AD-1):**
   Bokslutets avsättning, skatt och resultat går genom `runViewAction` till Att göra
   före bokföringen. Alla fem formulär har en gemensam felredirect; låsta år och
