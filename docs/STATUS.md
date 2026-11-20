@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 6.2 (crm), likviditet per kalendermånad:**
+  Ren rullning i domain/liquidity.ts och läsåtgärden liquidity_by_month genom
+  liquidityByMonth i reports.ts. Delade källhjälpare för kassa, reskontra,
+  AGI och skattedatum; recurringMonthOre delas med styrvyn. Tre belagda källor,
+  sju obelagda poster och okänt med källa. Prognosens noter och svar bevaras.
+  steering-liquidity.test.ts täcker U/G/A/B/D; befintliga tester är orörda.
+  Rött före kod observerat i typkontroll och rena negativa kontroller.
+  Slutkontroll: typecheck exit 0 (båda tsconfig), build exit 0 och
+  git diff --check exit 0. Separat Vitest utan DB-setup: 16 passed,
+  19 skipped (U1–U10, G0, B1n mekanism, D1 samt befintlig liquidityGuard).
+  Fullsviten körd före och efter varje uppgift: exit 1 i globalSetup,
+  connect EPERM 127.0.0.1:5433. Databasfallen är okörda här och lämnas till
+  kedjan enligt uppdragets nätundantag. Inga databasmockar används.
+  DoD prövad punkt för punkt (26 punkter), databasundantag i 14/24;
+  berättelse och sprintstatus review.
+  Styrvyn visar likviditeten först efter Story 6.3; befintlig Daglig liggare,
+  typografi och tokens behålls eftersom detta bygge bara bär beräkningen.
+  Inga tjänster startade, ingen driftsättning eller webbläsarprovning.
+  Inget ändrat kontrakt mot CRM:s källsystem eller ny navigationsadress;
+  inga externa prov körda och ingen ändring av deras baslinje påstås.
+
+
 - **2026-11-20 — Story 1.4, tre High-fynd om samtidiga kundkopplingar (AC2/AC3):**
   Gemensam rotorsak: bara uttryckligt kundval tog kundlåset; synkens FK-lås
   tillät en manuell förkontroll mot ett gammalt läge och sedan 500 från indexet.

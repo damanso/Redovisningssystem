@@ -2542,3 +2542,63 @@ Ett byte av kund behandlar statusen som en ny koppling.
 Relationssidans *Rätta uppgifter* skickar bara ändrade fält, jämförda mot det
 visade värdet i de dolda `fore_`-fälten. Formuläret öppnas med
 `?oppna=uppgifter` från sidhuvudets *Ej i kundregistret*.
+
+
+## Likviditet per kalendermånad (crm 6.2)
+
+`liquidity_by_month` är en läsåtgärd (`read`) med valfri indata
+`as_of` som `YYYY-MM-DD` (utelämnat betyder i dag). REST och MCP läser
+`liquidityByMonth`, samma tjänst som styrvyn ska läsa i Story 6.3.
+Horisonten är tre kalendermånader: från skärdatum till första månadens slut,
+sedan två hela månader. Belopp anges som heltal i ören och månader som `YYYY-MM`.
+Ingående medel är bokfört saldo på 19xx per skärdatum och varje månads
+utgående saldo blir nästa månads ingående.
+
+Svaret innehåller:
+
+- `as_of`: skärdatum, och `horizon_end`: den tredje månadens sista dag.
+- `months`: månad, från-/tilldatum, ingående medel, belagda inbetalningar,
+  belagda utbetalningar, utgående saldo och varav förfallet på båda sidor.
+- `outcome`: `deficit`, `no_deficit` eller `unknown`.
+- `first_deficit`: första månaden med negativt utgående saldo och beloppet
+  under noll; annars `null`.
+- `need_ore`: största underskottet bland månadernas utgående saldon,
+  0 när inget underskott finns och `null` när behovet är okänt.
+- `complete`: om kassan är känd och inga källor är okända.
+- `counted`: en rad per belagd källa med riktning, belopp inom horisonten
+  och varav förfallet, också när beloppet är 0.
+- `not_counted`: obelagda belopp med riktning och skäl, nästa förfallodag
+  och underlagets reservation där dessa finns. Beloppet är absolutvärdet.
+- `unknown`: saknade eller omodellerade källor med skäl.
+- `beyond_horizon`: belagda in- och utbetalningar efter horisonten, för sig.
+
+Tre källor räknas, i ordning: kundfakturor (`kundfakturor`, kundens del efter
+ROT/RUT-avdrag på förfallodagen), leverantörsfakturor (`leverantorsfakturor`
+på förfallodagen) och obetalda lönebeskeds skatt och avgifter
+(`agi_lonebesked`, på respektive löneperiods AGI-förfallodag).
+Förfallna obetalda poster läggs i första månaden och märks som förfallna;
+en post på skärdatum räknas inte som förfallen.
+
+Sju obelagda källor redovisas alltid separat, i denna ordning, även vid 0:
+`abonnemang` (aktiva abonnemang utan ställd faktura, värde per månad),
+`ofakturerad_tid` (utfört arbete utan faktura), `moms` (periodlöst netto på
+26xx eller en odaterad fordran), `agi_restsaldo` (2710/2730 utan löneperiod),
+`bolagsskatt` (uppskattning), `semesterloner_2920` och
+`ovriga_kortfristiga_2890` (kända belopp utan betalningsdatum).
+De påverkar aldrig månadernas flöden. Positiv moms och positivt AGI-restsaldo
+bär nästa skatteförfallodag och underlagets reservation; datumet gör dem
+inte belagda. Fordringar och nollposter har `null` för datum och reservation.
+Skattekontot 2510 tas inte med en gång till. Öppna affärer ingår aldrig.
+
+Okänt har en sluten lista i denna ordning: `kassa_19xx` när inga bokförda
+rader på 1900–1999 finns t.o.m. skärdatum, och `leverantorsfakturor` när
+bolaget aldrig har bokfört en leverantörsfaktura. Båda behovstalen blir då
+`null` och utfallet `unknown`: okänt är aldrig ett fullständigt tal.
+Månadsflödena returneras ändå; saknas kassa blir även ingående och utgående
+saldon `null`. En tidigare använd leverantörsreskontra med allt betalt är
+känd och tom. Nollposter i den obelagda listan står kvar.
+
+`liquidity_forecast` behåller sin svarsform, sina noter och sina
+30-dagarshinkar oförändrade. Den äldre prognosen placerar även periodlösa
+skattenetton mot nästa skattedatum; kalendermånadsberäkningen håller dem
+utanför de belagda flödena. Datum är vägledande utan helgförskjutning.
