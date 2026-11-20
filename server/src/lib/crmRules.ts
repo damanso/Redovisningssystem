@@ -42,3 +42,34 @@ export function correctedEventFields(kind: CorrectableKind, body: unknown, now: 
   }
   return patch;
 }
+
+const ORGANIZATION_CORRECTION_FIELDS = ['name', 'org_number', 'website', 'status', 'customer_id', 'roll'] as const;
+
+/** Bara ändringar mot det visade blir människobeslut; tomt betyder oförändrat. */
+export function correctedOrganizationFields(body: unknown): Record<string, unknown> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return {};
+  const values = body as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const field of ORGANIZATION_CORRECTION_FIELDS) {
+    if (!Object.hasOwn(values, field)) continue;
+    const value = values[field];
+    if (typeof value !== 'string') {
+      patch[field] = value;
+      continue;
+    }
+    const previous = Object.hasOwn(values, `fore_${field}`) ? values[`fore_${field}`] : undefined;
+    const before = typeof previous === 'string' ? previous.trim() : '';
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== before) patch[field] = trimmed;
+  }
+  return patch;
+}
+
+const OPEN_FORMS = Object.freeze({ uppgifter: 'uppgifter' } as const);
+type OpenForm = typeof OPEN_FORMS[keyof typeof OPEN_FORMS];
+
+/** Adressen får bara öppna kända formulär, aldrig ärvda objektnycklar. */
+export function parseOpenForm(value: unknown): OpenForm | null {
+  return typeof value === 'string' && Object.hasOwn(OPEN_FORMS, value)
+    ? OPEN_FORMS[value as keyof typeof OPEN_FORMS] : null;
+}

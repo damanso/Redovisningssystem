@@ -153,6 +153,81 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.4, tre High-fynd om samtidiga kundkopplingar (AC2/AC3):**
+  Gemensam rotorsak: bara uttryckligt kundval tog kundlåset; synkens FK-lås
+  tillät en manuell förkontroll mot ett gammalt läge och sedan 500 från indexet.
+  Låset ligger nu i den gemensamma krockprövningen för både explicit och
+  automatisk koppling, i både INSERT- och UPDATE-grenen. Befintlig relation
+  låses före kunden i båda vägarna; en separat SELECT efter väntan ser vinnaren.
+  Synkens förlorande händelse redovisas genom befintligt skipped/savepoint,
+  och omsändningen redovisar okopplad relation. Kontraktsformen är oförändrad;
+  MCP_ACTIONS.md och API_KONTRAKT.md beskriver samtidighetsutfallet.
+  Först skrevs S1 (åtta fall: namn/nummer × ny/befintlig synkrelation ×
+  nykoppling/byte i vyn) och S2 (fyra fall i omvänd ordning med omsändning).
+  Riktiga transaktioner, grind, pg_blocking_pids och finally; inga databasmockar.
+  Befintliga fixturer och assertioner är oförändrade. Typecheck före/efter:
+  exit 0. npm test före/efter: exit 1 i globalSetup, connect EPERM mot
+  127.0.0.1:5433; inga databasfall körda eller grönrapporterade. Kedjan kör
+  hela sviten enligt användarens uttryckliga nätundantag.
+  Slutgrind: build och diffkontroll exit 0; fullsviten åter blockerad av EPERM.
+  Alla 26 DoD-punkter omprövade, tre fynd kryssade enligt nätundantaget;
+  berättelse och sprintstatus åter review.
+  Husets Daglig liggare med Public Sans/IBM Plex Mono, petrolaccent, native
+  select, fokusmarkering och befintliga tom-/fel-/laddade lägen följs.
+  Ingen ny yta, CSS-klass, rutt, åtgärd, migration, beroende eller statusregel.
+  Ingen tjänstestart, webbläsarprovning, drift eller Hermes-körning;
+  adresskontraktet/bmadglidning kvarstår som extern baslinje enligt berättelsen.
+
+- **2026-11-20 — Story 1.4, två High-fynd efter code-review (AC4/FR-8):**
+  Båda fynden har samma rotorsak: kunduppslaget i tjänsten kunde lägga till
+  utelämnad kundkoppling och därmed ändra status efter formulärets filtrering.
+  En gemensam vakt i `crmRelations.ts` hindrar automatiskt uppslag vid en
+  människas rättelse med `organization_id`, oavsett vilket fält som rättas.
+  Synkens uppslag på namn/org.nr och uttryckligt kundval behåller sin väg.
+  Först skrevs A9:s fem parameterfall (namn, org.nr, webbplats, status, roll),
+  A10:s fyra synkfall (namn/nummer × ny/befintlig relation) och K6 kompletterades
+  med en ledig kund med det nya namnet. Befintliga assertioner bevarade.
+  `npm run typecheck` före/efter kod: exit 0. `npm run build`: exit 0.
+  `git diff --check`: exit 0. `npm test` före/efter kod: exit 1 i globalSetup,
+  `Error: connect EPERM 127.0.0.1:5433`; inga databasfall körda här och inget
+  observerat rött/grönt påstås för dem. Kedjan kör hela sviten enligt uppdragets
+  uttryckliga undantag. Båda fynden kryssas efter läskontroll av hela felklassen.
+  MCP_ACTIONS.md och API_KONTRAKT.md förtydligar utelämnade fält vid rättelse.
+  Ingen ny rutt, migration, åtgärd, beroende eller ändring av statusregeln.
+  Alla 26 DoD-punkter omprövade med databasundantaget; berättelse och sprintstatus review.
+  Befintlig Daglig liggare, typografi, tokens, tangentbordsfokus och formulärlägen
+  följs. Hermes-prov, webbläsarprovning, tjänstestart och driftsättning ej körda;
+  adresskontraktet/bmadglidning är fortsatt extern baslinje enligt berättelsen.
+
+- **2026-11-20 — Story 1.4, kundkopplingen väljs och byts på relationssidan (FR-10, FR-8):**
+  *Rätta uppgifter* har kundval med aktiva kunder i nummerordning och nuvarande
+  inaktiva kund kvar som förval. Sex dolda `fore_`-fält gör att bara ändringar
+  mot det visade får människans ursprung. `name` får utelämnas med
+  `organization_id`; tom rättelse ger `nothing_to_update` utan skrivning.
+  Ett uttryckligt kundval slås inte upp och får skrivarens ursprung.
+  Kundraden låses före prövningen av en upptagen kund, som ger
+  `customer_already_linked` med relationens id och synlig notis.
+  Byten går genom samma befintliga statusväg som en ny koppling.
+  Sidhuvudets *Ej i kundregistret* länkar till `?oppna=uppgifter`; tillåtelselistan
+  ignorerar okända värden. R1–R5, A1–A8, K1–K9 och O1–O3 täcker beteendet.
+  Befintliga prov och fixturer är bytevis bevarade. Husets Daglig liggare,
+  Public Sans/IBM Plex Mono, petrolaccent, select, fokusmarkering och
+  etiketter återanvänds utan nya klasser. Tomt val visar *Ingen koppling*,
+  fel visas i befintlig notis, och det laddade läget serverrenderas utan JS.
+  Slutgrind: `npm run typecheck`, `npm run build` och `git diff --check`:
+  exit 0. Alla 26 DoD-punkter prövade med databasundantaget i 14 och 24;
+  berättelsen och sprintstatus är review. Rött i uppgift 1 observerades
+  som TS2305 före implementation. Separat Vitest av crm-rules.test.ts utan
+  databassetup: `Test Files 1 passed (1)`, `Tests 9 passed (9)`.
+  Rena sändvägs-/utskickskontroller inklusive N1–N4 och U0: `PASS`, 0 brister.
+  `npm test` försökt före/efter varje uppgift: exit 1 i globalSetup,
+  `Error: connect EPERM 127.0.0.1:5433`; inga databasfall kördes och ingen
+  grön fullsvit påstås. Kedjan kör databasproven enligt uppdragets undantag.
+  Ingen ny rutt, migration, åtgärd eller beroende. MCP_ACTIONS.md och
+  API_KONTRAKT.md beskriver schemaändringen. Adresskontraktet och bmadglidning
+  var röda före bygget av andra skäl enligt berättelsens baslinje.
+  Hermes-prov, tjänstestart, webbläsarprovning och driftsättning har inte körts.
+
 - **2026-11-20 — Story 1.2, två High-fynd efter code-review (AC3/FR-8):**
   Gemensam rotorsak: händelsens bekräftelse skrev human utan samma radlås som
   rättelse och synk. Båda händelsegrenarna i `confirmCrmValue` tar nu

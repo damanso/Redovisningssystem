@@ -61,7 +61,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -7285,6 +7285,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const companyId = parseCompanyId(req.params.companyId);
   const orgId = parseApprovalId(req.params.orgId);
   const filter: ThreadFilter = isThreadFilter(req.query.visa) ? req.query.visa : 'allt';
+  const oppetFormular = parseOpenForm(req.query.oppna);
   const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const o = await getOrganization(client, companyId, orgId) as {
@@ -7300,6 +7301,9 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       provenance: Record<string, ProvenanceView>;
       name_aliases: Array<{ name: string }>;
     };
+    const kundval = (await listCustomers(client, companyId, { includeInactive: true }) as Array<{
+      id: string; customer_number: number; name: string; is_active: boolean;
+    }>).filter((c) => c.is_active || c.id === o.customer_id);
     // EN rad, inte hela bolagets aggregering — och arkiverade relationer får
     // visa sina egna tal på det kort man uttryckligen öppnat.
     const [state] = await relationState(client, companyId, { organization_id: orgId });
@@ -7338,7 +7342,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const b = html`<div class="page-head"><div>${eyebrow('Relation')}<h1>${o.name}</h1>
         <p class="lede">${o.customer_id ? html`Kund i registret · ${entityLink(companyId, 'customer', o.customer_id, o.customer_name ?? 'Kundkortet')} · ` : ''}<a href="/app/c/${companyId}/relations">← Relationer</a></p></div>
         <div class="actions">${orgStatusChip(o.status)}${
-          o.customer_id ? '' : html` ${chip('Ej i kundregistret', 'warn', '!')}`
+          o.customer_id ? '' : html` <a href="/app/c/${companyId}/relations/${o.id}?oppna=uppgifter">${chip('Ej i kundregistret', 'warn', '!')}</a>`
         }</div></div>
       ${felNotis(req)}
 
@@ -7389,20 +7393,27 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                  kortets fem uppgifter: confirm_crm_value tar inte sfär eller roll. */ ''}
             <div class="uppgift"><span class="k">Sfär</span><span class="v">${sfarMarke(o.sfar)}${ursprungsMark(o.provenance.sfar)}</span></div>
             <div class="uppgift"><span class="k">Roll</span><span class="v">${o.roll ? rollText(o.roll) : '—'}${ursprungsMark(o.provenance.roll)}</span></div>
-            <details class="rattaform">
+            <details class="rattaform"${oppetFormular === 'uppgifter' ? html` open` : ''}>
               <summary>Rätta uppgifter</summary>
               <form method="post" action="/app/c/${companyId}/relations/${o.id}/edit">
                 <input type="hidden" name="back" value="${back}">
-                <label>Namn<input type="text" name="name" maxlength="200" value="${o.name}" required></label>
+                <label>Namn<input type="text" name="name" maxlength="200" value="${o.name}"></label>
+                <input type="hidden" name="fore_name" value="${o.name}">
                 <label>Org.nr<input type="text" name="org_number" maxlength="20" value="${o.org_number ?? ''}"></label>
+                <input type="hidden" name="fore_org_number" value="${o.org_number ?? ''}">
                 <label>Webbplats<input type="text" name="website" maxlength="200" value="${o.website ?? ''}"></label>
+                <input type="hidden" name="fore_website" value="${o.website ?? ''}">
                 <label>Status<select name="status">${(['prospect', 'customer', 'partner', 'former', 'archived'] as const).map((s) => html`<option value="${s}"${s === o.status ? html` selected` : ''}>${orgStatusText(s)}</option>`)}</select></label>
+                <input type="hidden" name="fore_status" value="${o.status}">
+                <label>Kund i registret<select name="customer_id">${o.customer_id ? '' : html`<option value="" selected>Ingen koppling</option>`}${kundval.map((c) => html`<option value="${c.id}"${c.id === o.customer_id ? html` selected` : ''}>${c.customer_number} · ${c.name}${c.is_active ? '' : ' (inaktiv)'}</option>`)}</select></label>
+                <input type="hidden" name="fore_customer_id" value="${o.customer_id ?? ''}">
                 <label>Roll<select name="roll">
                   <option value=""${o.roll ? '' : html` selected`}>— inte angiven —</option>
                   ${ORG_ROLLER.map((r) => html`<option value="${r}"${r === o.roll ? html` selected` : ''}>${rollText(r)}</option>`)}
                 </select></label>
+                <input type="hidden" name="fore_roll" value="${o.roll ?? ''}">
                 <button class="btn btn--primary btn--sm" type="submit">Spara</button>
-                <p class="hint">Det du sparar här räknas som ditt beslut. Ingen synk skriver över det efteråt.</p>
+                <p class="hint">Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan.</p>
               </form>
               ${/* B (leads beslut 18/11): sfären byts med set_crm_sfar. De öppna
                    åtagandena följer med bara när rutan är ikryssad, och klara och
@@ -7925,10 +7936,8 @@ viewRouter.post('/c/:companyId/relations/:id/confirm', page(async (req, res) => 
     { organization_id: id, field }, backToCrm(req, companyId, `relations/${id}`));
 }));
 
-// F4: rättning för hand. Går genom samma action som AI-vägen — men eftersom en
-// människa kör den blir ursprunget 'human', och därmed skyddat mot nästa synk.
-// Tomma fält betyder "oförändrat", inte "radera": annars hade ett halvifyllt
-// formulär tömt uppgifter man inte ens tittat på.
+// Bara ändrade fält skickas, jämförda mot det visade värdet. En samtidig synk
+// ska inte göra orörda fält till människobeslut. Tomt betyder oförändrat.
 viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
   assertSameOrigin(req);
   const companyId = parseCompanyId(req.params.companyId);
@@ -7951,22 +7960,9 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
       { ...correctedEventFields(key === 'interaction_id' ? 'interaction' : 'commitment', body, new Date()), ...target }, back);
     return;
   }
-  const text = (k: string): string | undefined => {
-    const v = body[k];
-    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
-  };
-  const status = text('status');
-  const roll = text('roll');
   await runViewAction(req, res, companyId, 'upsert_crm_organization', {
-    organization_id: id,
-    name: text('name') ?? '',
-    ...(text('org_number') ? { org_number: text('org_number') } : {}),
-    ...(text('website') ? { website: text('website') } : {}),
-    ...(status && ['prospect', 'customer', 'partner', 'former', 'archived'].includes(status) ? { status } : {}),
-    // Tom roll = oförändrad, samma regel som de andra fälten. Ett okänt värde
-    // skickas vidare och avvisas av schemat, så att notisen syns.
-    ...(roll ? { roll } : {}),
-  }, backToCrm(req, companyId, `relations/${id}`));
+    ...correctedOrganizationFields(body), organization_id: id,
+  }, back);
 }));
 
 // Steg 3 (B): byt sfär på organisationen, en av dess personer eller ett av dess

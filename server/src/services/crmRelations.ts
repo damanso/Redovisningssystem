@@ -8,7 +8,7 @@
 // Alla skrivningar är idempotenta. Härledningsjobben i E4 körs om natten och
 // körs om; en skrivning som inte tål att upprepas är en dubblettgenerator.
 import type { PoolClient } from 'pg';
-import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
@@ -63,7 +63,8 @@ export interface UpsertOrganizationInput {
    * stället för att döpa om den.
    */
   organization_id?: string;
-  name: string;
+  /** Får utelämnas bara med organization_id och betyder då oförändrat. */
+  name?: string;
   org_number?: string;
   website?: string;
   customer_id?: string;
@@ -270,21 +271,45 @@ function assertOrganisationInomGransen(rad: {
   }
 }
 
+/** Samordna alla nya kopplingar, även uppslagna, och pröva på nytt efter väntan. */
+async function assertCustomerFree(
+  client: PoolClient, companyId: string, customerId: string, exceptOrganizationId: string | null,
+): Promise<void> {
+  // Relationsraden är redan låst för en befintlig organisation. Alla vägar
+  // tar därefter kundlåset i samma ordning; FK-kontrollens lås räcker inte.
+  const customer = await client.query(
+    'SELECT 1 FROM customers WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
+    [customerId, companyId],
+  );
+  if (!customer.rows[0]) throw new NotFoundError('customer');
+  // En egen fråga efter låset ser också en koppling som committats under väntan.
+  const taken = await client.query<{ id: string; name: string }>(
+    `SELECT id, name FROM crm.organizations
+     WHERE company_id = $1 AND customer_id = $2 AND id IS DISTINCT FROM $3::uuid LIMIT 1`,
+    [companyId, customerId, exceptOrganizationId],
+  );
+  if (taken.rows[0]) {
+    throw new ConflictError('customer_already_linked',
+      `kunden är redan kopplad till relationen ${taken.rows[0].name} — en kund hör bara till en relation`,
+      { organization_id: taken.rows[0].id });
+  }
+}
+
 /**
  * Prospekt och kund är SAMMA rad. Den dag affären vinns pekas raden mot
  * kundregistret — relationshistoriken bryts inte, och kunduppgifterna kopieras
  * inte hit (de bor kvar i `customers`).
  *
  * Kopplingen sätts uttryckligen när anroparen kan den, annars slås den upp på
- * organisationsnummer eller namn (se matchCustomer). Utan uppslaget blir
- * omsättningen blind för allt som kommer in via API-kontraktet.
+ * organisationsnummer eller namn, utom vid människans rättelse med känt id.
+ * Utan uppslaget blir omsättningen blind för allt som kommer in via API-kontraktet.
  */
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, rawInput: UpsertOrganizationInput, origin: WriteOrigin,
 ): Promise<Organization & { created: boolean; kept_human_fields: string[]; redirected_from: string | null }> {
   const input: UpsertOrganizationInput = { ...rawInput, org_number: normaliseraOrgnummer(rawInput.org_number) };
-  const name = input.name.trim();
-  if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
+  const name = input.name?.trim();
+  if ((input.name !== undefined && !name) || (!input.organization_id && !name)) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
   if (input.customer_id) {
     const c = await client.query('SELECT 1 FROM customers WHERE id = $1 AND company_id = $2', [input.customer_id, companyId]);
     if (!c.rows[0]) throw new NotFoundError('customer');
@@ -298,6 +323,10 @@ export async function upsertOrganization(
         'SELECT id, name, customer_id, sfar, status, roll FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
         [companyId, name]);
   if (input.organization_id && !found.rows[0]) throw new NotFoundError('organization');
+  if (input.organization_id && [input.name, input.org_number, input.website, input.customer_id,
+    input.status, input.source, input.notes, input.sfar, input.roll].every((value) => value === undefined)) {
+    throw new BadRequestError('nothing_to_update', 'Inget att rätta: inget fält ändrades.');
+  }
 
   // Gravstenen efter en sammanslagning (migration 0059).
   //
@@ -320,11 +349,11 @@ export async function upsertOrganization(
         [companyId, name])
     : null;
   const hit = found.rows[0] ?? alias?.rows[0];
-  const redirectedFrom = !found.rows[0] && alias?.rows[0] ? name : null;
+  const redirectedFrom = !found.rows[0] && alias?.rows[0] ? name ?? null : null;
   // Det gamla namnet får ALDRIG döpa om den kvarvarande raden — då hade
   // gravstenen gjort exakt det den finns för att förhindra, fast tvärtom.
   // Skrivningen fortsätter mot rätt rad, med rätt namn.
-  const writeName = redirectedFrom ? hit!.name : name;
+  const writeName = redirectedFrom ? hit!.name : (name ?? hit!.name);
 
   // Namnbyte: krocken fångas här i stället för som ett rått unik-indexfel, och
   // svaret pekar mot rätt åtgärd — två rader för samma bolag ska slås ihop, inte
@@ -339,7 +368,11 @@ export async function upsertOrganization(
     }
   }
 
-  // Uppslaget görs bara när kopplingen saknas. En befintlig koppling ska aldrig
+  // Människans rättelse med känt id ändrar bara angivna fält. En utelämnad
+  // kund får därför aldrig fyllas i av uppslaget, oavsett vilket fält som rättas.
+  // Synken och upsert utan id behåller uppslaget när kopplingen saknas.
+  // Uppslaget görs bara utan uttrycklig kund.
+  // Det uttryckliga valet bär skrivarens ursprung. En befintlig koppling ska aldrig
   // flyttas av en synk — det är ett beslut för en människa.
   //
   // Och bara för en organisation som är och förblir 'foretag', utan privata
@@ -350,18 +383,20 @@ export async function upsertOrganization(
   //
   // Samma sak för en organisation med privata personer (steg 3, 0089): synken ska
   // inte försöka koppla den och fällas, den lämnar den okopplad och säger det.
-  const matchable = !hit?.customer_id
+  const matchable = (!input.organization_id || origin.source !== 'human')
+    && !hit?.customer_id
     && (input.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
     && (hit?.sfar ?? 'foretag') === 'foretag'
     && !(hit && await harPrivataAtaganden(client, companyId, hit.id))
     && !(hit && await harPrivataPersoner(client, companyId, [hit.id]));
-  const matched = matchable ? await matchCustomer(client, companyId, writeName, input.org_number, hit?.id) : null;
+  const matched = matchable && input.customer_id === undefined ? await matchCustomer(client, companyId, writeName, input.org_number, hit?.id) : null;
   const customerId = input.customer_id ?? matched;
 
   if (!hit) {
     const sfar = input.sfar ?? 'foretag';
     const status = input.status ?? (customerId ? 'customer' : 'prospect');
     assertOrganisationInomGransen({ sfar, customer_id: customerId, status, nyKoppling: Boolean(customerId), privataAtaganden: false });
+    if (customerId) await assertCustomerFree(client, companyId, customerId, null);
     const r = await client.query<Organization>(
       `INSERT INTO crm.organizations (company_id, name, org_number, website, customer_id, status, source, notes, created_by, sfar, roll)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING ${ORG_COLUMNS}`,
@@ -391,7 +426,7 @@ export async function upsertOrganization(
     // Vid omstyrning bär händelsen det GAMLA namnet. Det är inget påstående om
     // den kvarvarande raden, så det skrivs inte alls — och rapporteras därför
     // inte heller som ett stoppat människofält: synken bad aldrig om det.
-    { ...input, name: redirectedFrom ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
+    { ...input, name: redirectedFrom || name === undefined ? undefined : writeName, customer_id: customerId } as Record<string, unknown>,
   );
 
   // Rättningsvarv 3b (krav 8): en agent byter inte sfär eller roll på en befintlig
@@ -416,6 +451,8 @@ export async function upsertOrganization(
     privataAtaganden: sfarEfter === 'foretag' && nyKoppling && await harPrivataAtaganden(client, companyId, hit.id),
     privataPersoner: sfarEfter === 'foretag' && nyKoppling && await harPrivataPersoner(client, companyId, [hit.id]),
   });
+
+  if (nyKoppling) await assertCustomerFree(client, companyId, patch.customer_id as string, hit.id);
 
   const r = await client.query<Organization>(
     `UPDATE crm.organizations SET

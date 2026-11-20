@@ -2680,7 +2680,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       .object({
         // Anges när raden redan är känd (rättning i vyn). Utan den matchas namnet.
         organization_id: UuidSchema.optional(),
-        name: safeText(200),
+        // Med organization_id får namnet utelämnas (oförändrat); annars kräver tjänsten det.
+        name: safeText(200).optional(),
         org_number: safeText(20).optional(),
         website: safeText(200).optional(),
         // Sätts när prospektet blivit kund. Kunduppgifterna kopieras inte hit.
