@@ -99,6 +99,15 @@ afterAll(async () => {
 });
 
 describe('MCP-server (stdio) driver kärnan', () => {
+  it('M1 baklänkningens betalåtgärder är verktyg märkta med godkännande', async () => {
+    const res = await mcp.request('tools/list', {});
+    const tools = (res.result as { tools: { name: string; description: string }[] }).tools;
+    for (const name of ['link_voucher_and_mark_paid', 'unlink_voucher_and_reset_payment']) {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool, name).toBeDefined();
+      expect(tool!.description).toMatch(/godkänn/i);
+    }
+  });
   it('tools/list exponerar kärnans actions som native verktyg, känsliga märkta', async () => {
     const res = await mcp.request('tools/list', {});
     const tools = (res.result as { tools: { name: string; description: string; inputSchema: unknown }[] }).tools;

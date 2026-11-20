@@ -4,7 +4,8 @@
 // stämmer. link_voucher kopplar en befintlig post till ett BEFINTLIGT
 // verifikat utan att bokföra något nytt; statusfälten härleds ur länken.
 // suggest_voucher_links föreslår matchningar (belopp + datum + text) som
-// människan bekräftar per rad.
+// människan bekräftar per rad. Betalfakta går bara genom kön (K5, FR-35);
+// återställningens betalstatus prövas under radlåset (AD-2).
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { writeAudit } from './auditService.js';
@@ -31,14 +32,27 @@ const SPECS: Record<LinkableEntityType, LinkSpec> = {
 };
 
 /**
+ * K5, FR-35 och AD-2: link_voucher för aldrig betalmarkering förbi kön.
+ * Den känsliga varianten bär betalmarkeringen efter människans godkännande.
+ */
+export function rejectPaymentMark(markPaid: boolean | undefined): void {
+  if (markPaid === true) {
+    throw new BadRequestError('payment_requires_approval',
+      'betalmarkering kräver godkännande — använd link_voucher_and_mark_paid',
+      { use_action: 'link_voucher_and_mark_paid' });
+  }
+}
+
+/**
  * Kopplar en registerpost till ett befintligt verifikat. Bokför INGENTING —
  * verifikatet finns redan (t.ex. importserien I). Statusar härleds:
  * faktura → sent (eller paid med mark_paid), kvitto/lönebesked → booked,
- * leverantörsfaktura → booked/paid.
+ * leverantörsfaktura → booked/paid. Betalmarkering går bara genom kön
+ * (K5, FR-35, AD-2), med uttrycklig flagga från den känsliga åtgärden.
  */
 export async function linkVoucher(
   client: PoolClient, companyId: string, userId: string,
-  input: { entityType: LinkableEntityType; entityId: string; voucherId: string; markPaid?: boolean },
+  input: { entityType: LinkableEntityType; entityId: string; voucherId: string; markPaid: boolean },
 ): Promise<Record<string, unknown>> {
   const spec = SPECS[input.entityType];
   if (!spec) throw new BadRequestError('invalid_entity_type');
@@ -104,11 +118,12 @@ export async function linkVoucher(
  * SPÄRR: får bara ångra kopplingar som skapades via link_voucher — verifieras
  * mot auditloggen (`<typ>.voucher_linked`). En post vars verifikat skapades av
  * en bokningsaction (book_invoice m.fl.) rättas via rättelseverifikat, aldrig
- * via unlink.
+ * via unlink. Betalfakta får bara återställas genom kön (K5, FR-35);
+ * betalstatus kontrolleras under radlåset (AD-2).
  */
 export async function unlinkVoucher(
   client: PoolClient, companyId: string, userId: string,
-  input: { entityType: LinkableEntityType; entityId: string },
+  input: { entityType: LinkableEntityType; entityId: string; resetPayment: boolean },
 ): Promise<Record<string, unknown>> {
   const spec = SPECS[input.entityType];
   if (!spec) throw new BadRequestError('invalid_entity_type');
@@ -129,6 +144,13 @@ export async function unlinkVoucher(
   );
   if (!linkedViaAudit.rows[0]) {
     throw new ConflictError('not_unlinkable', `${spec.label}ns verifikat skapades genom bokning — rättelse sker via rättelseverifikat, inte unlink`);
+  }
+
+  if ((input.entityType === 'invoice' || input.entityType === 'supplier_invoice')
+    && Number(entity.paid_amount_ore) > 0 && !input.resetPayment) {
+    throw new ConflictError('payment_requires_approval',
+      `${spec.label}n är betalmarkerad — återställningen kräver godkännande med unlink_voucher_and_reset_payment`,
+      { use_action: 'unlink_voucher_and_reset_payment' });
   }
 
   const revertStatus = input.entityType === 'receipt' ? 'registered' : 'draft';

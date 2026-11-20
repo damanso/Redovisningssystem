@@ -215,13 +215,17 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
 
 - `link_voucher` (write) — kopplar en befintlig registerpost till ett
   BEFINTLIGT verifikat (t.ex. importserien) utan att bokföra något nytt;
-  status (bokförd/betald via `mark_paid`) härleds ur länken.
+  status (bokförd) härleds ur länken. `mark_paid: true` avvisas med 400
+  `payment_requires_approval` och `details.use_action: 'link_voucher_and_mark_paid'`.
+  Betalmarkering är Davids bekräftelse (K5) och går genom kön.
 - `unlink_voucher` (write) — ångrar en baklänkning (motsatsen till
   `link_voucher`). Bokför/raderar INGENTING — verifikatet står orört och
   posten återgår till utkastläge. Spärr: bara kopplingar som skapades via
   `link_voucher` kan ångras (verifieras mot auditloggen); verifikat skapade
   genom bokning rättas via rättelseverifikat. Avsedd för Ethos-rättelsen
-  13–18: unlink fel koppling → link rätt verifikat.
+  13–18: unlink fel koppling → link rätt verifikat. En kund- eller
+  leverantörsfaktura med `paid_amount_ore` större än 0 avvisas med 409
+  `payment_requires_approval` och `details.use_action: 'unlink_voucher_and_reset_payment'`.
 - `suggest_voucher_links` (read) — halvautomatiska matchningsförslag
   (belopp + datum + text, poängsatta med skäl) som människan bekräftar per
   rad via `link_voucher`.
@@ -255,6 +259,29 @@ godkännandepost och bokför + registrerar betalningen atomiskt.
   räknas från det kopplade verifikatets datum. Åldern räknas från
   förfallodagen till `as_of`. Utan `as_of` räknas reskontran mot dagens
   datum med fakturornas betalda belopp som de står i dag (FR-29).
+
+#### link_voucher_and_mark_paid
+
+Åtgärden är `sensitive` och köas för en människas godkännande (202).
+Ingenting ändras före godkännandet. Indata: `entity_type` (`invoice` eller
+`supplier_invoice`), `entity_id` och `voucher_id` till ett befintligt verifikat.
+Efter godkännandet är fakturan kopplad, har status `paid` och
+`paid_amount_ore` lika med `total_ore`. Auditraden `<typ>.voucher_linked`
+bär `mark_paid: true`. Vanliga skrivåtgärden `link_voucher` hänvisar hit med
+400 `payment_requires_approval` och `details.use_action` när betalmarkering
+begärs. Inget verifikat skapas eller raderas.
+
+#### unlink_voucher_and_reset_payment
+
+Åtgärden är `sensitive` och köas för en människas godkännande (202).
+Ingenting ändras före godkännandet. Indata: `entity_type` (`invoice` eller
+`supplier_invoice`) och `entity_id`. Efter godkännandet är `voucher_id` NULL,
+status `draft` och `paid_amount_ore` 0, med auditraden `<typ>.voucher_unlinked`.
+Vanliga skrivåtgärden `unlink_voucher` hänvisar hit med 409
+`payment_requires_approval` och `details.use_action` för en betalmarkerad
+faktura. En koppling som inte gjorts via `link_voucher` avvisas vid
+godkännandet med 409 `not_unlinkable`; fakturan är oförändrad och förslaget
+står kvar väntande. Inget verifikat skapas eller raderas.
 
 ### Kvittobilagor — tre steg, där steg 2 inte är ett MCP-anrop (beslut #178)
 

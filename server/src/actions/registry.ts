@@ -113,7 +113,7 @@ import {
 import { APPENDIX_LAYOUTS, createInvoiceFromTime, type AppendixLayout } from '../services/invoiceFromTime.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
-import { linkVoucher, unlinkVoucher, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
+import { linkVoucher, unlinkVoucher, rejectPaymentMark, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
 import { writeAudit } from '../services/auditService.js';
 
 const LinkableEntityTypeSchema = z.enum(['invoice', 'receipt', 'supplier_invoice', 'payslip']);
@@ -283,15 +283,18 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Koppla registerpost till befintligt verifikat (baklänkning)',
     sensitivity: 'write',
     // K6: bokför INGENTING nytt — kopplar en importerad/okopplad post till sitt
-    // redan bokförda verifikat så reskontran visar rätt bokförd/betald-status.
+    // redan bokförda verifikat så reskontran visar rätt bokförd-status.
+    // Betalmarkering sker genom link_voucher_and_mark_paid (K5, FR-35).
     inputSchema: z.object({
       entity_type: LinkableEntityTypeSchema,
       entity_id: UuidSchema,
       voucher_id: UuidSchema,
       mark_paid: z.boolean().optional(),
     }).strict(),
-    handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string; voucher_id: string; mark_paid?: boolean }) =>
-      linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: i.mark_paid }),
+    handler: async (ctx, i: { entity_type: LinkableEntityType; entity_id: string; voucher_id: string; mark_paid?: boolean }) => {
+      rejectPaymentMark(i.mark_paid);
+      return linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: false });
+    },
   }),
   def({
     name: 'unlink_voucher',
@@ -304,7 +307,32 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       entity_id: UuidSchema,
     }).strict(),
     handler: (ctx, i: { entity_type: LinkableEntityType; entity_id: string }) =>
-      unlinkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id }),
+      unlinkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, resetPayment: false }),
+  }),
+  // K5 och FR-35: betalfakta via baklänkning går genom kön. Känsligheten
+  // är fast per åtgärd (AD-2), som book_invoice_and_register_payment.
+  def({
+    name: 'link_voucher_and_mark_paid',
+    title: 'Koppla faktura till befintligt verifikat och markera betald',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({
+      entity_type: z.enum(['invoice', 'supplier_invoice']),
+      entity_id: UuidSchema,
+      voucher_id: UuidSchema,
+    }).strict(),
+    handler: (ctx, i: { entity_type: 'invoice' | 'supplier_invoice'; entity_id: string; voucher_id: string }) =>
+      linkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, voucherId: i.voucher_id, markPaid: true }),
+  }),
+  def({
+    name: 'unlink_voucher_and_reset_payment',
+    title: 'Ta bort baklänkning och betalmarkering från faktura',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({
+      entity_type: z.enum(['invoice', 'supplier_invoice']),
+      entity_id: UuidSchema,
+    }).strict(),
+    handler: (ctx, i: { entity_type: 'invoice' | 'supplier_invoice'; entity_id: string }) =>
+      unlinkVoucher(ctx.client, ctx.companyId, ctx.userId, { entityType: i.entity_type, entityId: i.entity_id, resetPayment: true }),
   }),
   def({
     name: 'suggest_voucher_links',

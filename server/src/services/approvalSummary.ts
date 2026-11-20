@@ -18,6 +18,9 @@ import { lasBaselineandring } from './uppdragImport.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 export const CARD_TEXT = {
+  obetald: 'Obetald',
+  betald: (belopp: string) => `Betald ${belopp}`,
+  baklankas: (post: string, verifikat: string) => `${post} · baklänkas till verifikat ${verifikat}`,
   dold: '(dold referens)', postenFinnsInte: 'Posten finns inte längre', tomt: '—', ja: 'Ja', nej: 'Nej',
   okantFalt: 'Uppgift utan svensk etikett', okandAtgard: 'Okänd åtgärd', godkannForst: 'Godkänn först:',
   beAssistenten: 'Be AI-assistenten föreslå bokföringen först.', annatForst: 'Ett annat förslag måste godkännas först.',
@@ -132,6 +135,8 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   description: 'Beskrivning',
   sie_content: 'SIE-fil',
   end_date: 'Slutdatum',
+  entity_id: 'Registerpost',
+  entity_type: 'Posttyp',
   signal_id: 'Scopesignal',
   external_invoice_number: 'Kundens fakturanummer',
   signed_date: 'Undertecknat',
@@ -163,6 +168,7 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   voucher_id: 'Verifikat',
 };
 export const VALUE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  entity_type: { invoice: 'Kundfaktura', supplier_invoice: 'Leverantörsfaktura', receipt: 'Kvitto', payslip: 'Lönebesked' },
   type: { avsattning: 'Avsättning', aterforing: 'Återföring' },
   party_type: { customer: 'Kund', supplier: 'Leverantör' },
   date_precision: { ar: 'År', halvar: 'Halvår', kvartal: 'Kvartal', manad: 'Månad', dag: 'Dag' },
@@ -183,6 +189,12 @@ function lookup(sql: string, link?: LinkKind): IdLookup {
   };
 }
 export const ID_LOOKUPS: Readonly<Record<string, IdLookup>> = {
+  entity_id: (c, co, id, action, input) => {
+    const types = { invoice: 'invoice_id', supplier_invoice: 'supplier_invoice_id', receipt: 'receipt_id', payslip: 'payslip_id' } as const;
+    const type = input.entity_type;
+    if (typeof type !== 'string' || !Object.hasOwn(types, type)) return Promise.resolve(text(CARD_TEXT.postenFinnsInte));
+    return ID_LOOKUPS[types[type as keyof typeof types]]!(c, co, id, action, input);
+  },
   customer_id: lookup('SELECT name AS text FROM customers WHERE id = $1 AND company_id = $2', 'customer'),
   supplier_id: lookup('SELECT name AS text FROM suppliers WHERE id = $1 AND company_id = $2', 'supplier'),
   party_id: (c, co, id, action, input) => ID_LOOKUPS[input.party_type === 'supplier' ? 'supplier_id' : 'customer_id']!(c, co, id, action, input),
@@ -279,6 +291,25 @@ export async function describeFields(client: PoolClient, companyId: string, acti
   return rows;
 }
 
+// Endast dessa två fakturatyper bär betalfakta via baklänkningen (AD-2).
+const BAKLANKNINGSFAKTUROR = {
+  invoice: `SELECT i.effective_invoice_number AS nr, c.name AS part, i.total_ore, i.paid_amount_ore, i.voucher_id
+    FROM invoices i JOIN customers c ON c.id = i.customer_id AND c.company_id = i.company_id
+    WHERE i.id = $1 AND i.company_id = $2`,
+  supplier_invoice: `SELECT i.number AS nr, s.name AS part, i.total_ore, i.paid_amount_ore, i.voucher_id
+    FROM supplier_invoices i JOIN suppliers s ON s.id = i.supplier_id AND s.company_id = i.company_id
+    WHERE i.id = $1 AND i.company_id = $2`,
+} as const;
+
+async function baklankningsfaktura(client: PoolClient, companyId: string, input: Record<string, unknown>) {
+  const id = asUuid(input.entity_id);
+  const typ = input.entity_type;
+  // Validera före SQL: ett ogiltigt UUID får aldrig förgifta sidans transaktion.
+  if (!id || typeof typ !== 'string' || !Object.hasOwn(BAKLANKNINGSFAKTUROR, typ)) return null;
+  return one<{ nr: number; part: string; total_ore: number; paid_amount_ore: number; voucher_id: string | null }>(
+    client, BAKLANKNINGSFAKTUROR[typ as keyof typeof BAKLANKNINGSFAKTUROR], [id, companyId]);
+}
+
 /**
  * Läsbar sammanfattning av vad ett förslag faktiskt rör. null när åtgärden
  * inte pekar på någon post (då räcker kortets fältlista).
@@ -286,6 +317,16 @@ export async function describeFields(client: PoolClient, companyId: string, acti
 export async function describeApproval(
   client: PoolClient, companyId: string, input: Record<string, unknown>, action?: string,
 ): Promise<string | null> {
+  if (action === 'link_voucher_and_mark_paid' || action === 'unlink_voucher_and_reset_payment') {
+    const faktura = await baklankningsfaktura(client, companyId, input);
+    if (!faktura) return CARD_TEXT.postenFinnsInte;
+    const post = `Faktura ${faktura.nr}${SEP}${faktura.part}`;
+    const voucherId = asUuid(action === 'link_voucher_and_mark_paid' ? input.voucher_id : faktura.voucher_id);
+    if (!voucherId) return post;
+    const voucher = await one<{ series: string; number: number }>(client,
+      'SELECT series, number FROM vouchers WHERE id = $1 AND company_id = $2', [voucherId, companyId]);
+    return voucher ? CARD_TEXT.baklankas(post, `${voucher.series}${voucher.number}`) : post;
+  }
   if (action === 'run_recurring_invoices' && typeof input.as_of === 'string') return CARD_TEXT.aterkommande(input.as_of);
   if (action === 'purge_crm_data') return typeof input.older_than_months === 'number' && Number.isInteger(input.older_than_months)
     && input.older_than_months >= 1 && input.older_than_months <= 240
@@ -463,6 +504,27 @@ export async function explainApproval(
           ? `Tidigare beslutade egna datum bevaras för ${egnaDatum.join(', ')}. Leverabler utan eget datum ärver sitt stegs intervall.`
           : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.'),
       source: { label: avtal.name, href: `${base}/projects/${avtal.project_id}/kontraktet` },
+    };
+  }
+
+  if (action === 'link_voucher_and_mark_paid' || action === 'unlink_voucher_and_reset_payment') {
+    const faktura = await baklankningsfaktura(client, companyId, input);
+    if (!faktura) return none;
+    const source = input.entity_type === 'supplier_invoice'
+      ? { label: `Leverantörsfaktura ${faktura.nr}`, href: `${base}/payables` }
+      : { label: `Faktura ${faktura.nr}`, href: `${base}/invoices` };
+    if (action === 'link_voucher_and_mark_paid') {
+      return {
+        change: { from: CARD_TEXT.obetald, to: CARD_TEXT.betald(kr(Number(faktura.total_ore))) },
+        why: 'Fakturan kopplas till ett verifikat som redan finns i bokföringen och markeras som betald. Inget nytt verifikat bokförs.',
+        source,
+      };
+    }
+    return {
+      change: Number(faktura.paid_amount_ore) > 0
+        ? { from: CARD_TEXT.betald(kr(Number(faktura.paid_amount_ore))), to: CARD_TEXT.obetald } : null,
+      why: 'Kopplingen till verifikatet tas bort och betalmarkeringen nollställs. Verifikatet står kvar orört.',
+      source,
     };
   }
 

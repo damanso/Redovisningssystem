@@ -209,6 +209,8 @@ function underlag(alternativ: 'ryms' | 'tillagg', A: string) {
     forslagstext: 'Kunden vill ha en extra rapport', skal: 'Ryms inom nuvarande tak', kallor: [{ typ: 'anteckning', id: A }], last_nar: '2026-10-18T08:00:00Z' };
 }
 const EXEMPEL_INDATA: Record<string, (f: Fixtur) => Record<string, unknown>> = {
+  link_voucher_and_mark_paid: (f) => ({ entity_type: 'invoice', entity_id: f.faktura.id, voucher_id: f.verifikat.id }),
+  unlink_voucher_and_reset_payment: (f) => ({ entity_type: 'invoice', entity_id: f.faktura.id }),
   set_invoice_number_series: () => ({ next_invoice_number: 1000 }),
   set_external_invoice_numbers: (f) => ({ assignments: [{ invoice_id: f.faktura.id, external_invoice_number: 501 }] }),
   book_depreciation: (f) => ({ fixed_asset_id: slump(), through_date: '2026-06-30', fiscal_year_id: f.fiscalYear.id }),
@@ -692,6 +694,98 @@ describe('beroenden utanför Att göras listfönster', () => {
         expect(card).not.toContain('href="#forslag-');
       }
       expect(card).not.toContain(`/approvals/${pay.id}/approve`);
+    }
+  });
+});
+
+
+describe('baklänkningens kort', () => {
+  let bk: Fixtur;
+  let betald: { id: string; effective_invoice_number: number };
+  let betaltVerifikat: { id: string; series: string; number: number };
+  let leverantorsfaktura: { id: string; number: number };
+  const LINK = 'link_voucher_and_mark_paid';
+  const RESET = 'unlink_voucher_and_reset_payment';
+  const input = (id: string, typ = 'invoice') => ({ entity_type: typ, entity_id: id, voucher_id: bk.verifikat.id });
+  const post = (nr: number, namn = 'Klartext Kund AB') => `Faktura ${nr} · ${namn}`;
+  const lank = (text: string, v = bk.verifikat) => `${text} · baklänkas till verifikat ${v.series}${v.number}`;
+  beforeAll(async () => {
+    bk = await byggFixtur('Baklänk Klartext AB');
+    const inv = await api.post(`${co(bk)}/actions/create_invoice`).set(human(bk)).send({
+      customer_id: bk.kund.id, invoice_date: '2026-03-01',
+      lines: [{ description: 'Betald tjänst', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }],
+    });
+    expect(inv.status, JSON.stringify(inv.body)).toBe(200);
+    betald = inv.body.result;
+    const v = await api.post(`${co(bk)}/accounting/vouchers`).set(human(bk)).send({
+      fiscal_year_id: bk.fiscalYear.id, voucher_date: '2026-03-02', description: 'Redan betald faktura',
+      lines: [{ account_number: 1930, debit_ore: 125000 }, { account_number: 3001, credit_ore: 125000 }],
+    });
+    expect(v.status, JSON.stringify(v.body)).toBe(201);
+    betaltVerifikat = v.body.voucher;
+    const req = await api.post(`${co(bk)}/actions/${LINK}`).set(human(bk)).send({ entity_type: 'invoice', entity_id: betald.id, voucher_id: betaltVerifikat.id });
+    expect(req.status, JSON.stringify(req.body)).toBe(202);
+    const ok = await api.post(`${co(bk)}/approvals/${req.body.approval.id}/approve`).set(human(bk)).send({});
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    const si = await api.post(`${co(bk)}/actions/create_supplier_invoice`).set(human(bk)).send({
+      supplier_id: bk.leverantor.id, invoice_date: '2026-03-01', due_date: '2026-03-31',
+      net_ore: 80000, vat_rate: 25, expense_account: 6110,
+    });
+    expect(si.status, JSON.stringify(si.body)).toBe(200);
+    leverantorsfaktura = si.body.result;
+  });
+  it('T6.1 postbeteckningen visar fakturan och det befintliga verifikatet', async () => {
+    await iTransaktion(bk, async (c) => {
+      expect(await summary.describeApproval(c, bk.bolag, input(bk.faktura.id), LINK)).toBe(lank(post(bk.faktura.effective_invoice_number)));
+      expect(await summary.describeApproval(c, bk.bolag, input(leverantorsfaktura.id, 'supplier_invoice'), LINK)).toBe(lank(post(leverantorsfaktura.number, 'Klartext Leverantör AB')));
+      expect(await summary.describeApproval(c, bk.bolag, { entity_type: 'invoice', entity_id: betald.id }, RESET)).toBe(lank(post(betald.effective_invoice_number), betaltVerifikat));
+      expect(await summary.describeApproval(c, bk.bolag, { entity_type: 'invoice', entity_id: bk.faktura.id }, RESET)).toBe(post(bk.faktura.effective_invoice_number));
+      for (const action of [LINK, RESET]) expect(await summary.describeApproval(c, bk.bolag, input(slump()), action)).toBe('Posten finns inte längre');
+    });
+  });
+  it('T6.2 före och efter visar betalmarkeringen åt båda hållen', async () => {
+    await iTransaktion(bk, async (c) => {
+      const base = `/app/c/${bk.bolag}`;
+      const link = await summary.explainApproval(c, bk.bolag, LINK, input(bk.faktura.id), base);
+      expect(link.change).toEqual({ from: 'Obetald', to: 'Betald ' + formatOre(125000, { currency: true }) });
+      expect(link.why).toBe('Fakturan kopplas till ett verifikat som redan finns i bokföringen och markeras som betald. Inget nytt verifikat bokförs.');
+      expect(link.source).toEqual({ label: `Faktura ${bk.faktura.effective_invoice_number}`, href: `${base}/invoices` });
+      const lev = await summary.explainApproval(c, bk.bolag, LINK, input(leverantorsfaktura.id, 'supplier_invoice'), base);
+      expect(lev.change?.to).toBe('Betald ' + formatOre(100000, { currency: true }));
+      expect(lev.source).toEqual({ label: `Leverantörsfaktura ${leverantorsfaktura.number}`, href: `${base}/payables` });
+      const reset = await summary.explainApproval(c, bk.bolag, RESET, { entity_type: 'invoice', entity_id: betald.id }, base);
+      expect(reset.change).toEqual({ from: 'Betald ' + formatOre(125000, { currency: true }), to: 'Obetald' });
+      expect(reset.why).toBe('Kopplingen till verifikatet tas bort och betalmarkeringen nollställs. Verifikatet står kvar orört.');
+      expect((await summary.explainApproval(c, bk.bolag, RESET, { entity_type: 'invoice', entity_id: bk.faktura.id }, base)).change).toBeNull();
+    });
+  });
+  it('T6.3 ogiltigt id eller posttyp förgiftar inte sidans transaktion', async () => {
+    await iTransaktion(bk, async (c) => {
+      for (const action of [LINK, RESET]) {
+        for (const i of [input('inte-ett-id'), input(bk.faktura.id, 'okand')]) {
+          expect(await summary.describeApproval(c, bk.bolag, i, action)).toBe('Posten finns inte längre');
+          expect((await summary.explainApproval(c, bk.bolag, action, i, `/app/c/${bk.bolag}`)).change).toBeNull();
+        }
+      }
+      expect((await c.query('SELECT 1 AS ok')).rows).toEqual([{ ok: 1 }]);
+    });
+  });
+  it('T6.4 Att göra visar postbeteckning och före och efter i husets kort', async () => {
+    const link = await koa(bk, LINK, input(bk.faktura.id));
+    const reset = await koa(bk, RESET, { entity_type: 'invoice', entity_id: betald.id });
+    const vy = await loggaIn(bk);
+    const res = await vy.get(`/app/c/${bk.bolag}/approvals`);
+    expect(res.status, res.text).toBe(200);
+    const belopp = formatOre(125000, { currency: true });
+    for (const [a, subject, fore, efter] of [
+      [link, lank(post(bk.faktura.effective_invoice_number)), 'Obetald', `Betald ${belopp}`],
+      [reset, lank(post(betald.effective_invoice_number), betaltVerifikat), `Betald ${belopp}`, 'Obetald'],
+    ] as const) {
+      const kort = kortPaSida(res.text, a.id);
+      expect(kort).toContain(`<div class="ai-card__subject"><strong>${subject}</strong></div>`);
+      expect(kort).toContain(`<span class="andring__f">${fore}</span>`);
+      expect(kort).toContain(`<span class="andring__t">${efter}</span>`);
+      expect(kort).toContain('type="submit">✓ Godkänn &amp; utför</button>');
     }
   });
 });

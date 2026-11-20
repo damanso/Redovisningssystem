@@ -124,11 +124,13 @@ describe('4.7 leverantörsreskontran per as_of', () => {
     return res.body.result;
   }
   const rad = (resultat: Reskontra, namn: string): Rad | undefined => resultat.rows.find((r) => r.supplier_name === namn);
-  // Baklänkningen på ett ställe: Story 1.5 och 1.6 flyttar den till kön och
-  // skriver om just den här hjälparen.
+  // Story 1.5: betalmarkeringen går genom kön; obetald koppling är direkt.
   async function koppla(fakturaId: string, verifikatId: string, betald: boolean) {
+    if (betald) return godkann('link_voucher_and_mark_paid', {
+      entity_type: 'supplier_invoice', entity_id: fakturaId, voucher_id: verifikatId,
+    });
     const res = await api.post(`${hc()}/actions/link_voucher`).set(ha()).send({
-      entity_type: 'supplier_invoice', entity_id: fakturaId, voucher_id: verifikatId, ...(betald ? { mark_paid: true } : {}),
+      entity_type: 'supplier_invoice', entity_id: fakturaId, voucher_id: verifikatId,
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     return res;
@@ -287,5 +289,37 @@ describe('4.7 leverantörsreskontran per as_of', () => {
       expect(saldo, asOf).toBe(vantat);
       expect((await reskontra(asOf)).totals.total_ore, asOf).toBe(saldo);
     }
+  });
+});
+
+
+describe('FR-29 agentfallet', () => {
+  it('R7 agentens leverantörsbokning och betalning väntar på människan', async () => {
+    const u = await registerUser('supplier-agent');
+    const a = { Authorization: `Bearer ${u.token}` };
+    const cid = await createCompany(u.token, 'Leverantör Agent AB');
+    const base = `/api/companies/${cid}`;
+    const fy = await createFiscalYear(cid, a, { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    const token = await api.post(`${base}/agent-tokens`).set(a).send({ name: 'Baklänk-AI' });
+    expect(token.status, JSON.stringify(token.body)).toBe(201);
+    const lev = await api.post(`${base}/actions/create_supplier`).set(a).send({ name: 'Agent Leverantör AB' });
+    expect(lev.status, JSON.stringify(lev.body)).toBe(200);
+    const inv = await api.post(`${base}/actions/create_supplier_invoice`).set(a).send({
+      supplier_id: lev.body.result.id, invoice_date: '2025-06-01', due_date: '2025-07-01', net_ore: 80_000, vat_rate: 25, expense_account: 6110,
+    });
+    expect(inv.status, JSON.stringify(inv.body)).toBe(200);
+    const count = () => withAdmin(async (db) => Number((await db.query('SELECT count(*) AS n FROM vouchers WHERE company_id = $1', [cid])).rows[0].n));
+    const before = await count();
+    const book = await api.post(`${base}/actions/book_supplier_invoice`).set({ Authorization: `Bearer ${token.body.token}` }).send({ supplier_invoice_id: inv.body.result.id, fiscal_year_id: fy.id });
+    expect(book.status, JSON.stringify(book.body)).toBe(202);
+    const pay = await api.post(`${base}/actions/register_supplier_payment`).set({ Authorization: `Bearer ${token.body.token}` }).send({ supplier_invoice_id: inv.body.result.id, fiscal_year_id: fy.id, payment_date: '2025-06-30' });
+    expect(pay.status, JSON.stringify(pay.body)).toBe(202);
+    expect(await count()).toBe(before);
+    const state = await withAdmin(async (db) => (await db.query('SELECT status FROM supplier_invoices WHERE company_id = $1 AND id = $2', [cid, inv.body.result.id])).rows[0]);
+    expect(state.status).toBe('draft');
+    const ok = await api.post(`${base}/approvals/${book.body.approval.id}/approve`).set(a).send({});
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(ok.body.result.status).toBe('booked');
+    expect(await count()).toBe(before + 1);
   });
 });
