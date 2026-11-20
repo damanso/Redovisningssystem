@@ -90,8 +90,8 @@ import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, u
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
 import { emailEnabled } from '../../services/email.js';
 import { mailtoLank, type Nejutkast } from '../../lib/utkast.js';
-import { importBankCsv, listBankTransactions, setBankTransactionReconciled } from '../../services/bankImport.js';
-import { importSie, parseSie } from '../../services/sieImport.js';
+import { listBankTransactions } from '../../services/bankImport.js';
+import { kontrolleraSieInnehall } from '../../services/sieImport.js';
 import { exportFiscalYearSie } from '../../services/sie.js';
 import { listEmployees, listPayslips } from '../../services/payroll.js';
 import { k2AnnualReport, k2ManagementReport, type K2Report, type K2Section, type ManagementReport } from '../../services/k2.js';
@@ -112,7 +112,19 @@ import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from
 import { undantagssida } from './undantagsvyn.js';
 
 export const viewRouter = Router();
-viewRouter.use(urlencoded({ extended: false, limit: '16kb' }));
+// AD-10:s prejudikat i http/app.ts: stora formulär läses av sin egen parser
+// först efter viewAuth. Varje annan vybegäran behåller gränsen på 16 kB.
+function isLargeImportForm(method: string, path: string): boolean {
+  return method === 'POST' && /^\/c\/[^/]+\/import\/(sie|bank)$/.test(path);
+}
+const globalFormParser = urlencoded({ extended: false, limit: '16kb' });
+viewRouter.use((req, res, next) => {
+  if (isLargeImportForm(req.method, req.path)) {
+    next();
+    return;
+  }
+  globalFormParser(req, res, next);
+});
 
 // ---- Autentisering ----
 viewRouter.get('/login', (req, res) => {
@@ -10745,22 +10757,33 @@ viewRouter.get('/c/:companyId/payroll/ku10.xml', page(async (req, res) => {
 
 // Migration/import: SIE-fil (konton + verifikat) och bank-CSV. Live bankkoppling
 // (PSD2) är utanför scope — detta är manuell filimport.
-viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client, companyId) => {
+viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client, companyId, req) => {
   const fys = await client.query<{ id: string; label: string }>(
     'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
   );
+  const fyParam = typeof req.query.fy === 'string' ? req.query.fy : null;
+  const valtAr = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]?.id;
+  const koposter = await listaVantandeKoposter(client, companyId, ['import_sie']);
+  const vantande = koposter.find((post) => Object.hasOwn(post.input, 'fiscal_year_id') && post.input.fiscal_year_id === valtAr);
+  const locked = (await listFiscalYears(client, companyId)).find((f) => f.id === valtAr)?.is_locked;
   const txns = await listBankTransactions(client, companyId, {});
-  return html`<div class="page-head"><div>${eyebrow('Import')}<h1>Migration & import</h1>
+  return html`${felNotis(req)}<div class="page-head"><div>${eyebrow('Import')}<h1>Migration & import</h1>
       <p class="lede">Flytta in bokföring från ett annat system (SIE) eller läs in kontohändelser från en bank-CSV. En live bankkoppling (PSD2) ingår inte — detta är filimport.</p></div></div>
-    <div class="panel"><div class="panel__head"><h2>SIE-import</h2></div><div class="panel__body" style="padding:14px 16px">
-      <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in innehållet i en SIE4-fil. Konton skapas, verifikat importeras med färska nummer i importserien I (originalnumret bevaras i texten). Debet=kredit krävs.</p>
+    <div class="panel"><div class="panel__head"><h2>SIE-import</h2><span class="muted" style="font-size:12.5px">kräver godkännande</span></div><div class="panel__body" style="padding:14px 16px">
+      <div class="page-head" style="padding-bottom:0"><div>${eyebrow('Välj räkenskapsår')}</div>
+        <div class="actions">${fys.rows.map((f) => html`<a class="btn ${f.id === valtAr ? 'btn--primary' : 'btn--ghost'} btn--sm" href="/app/c/${companyId}/import?fy=${f.id}">${f.label}</a> `)}</div></div>
+      <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in innehållet i en SIE4-fil. Importen läggs som ett förslag i Att göra. När du godkänt det skapas kontona, och verifikaten importeras med färska nummer i importserien I (originalnumret bevaras i texten). Debet=kredit krävs.</p>
       ${
         fys.rows.length === 0
           ? html`<p class="muted">Skapa ett räkenskapsår först.</p>`
-          : html`<form method="post" action="/app/c/${companyId}/import/sie" style="display:grid;gap:10px">
-              <label class="field" style="margin:0"><span>Räkenskapsår</span><select name="fiscal_year_id">${fys.rows.map((f) => html`<option value="${f.id}">${f.label}</option>`)}</select></label>
+          : vantande
+            ? html`<a href="/app/c/${companyId}/approvals#forslag-${vantande.id}">${statusChip('pending')}</a>`
+            : locked
+              ? chip('Räkenskapsåret är låst', 'ok', '🔒')
+              : html`<form method="post" action="/app/c/${companyId}/import/sie" style="display:grid;gap:10px">
+              <input type="hidden" name="fiscal_year_id" value="${valtAr}">
               <label class="field" style="margin:0"><span>SIE-innehåll</span><textarea name="sie_content" rows="8" required style="width:100%;font-family:monospace;font-size:12.5px"></textarea></label>
-              <div><button class="btn btn--primary" type="submit">Importera SIE</button></div></form>`
+              <div><button class="btn btn--primary" type="submit">Importera SIE…</button></div></form>`
       }</div></div>
     <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Bank-CSV</h2></div><div class="panel__body" style="padding:14px 16px">
       <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in en CSV med kolumnerna datum, text, belopp (och valfritt saldo). Dubbletter hoppas automatiskt.</p>
@@ -10783,38 +10806,61 @@ viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client
     }`;
 }));
 
-function importRedirect(companyId: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
-  return run().then(() => { res.redirect(`/app/c/${companyId}/import`); }, (err) => {
-    if (err instanceof BadRequestError || err instanceof ConflictError) { res.redirect(`/app/c/${companyId}/import`); return; }
+// Inga tysta utfall (AD-1, UX K2): formulär- och affärsfel syns på Import.
+async function importRedirect(
+  req: Request, res: import('express').Response, companyId: string,
+  run: (backTo: string) => Promise<void>,
+): Promise<void> {
+  const fy = UuidSchema.safeParse((req.body as { fiscal_year_id?: unknown } | undefined)?.fiscal_year_id);
+  const backTo = `/app/c/${companyId}/import${fy.success ? `?fy=${fy.data}` : ''}`;
+  try {
+    await run(backTo);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
+      return;
+    }
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(err.message)}`);
+      return;
+    }
     throw err;
-  });
+  }
 }
 
 viewRouter.post('/c/:companyId/import/sie', urlencoded({ extended: false, limit: '5mb' }), page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const b = z.object({ fiscal_year_id: UuidSchema, sie_content: z.string().min(1).max(4_000_000) }).parse(req.body);
-  await importRedirect(companyId, res, () =>
-    withTenantTransaction(userId, companyId, (client) => importSie(client, companyId, userId, b.fiscal_year_id, parseSie(b.sie_content))));
+  await importRedirect(req, res, companyId, async (backTo) => {
+    const b = z.object({ fiscal_year_id: UuidSchema, sie_content: z.string().min(1).max(4_000_000) }).parse(req.body);
+    await kontrolleraBokslutsar(getUserId(req), companyId, b.fiscal_year_id);
+    kontrolleraSieInnehall(b.sie_content);
+    await runViewAction(req, res, companyId, 'import_sie', {
+      fiscal_year_id: b.fiscal_year_id, sie_content: b.sie_content,
+    }, backTo);
+  });
 }));
 
 viewRouter.post('/c/:companyId/import/bank', urlencoded({ extended: false, limit: '5mb' }), page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const b = z.object({ csv_content: z.string().min(1).max(4_000_000) }).parse(req.body);
-  await importRedirect(companyId, res, () =>
-    withTenantTransaction(userId, companyId, (client) => importBankCsv(client, companyId, userId, b.csv_content)));
+  await importRedirect(req, res, companyId, async (backTo) => {
+    const b = z.object({ csv_content: z.string().min(1).max(4_000_000) }).parse(req.body);
+    await runViewAction(req, res, companyId, 'import_bank_csv', {
+      csv_content: b.csv_content,
+    }, backTo);
+  });
 }));
 
 viewRouter.post('/c/:companyId/import/reconcile', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const id = z.string().uuid().parse((req.body as { transaction_id?: unknown }).transaction_id);
-  await importRedirect(companyId, res, () =>
-    withTenantTransaction(userId, companyId, (client) => setBankTransactionReconciled(client, companyId, userId, id, true)));
+  await importRedirect(req, res, companyId, async (backTo) => {
+    const id = z.string().uuid().parse((req.body as { transaction_id?: unknown } | undefined)?.transaction_id);
+    await runViewAction(req, res, companyId, 'reconcile_bank_transaction', {
+      transaction_id: id, reconciled: true,
+    }, backTo);
+  });
 }));
 
 // Hela revisionsloggen (keyset-paginerad).

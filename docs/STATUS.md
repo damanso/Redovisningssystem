@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.3, SIE-import från vyn köas och Import visar sina fel (FR-39, FR-38, AD-1):**
+  Vyns SIE-import går nu genom `runViewAction` till Att göra före varje konto
+  och verifikat. Endast POST import/sie och import/bank undantas från den
+  globala parsern på 16 kB; deras egna 5mb-parsrar ligger efter `viewAuth`.
+  Bankimport och avstämning använder samma åtgärdslager med `action.executed`.
+  `importRedirect` visar formulär-/verksamhetsfel via `?fel=` och `felNotis`;
+  SIE:s år och innehåll kontrolleras före kön utan mutation. SIE-panelen har
+  årsväljare, "Importera SIE…" och "kräver godkännande"; väntande förslag
+  ersätter formuläret med kortlänk, låst år med lås-chip. Bankytan är kvar.
+  Daglig liggare behålls för igenkänning: samma tokens, typografi, knappskala,
+  kontrast och synlig fokusring. Native länkar, etiketter och knappar ger
+  fokusordning år → SIE-text → import → bank. Tomt läge, väntande/låst läge,
+  laddad sida och felnotis är ritade; SSR har ingen separat laddningsvy.
+  S1.1–S1.5, V1.1, B2.1–B2.3, F3.1–F3.6 och K4.1–K4.4 är skrivna genom
+  session, vy, åtgärd och riktig databas; formregeln har även enhetsassertioner.
+  Röd- och grönförsöken med `npm test` samt delgrindarnas vitest-körningar:
+  **inte kört — `Error: connect EPERM 127.0.0.1:5433`**, exit 1 i globalSetup
+  före testfallen. Inget databasprov påstås grönt; kedjan kör hela sviten.
+  `npm run typecheck`: exit 0 (`tsc --noEmit && tsc --noEmit -p tsconfig.test.json`).
+  `npm run build`: exit 0 (`tsc`); `git diff --check`: exit 0.
+  Ren SIE-formkontroll utan databas:
+  `Ren SIE-formkontroll: 9/9 gröna (3 giltiga, 5 tomma/ogiltiga, 1 datumfel)`.
+  Ingen ny rutt, migration, åtgärd, CSS-klass eller beroende; inget kontrakt
+  mot CRM ändrat. Inget nytt känt rött utanför repot; baslinjens externa
+  provläge är inte ommätt här (adresskontraktet, bmadglidning,
+  overlamningsregister_fr6, continuityvakt).
+
 - **2026-11-20 — Story 1.7, kundnumret går att rätta från relationssidan (crm, FR-10):**
   `update_customer` tar valfritt `customer_number` med delat `CustomerNumberSchema`
   (1–2 147 483 645). `updateCustomer` låser kundserien före krockuppslaget och
