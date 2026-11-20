@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.2, Bokslutets bokningar blir förslag i Att göra (FR-22, FR-38, AD-1):**
+  Bokslutsvyns avsättning, skatt och resultat samt vyns SIE-import använder
+  runViewAction och godkännandekön. Alla fem Bokslutsformulär får synliga
+  validerings-/affärsfel; låst år kontrolleras före köandet, och beskrivningen
+  använder samma hjälpare. Ellips, hint och statusChip ersätter väntande
+  knappar per åtgärd och år. Husets typografi, tokens, AI-ockra och fokusram
+  bevaras; beloppsfälten har tillgängliga namn. B1.1–B3.3, V1.1–V2.4,
+  R1.1–R1.3 och A1.1 täcker flödena, audit och förtroendegränsen.
+  Rena källprov körda rött (2 failed, 3 passed) och grönt; slutligt urval:
+  Test Files 1 passed (1), Tests 7 passed | 5 skipped (12). De fem hoppade
+  fallen är integrationsfall i samma fil. Typecheck och build exit 0.
+  npm test och grindarnas databasfiler: inte körda — connect EPERM
+  127.0.0.1:5433 i globalSetup, exit 1. Kedjan måste köra hela sviten.
+  Separat renderkontroll med riktiga HTML-komponenter klarar formulär,
+  väntande, låst och fel; Chromium kunde inte starta (Target page, context
+  or browser has been closed), så tangentbords-/browserprov är inte körda.
+  Befintliga bokförings-, audit-, avskrivnings-, INK2- och K2-prov är lästa
+  och oförändrade. Inget externt kontrakt ändrat. Inga nya externa röda
+  påvisade; externa prov inte körda, och baslinjens adresskontraktet,
+  bmadglidning och overlamningsregister_fr6 står kvar som tidigare röda,
+  continuityvakt som KUNDE_INTE. Importens felnotis och bankflöden hör till
+  Story 1.3; här köas bara SIE-importen. Inga tjänster startade eller
+  driftsättning gjord. DoD prövad punktvis med nätundantaget; Status review.
+  Sprint-status lämnas orörd enligt berättelsen.
+
+
 - **2026-11-20 — Story 1.1, omtag efter fyra High-fynd (FR-27):**
   Två felklasser rättade i Att göra: bolagsnamn och felnotis går genom samma
   UUID-mask före HTML-escaping; sidan kompletterar de 200 senaste köposterna

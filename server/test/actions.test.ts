@@ -62,6 +62,32 @@ describe('förtroendegräns: agent kan inte kringgå godkännandekön via direkt
     const humanBook = await api.post(`${co()}/invoices/${iid}/book`).set(human()).send({ fiscal_year_id: fiscalYearId });
     expect(humanBook.status, JSON.stringify(humanBook.body)).toBe(200);
   });
+  // Förutsättning: en tappad requireHuman på någon transportrutt gör provet rött.
+  it('A1.1 alla fem mänskliga transportrutter avvisar agent-token', async () => {
+    const iid = await freshInvoice();
+    const receipt = await api.post(`${co()}/actions/create_receipt`).set(human()).send({
+      receipt_date: '2025-06-01', description: 'Transportprov', net_ore: 20000, vat_rate: 25, expense_account: 5460, payment_account: 1930,
+    });
+    expect(receipt.status, JSON.stringify(receipt.body)).toBe(200);
+    const voucherBody = {
+      fiscal_year_id: fiscalYearId, voucher_date: '2025-06-01', description: 'Transportprov',
+      lines: [{ account_number: 1930, debit_ore: 1000 }, { account_number: 3001, credit_ore: 1000 }],
+    };
+    const voucher = await api.post(`${co()}/accounting/vouchers`).set(human()).send(voucherBody);
+    expect(voucher.status, JSON.stringify(voucher.body)).toBe(201);
+    const anrop = [
+      () => api.post(`${co()}/invoices/${iid}/book`).send({ fiscal_year_id: fiscalYearId }),
+      () => api.post(`${co()}/receipts/${receipt.body.result.id}/book`).send({ fiscal_year_id: fiscalYearId }),
+      () => api.patch(`${co()}/accounting/fiscal-years/${fiscalYearId}`).send({ locked: true }),
+      () => api.post(`${co()}/accounting/vouchers`).send(voucherBody),
+      () => api.post(`${co()}/accounting/vouchers/${voucher.body.voucher.id}/reverse`).send({}),
+    ];
+    for (const req of anrop) {
+      const res = await req().set(agent());
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe('human_required');
+    }
+  });
   it('agent kan BEGÄRA bokföring via action-lagret → hamnar i godkännandekö (202)', async () => {
     const iid = await freshInvoice();
     const req = await api.post(`${co()}/actions/book_invoice`).set(agent()).send({ invoice_id: iid, fiscal_year_id: fiscalYearId });
