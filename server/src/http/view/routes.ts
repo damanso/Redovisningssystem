@@ -21,7 +21,7 @@ import { getCustomer, getSupplier, listCustomers, listSuppliers, listArticles } 
 import { getPartyCrm, type PartyType } from '../../services/crm.js';
 import { attachReceiptFile, listReceipts } from '../../services/receipts.js';
 import { singleFileUpload } from '../../lib/upload.js';
-import { getApproval, listApprovals, listRecentDecisions } from '../../services/approvals.js';
+import { getApproval, listApprovals, listRecentDecisions, listaVantandeKoposter } from '../../services/approvals.js';
 import { forslagskort, avgjordRad, utanUuid } from '../../services/approvalSummary.js';
 import { approveAction, executeAction, rejectApproval, type ActionResult } from '../../actions/execute.js';
 import { getAction } from '../../actions/registry.js';
@@ -98,7 +98,6 @@ import { k2AnnualReport, k2ManagementReport, type K2Report, type K2Section, type
 import { runTaxReminders, setOpeningTaxLoss, setVatPeriod, taxOverview } from '../../services/taxes.js';
 import { taxPlanning } from '../../services/taxPlanning.js';
 import { listFixedAssets } from '../../services/fixedAssets.js';
-import { bookCorporateTax, bookPeriodiseringsfond, bookYearResult } from '../../services/bokslut.js';
 import { addTaxAdjustment, deleteTaxAdjustment, ink2rReport, ink2sReport, type Ink2rReport, type Ink2sResult } from '../../services/ink2.js';
 import { vatDeclaration, type VatBox, type VatDeclaration } from '../../services/vatDeclaration.js';
 import { generateInk2Sru } from '../../services/sruExport.js';
@@ -108,7 +107,7 @@ import { generateKu10Xml } from '../../services/ku10.js';
 import { k10Computation, generateK10Sru, type K10Result } from '../../services/k10.js';
 import { k10Prefill } from '../../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
-import { createFiscalYear } from '../../services/accounting/fiscalYears.js';
+import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
 
@@ -1359,9 +1358,21 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
       'SELECT id, label FROM fiscal_years WHERE company_id = $1 ORDER BY start_date DESC', [companyId],
     );
     if (fys.rows.length === 0) {
-      return { name: company.name, body: html`<div class="page-head"><div>${eyebrow('Bokslut')}<h1>Årsredovisning</h1></div></div><div class="empty"><div class="big">Inget räkenskapsår</div>Skapa ett räkenskapsår först.</div>` };
+      return { name: company.name, body: html`${felNotis(req)}<div class="page-head"><div>${eyebrow('Bokslut')}<h1>Årsredovisning</h1></div></div><div class="empty"><div class="big">Inget räkenskapsår</div>Skapa ett räkenskapsår först.</div>` };
     }
     const chosen = fyParam && fys.rows.some((f) => f.id === fyParam) ? fyParam : fys.rows[0]!.id;
+    const koposter = await listaVantandeKoposter(client, companyId,
+      ['book_periodiseringsfond', 'book_corporate_tax', 'book_year_result', 'lock_period']);
+    const vantande = new Map<string, string>();
+    for (const post of koposter) {
+      if (Object.hasOwn(post.input, 'fiscal_year_id') && post.input.fiscal_year_id === chosen && !vantande.has(post.action)) {
+        vantande.set(post.action, post.id);
+      }
+    }
+    const vantandeLank = (atgard: string) => {
+      const id = vantande.get(atgard);
+      return id ? html`<a href="/app/c/${companyId}/approvals#forslag-${id}">${statusChip('pending')}</a>` : null;
+    };
     const report = await k2AnnualReport(client, companyId, chosen);
     const mgmt = await k2ManagementReport(client, companyId, chosen);
     const extraNoter = mgmt.fixed_assets_note
@@ -1377,72 +1388,101 @@ viewRouter.get('/c/:companyId/annual', page(async (req, res) => {
     const plan = await taxPlanning(client, companyId, chosen);
     const picker = html`<div class="page-head" style="padding-bottom:0"><div>${eyebrow('Välj räkenskapsår')}</div>
       <div class="actions">${fys.rows.map((f) => html`<a class="btn ${f.id === chosen ? 'btn--primary' : 'btn--ghost'} btn--sm" href="/app/c/${companyId}/annual?fy=${f.id}">${f.label}</a> `)}</div></div>`;
-    const bokslut = html`<section class="statement"><div class="statement__cap"><h2>Bokslutsåtgärder</h2></div>
-      <div class="empty" style="text-align:left;padding:12px 14px">${locked ? chip('Räkenskapsåret är låst', 'ok', '🔒') : chip('Bokför bokslutstransaktionerna i ordning', 'info')} <span class="muted">Avsättning periodiseringsfond → årets skatt → överför årets resultat → lås. Dessa skapar riktiga verifikat i huvudboken.</span></div>
+    const bokslut = html`<section class="statement"><div class="statement__cap"><h2>Bokslutsåtgärder</h2><span class="muted" style="font-size:12.5px">kräver godkännande</span></div>
+      <div class="empty" style="text-align:left;padding:12px 14px">${locked ? chip('Räkenskapsåret är låst', 'ok', '🔒') : chip('Bokför bokslutstransaktionerna i ordning', 'info')} <span class="muted">Avsättning periodiseringsfond → årets skatt → överför årets resultat → lås. Bokningarna skapar verifikat i huvudboken när du godkänner dem i Att göra.</span></div>
       ${locked ? '' : html`<div class="table-wrap"><table><tbody>
         <tr><td>Avsättning periodiseringsfond (max ${money(plan.periodiseringsfond_max_ore)} kr)</td><td>
-          <form method="post" action="/app/c/${companyId}/annual/pf" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" min="0" step="1" value="${String(Math.round(plan.periodiseringsfond_max_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför avsättning</button></form></td></tr>
+          ${vantandeLank('book_periodiseringsfond') ?? html`<form method="post" action="/app/c/${companyId}/annual/pf" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" aria-label="Avsättning till periodiseringsfond i kronor" min="0" step="1" value="${String(Math.round(plan.periodiseringsfond_max_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför avsättning…</button></form>`}</td></tr>
         <tr><td>Årets skatt (uppskattad ${money(plan.optimized.tax_ore)} kr)</td><td>
-          <form method="post" action="/app/c/${companyId}/annual/tax" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" min="0" step="1" value="${String(Math.round(plan.optimized.tax_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför skatt</button></form></td></tr>
+          ${vantandeLank('book_corporate_tax') ?? html`<form method="post" action="/app/c/${companyId}/annual/tax" style="display:inline-flex;gap:6px;align-items:center"><input type="hidden" name="fy" value="${chosen}"><input type="number" name="amount_kr" aria-label="Årets skatt i kronor" min="0" step="1" value="${String(Math.round(plan.optimized.tax_ore / 100))}" style="width:120px"><button class="btn btn--ghost btn--sm" type="submit">Bokför skatt…</button></form>`}</td></tr>
         <tr><td>Överför årets resultat till eget kapital (2099)</td><td>
-          <form method="post" action="/app/c/${companyId}/annual/result"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--ghost btn--sm" type="submit">Bokför årets resultat</button></form></td></tr>
+          ${vantandeLank('book_year_result') ?? html`<form method="post" action="/app/c/${companyId}/annual/result"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--ghost btn--sm" type="submit">Bokför årets resultat…</button></form>`}</td></tr>
         <tr><td><strong>Lås räkenskapsåret</strong> (inga fler verifikat kan bokföras)</td><td>
-          <form method="post" action="/app/c/${companyId}/annual/lock"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--primary btn--sm" type="submit">Lås bokslut</button></form></td></tr>
+          ${vantandeLank('lock_period') ?? html`<form method="post" action="/app/c/${companyId}/annual/lock"><input type="hidden" name="fy" value="${chosen}"><button class="btn btn--primary btn--sm" type="submit">Lås bokslut…</button></form>`}</td></tr>
       </tbody></table></div>`}
       <p class="muted" style="font-size:12px;margin-top:6px">Skatten ovan är en uppskattning ur bokföringen (utan skattemässiga justeringar). Justera beloppet efter din revisors bedömning innan du bokför.</p></section>`;
-    return { name: company.name, body: html`${picker}${forvaltningsberattelseBody(companyId, chosen, mgmt, report)}${k2Body(companyId, chosen, report)}${extraNoter}${signaturesBody(report, mgmt)}${bokslut}` };
+    return { name: company.name, body: html`${felNotis(req)}${picker}${forvaltningsberattelseBody(companyId, chosen, mgmt, report)}${k2Body(companyId, chosen, report)}${extraNoter}${signaturesBody(report, mgmt)}${bokslut}` };
   });
   res.type('html').send(layout({ title: 'Årsredovisning', companyId, companyName: name, active: 'annual', body }).value);
 }));
 
-function bokslutRedirect(companyId: string, fy: string, res: import('express').Response, run: () => Promise<unknown>): Promise<void> {
-  return run().then(() => { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); }, (err) => {
-    if (err instanceof ConflictError || err instanceof BadRequestError) { res.redirect(`/app/c/${companyId}/annual?fy=${fy}`); return; }
+// Inga tysta utfall (AD-1, UX K2): formulär- och affärsfel syns på Bokslut.
+async function bokslutRedirect(
+  req: Request, res: import('express').Response, companyId: string,
+  run: (backTo: string) => Promise<void>,
+): Promise<void> {
+  const fy = UuidSchema.safeParse((req.body as { fy?: unknown }).fy);
+  const backTo = `/app/c/${companyId}/annual${fy.success ? `?fy=${fy.data}` : ''}`;
+  try {
+    await run(backTo);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
+      return;
+    }
+    if (err instanceof BadRequestError || err instanceof ConflictError) {
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(err.message)}`);
+      return;
+    }
     throw err;
-  });
+  }
+}
+
+// AC 4/UX K2: ett låst år ska ge ?fel= före kön, i linje med husets knappregel
+// och fakturans uppslag före köandet. Läs genom tjänsten, utan SQL här.
+// Tjänstens låsregel avgör fortfarande vid godkännandet om året låsts sedan dess.
+async function kontrolleraBokslutsar(userId: string, companyId: string, fy: string): Promise<void> {
+  const year = await withTenantTransaction(userId, companyId, async (client) =>
+    (await listFiscalYears(client, companyId)).find((row) => row.id === fy));
+  if (!year) throw new BadRequestError('fiscal_year_not_found', 'Räkenskapsåret finns inte i bolaget.');
+  if (year.is_locked) throw new ConflictError('year_locked', 'räkenskapsåret är låst');
 }
 
 viewRouter.post('/c/:companyId/annual/description', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  // Rensa NUL/C0-styrtecken (utom tab/CR/LF) och DEL som safeText avvisar.
-  const desc = z.string().max(4000).parse((req.body as { business_description?: unknown }).business_description ?? '')
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
-  // Via executeAction (actor human) så att ändringen auditloggas som alla
-  // andra genomförda åtgärder (FR-3, lärdom 5) — ingen direkt UPDATE här.
-  await executeAction({ companyId, userId, actor: 'human', actionName: 'set_business_description', input: { business_description: desc || null } });
-  res.redirect(`/app/c/${companyId}/annual?fy=${fy}`);
+  await bokslutRedirect(req, res, companyId, async (backTo) => {
+    z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+    // Rensa NUL/C0-styrtecken (utom tab/CR/LF) och DEL som safeText avvisar.
+    const desc = z.string().max(4000).parse((req.body as { business_description?: unknown }).business_description ?? '')
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+    // Samma åtgärdslager och auditrad som övriga genomförda åtgärder (FR-3).
+    await runViewAction(req, res, companyId, 'set_business_description', { business_description: desc || null }, backTo);
+  });
 }));
 
 viewRouter.post('/c/:companyId/annual/pf', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
-  await bokslutRedirect(companyId, fy, res, () => kr === 0 ? Promise.resolve() :
-    withTenantTransaction(userId, companyId, (client) => bookPeriodiseringsfond(client, companyId, userId, fy, 'avsattning', kr * 100)));
+  await bokslutRedirect(req, res, companyId, async (backTo) => {
+    const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+    const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
+    if (kr === 0) throw new BadRequestError('invalid_amount', 'Ange ett belopp större än 0 kr för avsättningen till periodiseringsfond.');
+    await kontrolleraBokslutsar(getUserId(req), companyId, fy);
+    await runViewAction(req, res, companyId, 'book_periodiseringsfond',
+      { fiscal_year_id: fy, type: 'avsattning', amount_ore: kr * 100 }, backTo);
+  });
 }));
 
 viewRouter.post('/c/:companyId/annual/tax', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
-  await bokslutRedirect(companyId, fy, res, () =>
-    withTenantTransaction(userId, companyId, (client) => bookCorporateTax(client, companyId, userId, fy, kr * 100)));
+  await bokslutRedirect(req, res, companyId, async (backTo) => {
+    const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+    const kr = z.coerce.number().int().min(0).max(1_000_000_000).parse((req.body as { amount_kr?: unknown }).amount_kr);
+    await kontrolleraBokslutsar(getUserId(req), companyId, fy);
+    await runViewAction(req, res, companyId, 'book_corporate_tax', { fiscal_year_id: fy, amount_ore: kr * 100 }, backTo);
+  });
 }));
 
 viewRouter.post('/c/:companyId/annual/result', page(async (req, res) => {
   assertSameOrigin(req);
-  const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  await bokslutRedirect(companyId, fy, res, () =>
-    withTenantTransaction(userId, companyId, (client) => bookYearResult(client, companyId, userId, fy)));
+  await bokslutRedirect(req, res, companyId, async (backTo) => {
+    const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+    await kontrolleraBokslutsar(getUserId(req), companyId, fy);
+    await runViewAction(req, res, companyId, 'book_year_result', { fiscal_year_id: fy }, backTo);
+  });
 }));
 
 // Låset är sensitive (FR-2/FR-38): vyn köar lock_period i Att göra i stället
@@ -1450,8 +1490,10 @@ viewRouter.post('/c/:companyId/annual/result', page(async (req, res) => {
 viewRouter.post('/c/:companyId/annual/lock', page(async (req, res) => {
   assertSameOrigin(req);
   const companyId = parseCompanyId(req.params.companyId);
-  const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
-  await runViewAction(req, res, companyId, 'lock_period', { fiscal_year_id: fy, locked: true }, `/app/c/${companyId}/annual?fy=${fy}`);
+  await bokslutRedirect(req, res, companyId, async (backTo) => {
+    const fy = z.string().uuid().parse((req.body as { fy?: unknown }).fy);
+    await runViewAction(req, res, companyId, 'lock_period', { fiscal_year_id: fy, locked: true }, backTo);
+  });
 }));
 
 viewRouter.get('/c/:companyId/annual/export.csv', page(async (req, res) => {
