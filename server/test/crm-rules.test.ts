@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -147,5 +147,17 @@ describe('statusregeln vid kundkoppling (story 1.6)', () => {
   });
   it.each(mergefacit)('M1 sammanslagningens utfall %#', (keep, gone, source, expected) => {
     expect(mergeStatusOutcome(keep, gone, source)).toEqual(expected);
+  });
+});
+
+describe('projektkodsmönstret (story 2.2)', () => {
+  const projektkoder = ['NVR-001', 'ILT-123', 'ÅÄÖ-999', '  NVR-001  ', 'AB-000', 'ABCDEF-999'];
+  const andraNamn = ['nvr-001', 'NVR-0012', 'NVR001', 'A-001', 'ABCDEFG-001', 'Nordic Vision Retail AB',
+    '', 'NVR-001 AB', 'NVR–001', 'NVR-0O1', 'ILT-Education'];
+  it.each(projektkoder)('P1 %s är en projektkod efter trimning', (name) => {
+    expect(isProjectCode(name)).toBe(true);
+  });
+  it.each(andraNamn)('P2 %s är inte en projektkod', (name) => {
+    expect(isProjectCode(name)).toBe(false);
   });
 });

@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 2.2, projektkoder blir aldrig organisationer och namnen normaliseras på ett ställe (FR-14, FR-30 b):**
+  Migration 0091 lägger `crm.normalize_org_name`, genererad `name_norm` och
+  ett icke-unikt index per bolag. Bolagsformslistan finns bara där.
+  `isProjectCode` och spärren överst i `upsertOrganization` avvisar med
+  `project_code_as_name` före databasfrågor och namnalias. Intaget använder
+  sin befintliga savepoint och redovisar index och svensk text i `skipped`;
+  vyn visar texten i sin notis. Äldre rader kan rättas och döpas om.
+  Aliasprovets fixtur NVR-001 är nu NVR-piloten; assertionerna behåller sin
+  innebörd. MCP_ACTIONS och API_KONTRAKT beskriver det ändrade kontraktet.
+  P1/P2, M1–M5, N1–N6, S1–S6 och D1 täcker beteendet; varje ny del fick
+  sina fall före implementationen. Befintliga P-fall och regel behölls vid
+  omtaget. Typecheck exit 0 före/efter uppgift 1–3 och före uppgift 4.
+  `npm test` före/efter varje uppgiftsgrind stoppas i globalSetup med
+  `connect EPERM 127.0.0.1:5433` (exit 1). Inga databasfall har körts eller
+  grönrapporterats; kedjan verifierar hela sviten enligt nätundantaget.
+  Fristående Vitest-körning utan databassetup: crm-rules 76/76 gröna.
+  D1:s första dokumentkontroll föll före ändringen och samtliga dess
+  dokumentkontroller passerar efteråt i fristående körning.
+  Regressionsytan läskontrollerad; skrivpunkterna är oförändrade.
+  Daglig liggares befintliga notis, Public Sans/IBM Plex Mono, petrolaccent,
+  tokens, fokusmarkering och tangentbordsordning används, liksom dess tomma
+  och laddade lägen. Ingen ny rutt, åtgärd, indata-schemaändring, CSS-klass
+  eller beroende tillkom. Ingen tjänstestart, webbläsarprovning eller drift.
+  Slutgrind: typecheck, build och diffkontroll exit 0. DoD:s 26 punkter
+  prövade; 24 uppfyllda och två hanterade med nätundantaget. Berättelsen och
+  sprintstatus står i review; kedjans databasverifiering återstår.
+  Externa prov körs av kedjan; inga nya externa resultat påstås här.
+
 - **2026-11-20 — Story 1.6, en människosatt status står kvar när kundkopplingen tillkommer eller flyttas (FR-12, FR-8):**
   `statusAfterLink`, `linkStatusOutcome` och `mergeStatusOutcome` samlar regeln
   i lib. `upsertOrganization` och `mergeOrganizations` skriver räknad status

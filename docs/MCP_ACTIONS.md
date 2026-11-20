@@ -2562,3 +2562,24 @@ skrivarens ursprung. Sammanslagningen ändrar inte statusens ursprung.
 Att göra-kortet för `merge_crm_organizations` använder samma regel som körningen
 och säger om statusen står kvar eller ändras. Påståendet ”ifyllda rörs inte”
 står bara när statusen står kvar.
+
+## Projektkoder och normaliserat namn (crm 2.2)
+
+Ett organisationsnamn som efter trimning matchar `^[A-ZÅÄÖ]{2,6}-\d{3}$`
+(till exempel NVR-001) avvisas. `upsert_crm_organization` svarar 400
+`project_code_as_name` från både människa och agent. `ingest_crm_events`
+lägger händelsen i `skipped` med sitt index och skälet att namnet är en
+projektkod; ingenting skrivs för den, och övriga händelser skrivs som vanligt.
+Avvisningen gäller före namngravstenen, så ett alias styr inte om projektkoden.
+Vyn visar den svenska feltexten i sin befintliga notis.
+
+Ett anrop med `organization_id` utan namn rör inte namnet. En befintlig rad
+med projektkodsnamn kan därför rättas i andra fält och döpas om till bolagets
+namn; ett nytt projektkodsnamn avvisas alltid. Befintliga rader ändras inte
+automatiskt.
+
+Varje organisation bär `name_norm`, genererad av `crm.normalize_org_name`:
+gemener, trimmade och hopslagna blanktecken och en avslutande bolagsform ur
+den slutna listan. Kolumnen syns inte i åtgärdernas svar; den är
+jämförelsenyckeln för bolagsformsvarianterna i 2.3 och dataprovet. Uppslaget
+på namn är fortfarande skiftlägesokänsligt på hela namnet.

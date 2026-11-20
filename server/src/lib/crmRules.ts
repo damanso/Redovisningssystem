@@ -94,3 +94,10 @@ export function mergeStatusOutcome(
   const outcome = linkMoves ? linkStatusOutcome(keep.status, provenance) : { status: keep.status, kept: false };
   return { linkMoves, from: keep.status, to: outcome.status, kept: outcome.kept };
 }
+
+const PROJECT_CODE_PATTERN = /^[A-ZÅÄÖ]{2,6}-\d{3}$/;
+
+/** En projektkod är ett uppdrag, ingen motpart; en relation under koden gör att styrvyn räknar noll för kunden. */
+export function isProjectCode(name: string): boolean {
+  return PROJECT_CODE_PATTERN.test(name.trim());
+}

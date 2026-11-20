@@ -93,6 +93,14 @@ Skälet är mätt, inte principiellt: två av tre aktiva projekt har noll loggad
 minuter men betalda fakturor, så en "senaste kontakt" byggd på tidrapporter
 hade visat den största kunden som kontaktlös.
 
+**6. En projektkod är inget organisationsnamn.** Ett organisationsnamn som
+efter trimning matchar `^[A-ZÅÄÖ]{2,6}-\d{3}$` (som *NVR-001*) avvisas.
+Händelsen hamnar i `skipped` med sitt index och skälet att namnet är en
+projektkod; ingenting skrivs för den och övriga händelser skrivs som vanligt.
+`upsert_crm_organization` svarar 400 `project_code_as_name` för både människa
+och agent. Regeln gäller före namngravstenen. Befintliga organisationer med
+ett sådant namn rörs inte.
+
 ## Svaret
 
 ```jsonc
@@ -199,6 +207,12 @@ Statusens ursprung ändras inte av sammanslagningen.
 Två fall avvisas i stället för att gissas: organisationer som pekar på **olika**
 kunder i redovisningen (`customer_conflict`) och personer med **olika**
 e-postadresser (`email_conflict`). Det är då inte dubbletter.
+
+Varje organisation bär `name_norm`, genererad av `crm.normalize_org_name`,
+så att *Alliance Optikk AS* och *Alliance Optikk* har samma jämförelsenyckel.
+Nyckeln använder gemener, trimmade och hopslagna blanktecken och tar bort en
+avslutande bolagsform ur den slutna listan. Uppslaget på namn är fortfarande
+skiftlägesokänsligt på hela namnet; bolagsformsvarianter slås inte ihop här.
 
 ### Ett hopslaget namn återuppstår inte
 
