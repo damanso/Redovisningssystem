@@ -107,6 +107,17 @@ export function parseSie(text: string): ParsedSie {
   return { accounts, vouchers };
 }
 
+/**
+ * AC 4: ogiltigt innehåll ska synas på Import före kön. En känslig åtgärd
+ * körs inte vid köandet; den här formkontrollen läser bara, utan skrivningar.
+ */
+export function kontrolleraSieInnehall(text: string): void {
+  const parsed = parseSie(text);
+  if (parsed.accounts.length === 0 && !parsed.vouchers.some((voucher) => voucher.lines.length > 0)) {
+    throw new BadRequestError('invalid_sie', 'SIE-innehållet har inga konton och inga verifikat att importera.');
+  }
+}
+
 export interface SieImportResult { accounts_created: number; accounts_skipped: number; vouchers_imported: number }
 
 export async function importSie(

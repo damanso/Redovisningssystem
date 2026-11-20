@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.3, SIE-import från vyn köas och Import visar fel (FR-39, FR-38, AD-1):**
+  Vyns SIE-import går nu genom `runViewAction` till Att göra före konton och
+  verifikat. En exakt tillåtelselista för POST till import/sie och import/bank
+  bevarar 5 MB-parsern efter inloggning och 16 kB för övriga formulär.
+  Bankimport och avstämning går genom samma åtgärdslager med action.executed.
+  Gemensam importRedirect visar formulär- och affärsfel, behåller giltigt år
+  och undviker dubbel redirect. Främmande/låsta år och ogiltig SIE avvisas före
+  kön. Årsväljare, ellips, godkännandehint och länkat väntandechip återanvänder
+  Bokslutets markup och Daglig liggares tokens, typografi, skala och fokus.
+  Tomt läge, laddad sida och felnotis använder samma serverrenderade yta.
+  S1.1–S1.5, V1.1, B2.1–B2.3, F3.1–F3.6 och K4.1–K4.3 är skrivna i
+  import.test.ts och nya vy-kansliga-knappar.test.ts; dessutom ett enhetsprov
+  för formkontrollens tomma/oavslutade verifikat samt konto-/verifikatfiler.
+  Befintliga importfall och förslagskortets importindata lästa utan omskrivning.
+  `npm run typecheck`: exit 0 (tsc --noEmit och tsconfig.test.json).
+  `npm run build`: exit 0 (tsc). `git diff --check`: exit 0.
+  Samtliga röd-/grönförsök, delgrindar och hela `npm test`: inte kört —
+  `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)` i
+  globalSetup, exit 1 (Vitest skriver även «No test files found»).
+  Inga databasprov påstås gröna; kedjan verifierar dem enligt nätundantaget.
+  Sju rena fall mot den byggda SIE-kontrollen körda separat med node:assert:
+  exit 0, utan databas/nät och med DOTENV_CONFIG_PATH=/dev/null.
+  DoD prövad punktvis med nätundantaget; berättelsens Status är review.
+  Ingen webbläsarmätning eller driftkontroll körd, inga tjänster startade.
+  Baslinjens adresskontraktet, bmadglidning, overlamningsregister_fr6 och
+  continuityvakt har inte körts här; inget nytt externt rött är känt.
+  Inga nya rutter/åtgärder/beroenden eller ändrade externa kontrakt.
+
 - **2026-11-20 — Story 1.13, förtroendegränsen för agent, contractor och bokförda verifikat (FR-2, FR-3, FR-38):**
   Nio nya fall i `server/test/actions.test.ts`, i fem bolagsisolerade `describe`
   med lokal rigg. Ingen produktionskod ändrad. R1.1–R1.5 prövar beroende och
