@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 6.2, likviditet per kalendermånad ur belagda betalningar (FR-44):**
+  `domain/liquidity.ts` rullar tre kalendermånader med överfört saldo, förfallet,
+  första underskott, horisontens behov och okänt med källa. `liquidityByMonth`
+  i reports delar kassa/reskontror/AGI-hjälpare med den äldre prognosen. Bara
+  kundfakturor, leverantörsfakturor och periodmärkta lönebeskeds AGI räknas.
+  Saknade kassarader och aldrig bokförd leverantörsreskontra ger okänt behov.
+  U1–U10, G0–G1, A1–A4 och O1–O2 i `steering-liquidity.test.ts` skrevs före
+  respektive kod; G1 karakteriserar basen. Typkontrollens röda steg gav TS2307
+  respektive TS2305; efter koden exit 0. G0:s stubbe gav ett observerat rött,
+  därefter passerade U1–U10 och G0 (11/11) i en separat ren Vitest-körning.
+  Källtextkontrollerna S1, U1–U3 och deras negativa kontroller passerar (exit 0).
+  Textjämförelse mot HEAD bekräftar orörda prognosnoter/källbyggen och avstämning.
+  `npm test` före/efter varje koduppgift stoppades i globalSetup med exit 1,
+  `Error: connect EPERM 127.0.0.1:5433`. Inga databasfall har körts här eller
+  grönrapporterats; kedjan kör hela sviten enligt användarens nätundantag.
+  Kommandon kördes enligt uppdraget; berättelsens äldre verktygsantagande gäller
+  inte denna session. Obelagda poster och läsåtgärden hör till Story 6.5,
+  visningen till Story 6.3. Befintlig Daglig liggare läst: Public Sans/IBM Plex
+  Mono, petrolaccent, tokens och fokusmarkering bevaras; denna beräkningsstory
+  ändrar ingen vy. Inget externt kontrakt, beroende, migration eller tjänstestart.
+  Slutgrind: `npm run build` och `git diff --check` exit 0; slutlig fullsvit
+  åter EPERM i globalSetup. DoD:s 26 punkter prövade med nätundantaget;
+  berättelse och sprintstatus review. Tillfällig ren provkopia borttagen.
+  Ingen driftsättning; kodgranskning och kedjans databasgrind återstår.
+
+
 - **2026-11-20 — Story 1.6, en människosatt status står kvar när kundkopplingen tillkommer eller flyttas (FR-12, FR-8):**
   `statusAfterLink`, `linkStatusOutcome` och `mergeStatusOutcome` samlar regeln
   i lib. `upsertOrganization` och `mergeOrganizations` skriver räknad status
