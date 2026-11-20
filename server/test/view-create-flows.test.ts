@@ -246,7 +246,10 @@ describe('godkännandekonflikt syns i Att göra', () => {
     expect(pay.headers.location).toBe(`/app/c/${companyId}/approvals`);
     // ...och godkänn: utförandet ska stoppas med ett SYNLIGT skäl (inte tyst).
     const appr = await agent.get(`/app/c/${companyId}/approvals`);
-    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/approve/);
+    const aid = appr.text.match(/\/approvals\/([0-9a-f-]{36})\/reject/);
+    expect(aid, 'betalningsförslagets avvisningsformulär saknas').toBeTruthy();
+    expect(appr.text).not.toContain(`/approvals/${aid![1]}/approve`);
+    expect(appr.text).toContain('Be AI-assistenten föreslå bokföringen först.');
     const res = await agent.post(`/app/c/${companyId}/approvals/${aid![1]}/approve`).send({});
     expect([302, 303]).toContain(res.status);
     expect(res.headers.location).toContain('fel=');
