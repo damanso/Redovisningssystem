@@ -2523,6 +2523,10 @@ Utan `organization_id` krävs `name`; saknat eller blankt namn ger 400
 `invalid_name`. Ett anrop med `organization_id` utan ändringsfält ger 400
 `nothing_to_update` (”Inget att rätta: inget fält ändrades.”), utan skrivning.
 
+En människas rättelse med `organization_id` gör inget automatiskt kunduppslag.
+Utelämnat `customer_id` lämnar kopplingen och dess ursprung orörda, även om ett
+ändrat namn eller org.nr matchar en kund. Synkens kunduppslag är oförändrat.
+
 Ett uttryckligt `customer_id` slås aldrig upp i kundregistret och får skrivarens
 ursprung: `human` för en människa och `ai` för en agent. En kund som redan är
 kopplad till en annan relation ger 409 `customer_already_linked` med

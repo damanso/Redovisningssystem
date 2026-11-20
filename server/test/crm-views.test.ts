@@ -1193,6 +1193,69 @@ describe('1.4 kundkopplingen på relationssidan', () => {
       const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
       expect(kontrakt.split('## Människan vinner')[1]!.split(/\n## /)[0]).toContain('customer_already_linked');
     });
+
+    it.each([
+      { field: 'name', value: 'Rättat matchnamn 14 AB' },
+      { field: 'org_number', value: '556914-0091' },
+      { field: 'website', value: 'https://rattat14.example' },
+      { field: 'status', value: 'partner' },
+      { field: 'roll', value: 'kund' },
+    ])('A9 manuell rättelse av $field lämnar utelämnad kundkoppling och övriga fält orörda', async ({ field, value }) => {
+      const id = await nyK1Org(`Rättelse ${field} 14 AB`);
+      // Kunden tillkommer efter relationen: en ofarlig rättelse får inte börja
+      // koppla bara för att registret har ändrats sedan relationen skapades.
+      const customer = await api.post(`${co()}/customers`).set(auth()).send({
+        name: field === 'name' ? value : `Rättelse ${field} 14 AB`,
+        ...(field === 'org_number' ? { name: 'Nummermatch 14 AB', org_number: value } : {}),
+      });
+      expect(customer.status, JSON.stringify(customer.body)).toBe(201);
+      for (const f of ['name', 'status']) await plantera({ organization_id: id }, f,
+        { source: 'sync', source_system: 'gmail', source_ref: `gmail:a9:${field}` });
+      const fore = await lasK1Org(id);
+      const r = await act('upsert_crm_organization', { organization_id: id, [field]: value });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const efter = await lasK1Org(id);
+      expect(efter[field]).toBe(value);
+      expect(efter.provenance[field].source).toBe('human');
+      for (const untouched of ['name', 'org_number', 'website', 'status', 'customer_id', 'roll'].filter((f) => f !== field)) {
+        expect(efter[untouched], untouched).toBe(fore[untouched]);
+        expect(efter.provenance[untouched], untouched).toEqual(fore.provenance[untouched]);
+      }
+      expect(efter.customer_id).toBeNull();
+    });
+
+    it.each([
+      { key: 'namn', existing: false, org_number: undefined },
+      { key: 'orgnr', existing: false, org_number: '556914-0092' },
+      { key: 'namn', existing: true, org_number: undefined },
+      { key: 'orgnr', existing: true, org_number: '556914-0093' },
+    ])('A10 synken matchar fortfarande $key (befintlig relation: $existing)', async ({ key, existing, org_number }) => {
+      const name = `Synk ${key} ${existing ? 'befintlig' : 'ny'} 14 AB`;
+      const id = existing ? await nyK1Org(name) : undefined;
+      if (id) await plantera({ organization_id: id }, 'status', { source: 'sync' });
+      const customer = await api.post(`${co()}/customers`).set(auth()).send({
+        name: org_number ? `Nummerkund ${org_number} 14 AB` : name,
+        ...(org_number ? { org_number } : {}),
+      });
+      expect(customer.status, JSON.stringify(customer.body)).toBe(201);
+      const r = await act('ingest_crm_events', { events: [{
+        kind: 'interaction', organization: { name, ...(org_number ? { org_number } : {}) },
+        occurred_at: '2026-06-10T09:14:00Z', channel: 'email', direction: 'inbound',
+        summary: 'Synkens kunduppslag.', source_system: 'gmail', source_ref: `gmail:a10:${key}:${existing}`,
+      }] });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const rows = await withAdmin(async (client) => (await client.query<{ id: string }>(
+        'SELECT id FROM crm.organizations WHERE company_id = $1 AND name = $2', [companyId, name],
+      )).rows);
+      expect(rows).toHaveLength(1);
+      if (id) expect(rows[0]!.id).toBe(id);
+      const o = await lasK1Org(rows[0]!.id);
+      expect(o.customer_id).toBe(customer.body.customer.id);
+      expect(o.status).toBe('customer');
+      expect(o.provenance.customer_id).toMatchObject({
+        source: 'accounting', reason: org_number ? 'matchad på organisationsnummer' : 'matchad på namn i kundregistret',
+      });
+    });
   });
 
   describe('vyn (story 1.4)', () => {
@@ -1284,6 +1347,7 @@ describe('1.4 kundkopplingen på relationssidan', () => {
       expect(efter.provenance).toEqual(fore.provenance);
     });
     it('K6 bara ändrat namn blir human; orörda värden och ursprung står kvar', async () => {
+      await v14Kund('Namnbolaget 14 Ny AB');
       for (const field of ['name', 'org_number', 'status']) await plantera({ organization_id: M }, field,
         { source: 'sync', source_system: 'gmail', source_ref: 'gmail:k6' });
       await plantera({ organization_id: M }, 'website', { source: 'ai' });

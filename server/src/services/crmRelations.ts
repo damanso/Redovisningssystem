@@ -293,8 +293,8 @@ async function assertCustomerFree(
  * inte hit (de bor kvar i `customers`).
  *
  * Kopplingen sätts uttryckligen när anroparen kan den, annars slås den upp på
- * organisationsnummer eller namn (se matchCustomer). Utan uppslaget blir
- * omsättningen blind för allt som kommer in via API-kontraktet.
+ * organisationsnummer eller namn, utom vid människans rättelse med känt id.
+ * Utan uppslaget blir omsättningen blind för allt som kommer in via API-kontraktet.
  */
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, rawInput: UpsertOrganizationInput, origin: WriteOrigin,
@@ -360,7 +360,10 @@ export async function upsertOrganization(
     }
   }
 
-  // Uppslaget görs bara utan uttrycklig kund och när kopplingen saknas.
+  // Människans rättelse med känt id ändrar bara angivna fält. En utelämnad
+  // kund får därför aldrig fyllas i av uppslaget, oavsett vilket fält som rättas.
+  // Synken och upsert utan id behåller uppslaget när kopplingen saknas.
+  // Uppslaget görs bara utan uttrycklig kund.
   // Det uttryckliga valet bär skrivarens ursprung. En befintlig koppling ska aldrig
   // flyttas av en synk — det är ett beslut för en människa.
   //
@@ -372,7 +375,8 @@ export async function upsertOrganization(
   //
   // Samma sak för en organisation med privata personer (steg 3, 0089): synken ska
   // inte försöka koppla den och fällas, den lämnar den okopplad och säger det.
-  const matchable = !hit?.customer_id
+  const matchable = (!input.organization_id || origin.source !== 'human')
+    && !hit?.customer_id
     && (input.sfar ?? hit?.sfar ?? 'foretag') === 'foretag'
     && (hit?.sfar ?? 'foretag') === 'foretag'
     && !(hit && await harPrivataAtaganden(client, companyId, hit.id))

@@ -163,6 +163,9 @@ avvisas skrivningen med `name_taken`; två rader för samma bolag ska slås ihop
 får `name` utelämnas och betyder då oförändrat. Ett `customer_id` som redan
 hör till en annan organisation avvisas med 409 `customer_already_linked`
 i stället för ett indexfel.
+En människas rättelse med `organization_id` gör inget automatiskt kunduppslag:
+utelämnat `customer_id` lämnar kopplingen, dess ursprung och en utelämnad status
+orörda även vid matchande namn eller org.nr. Synkens uppslag är oförändrat.
 
 ## Kadens, dubbletter och sökning
 

@@ -153,6 +153,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.4, två High-fynd efter code-review (AC4/FR-8):**
+  Båda fynden har samma rotorsak: kunduppslaget i tjänsten kunde lägga till
+  utelämnad kundkoppling och därmed ändra status efter formulärets filtrering.
+  En gemensam vakt i `crmRelations.ts` hindrar automatiskt uppslag vid en
+  människas rättelse med `organization_id`, oavsett vilket fält som rättas.
+  Synkens uppslag på namn/org.nr och uttryckligt kundval behåller sin väg.
+  Först skrevs A9:s fem parameterfall (namn, org.nr, webbplats, status, roll),
+  A10:s fyra synkfall (namn/nummer × ny/befintlig relation) och K6 kompletterades
+  med en ledig kund med det nya namnet. Befintliga assertioner bevarade.
+  `npm run typecheck` före/efter kod: exit 0. `npm run build`: exit 0.
+  `git diff --check`: exit 0. `npm test` före/efter kod: exit 1 i globalSetup,
+  `Error: connect EPERM 127.0.0.1:5433`; inga databasfall körda här och inget
+  observerat rött/grönt påstås för dem. Kedjan kör hela sviten enligt uppdragets
+  uttryckliga undantag. Båda fynden kryssas efter läskontroll av hela felklassen.
+  MCP_ACTIONS.md och API_KONTRAKT.md förtydligar utelämnade fält vid rättelse.
+  Ingen ny rutt, migration, åtgärd, beroende eller ändring av statusregeln.
+  Alla 26 DoD-punkter omprövade med databasundantaget; berättelse och sprintstatus review.
+  Befintlig Daglig liggare, typografi, tokens, tangentbordsfokus och formulärlägen
+  följs. Hermes-prov, webbläsarprovning, tjänstestart och driftsättning ej körda;
+  adresskontraktet/bmadglidning är fortsatt extern baslinje enligt berättelsen.
+
 - **2026-11-20 — Story 1.4, kundkopplingen väljs och byts på relationssidan (FR-10, FR-8):**
   *Rätta uppgifter* har kundval med aktiva kunder i nummerordning och nuvarande
   inaktiva kund kvar som förval. Sex dolda `fore_`-fält gör att bara ändringar
