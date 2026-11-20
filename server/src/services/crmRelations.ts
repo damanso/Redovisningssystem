@@ -685,12 +685,14 @@ export async function confirmCrmValue(
   } else if (Object.hasOwn(target, 'interaction_id')) {
     entityType = 'interaction';
     entityId = ids.interaction_id!;
-    const event = await client.query('SELECT 1 FROM crm.interactions WHERE id = $1 AND company_id = $2', [entityId, companyId]);
+    // Samma radlås som rättelse och omsändning, före ursprunget: annars kan
+    // deras vakt läsa gammalt ursprung medan människans bekräftelse är öppen.
+    const event = await client.query('SELECT 1 FROM crm.interactions WHERE id = $1 AND company_id = $2 FOR UPDATE', [entityId, companyId]);
     if (!event.rows[0]) throw new NotFoundError('interaction');
   } else {
     entityType = 'commitment';
     entityId = ids.commitment_id!;
-    const event = await client.query('SELECT 1 FROM crm.commitments WHERE id = $1 AND company_id = $2', [entityId, companyId]);
+    const event = await client.query('SELECT 1 FROM crm.commitments WHERE id = $1 AND company_id = $2 FOR UPDATE', [entityId, companyId]);
     if (!event.rows[0]) throw new NotFoundError('commitment');
   }
   await confirmValue(client, companyId, userId, target, field);

@@ -2499,6 +2499,9 @@ av de fyra målen `organization_id`, `person_id`, `interaction_id`,
 oförändrade. Bekräftelsen ändrar bara ursprunget till `human` med skälet
 ”bekräftad av människa”, aldrig värdet. Agent-token ger 403
 `human_confirmation_required`. MCP-schemat är fortsatt ett objekt på toppnivån.
+För händelser tas samma radlås som vid rättelse och omsändning före
+bekräftelsen och hålls till transaktionens slut, så att en samtidig agent eller
+synk prövar människoskyddet först efter att bekräftelsen committats.
 
 I tråden och åtagandevyn finns hopfälld *Rätta* för kontaktpunkter och löften
 med relation. Tomma och oförändrade formulärfält lämnas orörda; *Inget

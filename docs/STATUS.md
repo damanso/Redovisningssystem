@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-20 — Story 1.2, två High-fynd efter code-review (AC3/FR-8):**
+  Gemensam rotorsak: händelsens bekräftelse skrev human utan samma radlås som
+  rättelse och synk. Båda händelsegrenarna i `confirmCrmValue` tar nu
+  `FOR UPDATE` före `confirmValue` och behåller låset till commit. Därmed kan
+  ingen konkurrerande skrivare läsa gammalt ursprung före vakten. Människospärr,
+  bolagsfilter, 404 och audit i samma transaktion står kvar. Inga nya mönster,
+  beroenden, migrationer eller sfärändringar. API_KONTRAKT.md berörs inte;
+  MCP_ACTIONS.md beskriver låsningen. Två granskningspunkter kryssade med
+  berättelsens uttryckliga läskontrollundantag; Status återförs till review.
+  Först skrevs 22 nya parameterfall i crm-event-provenance.test.ts: B7 väntan
+  på en pågående skrivning (2), B8 alla nio bekräftelsefält från två baslägen
+  inklusive null/status och obekräftade fält som negativ kontroll (18), B9
+  samtidiga omsändningar för båda händelseslagen (2). Grind och finally håller
+  transaktionerna under kontroll. Konkurrerande anrop går genom HTTP/actions;
+  ingen databas mockas. Alla äldre fixturer/assertioner är bytevis oförändrade.
+  `npm run typecheck` före/efter kod: exit 0. `npm run build`: exit 0.
+  `git diff --check`: exit 0. `npm test` före/efter: exit 1 i globalSetup,
+  `Error: connect EPERM 127.0.0.1:5433`; inga testfall körda här. Observerat
+  rött/grönt och full regression återstår för kedjan, inga gröna databasprov
+  påstås. Dev Agent Record och samtliga 26 DoD-punkter omprövade.
+  Befintliga Rätta/Stämmer-ytor och Daglig liggares typografi, tokens, fokus,
+  etiketter, fel-/tomlägen och serverrenderade laddade läge är lästa och
+  behålls; ändringen ligger bakom knappen. Ingen tjänst, webbläsarkontroll,
+  driftsättning eller Hermes-körning. Adresskontraktets generatorsynk och
+  de tidigare röda baslinjeproven kvarstår enligt föregående sessionsrad.
+
 - **2026-11-20 — Story 1.2, omtag efter fyra röda vyprov (K3/K6/K8/F2):**
   Gemensam felklass i nya provhjälparen `v12TableRow`: exakt `<tr>` missade
   husets befintliga `<tr role="row">` från `staplabaraTabeller`. Matchningen

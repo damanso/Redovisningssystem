@@ -1101,6 +1101,146 @@ describe('1.2 rätta och bekräfta händelser', () => {
       expect(schema.properties).toHaveProperty('commitment_id');
       expect(schema).not.toHaveProperty('anyOf');
     });
+
+    // En grind håller T1 öppen. Det räcker inte att T2 väntar på ursprungsraden:
+    // utan händelsens lås kan vakten redan ha läst det gamla ursprunget.
+    async function r12DuringConfirmation<T>(
+      hold: (db: pg.PoolClient) => Promise<void>, compete: () => Promise<T>,
+    ): Promise<{ blocked: boolean; result: T }> {
+      let release!: () => void;
+      let ready!: (pid: number) => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<number>((resolve) => { ready = resolve; });
+      const first = withTenantTransaction(r12User.userId, r12Company, async (db) => {
+        await hold(db);
+        ready((await db.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);
+        await gate;
+      });
+      let second: Promise<T> | undefined;
+      try {
+        const pid = await Promise.race([locked, first.then(() => { throw new Error('T1 avslutades före grinden'); })]);
+        second = compete();
+        // Avvisningar observeras direkt, också om de kommer under låspollningen.
+        void second.catch(() => {});
+        let blocked = false;
+        for (let i = 0; i < 100; i++) {
+          blocked = await withAdmin(async (db) => (await db.query<{ blocked: boolean }>(
+            'SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked',
+            [pid])).rows[0]!.blocked);
+          if (blocked) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        release();
+        await first;
+        return { blocked, result: await second };
+      } finally {
+        release();
+        await Promise.allSettled([first, second]);
+      }
+    }
+
+    it.each(['interaction', 'commitment'] as const)(
+      'B7 %s: bekräftelsen väntar på händelsens pågående skrivning', async (kind) => {
+        const ref = kind === 'interaction' ? 'gmail:rB7' : 'linear:LOC-LB7';
+        await r12Ingest(kind === 'interaction' ? r12Interaction('B7') : r12Commitment('B7'));
+        const before = await r12Row(kind, ref);
+        const target = kind === 'interaction' ? { interaction_id: before.id } : { commitment_id: before.id };
+        const field = kind === 'interaction' ? 'summary' : 'body';
+        const { blocked } = await r12DuringConfirmation(async (db) => {
+          await db.query(kind === 'interaction'
+            ? 'SELECT id FROM crm.interactions WHERE company_id = $1 AND id = $2 FOR UPDATE'
+            : 'SELECT id FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE', [r12Company, before.id]);
+        }, () => r12Ok('confirm_crm_value', { ...target, field }));
+        expect(blocked, 'bekräftelsen måste vänta innan den skriver human').toBe(true);
+        expect(await r12Row(kind, ref)).toEqual(before);
+        expect((await r12Provenance(kind, before.id)).find((p) => p.field === field))
+          .toMatchObject({ source: 'human', reason: 'bekräftad av människa' });
+      },
+    );
+
+    const r12ConfirmationFields = [
+      { kind: 'interaction', field: 'summary', value: 'Agentens nya sammanfattning B8.' },
+      { kind: 'interaction', field: 'channel', value: 'call' },
+      { kind: 'interaction', field: 'direction', value: 'outbound' },
+      { kind: 'interaction', field: 'occurred_at', value: '2026-09-08T12:00:00Z' },
+      { kind: 'commitment', field: 'body', value: 'Agentens nya text B8.' },
+      { kind: 'commitment', field: 'direction', value: 'they_owe' },
+      { kind: 'commitment', field: 'due_date', value: null },
+      { kind: 'commitment', field: 'occurred_at', value: '2026-09-08T12:00:00Z' },
+      { kind: 'commitment', field: 'status', value: 'done' },
+    ] as const;
+    it.each(r12ConfirmationFields.flatMap((entry) => ['sync', 'ai'].map((source) => ({ ...entry, source }))))(
+      'B8 $kind.$field ($source): en öppen bekräftelse skyddar bara sitt fält mot agenten',
+      async ({ kind, field, value, source }) => {
+        const { confirmCrmValue } = await import('../src/services/crmRelations.js');
+        const n = `B8-${field}-${source}`;
+        const ref = kind === 'interaction' ? `gmail:r${n}` : `linear:LOC-L${n}`;
+        const event = kind === 'interaction' ? r12Interaction(n) : r12Commitment(n);
+        await r12Ingest(event);
+        const before = await r12Row(kind, ref);
+        const target = kind === 'interaction' ? { interaction_id: before.id } : { commitment_id: before.id };
+        const action = kind === 'interaction' ? 'update_crm_interaction' : 'update_crm_commitment';
+        const otherField = kind === 'interaction'
+          ? field === 'summary' ? 'direction' : 'summary'
+          : field === 'body' ? 'direction' : 'body';
+        const otherValue = otherField === 'summary' || otherField === 'body'
+          ? 'Obekräftat fält B8.' : kind === 'interaction' ? 'internal' : 'they_owe';
+        if (source === 'ai') {
+          // Skriv samma värde via agenten så att startursprunget blir ai, utan
+          // att återanvända de värden som ska försöka skriva över bekräftelsen.
+          await r12Ok(field === 'status' ? 'set_crm_commitment_status' : action,
+            { ...target, [field]: field === 'occurred_at' ? new Date(before[field]).toISOString() : before[field] }, r12Agent);
+        }
+        expect((await r12Provenance(kind, before.id)).find((p) => p.field === field)?.source)
+          .toBe(field === 'status' && source === 'sync' ? undefined : source);
+        const { blocked, result } = await r12DuringConfirmation(async (db) => {
+          await confirmCrmValue(db, r12Company, r12User.userId, 'human', target, field);
+          expect((await readProvenance(db, r12Company, target)).get(field)?.source).toBe('human');
+        }, () => r12Ok(field === 'status' ? 'set_crm_commitment_status' : action,
+          { ...target, [field]: value, ...(field === 'status' ? {} : { [otherField]: otherValue }) }, r12Agent));
+        expect(blocked, 'agenten måste vänta tills människans bekräftelse committats').toBe(true);
+        expect(result.kept_human_fields).toEqual([field]);
+        const after = await r12Row(kind, ref);
+        expect(after[field]).toEqual(before[field]);
+        expect((await r12Provenance(kind, before.id)).find((p) => p.field === field))
+          .toMatchObject({ source: 'human', reason: 'bekräftad av människa' });
+        expect(await r12Audit('crm.value_confirmed', before.id))
+          .toMatchObject({ entity_type: kind, details: { field } });
+        if (field !== 'status') {
+          expect(after[otherField], 'negativ kontroll: obekräftade fält följer fortfarande agenten').toBe(otherValue);
+          expect((await r12Provenance(kind, before.id)).find((p) => p.field === otherField)?.source).toBe('ai');
+          expect(await r12Audit(`crm.${kind}_corrected`, before.id))
+            .toMatchObject({ details: { fields: [otherField], kept_human_fields: [field] } });
+        }
+      },
+    );
+
+    it.each(['interaction', 'commitment'] as const)(
+      'B9 %s: en samtidig omsändning behåller bekräftelsen och följer källan för resten', async (kind) => {
+        const { confirmCrmValue } = await import('../src/services/crmRelations.js');
+        const event = kind === 'interaction' ? r12Interaction('B9') : r12Commitment('B9');
+        const ref = kind === 'interaction' ? 'gmail:rB9' : 'linear:LOC-LB9';
+        await r12Ingest(event);
+        const before = await r12Row(kind, ref);
+        const target = kind === 'interaction' ? { interaction_id: before.id } : { commitment_id: before.id };
+        const field = kind === 'interaction' ? 'summary' : 'body';
+        const { blocked, result } = await r12DuringConfirmation(
+          async (db) => { await confirmCrmValue(db, r12Company, r12User.userId, 'human', target, field); },
+          () => r12Ingest({ ...event, [field]: 'Källans nya text B9.',
+            ...(kind === 'interaction' ? { direction: 'outbound' } : { commitment_direction: 'they_owe' }) }),
+        );
+        expect(blocked, 'synken måste vänta på bekräftelsen före vakten').toBe(true);
+        expect(result.kept_human_fields).toEqual([
+          `${kind === 'interaction' ? 'Rättelseprovet R AB' : 'Rättelseprovet L AB'}: ${ref} ${field}`,
+        ]);
+        const after = await r12Row(kind, ref);
+        expect(after[field]).toEqual(before[field]);
+        expect(after.direction).toBe(kind === 'interaction' ? 'outbound' : 'they_owe');
+        const provenance = await r12Provenance(kind, before.id);
+        expect(provenance.find((p) => p.field === field)).toMatchObject({ source: 'human', reason: 'bekräftad av människa' });
+        expect(provenance.find((p) => p.field === 'direction')?.source).toBe('sync');
+      },
+    );
   });
 
   it('D1 dokumentet beskriver rättelser, händelsemål och felkoder i ett eget avsnitt', async () => {
