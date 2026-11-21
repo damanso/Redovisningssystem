@@ -51,6 +51,7 @@ import {
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
 import { begarNyBedomning, sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
+import { sattBedomningsankare } from '../services/uppdragRytm.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
@@ -1824,6 +1825,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // samma skäl som `tand_av` — ett indatafält hade gjort spåret till ett
     // påstående anroparen skriver om sig själv.
     handler: (ctx, i) => begarNyBedomning(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // Story 2.3 (FR-14, B-14): David sätter datumet som avtalets bedömningsrytm
+  // räknas från. Kontraktet säger takten men aldrig vilken dag — och ett gissat
+  // ankare flyttar varje period utan att någon ser det.
+  def({
+    name: 'satt_bedomningsankare',
+    title: 'Sätt ankardatumet för avtalets bedömningsrytm (en gång, med källa)',
+    // `write` + `kravManniska`, samma form som `godkann_leverabel`: ankaret är
+    // Davids uppgift, och ingen ANNAN kan sätta det — en agent får 403
+    // `human_required` i executeAction före varje skrivning.
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        ankare: IsoDateSchema,
+        // Källan är obligatorisk och har exakt två former: Davids uppgift med
+        // datum, eller en av avtalets kalenderreferenser. Ingen standardkälla.
+        kalla: z.discriminatedUnion('typ', [
+          z.object({ typ: z.literal('davids_uppgift'), datum: IsoDateSchema }).strict(),
+          z.object({ typ: z.literal('kalender'), referens_id: UuidSchema }).strict(),
+        ]),
+      })
+      .strict(),
+    // Ett satt ankare ändras inte här (409 `ankare_redan_satt`): ändringen är en
+    // baselineändring med orsak (Story 2.4).
+    handler: (ctx, i) => sattBedomningsankare(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.1: leverabelregistret läses. Importen (S1.2) fyllde

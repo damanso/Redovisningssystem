@@ -510,7 +510,9 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
   const DAGENS = ['pg', '../lib/lasvarde.js', '../domain/money.js', './approvals.js', './approvalSummary.js', '../http/middleware/authenticate.js'];
   // Story 1.10: en lista per fil, så att ingen fil får mer än den behöver.
   const tillatna: Record<string, readonly string[]> = {
-    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js', '../lib/beslutsunderlag.js', '../lib/avtalsdelsfalt.js', '../lib/uppdragsplan.js', './contracts.js'],
+    '../src/services/uppdragUndantag.ts': [...DAGENS, './uppdragBedomning.js', '../lib/bedomningsbegaran.js', '../lib/beslutsunderlag.js', '../lib/avtalsdelsfalt.js', '../lib/uppdragsplan.js', './contracts.js',
+      // Story 2.3: perioden ur avtalets rytm, läst och räknad på ett ställe.
+      './uppdragRytm.js', '../lib/bedomningsrytm.js'],
     // Story 2.1: `delandringar` visar datumet med `visaDatum`. Den nya grannen
     // får en egen lista, så att läsvägens nätverksförbud följer med in i den.
     '../src/lib/uppdragsplan.ts': ['./leveranskontrakt.js'],
@@ -519,6 +521,8 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
     '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js', './leveranskontrakt.js'],
     '../src/lib/lasvarde.ts': DAGENS,
     '../src/lib/bedomningsbegaran.ts': ['./duration.js', '../domain/money.js'],
+    // Story 2.3: rytmregeln är ren och importerar ingenting.
+    '../src/lib/bedomningsrytm.ts': [],
     '../src/services/uppdragBedomning.ts': ['pg', '../lib/errors.js', './contracts.js', './projects.js', './uppdragReferens.js', './auditService.js'],
   };
   for (const [fil, lista] of Object.entries(tillatna)) {

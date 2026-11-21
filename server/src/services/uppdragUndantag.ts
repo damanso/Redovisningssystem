@@ -10,7 +10,9 @@ import { KALLA_REDOVISNING, last, olast, saknas, type Lasvarde } from '../lib/la
 import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
-import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import { forbrukningsandringar, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import { bedomningsperiod, type Bedomningsrytm } from '../lib/bedomningsrytm.js';
+import { lasBedomningsrytm, tillBedomningsrytm } from './uppdragRytm.js';
 import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import { visaDatum, type Datumprecision } from '../lib/uppdragsplan.js';
@@ -106,7 +108,8 @@ export interface Begardbedomning {
   senaste: Lasvarde<{ id: string; lage: Bedomningslage; period_start: string; period_slut: string;
     satt_nar: string; satt_av_namn: string | null; kommentar: string | null }>;
   andringar: Lasvarde<Andringsunderlag>;
-  period: { start: string; slut: string };
+  /** Perioden ur avtalets rytm (Story 2.3). null = datum eller rytm saknas, och David anger perioden själv. */
+  period: { start: string; slut: string } | null;
 }
 export interface Undantagspost {
   slag: Postslag;
@@ -494,6 +497,8 @@ interface Begaransunderlag {
   /** Senaste mänskliga bedömning, eller null när ingen finns. */
   senaste: Bedomningsrad | null;
   andringar: Andringsunderlag;
+  /** Avtalets rytm och ankare (Story 2.3): perioden räknas ur dem och ingen annanstans. */
+  rytm: Bedomningsrytm;
 }
 /**
  * Ren: ingen maskin föreslår ett läge (FR-15). Förslagsfältet bär bara det
@@ -519,7 +524,9 @@ export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: st
         period_start: s.period_start, period_slut: s.period_slut, satt_nar: s.created_at,
         satt_av_namn: s.satt_av_namn, kommentar: s.kommentar }, KALLA_REDOVISNING, lastNar),
       andringar: last(u.andringar, KALLA_REDOVISNING, lastNar),
-      period: kalendermanad(lastNar.slice(0, 10)),
+      // Story 2.3: perioden följer avtalets rytm, på läsvägens egen dag. Utan
+      // ankare finns ingen — en gissad kalendermånad vore en husrytm (FR-14).
+      period: bedomningsperiod(u.rytm, lastNar.slice(0, 10)),
     } };
 }
 
@@ -788,20 +795,24 @@ async function bedomningsposter(client: PoolClient, companyId: string, lastNar: 
   const poster: Undantagspost[] = [];
   const hoppade: Undantag['hoppade'] = [];
   for (const r of begaranden) {
-    const a = per.get(r.contract_id);
+    // En nyckel för avtalet i hela slingan: begärans egen, som aldrig är NULL.
+    // Uppslagsraden delar typ med projektuppslaget, där avtalet saknas.
+    const avtalId = r.contract_id;
+    const a = per.get(avtalId);
     if (!a || a.projektstatus !== 'active') {
       hoppade.push({ id: r.id, identitet: 'begaran', atgard: null, orsak: a ? 'uppdrag_avslutat' : 'uppdrag_saknas' });
       continue;
     }
     // Senaste MÄNSKLIGA bedömning: samma lista och ordning som Läget läser.
-    const senaste = (await listaBedomningar(client, companyId, r.contract_id))
+    const senaste = (await listaBedomningar(client, companyId, avtalId))
       .filter((b) => b.satt_av_manniska).at(-1) ?? null;
-    const nu = await lasDelsiffror(client, companyId, r.contract_id);
+    const nu = await lasDelsiffror(client, companyId, avtalId);
     const andringar: Andringsunderlag = senaste === null
       ? { sedan: null, forbrukning: forbrukningsandringar(null, nu), leverabelrorelser: [], signaler: [], baselineandringar: [] }
       : { sedan: senaste.created_at, forbrukning: forbrukningsandringar(senaste.frysta_siffror?.delar ?? null, nu),
-        ...await andringarSedan(client, companyId, r.contract_id, senaste.created_at) };
-    poster.push(beskrivNyBedomning({ begaran: r, uppdrag: uppdragsref(a), senaste, andringar }, `/app/c/${companyId}`, lastNar));
+        ...await andringarSedan(client, companyId, avtalId, senaste.created_at) };
+    const rytm = tillBedomningsrytm(await lasBedomningsrytm(client, companyId, avtalId, lastNar.slice(0, 10)));
+    poster.push(beskrivNyBedomning({ begaran: r, uppdrag: uppdragsref(a), senaste, andringar, rytm }, `/app/c/${companyId}`, lastNar));
   }
   return { poster, hoppade };
 }

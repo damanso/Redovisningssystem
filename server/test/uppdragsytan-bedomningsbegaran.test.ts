@@ -24,6 +24,7 @@ import { withTenantTransaction } from '../src/db/tx.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { BASELINEKOLUMNER } from '../src/lib/baselinekolumner.js';
 import { LEVERABELORD, kalendermanad, sammanfattaAndringar } from '../src/lib/bedomningsbegaran.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import { BEDOMNINGSLAGEN } from '../src/services/uppdragBedomning.js';
 import { BESLUTSRADEN } from '../src/services/uppdragUndantag.js';
 import { statusChip } from '../src/http/view/html.js';
@@ -813,10 +814,18 @@ describe('K5 läsvägarna', () => {
     for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor, p.bedomning.senaste, p.bedomning.andringar]) {
       expect(v).toMatchObject({ kalla: 'redovisning', last_nar: svar.last_nar });
     }
-    expect(p.bedomning.period).toEqual(kalendermanad(svar.last_nar.slice(0, 10)));
+    // Story 2.3: avtalet har ingen rytm, så ingen period föreslås — ingen gissad månad.
+    expect(p.bedomning.period).toBeNull();
     expect(p.bedomning.begaran).toEqual({
       id: r1Begaran.id, begard_av_namn: 'bedomningsbegaran', begard_nar: r1Begaran.begard_nar, kommentar: 'Kunden flyttade L3',
     });
+  });
+
+  it('a2 med avtalets rytm och ankare föreslår posten perioden ur rytmen', async () => {
+    const r3 = await riggatUppdrag(las, 'R3');
+    const begaran = await begar(las, r3.contractId);
+    const { period } = await saBedomningsrytm(r3.contractId);
+    expect(postFor(await undantag(las), begaran.id).bedomning.period).toEqual(period);
   });
 
   it('b senaste mänskliga bedömning med läge, datum och vem, och utan namn för en rad från före 0082', async () => {
@@ -1092,11 +1101,18 @@ describe('K6 vyn', () => {
     expect(kort(await sida(stangt, laget(stangt, z2)), 'kort-bedomning')).not.toContain('value="begar_bedomning"');
   });
 
-  it('h Bedömning-sidans period är oförändrad: läsdagens kalendermånad', async () => {
+  it('h Bedömning-sidan gissar ingen period: utan rytm är fälten tomma och ingen kalendermånad står där', async () => {
     const { start, slut } = kalendermanad(new Date().toISOString().slice(0, 10));
     const html = await sida(vy, `/app/c/${vy.id}/projects/${q.projectId}/bedomning`);
-    expect(html).toContain(`name="period_start" value="${start}"`);
-    expect(html).toContain(`name="period_slut" value="${slut}"`);
+    expect(html).toContain('rytm saknas i kontraktet');
+    for (const namn of ['period_start', 'period_slut']) {
+      const falt = new RegExp(`<input type="date" name="${namn}"([^>]*)>`).exec(html);
+      expect(falt, namn).not.toBeNull();
+      expect(falt![1], namn).not.toMatch(/value="\d{4}-\d{2}-\d{2}"/);
+      expect(falt![1], namn).toContain('required');
+    }
+    expect(html).not.toContain(`value="${start}"`);
+    expect(html).not.toContain(`value="${slut}"`);
   });
 });
 

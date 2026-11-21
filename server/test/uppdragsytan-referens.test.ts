@@ -29,6 +29,7 @@ import { underlagsreferens } from '../src/services/uppdragSignal.js';
 import { godkann, notis, nyttBolag, nyttUppdrag, ok as okRigg, rest, sida, type Bolag } from './undantagsvynRigg.js';
 import { anteckning, forslag, iltUppdrag, ovrigtFraga, svepa } from './ovrigtRigg.js';
 import { artikeln, block, falt } from './undantagsvynHelper.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 let user: TestUser;
 let company = '';
@@ -691,6 +692,8 @@ describe('Story 3.1 · referensen i vyn', () => {
 
   it('Y7 rapportens Händelser i perioden visar referensens saknade datum', async () => {
     const u = await nyttUppdrag(b, 'Y7 rapport');
+    // Story 2.3: rapporten ritas bara när avtalet har en period ur sin rytm.
+    await saBedomningsrytm(u.contractId);
     const nu = new Date();
     const created = `${nu.getUTCFullYear()}-${String(nu.getUTCMonth() + 1).padStart(2, '0')}-01T08:00:00Z`;
     const id = await withAdmin(async (c) => (await c.query<{ id: string }>(

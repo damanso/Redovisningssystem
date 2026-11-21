@@ -18,6 +18,7 @@ import { forslagHash, byggRymsindata } from '../src/lib/beslutsunderlag.js';
 import { updateContract } from '../src/services/contracts.js';
 import { bindaKostnad } from '../src/services/uppdragKostnad.js';
 import { beskrivProv } from './undantagBeskrivningHelper.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import { SIGNALUNDERLAGSPROV, provaSignalunderlagsprov, beslutsradHtml, provaBeslutsradHtml, kontrolleraCheckFel, provaCheckFelkontrollen } from './beslutsunderlagHelper.js';
 
 // Story 1.18 (B-4 punkt 4, kriterium 6): ett tekniskt fel efter verkställigheten men
@@ -1766,7 +1767,8 @@ describe('P19 fel efter verkställigheten men före svaret', () => {
 
 describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
   const korda = new Set<string>();
-  type P20 = { b: Bolag; u: Uppdrag; qB: string; qK: string; kvittoId: string; stromId: string; signal: string; begaran: string };
+  type P20 = { b: Bolag; u: Uppdrag; qB: string; qK: string; kvittoId: string; stromId: string; signal: string; begaran: string;
+    period: { start: string; slut: string } };
   let delat: Promise<P20> | null = null;
   /** Ett bolag för kriterium 7 och 8: de fyra posttyperna över höjda trösklar, och sist ett svep. */
   const forsta = () => (delat ??= (async () => {
@@ -1776,10 +1778,13 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     const { kvittoId, approvalId: qK, stromId } = await kostnadTillStrom(b, u);
     const signal = (await ok(b, 'tand_scopesignal', { contract_id: u.contractId, fras: 'kan ni även', klausul: '5.4' })).id as string;
     const begaran = await begarBedomningIVyn(b, u);
+    // Story 2.3: postens dolda periodfält kräver avtalets rytm och ankare. Fallen
+    // kräver den sådda perioden i fälten, så att inget formulär postas utan period.
+    const { period } = await saBedomningsrytm(u.contractId);
     await withAdmin((c) => c.query('UPDATE contracts SET troskel_golv_ore=900000000000, troskel_procent=999.99 WHERE company_id=$1 AND id=$2',
       [b.id, u.contractId]));
     await svepa(b);
-    return { b, u, qB, qK, kvittoId, stromId, signal, begaran };
+    return { b, u, qB, qK, kvittoId, stromId, signal, begaran, period };
   })());
   const kvittotsDel = async (b: Bolag, kvittoId: string) => (await withAdmin((c) => c.query<{ contract_part_id: string | null }>(
     'SELECT contract_part_id FROM receipts WHERE company_id=$1 AND id=$2', [b.id, kvittoId]))).rows[0]!.contract_part_id;
@@ -1808,7 +1813,7 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     korda.add('a');
   }, 120_000);
   it('b människospärren i tabellen: agentens nyckel får 403, och ingenting skrivs', async () => {
-    const { b, u, qB, qK, kvittoId, signal, begaran } = await forsta();
+    const { b, u, qB, qK, kvittoId, signal, begaran, period } = await forsta();
     for (const q of [qB, qK]) {
       const r = await rest(b, `approvals/${q}/approve`, {}, b.agent);
       expect(r.status, JSON.stringify(r.body)).toBe(403); expect(r.body.error).toBe('human_approval_required');
@@ -1817,7 +1822,7 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     expect(scope.status, JSON.stringify(scope.body)).toBe(403); expect(scope.body.error).toBe('human_required');
     // Schemat är .strict() och parsas före spärren: utan `handling` prövas spärren och inte schemat.
     const { handling: _handling, ...falt } = dolda(artikelFor(await sida(b, vyn(b)), begaran));
-    expect(falt).toMatchObject({ begaran_id: begaran, contract_id: u.contractId });
+    expect(falt).toMatchObject({ begaran_id: begaran, contract_id: u.contractId, period_start: period.start, period_slut: period.slut });
     const bedomning = await rest(b, 'actions/satt_bedomning', { ...falt, lage: 'risk' }, b.agent);
     expect(bedomning.status, JSON.stringify(bedomning.body)).toBe(403); expect(bedomning.body.error).toBe('human_required');
     expect(await delversioner(b.id, u.contractId, 'B1')).toEqual([]);
@@ -1826,7 +1831,7 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     korda.add('b');
   }, 120_000);
   it('c David avgör alla fyra genom vyn, och varje utfall följer tabellen i Story 1.11', async () => {
-    const { b, u, qB, qK, kvittoId, stromId, signal, begaran } = await forsta();
+    const { b, u, qB, qK, kvittoId, stromId, signal, begaran, period } = await forsta();
     leder(await posta(b, { handling: 'ja', approval_id: qB }), beslutsplatsFor(b, u, qB));
     expect(await delversioner(b.id, u.contractId, 'B1')).toHaveLength(1);
     expect(await beslutsrader(qB)).toEqual({ antal: 1, utfall: ['ja'] });
@@ -1839,7 +1844,8 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     leder(await posta(b, { handling: 'scope', signal_id: signal, avgjord: 'innanfor' }), `/app/c/${b.id}/projects/${u.projektId}/laget#kort-signaler`);
     expect(await avgoranden(signal)).toEqual([{ avgorande: 'innanfor', avgjort_av: b.user.userId }]);
     const falt = dolda(artikelFor(await sida(b, vyn(b)), begaran));
-    expect(falt).toMatchObject({ handling: 'bedomning', begaran_id: begaran, contract_id: u.contractId });
+    expect(falt).toMatchObject({ handling: 'bedomning', begaran_id: begaran, contract_id: u.contractId,
+      period_start: period.start, period_slut: period.slut });
     leder(await posta(b, { ...falt, lage: 'risk' }), `/app/c/${b.id}/projects/${u.projektId}/laget#kort-bedomning`);
     expect(await bedomningar(begaran)).toEqual([{ lage: 'risk', satt_av_manniska: true, begaran_id: begaran, kommentar: null }]);
     expect((await undantag(b)).poster).toEqual([]);

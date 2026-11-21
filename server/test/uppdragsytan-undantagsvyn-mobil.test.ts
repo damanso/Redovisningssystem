@@ -28,6 +28,7 @@ import type { Server } from 'node:http';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app, withAdmin } from './helpers.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import {
   type Bolag, type FemSlag, type Uppdrag,
   PASSWORD, avgoranden, bedomningar, beslutsrader, femSlag, frisktUppdrag, koa, kopost, nyttBolag, ok, rest, svep,
@@ -239,10 +240,16 @@ describe('B (6) varje val i telefonen', () => {
   let ovrigtTillagg: { anteckningId: string; approvalId: string };
   let ovrigtRyms: { anteckningId: string; approvalId: string };
   let ovrigtUtanTimmar: { anteckningId: string; approvalId: string };
+  /** Story 2.3: perioden som riggen sår för den begärda bedömningens avtal. */
+  let bedomningsperiod: { start: string; slut: string };
 
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
     f = await femSlag(val);
+    // Story 2.3: den begärda bedömningen (på avtalet b) bär sina dolda
+    // periodfält bara när avtalet har rytm och ankare. Fallet kräver den sådda
+    // perioden i fälten, så att inget formulär postas utan period.
+    bedomningsperiod = (await saBedomningsrytm(f.b.contractId)).period;
     utanforSignal = (await ok(val, 'tand_scopesignal', { contract_id: f.a.contractId, fras: 'en sak till' })).id as string;
     jaPost = await koa(val, 'andra_baseline', {
       contract_id: f.a.contractId, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123,
@@ -449,6 +456,7 @@ describe('B (6) varje val i telefonen', () => {
     try {
       await page.goto(vyn(val));
       const dold = await dolda(page, f.ny_bedomning);
+      expect(dold).toMatchObject({ period_start: bedomningsperiod.start, period_slut: bedomningsperiod.slut });
       const form: Record<string, string> = { ...dold, lage: 'risk' };
       const { handling: _h, ...input } = form;
       await valet({ page, kontext, id: f.ny_bedomning, knapp: 'Risk', form,

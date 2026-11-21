@@ -23,6 +23,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { withTenantTransaction } from '../src/db/tx.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -645,11 +646,14 @@ describe('(S4.2 c) en tom period fryser nollor och lyckas', () => {
 describe('(S4.2 d) vyn förifyller rapporten', () => {
   let vy: { projektId: string; avtalId: string; leverabelId: string };
   let manad: { start: string; slut: string };
+  let period: { start: string; slut: string };
   let html = '';
 
   beforeAll(async () => {
-    // Sidans förval är innevarande månad, så riggen måste ligga där: rapporten
-    // visar den period formuläret faktiskt skulle skicka.
+    // Story 2.3: sidans förval är perioden ur avtalets rytm, och utan ankare
+    // finns ingen. Riggen sår därför en rytm vars period innehåller hela
+    // innevarande månad, och riggens datum ligger där: rapporten visar den
+    // period formuläret faktiskt skulle skicka.
     const nu = new Date();
     const dag = (d: Date): string => d.toISOString().slice(0, 10);
     manad = {
@@ -658,6 +662,7 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
     };
 
     vy = await riggatUppdrag('Vyrapport', 100_000);
+    period = (await saBedomningsrytm(vy.avtalId)).period;
     await ok('log_time', {
       project_id: vy.projektId, work_date: dag(nu), minutes: 90,
       description: 'Arbete den här månaden', contract_part_id: await delId(vy.avtalId, 'S1'),
@@ -691,7 +696,7 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
 
   it('rapporten står på sidan med periodens timmar och delen mot sitt tak', () => {
     expect(html).toContain('Underlaget för perioden');
-    expect(html).toContain(`${manad.start} – ${manad.slut}`);
+    expect(html).toContain(`${period.start} – ${period.slut}`);
     expect(html).toContain('1 h 30 min');
     expect(html).toContain('Förbrukning mot tak');
     expect(html).toContain('S1');
@@ -711,7 +716,7 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   });
 
   it('formuläret är kvar med sitt förval, och sidan är JS-fri', () => {
-    expect(html).toContain(`value="${manad.start}"`);
+    expect(html).toContain(`value="${period.start}"`);
     expect(html).toContain('name="lage" value="pa_spar"');
     expect(html).not.toContain('<script');
   });
@@ -731,6 +736,8 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   });
 
   it('ett uppdrag utan länkade händelser säger det i stället för att gissa (FR-32)', async () => {
+    // Rapporten ritas bara när avtalet har en period (Story 2.3).
+    await saBedomningsrytm(avtalId);
     const res = await ua.get(`/app/c/${companyId}/projects/${projektId}/bedomning`);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Inga kalenderposter eller mejl är länkade');

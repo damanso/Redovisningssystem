@@ -31,6 +31,7 @@ import {
 import { beslutsraderFor, delversioner, iltUppdrag, kopostInput, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 import { ersattning, fragaUtanTimmar, tillstand } from './kompletteringRigg.js';
 import { amount } from '../src/http/view/html.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -455,20 +456,47 @@ describe('V6 den begärda bedömningen', () => {
     { lage: 'ur_spar', kommentar: '' },
   ];
 
-  /** Postens formulärdata, läst ur den renderade artikeln — samma som webbläsaren skickar. */
+  /** Varje begäran i V6 och den period som riggen sådde för dess avtal. */
+  const perioder = new Map<string, { start: string; slut: string }>();
+
+  /**
+   * En begärd bedömning på ett nytt friskt uppdrag — den enda vägen in i V6.
+   * Story 2.3: perioden följer avtalets rytm, och utan ankare finns ingen. Utan
+   * period bär posten inga dolda periodfält, och ett inlämnat formulär prövas av
+   * schemat (400) före människospärren. Därför sår riggen rytm och ankare i samma
+   * steg som begäran, och ingen begäran i V6 skapas på något annat sätt.
+   */
+  async function begardBedomning(namn: string): Promise<{ u: Uppdrag; begaran: string }> {
+    const u = await frisktUppdrag(b, namn);
+    const { period } = await saBedomningsrytm(u.contractId);
+    const begaran = (await ok(b, 'begar_ny_bedomning', { contract_id: u.contractId })).id as string;
+    perioder.set(begaran, period);
+    return { u, begaran };
+  }
+
+  /**
+   * Postens formulärdata, läst ur den renderade artikeln — samma som webbläsaren
+   * skickar. Kräver avtalets sådda period i de dolda fälten, så att ett fall
+   * aldrig postar ett formulär utan period. Posten utan ankare, utan dolda
+   * periodfält, prövas i B4 och B5 i `uppdragsytan-matt-rytm.test.ts`.
+   */
   async function formularet(begaran: string): Promise<Record<string, string>> {
+    const period = perioder.get(begaran);
+    expect(period, `begäran ${begaran} är inte skapad med begardBedomning, och avtalet saknar sått ankare`).toBeDefined();
     const a = artikel(await sida(b, vy(b)), begaran);
     expect(a, `posten ${begaran} saknas`).not.toBeNull();
     const data: Record<string, string> = {};
     for (const m of a!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) data[m[1]!] = m[2]!;
+    expect({ start: data.period_start, slut: data.period_slut }, `posten ${begaran}: de dolda periodfälten`).toEqual(period);
     return data;
   }
 
   beforeAll(async () => {
     b = await nyttBolag('Undantagsvyn bedömning');
     for (const [i, f] of fall.entries()) {
-      f.u = await frisktUppdrag(b, `Bedömning ${i + 1}`);
-      f.begaran = (await ok(b, 'begar_ny_bedomning', { contract_id: f.u.contractId })).id as string;
+      const { u, begaran } = await begardBedomning(`Bedömning ${i + 1}`);
+      f.u = u;
+      f.begaran = begaran;
     }
   }, 90_000);
 
@@ -507,8 +535,7 @@ describe('V6 den begärda bedömningen', () => {
   });
 
   it('(c) agentens token får 403 human_required, och ingen rad tillkommer', async () => {
-    const u = await frisktUppdrag(b, 'Bedömning agent');
-    const begaran = (await ok(b, 'begar_ny_bedomning', { contract_id: u.contractId })).id as string;
+    const { begaran } = await begardBedomning('Bedömning agent');
     const data = await formularet(begaran);
     const { handling: _h, ...input } = data;
     const r = await rest(b, 'actions/satt_bedomning', { ...input, lage: 'risk' }, b.agent);

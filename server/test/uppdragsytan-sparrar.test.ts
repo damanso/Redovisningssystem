@@ -387,6 +387,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
     ['uppdrag_scopesignal', "(company_id, contract_id, fras) VALUES ($1, $2, 'även')"],
     ['uppdrag_referens', "(company_id, contract_id, sort, extern_id) VALUES ($1, $2, 'drive', 'abc')"],
     ['uppdrag_svepvarde', "(company_id, contract_id, nyckel, varde) VALUES ($1, $2, 'n', '1'::jsonb)"],
+    ['uppdrag_matt', "(company_id, contract_id, namn, larmregel_lage, utfall_lage) VALUES ($1, $2, 'Mått', 'harleds_ej', 'harleds_ej')"],
   ] as const;
 
   for (const [tabell, kolumner] of MODULTABELLER) {
