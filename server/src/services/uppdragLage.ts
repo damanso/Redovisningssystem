@@ -41,7 +41,11 @@ import {
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
 import { ROTKOD, scopelinjelage, type Scopelinjelage } from '../lib/leveranskontrakt.js';
+import { last } from '../lib/lasvarde.js';
 import type { Troskelutfall } from '../lib/troskel.js';
+import {
+  lasBedomningsrytm, lasUppfoljningsmatt, mattvarde, type Avtalsrytm, type Mattrad,
+} from './uppdragRytm.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -133,6 +137,13 @@ export interface Avtalslage {
   scopelinje: Scopelinje[];
   /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn. */
   scopelinje_lage: Scopelinjelage;
+  /**
+   * Uppföljningsmåtten ur del 3 (Story 2.3), i kontraktets ordning. Varje värde
+   * bär källa och lästid; ett utfall som inte härleds har värdet null.
+   */
+  matt: Mattrad[];
+  /** Rytmen ur del 4 och nästa bedömningstillfälle, ur `bedomningsrytmlage`. */
+  rytm: Avtalsrytm;
 }
 
 /**
@@ -150,6 +161,8 @@ export interface Lagesfarskhet {
   koposter: Farskhet;
   beslut: Farskhet;
   scopelinje: Farskhet;
+  matt: Farskhet;
+  rytm: Farskhet;
 }
 
 export interface Beslutsrad {
@@ -380,13 +393,24 @@ export async function lasUppdragslage(
 
     const scopelinje = await lasScopelinjer(client, companyId, contractId);
 
+    // Story 2.3: måttens värde ur samma förbrukning som kortet visar, och
+    // rytmen räknad på läsvägens egen klocka.
+    const forbrukning = {
+      minuter: rot?.billable_minutes ?? 0,
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+    };
+    const tidMotRam = last(forbrukning, direkt.kalla, direkt.last_nar);
+    const matt = (await lasUppfoljningsmatt(client, companyId, contractId))
+      .map((m) => ({ ...m, varde: mattvarde(m, tidMotRam) }));
+    const rytm = await lasBedomningsrytm(client, companyId, contractId, lastNar.slice(0, 10));
+
     avtal.push({
       contract_id: contractId,
       contract_name: usage.name,
       forbrukning: {
-        minuter: rot?.billable_minutes ?? 0,
+        minuter: forbrukning.minuter,
         belopp_ore: rot?.amount_ore ?? 0,
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
+        tak_minuter: forbrukning.tak_minuter,
         tak_ore: rot?.cap_amount_ore ?? null,
         tak_status: rot?.cap_status ?? 'vet_ej',
         tidposter,
@@ -402,6 +426,8 @@ export async function lasUppdragslage(
       avgjorda_signaler: signalhistorik.length,
       scopelinje,
       scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
+      matt,
+      rytm,
     });
   }
 
@@ -437,6 +463,8 @@ export async function lasUppdragslage(
       koposter: direkt,
       beslut: direkt,
       scopelinje: direkt,
+      matt: direkt,
+      rytm: direkt,
     },
   };
 }

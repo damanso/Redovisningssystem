@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, måtten och rytmen ur kontraktets del 3 och del 4 (FR-19, FR-14, FR-26, FR-35, NFR-11):**
+  Migration `0095_matt_och_rytm.sql` skapar tabellen uppdrag_matt (BASELINE,
+  RLS+FORCE, sammansatt FK, SELECT+INSERT för `app`, avslutstriggern) och lägger
+  sex nullbara rytmkolumner på `contracts` med fyra namngivna CHECK-villkor.
+  Inga rader ändras. Parsern läser del 3 (måtten, läsvägen ur en sluten
+  ordlista, ”Sektion N” mot dokumentets rubriker) och del 4 (den första hela
+  rytmen och dess mottagarkrets). Importen skriver måtten och rytmen efter
+  Davids ja; en okänd läsväg står som `uppfoljning.<namn>.lasvag` bland de
+  saknade fälten. Ny ren `lib/bedomningsrytm.ts` räknar varje period ur ankare
+  och intervall; utan ankare finns ingen. Ny åtgärd `satt_bedomningsankare`
+  (write, kravManniska, engångs, obligatorisk källa). `las_uppdragslage` bär
+  `avtal[].matt`, `avtal[].rytm`, `farskhet.matt` och `farskhet.rytm`. Vyn:
+  panelen *Uppföljning och rytm* sist på Läget (ny vyfil
+  `http/view/uppdragUppfoljning.ts`, bara husets klasser, inget formulär), och
+  rytmpanelen med ankarformuläret på Bedömning. Bedömning och undantagsvyns
+  begärda bedömning räknar perioden ur rytmen i stället för kalendermånaden;
+  utan period ritas rapporten inte och periodfälten är tomma och obligatoriska.
+  Prov: ny `server/test/uppdragsytan-matt-rytm.test.ts` (M1–M5, P1–P7, I1–I6,
+  R1–R7, A1–A8, L1–L4, V1–V5, N1, B1–B6, D1) och provhjälparen
+  `server/test/bedomningsrytmHelper.ts`. Omskrivna rigg/assertioner:
+  import-v3 (P2, P5), laget (färskhetsraderna 7 → 8), sparrar (uppdrag_matt i
+  triggerlistan), undantag (P16-listorna), bedomning, bedomningsbegaran och
+  dess hjälpare, undantagsvyn (a)–(c), undantagsvyn-mobil, beslut (P20) och
+  referens (Y7). Docs: MCP_ACTIONS (import, Bedömningen med ankaråtgärden, Läget)
+  och ARKITEKTUR rad 34 och 36.
+  **Inte kört:** `npm run typecheck` och `npx vitest run` gav båda ordagrant
+  ”This command requires approval” i sandlådan. Varken typecheck, build eller
+  något prov är kört här, och kedjans körning är belägget. Designskillen
+  `impeccable` gick inte att ladda (”Execute skill: impeccable”); panelerna
+  följer husets klasser och tillgänglighetsskillens krav (fieldset/legend,
+  etiketter, chip med text). Hermes-prov och webbläsarkontroll är inte körda.
+  **Följd i drift:** driftsättningen kör 0095. NVR-001 i drift får måtten och
+  rytmen först vid en ny godkänd import (en `redan_koad` text skriver inget).
+  Davids ankare sätts efter driftsättningen på Bedömning. **POST-rutten
+  `/app/c/:companyId/projects/:projectId/bedomning/ankare` är ny under `/app`.**
+  `server/kontrakt/navigation.v1.json` redigeras inte för hand: Hermes prov
+  adresskontraktet står RÖTT (K2) tills Davids generator har synkat
+  navigationskontraktet. handgrepp ska stå kvar GRÖNT: inga nya ensamma
+  kodspann med understreck i avsnittet Uppdragsytan; Hermes `MODULATGARDER`
+  bör få ankaråtgärden i en egen berättelse i hermes-kedjan.
+
 - **2026-11-21 — Story 2.6, scopelinjen med åtgärd ur del 5 (FR-6, FR-7, FR-27, NFR-9):**
   Migration `0094_scopelinje_atgard.sql` vidgar CHECK-villkoret
   `uppdrag_scopelinje_sort_check` med `atgard`. Inga rader ändras, och

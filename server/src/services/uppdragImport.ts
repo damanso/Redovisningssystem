@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
@@ -58,13 +59,19 @@ interface Avtalsrad {
   godkannare_eskalering: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
+  /** Rytmen ur del 4 (Story 2.3). Jämförs med texten så att en ny import inte rör raden i onödan. */
+  rytm_text: string | null;
+  bedomning_intervall_dagar: number | null;
+  bedomning_veckodag: number | null;
+  rapport_mottagarkrets: string | null;
 }
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
+            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -322,8 +329,22 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
   if (k.styrning) kolla(`${STYRNINGSKOD}.cap_hours`, k.styrning.cap_hours);
   kolla('godkannare', k.godkannare);
   kolla('godkannare_eskalering', k.godkannare_eskalering);
+  // Story 2.3: ett mått vars läsväg kontraktet inte säger. Det lagras med
+  // läsvägen NULL, så att täckningsprovet kan fälla det; ingen läsväg gissas.
+  for (const m of k.matt) kolla(`uppfoljning.${m.namn}.lasvag`, m.lasvag);
   return saknas;
 }
+
+/**
+ * Kolumnerna importen får skriva rytmen till. Ankaret och dess källa står inte
+ * här: de sätts bara av David med `satt_bedomningsankare` (Story 2.3, B6).
+ */
+const RYTM_UPDATE: Readonly<Record<string, string>> = {
+  rytm_text: 'rytm_text',
+  bedomning_intervall_dagar: 'bedomning_intervall_dagar',
+  bedomning_veckodag: 'bedomning_veckodag',
+  rapport_mottagarkrets: 'rapport_mottagarkrets',
+};
 
 export async function importeraLeveranskontrakt(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: ImporteraLeveranskontraktInput,
@@ -491,8 +512,45 @@ export async function sattBaseline(
     );
   }
 
+  // (h) Uppföljningsmåtten ur del 3, i textens ordning. UNIQUE (contract_id,
+  // namn) bär idempotensen, som leverabelregistret: ett mått som redan finns
+  // rörs inte, och en ny import av samma text skapar inga dubbletter.
+  let nyaMatt = 0;
+  for (const [i, m] of kontrakt.matt.entries()) {
+    const res = await client.query(
+      `INSERT INTO uppdrag_matt
+         (company_id, contract_id, namn, hur_ofta, kallreferenser, lasvag, larmregel,
+          larmregel_lage, utfall_lage, ordning)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT ON CONSTRAINT uppdrag_matt_namn_uk DO NOTHING`,
+      [companyId, input.contract_id, m.namn, m.hur_ofta, m.kallreferenser, m.lasvag, m.larmregel,
+        m.larmregel_lage, m.utfall_lage, i],
+    );
+    nyaMatt += res.rowCount ?? 0;
+  }
+
+  // (i) Rytmen ur del 4. Hittade texten ingen rytm står det som redan finns
+  // kvar, som för godkännarna. Bara när något av de fyra värdena skiljer sig
+  // körs en UPDATE, så att en ny import av samma text lämnar raden — också
+  // `updated_at` — orörd. Ankaret står inte i tillåtelselistan och rörs aldrig.
+  const rytm = kontrakt.rytm;
+  const rytmAndrad = rytm !== null && (
+    rytm.rytm_text !== avtal.rytm_text
+    || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
+    || rytm.bedomning_veckodag !== avtal.bedomning_veckodag
+    || rytm.rapport_mottagarkrets !== avtal.rapport_mottagarkrets);
+  if (rytm !== null && rytmAndrad) {
+    const rytmvarden: Record<string, unknown> = { ...rytm };
+    const update = buildAllowlistedUpdate(RYTM_UPDATE, rytmvarden)!;
+    await client.query(
+      `UPDATE contracts SET ${update.setSql}
+        WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
+      [...update.values, input.contract_id, companyId],
+    );
+  }
+
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
-    && nyaScopelinjer === 0 && !godkannareAndrad;
+    && nyaScopelinjer === 0 && !godkannareAndrad && nyaMatt === 0 && !rytmAndrad;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
   // ändring — samma hållning som `action.approval_requested`. Att en andra
@@ -505,6 +563,8 @@ export async function sattBaseline(
       avtalsdelar_skrivna: skrivnaDelar,
       leverabelrader_skapade: nyaLeverabelrader,
       scopelinjer_skapade: nyaScopelinjer,
+      matt_skapade: nyaMatt,
+      rytm_andrad: rytmAndrad,
       saknade_falt: saknadeFalt(kontrakt),
     },
   });
@@ -523,6 +583,8 @@ export async function sattBaseline(
     avtalsdelar_skrivna: skrivnaDelar,
     leverabelrader_skapade: nyaLeverabelrader,
     scopelinjer_skapade: nyaScopelinjer,
+    matt_skapade: nyaMatt,
+    rytm_andrad: rytmAndrad,
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     saknade_falt: saknadeFalt(kontrakt),

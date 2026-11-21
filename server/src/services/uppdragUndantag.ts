@@ -10,7 +10,9 @@ import { KALLA_REDOVISNING, last, olast, saknas, type Lasvarde } from '../lib/la
 import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
-import { forbrukningsandringar, kalendermanad, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import { forbrukningsandringar, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
+import { bedomningsperiod, type Bedomningsrytm } from '../lib/bedomningsrytm.js';
+import { lasBedomningsrytm, rytmen } from './uppdragRytm.js';
 import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import { visaDatum, type Datumprecision } from '../lib/uppdragsplan.js';
@@ -106,7 +108,12 @@ export interface Begardbedomning {
   senaste: Lasvarde<{ id: string; lage: Bedomningslage; period_start: string; period_slut: string;
     satt_nar: string; satt_av_namn: string | null; kommentar: string | null }>;
   andringar: Lasvarde<Andringsunderlag>;
-  period: { start: string; slut: string };
+  /**
+   * Perioden ur avtalets rytm (Story 2.3, `bedomningsperiod`). null utan
+   * ankare eller rytm: då anger David själv perioden han bedömer, och ingen
+   * kalendermånad föreslås.
+   */
+  period: { start: string; slut: string } | null;
 }
 export interface Undantagspost {
   slag: Postslag;
@@ -494,6 +501,8 @@ interface Begaransunderlag {
   /** Senaste mänskliga bedömning, eller null när ingen finns. */
   senaste: Bedomningsrad | null;
   andringar: Andringsunderlag;
+  /** Avtalets rytmkolumner. Perioden räknas ur dem, aldrig ur kalendern (Story 2.3). */
+  rytm: Bedomningsrytm;
 }
 /**
  * Ren: ingen maskin föreslår ett läge (FR-15). Förslagsfältet bär bara det
@@ -519,7 +528,7 @@ export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: st
         period_start: s.period_start, period_slut: s.period_slut, satt_nar: s.created_at,
         satt_av_namn: s.satt_av_namn, kommentar: s.kommentar }, KALLA_REDOVISNING, lastNar),
       andringar: last(u.andringar, KALLA_REDOVISNING, lastNar),
-      period: kalendermanad(lastNar.slice(0, 10)),
+      period: bedomningsperiod(u.rytm, lastNar.slice(0, 10)),
     } };
 }
 
@@ -801,7 +810,9 @@ async function bedomningsposter(client: PoolClient, companyId: string, lastNar: 
       ? { sedan: null, forbrukning: forbrukningsandringar(null, nu), leverabelrorelser: [], signaler: [], baselineandringar: [] }
       : { sedan: senaste.created_at, forbrukning: forbrukningsandringar(senaste.frysta_siffror?.delar ?? null, nu),
         ...await andringarSedan(client, companyId, r.contract_id, senaste.created_at) };
-    poster.push(beskrivNyBedomning({ begaran: r, uppdrag: uppdragsref(a), senaste, andringar }, `/app/c/${companyId}`, lastNar));
+    // Perioden ur avtalets rytm, på läsvägens egen klocka (Story 2.3).
+    const rytm = rytmen(await lasBedomningsrytm(client, companyId, r.contract_id, lastNar.slice(0, 10)));
+    poster.push(beskrivNyBedomning({ begaran: r, uppdrag: uppdragsref(a), senaste, andringar, rytm }, `/app/c/${companyId}`, lastNar));
   }
   return { poster, hoppade };
 }

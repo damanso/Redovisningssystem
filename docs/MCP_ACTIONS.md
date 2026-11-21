@@ -1262,7 +1262,12 @@ godkännandet, allt i samma transaktion:
 - `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul och
   åtgärden när en signal tänds; sorten är en av
   `'innanfor' | 'utanfor' | 'fras' | 'atgard'`, migration 0094, Story 2.6),
-- `contracts.godkannare` / `godkannare_eskalering`.
+- `contracts.godkannare` / `godkannare_eskalering`,
+- uppföljningsmåtten ur del 3 i tabellen uppdrag_matt, ett mått per rad i
+  textens ordning med namn, hur ofta, källreferenser, läsväg och larmregeln
+  ordagrant (migration 0095, Story 2.3),
+- rytmen ur del 4 på avtalet: `contracts.rytm_text` ordagrant, intervallet i
+  dagar, ISO-veckodagen och mottagarkretsen — aldrig ankardatumet.
 
 - **Utkastläget (Story 2.1, B-14).** En text med `kontrakt_tillstand: utkast`
   förhandsvisas, också utan `signed_date`: ingen baseline, inget register och
@@ -1320,6 +1325,25 @@ godkännandet, allt i samma transaktion:
   etikett (”Delning …”) avslutar stycket före och blir ingen rad. Texten lagras
   som den står, och antalet fraser kommer ur tabellen. v1:s rubrikform ger
   samma rader som förut. Förhandsvisningen och de saknade fälten har samma form.
+- **Del 3 och del 4 (Story 2.3, FR-19, FR-14).** Måtten läses bara ur avsnitt
+  vars rubrik nämner uppföljning, ur en tabell med namnkolumnen ”Vad som mäts”
+  (eller ”Mått”). Cellerna lagras som de står. Läsvägen
+  (`uppdrag_matt.lasvag`, en av `'redovisning' | 'arenden' | 'register' | 'kalender' | 'referens'`)
+  ges av en sluten ordlista över cellens första led före kommatecknet, och en
+  hel cell ”Sektion N” löses mot dokumentets eget avsnitt ”N. …” (leveranskartan
+  och scopelinjen läses ur registret). En cell som listan inte känner ger NULL,
+  och nyckeln `uppfoljning.<namn>.lasvag` står bland de saknade fälten — i
+  förhandsvisningen, i svaret och i auditraden. Ingen läsväg gissas. Larmregeln
+  importeras alltid med `larmregel_lage = 'harleds_ej'`, och utfallets läge
+  (`'harleds' | 'harleds_ej'`) är härlett bara för tid mot ram ur redovisningen —
+  ingen andel klara leverabler räknas (NFR-11). Rytmen är den första raden i ett
+  avsnitt om rapportering eller rytm vars ”Hur ofta” är en hel rytm (”Varannan
+  torsdag”, ”Varje vecka”); samma rads ”Till vem” är mottagarkretsen.
+  ”Månadsvis” och ”Vid behov” är ingen rytm, och utan rytm står kolumnerna kvar.
+  Måtten bärs av `UNIQUE (contract_id, namn)`, och rytmen skrivs bara när något
+  av de fyra värdena skiljer sig, så en ny import av samma text lämnar avtalsraden
+  orörd. Svaret och auditraden bär `matt_skapade: <antal>` och
+  `rytm_andrad: true | false`.
 - Uppsättning och import är `write`, men importen skriver planen först genom
   den känsliga köposten `satt_baseline`. Ingen lagrad version går att skriva
   över, bekräftad eller obekräftad: 0079 är sista försvarslinjen.
@@ -1374,9 +1398,36 @@ Svaret är den skrivna raden.
   skäl som `satt_av_manniska`. En period helt utan tid och händelser fryser
   nollor och en TOM array (`{}`); NULL betyder därmed entydigt "satt före S4.2",
   och sådana rader renderas som förut, utan siffror (FR-16/FR-20/FR-32).
-- **Ingen rytm-mekanik.** FR-14:s rytm har varken lagring eller läsare i v1
-  (1E Del 7) — den bärs av styrgruppsmötena i Davids kalender. Åtgärden spärrar
-  därför ingen dag, och vyn visar inget "nästa bedömningstillfälle".
+- **Perioden kommer ur avtalets rytm (Story 2.3, FR-14).** Kontraktets del 4
+  ger intervallet och veckodagen, och David sätter ankardatumet. Perioden är
+  `[ankare + k·intervall, ankare + (k+1)·intervall − 1]`, räknad i UTC av den
+  rena regeln i `server/src/lib/bedomningsrytm.ts` med läget
+  `'raknad' | 'datum_saknas' | 'rytm_saknas'`. Utan ankare räknas ingen period,
+  och ingen fas gissas ur veckonumret; någon husrytm finns inte. Perioden i
+  åtgärdens indata är fortfarande Davids egen, och åtgärden spärrar ingen dag.
+
+**`satt_bedomningsankare { contract_id, ankare, kalla }` (write, `kravManniska: true`, engångs)**
+— "Sätt ankardatumet för avtalets bedömningsrytm". Källan är obligatorisk och
+har exakt två former: `{ typ: 'davids_uppgift', datum }` eller
+`{ typ: 'kalender', referens_id }`, där referensen är en rad med sorten kalender
+i avtalets referenser. Svaret är `{ contract_id, bedomning_ankare, bedomning_ankare_kalla, nasta }`.
+
+- **Bara en människa.** En agent får **403 `human_required`** i
+  `executeAction` före varje skrivning, på REST som i MCP.
+- **En gång per uppdrag.** Ett satt ankare ger `{ error: 'ankare_redan_satt' }`
+  (409) med texten att det bara ändras genom en baselineändring med orsak.
+  UPDATE:n bär villkoret att ankaret är NULL, efter radlåset på avtalet, och
+  varken `update_contract` eller importen kan skriva kolumnerna. Ändringsvägen
+  hör till baselineförslaget (Story 2.4).
+- **Felen, utan skrivning:** avtalet utan rytm ger `{ error: 'rytm_saknas' }`
+  (409); ett ankare på en annan veckodag än rytmens ger
+  `{ error: 'fel_veckodag' }` (400); en referens som inte är avtalets
+  kalenderpost ger `{ error: 'okand_kalenderreferens' }` (400), och en
+  kalenderpost med ett annat händelsedatum `{ error: 'kalla_annat_datum' }`
+  (400). Grannbolagets avtal ger 404 `not_found`.
+- **Källan lagras som text** på avtalet, `Davids uppgift <datum>` eller
+  `Kalenderreferens <id>`. Auditraden `uppdrag.bedomningsankare_satt` bär
+  `contract_id`, `ankare` och källans sort, ingen fritext.
 
 **Vyn:** `/app/c/:id/projects/:projectId/bedomning`, undersida till uppdraget
 (knappen **Bedömning** bredvid *Läs in avtal*). Sidan är **förifylld** (S4.2):
@@ -1387,7 +1438,15 @@ fryses aldrig). Saknas händelser sägs det rakt ut i stället för att blockera
 eller gissa. Formuläret sätter läget för en period — det enda obligatoriska
 valet — och historiken visar varje rads FRYSTA tal, aldrig omräknade. Den
 skriver genom `executeAction` med actor `human`, precis som resten av vyns
-skrivvägar.
+skrivvägar. Sedan Story 2.3 står panelen *Bedömningsrytmen* överst med rytmen
+och nästa bedömningstillfälle. Formulärets förval och rapportens period är
+rytmens period; utan ankare står ”datum saknas”, rapporten ritas inte och
+periodfälten är tomma och obligatoriska. När rytmen finns och inget ankare är
+satt bär panelen ankarformuläret, som postar till
+`/app/c/:id/projects/:projectId/bedomning/ankare` med källan Davids uppgift
+(förvald, dagens datum) eller en av avtalets kalenderreferenser. Undantagsvyns
+begärda bedömning räknar perioden med samma regel; utan ankare visar posten
+”datum saknas” och två synliga datumfält i stället för de dolda.
 
 ### Leverabelregistret läses (S3.1, våg 3)
 
@@ -2072,6 +2131,14 @@ inloggning visar scopelinjen (NFR-9).
 - **Beslutens referenser (Story 3.1):** `beslut.registrerade[].referenser[]`
   bär `status`, `senast_verifierad` och `handelse_datum` ur referensraden.
   Det frysta underlaget och `forslag_hash` ändras inte; källorna fryses som id.
+- **Måtten och rytmen (Story 2.3, FR-19, FR-14, FR-35).** Varje avtal bär
+  `avtal[].matt` — måtten ur del 3 i kontraktets ordning, med läsväg, larmregel,
+  lägena och `varde` — och `avtal[].rytm` med rytmkolumnerna, ankaret och dess
+  källa, `lage`, `period` och `nasta`. Ett måtts `varde` är en `Lasvarde` med
+  källa och lästid: tid mot ram bär förbrukningens minuter och tak (två tal,
+  aldrig en kvot), ett oläst värde är oläst med senaste lästid, och ett utfall
+  som inte härleds har `varde: null`. Rytmen räknas på läsvägens egen klocka.
+  Fälten är additiva; inget befintligt fält ändras.
 - **Ingenting räknas om (FR-25).** Förbrukningen kommer ur `getContractUsage`
   (husets enda takberäkning — samma tal som takvarningen och faktureringsspärren
   läser), tidsunderlaget ur `listTimeEntries` med husets eget `arIgnorerad`,
@@ -2080,7 +2147,8 @@ inloggning visar scopelinjen (NFR-9).
   `uppdrag_svepvarde` — att utvärdera FR-3:s dubbelvillkor en andra gång hade
   gett två svar på "larmar det?".
 - **Färskhet per källa, aldrig en sidstämpel (FR-35).** De direktlästa
-  delarna, sedan Story 2.6 också `farskhet.scopelinje`, bär
+  delarna, sedan Story 2.6 också `farskhet.scopelinje` och sedan Story 2.3
+  `farskhet.matt` och `farskhet.rytm`, bär
   `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
   `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
@@ -2104,7 +2172,14 @@ naken nolla. Tomt band byter från `.ai-card` till `.panel`: ockran betyder
 senaste bedömningen — saknas den står *Saknad*, aldrig grönt — och färskheten ur
 uppdragets svepvärden. Två nya klasser i `html.ts`: `.farskhet` och `.subnav`.
 Ingen migration, inget nytt beroende, JS-fri HTML, inga externa anrop under
-rendering (NFR-6).
+rendering (NFR-6). Sist på Läget står sedan Story 2.3 panelen *Uppföljning och
+rytm*, en per avtal med sin egen färskhetsrad: varje mått med läsvägen som chip
+(en saknad läsväg rött), takten, källan, utfallet och larmregeln ordagrant, med
+markeringen ”larmregel HÄRLEDS EJ” (och ”— kräver Davids svar” där regeln kräver
+en andel) och ”utfall HÄRLEDS EJ” där utfallet inte härleds. Rytmen står med
+mottagarkretsen och nästa bedömningstillfälle; utan ankare står ”datum saknas”
+med `.tomt` och en länk till Bedömning. Panelen har inget formulär och inget
+inmatningsfält, och ingen procentsats eller kvot.
 
 ### Övrigt — anteckningsloggen (överlämning #268)
 

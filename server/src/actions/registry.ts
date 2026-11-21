@@ -51,6 +51,7 @@ import {
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
 import { begarNyBedomning, sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
+import { sattBedomningsankare } from '../services/uppdragRytm.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
@@ -1824,6 +1825,32 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // samma skäl som `tand_av` — ett indatafält hade gjort spåret till ett
     // påstående anroparen skriver om sig själv.
     handler: (ctx, i) => begarNyBedomning(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // Story 2.3 (FR-14, B-14): David sätter bedömningsrytmens ankardatum. Utan
+  // ankare räknas inga perioder, och ingen fas gissas ur veckonumret.
+  def({
+    name: 'satt_bedomningsankare',
+    title: 'Sätt ankardatumet för avtalets bedömningsrytm (en gång per uppdrag)',
+    // `write` + `kravManniska` av samma skäl som `satt_bedomning`: datumet är
+    // Davids uppgift eller en kalenderpost han väljer, och en agent får 403
+    // `human_required` i executeAction före varje skrivning. Ett satt ankare
+    // ändras inte här (409 `ankare_redan_satt`); ändringen hör till
+    // baselineförslaget (Story 2.4).
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        ankare: IsoDateSchema,
+        // Källan är obligatorisk och har exakt två former. Det finns ingen
+        // standardkälla: ett datum utan källa är en gissning.
+        kalla: z.discriminatedUnion('typ', [
+          z.object({ typ: z.literal('davids_uppgift'), datum: IsoDateSchema }).strict(),
+          z.object({ typ: z.literal('kalender'), referens_id: UuidSchema }).strict(),
+        ]),
+      })
+      .strict(),
+    handler: (ctx, i) => sattBedomningsankare(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.1: leverabelregistret läses. Importen (S1.2) fyllde

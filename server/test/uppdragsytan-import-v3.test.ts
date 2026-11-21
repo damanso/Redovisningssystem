@@ -172,6 +172,9 @@ describe('v3: parsern', () => {
         { kod: 'L4', namn: 'Slutrapport', strom_kod: 'DEL3', cap_hours: 5, klausul: '§1.4', acceptanskriterium: 'Rapporten mottagen', uppfoljningsmatt: 'Mottagen, binärt', matt_lasvag: null },
       ],
       styrning: { kod: 'STYRNING', namn: 'Veckomöten med beställaren', cap_hours: 5 },
+      // Story 2.3: den syntetiska formen saknar del 3 och del 4.
+      matt: [],
+      rytm: null,
       godkannare: null,
       godkannare_eskalering: null,
     });
@@ -204,7 +207,7 @@ describe('v3: parsern', () => {
 
   it('(P5, AC 11, regression) utdatan är en sluten typ utan andel', () => {
     expect(Object.keys(k)).toEqual([
-      'kontrakt_tillstand', 'ram', 'strommar', 'leverabler', 'styrning', 'scopelinjer', 'godkannare', 'godkannare_eskalering',
+      'kontrakt_tillstand', 'ram', 'strommar', 'leverabler', 'styrning', 'scopelinjer', 'matt', 'rytm', 'godkannare', 'godkannare_eskalering',
     ]);
     expect(JSON.stringify(k)).not.toMatch(PROCENT);
   });

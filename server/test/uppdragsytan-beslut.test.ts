@@ -18,6 +18,7 @@ import { forslagHash, byggRymsindata } from '../src/lib/beslutsunderlag.js';
 import { updateContract } from '../src/services/contracts.js';
 import { bindaKostnad } from '../src/services/uppdragKostnad.js';
 import { beskrivProv } from './undantagBeskrivningHelper.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import { SIGNALUNDERLAGSPROV, provaSignalunderlagsprov, beslutsradHtml, provaBeslutsradHtml, kontrolleraCheckFel, provaCheckFelkontrollen } from './beslutsunderlagHelper.js';
 
 // Story 1.18 (B-4 punkt 4, kriterium 6): ett tekniskt fel efter verkställigheten men
@@ -1776,6 +1777,9 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     const { kvittoId, approvalId: qK, stromId } = await kostnadTillStrom(b, u);
     const signal = (await ok(b, 'tand_scopesignal', { contract_id: u.contractId, fras: 'kan ni även', klausul: '5.4' })).id as string;
     const begaran = await begarBedomningIVyn(b, u);
+    // Story 2.3: perioden kommer ur avtalets rytm. Med en sådd rytm bär den
+    // begärda bedömningens post periodfälten som dolda fält.
+    await saBedomningsrytm(u.contractId);
     await withAdmin((c) => c.query('UPDATE contracts SET troskel_golv_ore=900000000000, troskel_procent=999.99 WHERE company_id=$1 AND id=$2',
       [b.id, u.contractId]));
     await svepa(b);
