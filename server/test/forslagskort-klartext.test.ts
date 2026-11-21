@@ -239,6 +239,7 @@ const EXEMPEL_INDATA: Record<string, (f: Fixtur) => Record<string, unknown>> = {
   merge_crm_organizations: () => ({ keep_id: slump(), merge_id: slump() }),
   merge_crm_people: () => ({ keep_id: slump(), merge_id: slump() }),
   purge_crm_data: () => ({ older_than_months: 24 }),
+  merge_crm_name_variant: (f) => ({ organization_id: f.relation.id, name: 'Klartext Relation AS' }),
   set_crm_sfar: (f) => ({ organization_id: f.relation.id, sfar: 'privat', roll: 'leverantor', cascade_open_commitments: true }),
   book_invoice: (f) => ({ invoice_id: f.faktura.id, fiscal_year_id: f.fiscalYear.id }),
   book_receipt: () => ({ receipt_id: slump() }),

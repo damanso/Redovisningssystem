@@ -18,7 +18,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import { mergeStatusOutcome } from '../lib/crmRules.js';
 import { readProvenance } from './crmProvenance.js';
-import { writeCrmAudit } from './crmRelations.js';
+import { saveOrganizationDistinction, writeCrmAudit } from './crmRelations.js';
 import {
   arKundkopplad, harPrivataPersoner, privatGransFel, PRIVAT_PERSON_SKAL, sfarParameter, type Sfar, type SfarFilter,
 } from './crmSfar.js';
@@ -415,6 +415,40 @@ export async function removeOrganizationNameAlias(
     details: { removed: 1 },
   });
   return { removed_name: r.rows[0].name, organization_id: r.rows[0].organization_id };
+}
+
+/** Ett mottaget ja avslutas även om relationen eller namnet ändrats medan förslaget väntade. */
+export async function acceptNameVariant(
+  client: PoolClient, companyId: string, userId: string, input: { organization_id: string; name: string },
+): Promise<{ outcome: 'organization_missing' | 'name_exists' | 'already_alias' | 'alias_elsewhere' | 'alias_added'; organization_id: string }> {
+  const organization_id = input.organization_id;
+  const org = await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, organization_id]);
+  if (!org.rows[0]) return { outcome: 'organization_missing', organization_id };
+  const name = input.name.trim();
+  const existing = await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+  if (existing.rows[0]) return { outcome: 'name_exists', organization_id };
+  const alias = await client.query<{ organization_id: string }>(
+    'SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+  if (alias.rows[0]) return { outcome: alias.rows[0].organization_id === organization_id.toLowerCase() ? 'already_alias' : 'alias_elsewhere', organization_id };
+  await client.query(
+    `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by)
+     VALUES ($1,$2,$3,$4)`, [companyId, name, organization_id, userId]);
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.name_variant_accepted', entityType: 'organization', entityId: organization_id,
+    details: { alias_added: 1 },
+  });
+  return { outcome: 'alias_added', organization_id };
+}
+
+/** Ett nej gäller paret även vid omsänd synk; ett redan sparat besked är ett avslutat utfall. */
+export async function rejectNameVariant(
+  client: PoolClient, companyId: string, userId: string, input: { organization_id: string; name: string },
+): Promise<{ outcome: 'organization_missing' | 'distinction_saved' | 'already_distinct'; organization_id: string }> {
+  const organization_id = input.organization_id;
+  const org = await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, organization_id]);
+  if (!org.rows[0]) return { outcome: 'organization_missing', organization_id };
+  const { saved } = await saveOrganizationDistinction(client, companyId, userId, organization_id, input.name);
+  return { outcome: saved ? 'distinction_saved' : 'already_distinct', organization_id };
 }
 
 // ---------------------------------------------------------------------------

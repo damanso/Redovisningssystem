@@ -165,10 +165,13 @@ async function provaUnderlag(f: FallContext, r: Record<string, any>, atgard: Man
 describe('P4 mandatkontraktet genom REST och vy', () => {
   it('takbekräftelsens kontroll skiljer tillåten flagga från ändrad baseline', provaTakbekraftelsekontrollen);
   it('a registret i båda riktningarna och falltabellen', () => {
+    const ANDRA_TVAFAS = ['merge_crm_name_variant'] as const;
     expect(Object.keys(FALL).sort()).toEqual([...MANDATATGARDER].sort());
+    expect(ACTIONS.filter((a) => a.tvafas).map((a) => a.name).sort()).toEqual([...MANDATATGARDER, ...ANDRA_TVAFAS].sort());
     for (const a of ACTIONS) {
       const mandat = (MANDATATGARDER as readonly string[]).includes(a.name);
       if (mandat) { expect(a.sensitivity).toBe('sensitive'); expect(a.tvafas).toBe(true); expect(a.vidAvslag).toBeTypeOf('function'); }
+      else if ((ANDRA_TVAFAS as readonly string[]).includes(a.name)) { expect(a.sensitivity).toBe('sensitive'); expect(a.tvafas).toBe(true); expect(a.vidAvslag).toBeTypeOf('function'); }
       else { expect(a.tvafas).toBeUndefined(); expect(a.vidAvslag).toBeUndefined(); }
     }
   });

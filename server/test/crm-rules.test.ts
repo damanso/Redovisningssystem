@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -335,5 +335,30 @@ describe('namnkrockens adress (story 2.1)', () => {
       '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f']) {
       expect(mergeCandidate(value, [A, B])).toBeNull();
     }
+  });
+});
+
+
+describe('bolagsformsvariantens regler (story 2.3)', () => {
+  const A = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+  it('BR1: bara ett eget giltigt namnpar ur rätt felkod ger förslag', () => {
+    const expected = { organization_id: A, name: 'Alliance Optikk' };
+    expect(nameVariantOrganization({ code: 'name_variant_of', details: expected })).toEqual(expected);
+    expect(nameVariantOrganization({ code: 'name_variant_of', details: { organization_id: A.toUpperCase(), name: '  Alliance Optikk  ' } })).toEqual(expected);
+    const invalid = [undefined, null, [A], { organization_id: A },
+      { organization_id: A, name: '   ' }, { organization_id: A, name: 7 },
+      { organization_id: 'inte-ett-id', name: 'X' }, Object.create({ organization_id: A, name: 'X' })];
+    for (const details of invalid) expect(nameVariantOrganization({ code: 'name_variant_of', details })).toBeNull();
+    for (const code of ['name_taken', 'NAME_VARIANT_OF', 'name_variant_ambiguous']) {
+      expect(nameVariantOrganization({ code, details: expected })).toBeNull();
+    }
+  });
+  it('BR2: bolagsformen kommer ur databasens nyckel och behåller stavningen', () => {
+    for (const [name, norm, suffix] of [
+      ['Alliance Optikk AS', 'alliance optikk', 'AS'], ['  Bolaget   AB (publ) ', 'bolaget', 'AB (publ)'],
+      ['Firma A/S', 'firma', 'A/S'], ['Optikko Kivinen Oy', 'optikko kivinen', 'Oy'],
+      ['Alliance Optikk', 'alliance optikk', null], ['Alliance OptikkAS', 'alliance optikk', null],
+      ['Annat Bolag AB', 'alliance optikk', null], ['', '', null],
+    ] as const) expect(companyFormSuffix(name, norm)).toBe(suffix);
   });
 });

@@ -7,6 +7,9 @@ import { readFile } from 'node:fs/promises';
 import { loadMigrations, migrate, type MigrationFile } from '../src/db/migrate.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { api, app, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { upsertOrganization, saveOrganizationDistinction } from '../src/services/crmRelations.js';
+import { queueNameVariantProposal } from '../src/services/crmIngest.js';
+import { explainApproval } from '../src/services/approvalSummary.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -718,5 +721,408 @@ describe('dokumenten (story 2.1)', () => {
     expect(manniskan).toContain('`merge_action`');
     expect(kontrakt.match(/^## Människan vinner$/gm)).toHaveLength(1);
     expect(kontrakt.match(/^## Kadens, dubbletter och sökning$/gm)).toHaveLength(1);
+  });
+});
+
+// Davids besked är bolagsbundet och får aldrig skrivas om av approllen.
+describe('bolagsformsvariantens tabell (story 2.3)', () => {
+  let tabellbolag: string;
+  beforeAll(async () => { tabellbolag = await nyOrganisation('Tabellbolaget'); });
+
+  it('BM1: katalogen bär sammansatt FK, unikt namnpar och bara två rättigheter', async () => {
+    await withAdmin(async (db) => {
+      const columns = await db.query(`SELECT column_name, data_type, is_nullable FROM information_schema.columns
+        WHERE table_schema = 'crm' AND table_name = 'organization_distinctions' ORDER BY ordinal_position`);
+      expect(columns.rows).toEqual([
+        { column_name: 'company_id', data_type: 'uuid', is_nullable: 'NO' },
+        { column_name: 'organization_id', data_type: 'uuid', is_nullable: 'NO' },
+        { column_name: 'variant_name', data_type: 'text', is_nullable: 'NO' },
+        { column_name: 'created_by', data_type: 'uuid', is_nullable: 'YES' },
+        { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+      ]);
+      const fk = await db.query(`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+        WHERE conrelid = 'crm.organization_distinctions'::regclass AND conname = 'organization_distinctions_organization_fk'`);
+      expect(fk.rows).toEqual([{ definition: 'FOREIGN KEY (organization_id, company_id) REFERENCES crm.organizations(id, company_id) ON DELETE CASCADE' }]);
+      const idx = await db.query(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'crm' AND indexname = 'organization_distinctions_uk'`);
+      expect(idx.rows).toEqual([{ indexdef: 'CREATE UNIQUE INDEX organization_distinctions_uk ON crm.organization_distinctions USING btree (company_id, organization_id, lower(variant_name))' }]);
+      const security = await db.query(`SELECT relrowsecurity, relforcerowsecurity,
+        obj_description(oid, 'pg_class') AS comment FROM pg_class WHERE oid = 'crm.organization_distinctions'::regclass`);
+      expect(security.rows).toEqual([{ relrowsecurity: true, relforcerowsecurity: true,
+        comment: 'Kategori: ÄGD — Davids besked att ett namn som bara skiljer sig i bolagsform är ett annat bolag' }]);
+      expect((await db.query(`SELECT cmd FROM pg_policies WHERE schemaname = 'crm'
+        AND tablename = 'organization_distinctions' ORDER BY cmd`)).rows).toEqual([{ cmd: 'INSERT' }, { cmd: 'SELECT' }]);
+      for (const [verb, allowed] of [['SELECT', true], ['INSERT', true], ['UPDATE', false], ['DELETE', false]] as const) {
+        expect((await db.query(`SELECT has_table_privilege('app', 'crm.organization_distinctions', $1) AS allowed`, [verb])).rows).toEqual([{ allowed }]);
+      }
+    });
+  });
+
+  it('BM2: migrationskedjan igen ändrar ingenting', async () => {
+    expect((await migrate(process.env.DATABASE_ADMIN_URL!)).applied).toEqual([]);
+    expect(await antal("SELECT count(*)::int AS n FROM schema_migrations WHERE name = 'crm_organization_distinctions'", [])).toBe(1);
+  });
+
+  it('BM3: app får lägga till men inte ändra eller radera, och grannen ser inget', async () => {
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      expect((await c.query(`INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by)
+        VALUES ($1,$2,'Tabellbolaget AB',$3)`, [companyId, tabellbolag, user.userId])).rowCount).toBe(1);
+    });
+    for (const sql of ["UPDATE crm.organization_distinctions SET variant_name = 'x' WHERE company_id = $1", 'DELETE FROM crm.organization_distinctions WHERE company_id = $1']) {
+      await expect(withTenantTransaction(user.userId, companyId, (c) => c.query(sql, [companyId]))).rejects.toMatchObject({ code: '42501' });
+    }
+    await withTenantTransaction(granne.userId, grannbolag, async (c) => {
+      expect((await c.query('SELECT count(*)::int AS n FROM crm.organization_distinctions')).rows).toEqual([{ n: 0 }]);
+    });
+  });
+});
+
+
+// Synkens beslut tas före första skrivningen; handvägen behåller sitt beteende.
+describe('synkens bolagsformsregel (story 2.3)', () => {
+  let synkbolag: string, beskedbolag: string;
+  beforeAll(async () => {
+    synkbolag = await nyOrganisation('Synkbolaget');
+    await nyOrganisation('Tvåkandidat');
+    await nyOrganisation('Tvåkandidat AB');
+    beskedbolag = await nyOrganisation('Beskedbolaget');
+  });
+  it('BS1: en kandidat ger exakt fel och ingen ny relation', async () => {
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      const attempt = upsertOrganization(c, companyId, user.userId, { name: 'Synkbolaget AS' }, { source: 'sync' });
+      await expect(attempt).rejects.toMatchObject({ code: 'name_variant_of', status: 400,
+        message: 'bolagsformsvariant av Synkbolaget — väntar på ditt beslut i Att göra' });
+      await expect(attempt).rejects.toHaveProperty('details', { organization_id: synkbolag, name: 'Synkbolaget' });
+    });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND lower(name) = 'synkbolaget as'", [companyId])).toBe(0);
+  });
+  it('BS2: flera kandidater ger skäl utan gissat id', async () => {
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      await expect(upsertOrganization(c, companyId, user.userId, { name: 'Tvåkandidat Oy' }, { source: 'sync' }))
+        .rejects.toMatchObject({ code: 'name_variant_ambiguous',
+          message: 'bolagsformsvariant av flera relationer — slå ihop dem först', details: undefined });
+    });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND name = 'Tvåkandidat Oy'", [companyId])).toBe(0);
+  });
+  it('BS3: sparat besked är idempotent, trimmat och släpper nästa synk', async () => {
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      expect(await saveOrganizationDistinction(c, companyId, user.userId, beskedbolag, ' Beskedbolaget Oy ')).toEqual({ saved: 1 });
+      expect(await saveOrganizationDistinction(c, companyId, user.userId, beskedbolag, 'BESKEDBOLAGET OY')).toEqual({ saved: 0 });
+      expect(await upsertOrganization(c, companyId, user.userId, { name: 'Beskedbolaget Oy' }, { source: 'sync' }))
+        .toMatchObject({ created: true, name: 'Beskedbolaget Oy' });
+    });
+    await withAdmin(async (db) => {
+      expect((await db.query('SELECT variant_name FROM crm.organization_distinctions WHERE company_id = $1 AND organization_id = $2', [companyId, beskedbolag])).rows)
+        .toEqual([{ variant_name: 'Beskedbolaget Oy' }]);
+      const audit = (await db.query("SELECT details FROM crm.audit_log WHERE company_id = $1 AND entity_id = $2 AND action = 'crm.organization_distinction_saved' ORDER BY occurred_at, id", [companyId, beskedbolag])).rows;
+      expect(audit).toHaveLength(2);
+      expect(audit).toEqual(expect.arrayContaining([{ details: { saved: 1 } }, { details: { saved: 0 } }]));
+      expect(JSON.stringify(audit)).not.toContain('Beskedbolaget');
+    });
+  });
+  it('BS4: exakt träff i annat skiftläge är ingen variant', async () => {
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      expect(await upsertOrganization(c, companyId, user.userId, { name: 'SYNKBOLAGET' }, { source: 'sync' }))
+        .toMatchObject({ id: synkbolag, created: false });
+    });
+  });
+  it('BS5: grannbolaget ser ingen kandidat i vårt bolag', async () => {
+    await withTenantTransaction(granne.userId, grannbolag, async (c) => {
+      expect(await upsertOrganization(c, grannbolag, granne.userId, { name: 'Synkbolaget AB' }, { source: 'sync' }))
+        .toMatchObject({ created: true });
+    });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND name = 'Synkbolaget AB'", [companyId])).toBe(0);
+  });
+});
+
+describe('förslaget i Att göra (story 2.3)', () => {
+  let gbolag: string, gtva: string, gtre: string;
+  beforeAll(async () => {
+    gbolag = await nyOrganisation('Gbolaget');
+    gtva = await nyOrganisation('Gtvå');
+    gtre = await nyOrganisation('Gtre');
+  });
+  async function koa(id: string, name: string, bolag = companyId, token = user.token) {
+    const r = await api.post(`/api/companies/${bolag}/actions/merge_crm_name_variant`)
+      .set('Authorization', `Bearer ${token}`).send({ organization_id: id, name });
+    expect(r.status, JSON.stringify(r.body)).toBe(202);
+    expect(r.body.approval.status).toBe('pending');
+    return r.body.approval.id as string;
+  }
+  function beslut(id: string, val: 'approve' | 'reject', body = {}, token = user.token, bolag = companyId) {
+    return api.post(`/api/companies/${bolag}/approvals/${id}/${val}`).set('Authorization', `Bearer ${token}`).send(body);
+  }
+  async function aliasantal(name: string) {
+    return antal('SELECT count(*)::int AS n FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
+  }
+  it('BG1: giltigt förslag gör inget förrän människan godkänner aliaset', async () => {
+    for (const input of [{ organization_id: 'inte-ett-id', name: 'Gbolaget AS' },
+      { organization_id: gbolag, name: '' }, { organization_id: gbolag, name: '   ' }]) {
+      const r = await act('merge_crm_name_variant', input);
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+      expect(r.body.error).toBe('validation_error');
+    }
+    expect(await antal("SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1 AND action = 'merge_crm_name_variant' AND input->>'organization_id' = $2", [companyId, gbolag])).toBe(0);
+    const id = await koa(gbolag, 'Gbolaget AS');
+    expect(await aliasantal('Gbolaget AS')).toBe(0);
+    const r = await beslut(id, 'approve');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.approval.status).toBe('executed');
+    expect(r.body.result).toEqual({ outcome: 'alias_added', organization_id: gbolag });
+    await withAdmin(async (db) => {
+      expect((await db.query("SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = 'gbolaget as'", [companyId])).rows).toEqual([{ organization_id: gbolag }]);
+      expect((await db.query("SELECT details FROM crm.audit_log WHERE company_id = $1 AND entity_id = $2 AND action = 'crm.name_variant_accepted'", [companyId, gbolag])).rows).toEqual([{ details: { alias_added: 1 } }]);
+    });
+  });
+  it('BG2: nej sparar skälet och paret utan alias', async () => {
+    const id = await koa(gtva, 'Gtvå Oy');
+    const r = await beslut(id, 'reject', { reason: 'Två olika bolag, olika länder.' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.approval.status).toBe('rejected');
+    expect(r.body.approval.beslut_skal).toBe('Två olika bolag, olika länder.');
+    expect(r.body.approval.result).toEqual({ vid_avslag: { outcome: 'distinction_saved', organization_id: gtva } });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organization_distinctions WHERE company_id = $1 AND organization_id = $2 AND variant_name = 'Gtvå Oy'", [companyId, gtva])).toBe(1);
+    expect(await aliasantal('Gtvå Oy')).toBe(0);
+  });
+  it('BG3: affärslägen avslutas utan kast och grannens beslut skriver inget hos oss', async () => {
+    const exists = await koa(gtre, 'Gtre AB');
+    await nyOrganisation('Gtre AB');
+    const a = await beslut(exists, 'approve');
+    expect(a.status, JSON.stringify(a.body)).toBe(200);
+    expect(a.body.result).toEqual({ outcome: 'name_exists', organization_id: gtre });
+    expect(await aliasantal('Gtre AB')).toBe(0);
+    for (const [org, outcome] of [[gbolag, 'already_alias'], [gtre, 'alias_elsewhere']] as const) {
+      const r = await beslut(await koa(org, 'Gbolaget AS'), 'approve');
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result).toEqual({ outcome, organization_id: org });
+    }
+    expect(await aliasantal('Gbolaget AS')).toBe(1);
+    expect(await antal("SELECT count(*)::int AS n FROM crm.audit_log WHERE company_id = $1 AND entity_id = $2 AND action = 'crm.name_variant_accepted'", [companyId, gbolag])).toBe(1);
+    const d = await beslut(await koa(gtva, 'Gtvå Oy'), 'reject', { reason: 'Samma besked.' });
+    expect(d.status, JSON.stringify(d.body)).toBe(200);
+    expect(d.body.approval.result).toEqual({ vid_avslag: { outcome: 'already_distinct', organization_id: gtva } });
+    expect(await antal('SELECT count(*)::int AS n FROM crm.organization_distinctions WHERE company_id = $1 AND organization_id = $2', [companyId, gtva])).toBe(1);
+    for (const [org, name, val] of [[gbolag, 'Gbolaget Oy', 'approve'], [gtva, 'Gtvå AB', 'reject']] as const) {
+      const id = await koa(org, name, grannbolag, granne.token);
+      const r = await beslut(id, val, val === 'reject' ? { reason: 'Ett annat bolag.' } : {}, granne.token, grannbolag);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const outcome = { outcome: 'organization_missing', organization_id: org };
+      if (val === 'approve') expect(r.body.result).toEqual(outcome);
+      else expect(r.body.approval.result).toEqual({ vid_avslag: outcome });
+    }
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organization_name_aliases WHERE company_id = ANY($1::uuid[]) AND name = 'Gbolaget Oy'", [[companyId, grannbolag]])).toBe(0);
+    expect(await antal('SELECT count(*)::int AS n FROM crm.organization_distinctions WHERE company_id = $1', [grannbolag])).toBe(0);
+    await withAdmin(async (db) => {
+      expect((await db.query("SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND name = 'Gbolaget AS'", [companyId])).rows).toEqual([{ organization_id: gbolag }]);
+    });
+  });
+  it('BG4: agenten kan aldrig avgöra och människans nej kräver skäl', async () => {
+    const id = await koa(gtva, 'Gtvå AB');
+    for (const val of ['approve', 'reject'] as const) {
+      const r = await beslut(id, val, {}, agentToken);
+      expect(r.status, JSON.stringify(r.body)).toBe(403);
+      expect(r.body.error).toBe('human_approval_required');
+    }
+    const r = await beslut(id, 'reject');
+    expect(r.status, JSON.stringify(r.body)).toBe(400);
+    expect(r.body.error).toBe('skal_kravs');
+    expect(await antal("SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1 AND id = $2 AND status = 'pending'", [companyId, id])).toBe(1);
+  });
+});
+
+describe('intaget och bolagsformsvarianten (story 2.3)', () => {
+  let alliance: string;
+  beforeAll(async () => { alliance = await nyOrganisation('Alliance Optikk'); });
+  const skal = (name: string) => `bolagsformsvariant av ${name} — väntar på ditt beslut i Att göra`;
+  async function forslag(org: string, name: string, bolag = companyId) {
+    return withAdmin(async (db) => (await db.query<{ id: string; status: string; input: unknown; requested_actor: string }>(
+      `SELECT id, status, input, requested_actor FROM action_approvals WHERE company_id = $1
+       AND action = 'merge_crm_name_variant' AND input->>'organization_id' = $2
+       AND lower(input->>'name') = lower($3) ORDER BY created_at, id`, [bolag, org, name])).rows);
+  }
+  async function kravBolagsformsforslag(svar: { skipped?: unknown[]; merge_proposals?: string[]; organizations_created?: number }, index: number, variant: string, befintlig: string) {
+    expect(svar.skipped).toContainEqual({ index, reason: skal(befintlig) });
+    expect(svar.merge_proposals).toContain(`${variant} → ${befintlig} (bolagsform)`);
+    expect(await antal('SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, variant])).toBe(0);
+  }
+  function avgor(id: string, val: 'approve' | 'reject') {
+    return api.post(`/api/companies/${companyId}/approvals/${id}/${val}`).set('Authorization', `Bearer ${user.token}`)
+      .send(val === 'reject' ? { reason: 'Olika juridiska personer.' } : {});
+  }
+  it('BI1: variant ger ett auditerat förslag och batchens andra händelse skrivs', async () => {
+    const r = await ingest([kontaktpunkt('Alliance Optikk AS', 'gmail:bi1-1'), kontaktpunkt('Intagsgrannen AB', 'gmail:bi1-2')]);
+    expect(r.skipped).toEqual([{ index: 0, reason: skal('Alliance Optikk') }]);
+    expect(r.merge_proposals).toEqual(['Alliance Optikk AS → Alliance Optikk (bolagsform)']);
+    expect(r).toMatchObject({ organizations_created: 1, interactions_created: 1 });
+    await kravBolagsformsforslag(r, 0, 'Alliance Optikk AS', 'Alliance Optikk');
+    expect(await antal("SELECT count(*)::int AS n FROM crm.interactions WHERE company_id = $1 AND source_ref = 'gmail:bi1-1'", [companyId])).toBe(0);
+    const rows = await forslag(alliance, 'Alliance Optikk AS');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'pending', requested_actor: 'agent', input: { organization_id: alliance, name: 'Alliance Optikk AS' } });
+    await withAdmin(async (db) => {
+      const audit = (await db.query("SELECT entity_type, details FROM audit_log WHERE company_id = $1 AND action = 'action.approval_requested' AND entity_id = $2", [companyId, rows[0]!.id])).rows;
+      expect(audit).toEqual([{ entity_type: 'approval', details: { action: 'merge_crm_name_variant', actor: 'agent', reason: 'bolagsform' } }]);
+      expect(JSON.stringify(audit)).not.toContain('Alliance');
+    });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.audit_log WHERE company_id = $1 AND action = 'crm.ingested' AND details->>'merge_proposals' = '1'", [companyId])).toBe(1);
+    expect(await antal("SELECT count(*)::int AS n FROM crm.audit_log WHERE company_id = $1 AND action = 'crm.ingested' AND details::text LIKE '%Alliance%'", [companyId])).toBe(0);
+  });
+  it('BI2: omsänd händelse och två varianter i batchen behåller ett förslag', async () => {
+    const a = await ingest([kontaktpunkt('Alliance Optikk AS', 'gmail:bi1-1')]);
+    expect(a.skipped).toEqual([{ index: 0, reason: skal('Alliance Optikk') }]);
+    expect(a.merge_proposals).toEqual(['Alliance Optikk AS → Alliance Optikk (bolagsform)']);
+    const b = await ingest([kontaktpunkt('Alliance Optikk AS', 'gmail:bi2-1'), kontaktpunkt('Alliance Optikk AS', 'gmail:bi2-2')]);
+    expect(b.skipped).toEqual([0, 1].map((index) => ({ index, reason: skal('Alliance Optikk') })));
+    expect(b.merge_proposals).toEqual(['Alliance Optikk AS → Alliance Optikk (bolagsform)']);
+    const rows = await forslag(alliance, 'Alliance Optikk AS');
+    expect(rows).toHaveLength(1);
+    expect(await antal("SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1 AND action = 'action.approval_requested' AND entity_id = $2", [companyId, rows[0]!.id])).toBe(1);
+  });
+  it('BI3: förslag och audit följer händelsens återrullade savepoint', async () => {
+    const org = await nyOrganisation('Rollbackbolaget');
+    let id = '';
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      await c.query('SAVEPOINT bi3');
+      const r = await queueNameVariantProposal(c, companyId, user.userId, 'agent', { organization_id: org, name: 'Rollbackbolaget AB' });
+      expect(r.queued).toBe(true);
+      id = r.approval_id;
+      expect((await c.query('SELECT id FROM action_approvals WHERE company_id = $1 AND id = $2', [companyId, id])).rows).toEqual([{ id }]);
+      await c.query('ROLLBACK TO SAVEPOINT bi3');
+      expect((await c.query('SELECT id FROM action_approvals WHERE company_id = $1 AND id = $2', [companyId, id])).rows).toEqual([]);
+    });
+    expect(await forslag(org, 'Rollbackbolaget AB')).toEqual([]);
+    expect(await antal('SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1 AND entity_id = $2', [companyId, id])).toBe(0);
+  });
+  it('BI4: två kandidater ger redovisat överhopp utan förslag', async () => {
+    await nyOrganisation('Nordic Retail');
+    await nyOrganisation('Nordic Retail AB');
+    const r = await ingest([kontaktpunkt('Nordic Retail Oy', 'gmail:bi4-1')]);
+    expect(r.skipped).toEqual([{ index: 0, reason: 'bolagsformsvariant av flera relationer — slå ihop dem först' }]);
+    expect(r.merge_proposals).toEqual(['Nordic Retail Oy (flera möjliga)']);
+    expect(r.organizations_created).toBe(0);
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND name = 'Nordic Retail Oy'", [companyId])).toBe(0);
+    expect(await antal("SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1 AND action = 'merge_crm_name_variant' AND lower(input->>'name') = 'nordic retail oy'", [companyId])).toBe(0);
+  });
+  it('BI5: ja styr nästa synk till aliasets relation och skriver den väntande kontaktpunkten', async () => {
+    const org = await nyOrganisation('Godkänt Optik');
+    const events = [kontaktpunkt('Godkänt Optik AS', 'gmail:bi5-1')];
+    await kravBolagsformsforslag(await ingest(events), 0, 'Godkänt Optik AS', 'Godkänt Optik');
+    const r = await avgor((await forslag(org, 'Godkänt Optik AS'))[0]!.id, 'approve');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.approval.status).toBe('executed');
+    expect(r.body.result.outcome).toBe('alias_added');
+    const b = await ingest(events);
+    expect(b).toMatchObject({ skipped: [], merge_proposals: [], redirected_organizations: ['Godkänt Optik AS → Godkänt Optik'], organizations_created: 0, interactions_created: 1 });
+    expect(await antal("SELECT count(*)::int AS n FROM crm.interactions WHERE company_id = $1 AND source_ref = 'gmail:bi5-1' AND organization_id = $2", [companyId, org])).toBe(1);
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND name = 'Godkänt Optik AS'", [companyId])).toBe(0);
+  });
+  it('BI6: nej låter synken skapa egen relation och nytt skiftläge frågar aldrig igen', async () => {
+    const org = await nyOrganisation('Optikko Kivinen');
+    const events = [kontaktpunkt('Optikko Kivinen Oy', 'gmail:bi6-1')];
+    await kravBolagsformsforslag(await ingest(events), 0, 'Optikko Kivinen Oy', 'Optikko Kivinen');
+    const r = await avgor((await forslag(org, 'Optikko Kivinen Oy'))[0]!.id, 'reject');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(await ingest(events)).toMatchObject({ skipped: [], merge_proposals: [], organizations_created: 1, interactions_created: 1 });
+    expect(await ingest([kontaktpunkt('OPTIKKO KIVINEN OY', 'gmail:bi6-2')])).toMatchObject({ skipped: [], merge_proposals: [], organizations_created: 0 });
+    expect(await antal(`SELECT count(*)::int AS n FROM crm.interactions i JOIN crm.organizations o ON o.id = i.organization_id AND o.company_id = i.company_id
+      WHERE i.company_id = $1 AND i.source_ref = 'gmail:bi6-1' AND lower(o.name) = 'optikko kivinen oy'`, [companyId])).toBe(1);
+    const rows = await forslag(org, 'Optikko Kivinen Oy');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('rejected');
+  });
+  it('BI7: nytt namn och saknad motpart behåller tydliga tomma listor', async () => {
+    expect(await ingest([kontaktpunkt('Helt Ny Kund AB', 'gmail:bi7-1')])).toMatchObject({ organizations_created: 1, skipped: [], merge_proposals: [] });
+    const { organization: _organization, ...utan } = kontaktpunkt('Utelämnad', 'gmail:bi7-2');
+    expect(await ingest([utan])).toMatchObject({ skipped: [{ index: 0, reason: 'händelsen saknar både organisation och person' }], merge_proposals: [] });
+  });
+  it('BI8: grannen delar varken förslag, besked eller alias', async () => {
+    async function grannAct(action: string, input: Record<string, unknown>) {
+      const r = await api.post(`/api/companies/${grannbolag}/actions/${action}`).set('Authorization', `Bearer ${granne.token}`).send(input);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      return r.body.result;
+    }
+    const eget = await grannAct('upsert_crm_organization', { name: 'Alliance Optikk' });
+    const a = await grannAct('ingest_crm_events', { events: [kontaktpunkt('Alliance Optikk AS', 'gmail:bi8-a')] });
+    expect(a.merge_proposals).toEqual(['Alliance Optikk AS → Alliance Optikk (bolagsform)']);
+    expect(await forslag(eget.id, 'Alliance Optikk AS', grannbolag)).toHaveLength(1);
+    expect(await forslag(alliance, 'Alliance Optikk AS')).toHaveLength(1);
+    await grannAct('upsert_crm_organization', { name: 'Optikko Kivinen' });
+    const b = await grannAct('ingest_crm_events', { events: [kontaktpunkt('Optikko Kivinen Oy', 'gmail:bi8-b')] });
+    expect(b.skipped).toEqual([{ index: 0, reason: skal('Optikko Kivinen') }]);
+    expect(await antal("SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1 AND lower(name) = 'optikko kivinen oy'", [grannbolag])).toBe(0);
+    const c = await grannAct('ingest_crm_events', { events: [kontaktpunkt('Godkänt Optik AS', 'gmail:bi8-c')] });
+    expect(c).toMatchObject({ organizations_created: 1, redirected_organizations: [] });
+  });
+  it('BI9: negativ kontroll fäller både planterat svar och verkligt onormaliserat namn', async () => {
+    await expect(kravBolagsformsforslag({ skipped: [], merge_proposals: [], organizations_created: 1 }, 0, 'Planterad AS', 'Planterad')).rejects.toThrow();
+    const r = await ingest([kontaktpunkt('Alliance Optikk Norge', 'gmail:bi9-1')]);
+    expect(r).toMatchObject({ organizations_created: 1, merge_proposals: [] });
+    await expect(kravBolagsformsforslag(r, 0, 'Alliance Optikk Norge', 'Alliance Optikk')).rejects.toThrow();
+  });
+});
+
+describe('kortet i Att göra (story 2.3)', () => {
+  it('BK1: kortet säger exakt vad ja och nej betyder och bär synligt skälfält', async () => {
+    const id = await withAdmin(async (db) => (await db.query<{ id: string }>(
+      `SELECT id FROM action_approvals WHERE company_id = $1 AND action = 'merge_crm_name_variant'
+       AND input->>'name' = 'Alliance Optikk AS' AND status = 'pending'`, [companyId])).rows[0]!.id);
+    const r = await ua.get(`/app/c/${companyId}/approvals`);
+    expect(r.status, r.text).toBe(200);
+    const card = (r.text.match(/<article class="ai-card">[\s\S]*?<\/article>/g) ?? [])
+      .find((text) => text.includes(`/approvals/${id}/reject`));
+    expect(card).toBeDefined();
+    const text = card!.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const sentence of [
+      'Namnen skiljer sig bara i bolagsform (AS).',
+      'Godkänn: Alliance Optikk AS räknas som Alliance Optikk, och kommande händelser med det namnet hamnar där.',
+      'Avvisa: det är ett annat bolag — nästa synk skapar en egen relation för Alliance Optikk AS.',
+    ]) expect(text).toContain(sentence);
+    expect(card).toContain('name="skal"');
+    expect(card).toContain('Skäl till nej');
+    expect(card).toMatch(/<textarea[^>]*name="skal"[^>]*required/);
+  });
+  it('BK2: båda bolagsformerna visas och ogiltigt eller saknat mål förgiftar aldrig transaktionen', async () => {
+    const rows = await withAdmin(async (db) => (await db.query<{ id: string; name: string }>(
+      "SELECT id, name FROM crm.organizations WHERE company_id = $1 AND name IN ('Nordic Retail', 'Nordic Retail AB')", [companyId])).rows);
+    const org = rows.find((r) => r.name === 'Nordic Retail')!.id;
+    const ab = rows.find((r) => r.name === 'Nordic Retail AB')!.id;
+    const base = `/app/c/${companyId}`;
+    await withTenantTransaction(user.userId, companyId, async (c) => {
+      const a = await explainApproval(c, companyId, 'merge_crm_name_variant', { organization_id: ab, name: 'Nordic Retail Oy' }, base);
+      expect(a.why).toMatch(/^Namnen skiljer sig bara i bolagsform \(Oy, AB\)\./);
+      const b = await explainApproval(c, companyId, 'merge_crm_name_variant', { organization_id: org, name: 'Nordic Retail' }, base);
+      expect(b.why).toMatch(/^Namnen skiljer sig bara i bolagsform\./);
+      expect(b.source).toEqual({ label: 'Öppna relationen', href: `${base}/relations/${org}` });
+      for (const input of [
+        { organization_id: '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f', name: 'X AB' },
+        { organization_id: 'inte-ett-id', name: 'X AB' }, { organization_id: org, name: '  ' },
+      ]) {
+        expect(await explainApproval(c, companyId, 'merge_crm_name_variant', input, base)).toEqual({ change: null, why: null, source: null });
+        expect((await c.query('SELECT 1 AS n')).rows).toEqual([{ n: 1 }]);
+      }
+    });
+  });
+});
+
+describe('dokumenten (story 2.3)', () => {
+  it('BD1: förslag, överhopp och beslut beskrivs i de befintliga kontraktsavsnitten', async () => {
+    const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const title = '## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)';
+    expect(doc.split(title)).toHaveLength(2);
+    expect(doc.indexOf(title)).toBeGreaterThan(doc.indexOf('## Namnkrocken leder till sammanslagningen (crm 2.1)'));
+    const section = doc.split(title)[1]!.split('\n## ')[0]!;
+    expect(section).not.toMatch(/^### /m);
+    for (const term of ['merge_crm_name_variant', 'merge_proposals', 'skipped', 'ingest_crm_events', 'crm.organization_distinctions', 'tvafas']) {
+      expect(section, term).toContain('`' + term + '`');
+    }
+    const contract = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+    const rules = contract.split('## De fyra reglerna\n')[1]!.split('\n## ')[0]!;
+    expect(rules).toContain('**8. En bolagsformsvariant blir ett sammanslagningsförslag, inte en ny relation.**');
+    for (const term of ['merge_proposals', 'skipped', 'merge_crm_name_variant']) expect(rules).toContain('`' + term + '`');
+    const result = contract.split('## Svaret\n')[1]!.split('\n## ')[0]!;
+    expect(result).toContain('"merge_proposals": []');
+    expect(result).toContain('`merge_proposals`');
+    for (const heading of ['De fyra reglerna', 'Svaret', 'Människan vinner', 'Kadens, dubbletter och sökning']) {
+      expect(contract.split('\n').filter((line) => line === '## ' + heading)).toHaveLength(1);
+    }
   });
 });

@@ -2666,3 +2666,34 @@ Vägen vidare är `merge_crm_organizations` med de två relationernas id som
 Relationssidan visar namnkrocken som en notis med en länk till relationen och
 knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
 via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.
+
+## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)
+
+`ingest_crm_events` skapar ingen relation när ett organisationsnamn utan exakt
+träff eller alias bara skiljer sig i bolagsform från exakt en befintlig relation,
+och paret inte är sparat som olika bolag. Händelsen hamnar i `skipped` med
+skälet «bolagsformsvariant av Alliance Optikk — väntar på ditt beslut i Att göra».
+Förslaget `merge_crm_name_variant` köas en gång per namnpar och redovisas i
+`merge_proposals` som «Alliance Optikk AS → Alliance Optikk (bolagsform)».
+Även ett mottaget men ännu inte verkställt beslut räknas som väntande.
+
+Flera möjliga relationer ger «bolagsformsvariant av flera relationer — slå ihop
+dem först» i `skipped` och «<namn> (flera möjliga)» i `merge_proposals`.
+Ingen relation eller köpost skapas då.
+
+Åtgärden är `sensitive` med `tvafas`. Den tar relationens id och variantens namn.
+Godkänt lägger namnet som alias; nästa synk skriver de överhoppade händelserna
+på relationen och redovisar omstyrningen i `redirected_organizations`.
+Avvisat kräver skäl och sparar paret i `crm.organization_distinctions`, så nästa
+synk skapar den egna relationen utan nytt förslag för paret. Bara en människa
+kan godkänna eller avvisa. Förslaget och dess auditrad hör till händelsens
+savepoint; audit bär bara åtgärd, aktör och skälet bolagsform, aldrig namn.
+
+Godkännandets slutna utfall är `alias_added`, `already_alias`, `name_exists`,
+`alias_elsewhere` och `organization_missing`. Avslagets är `distinction_saved`,
+`already_distinct` och `organization_missing`, under `result.vid_avslag`.
+Affärslägena avslutas utan att lämna ett mottaget beslut för återförsök.
+
+Regeln gäller synkens skrivningar. En relation som skapas för hand prövas inte
+av den. Direkta anrop av åtgärden köas som andra känsliga åtgärder; spärren mot
+flera väntande förslag gäller synkens köfunktion.

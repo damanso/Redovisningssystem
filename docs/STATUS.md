@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
+  Migration 0092 lagrar Davids besked per namnpar med RLS och SELECT/INSERT.
+  Synkens regel i `upsertOrganization` ger förslag före första skrivningen;
+  `saveOrganizationDistinction` är enda skrivvägen för nej. Den känsliga
+  tvåfasåtgärden `merge_crm_name_variant` lägger alias vid ja och sparar paret
+  vid nej. Intaget köar i händelsens savepoint med namnfri audit och redovisar
+  `merge_proposals`; kortet förklarar båda valen. MCP-dokumentet och
+  intagskontraktet beskriver beteendet. BM1–BM3, BR1–BR2, BS1–BS5, BG1–BG4,
+  BI1–BI9, BK1–BK2 och BD1 täcker det. Registerrader i vy-kansliga-knappar,
+  forslagskort-klartext och uppdragsytan-mandat håller deras slutna listor
+  fullständiga; mandatprovet kontrollerar också tvåfaslistans exakta mängd.
+  Den handskapade varianten, notisen och `distinct_from` är berättelse 2.5.
+  Tester skrevs före respektive implementation. Rena regler gick från 2 röda
+  till 94/94 gröna; statiska importprov 9/9 och sändvägsprov 10/10 gröna.
+  Full `npm test` vid rött och grönt stannar före fallen: connect EPERM
+  127.0.0.1:5433 i globalSetup. Databas-, migrations- och vykörningar inväntar
+  kedjan enligt uppdragets undantag; ingen grön fullsvit eller interaktiv
+  webbläsarkontroll påstås. Typkontroll och slutkontroller redovisas i
+  berättelsens Dev Agent Record: typkontroll och bygge exit 0; isolerad BD1
+  gick från rött till grönt. Inga externa prov har körts.
+  Befintliga ai-card, Public Sans, färgtokens och synligt fokus återanvänds;
+  tomläge, felnotis och skälfält följer husets serverrenderade yta.
+  Ingen rutt, CSS-klass, miljövariabel eller nytt beroende tillkommer.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när
