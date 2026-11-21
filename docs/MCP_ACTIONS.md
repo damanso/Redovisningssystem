@@ -2689,6 +2689,11 @@ kräver ett skäl som sparas med beslutet och lagrar paret i
 `crm.organization_distinctions`. Nästa synk får då skapa den egna relationen
 utan nytt förslag mot samma relation.
 
+Kortet jämför de aktuella normaliserade namnen. Om förslaget gäller olika
+namn eller relationen har döpts om säger kortet att namnen inte bara skiljer
+sig i bolagsform och ber dig kontrollera dem före beslutet. Ett ja kan då
+lägga namnet som alias om det är ledigt; ett nej sparar namnen som olika bolag.
+
 Godkänt svarar med `outcome`: `alias_added`, `already_alias`, `name_exists`,
 `alias_elsewhere` eller `organization_missing`. Avvisat svarar under
 `approval.result.vid_avslag` med `distinction_saved`, `already_distinct` eller

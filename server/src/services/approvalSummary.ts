@@ -689,6 +689,17 @@ export async function explainApproval(
     const normalized = await one<{ name_norm: string }>(client,
       'SELECT crm.normalize_org_name($1) AS name_norm', [variant]);
     if (!normalized) return none;
+    // Ett direkt förslag eller ett senare namnbyte kan sakna bolagsformsrelation.
+    // Kortet visar det aktuella underlaget och lovar bara vad åtgärden kan göra.
+    if (normalized.name_norm !== organization.name_norm) {
+      return {
+        change: null,
+        why: 'Namnen skiljer sig inte bara i bolagsform. Kontrollera namnen före beslutet. '
+          + `Godkänn: ${variant} läggs som alias för ${organization.name} om namnet är ledigt. `
+          + 'Avvisa: namnen sparas som olika bolag.',
+        source: { label: 'Öppna relationen', href: `${base}/relations/${id}` },
+      };
+    }
     // Nycklarna kommer ur SQL:s enda lista, så kort och skrivning inte glider isär.
     const forms = [...new Set([
       companyFormSuffix(variant, normalized.name_norm), companyFormSuffix(organization.name, organization.name_norm),

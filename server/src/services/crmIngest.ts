@@ -99,15 +99,20 @@ export async function queueNameVariantProposal(
   await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
     [companyId, input.organization_id]);
   const action = 'merge_crm_name_variant';
-  const pending = await client.query<{ id: string }>(
-    `SELECT id FROM action_approvals WHERE company_id = $1 AND action = $4
-       AND input->>'organization_id' = $2 AND lower(input->>'name') = lower($3)
+  // Äldre och direkt köade indata är inte kanoniska. Läs alla aktiva namn för
+  // relationen och använd samma trimning på båda sidor, även Unicode-blanktecken.
+  const pending = await client.query<{ id: string; name: string | null }>(
+    `SELECT id, input->>'name' AS name FROM action_approvals WHERE company_id = $1 AND action = $3
+       AND lower(input->>'organization_id') = lower($2)
        AND (status = 'pending' OR (${MOTTAGET_EJ_VERKSTALLT}))
-     ORDER BY created_at, id LIMIT 1`,
-    [companyId, input.organization_id, input.name, action],
+     ORDER BY created_at, id`,
+    [companyId, input.organization_id, action],
   );
-  if (pending.rows[0]) return { approval_id: pending.rows[0].id, queued: false };
-  const approval = await createApproval(client, companyId, userId, actor, action, input);
+  const name = input.name.trim();
+  const existing = pending.rows.find((row) => row.name?.trim().toLowerCase() === name.toLowerCase());
+  if (existing) return { approval_id: existing.id, queued: false };
+  const approval = await createApproval(client, companyId, userId, actor, action,
+    { organization_id: input.organization_id.toLowerCase(), name });
   await writeAudit(client, {
     companyId, userId, action: 'action.approval_requested', entityType: 'approval', entityId: approval.id,
     details: { action, actor, reason: 'bolagsform' },

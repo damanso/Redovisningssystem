@@ -126,6 +126,11 @@ med skäl låter nästa synk skapa en egen relation utan nytt förslag mot samma
 relation. Flera möjliga relationer ger inget förslag och ingen relation:
 `skipped` säger «bolagsformsvariant av flera relationer — slå ihop dem först».
 
+Väntande förslag jämförs utan hänsyn till skiftläge i UUID och namn eller
+omgivande blanktecken i namnet, även för äldre direktköade förslag.
+Efter låsväntan läser synken alias och sparade besked på nytt innan den avgör
+om ett förslag behövs.
+
 ## Svaret
 
 ```jsonc

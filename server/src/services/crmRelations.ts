@@ -392,18 +392,48 @@ export async function upsertOrganization(
   // A-4: synkens nya namn får ingen egen relation innan David avgjort paret.
   // Exakt träff och alias har redan företräde; varje kast sker före skrivning.
   if (origin.source === 'sync' && !hit) {
-    const candidates = await client.query<{ id: string; name: string }>(
-      `SELECT o.id, o.name FROM crm.organizations o
-       WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
-         AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
-           WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
-       ORDER BY o.name, o.id FOR UPDATE`,
-      [companyId, writeName],
-    );
-    if (candidates.rows.length > 1) {
+    let candidates: { id: string; name: string }[];
+    for (;;) {
+      // Lås utan beskedsfilter först. Frågan som väntar behåller sin gamla
+      // ögonblicksbild; beslut och alias måste läsas i NYA satser efter låset.
+      const locked = await client.query<{ id: string }>(
+        `SELECT id FROM crm.organizations WHERE company_id = $1 AND name_norm = crm.normalize_org_name($2)
+         ORDER BY name, id FOR UPDATE`, [companyId, writeName],
+      );
+      const exactNow = await client.query<{ id: string }>(
+        'SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+        [companyId, writeName],
+      );
+      // Alias ändras inte på plats och saknar UPDATE-rättighet (0059).
+      // Lås bara målorganisationen, som i det första aliasuppslaget.
+      const aliasNow = !exactNow.rows[0] ? await client.query<{ id: string }>(
+        `SELECT o.id FROM crm.organization_name_aliases a
+         JOIN crm.organizations o ON o.id = a.organization_id AND o.company_id = a.company_id
+         WHERE a.company_id = $1 AND lower(a.name) = lower($2) FOR UPDATE OF o`,
+        [companyId, writeName],
+      ) : null;
+      if (exactNow.rows[0] || aliasNow?.rows[0]) {
+        // Återanvänd den vanliga skrivvägen; låsen håller den nya träffen kvar.
+        return upsertOrganization(client, companyId, userId, rawInput, origin);
+      }
+      const current = await client.query<{ id: string; name: string }>(
+        `SELECT o.id, o.name FROM crm.organizations o
+         WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+           AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
+             WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
+         ORDER BY o.name, o.id`,
+        [companyId, writeName],
+      );
+      const lockedIds = new Set(locked.rows.map((row) => row.id));
+      // En nytillkommen kandidat måste också låsas före en ny beslutsläsning.
+      if (current.rows.some((row) => !lockedIds.has(row.id))) continue;
+      candidates = current.rows;
+      break;
+    }
+    if (candidates.length > 1) {
       throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
     }
-    const candidate = candidates.rows[0];
+    const candidate = candidates[0];
     if (candidate) {
       throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${candidate.name} — väntar på ditt beslut i Att göra`,
         { organization_id: candidate.id, name: candidate.name });
