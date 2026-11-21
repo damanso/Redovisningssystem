@@ -539,6 +539,7 @@ import {
 } from './kedjaRigg.js';
 import { actionManifest } from '../src/actions/registry.js';
 import { skapaReferens } from '../src/services/uppdragReferens.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 async function avtalsdelar(b: Bolag, ilt: Ilt) {
   return (await withAdmin((c) => c.query('SELECT * FROM contract_parts WHERE company_id=$1 AND contract_id=$2 ORDER BY id', [b.id, ilt.contractId]))).rows;
@@ -1776,6 +1777,9 @@ describe('P20 övriga posttyper och frånvaroprovet i samma körning', () => {
     const { kvittoId, approvalId: qK, stromId } = await kostnadTillStrom(b, u);
     const signal = (await ok(b, 'tand_scopesignal', { contract_id: u.contractId, fras: 'kan ni även', klausul: '5.4' })).id as string;
     const begaran = await begarBedomningIVyn(b, u);
+    // Story 2.3: posten bär perioden i dolda fält bara när rytmen räknar en, och
+    // agentens 403 kräver giltig indata eftersom schemat parsas före spärren.
+    await saBedomningsrytm(u.contractId);
     await withAdmin((c) => c.query('UPDATE contracts SET troskel_golv_ore=900000000000, troskel_procent=999.99 WHERE company_id=$1 AND id=$2',
       [b.id, u.contractId]));
     await svepa(b);

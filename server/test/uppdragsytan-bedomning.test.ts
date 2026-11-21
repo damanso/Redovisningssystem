@@ -22,6 +22,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -644,26 +645,25 @@ describe('(S4.2 c) en tom period fryser nollor och lyckas', () => {
 
 describe('(S4.2 d) vyn förifyller rapporten', () => {
   let vy: { projektId: string; avtalId: string; leverabelId: string };
-  let manad: { start: string; slut: string };
+  let period: { start: string; slut: string };
   let html = '';
 
   beforeAll(async () => {
-    // Sidans förval är innevarande månad, så riggen måste ligga där: rapporten
-    // visar den period formuläret faktiskt skulle skicka.
+    // Sidans förval är perioden ur avtalets rytm (Story 2.3), och utan ankare
+    // finns ingen. Riggen sår därför rytm och ankare, och perioden innehåller
+    // dagens datum och månadens första: rapporten visar den period formuläret
+    // faktiskt skulle skicka.
     const nu = new Date();
     const dag = (d: Date): string => d.toISOString().slice(0, 10);
-    manad = {
-      start: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1))),
-      slut: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0))),
-    };
 
     vy = await riggatUppdrag('Vyrapport', 100_000);
+    ({ period } = await saBedomningsrytm(vy.avtalId));
     await ok('log_time', {
       project_id: vy.projektId, work_date: dag(nu), minutes: 90,
       description: 'Arbete den här månaden', contract_part_id: await delId(vy.avtalId, 'S1'),
     });
-    await riggaReferens(vy.avtalId, 'mejl', 'manadens-mejl@mail.gmail.com', `${manad.start}T08:00:00Z`);
-    await riggaRorelse(vy.avtalId, vy.leverabelId, 'ej_paborjad', 'pagar', `${manad.start}T08:00:00Z`);
+    await riggaReferens(vy.avtalId, 'mejl', 'manadens-mejl@mail.gmail.com', `${period.start}T08:00:00Z`);
+    await riggaRorelse(vy.avtalId, vy.leverabelId, 'ej_paborjad', 'pagar', `${period.start}T08:00:00Z`);
     await withAdmin(async (c) => {
       for (const [sort, text] of [['innanfor', 'Löpande bokföring och avstämning'],
         ['utanfor', 'Systemimplementation hos tredje part'],
@@ -691,7 +691,7 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
 
   it('rapporten står på sidan med periodens timmar och delen mot sitt tak', () => {
     expect(html).toContain('Underlaget för perioden');
-    expect(html).toContain(`${manad.start} – ${manad.slut}`);
+    expect(html).toContain(`${period.start} – ${period.slut}`);
     expect(html).toContain('1 h 30 min');
     expect(html).toContain('Förbrukning mot tak');
     expect(html).toContain('S1');
@@ -711,14 +711,14 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   });
 
   it('formuläret är kvar med sitt förval, och sidan är JS-fri', () => {
-    expect(html).toContain(`value="${manad.start}"`);
+    expect(html).toContain(`value="${period.start}"`);
     expect(html).toContain('name="lage" value="pa_spar"');
     expect(html).not.toContain('<script');
   });
 
   it('historiken visar den frysta radens tal — och säger ifrån när de saknas', async () => {
     await ok('satt_bedomning', {
-      contract_id: vy.avtalId, period_start: manad.start, period_slut: manad.slut,
+      contract_id: vy.avtalId, period_start: period.start, period_slut: period.slut,
       lage: 'risk', kommentar: 'Halva taket på en månad.',
     });
     const res = await ua.get(`/app/c/${companyId}/projects/${vy.projektId}/bedomning`);
@@ -731,6 +731,8 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   });
 
   it('ett uppdrag utan länkade händelser säger det i stället för att gissa (FR-32)', async () => {
+    // Rapporten ritas bara med en period, och perioden kräver rytm och ankare (Story 2.3).
+    await saBedomningsrytm(avtalId);
     const res = await ua.get(`/app/c/${companyId}/projects/${projektId}/bedomning`);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Inga kalenderposter eller mejl är länkade');

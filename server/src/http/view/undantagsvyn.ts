@@ -27,6 +27,7 @@ import type {
   Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
 } from '../../services/uppdragUndantag.js';
 import { BEDOMNINGSLAGEN, type Bedomningslage } from '../../services/uppdragBedomning.js';
+import { INGEN_PERIOD, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
 
 /** Verifierat tomt (FR-22): bara när svepet läst allt underlag. */
@@ -130,6 +131,16 @@ function senasteBedomning(b: Begardbedomning, idag: string): Raw | string {
   if (b.senaste.lage === 'saknas') return 'Ingen bedömning är satt ännu';
   return lasvardetext(b.senaste, idag, (s) => html`<span data-ikon aria-hidden="true">${BEDOMNINGSVAL[s.lage].symbol}</span> ${
     BEDOMNINGSVAL[s.lage].ord} för ${s.period_start} – ${s.period_slut}, satt ${s.satt_nar.slice(0, 10)} av ${s.satt_av_namn ?? 'en människa'}`);
+}
+
+/**
+ * Perioden som posten bär den (Story 2.3). Utan period står meningen ur
+ * `INGEN_PERIOD` i husets `.tomt` — samma ord som Läget och Bedömning, och
+ * ingen egen text om varför perioden saknas.
+ */
+function periodtext(period: Bedomningsperiod): Raw | string {
+  if (period.lage === 'raknad') return `${period.start} – ${period.slut}`;
+  return html`<p class="tomt" style="margin:2px 0 0;padding:8px 12px;font-size:13px">${INGEN_PERIOD[period.lage]}</p>`;
 }
 
 /** En kort lista i postens fält, i samma form som Källorna. */
@@ -320,10 +331,21 @@ function bedomningsformular(companyId: string, p: Undantagspost): Raw {
     return html`<p style="margin:4px 16px 12px;font-size:13px">Uppdraget kunde inte läsas, så frågan kan inte avgöras här.</p>`;
   }
   const { period } = p.bedomning;
+  // Story 2.3: med en period ur rytmen bärs den dold, som förut. Utan period
+  // är fälten synliga och obligatoriska — David anger perioden han bedömer, och
+  // ingen period gissas.
+  const periodfalt = period.lage === 'raknad'
+    ? html`<input type="hidden" name="period_start" value="${period.start}"><input type="hidden" name="period_slut" value="${period.slut}">`
+    : html`<fieldset style="border:0;margin:0 0 8px;padding:0">
+        <legend style="padding:0;font-size:12.5px;font-weight:550;color:var(--ink-2)">Perioden du bedömer</legend>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:8px;margin-top:4px">
+          <label class="field" style="margin:0"><span>Från</span><input type="date" name="period_start" required></label>
+          <label class="field" style="margin:0"><span>Till och med</span><input type="date" name="period_slut" required></label>
+        </div></fieldset>`;
   return html`<form method="post" action="/app/c/${companyId}/uppdrag" style="margin:0;padding:4px 16px 12px">
     <input type="hidden" name="handling" value="bedomning"><input type="hidden" name="begaran_id" value="${p.id}">
     <input type="hidden" name="contract_id" value="${contractId}">
-    <input type="hidden" name="period_start" value="${period.start}"><input type="hidden" name="period_slut" value="${period.slut}">
+    ${periodfalt}
     <label class="field" style="margin:0 0 8px"><span>Kommentar (frivillig)</span><textarea name="kommentar" rows="2" maxlength="2000"></textarea></label>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${BEDOMNINGSLAGEN.map((l) =>
       html`<button class="btn btn--ghost" type="submit" name="lage" value="${l}"><span data-ikon aria-hidden="true">${BEDOMNINGSVAL[l].symbol}</span>${BEDOMNINGSVAL[l].ord}</button>`)}</div>
@@ -361,7 +383,7 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
           ks.map((k) => html`<li>${kallrad(k, idag)}</li>`)}</ul>`))}
         ${faltet('Ditt svar registrerar', 'ja_registrerar', p.ja_registrerar)}
         ${p.bedomning ? html`${faltet('Senaste bedömning', 'senaste', senasteBedomning(p.bedomning, idag))}${
-          faltet('Perioden', 'period', `${p.bedomning.period.start} – ${p.bedomning.period.slut}`)}` : ''}
+          faltet('Perioden', 'period', periodtext(p.bedomning.period))}` : ''}
         ${p.ovrigt ? ovrigtdel(p.ovrigt, idag) : ''}
       </dl>
       ${FORMULAR[p.slag](companyId, p)}

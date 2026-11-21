@@ -36,11 +36,15 @@ import { listContracts, getContractUsage, type Delforbrukning, type Kontrakttill
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import {
-  lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden, type Bedomningsrad, type Begaransrad, type Scopelinje,
+  lasBedomningsrytm, lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden,
+  type Avtalsrytm, type Bedomningsrad, type Begaransrad, type Scopelinje,
 } from './uppdragBedomning.js';
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
-import { ROTKOD, scopelinjelage, type Scopelinjelage } from '../lib/leveranskontrakt.js';
+import {
+  mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
+} from '../lib/leveranskontrakt.js';
+import { last, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
@@ -133,7 +137,21 @@ export interface Avtalslage {
   scopelinje: Scopelinje[];
   /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn. */
   scopelinje_lage: Scopelinjelage;
+  /** Uppföljningsmåtten ur del 3, i `ordning`, med värdet där en läsare finns (Story 2.3, FR-19). */
+  matt: Mattrad[];
+  /** Bedömningsrytmen ur del 4 och dess läge i dag — ur `bedomningsrytmlage`, aldrig ur vyn (FR-14). */
+  rytm: Avtalsrytm;
 }
+
+/**
+ * Ett uppföljningsmått som läsvägen ger det. `varde` är `null` när utfallet
+ * inte härleds; annars är det ett läst värde med källa och lästid (FR-35),
+ * och en oläst källa förs vidare som oläst. Två tal, aldrig en kvot (NFR-11).
+ */
+export type Mattrad = Uppfoljningsmatt & {
+  ordning: number;
+  varde: Lasvarde<{ minuter: number; tak_minuter: number | null }> | null;
+};
 
 /**
  * Färskheten per innehållsdel — en post per faktakort, aldrig en per sida.
@@ -150,6 +168,9 @@ export interface Lagesfarskhet {
   koposter: Farskhet;
   beslut: Farskhet;
   scopelinje: Farskhet;
+  /** Måtten läses direkt ur redovisningen, liksom rytmen (Story 2.3). */
+  matt: Farskhet;
+  rytm: Farskhet;
 }
 
 export interface Beslutsrad {
@@ -305,6 +326,40 @@ function rotdel(delar: Delforbrukning[]): Delforbrukning | null {
 }
 
 /**
+ * Avtalets uppföljningsmått i kontraktets ordning (Story 2.3). Raderna skrevs
+ * av importen efter Davids ja och läses som de står.
+ */
+export async function lasUppfoljningsmatt(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Array<Uppfoljningsmatt & { ordning: number }>> {
+  const res = await client.query<Uppfoljningsmatt & { ordning: number }>(
+    `SELECT namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage, ordning
+       FROM uppdrag_matt
+      WHERE company_id = $1 AND contract_id = $2
+      ORDER BY ordning, namn`,
+    [companyId, contractId],
+  );
+  // Läsvägen och lägena är bundna till `MATTLASVAGAR` och `MATTLAGEN` av 0095:s CHECK.
+  return res.rows;
+}
+
+/**
+ * Måttets värde ur läsvägen (FR-19, FR-35). REN: ett mått vars utfall inte
+ * härleds har inget värde (`null`), och det enda måttet med en läsare —
+ * nedlagd tid mot ramen — bär förbrukningens läsvärde oförändrat, med samma
+ * läge, källa och lästid. En oläst förbrukning blir alltså ett oläst mått,
+ * aldrig en nolla. Ett härlett mått utan läsare saknas i underlaget.
+ */
+export function mattvarde(
+  matt: Pick<Uppfoljningsmatt, 'namn' | 'lasvag' | 'utfall_lage'>,
+  forbrukning: Lasvarde<{ minuter: number; tak_minuter: number | null }>,
+): Mattrad['varde'] {
+  if (matt.utfall_lage === 'harleds_ej') return null;
+  if (mattlasare(matt.namn, matt.lasvag) === 'tid_mot_ram') return forbrukning;
+  return saknas(KALLA_REDOVISNING, forbrukning.last_nar);
+}
+
+/**
  * Läget för ETT uppdrag: FR-18:s fem innehållsdelar, var och en ur den tjänst
  * som redan äger den, och var och en med sin egen färskhet.
  */
@@ -380,18 +435,27 @@ export async function lasUppdragslage(
 
     const scopelinje = await lasScopelinjer(client, companyId, contractId);
 
+    const forbrukning: Forbrukning = {
+      minuter: rot?.billable_minutes ?? 0,
+      belopp_ore: rot?.amount_ore ?? 0,
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+      tak_ore: rot?.cap_amount_ore ?? null,
+      tak_status: rot?.cap_status ?? 'vet_ej',
+      tidposter,
+      registrerade_minuter: registreradeMinuter,
+    };
+    // Story 2.3: måttet Nedlagd tid mot ram ÄR förbrukningen ovan, läst i samma
+    // ögonblick — ingen andra summering. Rytmen räknas på läsvägens egen klocka.
+    const lastForbrukning = last({ minuter: forbrukning.minuter, tak_minuter: forbrukning.tak_minuter },
+      direkt.kalla, direkt.last_nar);
+    const matt = (await lasUppfoljningsmatt(client, companyId, contractId))
+      .map((m): Mattrad => ({ ...m, varde: mattvarde(m, lastForbrukning) }));
+    const rytm = await lasBedomningsrytm(client, companyId, contractId, lastNar.slice(0, 10));
+
     avtal.push({
       contract_id: contractId,
       contract_name: usage.name,
-      forbrukning: {
-        minuter: rot?.billable_minutes ?? 0,
-        belopp_ore: rot?.amount_ore ?? 0,
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
-        tak_ore: rot?.cap_amount_ore ?? null,
-        tak_status: rot?.cap_status ?? 'vet_ej',
-        tidposter,
-        registrerade_minuter: registreradeMinuter,
-      },
+      forbrukning,
       troskellarm: larm,
       leverabler: LEVERABELLAGEN.map((lage) => ({ lage, antal: rakning.get(lage) ?? 0 })),
       leverabler_totalt: register.length,
@@ -402,6 +466,8 @@ export async function lasUppdragslage(
       avgjorda_signaler: signalhistorik.length,
       scopelinje,
       scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
+      matt,
+      rytm,
     });
   }
 
@@ -437,6 +503,8 @@ export async function lasUppdragslage(
       koposter: direkt,
       beslut: direkt,
       scopelinje: direkt,
+      matt: direkt,
+      rytm: direkt,
     },
   };
 }

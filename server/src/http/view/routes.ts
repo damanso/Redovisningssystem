@@ -32,9 +32,10 @@ import { listRecurringInvoices } from '../../services/recurringInvoices.js';
 import { getProject, listProjects, listTimeEntries, TILLATNA_BYTEN, type TimeEntryLink, type TimeEntryStatus } from '../../services/projects.js';
 import { listContracts } from '../../services/contracts.js';
 import { listaBedomningar, listaObesvaradeBegaranden, byggRapportunderlag, lasScopelinjer, BEDOMNINGSLAGEN,
-  type Begaransrad, type Begaransvar, type Bedomningslage, type Bedomningsrad, type FrystaSiffror, type Rapportunderlag,
-  type Scopelinje } from '../../services/uppdragBedomning.js';
-import { kalendermanad } from '../../lib/bedomningsbegaran.js';
+  kalenderreferenser, lasBedomningsrytm, rytmAvAvtal,
+  type Avtalsrytm, type Begaransrad, type Begaransvar, type Bedomningslage, type Bedomningsrad, type FrystaSiffror,
+  type Kalenderreferens, type Rapportunderlag, type Scopelinje } from '../../services/uppdragBedomning.js';
+import { bedomningsperiod, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
@@ -54,6 +55,7 @@ import {
 import type { Larm } from '../../lib/troskel.js';
 import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
+import { rytmpanel, uppfoljningspanel } from './uppdragUppfoljning.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import {
@@ -2657,10 +2659,14 @@ viewRouter.post('/c/:companyId/projects/:projectId/avtal/skapa', page(async (req
 //     mot det man sa förra gången; ligger den bakom ytterligare ett klick
 //     sätter man i praktiken varje bedömning från noll.
 //
-// Ingen rytm-mekanik: 1E Del 7 lämnar FR-14:s rytm utan lagring och utan läsare
-// i v1 — den bärs av styrgruppsmötena i Davids kalender. Sidan spärrar alltså
-// ingen dag och visar inget "nästa tillfälle"; att kunna sätta bedömningen när
-// som helst är avsiktligt.
+// Rytmen följer kontraktet (Story 2.3, FR-14): perioden räknas ur avtalets
+// rytm ur del 4 och Davids ankardatum, av `bedomningsrytmlage`, aldrig ur
+// kalendermånaden. Utan ankare finns ingen period: rapporten ritas inte,
+// periodfälten står tomma och David anger själv perioden han bedömer, och
+// rytmpanelen säger varför med meningen ur `INGEN_PERIOD`. Sidan spärrar ändå
+// ingen dag; att kunna sätta bedömningen när som helst är avsiktligt. Rytmen
+// är avtalets, så sidan gäller ett avtal i taget: `?avtal=` väljer det, och
+// rytmpanelen, ankarformuläret, perioden, rapporten och formuläret följer valet.
 // ---------------------------------------------------------------------------
 
 /** De tre lägena i skalans ordning, med husets färgspråk och sin innebörd. */
@@ -2697,9 +2703,25 @@ interface Bedomningshistorik {
 }
 
 interface Bedomningsunderlag extends Bedomningshistorik {
-  /** Innevarande månad — formulärets förval OCH rapportens period. */
-  period: { start: string; slut: string };
-  /** Rapporten för det första avtalet. `null` = uppdraget har inget avtal. */
+  /**
+   * Avtalet David bedömer: `?avtal=` när det är ett av uppdragets, annars det
+   * första. ALLT som gäller ett avtal på sidan — rytmen, ankarformuläret,
+   * perioden, rapporten och formulärets avtal — läses för just det här, så att
+   * ett förval aldrig kommer ur ett annat avtals rytm. `null` = inget avtal.
+   */
+  valt: { id: string; name: string } | null;
+  /**
+   * Perioden ur det valda avtalets rytm — formulärets förval OCH rapportens
+   * period. Utan period (läget säger varför) är fälten tomma och rapporten borta.
+   */
+  period: Bedomningsperiod;
+  /** Det valda avtalets rytm. `null` = uppdraget har inget avtal. */
+  rytm: Avtalsrytm | null;
+  /** Det valda avtalets kalenderreferenser, källorna ankarformuläret erbjuder. */
+  kalenderref: Kalenderreferens[];
+  /** Underlagets UTC-datum: samma dag som perioden räknades på. */
+  idag: string;
+  /** Rapporten för det valda avtalet. `null` = uppdraget har inget avtal, eller perioden saknas. */
   rapport: Rapportunderlag | null;
   scopelinje: Scopelinje[];
   /** Avtalens obesvarade begäranden (Story 1.10): bedömningen här besvarar dem. */
@@ -2726,27 +2748,41 @@ async function bedomningshistorik(
   return { projekt: p, avtal, historik };
 }
 
-/** Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. */
+/**
+ * Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. `valtAvtal`
+ * är `?avtal=` ur adressen; ett okänt värde landar i det första avtalet, som
+ * `?fy=` och Leveransernas växel — aldrig i en tom sida.
+ */
 async function bedomningsunderlag(
-  client: PoolClient, companyId: string, projectId: string,
+  client: PoolClient, companyId: string, projectId: string, valtAvtal?: string,
 ): Promise<Bedomningsunderlag> {
   const { projekt: p, avtal, historik } = await bedomningshistorik(client, companyId, projectId);
-  // Innevarande månad. Det är en formulärhjälp, inte en rytm: rytmen har ingen
-  // lagring (1E Del 7). Samma period styr rapporten ovanför formuläret, så att
-  // sidan aldrig visar tal för ett annat intervall än det som står i fälten —
-  // och samma funktion föreslår perioden i undantagsvyns post (Story 1.10).
-  const period = kalendermanad(new Date().toISOString().slice(0, 10));
-  // Rapporten byggs för det avtal formuläret har förvalt — samma tjänstefunktion
-  // som fryser talen vid INSERT:en, så förhandsvisningen och den frysta raden
-  // kan aldrig svara olika på samma fråga.
-  const forsta = avtal[0];
+  // Perioden ur det valda avtalets rytm (Story 2.3), räknad på samma UTC-datum
+  // som förut och med samma regel som undantagsvyns post. Samma period styr
+  // rapporten ovanför formuläret, så att sidan aldrig visar tal för ett annat
+  // intervall än det som står i fälten. Utan period ritas ingen rapport.
+  const idag = new Date().toISOString().slice(0, 10);
+  const valt = avtal.find((a) => a.id === valtAvtal) ?? avtal[0] ?? null;
+  const rytm = valt ? await lasBedomningsrytm(client, companyId, valt.id, idag) : null;
+  const period = bedomningsperiod(
+    rytm ? rytmAvAvtal(rytm) : { intervall_dagar: null, veckodag: null, ankare: null }, idag,
+  );
+  // Rapporten byggs för det valda avtalet — samma tjänstefunktion som fryser
+  // talen vid INSERT:en, så förhandsvisningen och den frysta raden kan aldrig
+  // svara olika på samma fråga.
   return {
     projekt: p,
     avtal,
     historik,
+    valt,
     period,
-    rapport: forsta ? await byggRapportunderlag(client, companyId, forsta.id, period.start, period.slut) : null,
-    scopelinje: forsta ? await lasScopelinjer(client, companyId, forsta.id) : [],
+    rytm,
+    kalenderref: valt ? await kalenderreferenser(client, companyId, valt.id) : [],
+    idag,
+    rapport: valt && period.lage === 'raknad'
+      ? await byggRapportunderlag(client, companyId, valt.id, period.start, period.slut)
+      : null,
+    scopelinje: valt ? await lasScopelinjer(client, companyId, valt.id) : [],
     oppnaBegaranden: avtal.length === 0 ? [] : await listaObesvaradeBegaranden(client, companyId, avtal.map((a) => a.id)),
   };
 }
@@ -2837,7 +2873,7 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
       <p class="muted" style="margin:6px 16px 12px;font-size:12.5px">Talen är husets egna — samma förbrukning som
         takvarningen och faktureringsspärren läser. Ändrar du perioden i formuläret räknas de om av servern och fryses
         med bedömningen; det är de frysta talen historiken visar${u.avtal.length > 1
-          ? html`. Rapporten gäller <b>${u.avtal[0]!.name}</b>, avtalet som är förvalt i formuläret`
+          ? html`. Rapporten gäller <b>${u.valt!.name}</b>, avtalet du bedömer`
           : ''}.</p>
     </div>
   </section>`;
@@ -2868,16 +2904,23 @@ function frystCell(b: Bedomningsrad): Raw {
 }
 
 function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
-  const { start, slut } = u.period;
+  // Utan period står fälten tomma och obligatoriska: David anger själv
+  // perioden han bedömer. Ingen period gissas (Story 2.3).
+  const start = u.period.start ?? '';
+  const slut = u.period.slut ?? '';
   const flera = u.avtal.length > 1;
+  // Avtalet är det valda, aldrig en egen select: periodens förval kommer ur
+  // det valda avtalets rytm, och en select som bytte avtal utan att byta
+  // förvalet hade satt ett avtals bedömning på ett annat avtals period.
+  // Avtalet byts i växeln ovanför, och då följer hela sidan med.
   return html`<form method="post" action="/app/c/${companyId}/projects/${u.projekt.id}/bedomning" style="margin:0">
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:12px 16px 4px">
+      <input type="hidden" name="contract_id" value="${u.valt!.id}">
       ${flera
-        ? html`<label class="field" style="margin:0;flex:2 1 240px"><span>Avtal</span>
-            <select name="contract_id" required>
-              ${u.avtal.map((a) => html`<option value="${a.id}">${a.name}</option>`)}
-            </select></label>`
-        : html`<input type="hidden" name="contract_id" value="${u.avtal[0]!.id}">`}
+        ? html`<div class="field" style="margin:0;flex:2 1 240px"><span>Avtal</span>
+            <p style="margin:0;padding:8px 0;overflow-wrap:anywhere"><b style="font-weight:600">${u.valt!.name}</b>
+              <a href="#avtalsval" style="font-size:12.5px;margin-left:6px">Byt avtal</a></p></div>`
+        : ''}
       <label class="field" style="margin:0;flex:0 1 168px"><span>Perioden från</span>
         <input type="date" name="period_start" value="${start}" required></label>
       <label class="field" style="margin:0;flex:0 1 168px"><span>till och med</span>
@@ -2915,14 +2958,40 @@ function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
  * Story 1.10: en rad per öppen begäran, FÖRE formuläret. En bedömning som
  * besvarar en begäran ska säga det innan den sätts (FR-16, "Inga tysta
  * utfall"): `satt_bedomning` besvarar avtalets öppna begäran också utan id.
+ * Formuläret gäller bara det valda avtalet, så en begäran på ett annat avtal
+ * säger det och pekar dit — den besvaras aldrig av en bedömning här.
  */
-function begaranderader(u: Bedomningsunderlag): Raw {
+function begaranderader(companyId: string, u: Bedomningsunderlag): Raw {
   const flera = u.avtal.length > 1;
   const namn = new Map(u.avtal.map((a): [string, string] => [a.id, a.name]));
   return html`${u.oppnaBegaranden.map((b) => html`<p class="muted" style="margin:10px 16px 0;font-size:12.5px">
     Ny bedömning begärd ${b.begard_nar.slice(0, 10)} av ${b.begard_av_namn}${flera
       ? html` för <b>${namn.get(b.contract_id) ?? ''}</b>` : ''}.
-    Bedömningen du sätter här för avtalet besvarar begäran, och frågan försvinner.</p>`)}`;
+    ${b.contract_id === u.valt?.id
+      ? 'Bedömningen du sätter här för avtalet besvarar begäran, och frågan försvinner.'
+      : html`Den besvaras av en bedömning av det avtalet —
+        <a href="${bedomningsadress(companyId, u.projekt.id, b.contract_id)}#satt-bedomningen">bedöm det avtalet</a>.`}</p>`)}`;
+}
+
+/** Bedömning för ett givet avtal: adressen ÄR valet, som Leveransernas växel. */
+const bedomningsadress = (companyId: string, projectId: string, contractId: string): string =>
+  `/app/c/${companyId}/projects/${projectId}/bedomning?avtal=${encodeURIComponent(contractId)}`;
+
+/**
+ * Växeln mellan uppdragets avtal (Story 2.3): det valda står som chip, de
+ * andra som vanliga länkar. Allt avtalsbundet på sidan — rytmen,
+ * ankarformuläret, perioden, rapporten och formuläret — följer valet, så
+ * ingen del av sidan kan gälla ett annat avtal än de andra. Inget skript.
+ */
+function avtalsvaxel(companyId: string, u: Bedomningsunderlag): Raw {
+  if (u.avtal.length < 2 || !u.valt) return html``;
+  const valt = u.valt;
+  return html`<nav id="avtalsval" aria-label="Avtalet du bedömer" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:16px">
+    <span style="font-size:12.5px;font-weight:550;color:var(--ink-2)">Avtalet du bedömer</span>
+    <span aria-current="true">${chip(valt.name, 'info', '▸')}</span>
+    ${u.avtal.filter((a) => a.id !== valt.id).map((a) => html`<a class="btn btn--ghost btn--sm"
+      href="${bedomningsadress(companyId, u.projekt.id, a.id)}">${a.name}</a>`)}
+  </nav>`;
 }
 
 function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, idag: string): Raw {
@@ -2946,10 +3015,15 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, 
         ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
             Bedömningen sätts mot avtalet — det är där det står vad som lovats.
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
-        : html`${bedomningsrapport(companyId, u, idag)}
+        : html`${/* Story 2.3: avtalet först, sedan rytmen och nästa tillfälle —
+                    perioden nedan följer den, och utan ankare står
+                    ankarformuläret här, för det avtal som växeln har valt. */ ''}
+          ${avtalsvaxel(companyId, u)}
+          ${u.rytm && u.valt ? rytmpanel(companyId, u.projekt.id, u.valt.id, u.rytm, u.kalenderref, u.idag) : ''}
+          ${bedomningsrapport(companyId, u, idag)}
           <div class="panel" id="satt-bedomningen" style="margin-top:16px">
             <div class="panel__head"><h2>Sätt bedömningen</h2></div>
-            <div class="panel__body" style="padding:4px 0 4px">${begaranderader(u)}${bedomningsformular(companyId, u)}</div>
+            <div class="panel__body" style="padding:4px 0 4px">${begaranderader(companyId, u)}${bedomningsformular(companyId, u)}</div>
           </div>`
     }
     <h2 style="margin-top:18px">Historik</h2>
@@ -2983,9 +3057,11 @@ viewRouter.get('/c/:companyId/projects/:projectId/bedomning', page(async (req, r
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
+  // `?avtal=` väljer avtalet; bara ett av uppdragets egna avtal kan väljas.
+  const valtAvtal = typeof req.query.avtal === 'string' ? req.query.avtal : undefined;
   const { name, medUndermeny, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    const u = await bedomningsunderlag(client, companyId, projectId);
+    const u = await bedomningsunderlag(client, companyId, projectId, valtAvtal);
     // Samma villkor som undermenyn i bedomningsSida.
     return { name: company.name, medUndermeny: u.avtal.length > 0, body: bedomningsSida(req, companyId, u, idag) };
   });
@@ -3016,6 +3092,31 @@ viewRouter.post('/c/:companyId/projects/:projectId/bedomning', page(async (req, 
     lage: falt(kropp.lage),
     ...(kommentar ? { kommentar } : {}),
   }, `/app/c/${companyId}/projects/${projectId}/bedomning`);
+}));
+
+// Story 2.3 (FR-14): David sätter rytmens ankardatum från Bedömning. Samma väg
+// som bedömningens POST: `satt_bedomningsankare` bär `kravManniska`, och här är
+// actor 'human'. Källan väljs med en radioknapp: Davids egen uppgift (med dagens
+// UTC-datum, samma dag som sidan räknade perioden på) eller `kalender:<id>`. Ett
+// värde i någon annan form ger ingen källa, och schemat svarar med formulärfelet.
+// Tillbaka till samma avtal: kvittot är ankaret i just det avtalets rytmpanel.
+viewRouter.post('/c/:companyId/projects/:projectId/bedomning/ankare', page(async (req, res) => {
+  assertSameOrigin(req);
+  const companyId = parseCompanyId(req.params.companyId);
+  const projectId = parseApprovalId(req.params.projectId);
+  const kropp = req.body as Record<string, unknown>;
+  const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const val = falt(kropp.kalla);
+  const referens = /^kalender:(.+)$/.exec(val)?.[1];
+  const kalla = val === 'davids_uppgift'
+    ? { typ: 'davids_uppgift', datum: new Date().toISOString().slice(0, 10) }
+    : referens !== undefined ? { typ: 'kalender', referens_id: referens } : undefined;
+  const contractId = falt(kropp.contract_id);
+  await runViewAction(req, res, companyId, 'satt_bedomningsankare', {
+    contract_id: contractId,
+    ankare: falt(kropp.ankare),
+    ...(kalla ? { kalla } : {}),
+  }, bedomningsadress(companyId, projectId, contractId));
 }));
 
 // ---------------------------------------------------------------------------
@@ -4530,7 +4631,12 @@ function lagessida(
           ska avgöras; den är inget av FR-18:s fem kort. */ ''}
     ${l.avtal.map((a) => scopelinjepanel(companyId, p.project_id, a.contract_id, a.scopelinje, a.scopelinje_lage,
       l.avtal.length > 1 ? a.contract_name : undefined,
-      farskhetsrad([direktFarskhet(l.farskhet.scopelinje, idag)])))}`;
+      farskhetsrad([direktFarskhet(l.farskhet.scopelinje, idag)])))}
+    ${/* Story 2.3: måtten ur del 3 och rytmen ur del 4, sist och en panel per
+          avtal, med sin egen färskhetsrad. Ankaret sätts på Bedömning. */ ''}
+    ${l.avtal.map((a) => uppfoljningspanel(companyId, p.project_id, a.contract_id, a.matt, a.rytm, idag,
+      l.avtal.length > 1 ? a.contract_name : undefined,
+      farskhetsrad([direktFarskhet(l.farskhet.matt, idag)])))}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {

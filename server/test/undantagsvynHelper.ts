@@ -88,7 +88,8 @@ export function post(slag: Postslag, over: Partial<Undantagspost> = {}): Undanta
       senaste: saknas(KALLA_REDOVISNING, TID),
       andringar: last({ sedan: null, forbrukning: [], leverabelrorelser: [], signaler: [], baselineandringar: [] },
         KALLA_REDOVISNING, TID),
-      period: { start: '2026-10-01', slut: '2026-10-31' },
+      // Story 2.3: perioden är rytmregelns, och läget säger att den räknats.
+      period: { lage: 'raknad', start: '2026-10-01', slut: '2026-10-31' },
     };
   }
   return { ...bas, ...over };

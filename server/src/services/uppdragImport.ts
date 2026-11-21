@@ -25,9 +25,10 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
-  type Datumprecision, type Leveranskontrakt,
+  type Datumprecision, type Leveranskontrakt, type Uppfoljningsmatt,
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
@@ -58,13 +59,19 @@ interface Avtalsrad {
   godkannare_eskalering: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
+  /** Rytmen ur del 4 (Story 2.3). Ankaret läses inte här: importen rör det aldrig. */
+  rytm_text: string | null;
+  bedomning_intervall_dagar: number | null;
+  bedomning_veckodag: number | null;
+  rapport_mottagarkrets: string | null;
 }
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
+            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -322,7 +329,63 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
   if (k.styrning) kolla(`${STYRNINGSKOD}.cap_hours`, k.styrning.cap_hours);
   kolla('godkannare', k.godkannare);
   kolla('godkannare_eskalering', k.godkannare_eskalering);
+  // Story 2.3: ett mått utan läsväg redovisas här och lagras med läsvägen
+  // saknad. En saknad rytm redovisas inte (B3): avtalet säger det självt med
+  // ”ingen bedömningsrytm är inläst” på Läget, Bedömning och undantagsvyn.
+  for (const m of k.matt) kolla(`uppfoljning.${m.namn}.lasvag`, m.lasvag);
   return saknas;
+}
+
+/**
+ * Rytmkolumnerna importen får skriva, och aldrig fler. Ankaret och dess källa
+ * står inte här: de sätts bara av David med `satt_bedomningsankare`.
+ */
+const RYTM_UPDATE: Readonly<Record<string, string>> = {
+  rytm_text: 'rytm_text',
+  bedomning_intervall_dagar: 'bedomning_intervall_dagar',
+  bedomning_veckodag: 'bedomning_veckodag',
+  rapport_mottagarkrets: 'rapport_mottagarkrets',
+};
+
+/**
+ * Måttets fält ur kontraktets text, utom nyckeln `namn` — de fält där ett
+ * lagrat mått kan avvika från en ny kontraktsversion. Typen gör listan
+ * fullständig: ett nytt fält i `Uppfoljningsmatt` fäller typkontrollen tills
+ * det står här, så att en avvikelse i fältet aldrig blir tyst.
+ */
+const MATTFALT: { readonly [K in Exclude<keyof Uppfoljningsmatt, 'namn'>]: K } = {
+  hur_ofta: 'hur_ofta',
+  kallreferenser: 'kallreferenser',
+  lasvag: 'lasvag',
+  larmregel: 'larmregel',
+  larmregel_lage: 'larmregel_lage',
+  utfall_lage: 'utfall_lage',
+};
+
+/**
+ * Det importen inte skrev men inte heller får tiga om (”Inga tysta utfall”):
+ * lagrade mått som avviker från textens rad med samma namn, lagrade mått som
+ * texten inte längre har, och en lagrad rytm som texten saknar. Importen
+ * lägger bara till mått (0095 ger `app` varken UPDATE eller DELETE) och tömmer
+ * aldrig en rytm, så tills en skrivväg finns (Story 5.8 och 2.4) står de här.
+ */
+function kvarstaendeAvvikelser(
+  kontrakt: Leveranskontrakt, lagrade: readonly Uppfoljningsmatt[], avtal: Avtalsrad,
+): { matt_avvikande: string[]; matt_kvarstaende: string[]; rytm_kvarstaende: boolean } {
+  const iTexten = new Map(kontrakt.matt.map((m): [string, Uppfoljningsmatt] => [m.namn, m]));
+  const falt = Object.values(MATTFALT);
+  return {
+    matt_avvikande: lagrade
+      .filter((r) => {
+        const m = iTexten.get(r.namn);
+        return m !== undefined && falt.some((f) => r[f] !== m[f]);
+      })
+      .map((r) => r.namn),
+    matt_kvarstaende: lagrade.filter((r) => !iTexten.has(r.namn)).map((r) => r.namn),
+    rytm_kvarstaende: kontrakt.rytm === null && (
+      avtal.rytm_text !== null || avtal.bedomning_intervall_dagar !== null
+      || avtal.bedomning_veckodag !== null || avtal.rapport_mottagarkrets !== null),
+  };
 }
 
 export async function importeraLeveranskontrakt(
@@ -491,8 +554,58 @@ export async function sattBaseline(
     );
   }
 
+  // (h) Måtten ur del 3 (Story 2.3, FR-19). Samma idempotens som registret:
+  // UNIQUE (contract_id, namn) bär den, och ett mått som redan finns rörs inte.
+  // `app` har bara INSERT på tabellen (0095), så en import kan aldrig skriva om
+  // ett mått.
+  let mattSkapade = 0;
+  for (const [ordning, m] of kontrakt.matt.entries()) {
+    const res = await client.query(
+      `INSERT INTO uppdrag_matt
+         (company_id, contract_id, namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage, ordning)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT ON CONSTRAINT uppdrag_matt_namn_uk DO NOTHING`,
+      [companyId, input.contract_id, m.namn, m.hur_ofta, m.kallreferenser, m.lasvag, m.larmregel,
+        m.larmregel_lage, m.utfall_lage, ordning],
+    );
+    mattSkapade += res.rowCount ?? 0;
+  }
+
+  // (i) Rytmen ur del 4 (FR-14). Bara när texten har en rytm och något av de
+  // fyra värdena skiljer sig — annars körs ingen UPDATE, och `updated_at` står
+  // kvar. En text utan rytm har inte sagt att rytmen är tom. UPDATE:n byggs ur
+  // den fasta tillåtelselistan; ankaret och dess källa står inte i den.
+  const rytm = kontrakt.rytm;
+  const rytmAndrad = rytm !== null && (
+    rytm.rytm_text !== avtal.rytm_text
+    || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
+    || rytm.bedomning_veckodag !== avtal.bedomning_veckodag
+    || rytm.rapport_mottagarkrets !== avtal.rapport_mottagarkrets);
+  if (rytm !== null && rytmAndrad) {
+    const update = buildAllowlistedUpdate(RYTM_UPDATE, { ...rytm });
+    if (update) {
+      await client.query(
+        `UPDATE contracts SET ${update.setSql}
+          WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
+        [...update.values, input.contract_id, companyId],
+      );
+    }
+  }
+
+  // (j) Det som inte skrevs men skiljer sig från texten. Läses efter (h), så
+  // att ett mått som just skrevs jämförs med sig självt och aldrig räknas.
+  const lagradeMatt = (await client.query<Uppfoljningsmatt>(
+    `SELECT namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage
+       FROM uppdrag_matt WHERE company_id = $1 AND contract_id = $2 ORDER BY ordning, namn`,
+    [companyId, input.contract_id],
+  )).rows;
+  const avvikelser = kvarstaendeAvvikelser(kontrakt, lagradeMatt, avtal);
+
+  // `oforandrad` betyder att importen inte skrev något. Avvikelserna i (j)
+  // skrevs inte heller — de står i egna fält, så att en oförändrad import med
+  // en avvikande text aldrig ser ut som en import av samma text.
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
-    && nyaScopelinjer === 0 && !godkannareAndrad;
+    && nyaScopelinjer === 0 && !godkannareAndrad && mattSkapade === 0 && !rytmAndrad;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
   // ändring — samma hållning som `action.approval_requested`. Att en andra
@@ -505,6 +618,13 @@ export async function sattBaseline(
       avtalsdelar_skrivna: skrivnaDelar,
       leverabelrader_skapade: nyaLeverabelrader,
       scopelinjer_skapade: nyaScopelinjer,
+      matt_skapade: mattSkapade,
+      rytm_andrad: rytmAndrad,
+      // Antalen, inte namnen: auditraden bär aldrig kontraktets ord (lärdom 10).
+      // Namnen står i svaret.
+      matt_avvikande_antal: avvikelser.matt_avvikande.length,
+      matt_kvarstaende_antal: avvikelser.matt_kvarstaende.length,
+      rytm_kvarstaende: avvikelser.rytm_kvarstaende,
       saknade_falt: saknadeFalt(kontrakt),
     },
   });
@@ -523,6 +643,9 @@ export async function sattBaseline(
     avtalsdelar_skrivna: skrivnaDelar,
     leverabelrader_skapade: nyaLeverabelrader,
     scopelinjer_skapade: nyaScopelinjer,
+    matt_skapade: mattSkapade,
+    rytm_andrad: rytmAndrad,
+    ...avvikelser,
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     saknade_falt: saknadeFalt(kontrakt),

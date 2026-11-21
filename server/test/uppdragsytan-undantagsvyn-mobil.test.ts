@@ -28,6 +28,7 @@ import type { Server } from 'node:http';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { app, withAdmin } from './helpers.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import {
   type Bolag, type FemSlag, type Uppdrag,
   PASSWORD, avgoranden, bedomningar, beslutsrader, femSlag, frisktUppdrag, koa, kopost, nyttBolag, ok, rest, svep,
@@ -243,6 +244,9 @@ describe('B (6) varje val i telefonen', () => {
   beforeAll(async () => {
     val = await nyttBolag('Mobil val');
     f = await femSlag(val);
+    // Story 2.3: perioden följer avtalets rytm. Riggen sår rytm och ankare på
+    // avtalet B, där bedömningen är begärd, så att posten bär de dolda fälten.
+    await saBedomningsrytm(f.b.contractId);
     utanforSignal = (await ok(val, 'tand_scopesignal', { contract_id: f.a.contractId, fras: 'en sak till' })).id as string;
     jaPost = await koa(val, 'andra_baseline', {
       contract_id: f.a.contractId, code: 'L1', name: 'Ny L1', valid_from: '2026-12-01', cap_hours: 123,
