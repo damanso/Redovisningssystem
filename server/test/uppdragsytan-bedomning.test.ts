@@ -23,6 +23,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { withTenantTransaction } from '../src/db/tx.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 
@@ -648,16 +649,15 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   let html = '';
 
   beforeAll(async () => {
-    // Sidans förval är innevarande månad, så riggen måste ligga där: rapporten
-    // visar den period formuläret faktiskt skulle skicka.
+    // Story 2.3: sidans förval är perioden ur avtalets rytm och ankare, och
+    // utan ankare räknas ingen period. Riggen sår därför en rytm vars period
+    // innehåller dagen och månadens första: rapporten visar den period
+    // formuläret faktiskt skulle skicka.
     const nu = new Date();
     const dag = (d: Date): string => d.toISOString().slice(0, 10);
-    manad = {
-      start: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth(), 1))),
-      slut: dag(new Date(Date.UTC(nu.getUTCFullYear(), nu.getUTCMonth() + 1, 0))),
-    };
 
     vy = await riggatUppdrag('Vyrapport', 100_000);
+    manad = (await saBedomningsrytm(vy.avtalId)).period;
     await ok('log_time', {
       project_id: vy.projektId, work_date: dag(nu), minutes: 90,
       description: 'Arbete den här månaden', contract_part_id: await delId(vy.avtalId, 'S1'),
@@ -731,6 +731,8 @@ describe('(S4.2 d) vyn förifyller rapporten', () => {
   });
 
   it('ett uppdrag utan länkade händelser säger det i stället för att gissa (FR-32)', async () => {
+    // Rapporten ritas bara när en period räknas (Story 2.3): avtalet får en rytm.
+    await saBedomningsrytm(avtalId);
     const res = await ua.get(`/app/c/${companyId}/projects/${projektId}/bedomning`);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Inga kalenderposter eller mejl är länkade');

@@ -50,6 +50,15 @@
 //     (Story 2.6). Stycket lagras som det står, och en ensam paragrafhänvisning
 //     i etiketten blir klausulen. En annan etikett (”Delning …”) avslutar
 //     stycket före och blir ingen rad.
+//   * **Uppföljningen (del 3)** — bara avsnitt vars rubrik nämner uppföljning.
+//     En tabell med en namnkolumn (`Vad som mäts`) ger ett mått per rad, med
+//     frekvensen, källreferensen (`Var siffran läses`) och larmregeln ordagrant.
+//     Läsvägen läses ur källans första led genom en sluten lista, och en
+//     `Sektion N` löses mot dokumentets egna rubriker. Okänt är NULL (Story 2.3).
+//   * **Rapporteringen (del 4)** — bara avsnitt vars rubrik nämner rapportering
+//     eller rytm, och bara tabeller med `Till vem` och `Hur ofta`. Den första
+//     raden vars `Hur ofta` är en hel rytm (`Varannan torsdag`) är avtalets rytm,
+//     och samma rads `Till vem` är mottagarkretsen. Inget ankardatum läses här.
 //
 // Datumen bär sin egen precision: `2026-09` är en MÅNAD (`date_precision`
 // 'manad', slutdatumet blir månadens sista dag), `2026-09-01` är en DAG.
@@ -60,6 +69,23 @@ export type Datumprecision = 'ar' | 'halvar' | 'kvartal' | 'manad' | 'dag';
 /** Var måttet LÄSES — exakt CHECK-villkoret på uppdrag_leverabel.matt_lasvag (0068). */
 export const LASVAGAR = ['redovisning', 'arenden', 'register', 'kalender'] as const;
 export type Lasvag = (typeof LASVAGAR)[number];
+
+/**
+ * Var ett uppföljningsmått ur del 3 LÄSES — exakt CHECK-villkoret
+ * `uppdrag_matt_lasvag_check` (Story 2.3). `referens` är källreferenser i
+ * kontraktets egna ord (styrgruppsprotokoll, mejl), som pekas på och aldrig
+ * kopieras (FR-26). NULL i kolumnen betyder att läsvägen saknas i kontraktet.
+ */
+export const MATTLASVAGAR = ['redovisning', 'arenden', 'register', 'kalender', 'referens'] as const;
+export type Mattlasvag = (typeof MATTLASVAGAR)[number];
+
+/**
+ * Om en larmregel eller ett utfall HÄRLEDS ur en läsväg — exakt villkoren
+ * `uppdrag_matt_larmregel_lage_check` och `uppdrag_matt_utfall_lage_check`.
+ * `harleds_ej` säger det rakt ut i stället för att gissa (FR-19).
+ */
+export const MATTLAGEN = ['harleds', 'harleds_ej'] as const;
+export type Mattlage = (typeof MATTLAGEN)[number];
 
 export interface Ram {
   cap_hours: number | null;
@@ -108,6 +134,33 @@ export interface Scopelinje {
   klausul: string | null;
 }
 
+/**
+ * Ett uppföljningsmått ur del 3, i kontraktets egna ord (Story 2.3, FR-19).
+ * `lasvag` NULL = läsvägen saknas i kontraktet; den gissas aldrig. Lägena säger
+ * om larmregeln och utfallet härleds — inget fält bär ett utfall eller en kvot.
+ */
+export interface Uppfoljningsmatt {
+  namn: string;
+  hur_ofta: string | null;
+  kallreferenser: string | null;
+  lasvag: Mattlasvag | null;
+  larmregel: string | null;
+  larmregel_lage: Mattlage;
+  utfall_lage: Mattlage;
+}
+
+/**
+ * Bedömningsrytmen ur del 4 (Story 2.3, FR-14). Ankaret står inte här: inget
+ * ankardatum står i kontraktet, och det sätts av David med sin källa.
+ */
+export interface Kontraktsrytm {
+  rytm_text: string;
+  bedomning_intervall_dagar: number;
+  /** ISO-veckodagen, måndag = 1. NULL = rytmen nämner ingen veckodag. */
+  bedomning_veckodag: number | null;
+  rapport_mottagarkrets: string | null;
+}
+
 export interface Leveranskontrakt {
   kontrakt_tillstand: 'fryst' | 'utkast' | null;
   ram: Ram;
@@ -116,6 +169,10 @@ export interface Leveranskontrakt {
   /** Styrningen är en avtalsdel men ingen leverabel — den har ingen registerrad. */
   styrning: Styrning | null;
   scopelinjer: Scopelinje[];
+  /** Del 3: uppföljningsmåtten i textens ordning. Tom lista = del 3 finns inte i texten. */
+  matt: Uppfoljningsmatt[];
+  /** Del 4: rytmen. NULL = ingen rad i rapporteringen har en rytm som regeln känner. */
+  rytm: Kontraktsrytm | null;
   godkannare: string | null;
   godkannare_eskalering: string | null;
 }
@@ -468,6 +525,165 @@ function scopelinjerIAvsnitt(a: Avsnitt): Scopelinje[] {
   return lasta.filter((l) => !l.punkt || !tabellrader).map((l) => l.linje);
 }
 
+// ---------------------------------------------------------------------------
+// Del 3 och del 4: måtten och rytmen (Story 2.3, FR-19 och FR-14)
+//
+// Kontraktets celler är fritext, inte enumvärden. Allt läses därför genom
+// slutna listor av ord, och det som ingen lista känner blir NULL — aldrig en
+// standard. Reglerna nämner inga ord ur ett visst avtal.
+// ---------------------------------------------------------------------------
+
+/** Avsnitten som får bära del 3. Kolumnen ”Uppföljningsmått” i leveranskartan är ingen rubrik. */
+const MATTAVSNITT = ['uppfoljning'];
+/** Avsnitten som får bära del 4. */
+const RYTMAVSNITT = ['rapportering', 'rytm'];
+const MATTNAMN = ['vadsommats', 'matt', 'uppfoljningsmatt'];
+const MATTFREKVENS = ['hurofta'];
+const MATTKALLA = ['varsiffranlases', 'lasvag', 'kalla'];
+const MATTLARM = ['larmarnar', 'larmregel'];
+
+/** Inledande ord → läsväg, prövade i ordning. Första ledet före ett kommatecken jämförs. */
+const MATTLASVAGSORD: ReadonlyArray<{ ord: readonly string[]; lasvag: Mattlasvag }> = [
+  { ord: ['redovisning'], lasvag: 'redovisning' },
+  { ord: ['denharkartan', 'kartan', 'leveranskartan', 'registret', 'leverabelregistret'], lasvag: 'register' },
+  { ord: ['kalender'], lasvag: 'kalender' },
+  { ord: ['arende'], lasvag: 'arenden' },
+  { ord: ['styrgruppsprotokoll', 'protokoll', 'mejl', 'mail'], lasvag: 'referens' },
+];
+
+/**
+ * Måttets läsväg ur cellen ”Var siffran läses”. En hänvisning som
+ * `Sektion 5` löses mot dokumentets egna rubriker: det första avsnitt vars
+ * rubrik börjar med `5. ` (numret, en punkt och ett blanksteg — `5.1` är inte
+ * `5.`). Är det avsnittet scopelinjen eller leveranskartan lagras innehållet i
+ * modulens egna tabeller, och då är läsvägen registret självt. Allt annat är
+ * NULL: ingen läsväg gissas (FR-19).
+ */
+export function mattlasvag(cell: string | null | undefined, rubriker: readonly string[]): Mattlasvag | null {
+  if (!cell) return null;
+  const forsta = normalisera(cell.split(',')[0]!);
+  for (const { ord, lasvag } of MATTLASVAGSORD) {
+    if (forsta && ord.some((o) => forsta.startsWith(o))) return lasvag;
+  }
+  const sektion = /^(?:sektion|avsnitt)(\d+)$/.exec(normalisera(cell));
+  if (!sektion) return null;
+  const nummer = new RegExp(`^${Number(sektion[1])}\\.\\s`);
+  const rubrik = rubriker.find((r) => nummer.test(r));
+  if (rubrik === undefined) return null;
+  const n = normalisera(rubrik);
+  return [...SCOPEAVSNITT, 'leveranskarta'].some((o) => n.includes(o)) ? 'register' : null;
+}
+
+/** Måttnamnen som har en läsare: förbrukad tid mot ramen, ur redovisningen. */
+const TID_MOT_RAM = ['nedlagdtidmotram', 'tidmotram', 'timmarmotram', 'forbrukadtidmotram'];
+
+/**
+ * Läsaren som ger ett mått dess utfall. Listan är sluten och har en enda
+ * läsare: tiden mot ramen ur redovisningen, som Läget redan läser. Registret
+ * har ingen läsare — ett utfall som ”klara av sex” är den färdigställandegrad
+ * som NFR-11 förbjuder — och ett mått utan läsare härleds inte.
+ */
+export function mattlasare(namn: string, lasvag: Mattlasvag | null): 'tid_mot_ram' | null {
+  return lasvag === 'redovisning' && TID_MOT_RAM.includes(normalisera(namn)) ? 'tid_mot_ram' : null;
+}
+
+const RYTMINTERVALL: Readonly<Record<string, number>> = { varje: 1, varannan: 2, vartredje: 3, varfjarde: 4 };
+const VECKODAGAR = ['mandag', 'tisdag', 'onsdag', 'torsdag', 'fredag', 'lordag', 'sondag'];
+const RYTMCELL = /^(varje|varannan|vartredje|varfjarde)(mandag|tisdag|onsdag|torsdag|fredag|lordag|sondag|vecka)$/;
+
+/**
+ * En cell i ”Hur ofta” som en rytm, eller NULL. Hela cellen ska vara
+ * `<intervall><enhet>` efter att ett omslutande `**…**` och en avslutande punkt
+ * tagits bort: ”Varannan torsdag” är en rytm, ”Varannan torsdag, växelvis med
+ * ovan”, ”Månadsvis” och ”Vid behov” är det inte. Texten lagras som den står,
+ * utan stjärnorna, och veckonumret läses aldrig.
+ */
+export function rytmregel(
+  cell: string | null | undefined,
+): Omit<Kontraktsrytm, 'rapport_mottagarkrets'> | null {
+  const rytmText = (cell ?? '').trim().replace(/^\*\*(.*)\*\*$/, '$1').trim();
+  if (!rytmText) return null;
+  const m = RYTMCELL.exec(normalisera(rytmText.replace(/\.$/, '')));
+  if (!m) return null;
+  const veckor = RYTMINTERVALL[m[1]!]!;
+  const veckodag = VECKODAGAR.indexOf(m[2]!);
+  return {
+    rytm_text: rytmText,
+    bedomning_intervall_dagar: veckor * 7,
+    bedomning_veckodag: veckodag < 0 ? null : veckodag + 1,
+  };
+}
+
+const ANDELSORD = ['andel', 'andelen', 'andelar', 'procent', 'procenten'];
+
+/**
+ * Om larmregeln kräver en andel eller ett procenttal — då kan den inte
+ * operationaliseras utan Davids svar (NFR-11). Ord jämförs hela, aldrig som
+ * delsträngar: ”händelse” innehåller ”andel” men är inte ordet.
+ */
+export function larmregelKraverAndel(larmregel: string | null | undefined): boolean {
+  if (!larmregel) return false;
+  if (larmregel.includes('%')) return true;
+  return larmregel.toLowerCase().split(/[^\p{L}]+/u).some((ord) => ANDELSORD.includes(ord));
+}
+
+const harRubrikord = (a: Avsnitt, ord: readonly string[]): boolean =>
+  ord.some((o) => normalisera(a.titel).includes(o));
+
+/** Del 3: en rad per mått med en icke-tom namncell, i textens ordning. */
+function mattIAvsnitten(avsnitten: Avsnitt[]): Uppfoljningsmatt[] {
+  const rubriker = avsnitten.map((a) => a.titel);
+  const ut: Uppfoljningsmatt[] = [];
+  for (const a of avsnitten) {
+    if (!harRubrikord(a, MATTAVSNITT)) continue;
+    for (const tabell of tabeller(a.rader)) {
+      const iNamn = kolumn(tabell.rubrik, MATTNAMN);
+      if (iNamn < 0) continue;
+      const iFrekvens = kolumn(tabell.rubrik, MATTFREKVENS);
+      const iKalla = kolumn(tabell.rubrik, MATTKALLA);
+      const iLarm = kolumn(tabell.rubrik, MATTLARM);
+      for (const rad of tabell.rader) {
+        const namn = text(rad[iNamn]);
+        if (!namn) continue;
+        const kallreferenser = iKalla >= 0 ? text(rad[iKalla]) : null;
+        const lasvag = mattlasvag(kallreferenser, rubriker);
+        ut.push({
+          namn,
+          hur_ofta: iFrekvens >= 0 ? text(rad[iFrekvens]) : null,
+          kallreferenser,
+          lasvag,
+          larmregel: iLarm >= 0 ? text(rad[iLarm]) : null,
+          // Ingen larmregel operationaliseras här; den läses som den står.
+          larmregel_lage: 'harleds_ej',
+          utfall_lage: mattlasare(namn, lasvag) === null ? 'harleds_ej' : 'harleds',
+        });
+      }
+    }
+  }
+  return ut;
+}
+
+/**
+ * Del 4: den första tabellraden vars ”Hur ofta” är en rytm. Mottagarkretsen är
+ * samma rads ”Till vem”. Tabellen måste ha båda kolumnerna; v1:s fältpar om
+ * rapporteringstakten är ingen rytmtabell.
+ */
+function rytmIAvsnitten(avsnitten: Avsnitt[]): Kontraktsrytm | null {
+  for (const a of avsnitten) {
+    if (!harRubrikord(a, RYTMAVSNITT)) continue;
+    for (const tabell of tabeller(a.rader)) {
+      const iFrekvens = kolumn(tabell.rubrik, ['hurofta']);
+      const iMottagare = kolumn(tabell.rubrik, ['tillvem']);
+      if (iFrekvens < 0 || iMottagare < 0) continue;
+      for (const rad of tabell.rader) {
+        const rytm = rytmregel(rad[iFrekvens]);
+        if (rytm) return { ...rytm, rapport_mottagarkrets: text(rad[iMottagare]) };
+      }
+    }
+  }
+  return null;
+}
+
 export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
   const avsnitten = avsnitt(kontraktstext);
 
@@ -617,6 +833,8 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     leverabler: [...leverabelkarta.values()],
     styrning,
     scopelinjer,
+    matt: mattIAvsnitten(avsnitten),
+    rytm: rytmIAvsnitten(avsnitten),
     godkannare: text(dokumentfalt.get('godkannare')),
     godkannare_eskalering: text(
       dokumentfalt.get('eskalering')

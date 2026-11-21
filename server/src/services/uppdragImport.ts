@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
@@ -58,13 +59,30 @@ interface Avtalsrad {
   godkannare_eskalering: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
+  /** Rytmen ur del 4 som den står lagrad (Story 2.3). Ankaret läses inte här: importen skriver det aldrig. */
+  rytm_text: string | null;
+  bedomning_intervall_dagar: number | null;
+  bedomning_veckodag: number | null;
+  rapport_mottagarkrets: string | null;
 }
+
+/**
+ * Kolumnerna importen får skriva för rytmen (Story 2.3). Aldrig ett kolumnnamn
+ * ur indata, och aldrig ankaret: det sätts av David med sin källa.
+ */
+const RYTM_UPDATE: Readonly<Record<string, string>> = {
+  rytm_text: 'rytm_text',
+  bedomning_intervall_dagar: 'bedomning_intervall_dagar',
+  bedomning_veckodag: 'bedomning_veckodag',
+  rapport_mottagarkrets: 'rapport_mottagarkrets',
+};
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
+            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -320,6 +338,8 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
     kolla(`${l.kod}.matt_lasvag`, l.matt_lasvag);
   }
   if (k.styrning) kolla(`${STYRNINGSKOD}.cap_hours`, k.styrning.cap_hours);
+  // Story 2.3: ett mått utan läsväg lagras med läsvägen saknad, och det syns här.
+  for (const m of k.matt) kolla(`uppfoljning.${m.namn}.lasvag`, m.lasvag);
   kolla('godkannare', k.godkannare);
   kolla('godkannare_eskalering', k.godkannare_eskalering);
   return saknas;
@@ -491,8 +511,44 @@ export async function sattBaseline(
     );
   }
 
+  // (h) Uppföljningsmåtten ur del 3 (Story 2.3, FR-19), i textens ordning.
+  // UNIQUE (contract_id, namn) bär idempotensen, som för leverabelregistret:
+  // en rad som redan finns rörs inte, och `app` har ingen UPDATE på tabellen.
+  let mattSkapade = 0;
+  for (const [ordning, m] of kontrakt.matt.entries()) {
+    const res = await client.query(
+      `INSERT INTO uppdrag_matt
+         (company_id, contract_id, namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage, ordning)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT ON CONSTRAINT uppdrag_matt_namn_uk DO NOTHING`,
+      [companyId, input.contract_id, m.namn, m.hur_ofta, m.kallreferenser, m.lasvag, m.larmregel,
+        m.larmregel_lage, m.utfall_lage, ordning],
+    );
+    mattSkapade += res.rowCount ?? 0;
+  }
+
+  // (i) Rytmen ur del 4 (Story 2.3, FR-14). Bara när texten gav en rytm och den
+  // skiljer sig från raden: hittade texten ingen rytm har den inte sagt att
+  // rytmen är tom, och en oförändrad rad får ingen UPDATE (då står `updated_at`
+  // kvar). Ankaret står inte i tillåtelselistan och rörs aldrig av importen.
+  const rytm = kontrakt.rytm;
+  const rytmAndrad = rytm !== null && (rytm.rytm_text !== avtal.rytm_text
+    || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
+    || rytm.bedomning_veckodag !== avtal.bedomning_veckodag
+    || rytm.rapport_mottagarkrets !== avtal.rapport_mottagarkrets);
+  if (rytmAndrad) {
+    const update = buildAllowlistedUpdate(RYTM_UPDATE, { ...rytm });
+    if (update) {
+      await client.query(
+        `UPDATE contracts SET ${update.setSql}
+          WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
+        [...update.values, input.contract_id, companyId],
+      );
+    }
+  }
+
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
-    && nyaScopelinjer === 0 && !godkannareAndrad;
+    && nyaScopelinjer === 0 && !godkannareAndrad && mattSkapade === 0 && !rytmAndrad;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
   // ändring — samma hållning som `action.approval_requested`. Att en andra
@@ -505,6 +561,8 @@ export async function sattBaseline(
       avtalsdelar_skrivna: skrivnaDelar,
       leverabelrader_skapade: nyaLeverabelrader,
       scopelinjer_skapade: nyaScopelinjer,
+      matt_skapade: mattSkapade,
+      rytm_andrad: rytmAndrad,
       saknade_falt: saknadeFalt(kontrakt),
     },
   });
@@ -523,6 +581,8 @@ export async function sattBaseline(
     avtalsdelar_skrivna: skrivnaDelar,
     leverabelrader_skapade: nyaLeverabelrader,
     scopelinjer_skapade: nyaScopelinjer,
+    matt_skapade: mattSkapade,
+    rytm_andrad: rytmAndrad,
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     saknade_falt: saknadeFalt(kontrakt),

@@ -27,7 +27,11 @@
 //     `satt_av` läses ur den inloggade användaren, aldrig ur indata, av samma
 //     skäl som `satt_av_manniska`. NULL i `satt_av` betyder "satt före 0082".
 import type { PoolClient } from 'pg';
-import { ConflictError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import {
+  ankarkallatext, bedomningsrytmlage, isoVeckodag, type Ankarkalla, type Bedomningsrytm, type Rytmutfall,
+} from '../lib/bedomningsrytm.js';
+import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 import { arGodkannande, arFakturerad, arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { listaReferenser, type Referensrad } from './uppdragReferens.js';
@@ -518,4 +522,157 @@ export async function listaBedomningar(
     [companyId, contractId],
   );
   return res.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Rytmen och ankaret (Story 2.3, FR-14, B-14)
+//
+// Rytmen kommer ur kontraktets del 4 genom importen, och perioderna räknas av
+// den rena `bedomningsrytmlage` — här räknas inget eget läge. Ankardatumet står
+// inte i kontraktet, så David sätter det, en gång per avtal och med sin källa.
+// Ett satt ankare ändras bara genom en baselineändring: åtgärden skriver bara
+// när kolumnen är NULL, `update_contract` saknar kolumnerna och importen rör
+// dem aldrig.
+// ---------------------------------------------------------------------------
+
+/** Rytmkolumnerna på avtalet, som de lagras. NULL = inte satt. */
+export interface Rytmkolumner {
+  rytm_text: string | null;
+  bedomning_intervall_dagar: number | null;
+  bedomning_veckodag: number | null;
+  bedomning_ankare: string | null;
+  bedomning_ankare_kalla: string | null;
+  rapport_mottagarkrets: string | null;
+}
+
+/** Avtalets rytm med utfallet av rytmregeln för läsdagen. */
+export type Avtalsrytm = Rytmkolumner & Rytmutfall;
+
+/** Kolumnerna i rytmregelns form. */
+export function rytmUrKolumner(k: Rytmkolumner): Bedomningsrytm {
+  return { intervall_dagar: k.bedomning_intervall_dagar, veckodag: k.bedomning_veckodag, ankare: k.bedomning_ankare };
+}
+
+/**
+ * Avtalets rytm och dess läge för `idag` (`YYYY-MM-DD`). Läsvägen räknar inget
+ * eget läge: utfallet är `bedomningsrytmlage` för kolumnerna.
+ */
+export async function lasBedomningsrytm(
+  client: PoolClient, companyId: string, contractId: string, idag: string,
+): Promise<Avtalsrytm> {
+  const res = await client.query<Rytmkolumner>(
+    `SELECT rytm_text, bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare::text AS bedomning_ankare,
+            bedomning_ankare_kalla, rapport_mottagarkrets
+       FROM contracts WHERE id = $1 AND company_id = $2`,
+    [contractId, companyId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('contract');
+  return { ...rad, ...bedomningsrytmlage(rytmUrKolumner(rad), idag) };
+}
+
+/** En kalenderpost som Hermes länkat till avtalet — en möjlig källa till ankaret. */
+export interface Kalenderreferens {
+  id: string;
+  titel_vid_lankning: string | null;
+  handelse_datum: string | null;
+}
+
+/**
+ * Avtalets kalenderreferenser för ankarformuläret. En trasig länk eller en
+ * referens utanför spärrmappen är ingen källa att peka på.
+ */
+export async function kalenderreferenser(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Kalenderreferens[]> {
+  const res = await client.query<Kalenderreferens>(
+    `SELECT id, titel_vid_lankning, handelse_datum::text AS handelse_datum
+       FROM uppdrag_referens
+      WHERE company_id = $1 AND contract_id = $2 AND sort = 'kalender'
+        AND status NOT IN ('trasig', 'utanfor_sparr')
+      ORDER BY handelse_datum NULLS LAST, id`,
+    [companyId, contractId],
+  );
+  return res.rows;
+}
+
+export interface SattBedomningsankareInput {
+  contract_id: string;
+  ankare: string;
+  kalla: Ankarkalla;
+}
+
+/** Kolumnerna åtgärden får skriva. Aldrig ett kolumnnamn ur indata. */
+const ANKARE_UPDATE: Readonly<Record<string, string>> = {
+  bedomning_ankare: 'bedomning_ankare',
+  bedomning_ankare_kalla: 'bedomning_ankare_kalla',
+};
+
+const ANKARE_REDAN_SATT = 'Ankardatumet är redan satt. Det ändras bara genom en baselineändring med orsak.';
+
+/**
+ * Sätter avtalets ankardatum, en gång. Avtalet låses först, och UPDATE:n
+ * kräver ett tomt ankare — två samtidiga anrop kan aldrig båda skriva. Källan
+ * är obligatorisk: Davids uppgift eller en kalenderreferens ur avtalets egna,
+ * och en kalenderpost med ett annat datum är ingen källa till det här.
+ * Auditraden bär id, datum och källans typ, ingen fritext (lärdom 10).
+ */
+export async function sattBedomningsankare(
+  client: PoolClient, companyId: string, userId: string, input: SattBedomningsankareInput,
+): Promise<{ contract_id: string; bedomning_ankare: string; bedomning_ankare_kalla: string; nasta: string | null }> {
+  const avtal = (await client.query<{
+    id: string; bedomning_intervall_dagar: number | null; bedomning_veckodag: number | null; bedomning_ankare: string | null;
+  }>(
+    `SELECT id, bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare::text AS bedomning_ankare
+       FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.contract_id, companyId],
+  )).rows[0];
+  if (!avtal) throw new NotFoundError('contract');
+  if (avtal.bedomning_intervall_dagar === null) {
+    throw new ConflictError('rytm_saknas',
+      'Avtalet har ingen bedömningsrytm inläst. Rytmen läses ur leveranskontraktets del 4 när baselinen godkänns, och först då kan ankardatumet sättas.');
+  }
+  if (avtal.bedomning_ankare !== null) throw new ConflictError('ankare_redan_satt', ANKARE_REDAN_SATT);
+  if (avtal.bedomning_veckodag !== null && isoVeckodag(input.ankare) !== avtal.bedomning_veckodag) {
+    throw new BadRequestError('fel_veckodag',
+      `Ankardatumet ${input.ankare} faller inte på rytmens veckodag. Välj ett datum på rytmens dag.`);
+  }
+  if (input.kalla.typ === 'kalender') {
+    const ref = (await client.query<{ sort: string; handelse_datum: string | null }>(
+      `SELECT sort, handelse_datum::text AS handelse_datum FROM uppdrag_referens
+        WHERE id = $1 AND company_id = $2 AND contract_id = $3`,
+      [input.kalla.referens_id, companyId, avtal.id],
+    )).rows[0];
+    if (!ref || ref.sort !== 'kalender') {
+      throw new BadRequestError('okand_kalenderreferens', 'Kalenderreferensen finns inte bland avtalets kalenderposter.');
+    }
+    if (ref.handelse_datum !== null && ref.handelse_datum !== input.ankare) {
+      throw new BadRequestError('kalla_annat_datum',
+        `Kalenderposten gäller ${ref.handelse_datum}, inte ${input.ankare}. Ankaret och källan ska vara samma dag.`);
+    }
+  }
+  const kallatext = ankarkallatext(input.kalla);
+  const update = buildAllowlistedUpdate(ANKARE_UPDATE, { bedomning_ankare: input.ankare, bedomning_ankare_kalla: kallatext });
+  if (!update) throw new BadRequestError('no_fields', 'inget att uppdatera');
+  const n = update.values.length;
+  // Andra spärren efter radlåset: villkoret i UPDATE:n skriver aldrig över ett satt ankare.
+  const satt = await client.query(
+    `UPDATE contracts SET ${update.setSql}
+      WHERE id = $${n + 1} AND company_id = $${n + 2} AND bedomning_ankare IS NULL`,
+    [...update.values, avtal.id, companyId],
+  );
+  if (satt.rowCount === 0) throw new ConflictError('ankare_redan_satt', ANKARE_REDAN_SATT);
+  await writeAudit(client, {
+    companyId,
+    userId,
+    action: 'uppdrag.bedomningsankare_satt',
+    entityType: 'contract',
+    entityId: avtal.id,
+    details: { contract_id: avtal.id, ankare: input.ankare, kalla_typ: input.kalla.typ },
+  });
+  // Samma UTC-dag som Bedömning räknar perioden på.
+  const utfall = bedomningsrytmlage({
+    intervall_dagar: avtal.bedomning_intervall_dagar, veckodag: avtal.bedomning_veckodag, ankare: input.ankare,
+  }, new Date().toISOString().slice(0, 10));
+  return { contract_id: avtal.id, bedomning_ankare: input.ankare, bedomning_ankare_kalla: kallatext, nasta: utfall.nasta };
 }

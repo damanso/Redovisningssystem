@@ -27,6 +27,7 @@ import type {
   Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
 } from '../../services/uppdragUndantag.js';
 import { BEDOMNINGSLAGEN, type Bedomningslage } from '../../services/uppdragBedomning.js';
+import { INGEN_PERIOD, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
 
 /** Verifierat tomt (FR-22): bara när svepet läst allt underlag. */
@@ -101,6 +102,16 @@ function lasvardetext<T>(v: Lasvarde<T>, idag: string, visa: (varde: T) => Raw |
 function kallrad(k: Kallreferens, idag: string): Raw {
   if (k.typ === 'yta') return html`<a href="${k.sokvag}">${k.etikett}</a>`;
   return referensvisning(k, idag);
+}
+
+/**
+ * Perioden i den begärda bedömningen. Utan period står meningen ur
+ * `INGEN_PERIOD` i `.tomt`, samma ord som Läget och Bedömning — vyn skriver
+ * ingen egen. Grenen avgörs på läget, så att tabellen bara nås utan period.
+ */
+function periodtext(period: Bedomningsperiod): Raw | string {
+  if (period.lage === 'raknad') return `${period.start} – ${period.slut}`;
+  return html`<p class="tomt" style="margin:0;padding:.6rem .8rem">${INGEN_PERIOD[period.lage]}</p>`;
 }
 
 /** Ett fält i postens beskrivningslista. */
@@ -320,10 +331,21 @@ function bedomningsformular(companyId: string, p: Undantagspost): Raw {
     return html`<p style="margin:4px 16px 12px;font-size:13px">Uppdraget kunde inte läsas, så frågan kan inte avgöras här.</p>`;
   }
   const { period } = p.bedomning;
+  // Story 2.3: med en period ur rytmen bär formuläret den dolt, som förut. Utan
+  // period anger David själv perioden han bedömer — två synliga obligatoriska
+  // fält är vägen vidare, och ingen period gissas.
+  const periodfalt = period.lage === 'raknad'
+    ? html`<input type="hidden" name="period_start" value="${period.start}"><input type="hidden" name="period_slut" value="${period.slut}">`
+    : html`<fieldset style="border:0;margin:0 0 8px;padding:0">
+        <legend style="padding:0;font-size:12.5px;font-weight:550;color:var(--ink-2)">Perioden du bedömer</legend>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+          <label class="field" style="margin:0;flex:1 1 150px"><span>Från</span><input type="date" name="period_start" required></label>
+          <label class="field" style="margin:0;flex:1 1 150px"><span>Till och med</span><input type="date" name="period_slut" required></label>
+        </div></fieldset>`;
   return html`<form method="post" action="/app/c/${companyId}/uppdrag" style="margin:0;padding:4px 16px 12px">
     <input type="hidden" name="handling" value="bedomning"><input type="hidden" name="begaran_id" value="${p.id}">
     <input type="hidden" name="contract_id" value="${contractId}">
-    <input type="hidden" name="period_start" value="${period.start}"><input type="hidden" name="period_slut" value="${period.slut}">
+    ${periodfalt}
     <label class="field" style="margin:0 0 8px"><span>Kommentar (frivillig)</span><textarea name="kommentar" rows="2" maxlength="2000"></textarea></label>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${BEDOMNINGSLAGEN.map((l) =>
       html`<button class="btn btn--ghost" type="submit" name="lage" value="${l}"><span data-ikon aria-hidden="true">${BEDOMNINGSVAL[l].symbol}</span>${BEDOMNINGSVAL[l].ord}</button>`)}</div>
@@ -361,7 +383,7 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
           ks.map((k) => html`<li>${kallrad(k, idag)}</li>`)}</ul>`))}
         ${faltet('Ditt svar registrerar', 'ja_registrerar', p.ja_registrerar)}
         ${p.bedomning ? html`${faltet('Senaste bedömning', 'senaste', senasteBedomning(p.bedomning, idag))}${
-          faltet('Perioden', 'period', `${p.bedomning.period.start} – ${p.bedomning.period.slut}`)}` : ''}
+          faltet('Perioden', 'period', periodtext(p.bedomning.period))}` : ''}
         ${p.ovrigt ? ovrigtdel(p.ovrigt, idag) : ''}
       </dl>
       ${FORMULAR[p.slag](companyId, p)}

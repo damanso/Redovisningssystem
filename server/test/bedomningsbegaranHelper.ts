@@ -130,13 +130,15 @@ export function provaRenNyBedomning() {
     begard_nar: '2026-10-13T09:00:00.000Z', kommentar: null,
   };
   const andringar = underlag({ sedan: null, forbrukning: forbrukningsandringar(null, [S1]) });
-  const p = beskrivNyBedomning({ begaran, uppdrag, senaste: null, andringar }, '/app/c/bolag', lastNar);
+  // Story 2.3: utan inläst rytm räknas ingen period, och kalendermånaden föreslås aldrig.
+  const rytm = { intervall_dagar: null, veckodag: null, ankare: null };
+  const p = beskrivNyBedomning({ begaran, uppdrag, senaste: null, andringar, rytm }, '/app/c/bolag', lastNar);
   assert.ok(!p.ja_registrerar.includes(BESLUTSRADEN), p.ja_registrerar);
   assert.equal(p.forslag.varde!.till, sammanfattaAndringar(andringar));
-  assert.deepEqual(p.bedomning!.period, kalendermanad(lastNar.slice(0, 10)));
+  assert.deepEqual(p.bedomning!.period, { lage: 'rytm_saknas', start: null, slut: null });
   assert.equal(p.skal.varde, 'bedomningsbegaran begärde en ny bedömning 2026-10-13.');
   assert.equal(p.bedomning!.senaste.lage, 'saknas');
-  const med = beskrivNyBedomning({ begaran: { ...begaran, kommentar: 'Kunden flyttade L3' }, uppdrag, senaste: null, andringar },
+  const med = beskrivNyBedomning({ begaran: { ...begaran, kommentar: 'Kunden flyttade L3' }, uppdrag, senaste: null, andringar, rytm },
     '/app/c/bolag', lastNar);
   assert.equal(med.skal.varde, 'bedomningsbegaran begärde en ny bedömning 2026-10-13: Kunden flyttade L3');
 }

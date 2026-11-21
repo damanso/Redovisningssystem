@@ -50,7 +50,7 @@ import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
-import { begarNyBedomning, sattBedomning, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
+import { begarNyBedomning, sattBedomning, sattBedomningsankare, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
 import { lasUppdragslage } from '../services/uppdragLage.js';
@@ -1824,6 +1824,33 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // samma skäl som `tand_av` — ett indatafält hade gjort spåret till ett
     // påstående anroparen skriver om sig själv.
     handler: (ctx, i) => begarNyBedomning(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // Story 2.3 (FR-14, B-14): rytmen kommer ur kontraktets del 4, men inget
+  // ankardatum står där. David sätter det, en gång per avtal och med sin källa.
+  def({
+    name: 'satt_bedomningsankare',
+    title: 'Sätt ankardatumet för avtalets bedömningsrytm (en gång per avtal)',
+    // `write` + `kravManniska`, som `satt_bedomning`: ankaret är Davids egen
+    // uppgift, och ett köat godkännande av den vore ett handgrepp utan innehåll.
+    // En agent får 403 `human_required` i executeAction, före varje skrivning.
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        ankare: IsoDateSchema,
+        // Källan är obligatorisk och har ingen standard: Davids uppgift med
+        // datumet han lämnade den, eller en kalenderreferens ur avtalets egna.
+        // Ett datum utan källa är exakt det gissade ankare FR-14 förbjuder.
+        kalla: z.discriminatedUnion('typ', [
+          z.object({ typ: z.literal('davids_uppgift'), datum: IsoDateSchema }).strict(),
+          z.object({ typ: z.literal('kalender'), referens_id: UuidSchema }).strict(),
+        ]),
+      })
+      .strict(),
+    // Ett satt ankare skrivs aldrig över här (409 `ankare_redan_satt`); det
+    // ändras bara genom en baselineändring med orsak.
+    handler: (ctx, i) => sattBedomningsankare(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S3.1: leverabelregistret läses. Importen (S1.2) fyllde
