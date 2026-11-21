@@ -129,7 +129,9 @@ describe('gravstenen: en hopslagen organisation återuppstår inte vid nästa sy
     const a = (await act('list_crm_organizations', {})).body.result
       .find((o: { name: string }) => o.name === 'NVR-piloten');
     const b = await nyOrg('Nordic Vision Retail');
-    const c = await nyOrg('Nordic Vision Retail AB');
+    const skapad = await act('upsert_crm_organization', { name: 'Nordic Vision Retail AB', distinct_from: b });
+    expect(skapad.status, JSON.stringify(skapad.body)).toBe(200);
+    const c = skapad.body.result.id;
 
     await slaIhop(b, a.id);
     const andra = await slaIhop(c, b);

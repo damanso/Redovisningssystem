@@ -1,5 +1,5 @@
 // CRM 1.2: jämför mot det visade värdet, så en samtidig synk inte blir ett människobeslut.
-import { CustomerNumberSchema, EmailSchema, IsoDateSchema, UuidSchema } from './validation.js';
+import { CustomerNumberSchema, EmailSchema, IsoDateSchema, UuidSchema, safeText } from './validation.js';
 
 type CorrectableKind = 'interaction' | 'commitment';
 const CORRECTION_FIELDS = {
@@ -43,7 +43,7 @@ export function correctedEventFields(kind: CorrectableKind, body: unknown, now: 
   return patch;
 }
 
-const ORGANIZATION_CORRECTION_FIELDS = ['name', 'org_number', 'website', 'status', 'customer_id', 'roll'] as const;
+const ORGANIZATION_CORRECTION_FIELDS = ['name', 'org_number', 'website', 'status', 'customer_id', 'roll', 'distinct_from'] as const;
 
 /** Bara ändringar mot det visade blir människobeslut; tomt betyder oförändrat. */
 export function correctedOrganizationFields(body: unknown): Record<string, unknown> {
@@ -175,4 +175,26 @@ export function mergeCandidate(value: unknown, candidateIds: readonly string[]):
   if (typeof value !== 'string' || !UuidSchema.safeParse(value).success) return null;
   const id = value.toLowerCase();
   return candidateIds.includes(id) ? id : null;
+}
+
+/** Bara bolagsformsvarianten leder hit; namnkrock och kundlås bär också relations-id. */
+export function nameVariantOrganization(error: { code: string; details?: unknown }): { organization_id: string; name: string } | null {
+  if (error.code !== 'name_variant_of') return null;
+  const details = error.details;
+  if (typeof details !== 'object' || details === null || Array.isArray(details)
+    || !Object.hasOwn(details, 'organization_id') || !Object.hasOwn(details, 'name')) return null;
+  const { organization_id: id, name } = details as Record<string, unknown>;
+  return typeof id === 'string' && UuidSchema.safeParse(id).success && typeof name === 'string' && name.trim()
+    ? { organization_id: id.toLowerCase(), name: name.trim() } : null;
+}
+
+/** Databasens nyckel bär bolagsformslistan (A-4); här läses bara resten av visningsnamnet. */
+export function companyFormSuffix(name: string, nameNorm: string): string | null {
+  const compact = name.trim().replace(/\s+/g, ' ');
+  return compact.toLowerCase().startsWith(nameNorm + ' ') ? compact.slice(nameNorm.length + 1).trim() || null : null;
+}
+
+/** Adressen är fri indata; det dolda namnet prövas även av åtgärdens schema och regel vid ompostning. */
+export function variantRepostName(value: unknown): string | null {
+  return typeof value === 'string' && safeText(200).safeParse(value).success && value.trim() ? value.trim() : null;
 }

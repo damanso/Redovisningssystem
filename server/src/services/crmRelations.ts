@@ -57,6 +57,7 @@ export interface Organization {
 const ORG_COLUMNS = 'id, name, org_number, website, customer_id, status, source, notes, sfar, roll';
 
 export interface UpsertOrganizationInput {
+  distinct_from?: string;
   /**
    * Pekar ut raden när anroparen redan vet vilken det gäller — vilket bara en
    * människa i vyn gör. Utan den matchas raden på namnet, och då går namnet inte
@@ -308,6 +309,9 @@ async function assertCustomerFree(
 export async function upsertOrganization(
   client: PoolClient, companyId: string, userId: string, rawInput: UpsertOrganizationInput, origin: WriteOrigin,
 ): Promise<Organization & { created: boolean; kept_human_fields: string[]; kept_customer_fields: string[]; redirected_from: string | null }> {
+  if (rawInput.distinct_from !== undefined && origin.source !== 'human') {
+    throw new ForbiddenError('human_required', 'bara en människa kan säga att två namn är olika bolag');
+  }
   const input: UpsertOrganizationInput = { ...rawInput, org_number: normaliseraOrgnummer(rawInput.org_number) };
   const name = input.name?.trim();
   if ((input.name !== undefined && !name) || (!input.organization_id && !name)) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
@@ -389,6 +393,32 @@ export async function upsertOrganization(
     }
   }
 
+  // A-4: beslutet tas före varje skrivning. Samma regel bär synk och handskapade namn.
+  let distinctFrom: string | undefined;
+  if (!hit || writeName.toLowerCase() !== hit.name.toLowerCase()) {
+    const candidates = await client.query<{ id: string; name: string }>(
+      `SELECT o.id, o.name FROM crm.organizations o
+       WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+         AND ($3::uuid IS NULL OR o.id <> $3)
+         AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
+           WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
+       ORDER BY o.name, o.id FOR UPDATE`,
+      [companyId, writeName, hit?.id ?? null],
+    );
+    distinctFrom = input.distinct_from?.toLowerCase();
+    if (distinctFrom !== undefined && !candidates.rows.some((c) => c.id === distinctFrom)) {
+      throw new BadRequestError('distinct_from_mismatch', 'Relationen du valde skiljer sig inte bara i bolagsform från namnet — inget sparades.');
+    }
+    const k = candidates.rows[0];
+    if (k && origin.source === 'sync') {
+      if (candidates.rows.length > 1) throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
+      throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${k.name} — väntar på ditt beslut i Att göra`, { organization_id: k.id, name: k.name });
+    }
+    if (k && distinctFrom === undefined) {
+      throw new BadRequestError('name_variant_of', `Namnet skiljer sig bara i bolagsform från ${k.name}.`, { organization_id: k.id, name: k.name });
+    }
+  }
+
   // Människans rättelse med känt id ändrar bara angivna fält. En utelämnad
   // kund får därför aldrig fyllas i av uppslaget, oavsett vilket fält som rättas.
   // Synken och upsert utan id behåller uppslaget när kopplingen saknas.
@@ -436,6 +466,7 @@ export async function upsertOrganization(
         linked_customer: Boolean(r.rows[0]!.customer_id), source: origin.source,
       },
     });
+    if (distinctFrom) await saveOrganizationDistinction(client, companyId, userId, distinctFrom, writeName);
     return { ...r.rows[0]!, created: true, kept_human_fields: [], kept_customer_fields: [], redirected_from: null };
   }
 
@@ -499,6 +530,7 @@ export async function upsertOrganization(
       patch.status ?? (statusBytsAvKopplingen ? kopplingsstatus.status : null), writeInput.source ?? null, patch.notes ?? null,
       patch.sfar ?? null, patch.roll ?? null],
   );
+  if (distinctFrom) await saveOrganizationDistinction(client, companyId, userId, distinctFrom, writeName);
   // Kopplingen som systemet självt slog upp bär sitt eget ursprung; övriga fält
   // bär skrivarens.
   const link = patch.customer_id && patch.customer_id === matched
@@ -529,6 +561,20 @@ export async function upsertOrganization(
     },
   });
   return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, kept_customer_fields: keptCustomerFields, redirected_from: redirectedFrom };
+}
+
+/** Ett nej ska överleva nästa synk, med antal i auditloggen och namnet bara på relationsraden. */
+export async function saveOrganizationDistinction(
+  client: PoolClient, companyId: string, userId: string, organizationId: string, variantName: string,
+): Promise<{ saved: number }> {
+  const r = await client.query(
+    `INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [companyId, organizationId, variantName.trim(), userId],
+  );
+  const saved = r.rowCount ?? 0;
+  await writeCrmAudit(client, { companyId, userId, action: 'crm.organization_distinction_saved',
+    entityType: 'organization', entityId: organizationId, details: { saved } });
+  return { saved };
 }
 
 /**

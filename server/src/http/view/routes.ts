@@ -61,7 +61,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, variantRepostName } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -804,6 +804,15 @@ function felNotis(req: Request, formatText: (text: string) => string = (text) =>
   const fel = req.query.fel;
   if (typeof fel !== 'string' || !fel) return '';
   return html`<p class="notice">${formatText(fel === '1' ? FORM_FEL : fel)}</p>`;
+}
+
+/** Samma återkommande form på listan och relationen, med husets fokusmarkerade länkar och knappar. */
+function bolagsformsnotis(
+  req: Request, companyId: string, relation: { id: string; name: string }, action: string, dolda: Record<string, string>,
+): Raw {
+  const fel = req.query.fel;
+  return html`<p class="notice">${typeof fel === 'string' ? (fel === '1' ? FORM_FEL : fel) : ''} <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations/${relation.id}">Öppna ${relation.name}</a></p>
+    <form method="post" action="${action}">${Object.entries(dolda).map(([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`)}<input type="hidden" name="distinct_from" value="${relation.id}"><button class="btn btn--ghost btn--sm" type="submit">Det är ett annat bolag</button></form>`;
 }
 
 /**
@@ -7012,6 +7021,14 @@ viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, compan
 }));
 
 viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', async (client, companyId, req) => {
+  let variantRelation: { id: string; name: string } | undefined;
+  if (typeof req.query.variant === 'string') {
+    const relations = await listOrganizations(client, companyId) as Array<{ id: string; name: string }>;
+    const variantId = mergeCandidate(req.query.variant, relations.map((r) => r.id));
+    variantRelation = relations.find((r) => r.id === variantId);
+  }
+  const ompostNamn = variantRepostName(req.query.namn);
+
   const state = await relationState(client, companyId);
   // Förslagen räknas ur samma resultat — inte ur en andra körning av samma fråga.
   const suggestions = await contactSuggestions(client, companyId, { rows: state });
@@ -7022,7 +7039,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
     ${/* Utan notisen försvinner varje fel från handgreppen som landar här —
          formuläret ser ut att inte ha gjort någonting alls. Exakt den tystnad
          som gjorde de tidigare felen svåra att upptäcka. */ ''}
-    ${felNotis(req)}
+    ${variantRelation && ompostNamn ? bolagsformsnotis(req, companyId, variantRelation, `/app/c/${companyId}/relations/create`, { name: ompostNamn }) : felNotis(req)}
     ${
       suggestions.suggestions.length > 0
         ? html`<div class="panel"><div class="panel__head"><h2>Att höra av sig till</h2></div>
@@ -7163,7 +7180,12 @@ viewRouter.post('/c/:companyId/relations/create', page(async (req, res) => {
   await runViewAction(req, res, companyId, 'upsert_crm_organization', {
     name: text('name') ?? '',
     ...(text('org_number') ? { org_number: text('org_number') } : {}),
-  }, `/app/c/${companyId}/relations`);
+    ...(text('distinct_from') ? { distinct_from: text('distinct_from') } : {}),
+  }, `/app/c/${companyId}/relations`, undefined, undefined, (err) => {
+    const variant = nameVariantOrganization(err);
+    const name = text('name');
+    return variant && name ? { variant: variant.organization_id, namn: name } : undefined;
+  });
 }));
 
 // ---------------------------------------------------------------------------
@@ -7378,6 +7400,9 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
       .filter((r) => r.id !== o.id) as Array<{ id: string; name: string }>;
     const krockId = mergeCandidate(req.query.krock, andra.map((a) => a.id));
     const krock = andra.find((a) => a.id === krockId);
+    const variantId = mergeCandidate(req.query.variant, andra.map((a) => a.id));
+    const variantRelation = andra.find((a) => a.id === variantId);
+    const ompostNamn = variantRepostName(req.query.namn);
     const forval = oppetFormular === 'slaihop'
       ? mergeCandidate(req.query.med, andra.map((a) => a.id)) : null;
     const thread = await relationThread(client, companyId, orgId, { filter });
@@ -7410,7 +7435,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
         <div class="actions">${orgStatusChip(o.status)}${
           o.customer_id ? '' : html` <a href="/app/c/${companyId}/relations/${o.id}?oppna=uppgifter">${chip('Ej i kundregistret', 'warn', '!')}</a>`
         }</div></div>
-      ${krock ? html`<p class="notice">Namnet bärs redan av <a href="/app/c/${companyId}/relations/${krock.id}">${krock.name}</a>. Två rader för samma bolag slås ihop i stället för att döpas om. <a class="btn btn--ghost btn--sm" href="${back}?oppna=slaihop&med=${krock.id}">Slå ihop ${krock.name} hit…</a></p>` : felNotis(req)}
+      ${krock ? html`<p class="notice">Namnet bärs redan av <a href="/app/c/${companyId}/relations/${krock.id}">${krock.name}</a>. Två rader för samma bolag slås ihop i stället för att döpas om. <a class="btn btn--ghost btn--sm" href="${back}?oppna=slaihop&med=${krock.id}">Slå ihop ${krock.name} hit…</a></p>` : variantRelation && ompostNamn ? bolagsformsnotis(req, companyId, variantRelation, `${back}/edit`, { back, name: ompostNamn, fore_name: o.name }) : felNotis(req)}
 
       <div class="relation">
         <aside class="relation__facts">
@@ -8106,9 +8131,12 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
   }
   await runViewAction(req, res, companyId, 'upsert_crm_organization', {
     ...correctedOrganizationFields(body), organization_id: id,
-  }, back, undefined, undefined, (err) => {
+  }, back, undefined, undefined, (err): Record<string, string> | undefined => {
     const krockId = nameTakenOrganization(err);
-    return krockId ? { krock: krockId } : undefined;
+    if (krockId) return { krock: krockId };
+    const variant = nameVariantOrganization(err);
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    return variant && name ? { variant: variant.organization_id, namn: name } : undefined;
   });
 }));
 

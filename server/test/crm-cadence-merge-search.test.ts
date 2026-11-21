@@ -110,7 +110,7 @@ describe('kadens: en gemensam gräns passar ingen', () => {
 describe('sammanslagning: ingenting kastas, tomma fält fylls', () => {
   it('flyttar historik och fyller luckor utan att skriva över', async () => {
     const behall = await act('upsert_crm_organization', { name: 'Nordic Vision Retail AB', org_number: '556000-1234' });
-    const dubblett = await act('upsert_crm_organization', { name: 'Nordic Vision Retail', website: 'https://nvr.example' });
+    const dubblett = await act('upsert_crm_organization', { name: 'Nordic Vision Retail', distinct_from: behall.body.result.id, website: 'https://nvr.example' });
     const behallId = behall.body.result.id;
     const dubblettId = dubblett.body.result.id;
 
@@ -186,7 +186,9 @@ describe('sammanslagning: ingenting kastas, tomma fält fylls', () => {
     // e-post på båda raderna. people_name_uk är unikt per organisation för
     // e-postlösa personer — en rak omflyttning hade fällt hela transaktionen.
     const behall = await nyOrg('Krockbolaget AB');
-    const dubblett = await nyOrg('Krockbolaget');
+    const skapad = await act('upsert_crm_organization', { name: 'Krockbolaget', distinct_from: behall });
+    expect(skapad.status, JSON.stringify(skapad.body)).toBe(200);
+    const dubblett = skapad.body.result.id;
     const a = await act('upsert_crm_person', { name: 'Karin Ek', organization_id: behall });
     const b = await act('upsert_crm_person', { name: 'Karin Ek', organization_id: dubblett });
     expect(a.body.result.id).not.toBe(b.body.result.id);

@@ -17,6 +17,10 @@
 // Spärr: ingenting som kommer in här skickas någonsin vidare till en kund.
 import type { PoolClient } from 'pg';
 import { BadRequestError } from '../lib/errors.js';
+import { nameVariantOrganization } from '../lib/crmRules.js';
+import type { Actor } from '../http/middleware/authenticate.js';
+import { createApproval, MOTTAGET_EJ_VERKSTALLT } from './approvals.js';
+import { writeAudit } from './auditService.js';
 import {
   recordCommitment, recordInteraction, upsertOrganization, upsertPerson, writeCrmAudit,
   type SourceSystem, type WriteOrigin,
@@ -83,7 +87,28 @@ export interface IngestResult {
    * bort med `remove_crm_name_alias`.
    */
   redirected_organizations: string[];
+  /** Varianten väntar på Davids beslut; avsändaren ska se varför ingen relation skapats. */
+  merge_proposals: string[];
   skipped: { index: number; reason: string }[];
+}
+
+/** Radlåset och uppslaget delar händelsens klient, så förslag och audit följer samma savepoint. */
+export async function queueNameVariantProposal(
+  client: PoolClient, companyId: string, userId: string, actor: Actor, input: { organization_id: string; name: string },
+): Promise<{ approval_id: string; queued: boolean }> {
+  await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, input.organization_id]);
+  const action = 'merge_crm_name_variant';
+  const found = await client.query<{ id: string }>(
+    `SELECT id FROM action_approvals WHERE company_id = $1 AND action = $4
+      AND input->>'organization_id' = $2 AND lower(input->>'name') = lower($3)
+      AND (status = 'pending' OR (${MOTTAGET_EJ_VERKSTALLT})) ORDER BY created_at, id LIMIT 1`,
+    [companyId, input.organization_id, input.name, action],
+  );
+  if (found.rows[0]) return { approval_id: found.rows[0].id, queued: false };
+  const approval = await createApproval(client, companyId, userId, actor, action, input);
+  await writeAudit(client, { companyId, userId, action: 'action.approval_requested', entityType: 'approval', entityId: approval.id,
+    details: { action, actor, reason: 'bolagsform' } });
+  return { approval_id: approval.id, queued: true };
 }
 
 /**
@@ -94,7 +119,7 @@ export interface IngestResult {
  * värre än ett som levererar 399 och säger vad som fattades.
  */
 export async function ingestCrmEvents(
-  client: PoolClient, companyId: string, userId: string, events: IngestEvent[],
+  client: PoolClient, companyId: string, userId: string, events: IngestEvent[], actor: Actor,
 ): Promise<IngestResult> {
   const result: IngestResult = {
     received: events.length,
@@ -102,7 +127,7 @@ export async function ingestCrmEvents(
     commitments_created: 0, commitments_unchanged: 0,
     organizations_created: 0, people_created: 0,
     organizations_linked: 0, unlinked_organizations: [], kept_human_fields: [], kept_customer_fields: [],
-    redirected_organizations: [],
+    redirected_organizations: [], merge_proposals: [],
     skipped: [],
   };
   const linked = new Set<string>();
@@ -110,6 +135,7 @@ export async function ingestCrmEvents(
   const kept = new Set<string>();
   const keptCustomer = new Set<string>();
   const redirected = new Set<string>();
+  const proposals = new Set<string>();
 
   for (const [index, e] of events.entries()) {
     // Savepoint per händelse: en krock (t.ex. en e-post som redan hör till en
@@ -128,11 +154,23 @@ export async function ingestCrmEvents(
       let prefix = '';
       let organizationId: string | undefined;
       if (e.organization) {
-        const org = await upsertOrganization(client, companyId, userId, {
-          name: e.organization.name,
-          org_number: e.organization.org_number,
-          website: e.organization.website,
-        }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
+        let org;
+        try {
+          org = await upsertOrganization(client, companyId, userId, {
+            name: e.organization.name,
+            org_number: e.organization.org_number,
+            website: e.organization.website,
+          }, { source: 'sync', source_system: e.source_system, source_ref: e.source_ref });
+        } catch (err) {
+          const variant = err instanceof BadRequestError ? nameVariantOrganization(err) : null;
+          if (!(err instanceof BadRequestError) || !variant) throw err;
+          // Felet kastades före varje skrivning, så savepointen är ren och kön kan sparas.
+          await queueNameVariantProposal(client, companyId, userId, actor, { organization_id: variant.organization_id, name: e.organization.name.trim() });
+          await client.query('RELEASE SAVEPOINT crm_event');
+          result.skipped.push({ index, reason: err.message });
+          proposals.add(`${e.organization.name.trim()} → ${variant.name} (bolagsform)`);
+          continue;
+        }
         organizationId = org.id;
         prefix = org.name;
         if (org.created) delta.organizations += 1;
@@ -193,6 +231,7 @@ export async function ingestCrmEvents(
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT crm_event');
       result.skipped.push({ index, reason: err instanceof Error ? err.message : 'okänt fel' });
+      if (err instanceof BadRequestError && err.code === 'name_variant_ambiguous') proposals.add(`${e.organization!.name.trim()} (flera möjliga)`);
     }
   }
 
@@ -201,6 +240,7 @@ export async function ingestCrmEvents(
   result.kept_human_fields = [...kept].sort();
   result.kept_customer_fields = [...keptCustomer].sort();
   result.redirected_organizations = [...redirected].sort();
+  result.merge_proposals = [...proposals].sort();
 
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.ingested',
@@ -214,6 +254,7 @@ export async function ingestCrmEvents(
       kept_customer_fields: result.kept_customer_fields.length,
       redirected: result.redirected_organizations.length,
       skipped: result.skipped.length,
+      merge_proposals: result.merge_proposals.length,
     },
   });
   return result;

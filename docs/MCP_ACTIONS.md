@@ -2666,3 +2666,32 @@ Vägen vidare är `merge_crm_organizations` med de två relationernas id som
 Relationssidan visar namnkrocken som en notis med en länk till relationen och
 knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
 via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.
+
+## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)
+
+`ingest_crm_events` skapar ingen relation när namnet, utan exakt träff eller alias,
+bara skiljer sig i bolagsform från exakt en befintlig relation och paret inte är
+sparat som olika bolag. Händelsen hamnar i `skipped` med skälet
+«bolagsformsvariant av Alliance Optikk — väntar på ditt beslut i Att göra».
+Förslaget `merge_crm_name_variant` köas en gång per namnpar och redovisas i
+`merge_proposals` som «Alliance Optikk AS → Alliance Optikk (bolagsform)».
+Ett väntande eller mottaget men ännu inte verkställt beslut ger inget nytt förslag.
+Flera möjliga relationer ger `name_variant_ambiguous` med skälet
+«bolagsformsvariant av flera relationer — slå ihop dem först», ingen kö och
+«<namn> (flera möjliga)» i samma lista.
+
+`upsert_crm_organization` svarar 400 `name_variant_of` med
+`details: { organization_id, name }`, där namnet är den befintliga relationens.
+Människans `distinct_from` skapar eller döper om relationen ändå, med ursprunget
+human, och sparar paret i `crm.organization_distinctions` i samma transaktion.
+Bara en människa får skicka fältet; agenten får 403 `human_required`.
+Ett id som inte är en kandidat ger 400 `distinct_from_mismatch` utan skrivning.
+Vyn visar *Öppna {relation}* och *Det är ett annat bolag*.
+
+Förslaget är `sensitive` med `tvafas`. Godkänt lägger namnet som alias; nästa
+synk styrs till relationen och redovisas i redirected_organizations.
+Avvisat kräver skäl och sparar paret som olika bolag; nästa synk skapar den egna
+relationen. Agenten kan aldrig godkänna eller avvisa. Ja ger ett slutligt utfall:
+`alias_added`, `already_alias`, `name_exists`, `alias_elsewhere` eller
+`organization_missing`. Nej ger `distinction_saved`, `already_distinct` eller
+`organization_missing`. Audit bär antal och fasta skäl, aldrig namnen.

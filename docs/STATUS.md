@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
+  Migration 0092 bär Davids besked i organization_distinctions, med sammansatt FK,
+  FORCE RLS och bara SELECT/INSERT. upsertOrganization prövar name_norm före
+  skrivning; distinct_from är människans uttryckliga besked. Den känsliga
+  tvåfasåtgärden merge_crm_name_variant lägger alias vid ja och sparar paret vid
+  nej med skäl. Intaget köar en gång per par i händelsens savepoint, med namnfri
+  audit och listan merge_proposals. Kortet säger följden av båda valen. Listan
+  och relationssidan visar Öppna och Det är ett annat bolag med husets notice
+  och btn--ghost, samma typografi, tokens och fokusmarkering, utan JavaScript.
+  API_KONTRAKT har bara nya rader; MCP_ACTIONS beskriver ändringen.
+  Proven är BM1–BM3, BR1–BR4, BH1–BH7, BG1–BG4, BI1–BI9, BK1–BK2, BV1–BV6
+  och BD1. Sju befintliga provfiler ändras: crm-org-name-norm och crm-rules får
+  fallen; crm-name-alias och crm-cadence-merge-search får människans distinct_from
+  i tre fixturer; vy-kansliga-knappar, forslagskort-klartext och uppdragsytan-mandat
+  får nya registerrader (mandatprovet får dessutom exakt tvåfaslista).
+  Rött först: rena regler «4 failed | 92 passed (96)»; grönt «96 passed (96)».
+  BD1 körd isolerat: «1 passed». Källproven VK1–VK3 och CRM S2/S3/D3: «12 passed».
+  Typkontroll och bygge: exit 0. Npm test försökt före/efter varje uppgift och
+  vid slutkontroll: exit 1, «connect EPERM 127.0.0.1:5433» i globalSetup före
+  fallen. Databasfallen, migrationskörningen och full regression är därför
+  inte verifierade här; kedjan kör dem. Interaktiv webbläsarkontroll inte gjord,
+  inga tjänster startade. Testberoende kryss och review väntar enligt användarens
+  uttryckliga krav på gröna tester. Ingen rutt, CSS-klass, miljövariabel eller
+  beroende tillkom. Befintliga externa röda prov (adresskontraktet och
+  bmadglidning enligt baslinjen) har inte körts eller ändrats här.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när

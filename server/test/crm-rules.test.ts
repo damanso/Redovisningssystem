@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, variantRepostName } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -335,5 +335,46 @@ describe('namnkrockens adress (story 2.1)', () => {
       '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f']) {
       expect(mergeCandidate(value, [A, B])).toBeNull();
     }
+  });
+});
+
+describe('bolagsformsvariantens regler (story 2.3)', () => {
+  const A = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+  const F = {
+    name: 'Bolaget AB', fore_name: 'Bolaget AB', org_number: '556914-0009', fore_org_number: '556914-0009',
+    website: '', fore_website: '', status: 'prospect', fore_status: 'prospect',
+    customer_id: '', fore_customer_id: '', roll: '', fore_roll: '',
+  };
+  it('BR1 bara rätt fel med egna giltiga fält ger en relation', () => {
+    const facit = { organization_id: A, name: 'Alliance Optikk' };
+    expect(nameVariantOrganization({ code: 'name_variant_of', details: facit })).toEqual(facit);
+    expect(nameVariantOrganization({ code: 'name_variant_of', details: { organization_id: A.toUpperCase(), name: '  Alliance Optikk  ' } })).toEqual(facit);
+    for (const details of [undefined, null, [A], { organization_id: A }, { organization_id: A, name: '   ' },
+      { organization_id: A, name: 7 }, { organization_id: 'inte-ett-id', name: 'X' }, Object.create({ organization_id: A, name: 'X' })]) {
+      expect(nameVariantOrganization({ code: 'name_variant_of', details })).toBeNull();
+    }
+    for (const code of ['name_taken', 'NAME_VARIANT_OF', 'name_variant_ambiguous']) {
+      expect(nameVariantOrganization({ code, details: facit })).toBeNull();
+    }
+  });
+  it('BR2 bolagsformen kommer ur databasens nyckel utan en egen lista', () => {
+    for (const [name, norm, suffix] of [
+      ['Alliance Optikk AS', 'alliance optikk', 'AS'], ['  Bolaget   AB (publ) ', 'bolaget', 'AB (publ)'],
+      ['Firma A/S', 'firma', 'A/S'], ['Optikko Kivinen Oy', 'optikko kivinen', 'Oy'],
+      ['Alliance Optikk', 'alliance optikk', null], ['Alliance OptikkAS', 'alliance optikk', null],
+      ['Annat Bolag AB', 'alliance optikk', null], ['', '', null],
+    ] as const) expect(companyFormSuffix(name, norm)).toBe(suffix);
+  });
+  it('BR3 adressens namn måste vara en enda säker text inom schemats gräns', () => {
+    for (const name of ['Alliance Optikk AS', '  Alliance Optikk AS  ']) expect(variantRepostName(name)).toBe('Alliance Optikk AS');
+    expect(variantRepostName('a'.repeat(200))).toBe('a'.repeat(200));
+    for (const value of ['', '   ', undefined, null, 42, ['Alliance Optikk AS'], 'a'.repeat(201), 'Alliance\u0007Optikk']) {
+      expect(variantRepostName(value)).toBeNull();
+    }
+  });
+  it('BR4 bara ett ifyllt distinct_from skickas med rättelsen', () => {
+    expect(correctedOrganizationFields({ ...F, distinct_from: A })).toEqual({ distinct_from: A });
+    expect(correctedOrganizationFields({ ...F, distinct_from: '' })).toEqual({});
+    expect(correctedOrganizationFields({ ...F, name: 'Ny AB', distinct_from: A })).toEqual({ name: 'Ny AB', distinct_from: A });
   });
 });
