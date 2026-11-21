@@ -11,7 +11,7 @@
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
-import { mergeStatusOutcome } from '../lib/crmRules.js';
+import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
@@ -676,6 +676,29 @@ export async function explainApproval(
       change: { from: `Två relationer: ${a.name} och ${b.name}`, to: `En relation: ${a.name}` },
       why: `Kontaktpunkter, löften och personer flyttas till ${a.name}.${statusText} ${b.name} upphör — det går inte att ångra.`,
       source: { label: 'Öppna relationen', href: `${base}/relations/${keep}` },
+    };
+  }
+
+  if (action === 'merge_crm_name_variant') {
+    const id = asUuid(input.organization_id);
+    if (!id || typeof input.name !== 'string' || !input.name.trim()) return none;
+    const variant = input.name.trim();
+    const organization = await one<{ name: string; name_norm: string }>(client,
+      'SELECT name, name_norm FROM crm.organizations WHERE id = $1 AND company_id = $2', [id, companyId]);
+    if (!organization) return none;
+    const normalized = await one<{ name_norm: string }>(client,
+      'SELECT crm.normalize_org_name($1) AS name_norm', [variant]);
+    if (!normalized) return none;
+    // Nycklarna kommer ur SQL:s enda lista, så kort och skrivning inte glider isär.
+    const forms = [...new Set([
+      companyFormSuffix(variant, normalized.name_norm), companyFormSuffix(organization.name, organization.name_norm),
+    ].filter((form): form is string => form !== null))];
+    return {
+      change: null,
+      why: `Namnen skiljer sig bara i bolagsform${forms.length ? ` (${forms.join(', ')})` : ''}. `
+        + `Godkänn: ${variant} räknas som ${organization.name}, och kommande händelser med det namnet hamnar där. `
+        + `Avvisa: det är ett annat bolag — nästa synk skapar en egen relation för ${variant}.`,
+      source: { label: 'Öppna relationen', href: `${base}/relations/${id}` },
     };
   }
 

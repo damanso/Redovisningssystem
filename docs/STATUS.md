@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
+  Migration 0092 ger parvisa besked med sammansatt FK, FORCE RLS och bara
+  SELECT/INSERT. Synkens regel i `upsertOrganization` kastar före skrivning;
+  `saveOrganizationDistinction` är enda skrivvägen. Den känsliga tvåfasåtgärden
+  `merge_crm_name_variant` lägger alias vid ja och sparar besked vid nej med skäl.
+  Intaget köar med radlås i händelsens savepoint och redovisar `merge_proposals`;
+  audit bär antal och fasta nycklar, aldrig namn. Kortet visar skälet och båda
+  beslutsföljderna i husets befintliga ai-card, med dess typografi, knappar,
+  synliga skälfält och fokusmarkering. Kontraktet och MCP_ACTIONS är utökade.
+  Fall: BM1–BM3, BR1–BR2, BS1–BS5, BG1–BG4, BI1–BI9, BK1–BK2 och BD1.
+  Registerrader i vy-kansliga-knappar (båda känsliga handlers),
+  forslagskort-klartext (exempelindata) och uppdragsytan-mandat (uttrycklig
+  tvåfaslista med likhetskontroll). Inga befintliga assertioner försvagade.
+  Den handskapade varianten, notisen och `distinct_from` är berättelse 2.5.
+  Rött–grönt per uppgift: `npm run typecheck` körd; senaste avslutade exit 0.
+  Rena crm-rules: före 2 failed | 92 passed, efter 94 passed (94), exit 0.
+  Separata VK1–VK3 och sändspärrskontroller: 13 passed, exit 0.
+  Slutligt rent/statiskt urval: 107 passed | 22 skipped, exit 0. Bygge exit 0.
+  Story och sprintstatus: review efter punktvis DoD med nätundantag.
+  `npm test` körd i båda faserna per uppgift men stoppas i globalSetup med
+  «connect EPERM 127.0.0.1:5433», exit 1. Databasfallen, full regression och
+  interaktiv webbläsarkontroll är därför inte verifierade i sandlådan; kedjan
+  kör dem enligt nätundantaget. Inget påstående om grön helsvit.
+  Ingen rutt, CSS-klass, miljövariabel eller beroende tillkom. Den kända
+  GDPR-gränsen för sparade besked följer AC1 och kräver senare beslut.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när

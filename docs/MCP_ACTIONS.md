@@ -2666,3 +2666,35 @@ Vägen vidare är `merge_crm_organizations` med de två relationernas id som
 Relationssidan visar namnkrocken som en notis med en länk till relationen och
 knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
 via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.
+
+## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)
+
+Ett nytt organisationsnamn som bara skiljer sig i bolagsform från exakt en
+befintlig relation skapas inte av `ingest_crm_events`, om paret inte redan har
+sparats som olika bolag. Händelsen hamnar i `skipped` med skälet
+«bolagsformsvariant av Alliance Optikk — väntar på ditt beslut i Att göra».
+Förslaget `merge_crm_name_variant` med relationens `organization_id` och
+variantens `name` köas en gång per namnpar. `merge_proposals` redovisar det som
+«Alliance Optikk AS → Alliance Optikk (bolagsform)», också när förslaget redan
+väntar. Mottagna beslut som väntar på verkställighet räknas också som väntande.
+
+Finns flera möjliga relationer skapas varken relation eller förslag. `skipped`
+säger «bolagsformsvariant av flera relationer — slå ihop dem först», och
+förslagslistan visar «<namn> (flera möjliga)».
+
+Åtgärden är `sensitive` med `tvafas`: bara en människa får godkänna eller
+avvisa den. Ett ja lägger namnet som alias för relationen, och nästa synk
+styr om de överhoppade händelserna dit (`redirected_organizations`). Ett nej
+kräver ett skäl som sparas med beslutet och lagrar paret i
+`crm.organization_distinctions`. Nästa synk får då skapa den egna relationen
+utan nytt förslag mot samma relation.
+
+Godkänt svarar med `outcome`: `alias_added`, `already_alias`, `name_exists`,
+`alias_elsewhere` eller `organization_missing`. Avvisat svarar under
+`approval.result.vid_avslag` med `distinction_saved`, `already_distinct` eller
+`organization_missing`. Dessa affärslägen avslutar beslutet utan återförsök.
+Aliaset och det sparade beskedet auditeras med antal, aldrig namn; intagets
+förslag och dess auditrad sparas i samma savepoint.
+
+Regeln gäller synkens skrivningar. En relation som skapas för hand prövas
+inte av den i denna version.
