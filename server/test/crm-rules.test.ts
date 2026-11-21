@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -369,5 +369,43 @@ describe('bolagsformsvariantens regler (story 2.3)', () => {
       ['Alliance Optikk', 'alliance optikk', null], ['Alliance OptikkAS', 'alliance optikk', null],
       ['Annat Bolag AB', 'alliance optikk', null], ['', '', null],
     ] as const) expect(companyFormSuffix(name, norm), name).toBe(suffix);
+  });
+});
+
+describe('löftets status från synken (story 3.3)', () => {
+  it('LR1 regelns tabell: bara human och en stängd status utan ursprungsrad står emot synken', () => {
+    for (const [nuvarande, ursprung, inkommande, utfall] of [
+      ['open', null, undefined, 'omitted'],
+      ['done', 'human', undefined, 'omitted'],
+      ['open', null, 'done', 'write'],
+      ['open', null, 'open', 'write'],
+      ['done', null, 'open', 'kept_human'],
+      ['dropped', null, 'open', 'kept_human'],
+      ['done', null, 'done', 'kept_human'],
+      ['done', 'human', 'open', 'kept_human'],
+      ['open', 'human', 'done', 'kept_human'],
+      ['done', 'sync', 'open', 'write'],
+      ['dropped', 'sync', 'open', 'write'],
+      ['done', 'ai', 'open', 'write'],
+      ['open', 'accounting', 'dropped', 'write'],
+      ['done', 'import', 'open', 'write'],
+      ['done', undefined, 'open', 'kept_human'],
+    ] as const) {
+      expect(syncedCommitmentStatus(nuvarande, ursprung, inkommande), `${nuvarande} ${ursprung} ${inkommande}`).toBe(utfall);
+    }
+  });
+  it('LR2 negativ kontroll: utan undantaget hade synken skrivit över de sex stängda paren', () => {
+    const statusar = ['open', 'done', 'dropped'] as const;
+    const skiljer: [string, string][] = [];
+    for (const nuvarande of statusar) {
+      for (const inkommande of statusar) {
+        const utanRad = syncedCommitmentStatus(nuvarande, null, inkommande);
+        const medSync = syncedCommitmentStatus(nuvarande, 'sync', inkommande);
+        if (utanRad === medSync) continue;
+        skiljer.push([nuvarande, inkommande]);
+        expect([utanRad, medSync], `${nuvarande} ${inkommande}`).toEqual(['kept_human', 'write']);
+      }
+    }
+    expect(skiljer).toEqual([['done', 'open'], ['done', 'done'], ['done', 'dropped'], ['dropped', 'open'], ['dropped', 'done'], ['dropped', 'dropped']]);
   });
 });

@@ -3132,7 +3132,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
               summary: safeText(2000).optional(),
               commitment_direction: z.enum(['we_owe', 'they_owe']).optional(),
               body: safeText(2000).optional(),
-              due_date: IsoDateSchema.optional(),
+              // Löftets livscykel (A-2): ett utelämnat fält lämnar värdet orört,
+              // och ett uttryckligt null tar bort förfallodatumet.
+              status: z.enum(['open', 'done', 'dropped']).optional(),
+              due_date: IsoDateSchema.nullable().optional(),
             }).strict(),
           )
           .min(1)

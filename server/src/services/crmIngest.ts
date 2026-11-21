@@ -42,7 +42,8 @@ export interface IngestEvent {
   // commitment
   commitment_direction?: 'we_owe' | 'they_owe';
   body?: string;
-  due_date?: string;
+  status?: 'open' | 'done' | 'dropped';
+  due_date?: string | null;
 }
 
 export interface IngestResult {
@@ -225,7 +226,7 @@ export async function ingestCrmEvents(
         if (!e.commitment_direction || !e.body) throw new BadRequestError('invalid_event', 'åtagande kräver riktning och text');
         const r = await recordCommitment(client, companyId, userId, {
           person_id: personId, organization_id: organizationId,
-          direction: e.commitment_direction, body: e.body, due_date: e.due_date,
+          direction: e.commitment_direction, body: e.body, status: e.status, due_date: e.due_date,
           occurred_at: e.occurred_at, source_system: e.source_system, source_ref: e.source_ref,
         }, origin);
         delta.kept.push(...r.kept_human_fields.map((field) => `${prefix}: ${e.source_ref} ${field}`));

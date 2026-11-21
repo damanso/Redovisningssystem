@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 3.3 (crm), mottagaren tar emot löftets avslut och en borttagen deadline (FR-36, FR-8):**
+  `ingest_crm_events` tar för löften `status` (`open`/`done`/`dropped`) och ett
+  nullbart `due_date`; utelämnat är oförändrat och `null` tar bort datumet.
+  Intaget för vidare fälten oförändrade. I `recordCommitment` går statusen genom
+  `guardHumanFields` med innehållet, nu med `nullIsWrite`, och den rena regeln
+  `syncedCommitmentStatus` (`lib/crmRules.ts`) skyddar en stängd status utan
+  ursprungsrad (A-2). Omsändningens enda UPDATE byggs med
+  `COMMITMENT_SYNC_FIELDS` och sätter `completed_at` bara vid ett verkligt
+  statusbyte mot den låsta raden; ursprunget skrivs med `provenanceForKeys`.
+  En stängningshändelse för en okänd källnyckel skapar löftet stängt, med
+  statusens ursprung `sync` och `status` i `crm.commitment_recorded`.
+  Docs: regel 9 och den rättade meningen under «Människan vinner» i
+  `docs/crm/API_KONTRAKT.md`, avsnittet crm 3.3 sist i `docs/MCP_ACTIONS.md`.
+  Prov: ny `server/test/crm-commitment-lifecycle.test.ts` (LK1–LK3, LD1–LD4,
+  LA1–LA3, LB1–LB4, LM1–LM2, LN1–LN2, LT1–LT2) och en ny `describe` i
+  `server/test/crm-rules.test.ts` (LR1–LR2). INTE KÖRT i sandlådan: Bash
+  nekades, så varken typkontroll, bygge eller vitest kördes av utvecklaren;
+  kedjan kör dem efter sista ändringen. Avsändaren (Hermes skickar `status` och
+  `due_date: null`) är berättelse 3.4. Ingen migration, rutt, åtgärd eller tabell
+  har tillkommit.
 - **2026-11-21 — Story 2.6, scopelinjen med åtgärd ur del 5 (FR-6, FR-7, FR-27, NFR-9):**
   Migration `0094_scopelinje_atgard.sql` vidgar CHECK-villkoret
   `uppdrag_scopelinje_sort_check` med `atgard`. Inga rader ändras, och

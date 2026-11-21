@@ -153,6 +153,22 @@ export function mergeStatusOutcome(
   return { linkMoves, from: keep.status, to: outcome.status, kept: outcome.kept };
 }
 
+/**
+ * Vad synken får göra med löftets status (A-2). Bara `human` skyddas (A-1), med
+ * ett undantag: synken skrev aldrig status före 3.3, så en stängd status utan
+ * ursprungsrad sattes av en människa med statusåtgärden och står kvar som hennes,
+ * också mot samma värde — annars hade nästa open öppnat Davids avslut.
+ */
+export function syncedCommitmentStatus(
+  current: 'open' | 'done' | 'dropped', provenance: string | null | undefined,
+  incoming: 'open' | 'done' | 'dropped' | undefined,
+): 'omitted' | 'kept_human' | 'write' {
+  if (incoming === undefined) return 'omitted';
+  if (provenance === 'human') return 'kept_human';
+  if ((provenance === null || provenance === undefined) && current !== 'open') return 'kept_human';
+  return 'write';
+}
+
 const PROJECT_CODE_PATTERN = /^[A-ZÅÄÖ]{2,6}-\d{3}$/;
 
 /** En projektkod är ett uppdrag, ingen motpart; en relation under koden gör att styrvyn räknar noll för kunden. */
