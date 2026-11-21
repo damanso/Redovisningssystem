@@ -153,6 +153,51 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 3.1, omtag Y6 (uppgift 5):**
+  Kedjans röda vyprov delade HTML på ett taggslut som inte finns: Källornas
+  befintliga dd har ett style-attribut efter data-falt. Provet återanvänder nu
+  artikeln/falt ur undantagsvynHelper och väljer postens id först. Y6 prövar
+  två köposter med olika mejlkällor samt kalenderunderlag, och kräver länk,
+  verkligt läge, saknad lästid/datum och frånvaro av grannpostens källa.
+  Y5 använder samma hjälpares block och kräver att beslutspanelen finns.
+  Kriteriernas kärna står kvar; produktens markup, tokens, typografi och
+  fokusordning bevaras. Inga beroenden eller API-/CRM-kontrakt ändras.
+  `npm run typecheck` före/efter: exit 0, `tsc --noEmit && tsc --noEmit -p
+  tsconfig.test.json`. Hela `npm test` före/efter: exit 1 i globalSetup,
+  `connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)` före fallen.
+  Vyfallen och regressionen är inte körda; deras nästa belägg kommer från
+  kedjan enligt nätundantaget. Externa Hermes-prov och webbläsarkontroll
+  är inte körda här. Kedjan hanterar granskning, merge och driftsättning.
+
+- **2026-11-21 — Story 3.1, referensernas verkliga läge (B-15, FR-10/26/36):**
+  Migration `0093_referens.sql` ger overifierat utgångsläge, utanför-status,
+  händelsedatum och fryst Drive-revision. Den rättar aldrig verifierade levande
+  rader och kanoniska mejl-id:n i öppna uppdrag; avslutad historik står kvar.
+  Kantkontrollen stoppar mejlkrockar före ändring. Formregeln, skrivvägen och
+  signaluppslaget delar kanoniskt id; känd utanför-fil avvisas före skrivning.
+  Svepets dom består tills en innanför-dom kommer. Saknad fryst revision
+  redovisas som ej bedömd utan ny verifieringstid. De sex befintliga vyerna
+  använder en gemensam referensvisning med härledda länkar och källa/tid/datum.
+  Husets statuspiller, tokens, Public Sans, kodtypografi och länkfokus används;
+  tomma värden är vanlig text. Ingen CSS, rutt eller tjänst tillkommer.
+  Prov: F1–F3, M1–M7, W1–W10, D1, R1–R6, V1–V8 och Y1/Y3–Y9 samt
+  angivna regressioner; Y8 ligger i statusbytesprovet. Testerna skrevs före kod.
+  `npm run typecheck`: exit 0; `npm run build`: exit 0.
+  `git diff --check`: exit 0. Källkontroller för avgränsning och SQL utan fynd.
+  `npm test` före/efter varje uppgift: exit 1 i globalSetup,
+  `connect EPERM 127.0.0.1:5433` före fallen. Databas- och vyfallen samt
+  helsviten är därför inte körda; kedjans nästa körning är belägget enligt
+  nätundantaget. Inga tjänster startade eller migrationer körda manuellt.
+  Efter godkänd granskning hanterar kedjan merge, deploy och hälsokontroll.
+  Kantkontrollfel blir driftens arbete. Krock eller ett lägre migrationsnummer
+  än driftens kedja kräver nästa lediga nummer före merge/deploy. Före 3.2
+  förblir händelsedatum null; kalenderlänk kräver namngiven kalender eller datum.
+  Utanför-id lämnas till Hermes driftpost, aldrig som fråga i undantagsvyn.
+  Externa Hermes-prov och interaktiv webbläsarkontroll är inte körda.
+  Story/sprint: review efter alla 26 DoD-punkter med uttryckligt nätundantag.
+  Slutstegets hela `npm test` försökt igen: samma EPERM före fallen.
+
+
 - **2026-11-21 — Story 2.3, kontrollomtag efter röda CRM-regressioner (FR-14):**
   Aliasomläsningen i `crmRelations.ts` låste även aliasraden med FOR UPDATE,
   trots att migration 0059 avsiktligt inte ger app-rollen UPDATE på alias.

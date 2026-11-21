@@ -302,7 +302,7 @@ describe('(c) ytan är en väg, aldrig en kopia', () => {
     // den vägen byggs inte om här.
     expect(y.dokument).toHaveProperty('source_file_id');
     expect(y.dokument.referenser[0]).toHaveProperty('extern_id');
-    expect(Object.keys(y.dokument)).toEqual(['source_file_id', 'referenser']);
+    expect(Object.keys(y.dokument)).toEqual(['source_file_id', 'referenser', 'utanfor_sparr']);
   });
 
   it('vyns HTML bär referenser — aldrig dokumentinnehåll, och inget skript', async () => {
