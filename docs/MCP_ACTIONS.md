@@ -2696,3 +2696,14 @@ Godkännandets slutna utfall är `alias_added`, `already_alias`, `name_exists`,
 `organization_missing`. Ändrade affärslägen ger ett slutresultat i stället för
 ett tekniskt återförsök. Regeln gäller synkens skrivningar; en relation som
 skapas för hand prövas inte av den.
+
+Parjämförelsen återanvänder även direkt köade förslag med UUID i annat
+skiftläge och omgivande blanktecken i namnet. Efter låsväntan läser synken
+om besked och alias innan variantbeslutet fattas. Samtidiga godkännanden
+för samma aliasnamn ger samma slutna utfall; bara den som lade aliaset
+skriver `crm.name_variant_accepted`.
+
+Kortet jämför namnens aktuella nycklar i databasen. Ett direktförslag mellan
+olika namn eller en relation som döpts om får texten *Namnen skiljer sig i
+mer än bolagsform. Kontrollera att det är samma bolag.* Ja-texten visar
+aktuell målrelation och nej-texten förklarar att beskedet sparas för paret.

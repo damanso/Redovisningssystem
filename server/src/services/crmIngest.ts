@@ -98,12 +98,15 @@ export async function queueNameVariantProposal(
 ): Promise<{ approval_id: string; queued: boolean }> {
   await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
     [companyId, input.organization_id]);
+  // Samma trim som verkställighetens String.trim, även för redan lagrade
+  // direktförslag. SQL:s vanliga btrim tar bara bort ASCII-mellanslag.
+  const trimCharacters = '\u0009\u000a\u000b\u000c\u000d \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff';
   const existing = await client.query<{ id: string }>(
     `SELECT id FROM action_approvals WHERE company_id = $1 AND action = 'merge_crm_name_variant'
-       AND input->>'organization_id' = $2 AND lower(input->>'name') = lower($3)
+       AND lower(input->>'organization_id') = lower($2) AND lower(btrim(input->>'name', $4)) = lower($3)
        AND (status = 'pending' OR (${MOTTAGET_EJ_VERKSTALLT}))
      ORDER BY created_at, id LIMIT 1`,
-    [companyId, input.organization_id, input.name],
+    [companyId, input.organization_id, input.name.trim(), trimCharacters],
   );
   if (existing.rows[0]) return { approval_id: existing.rows[0].id, queued: false };
   const approval = await createApproval(client, companyId, userId, actor, 'merge_crm_name_variant', input);

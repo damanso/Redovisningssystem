@@ -153,6 +153,47 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, en bolagsformsvariant: kontrollomtag för röda R2-fall (crm, FR-14):**
+  Auditfrågan i `server/test/crm-org-name-norm.test.ts` jämför nu
+  textkolumnen `crm.audit_log.entity_id` med `text[]`. Rotorsaken var att
+  UUID-formade värden gav en felaktig SQL-typ i testet; TypeScript granskar
+  inte SQL-strängens operatorer. Samma klass sökt i hela storyändringen:
+  övriga UUID-arrayer jämför UUID-kolumner, JSON-text använder redan text[].
+  Tre samtidighetsfall (samma stavning, skiftläge, trim) har vardera tre
+  auditkontroller: blandad text-/UUID-lista, bara förloraren och tom lista.
+  Facit kräver exakt vinnarens id och namnfri audit eller inga rader.
+  `npm run typecheck` före/efter **exit 0**, `npm run build` **exit 0**,
+  `git diff --check` **exit 0**. `npm test` före/efter och i slutgrinden
+  **exit 1: connect EPERM 127.0.0.1:5433** i globalSetup före testfallen.
+  Kedjan måste verifiera DB-fallen enligt nätundantaget. DoD punktprövad;
+  Status **review** enligt undantaget. Ingen API- eller UI-ändring i omtaget;
+  husets befintliga ai-card/tokens/typografi och fokusordning består.
+  Ingen driftsättning. Hermes-proven och tidigare röda externa prov har
+  inte omprövats i denna session.
+
+- **2026-11-21 — Story 2.3, en bolagsformsvariant: omtag efter sju granskningsfynd (crm, FR-14):**
+  Fyra felklasser rättade i `crmIngest`, `crmMerge`, `crmRelations` och
+  `approvalSummary`: lagrade UUID/namn jämförs som vid verkställighet,
+  aliasinsättning hanterar samtidiga vinnare genom ON CONFLICT och omläsning,
+  synken läser besked/alias och hela kandidatmängden efter erhållna lås,
+  och kortet beskriver olika namn korrekt även efter namnbyte. Nytillkomna
+  kandidater under låsväntan låses också innan ett par väljs. Inga nya
+  beroenden, migrationer, rutter eller CSS-klasser. Kortet använder husets
+  ai-card, tokens, knappar och fokusordning; tom-/felläge och serverrendering
+  följer befintliga Att göra. API-kontrakt och MCP-text förtydligade.
+  14 regressioner i `crm-org-name-norm.test.ts` täcker direktförslag,
+  hela tillåtna trimmängden, negativa grannar, överlappande ja/nej,
+  ändrat kandidatantal och ärlig korttext på funktions- och vynivå.
+  Rena prov körda separat med installerad Vitest utan DB-setup: **94 passed**;
+  källtext-/register-/sändvägsprov **19 passed, 16 skipped** (DB-fall ej valda).
+  `npm run typecheck` före/efter rättelserna **exit 0**. `npm test` före/efter
+  stannar i globalSetup: **connect EPERM 127.0.0.1:5433**, inga DB-fall körda.
+  Bygget `npm run build` **exit 0**. Sju fynd ikryssade; Status **review**
+  enligt nätundantaget efter punktvis DoD-prövning.
+  Kedjan måste därför köra DB-regression och de nya överlappningsfallen.
+  Ingen driftsättning eller hälsokontroll utförd. Hermes-proven kördes inte;
+  tidigare röda adresskontrakt/bmadglidning har inte omprövats i denna session.
+
 - **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
   Migration 0092 lägger Davids besked i `crm.organization_distinctions` med
   sammansatt FK, FORCE RLS och bara SELECT/INSERT. Synkens regel i

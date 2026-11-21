@@ -10,6 +10,7 @@ import { api, app, createCompany, registerUser, withAdmin, type TestUser } from 
 import { upsertOrganization, saveOrganizationDistinction } from '../src/services/crmRelations.js';
 import { queueNameVariantProposal } from '../src/services/crmIngest.js';
 import { explainApproval } from '../src/services/approvalSummary.js';
+import { acceptNameVariant, rejectNameVariant } from '../src/services/crmMerge.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 let user: TestUser;
@@ -1207,6 +1208,262 @@ describe('dokumenten (story 2.3)', () => {
     expect(answer).toContain('"merge_proposals": []'); expect(answer).toContain('`merge_proposals`');
     for (const title of ['De fyra reglerna', 'Svaret', 'Människan vinner', 'Kadens, dubbletter och sökning']) {
       expect(contract.split('\n').filter((line) => line === '## ' + title), title).toHaveLength(1);
+    }
+  });
+});
+
+// Omtag: lagrade förslag ska jämföras som samma par även när transportens
+// giltiga stavningar skiljer sig från synkens. Negativa grannar får stå kvar.
+describe('granskningens parjämförelse (story 2.3)', () => {
+  it.each([
+    ['versalt id', 'upper', '', ''],
+    ['mellanslag', 'lower', '  ', '  '],
+    ['blandat id och radbrytningar', 'mixed', '\t\n', '\r\t'],
+    ['Unicode-blanktecken', 'upper', '\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a', '\u2028\u2029\u202f\u205f\u3000\ufeff'],
+  ])('R1 återanvänder direktförslag med %s', async (label, casing, left, right) => {
+    const name = `Parprov ${label}`;
+    const created = await act('upsert_crm_organization', { name });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const id: string = created.body.result.id;
+    const transportedId = casing === 'upper' ? id.toUpperCase()
+      : casing === 'mixed' ? id.slice(0, 18).toUpperCase() + id.slice(18) : id;
+    const variant = `${name} AS`;
+    const input = { organization_id: transportedId, name: left + variant.toUpperCase() + right };
+    const queued = await act('merge_crm_name_variant', input);
+    expect(queued.status, JSON.stringify(queued.body)).toBe(202);
+    // Samma organisation med annat namn och samma namn med annan organisation
+    // får inte räknas som det sökta paret.
+    const other = await act('upsert_crm_organization', { name: `Granne ${label}` });
+    expect(other.status, JSON.stringify(other.body)).toBe(200);
+    for (const distractor of [
+      { organization_id: id, name: `${name} Oy` },
+      { organization_id: other.body.result.id, name: variant },
+    ]) {
+      const r = await act('merge_crm_name_variant', distractor);
+      expect(r.status, JSON.stringify(r.body)).toBe(202);
+    }
+    const r = await ingest([kontaktpunkt(variant, `gmail:r1-${casing}-${label}`)]);
+    expect(r.skipped).toEqual([{ index: 0, reason: `bolagsformsvariant av ${name} — väntar på ditt beslut i Att göra` }]);
+    expect(r.merge_proposals).toEqual([`${variant} → ${name} (bolagsform)`]);
+    expect(r.organizations_created).toBe(0);
+    const rows = await withAdmin(async (db) => (await db.query(
+      `SELECT id, input FROM action_approvals WHERE company_id = $1
+       AND action = 'merge_crm_name_variant' AND lower(input->>'organization_id') = $2 ORDER BY created_at, id`,
+      [companyId, id])).rows);
+    expect(rows).toHaveLength(2);
+    expect(rows).toContainEqual({ id: queued.body.approval.id, input });
+    expect(await antal(`SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1
+      AND action = 'action.approval_requested' AND entity_id = $2`, [companyId, queued.body.approval.id])).toBe(1);
+  });
+});
+
+
+// Riktiga överlappande transaktioner: pg_blocking_pids bevisar att den andra
+// skrivningen faktiskt väntar före commit; ingen tidsbaserad gissning om ordning.
+async function vantaPaLas(pid: number) {
+  await withAdmin(async (db) => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const r = await db.query<{ blocked: boolean }>(
+        'SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS blocked', [pid]);
+      if (r.rows[0]!.blocked) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Ingen överlappande låsväntan observerades');
+  });
+}
+
+describe('granskningens samtidiga alias (story 2.3)', () => {
+  it.each(['samma stavning', 'annat skiftläge', 'trimmat namn'])(
+    'R2 samtidiga ja ger slutna utfall vid %s', async (fall) => {
+      const ids: string[] = [];
+      for (const name of [`Aliasvinnare ${fall}`, `Aliaskonkurrent ${fall}`]) {
+        const r = await act('upsert_crm_organization', { name });
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        ids.push(r.body.result.id);
+      }
+      const name = `Gemensamt alias ${fall} AS`;
+      const q = await act('merge_crm_name_variant', {
+        organization_id: ids[1]!.toUpperCase(),
+        name: fall === 'annat skiftläge' ? name.toUpperCase() : fall === 'trimmat namn' ? `  ${name} \t` : name,
+      });
+      expect(q.status, JSON.stringify(q.body)).toBe(202);
+      let simultaneous: Promise<Awaited<ReturnType<typeof act>>> | undefined;
+      try {
+        await withTenantTransaction(user.userId, companyId, async (c) => {
+          const first = await acceptNameVariant(c, companyId, user.userId, { organization_id: ids[0]!, name });
+          expect(first).toEqual({ outcome: 'alias_added', organization_id: ids[0] });
+          const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+          // Vinnaren har skrivit aliaset men ännu inte committat. Nästa ja
+          // måste möta samma unika namn trots att det låser en annan relation.
+          simultaneous = api.post(`/api/companies/${companyId}/approvals/${q.body.approval.id}/approve`)
+            .set('Authorization', `Bearer ${user.token}`).send({}).then((r) => r);
+          await vantaPaLas(pid);
+        });
+        const second = await simultaneous!;
+        expect(second.status, JSON.stringify(second.body)).toBe(200);
+        expect(second.body.approval.status).toBe('executed');
+        expect(second.body.result).toEqual({ outcome: 'alias_elsewhere', organization_id: ids[1]!.toUpperCase() });
+      } finally {
+        // Även ett trasigt prov måste släppa anslutningar före nästa fall.
+        if (simultaneous) await Promise.allSettled([simultaneous]);
+      }
+      expect(await antal(`SELECT count(*)::int AS n FROM crm.organization_name_aliases
+        WHERE company_id = $1 AND lower(name) = lower($2) AND organization_id = $3`, [companyId, name, ids[0]])).toBe(1);
+      // Auditens generiska entity_id är text även när värdena är organisations-UUID.
+      // Blandad id-lista, bara förloraren och tom lista vaktar även typgränsen.
+      for (const entityIds of [[...ids, 'audit-utan-uuid'], [ids[1]!], []]) {
+        const audits = await withAdmin(async (db) => (await db.query(`SELECT entity_id, details FROM crm.audit_log
+          WHERE company_id = $1 AND entity_id = ANY($2::text[]) AND action = 'crm.name_variant_accepted'`, [companyId, entityIds])).rows);
+        expect(audits).toEqual(entityIds.includes(ids[0]!)
+          ? [{ entity_id: ids[0], details: { alias_added: 1 } }] : []);
+      }
+    });
+});
+
+describe('granskningens beslut efter låsväntan (story 2.3)', () => {
+  it.each(['nej', 'ja'] as const)('R3 synken läser om ett samtidigt %s efter låset', async (val) => {
+    const name = `Låsväntan ${val}`;
+    const variant = `${name} AS`;
+    const created = await act('upsert_crm_organization', { name });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const id: string = created.body.result.id;
+    let syncing: ReturnType<typeof ingest> | undefined;
+    try {
+      await withTenantTransaction(user.userId, companyId, async (c) => {
+        await c.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, id]);
+        const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        syncing = ingest([kontaktpunkt(variant, `gmail:r3-${val}`)]);
+        await vantaPaLas(pid);
+        const execute = val === 'nej' ? rejectNameVariant : acceptNameVariant;
+        const result = await execute(c, companyId, user.userId, { organization_id: id, name: variant });
+        expect(result.outcome).toBe(val === 'nej' ? 'distinction_saved' : 'alias_added');
+      });
+      const r = await syncing!;
+      expect(r.skipped).toEqual([]);
+      expect(r.merge_proposals).toEqual([]);
+      expect(r.organizations_created).toBe(val === 'nej' ? 1 : 0);
+      expect(r.interactions_created).toBe(1);
+      expect(r.redirected_organizations).toEqual(val === 'nej' ? [] : [`${variant} → ${name}`]);
+      expect(await antal(`SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1
+        AND action = 'merge_crm_name_variant' AND input->>'organization_id' = $2`, [companyId, id])).toBe(0);
+      const interactions = await withAdmin(async (db) => (await db.query<{ name: string }>(
+        `SELECT o.name FROM crm.interactions i JOIN crm.organizations o
+         ON o.company_id = i.company_id AND o.id = i.organization_id
+         WHERE i.company_id = $1 AND i.source_ref = $2`, [companyId, `gmail:r3-${val}`])).rows);
+      expect(interactions).toEqual([{ name: val === 'nej' ? variant : name }]);
+    } finally {
+      if (syncing) await Promise.allSettled([syncing]);
+    }
+  });
+});
+
+describe('granskningens flera låsta kandidater (story 2.3)', () => {
+  it.each([false, true])('R5 räknar aktuella kandidater efter avslag på båda = %s', async (both) => {
+    const name = `Kandidatbesked ${both ? 'båda' : 'en'}`;
+    const names = [name, `${name} AB`];
+    const ids: string[] = [];
+    for (const n of names) {
+      const r = await act('upsert_crm_organization', { name: n });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      ids.push(r.body.result.id);
+    }
+    const variant = `${name} Oy`;
+    let syncing: ReturnType<typeof ingest> | undefined;
+    try {
+      await withTenantTransaction(user.userId, companyId, async (c) => {
+        await c.query(`SELECT id FROM crm.organizations WHERE company_id = $1
+          AND id = ANY($2::uuid[]) ORDER BY name, id FOR UPDATE`, [companyId, ids]);
+        const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        syncing = ingest([kontaktpunkt(variant, `gmail:r5-${both}`)]);
+        await vantaPaLas(pid);
+        for (const id of both ? ids : [ids[0]!]) {
+          expect((await rejectNameVariant(c, companyId, user.userId, { organization_id: id, name: variant })).outcome)
+            .toBe('distinction_saved');
+        }
+      });
+      const r = await syncing!;
+      expect(r.organizations_created).toBe(both ? 1 : 0);
+      expect(r.interactions_created).toBe(both ? 1 : 0);
+      expect(r.skipped).toEqual(both ? [] : [{ index: 0,
+        reason: `bolagsformsvariant av ${names[1]} — väntar på ditt beslut i Att göra` }]);
+      expect(r.merge_proposals).toEqual(both ? [] : [`${variant} → ${names[1]} (bolagsform)`]);
+      const proposals = await withAdmin(async (db) => (await db.query(`SELECT input FROM action_approvals
+        WHERE company_id = $1 AND action = 'merge_crm_name_variant'
+        AND input->>'organization_id' = ANY($2::text[])`, [companyId, ids])).rows);
+      expect(proposals).toEqual(both ? [] : [{ input: { organization_id: ids[1], name: variant } }]);
+    } finally {
+      if (syncing) await Promise.allSettled([syncing]);
+    }
+  });
+});
+
+describe('granskningens sanningsenliga kort (story 2.3)', () => {
+  it.each(['direkt', 'namnbyte'] as const)('R7 visar aktuellt beslutsunderlag för %s förslag', async (fall) => {
+    const name = `Kortursprung ${fall}`;
+    const variant = fall === 'direkt' ? 'Ett helt annat bolag AS' : `${name} AS`;
+    const created = await act('upsert_crm_organization', { name });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const id: string = created.body.result.id;
+    const queued = await act('merge_crm_name_variant', { organization_id: id, name: variant });
+    expect(queued.status, JSON.stringify(queued.body)).toBe(202);
+    const base = `/app/c/${companyId}`;
+    const explain = () => withTenantTransaction(user.userId, companyId,
+      (c) => explainApproval(c, companyId, 'merge_crm_name_variant', queued.body.approval.input, base));
+    let current = name;
+    if (fall === 'namnbyte') {
+      expect((await explain()).why).toContain('Namnen skiljer sig bara i bolagsform (AS).');
+      current = 'Omdöpt relationsbolag AB';
+      const changed = await act('upsert_crm_organization', { organization_id: id, name: current });
+      expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    }
+    const expected = 'Namnen skiljer sig i mer än bolagsform. Kontrollera att det är samma bolag.'
+      + ` Godkänn: ${variant} räknas som ${current}, och kommande händelser med det namnet hamnar där.`
+      + ' Avvisa: beskedet att det är olika bolag sparas för det här namnparet.';
+    const summary = await explain();
+    expect(summary).toEqual({ change: null, why: expected,
+      source: { label: 'Öppna relationen', href: `${base}/relations/${id}` } });
+    expect(summary.why).not.toContain('Namnen skiljer sig bara i bolagsform');
+    const page = await ua.get(`${base}/approvals`);
+    expect(page.status, page.text).toBe(200);
+    const card = (page.text.match(/<article class="ai-card">[\s\S]*?<\/article>/g) ?? [])
+      .find((c) => c.includes(`/approvals/${queued.body.approval.id}/reject`));
+    expect(card).toBeDefined();
+    expect(card!.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')).toContain(expected);
+    expect(card).toContain('name="skal"');
+    expect(card).toContain('required');
+    expect(card).toContain('class="btn btn--primary btn--sm"');
+    expect(card).toContain(`${base}/relations/${id}`);
+    expect(page.text).toContain(':focus-visible');
+  });
+});
+
+describe('granskningens ändrade kandidatmängd (story 2.3)', () => {
+  it('R5b en kandidat som tillkommer under låsväntan får inte förbises', async () => {
+    const name = 'Tillkommande kandidat';
+    const variant = `${name} Oy`;
+    const created = await act('upsert_crm_organization', { name });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    let syncing: ReturnType<typeof ingest> | undefined;
+    try {
+      await withTenantTransaction(user.userId, companyId, async (c) => {
+        await c.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
+          [companyId, created.body.result.id]);
+        const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        syncing = ingest([kontaktpunkt(variant, 'gmail:r5b')]);
+        await vantaPaLas(pid);
+        const extra = await act('upsert_crm_organization', { name: `${name} AB` });
+        expect(extra.status, JSON.stringify(extra.body)).toBe(200);
+      });
+      const r = await syncing!;
+      expect(r.skipped).toEqual([{ index: 0, reason: 'bolagsformsvariant av flera relationer — slå ihop dem först' }]);
+      expect(r.merge_proposals).toEqual([`${variant} (flera möjliga)`]);
+      expect(r.organizations_created).toBe(0);
+      expect(r.interactions_created).toBe(0);
+      expect(await antal(`SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1
+        AND action = 'merge_crm_name_variant' AND input->>'name' = $2`, [companyId, variant])).toBe(0);
+    } finally {
+      if (syncing) await Promise.allSettled([syncing]);
     }
   });
 });

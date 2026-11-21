@@ -438,10 +438,22 @@ export async function acceptNameVariant(
     [companyId, name],
   );
   if (alias.rows[0]) return result(alias.rows[0].organization_id === org.rows[0].id ? 'already_alias' : 'alias_elsewhere');
-  await client.query(
-    `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by)
-     VALUES ($1,$2,$3,$4)`, [companyId, name, organizationId, userId],
-  );
+  // Olika mål låser olika organisationsrader. Det unika aliasindexet avgör
+  // vinnaren; en förlorare läser målet i en ny snapshot utan att förgifta
+  // transaktionen. Tas aliaset bort mellan satserna får insättningen försöka igen.
+  for (;;) {
+    const inserted = await client.query(
+      `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by)
+       VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING organization_id`,
+      [companyId, name, organizationId, userId],
+    );
+    if (inserted.rowCount) break;
+    const winner = await client.query<{ organization_id: string }>(
+      'SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)',
+      [companyId, name],
+    );
+    if (winner.rows[0]) return result(winner.rows[0].organization_id === org.rows[0].id ? 'already_alias' : 'alias_elsewhere');
+  }
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.name_variant_accepted', entityType: 'organization', entityId: organizationId,
     details: { alias_added: 1 },

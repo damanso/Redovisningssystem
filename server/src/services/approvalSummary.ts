@@ -689,14 +689,20 @@ export async function explainApproval(
     const normalized = await one<{ name_norm: string }>(client,
       'SELECT crm.normalize_org_name($1) AS name_norm', [variant]);
     if (!normalized) return none;
+    // Direktförslag och senare namnbyten kan ge olika bolag. Skälet ska
+    // bygga på de aktuella databasnycklarna, aldrig på åtgärdens namn.
+    const sameNorm = normalized.name_norm === org.name_norm;
     const forms = [...new Set([
       companyFormSuffix(variant, normalized.name_norm), companyFormSuffix(org.name, org.name_norm),
     ].filter((form): form is string => form !== null))];
     return {
       change: null,
-      why: (forms.length ? `Namnen skiljer sig bara i bolagsform (${forms.join(', ')}).` : 'Namnen skiljer sig bara i bolagsform.')
+      why: (sameNorm
+        ? (forms.length ? `Namnen skiljer sig bara i bolagsform (${forms.join(', ')}).` : 'Namnen skiljer sig bara i bolagsform.')
+        : 'Namnen skiljer sig i mer än bolagsform. Kontrollera att det är samma bolag.')
         + ` Godkänn: ${variant} räknas som ${org.name}, och kommande händelser med det namnet hamnar där.`
-        + ` Avvisa: det är ett annat bolag — nästa synk skapar en egen relation för ${variant}.`,
+        + (sameNorm ? ` Avvisa: det är ett annat bolag — nästa synk skapar en egen relation för ${variant}.`
+          : ' Avvisa: beskedet att det är olika bolag sparas för det här namnparet.'),
       source: { label: 'Öppna relationen', href: `${base}/relations/${id}` },
     };
   }

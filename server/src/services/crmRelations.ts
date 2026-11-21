@@ -391,21 +391,47 @@ export async function upsertOrganization(
 
   // A-4: ingen ny relation för synkens variant innan David avgjort paret.
   if (origin.source === 'sync' && !hit) {
-    const candidates = await client.query<{ id: string; name: string }>(
-      `SELECT o.id, o.name FROM crm.organizations o
-       WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
-         AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
-           WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
-       ORDER BY o.name, o.id FOR UPDATE OF o`,
-      [companyId, writeName],
-    );
-    if (candidates.rows.length === 1) {
-      const k = candidates.rows[0]!;
-      throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${k.name} — väntar på ditt beslut i Att göra`,
-        { organization_id: k.id, name: k.name });
-    }
-    if (candidates.rows.length > 1) {
-      throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
+    const lockedIds = new Set<string>();
+    for (;;) {
+      // Lås först alla möjliga mål. Ett NOT EXISTS i låsfrågan använder
+      // snapshoten från före väntan och kan därför missa ett just verkställt nej.
+      const locked = await client.query<{ id: string }>(
+        `SELECT o.id FROM crm.organizations o
+         WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+         ORDER BY o.name, o.id FOR UPDATE OF o`,
+        [companyId, writeName],
+      );
+      for (const row of locked.rows) lockedIds.add(row.id);
+      // Varje sats efter låset får en ny snapshot. Ett samtidigt ja eller en
+      // nytillkommen exakt träff ska gå genom den befintliga uppslagsvägen igen,
+      // så kundskydd, ursprung och redovisad omstyrning följer samma regler.
+      const resolved = await client.query(
+        `SELECT 1 FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2)
+         UNION ALL
+         SELECT 1 FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)
+         LIMIT 1`, [companyId, writeName],
+      );
+      if (resolved.rows[0]) return upsertOrganization(client, companyId, userId, rawInput, origin);
+      const candidates = await client.query<{ id: string; name: string }>(
+        `SELECT o.id, o.name FROM crm.organizations o
+         WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+           AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
+             WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
+         ORDER BY o.name, o.id`,
+        [companyId, writeName],
+      );
+      // En ny kandidat kan ha committats medan låsfrågan väntade. Ta dess
+      // lås och läs om hela beslutsunderlaget innan något par väljs.
+      if (candidates.rows.some((row) => !lockedIds.has(row.id))) continue;
+      if (candidates.rows.length === 1) {
+        const k = candidates.rows[0]!;
+        throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${k.name} — väntar på ditt beslut i Att göra`,
+          { organization_id: k.id, name: k.name });
+      }
+      if (candidates.rows.length > 1) {
+        throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
+      }
+      break;
     }
   }
 

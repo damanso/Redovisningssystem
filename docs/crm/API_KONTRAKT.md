@@ -124,6 +124,11 @@ Godkänt styr nästa synk till relationen och redovisas i
 relationen. Flera möjliga relationer ger ingen relation och inget förslag,
 bara skälet *bolagsformsvariant av flera relationer — slå ihop dem först*.
 
+Väntande och mottagna men ännu inte verkställda förslag återanvänds även
+när ett direktförslag har UUID i annat skiftläge eller omgivande blanktecken
+i namnet. Ett beslut som verkställs medan synken väntar på organisationslåset
+läses om före variantbeslutet: ja följer aliaset, nej respekterar det sparade paret.
+
 ## Svaret
 
 ```jsonc
