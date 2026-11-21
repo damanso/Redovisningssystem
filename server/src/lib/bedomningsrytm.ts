@@ -6,6 +6,11 @@
 // för samma bedömning. Före Story 2.3 var perioden kalendermånaden: en husrytm
 // som kontraktet aldrig har sagt.
 //
+// Filen bär också de två prövningar som ytorna delar: `ankarhinder` (om ett
+// ankare kan sättas, i åtgärden och i vyn) och `periodlucka` (varför ingen
+// period räknas, i ord). En regel med två platser hade gett en sida som säger
+// något annat än svaret.
+//
 // Tre regler som filen inte får bryta:
 //
 //   * **Utan ankare finns ingen period.** Ingen period räknas frisk och
@@ -94,4 +99,61 @@ export function bedomningsperiod(rytm: Bedomningsrytm, idag: string): Bedomnings
  */
 export function ankarkallatext(kalla: Ankarkalla): string {
   return kalla.typ === 'davids_uppgift' ? `Davids uppgift ${kalla.datum}` : `Kalenderreferens ${kalla.referens_id}`;
+}
+
+/** Vyn vet bara att ingen rytm är inläst — inte vad kontraktet säger. */
+export const INGEN_RYTM = 'ingen rytm är inläst ur kontraktet';
+
+/**
+ * Varför ingen period räknas, i ord — den ENDA texten för det, på Läget,
+ * Bedömning och undantagsvyns begärda bedömning. Den följer läget och ankaret
+ * och påstår aldrig mer än kolumnerna vet: utan intervall är ingen rytm inläst,
+ * utan ankare saknas datumet, ett ankare på fel veckodag sägs vara just det,
+ * och före ankaret finns ett första tillfälle men ännu ingen period.
+ * NULL när en period finns.
+ */
+export function periodlucka(lage: Rytmlage, period: Bedomningsperiod | null, ankare: string | null): string | null {
+  if (period !== null) return null;
+  switch (lage) {
+    case 'rytm_saknas':
+      return INGEN_RYTM;
+    case 'datum_saknas':
+      return ankare === null
+        ? 'datum saknas — avtalets rytm har inget ankardatum'
+        : `ankardatumet ${ankare} stämmer inte med avtalets rytm`;
+    case 'raknad':
+      return `ingen period räknas före ankardatumet ${ankare ?? ''}`.trimEnd();
+    default: {
+      const okant: never = lage;
+      return String(okant);
+    }
+  }
+}
+
+/** Varför ankaret inte kan sättas. */
+export type Ankarhinder = 'uppdrag_avslutat' | 'rytm_saknas' | 'ankare_redan_satt';
+
+/**
+ * Hindrens ord: åtgärdens felmeddelande och vyns förklaring är samma text, så
+ * att sidan aldrig säger något annat än svaret på ett försök.
+ */
+export const ANKARHINDER: Readonly<Record<Ankarhinder, string>> = {
+  uppdrag_avslutat: 'Uppdraget är avslutat. Baselinen, rytmen och ankardatumet med, är skrivskyddad efter avslut.',
+  rytm_saknas: 'Ingen bedömningsrytm är inläst ur kontraktet. Utan rytm räknar ett ankardatum inga perioder.',
+  ankare_redan_satt: 'Ankardatumet är redan satt. Det ändras bara genom en baselineändring med orsak.',
+};
+
+/**
+ * Den ENDA prövningen av om ett ankare kan sättas, före indata: åtgärden
+ * kastar hindret som 409, och vyn visar formuläret bara när det inte finns
+ * något — ingen knapp som bara kan ge 409. Avslutet prövas först, eftersom
+ * ingenting på ett avslutat uppdrag skrivs (FR-8).
+ */
+export function ankarhinder(a: {
+  uppdrag_avslutat: boolean; bedomning_intervall_dagar: number | null; bedomning_ankare: string | null;
+}): Ankarhinder | null {
+  if (a.uppdrag_avslutat) return 'uppdrag_avslutat';
+  if (a.bedomning_intervall_dagar === null) return 'rytm_saknas';
+  if (a.bedomning_ankare !== null) return 'ankare_redan_satt';
+  return null;
 }

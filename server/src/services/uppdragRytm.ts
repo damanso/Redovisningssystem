@@ -11,6 +11,10 @@
 //     baselineändring med orsak (B6, Story 2.4). Tre spärrar bär det: radlåset
 //     och villkoret i UPDATE:n här, `update_contract`:s strikta schema och
 //     importens tillåtelselista, som inte nämner ankaret.
+//   * **En skrivväg till rytm- och ankarkolumnerna:** `skrivRytmkolumner`, för
+//     ankaret och för importens rytm. Den spärrar ett avslutat uppdrag (FR-8)
+//     och skriver aldrig under ett satt ankare. `contracts` saknar 0068:s
+//     avslutstrigger, så spärren bor här och ärvs av varje skrivare.
 //   * **Läget, Bedömning och undantagsvyn läser rytmen och måtten här.** Varje
 //     period räknas av den rena `bedomningsrytmlage` (`lib/bedomningsrytm.ts`),
 //     och varje måtts värde bär sin källa och lästid (`Lasvarde`, B-12).
@@ -20,7 +24,7 @@
 // Fel kastas och fångas aldrig inne i transaktionen (lärdom 2).
 import type { PoolClient } from 'pg';
 import {
-  ankarkallatext, bedomningsrytmlage, isoVeckodag,
+  ankarhinder, ANKARHINDER, ankarkallatext, bedomningsrytmlage, isoVeckodag,
   type Ankarkalla, type Bedomningsrytm, type Rytmutfall,
 } from '../lib/bedomningsrytm.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
@@ -28,9 +32,6 @@ import { KALLA_REDOVISNING, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import { mattlasare, type Uppfoljningsmatt } from '../lib/leveranskontrakt.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
-
-/** Svaret när ankaret redan är satt — också texten vyn visar (`?fel=`). */
-const ANKARE_SATT = 'Ankardatumet är redan satt. Det ändras bara genom en baselineändring med orsak.';
 
 /** ISO-veckodagarnas namn, för felets text. */
 const VECKODAGSNAMN = ['måndag', 'tisdag', 'onsdag', 'torsdag', 'fredag', 'lördag', 'söndag'];
@@ -45,6 +46,75 @@ const ANKARE_UPDATE: Readonly<Record<string, string>> = {
 };
 
 // ---------------------------------------------------------------------------
+// Rytmraden: en läsning och en skrivväg
+// ---------------------------------------------------------------------------
+
+/**
+ * Avtalets rytm- och ankarkolumner och om uppdraget är avslutat. Kolumnerna
+ * `contracts` saknar avslutstriggern (0068 lägger den bara på delarna och
+ * modulens tabeller), så avslutet läses här och prövas i koden.
+ */
+export interface Rytmrad {
+  rytm_text: string | null;
+  bedomning_intervall_dagar: number | null;
+  bedomning_veckodag: number | null;
+  bedomning_ankare: string | null;
+  bedomning_ankare_kalla: string | null;
+  rapport_mottagarkrets: string | null;
+  uppdrag_avslutat: boolean;
+}
+
+/**
+ * Den ENDA läsningen av rytmraden — för Läget, Bedömning, undantagsvyn, ankaret
+ * och importen. `forSkrivning` tar radlåset på avtalet i anroparens
+ * transaktion. Ingen rad (också grannbolagets avtal) ger `undefined`.
+ */
+export async function lasRytmraden(
+  client: PoolClient, companyId: string, contractId: string, forSkrivning = false,
+): Promise<Rytmrad | undefined> {
+  return (await client.query<Rytmrad>(
+    `SELECT c.rytm_text, c.bedomning_intervall_dagar, c.bedomning_veckodag,
+            c.bedomning_ankare::text AS bedomning_ankare, c.bedomning_ankare_kalla, c.rapport_mottagarkrets,
+            coalesce(p.status = 'closed', false) AS uppdrag_avslutat
+       FROM contracts c
+       LEFT JOIN projects p ON p.id = c.project_id AND p.company_id = c.company_id
+      WHERE c.id = $1 AND c.company_id = $2${forSkrivning ? ' FOR UPDATE OF c' : ''}`,
+    [contractId, companyId],
+  )).rows[0];
+}
+
+/**
+ * Den ENDA vägen in till rytm- och ankarkolumnerna på `contracts`, för
+ * importens rytm och för ankaret. Två spärrar som varje skrivare ärver:
+ *
+ *   * **ett avslutat uppdrag tar inte emot något** (FR-8): 409
+ *     `uppdrag_avslutat` före UPDATE:n, i samma transaktion och efter radlåset;
+ *   * **ett satt ankare skrivs aldrig över:** UPDATE:n bär villkoret
+ *     `bedomning_ankare IS NULL`, och rytmen under ett satt ankare skrivs inte
+ *     heller — då hade ankaret hamnat på fel veckodag i en ny rytm.
+ *
+ * Kolumnerna kommer ur anroparens fasta tillåtelselista, aldrig ur indata.
+ * Svaret är antalet uppdaterade rader: 0 betyder att ankaret redan stod där.
+ */
+export async function skrivRytmkolumner(
+  client: PoolClient, companyId: string, contractId: string,
+  tillatna: Readonly<Record<string, string>>, varden: Record<string, unknown>,
+): Promise<number> {
+  const rad = await lasRytmraden(client, companyId, contractId, true);
+  if (!rad) throw new NotFoundError('contract');
+  if (rad.uppdrag_avslutat) throw new ConflictError('uppdrag_avslutat', ANKARHINDER.uppdrag_avslutat);
+  const update = buildAllowlistedUpdate(tillatna, varden);
+  if (!update) return 0;
+  const res = await client.query(
+    `UPDATE contracts SET ${update.setSql}
+      WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}
+        AND bedomning_ankare IS NULL`,
+    [...update.values, contractId, companyId],
+  );
+  return res.rowCount ?? 0;
+}
+
+// ---------------------------------------------------------------------------
 // satt_bedomningsankare
 // ---------------------------------------------------------------------------
 
@@ -56,38 +126,29 @@ export interface SattBedomningsankareInput {
 
 /**
  * David sätter det första bedömningstillfället. I åtgärdens transaktion:
- * radlåset på avtalet, rytmen, det redan satta ankaret, veckodagen, källan,
- * UPDATE:n med villkoret `bedomning_ankare IS NULL` och auditraden. Auditraden
- * bär bara id, datum och källans sort — ingen fritext (lärdom 10).
+ * radlåset på avtalet, hindren i `ankarhinder` (avslutat uppdrag, rytmen, det
+ * redan satta ankaret — samma prövning som avgör om vyn visar formuläret),
+ * veckodagen, källan, UPDATE:n genom `skrivRytmkolumner` och auditraden.
+ * Auditraden bär bara id, datum och källans sort — ingen fritext (lärdom 10).
  */
 export async function sattBedomningsankare(
   client: PoolClient, companyId: string, userId: string, input: SattBedomningsankareInput,
 ): Promise<Record<string, unknown>> {
-  const avtal = (await client.query<{
-    bedomning_intervall_dagar: number | null; bedomning_veckodag: number | null; bedomning_ankare: string | null;
-  }>(
-    `SELECT bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare::text AS bedomning_ankare
-       FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE`,
-    [input.contract_id, companyId],
-  )).rows[0];
+  const avtal = await lasRytmraden(client, companyId, input.contract_id, true);
   // Grannbolagets avtal finns inte här: 404, aldrig 403.
   if (!avtal) throw new NotFoundError('contract');
-  if (avtal.bedomning_intervall_dagar === null) {
-    throw new ConflictError('rytm_saknas',
-      'Kontraktet anger ingen bedömningsrytm. Utan rytm räknar ett ankardatum inga perioder.');
-  }
-  if (avtal.bedomning_ankare !== null) throw new ConflictError('ankare_redan_satt', ANKARE_SATT);
+  const hinder = ankarhinder(avtal);
+  if (hinder !== null) throw new ConflictError(hinder, ANKARHINDER[hinder]);
   if (avtal.bedomning_veckodag !== null && isoVeckodag(input.ankare) !== avtal.bedomning_veckodag) {
     throw new BadRequestError('fel_veckodag',
       `Ankardatumet ${input.ankare} är ingen ${VECKODAGSNAMN[avtal.bedomning_veckodag - 1] ?? 'dag i rytmen'}, som rytmen säger.`);
   }
   if (input.kalla.typ === 'kalender') {
-    const referens = (await client.query<{ sort: string; handelse_datum: string | null }>(
-      `SELECT sort, handelse_datum::text AS handelse_datum FROM uppdrag_referens
-        WHERE id = $1 AND company_id = $2 AND contract_id = $3`,
-      [input.kalla.referens_id, companyId, input.contract_id],
-    )).rows[0];
-    if (!referens || referens.sort !== 'kalender') {
+    // Samma fråga som formulärets lista: en referens som formuläret inte
+    // erbjuder — trasig, utanför spärren, en annan sort eller ett annat
+    // avtals — kan inte heller bli källan genom REST eller MCP.
+    const referens = (await lasKalenderreferenser(client, companyId, input.contract_id, input.kalla.referens_id))[0];
+    if (!referens) {
       throw new BadRequestError('okand_kalenderreferens', 'Kalenderreferensen finns inte bland avtalets kalenderposter.');
     }
     if (referens.handelse_datum !== null && referens.handelse_datum !== input.ankare) {
@@ -97,18 +158,12 @@ export async function sattBedomningsankare(
   }
 
   const kallatext = ankarkallatext(input.kalla);
-  const update = buildAllowlistedUpdate(ANKARE_UPDATE, {
+  const skrivna = await skrivRytmkolumner(client, companyId, input.contract_id, ANKARE_UPDATE, {
     bedomning_ankare: input.ankare,
     bedomning_ankare_kalla: kallatext,
-  })!;
-  const res = await client.query(
-    `UPDATE contracts SET ${update.setSql}
-      WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}
-        AND bedomning_ankare IS NULL`,
-    [...update.values, input.contract_id, companyId],
-  );
+  });
   // Andra spärren efter radlåset: ingen rad uppdaterad betyder att ankaret redan stod där.
-  if ((res.rowCount ?? 0) === 0) throw new ConflictError('ankare_redan_satt', ANKARE_SATT);
+  if (skrivna === 0) throw new ConflictError('ankare_redan_satt', ANKARHINDER.ankare_redan_satt);
 
   await writeAudit(client, {
     companyId, userId, action: 'uppdrag.bedomningsankare_satt',
@@ -138,21 +193,31 @@ export interface Kalenderreferens {
 }
 
 /**
- * Avtalets kalenderreferenser för ankarformuläret: de Hermes har länkat, utom
- * de som är trasiga eller står utanför spärren. Händelsedatumet först, och `id`
- * sist så att listan inte byter ordning mellan omladdningar.
+ * Avtalets användbara kalenderreferenser: de Hermes har länkat, utom de som är
+ * trasiga eller står utanför spärren. Den ENDA frågan — formulärets lista och
+ * åtgärdens kontroll (med `id`) läser samma villkor, så att det formuläret inte
+ * erbjuder inte heller går att posta. Händelsedatumet först, och `id` sist så
+ * att listan inte byter ordning mellan omladdningar.
  */
-export async function kalenderreferenser(
-  client: PoolClient, companyId: string, contractId: string,
+async function lasKalenderreferenser(
+  client: PoolClient, companyId: string, contractId: string, id: string | null = null,
 ): Promise<Kalenderreferens[]> {
   return (await client.query<Kalenderreferens>(
     `SELECT id, titel_vid_lankning, handelse_datum::text AS handelse_datum
        FROM uppdrag_referens
       WHERE company_id = $1 AND contract_id = $2 AND sort = 'kalender'
         AND status NOT IN ('trasig', 'utanfor_sparr')
+        AND ($3::uuid IS NULL OR id = $3::uuid)
       ORDER BY handelse_datum NULLS LAST, id`,
-    [companyId, contractId],
+    [companyId, contractId, id],
   )).rows;
+}
+
+/** Avtalets kalenderreferenser för ankarformuläret. */
+export async function kalenderreferenser(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Kalenderreferens[]> {
+  return lasKalenderreferenser(client, companyId, contractId);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,19 +225,10 @@ export async function kalenderreferenser(
 // ---------------------------------------------------------------------------
 
 /** Avtalets rytm som Läget, Bedömning och undantagsvyn visar den. */
-export interface Avtalsrytm extends Rytmutfall {
-  rytm_text: string | null;
-  bedomning_intervall_dagar: number | null;
-  bedomning_veckodag: number | null;
-  bedomning_ankare: string | null;
-  bedomning_ankare_kalla: string | null;
-  rapport_mottagarkrets: string | null;
-}
-
-type Rytmkolumner = Omit<Avtalsrytm, keyof Rytmutfall>;
+export type Avtalsrytm = Rytmrad & Rytmutfall;
 
 /** Rytmkolumnerna i den form den rena rytmregeln tar dem. */
-export const rytmen = (a: Pick<Rytmkolumner, 'bedomning_intervall_dagar' | 'bedomning_veckodag' | 'bedomning_ankare'>): Bedomningsrytm => ({
+export const rytmen = (a: Pick<Rytmrad, 'bedomning_intervall_dagar' | 'bedomning_veckodag' | 'bedomning_ankare'>): Bedomningsrytm => ({
   intervall_dagar: a.bedomning_intervall_dagar,
   veckodag: a.bedomning_veckodag,
   ankare: a.bedomning_ankare,
@@ -185,12 +241,7 @@ export const rytmen = (a: Pick<Rytmkolumner, 'bedomning_intervall_dagar' | 'bedo
 export async function lasBedomningsrytm(
   client: PoolClient, companyId: string, contractId: string, idag: string,
 ): Promise<Avtalsrytm> {
-  const rad = (await client.query<Rytmkolumner>(
-    `SELECT rytm_text, bedomning_intervall_dagar, bedomning_veckodag,
-            bedomning_ankare::text AS bedomning_ankare, bedomning_ankare_kalla, rapport_mottagarkrets
-       FROM contracts WHERE id = $1 AND company_id = $2`,
-    [contractId, companyId],
-  )).rows[0];
+  const rad = await lasRytmraden(client, companyId, contractId);
   if (!rad) throw new NotFoundError('contract');
   return { ...rad, ...bedomningsrytmlage(rytmen(rad), idag) };
 }

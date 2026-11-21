@@ -23,6 +23,7 @@
  */
 import { chip, farskhetsrad, farskhetstid, html, type Raw } from './html.js';
 import { tidtext } from '../../lib/beslutsunderlag.js';
+import { ankarhinder, ANKARHINDER, periodlucka } from '../../lib/bedomningsrytm.js';
 import { larmregelKraverAndel, type Mattlasvag } from '../../lib/leveranskontrakt.js';
 import type { Avtalsrytm, Kalenderreferens, Mattrad } from '../../services/uppdragRytm.js';
 
@@ -40,7 +41,27 @@ export const LARMREGEL_HARLEDS_EJ = 'larmregel HÄRLEDS EJ';
 export const LARMREGEL_KRAVER_SVAR = 'larmregel HÄRLEDS EJ — kräver Davids svar';
 export const UTFALL_HARLEDS_EJ = 'utfall HÄRLEDS EJ';
 const INGA_MATT = 'Inga uppföljningsmått är inlästa för avtalet. De läses ur leveranskontraktets del 3 när baselinen godkänns och skrivs aldrig här.';
-const RYTM_SAKNAS = 'rytm saknas i kontraktet';
+
+/**
+ * Panelernas identitet. Varje panel i filen heter `<prefix>-<avtal>`: det är
+ * rubrikens id, regionens namn och målet för Lägets länk till Bedömning. Två
+ * element med samma namn går inte att skilja åt i en skärmläsares lista över
+ * landmärken, och panelen går inte att peka ut. Därför skrivs identiteten bara
+ * av `panelram`, en gång per panel, och ingen annan del av panelen bär den.
+ */
+export const PANELIDENTITET = ['uppfoljning', 'rytm'] as const;
+type Panelidentitet = (typeof PANELIDENTITET)[number];
+
+const panelid = (prefix: Panelidentitet, contractId: string): string => `${prefix}-${contractId}`;
+
+/** Panelens ram — det enda stället i filen som skriver ett id eller ett regionnamn. */
+function panelram(prefix: Panelidentitet, contractId: string, rubrik: Raw, huvud: Raw | string, kropp: Raw): Raw {
+  const id = panelid(prefix, contractId);
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="${id}">
+    <div class="panel__head"><h2 id="${id}">${rubrik}</h2>${huvud}</div>
+    <div class="panel__body" style="padding:0">${kropp}</div>
+  </section>`;
+}
 
 /** Källans namn i löptext: ”redovisningen” för det som läses direkt ur huset. */
 const kallnamn = (kalla: string): string => (kalla === 'redovisning' ? 'redovisningen' : kalla);
@@ -56,9 +77,11 @@ function utfall(m: Mattrad, idag: string): Raw {
   switch (v.lage) {
     case 'last': {
       const tid = v.varde!;
+      // Ett tak som inte är läst sägs som det, med Lägets egna ord: vyn vet
+      // inte om kontraktet saknar ramen eller om den bara inte är inläst.
       return html`<p style="margin:6px 0 0;font-size:14px;font-variant-numeric:tabular-nums">${
         tid.tak_minuter === null
-          ? `${tidtext(tid.minuter)} nedlagda, ram saknas i kontraktet`
+          ? `${tidtext(tid.minuter)} nedlagda mot ett tak som inte är läst`
           : `${tidtext(tid.minuter)} nedlagda mot ramen ${tidtext(tid.tak_minuter)}`}</p>
         ${farskhetsrad([`läst ur ${kallnamn(v.kalla)} ${farskhetstid(v.last_nar!, idag)}`])}`;
     }
@@ -96,28 +119,23 @@ function mattrad(m: Mattrad, idag: string): Raw {
 
 /**
  * Rytmen och nästa bedömningstillfälle, samma grammatik på Läget och
- * Bedömning. `ankarlank` pekar till Bedömning, där ankaret sätts; på Bedömning
- * står formuläret i stället.
+ * Bedömning. Varför ingen period räknas står med `periodlucka` och vägen
+ * vidare med `ankarhinder`, samma två regler som undantagsvyn och åtgärden
+ * läser: utan hinder pekar `ankarlank` till avtalets panel på Bedömning, där
+ * ankaret sätts (på Bedömning står formuläret i stället), och med ett hinder
+ * står hindrets egen text — samma ord som åtgärdens svar på ett försök.
  */
 function rytmdel(r: Avtalsrytm, ankarlank: string | null): Raw {
-  const nasta = (() => {
-    switch (r.lage) {
-      case 'raknad':
-        return html`<p data-falt="nasta_tillfalle" style="margin:8px 0 0;font-size:14px"><b>Nästa bedömningstillfälle</b> ${r.nasta ?? ''}${
-          r.period === null
-            ? ' · ingen period räknas före ankaret'
-            : ` · perioden ${r.period.start} – ${r.period.slut}`}</p>`;
-      case 'datum_saknas':
-        return html`<p class="tomt" data-falt="nasta_tillfalle"><b>Nästa bedömningstillfälle</b> datum saknas${
-          ankarlank === null ? '' : html` — ankardatumet sätts på <a href="${ankarlank}">Bedömning</a>`}. Ingen period räknas, och ingen gissas ur kalendern.</p>`;
-      case 'rytm_saknas':
-        return html`<p class="tomt" data-falt="nasta_tillfalle"><b>Nästa bedömningstillfälle</b> ${RYTM_SAKNAS}. Ingen period räknas, och ingen husrytm fyller i.</p>`;
-      default: {
-        const okant: never = r.lage;
-        return html`${String(okant)}`;
-      }
-    }
-  })();
+  const lucka = periodlucka(r.lage, r.period, r.bedomning_ankare);
+  const hinder = ankarhinder(r);
+  const vag = r.lage !== 'datum_saknas' ? ''
+    : hinder !== null ? ` ${ANKARHINDER[hinder]}`
+      : ankarlank === null ? '' : html` Ankardatumet sätts på <a href="${ankarlank}">Bedömning</a>.`;
+  const nasta = r.lage === 'raknad'
+    ? html`<p data-falt="nasta_tillfalle" style="margin:8px 0 0;font-size:14px"><b>Nästa bedömningstillfälle</b> ${r.nasta ?? ''}${
+      r.period === null ? ` · ${lucka ?? ''}` : ` · perioden ${r.period.start} – ${r.period.slut}`}</p>`
+    : html`<p class="tomt" data-falt="nasta_tillfalle"><b>Nästa bedömningstillfälle</b> ${lucka ?? ''}.${vag
+      } Ingen period räknas, och ingen gissas ur kalendern.</p>`;
   return html`<div style="padding:12px 16px">
     ${r.rytm_text === null ? '' : html`<p style="margin:0;font-size:14px"><b>Rytm:</b> ${r.rytm_text}${
       r.rapport_mottagarkrets === null ? '' : html` · till ${r.rapport_mottagarkrets}`}</p>`}
@@ -135,19 +153,18 @@ export function uppfoljningspanel(
   companyId: string, projectId: string, contractId: string, matt: readonly Mattrad[], rytm: Avtalsrytm,
   idag: string, avtalsnamn?: string, farskhet?: Raw,
 ): Raw {
-  return html`<section class="panel" style="margin-top:14px" aria-labelledby="uppfoljning-${contractId}">
-    <div class="panel__head"><h2 id="uppfoljning-${contractId}">Uppföljning och rytm${avtalsnamn ? html` — ${avtalsnamn}` : ''}</h2>
-      ${matt.length === 0 ? '' : chip(`${String(matt.length)} mått`, 'muted')}</div>
-    <div class="panel__body" style="padding:0">
-      <h3 style="margin:12px 16px 6px;font-size:13px">Måtten ur kontraktet</h3>
+  return panelram('uppfoljning', contractId,
+    html`Uppföljning och rytm${avtalsnamn ? html` — ${avtalsnamn}` : ''}`,
+    matt.length === 0 ? '' : chip(`${String(matt.length)} mått`, 'muted'),
+    html`<h3 style="margin:12px 16px 6px;font-size:13px">Måtten ur kontraktet</h3>
       ${matt.length === 0
         ? html`<p class="muted" style="margin:0 16px 12px;font-size:13px">${INGA_MATT}</p>`
         : html`<ul style="list-style:none;margin:0;padding:0">${matt.map((m) => mattrad(m, idag))}</ul>`}
       <h3 style="margin:4px 16px 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px">Bedömningsrytmen</h3>
-      ${rytmdel(rytm, `/app/c/${companyId}/projects/${projectId}/bedomning`)}
-      ${farskhet ?? ''}
-    </div>
-  </section>`;
+      ${/* Länken leder till just det här avtalets panel på Bedömning, också när
+            uppdraget har flera avtal: målet är samma identitet som panelen där. */ ''}
+      ${rytmdel(rytm, `/app/c/${companyId}/projects/${projectId}/bedomning#${panelid('rytm', contractId)}`)}
+      ${farskhet ?? ''}`);
 }
 
 /** Etiketten för en kalenderreferens i ankarformuläret. */
@@ -155,19 +172,24 @@ const referensetikett = (k: Kalenderreferens): string =>
   `${k.titel_vid_lankning ?? 'Kalenderpost'} · ${k.handelse_datum ?? 'datum saknas'}`;
 
 /**
- * Rytmen på Bedömning, med ankarformuläret när ett ankare kan sättas: rytmen
- * finns och inget ankare är satt. Annars visas ingen knapp som bara kan ge 409.
- * Källan är obligatorisk, och Davids uppgift är förvald med dagens datum.
+ * Ett avtals rytm på Bedömning — en panel per avtal, så att varje avtal har
+ * sin egen väg till sitt ankare. Ankarformuläret står bara när `ankarhinder`
+ * inte säger nej: uppdraget är öppet, rytmen finns och inget ankare är satt.
+ * Annars visas ingen knapp som bara kan ge 409. Källan är obligatorisk, och
+ * Davids uppgift är förvald med dagens datum.
+ *
+ * Formuläret står i avtalets region och bär inget eget regionnamn: ett namn
+ * lånat från panelen hade gett två landmärken som heter likadant. Med flera
+ * avtal säger knappen i stället vilket avtal datumet sätts för, eftersom det
+ * är handen som inte går att ångra.
  */
 export function rytmpanel(
   companyId: string, projectId: string, contractId: string, rytm: Avtalsrytm,
-  kalenderref: readonly Kalenderreferens[], idag: string,
+  kalenderref: readonly Kalenderreferens[], idag: string, avtalsnamn?: string,
 ): Raw {
-  const formular = rytm.lage === 'datum_saknas' && rytm.bedomning_intervall_dagar !== null && rytm.bedomning_ankare === null;
-  return html`<section class="panel" style="margin-top:14px" aria-labelledby="rytm-${contractId}">
-    <div class="panel__head"><h2 id="rytm-${contractId}">Bedömningsrytmen</h2></div>
-    <div class="panel__body" style="padding:0">
-      ${rytmdel(rytm, null)}
+  const formular = ankarhinder(rytm) === null;
+  return panelram('rytm', contractId, html`Bedömningsrytmen${avtalsnamn ? html` — ${avtalsnamn}` : ''}`, '',
+    html`${rytmdel(rytm, null)}
       ${formular
         ? html`<form method="post" action="/app/c/${companyId}/projects/${projectId}/bedomning/ankare"
             style="margin:0;padding:12px 16px 14px;border-top:1px solid var(--line)">
@@ -185,9 +207,8 @@ export function rytmpanel(
                 <input type="radio" name="kalla" value="kalender:${k.id}" style="width:auto">
                 <span>${referensetikett(k)}</span></label>`)}
             </fieldset>
-            <div class="actions" style="margin-top:10px"><button class="btn btn--primary" type="submit">Sätt ankardatumet</button></div>
+            <div class="actions" style="margin-top:10px"><button class="btn btn--primary" type="submit">Sätt ankardatumet${
+              avtalsnamn ? html` för ${avtalsnamn}` : ''}</button></div>
           </form>`
-        : ''}
-    </div>
-  </section>`;
+        : ''}`);
 }

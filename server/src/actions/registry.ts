@@ -1835,7 +1835,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // Davids uppgift eller en kalenderpost han väljer, och en agent får 403
     // `human_required` i executeAction före varje skrivning. Ett satt ankare
     // ändras inte här (409 `ankare_redan_satt`); ändringen hör till
-    // baselineförslaget (Story 2.4).
+    // baselineförslaget (Story 2.4). Ett avslutat uppdrag tar inget ankare
+    // (409 `uppdrag_avslutat`), samma prövning som vyns formulär läser.
     sensitivity: 'write',
     kravManniska: true,
     inputSchema: z

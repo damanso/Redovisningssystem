@@ -153,6 +153,62 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, omtag efter kedjans röda B7 (FR-14, UX):**
+  Kedjans `npm test` föll på B7: panelen `aria-labelledby="rytm-<avtal>"` stod
+  två gånger per avtal på Bedömning, eftersom ankarformuläret lånade sin panels
+  regionnamn. Det gav också två landmärken med samma namn (region och
+  formulär). **Klassen:** en panels identitet (rubrikens id, regionnamnet och
+  målet för Lägets länk) skrevs för hand i flera mallar. **Mekanismen:** en
+  enda skrivare, `panelram` i `http/view/uppdragUppfoljning.ts`, med prefixen i
+  `PANELIDENTITET`; Lägets länk härleds ur samma `panelid`. Formuläret bär
+  inget regionnamn, och med flera avtal säger knappen vilket avtal datumet
+  sätts för. **Prov:** nytt B9 (rytm- och uppföljningspaneler med ett och två
+  avtal, med och utan formulär, båda för samma avtal; ett statiskt källprov att
+  bara ramen skriver id och regionnamn; fyra planterade dubbletter och två
+  planterade källor fälls), och B1 och B7 kräver att sidorna saknar
+  identitetsbrister i varje läge. Docs: MCP_ACTIONS (knappen med flera avtal).
+  Ingen migration, inget nytt beroende och ingen ny CSS. **Inte kört:**
+  `npm run typecheck` gav ordagrant ”This command requires approval”, och
+  kedjans körning är belägget. `impeccable` gick inte att ladda (”Execute
+  skill: impeccable”); `accessibility` tillämpades (unika landmärkesnamn).
+  **Följd i drift:** oförändrad från posterna nedan.
+
+- **2026-11-21 — Story 2.3, omtag efter åtta Review Follow-ups (FR-14, FR-19, FR-8):**
+  Varje fynd lagades som en felklass. **En skrivväg:** rytm- och
+  ankarkolumnerna på `contracts` skrivs bara genom `skrivRytmkolumner`
+  (`services/uppdragRytm.ts`), både för ankaret och för importens rytm. Den läser
+  raden med radlås, svarar 409 `uppdrag_avslutat` på ett avslutat uppdrag före
+  UPDATE:n (`contracts` saknar 0068:s avslutstrigger) och skriver aldrig under
+  ett satt ankare. **En prövning:** den rena `ankarhinder` i
+  `lib/bedomningsrytm.ts` (avslutat, ingen rytm, ankare satt) avgör både
+  åtgärdens 409 och om vyn visar ankarformuläret; hindrens text är densamma.
+  **En text:** `periodlucka` säger varför ingen period räknas (ingen rytm
+  inläst, datum saknas, ankare på fel veckodag, före ankaret) på Läget, Bedömning
+  och undantagsvyn. Begäransposten bär därför `rytmlage` och `ankare`. Vyn
+  påstår inget om kontraktet som den inte läst: ”ingen rytm är inläst ur
+  kontraktet” och ”ett tak som inte är läst” i stället för ”… saknas i
+  kontraktet”. **Ett villkor:** formulärets kalenderlista och åtgärdens kontroll
+  läser samma fråga (trasiga referenser och referenser utanför spärren ger 400
+  `okand_kalenderreferens`). **Per avtal:** Bedömning har en rytmpanel och ett
+  ankarformulär per avtal, Lägets länk går till `#rytm-<avtal>`, och med flera
+  avtal förväljs ingen period. **Avvikelser syns:** importen redovisar lagrade
+  mått och en lagrad rytm som skiljer sig från texten i `avvikande_falt` (svar
+  och auditrad). Under ett satt ankare skrivs ingen ny rytm. P16 har en egen
+  importlista för `services/uppdragRytm.ts`. Prov i
+  `server/test/uppdragsytan-matt-rytm.test.ts`: A3 (utökat), A9–A11 (avslut,
+  skrivvägen, statiskt källprov med planterade vägar), I7–I8, V2 (utökat), B3
+  (ändrat), B7–B8 och D1 (utökat); vidare `uppdragsytan-bedomningsbegaran` (h),
+  `uppdragsytan-undantag` (P16) och fixturposten i `undantagsvynHelper.ts`.
+  Docs: MCP_ACTIONS (importen, ankarets fel, Bedömning, Läget, posten
+  `ny_bedomning`, där perioden felaktigt stod som kalendermånad) och
+  ARKITEKTUR rad 36. Ingen migration ändrad, inget nytt beroende.
+  **Inte kört:** `npm run typecheck` gav ordagrant ”This command requires
+  approval”. Inget prov, ingen typkontroll och inget bygge är kört här, och
+  kedjans körning är belägget. `impeccable` gick inte att ladda (”Execute skill:
+  impeccable”). `accessibility` tillämpades: varje ankarformulär har nu
+  sitt namn från panelens rubrik. **Följd i drift:** oförändrad från posten
+  nedan, och adresskontraktet står RÖTT tills navigationskontraktet har synkats.
+
 - **2026-11-21 — Story 2.3, måtten och rytmen ur kontraktets del 3 och del 4 (FR-19, FR-14, FR-26, FR-35, NFR-11):**
   Migration `0095_matt_och_rytm.sql` skapar tabellen uppdrag_matt (BASELINE,
   RLS+FORCE, sammansatt FK, SELECT+INSERT för `app`, avslutstriggern) och lägger

@@ -23,6 +23,7 @@ import { driveLank } from '../../lib/referens.js';
 import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, referensvisning, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
 import { DAVIDS_ANTECKNING, tidtext, type Andring, type Andringsfalt, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
+import { periodlucka } from '../../lib/bedomningsrytm.js';
 import type {
   Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
 } from '../../services/uppdragUndantag.js';
@@ -371,7 +372,9 @@ function postkort(companyId: string, p: Undantagspost, idag: string): Raw {
         ${faltet('Ditt svar registrerar', 'ja_registrerar', p.ja_registrerar)}
         ${p.bedomning ? html`${faltet('Senaste bedömning', 'senaste', senasteBedomning(p.bedomning, idag))}${
           faltet('Perioden', 'period', p.bedomning.period === null
-            ? html`<p class="tomt">datum saknas — avtalets rytm har inget ankardatum, så ingen period räknas.</p>`
+            // Varför perioden saknas följer rytmens läge, med samma regel som
+            // Läget och Bedömning — aldrig mer än kolumnerna vet (Story 2.3).
+            ? html`<p class="tomt">${periodlucka(p.bedomning.rytmlage, null, p.bedomning.ankare) ?? ''}. Ingen period föreslås.</p>`
             : `${p.bedomning.period.start} – ${p.bedomning.period.slut}`)}` : ''}
         ${p.ovrigt ? ovrigtdel(p.ovrigt, idag) : ''}
       </dl>

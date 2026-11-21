@@ -25,12 +25,12 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
-import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
-  type Datumprecision, type Leveranskontrakt,
+  type Datumprecision, type Kontraktsrytm, type Leveranskontrakt, type Uppfoljningsmatt,
 } from '../lib/leveranskontrakt.js';
 import { writeAudit } from './auditService.js';
+import { lasRytmraden, lasUppfoljningsmatt, skrivRytmkolumner, type Rytmrad } from './uppdragRytm.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
@@ -59,19 +59,13 @@ interface Avtalsrad {
   godkannare_eskalering: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
-  /** Rytmen ur del 4 (Story 2.3). Jämförs med texten så att en ny import inte rör raden i onödan. */
-  rytm_text: string | null;
-  bedomning_intervall_dagar: number | null;
-  bedomning_veckodag: number | null;
-  rapport_mottagarkrets: string | null;
 }
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
-            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -346,6 +340,44 @@ const RYTM_UPDATE: Readonly<Record<string, string>> = {
   rapport_mottagarkrets: 'rapport_mottagarkrets',
 };
 
+/** Rytmens fält i texten, samma namn som kolumnerna i `RYTM_UPDATE`. */
+const RYTMFALT: ReadonlyArray<keyof Kontraktsrytm & keyof Rytmrad> = [
+  'rytm_text', 'bedomning_intervall_dagar', 'bedomning_veckodag', 'rapport_mottagarkrets',
+];
+
+/** Måttets fält som är kontraktets ord. Lägena är modulens och jämförs inte. */
+const MATTFALT = ['hur_ofta', 'kallreferenser', 'lasvag', 'larmregel'] as const;
+
+/**
+ * De lagrade baselinevärden som INTE längre stämmer med texten och som
+ * importen inte skriver om (Story 2.3). Ett mått som redan finns rörs inte
+ * (`uppdrag_matt` har ingen UPDATE), och rytmen under ett satt ankare skrivs
+ * inte, för då hade ankaret hamnat på fel veckodag i en ny rytm. Det står i
+ * svaret och auditraden som nycklar i samma form som de saknade fälten, så att
+ * en tyst skillnad aldrig döljs bakom `oforandrad: true`:
+ *
+ *   * `uppfoljning.<namn>.<fält>` — ett lagrat mått vars fält skiljer sig;
+ *   * `uppfoljning.<namn>` — ett lagrat mått som texten inte längre har;
+ *   * `rytm.<kolumn>` — en lagrad rytm som texten säger annorlunda, eller
+ *     inte alls, och som står kvar.
+ */
+function mattavvikelser(text: readonly Uppfoljningsmatt[], lagrade: readonly Uppfoljningsmatt[]): string[] {
+  const ut: string[] = [];
+  const lagrat = new Map(lagrade.map((m): [string, Uppfoljningsmatt] => [m.namn, m]));
+  for (const m of text) {
+    const l = lagrat.get(m.namn);
+    if (l) for (const falt of MATTFALT) if (m[falt] !== l[falt]) ut.push(`uppfoljning.${m.namn}.${falt}`);
+  }
+  const iTexten = new Set(text.map((m) => m.namn));
+  for (const l of lagrade) if (!iTexten.has(l.namn)) ut.push(`uppfoljning.${l.namn}`);
+  return ut;
+}
+
+/** Rytmkolumnerna vars lagrade värde inte är textens. `null` bara lika med `null`. */
+function rytmskillnader(text: Kontraktsrytm | null, lagrad: Rytmrad): string[] {
+  return RYTMFALT.filter((k) => (text === null ? null : text[k]) !== lagrad[k]);
+}
+
 export async function importeraLeveranskontrakt(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: ImporteraLeveranskontraktInput,
 ): Promise<Record<string, unknown>> {
@@ -514,7 +546,8 @@ export async function sattBaseline(
 
   // (h) Uppföljningsmåtten ur del 3, i textens ordning. UNIQUE (contract_id,
   // namn) bär idempotensen, som leverabelregistret: ett mått som redan finns
-  // rörs inte, och en ny import av samma text skapar inga dubbletter.
+  // rörs inte, och en ny import av samma text skapar inga dubbletter. Skiljer
+  // sig ett lagrat mått från texten redovisas det i `avvikande_falt` nedan.
   let nyaMatt = 0;
   for (const [i, m] of kontrakt.matt.entries()) {
     const res = await client.query(
@@ -529,25 +562,26 @@ export async function sattBaseline(
     nyaMatt += res.rowCount ?? 0;
   }
 
-  // (i) Rytmen ur del 4. Hittade texten ingen rytm står det som redan finns
-  // kvar, som för godkännarna. Bara när något av de fyra värdena skiljer sig
-  // körs en UPDATE, så att en ny import av samma text lämnar raden — också
-  // `updated_at` — orörd. Ankaret står inte i tillåtelselistan och rörs aldrig.
+  // (i) Rytmen ur del 4, läst med radlåset och skriven genom den enda vägen
+  // `skrivRytmkolumner`, som spärrar ett avslutat uppdrag. Bara när något av de
+  // fyra värdena skiljer sig körs en UPDATE, så att en ny import av samma text
+  // lämnar raden — också `updated_at` — orörd. Hittade texten ingen rytm står
+  // det som redan finns kvar, som för godkännarna. Under ett satt ankare skrivs
+  // rytmen inte: ankaret och rytmen är ett par, och ett ankare på fel veckodag
+  // i en ny rytm räknar inga perioder. Ändringen hör då till baselineförslaget
+  // (Story 2.4), och skillnaden står i `avvikande_falt`. Ankaret står inte i
+  // tillåtelselistan och rörs aldrig här.
+  const lagradRytm = await lasRytmraden(client, companyId, input.contract_id, true);
+  if (!lagradRytm) throw new NotFoundError('contract');
   const rytm = kontrakt.rytm;
-  const rytmAndrad = rytm !== null && (
-    rytm.rytm_text !== avtal.rytm_text
-    || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
-    || rytm.bedomning_veckodag !== avtal.bedomning_veckodag
-    || rytm.rapport_mottagarkrets !== avtal.rapport_mottagarkrets);
-  if (rytm !== null && rytmAndrad) {
-    const rytmvarden: Record<string, unknown> = { ...rytm };
-    const update = buildAllowlistedUpdate(RYTM_UPDATE, rytmvarden)!;
-    await client.query(
-      `UPDATE contracts SET ${update.setSql}
-        WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
-      [...update.values, input.contract_id, companyId],
-    );
-  }
+  const rytmSkillnad = rytmskillnader(rytm, lagradRytm);
+  const rytmAndrad = rytm !== null && rytmSkillnad.length > 0 && lagradRytm.bedomning_ankare === null
+    && await skrivRytmkolumner(client, companyId, input.contract_id, RYTM_UPDATE, { ...rytm }) > 0;
+
+  const avvikandeFalt = [
+    ...mattavvikelser(kontrakt.matt, await lasUppfoljningsmatt(client, companyId, input.contract_id)),
+    ...(rytmAndrad ? [] : rytmSkillnad.map((k) => `rytm.${k}`)),
+  ];
 
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
     && nyaScopelinjer === 0 && !godkannareAndrad && nyaMatt === 0 && !rytmAndrad;
@@ -566,6 +600,7 @@ export async function sattBaseline(
       matt_skapade: nyaMatt,
       rytm_andrad: rytmAndrad,
       saknade_falt: saknadeFalt(kontrakt),
+      avvikande_falt: avvikandeFalt,
     },
   });
 
@@ -588,6 +623,7 @@ export async function sattBaseline(
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     saknade_falt: saknadeFalt(kontrakt),
+    avvikande_falt: avvikandeFalt,
     avtal: await getContractUsage(client, companyId, input.contract_id),
   };
 }

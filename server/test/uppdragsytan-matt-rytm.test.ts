@@ -24,23 +24,36 @@
 //   * **B — Bedömning och undantagsvyn:** perioden kommer ur rytmen.
 //   * **D — dokumentationen.**
 //
+// Granskningens fynd är prövade som klasser, inte som exempel: en skrivväg till
+// rytm- och ankarkolumnerna som spärrar avslutet (A9–A11), samma villkor i
+// formulärets lista och åtgärdens kontroll (A3), en rytmpanel per avtal (B7),
+// en text för varför ingen period räknas på alla tre ytorna (B8), en panels
+// identitet som bara dess ram skriver, en gång per sida (B1, B7, B9), inga
+// påståenden om kontraktet som vyn inte läst (V2, B3) och varje avvikelse
+// mellan lagrad baseline och text i importens svar (I7, I8).
+//
 // Varje kontroll som letar efter något bär en negativ kontroll (M5, V1, V2, N1,
-// D1). Varje fall sår sin egen data, så att det går att köra ensamt med `-t`.
+// A11, B7, B9, D1). Varje fall sår sin egen data, så att det går att köra ensamt
+// med `-t`.
+import { readdirSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { PoolClient } from 'pg';
 import { ACTIONS } from '../src/actions/registry.js';
 import { loadMigrations } from '../src/db/migrate.js';
 import { withTenantTransaction } from '../src/db/tx.js';
-import { ankarkallatext, bedomningsperiod, bedomningsrytmlage, isoVeckodag } from '../src/lib/bedomningsrytm.js';
+import {
+  ANKARHINDER, ankarkallatext, bedomningsperiod, bedomningsrytmlage, INGEN_RYTM, isoVeckodag,
+} from '../src/lib/bedomningsrytm.js';
 import {
   larmregelKraverAndel, MATTLAGEN, MATTLASVAGAR, mattlasvag, parseLeveranskontrakt, rytmregel,
   type Mattlasvag, type Uppfoljningsmatt,
 } from '../src/lib/leveranskontrakt.js';
 import { chip, esc, farskhetstid } from '../src/http/view/html.js';
 import {
-  LARMREGEL_KRAVER_SVAR, LASVAGSETIKETT, UTFALL_HARLEDS_EJ, uppfoljningspanel,
+  LARMREGEL_KRAVER_SVAR, LASVAGSETIKETT, PANELIDENTITET, rytmpanel, UTFALL_HARLEDS_EJ, uppfoljningspanel,
 } from '../src/http/view/uppdragUppfoljning.js';
 import { tidtext } from '../src/lib/beslutsunderlag.js';
 import { last, olast, type Lasvarde } from '../src/lib/lasvarde.js';
@@ -49,7 +62,7 @@ import { beskrivNyBedomning } from '../src/services/uppdragUndantag.js';
 import { undantagssida } from '../src/http/view/undantagsvyn.js';
 import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 import {
-  mattvarde, sattBedomningsankare, type Avtalsrytm, type Mattrad, type Tidmotram,
+  mattvarde, sattBedomningsankare, skrivRytmkolumner, type Avtalsrytm, type Mattrad, type Tidmotram,
 } from '../src/services/uppdragRytm.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { LEVERANSKONTRAKT_NVR001_V3 } from './fixtures/leveranskontrakt-nvr-001-v3.js';
@@ -548,6 +561,7 @@ describe('I: importen genom Davids ja', () => {
     });
     expect(u.svar.matt_skapade).toBe(5);
     expect(u.svar.rytm_andrad).toBe(true);
+    expect(u.svar.avvikande_falt).toEqual([]);
     const signaler = await withAdmin(async (c) => (await c.query(
       'SELECT id FROM uppdrag_scopesignal WHERE company_id = $1 AND contract_id = $2', [companyId, u.avtal],
     )).rows);
@@ -565,7 +579,7 @@ describe('I: importen genom Davids ja', () => {
     const fore = await avtalsrad(u.avtal);
     const matt = await mattrader(u.avtal);
     const svar = await sattBaselineDirekt(companyId, auth(), { contract_id: u.avtal, kontraktstext: V3 });
-    expect(svar).toMatchObject({ matt_skapade: 0, rytm_andrad: false, oforandrad: true });
+    expect(svar).toMatchObject({ matt_skapade: 0, rytm_andrad: false, oforandrad: true, avvikande_falt: [] });
     expect(await avtalsrad(u.avtal)).toEqual(fore);
     expect(await mattrader(u.avtal)).toEqual(matt);
   });
@@ -614,7 +628,78 @@ describe('I: importen genom Davids ja', () => {
     }
     expect(await avtalsrad(u.avtal)).toEqual(fore);
   });
+
+  it('I7 under ett satt ankare skrivs ingen ny rytm; skillnaden står i svaret och auditraden', async () => {
+    expect(V3, 'fixturens rytmcell').toContain(RYTMCELL);
+    const ny = V3.replace(RYTMCELL, '| **Varje onsdag** |');
+    // Utan ankare skriver en ny version sin rytm, som förut.
+    const utan = await v3Uppdrag('Ny rytm utan ankare');
+    const svarUtan = await sattBaselineDirekt(companyId, auth(), { contract_id: utan.avtal, kontraktstext: ny });
+    expect(svarUtan).toMatchObject({ rytm_andrad: true, avvikande_falt: [] });
+    expect(await rytmkolumner(utan.avtal)).toMatchObject({
+      rytm_text: 'Varje onsdag', bedomning_intervall_dagar: 7, bedomning_veckodag: 3,
+    });
+
+    // Med ankaret står paret kvar: rytmen och ankaret räknar fortfarande perioder.
+    const med = await v3Uppdrag('Ny rytm med ankare');
+    await medAnkare(med.avtal);
+    const fore = await rytmkolumner(med.avtal);
+    const svar = await sattBaselineDirekt(companyId, auth(), { contract_id: med.avtal, kontraktstext: ny });
+    const skillnad = ['rytm.rytm_text', 'rytm.bedomning_intervall_dagar', 'rytm.bedomning_veckodag'];
+    expect(svar).toMatchObject({ rytm_andrad: false, avvikande_falt: skillnad });
+    expect(await rytmkolumner(med.avtal)).toEqual(fore);
+    expect((await lage(med.projekt)).avtal[0]!.rytm.lage).toBe('raknad');
+    const audit = await withAdmin(async (c) => (await c.query<{ details: Record<string, unknown> }>(
+      `SELECT details FROM audit_log WHERE company_id = $1 AND action = 'uppdrag.leveranskontrakt_importerat'
+          AND entity_id = $2 ORDER BY id DESC LIMIT 1`,
+      [companyId, med.avtal],
+    )).rows[0]!.details);
+    expect(audit).toMatchObject({ rytm_andrad: false, avvikande_falt: skillnad });
+    // En text utan rytm lämnar den lagrade kvar och säger det också.
+    const utanRytm = await sattBaselineDirekt(companyId, auth(), {
+      contract_id: med.avtal, kontraktstext: V3.replace(RYTMCELL, '| Vid behov |'),
+    });
+    expect(utanRytm).toMatchObject({
+      rytm_andrad: false,
+      avvikande_falt: ['rytm.rytm_text', 'rytm.bedomning_intervall_dagar', 'rytm.bedomning_veckodag', 'rytm.rapport_mottagarkrets'],
+    });
+    expect(await rytmkolumner(med.avtal)).toEqual(fore);
+  });
+
+  it('I8 ett lagrat mått som skiljer sig från texten, eller som texten tappat, står i avvikande_falt', async () => {
+    const u = await v3Uppdrag('Ändrade mått');
+    const matt = await mattrader(u.avtal);
+    // Fyra slags skillnader, var och en en egen rad i fixturen.
+    const andringar: Array<[string, string, string]> = [
+      ['| Leverabler klara | Varje vecka |', '| Leverabler klara | Varannan vecka |', 'uppfoljning.Leverabler klara.hur_ofta'],
+      ['| En beslutspunkt passerat sitt datum, då aktiveras §3.6 |', '| En beslutspunkt är försenad |',
+        'uppfoljning.Kundens beslutspunkter.larmregel'],
+      [PORTALCELL, '| Fakturering | Månadsvis | Leverantörens portal |', 'uppfoljning.Fakturering.kallreferenser'],
+      ['| Scopesignaler | Löpande | Sektion 5 | En signalfras tänder |\n', '', 'uppfoljning.Scopesignaler'],
+    ];
+    let text = V3;
+    for (const [fran, till] of andringar) {
+      expect(text, fran).toContain(fran);
+      text = text.replace(fran, till);
+    }
+    const svar = await sattBaselineDirekt(companyId, auth(), { contract_id: u.avtal, kontraktstext: text });
+    // Portalen ger dessutom en läsväg som inte längre stämmer; måtten i textens
+    // ordning, det tappade sist. Nedlagd tid är oförändrad och står inte där.
+    expect(svar.avvikande_falt).toEqual([
+      'uppfoljning.Leverabler klara.hur_ofta',
+      'uppfoljning.Kundens beslutspunkter.larmregel',
+      'uppfoljning.Fakturering.kallreferenser',
+      'uppfoljning.Fakturering.lasvag',
+      'uppfoljning.Scopesignaler',
+    ]);
+    expect(svar).toMatchObject({ matt_skapade: 0, oforandrad: true });
+    // Raderna rörs inte: tabellen har ingen UPDATE, och skillnaden döljs inte.
+    expect(await mattrader(u.avtal)).toEqual(matt);
+  });
 });
+
+/** Del 4:s rytmcell i v3, ordagrant. */
+const RYTMCELL = '| **Varannan torsdag** |';
 
 // ---------------------------------------------------------------------------
 // R — rytmregeln (uppgift 4, AC 8 och 9). Fasta datum, ingen klocka.
@@ -694,13 +779,21 @@ async function medAnkare(avtal: string): Promise<Record<string, unknown>> {
 }
 
 /** En referens som rollen `app` skriver den, i en egen tenanttransaktion. */
-async function saReferens(avtal: string, sort: 'kalender' | 'mejl', extern: string, handelseDatum: string | null): Promise<string> {
+async function saReferens(
+  avtal: string, sort: 'kalender' | 'mejl', extern: string, handelseDatum: string | null,
+  status: 'overifierad' | 'trasig' | 'utanfor_sparr' = 'overifierad',
+): Promise<string> {
   return somApp(async (c) => (await c.query<{ id: string }>(
     `INSERT INTO uppdrag_referens
-       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, titel_vid_lankning, handelse_datum)
-     VALUES ($1, $2, $3, $4, 'icalendar#uid', 'gcal:locollabs', $5, $6) RETURNING id`,
-    [companyId, avtal, sort, extern, `Styrgruppsmöte ${extern}`, handelseDatum],
+       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, titel_vid_lankning, handelse_datum, status)
+     VALUES ($1, $2, $3, $4, 'icalendar#uid', 'gcal:locollabs', $5, $6, $7) RETURNING id`,
+    [companyId, avtal, sort, extern, `Styrgruppsmöte ${extern}`, handelseDatum, status],
   )).rows[0]!.id);
+}
+
+/** Ett uppdrag avslutas som David gör det: projektets status sätts till stängd. */
+async function avsluta(u: Uppdrag): Promise<void> {
+  await ok('set_project_status', { project_id: u.projekt, status: 'closed' });
 }
 
 /** Bolagets auditrader i ordning, som rollen med full insyn läser dem. */
@@ -748,12 +841,22 @@ describe('A: ankaret', () => {
     const mejl = await saReferens(u.avtal, 'mejl', 'msg-a3@example.se', ANKARE);
     const annatAvtal = await saReferens(annat.avtal, 'kalender', 'evt-a3-annat', ANKARE);
     const annatDatum = await saReferens(u.avtal, 'kalender', 'evt-a3-datum', '2026-10-22');
+    // AI-Review: en kalenderpost som formuläret inte erbjuder kan inte heller
+    // bli källan genom REST — trasig eller utanför spärren, med rätt datum.
+    const trasig = await saReferens(u.avtal, 'kalender', 'evt-a3-trasig', ANKARE, 'trasig');
+    const utanfor = await saReferens(u.avtal, 'kalender', 'evt-a3-utanfor', ANKARE, 'utanfor_sparr');
     const sats = (kalla?: Record<string, unknown>) =>
       act('satt_bedomningsankare', { contract_id: u.avtal, ankare: ANKARE, ...(kalla ? { kalla } : {}) });
 
+    // Formuläret och åtgärden läser samma villkor: det formuläret erbjuder är
+    // exakt avtalets användbara kalenderposter.
+    const html = await sida(vy(u, 'bedomning'));
+    const erbjudna = [...html.matchAll(/name="kalla" value="kalender:([^"]+)"/g)].map((m) => m[1]!).sort();
+    expect(erbjudna).toEqual([ratt, annatDatum].sort());
+
     const utanKalla = await sats();
     expect(utanKalla.status, JSON.stringify(utanKalla.body)).toBe(400);
-    for (const id of [mejl, annatAvtal, '00000000-0000-4000-8000-000000000000']) {
+    for (const id of [mejl, annatAvtal, trasig, utanfor, '00000000-0000-4000-8000-000000000000']) {
       const res = await sats({ typ: 'kalender', referens_id: id });
       expect(res.status, JSON.stringify(res.body)).toBe(400);
       expect(res.body.error).toBe('okand_kalenderreferens');
@@ -828,7 +931,104 @@ describe('A: ankaret', () => {
     expect(atgard).toMatchObject({ sensitivity: 'write', requires_approval: false });
     expect(ACTIONS.find((a) => a.name === 'satt_bedomningsankare')!.kravManniska).toBe(true);
   });
+
+  it('A9 ett avslutat uppdrag tar inget ankare: 409 före UPDATE:n, inget formulär och ingen länk', async () => {
+    const u = await v3Uppdrag('Ankare avslutat');
+    await avsluta(u);
+    const fore = { rad: await avtalsrad(u.avtal), audit: await auditlogg() };
+    const res = await act('satt_bedomningsankare', { contract_id: u.avtal, ankare: ANKARE, kalla: DAVIDS_UPPGIFT });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe('uppdrag_avslutat');
+    // Samma väg i vyn: ett försök ger ?fel=, och ingenting skrivs.
+    const vyn = await ua.post(`${vy(u, 'bedomning')}/ankare`).type('form')
+      .send({ contract_id: u.avtal, ankare: ANKARE, kalla: 'davids_uppgift' });
+    expect([302, 303], `ankaret gav ${vyn.status}`).toContain(vyn.status);
+    expect(String(vyn.headers.location)).toContain('?fel=');
+    expect({ rad: await avtalsrad(u.avtal), audit: await auditlogg() }).toEqual(fore);
+
+    // Sidan visar inget formulär som bara kan ge 409, och säger varför.
+    const bedomning = await sida(vy(u, 'bedomning'));
+    expect(bedomning).not.toContain('/bedomning/ankare"');
+    expect(nastaTillfalle(rytmpanelen(bedomning, u.avtal))).toContain(esc(ANKARHINDER.uppdrag_avslutat));
+    // Läget länkar inte dit ett ankare inte kan sättas.
+    expect(panelen(await sida(vy(u, 'laget')), u.avtal)).not.toContain('/bedomning#rytm-');
+  });
+
+  it('A10 den enda skrivvägen till rytm- och ankarkolumnerna spärrar avslutet för varje skrivare', async () => {
+    // Importens rytm och ankaret går genom samma funktion. Ett avslutat
+    // uppdrag fälls före UPDATE:n, vilken tillåten kolumn skrivaren än har.
+    const u = await v3Uppdrag('Skrivväg avslutat');
+    await avsluta(u);
+    const fore = await avtalsrad(u.avtal);
+    for (const [lista, varden] of [
+      [{ rytm_text: 'rytm_text' }, { rytm_text: 'Varje vecka' }],
+      [{ bedomning_intervall_dagar: 'bedomning_intervall_dagar' }, { bedomning_intervall_dagar: 7 }],
+      [{ bedomning_ankare: 'bedomning_ankare', bedomning_ankare_kalla: 'bedomning_ankare_kalla' },
+        { bedomning_ankare: ANKARE, bedomning_ankare_kalla: 'Davids uppgift 2026-10-07' }],
+    ] as const) {
+      const e = await fel(somApp((c) => skrivRytmkolumner(c, companyId, u.avtal, lista, { ...varden })));
+      expect(e?.code, JSON.stringify(lista)).toBe('uppdrag_avslutat');
+    }
+    expect(await avtalsrad(u.avtal)).toEqual(fore);
+
+    // Ett öppet uppdrag skrivs, och ett satt ankare skrivs aldrig över.
+    const oppet = await v3Uppdrag('Skrivväg öppet');
+    await medAnkare(oppet.avtal);
+    const overskrivning = await somApp((c) => skrivRytmkolumner(c, companyId, oppet.avtal,
+      { rytm_text: 'rytm_text' }, { rytm_text: 'Varje vecka' }));
+    expect(overskrivning).toBe(0);
+    expect((await rytmkolumner(oppet.avtal)).rytm_text).toBe('Varannan torsdag');
+  });
+
+  it('A11 rytm- och ankarkolumnerna har en skrivväg i källan; planterade vägar fälls', () => {
+    const dir = fileURLToPath(new URL('../src/', import.meta.url));
+    const kallor = new Map(readdirSync(dir, { recursive: true })
+      .filter((p): p is string => typeof p === 'string' && p.endsWith('.ts'))
+      .map((p) => [p, readFileSync(`${dir}/${p}`, 'utf8')]));
+    expect(kallor.has('services/uppdragRytm.ts')).toBe(true);
+    expect(rytmskrivvagar(kallor)).toEqual([]);
+    // Negativa kontroller: tre sätt att gå runt den enda vägen.
+    const planterat = (fil: string, text: string): string[] => rytmskrivvagar(new Map(kallor).set(fil, text));
+    expect(planterat('services/planterad.ts', '`UPDATE contracts SET bedomning_ankare = $1 WHERE id = $2`'))
+      .toContain('services/planterad.ts: handskriven SET av en rytmkolumn');
+    expect(planterat('services/planterad.ts',
+      "const L = { rytm_text: 'rytm_text' };\nconst s = `UPDATE contracts SET ${u.setSql} WHERE id = $1`;"))
+      .toEqual(expect.arrayContaining(['services/planterad.ts: tillåtelselista för rytmkolumner',
+        'services/planterad.ts: egen UPDATE av contracts bredvid en rytmlista']));
+    expect(planterat('services/uppdragRytm.ts',
+      `${kallor.get('services/uppdragRytm.ts')!}\nconst s = \`UPDATE contracts SET \${u.setSql} WHERE id = $1\`;`))
+      .toContain('services/uppdragRytm.ts: 2 UPDATE av contracts, väntat 1');
+  });
 });
+
+/** Rytmens och ankarets sex kolumner, som de står i tillåtelselistor och SQL. */
+const RYTMKOLUMNNAMN = Object.keys(RYTMKOLUMNER).join('|');
+
+/**
+ * Bristerna i skrivvägarna till rytm- och ankarkolumnerna, samma form som
+ * baselineorsak-provets `skrivvagar` för avtalsdelarna. Den enda vägen är
+ * `skrivRytmkolumner` i services/uppdragRytm.ts, med en UPDATE; varje annan
+ * fil som har en tillåtelselista för kolumnerna är importen, som lämnar listan
+ * dit och inte har någon egen UPDATE. Ingen fil skriver en kolumn för hand.
+ */
+function rytmskrivvagar(kallor: Map<string, string>): string[] {
+  const fel: string[] = [];
+  const lista = new RegExp(`\\b(${RYTMKOLUMNNAMN})\\s*:\\s*'\\1'`);
+  const handskriven = new RegExp(`\\b(${RYTMKOLUMNNAMN})\\s*=(?!=)`, 'i');
+  for (const [fil, text] of kallor) {
+    if (handskriven.test(text)) fel.push(`${fil}: handskriven SET av en rytmkolumn`);
+    const updates = [...text.matchAll(/UPDATE\s+contracts\s+SET\s+\$\{/gi)].length;
+    if (fil === 'services/uppdragRytm.ts') {
+      if (updates !== 1) fel.push(`${fil}: ${updates} UPDATE av contracts, väntat 1`);
+      continue;
+    }
+    if (!lista.test(text)) continue;
+    if (fil !== 'services/uppdragImport.ts') fel.push(`${fil}: tillåtelselista för rytmkolumner`);
+    if (updates > 0) fel.push(`${fil}: egen UPDATE av contracts bredvid en rytmlista`);
+    if (!text.includes('skrivRytmkolumner(')) fel.push(`${fil}: listan går inte till skrivRytmkolumner`);
+  }
+  return fel;
+}
 
 // ---------------------------------------------------------------------------
 // L — läsvägen (uppgift 6, AC 3, 5, 8 och 9)
@@ -912,8 +1112,8 @@ async function sida(path: string): Promise<string> {
 const vy = (u: Uppdrag, namn: 'laget' | 'bedomning'): string => `/app/c/${companyId}/projects/${u.projekt}/${namn}`;
 
 /** Panelen för avtalet: från `<section` före ankaret till närmaste `</section>`. Exakt en per sida. */
-function panelen(html: string, avtal: string): string {
-  const ankare = `aria-labelledby="uppfoljning-${avtal}"`;
+function panelen(html: string, avtal: string, prefix: 'uppfoljning' | 'rytm' = 'uppfoljning'): string {
+  const ankare = `aria-labelledby="${prefix}-${avtal}"`;
   expect(antal(html, ankare), `panelen för ${avtal}`).toBe(1);
   const i = html.indexOf(ankare);
   const start = html.lastIndexOf('<section', i);
@@ -921,6 +1121,41 @@ function panelen(html: string, avtal: string): string {
   expect(start).toBeGreaterThan(-1);
   expect(slut).toBeGreaterThan(i);
   return html.slice(start, slut + '</section>'.length);
+}
+
+/** Avtalets rytmpanel på Bedömning, med samma avgränsning. Exakt en per avtal och sida. */
+const rytmpanelen = (html: string, avtal: string): string => panelen(html, avtal, 'rytm');
+
+/**
+ * Brister i panelernas identitet i en renderad text: ett id som står två
+ * gånger, ett id som namnger två element (två landmärken med samma namn, och
+ * en panel som inte går att peka ut) eller ett namn som pekar på ett id som
+ * saknas. Ett namn av flera id räknas per id, så att ett lånat namn inte
+ * gömmer sig bakom ett eget. Bara identiteter med panelernas prefix läses,
+ * härledda ur `PANELIDENTITET`; husets övriga paneler hör inte till berättelsen.
+ */
+function identitetsbrister(html: string): string[] {
+  const egen = (v: string): boolean => PANELIDENTITET.some((p) => v.startsWith(`${p}-`));
+  const ider = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]!).filter(egen);
+  const namn = [...html.matchAll(/aria-labelledby="([^"]+)"/g)].flatMap((m) => m[1]!.split(/\s+/)).filter(egen);
+  const brister = new Set<string>();
+  ider.forEach((v, i) => { if (ider.indexOf(v) !== i) brister.add(`id ${v} två gånger`); });
+  namn.forEach((v, i) => { if (namn.indexOf(v) !== i) brister.add(`aria-labelledby ${v} två gånger`); });
+  for (const v of namn) if (!ider.includes(v)) brister.add(`aria-labelledby ${v} utan id`);
+  return [...brister];
+}
+
+/**
+ * Ställena i vyfilens källa som skriver ett id eller ett regionnamn. Det enda
+ * ska vara panelens ram, så att ingen del av en panel kan låna dess identitet.
+ */
+function identitetsskrivare(kalla: string): string[] {
+  const namn = [...kalla.matchAll(/aria-label(?:ledby)?=/g)].length;
+  const ider = [...kalla.matchAll(/\sid=/g)].length;
+  return [
+    ...(namn === 1 ? [] : [`${namn} regionnamn, väntat 1`]),
+    ...(ider === 1 ? [] : [`${ider} id, väntat 1`]),
+  ];
 }
 
 /** Måttets rad i panelen: `<li data-matt="<ordning>"` till närmaste `</li>`. */
@@ -961,6 +1196,22 @@ const PROCENTMONSTER = [
 ];
 const procentbrister = (text: string): string[] =>
   PROCENTMONSTER.filter((m) => m.test(text)).map((m) => m.source);
+
+/** En rytm i läsvägens form, utan databas: allt NULL och uppdraget öppet, utom det fallet säger. */
+function rytmlitteral(over: Partial<Avtalsrytm>): Avtalsrytm {
+  return {
+    rytm_text: null, bedomning_intervall_dagar: null, bedomning_veckodag: null, bedomning_ankare: null,
+    bedomning_ankare_kalla: null, rapport_mottagarkrets: null, uppdrag_avslutat: false,
+    lage: 'rytm_saknas', period: null, nasta: null, ...over,
+  };
+}
+
+/**
+ * Påståenden om kontraktet som vyn inte kan veta: en NULL-kolumn säger bara
+ * att inget är läst, inte vad kontraktet säger.
+ */
+const OKANDA_PASTAENDEN = ['rytm saknas i kontraktet', 'ram saknas i kontraktet'];
+const okandaPastaenden = (text: string): string[] => OKANDA_PASTAENDEN.filter((s) => text.includes(s));
 
 describe('V: Läget', () => {
   it('V1 panelen visar måtten med läsväg, tiden mot ramen, larmreglerna och rytmen utan ankare', async () => {
@@ -1005,13 +1256,11 @@ describe('V: Läget', () => {
       namn, hur_ofta: 'Varje vecka', kallreferenser: 'Redovisningen', lasvag: 'redovisning', larmregel: 'Tiden passerar ramen',
       larmregel_lage: 'harleds_ej', utfall_lage: 'harleds', ordning, varde,
     });
-    const utanRytm: Avtalsrytm = {
-      rytm_text: null, bedomning_intervall_dagar: null, bedomning_veckodag: null, bedomning_ankare: null,
-      bedomning_ankare_kalla: null, rapport_mottagarkrets: null, lage: 'rytm_saknas', period: null, nasta: null,
-    };
+    const utanRytm = rytmlitteral({ lage: 'rytm_saknas' });
     const p = uppfoljningspanel(companyId, 'projekt', 'avtal', [
       rad('Nedlagd tid mot ram', 0, olast('redovisning', LAST_NAR)),
       rad('Tid mot ram', 1, olast('redovisning', null)),
+      rad('Timmar mot ram', 2, last<Tidmotram>({ minuter: 600, tak_minuter: null }, 'redovisning', LAST_NAR)),
     ], utanRytm, idag).value;
     const medTid = mattetsRad(p, 0);
     expect(medTid).toContain('class="tomt"');
@@ -1021,7 +1270,15 @@ describe('V: Läget', () => {
     const utanTid = mattetsRad(p, 1);
     expect(utanTid).toContain('class="tomt"');
     expect(utanTid).toContain('senast läst aldrig');
-    expect(nastaTillfalle(p)).toContain('rytm saknas i kontraktet');
+    // AI-Review: vyn påstår inget om kontraktet som den inte har läst. Ett tak
+    // som inte är läst och en rytm som inte är inläst sägs som det — det kan
+    // lika gärna vara ett avtal som importerades före migrationen.
+    expect(mattetsRad(p, 2)).toContain(`${tidtext(600)} nedlagda mot ett tak som inte är läst`);
+    expect(nastaTillfalle(p)).toContain(INGEN_RYTM);
+    expect(okandaPastaenden(p)).toEqual([]);
+    // Negativ kontroll: samma kontroll fäller de två påståendena som stod här förut.
+    expect(okandaPastaenden(`${p}rytm saknas i kontraktet · ram saknas i kontraktet`))
+      .toEqual(['rytm saknas i kontraktet', 'ram saknas i kontraktet']);
 
     const inmatning = (panel: string): string[] => ['<form', '<input', '<textarea', '<select'].filter((t) => panel.includes(t));
     expect(inmatning(p)).toEqual([]);
@@ -1137,6 +1394,8 @@ describe('B: Bedömning och undantagsvyn', () => {
   it('B1 utan ankare: datum saknas, ingen rapport, tomma periodfält och ankarformuläret', async () => {
     const u = await v3Uppdrag('Bedömning utan ankare');
     const html = await sida(vy(u, 'bedomning'));
+    // Ett avtal med formulär: panelens identitet står en gång, och formuläret lånar den inte.
+    expect(identitetsbrister(html)).toEqual([]);
     const rytm = html.slice(html.indexOf(`aria-labelledby="rytm-${u.avtal}"`));
     expect(nastaTillfalle(rytm)).toContain('class="tomt"');
     expect(nastaTillfalle(rytm)).toContain('datum saknas');
@@ -1185,7 +1444,8 @@ describe('B: Bedömning och undantagsvyn', () => {
     const v1 = await v1Uppdrag('Bedömning v1');
     const html = await sida(vy(v1, 'bedomning'));
     expect(html).not.toContain('/bedomning/ankare"');
-    expect(html).toContain('rytm saknas i kontraktet');
+    expect(nastaTillfalle(rytmpanelen(html, v1.avtal))).toContain(INGEN_RYTM);
+    expect(okandaPastaenden(html)).toEqual([]);
   });
 
   it('B4 en begärd bedömning utan ankare: ingen period, datum saknas och två synliga datumfält', () => {
@@ -1235,7 +1495,171 @@ describe('B: Bedömning och undantagsvyn', () => {
     expect(rader).toEqual([{ period_start: '2026-10-01', period_slut: '2026-10-14', begaran_id: begaran }]);
     expect(await sida(`/app/c/${companyId}/uppdrag`)).not.toContain(`id="post-${begaran}"`);
   });
+
+  it('B7 två avtal: en rytmpanel och ett ankarformulär per avtal, och inget förval ur ett annat avtals rytm', async () => {
+    const u = await v3Uppdrag('Två avtal');
+    const andra = (await ok('skapa_uppdrag', {
+      project_id: u.projekt, name: 'Tilläggsavtal Två avtal', signed_date: SIGNERAT_V3,
+    })).contract_id as string;
+    await importeraOchGodkann(companyId, auth(), { contract_id: andra, kontraktstext: V3 });
+    const avtalen = [u.avtal, andra];
+    const periodfalt = (html: string): string[] =>
+      ['period_start', 'period_slut'].map((namn) => datumfalt(bedomningsformularet(html), namn));
+
+    // Före något ankare: varje avtal har sin panel, sitt formulär och sitt id,
+    // och inget av formulären bär sin panels identitet.
+    let html = await sida(vy(u, 'bedomning'));
+    expect(identitetsbrister(html)).toEqual([]);
+    for (const avtal of avtalen) {
+      const panel = rytmpanelen(html, avtal);
+      expect(panel, avtal).toContain(`action="/app/c/${companyId}/projects/${u.projekt}/bedomning/ankare"`);
+      expect(panel, avtal).toContain(`name="contract_id" value="${avtal}"`);
+    }
+    // Lägets panel för varje avtal leder till just det avtalets panel.
+    const laget = await sida(vy(u, 'laget'));
+    expect(identitetsbrister(laget)).toEqual([]);
+    for (const avtal of avtalen) {
+      expect(panelen(laget, avtal), avtal).toContain(`href="/app/c/${companyId}/projects/${u.projekt}/bedomning#rytm-${avtal}"`);
+      expect(html, avtal).toContain(`id="rytm-${avtal}"`);
+    }
+
+    // Ankaret för det andra avtalet sätts i dess egen panel, och det första rörs inte.
+    const res = await ua.post(`${vy(u, 'bedomning')}/ankare`).type('form')
+      .send({ contract_id: andra, ankare: ANKARE, kalla: 'davids_uppgift' });
+    expect([302, 303], `ankaret gav ${res.status}`).toContain(res.status);
+    expect(String(res.headers.location)).not.toContain('fel=');
+    expect((await rytmkolumner(andra)).bedomning_ankare).toBe(ANKARE);
+    expect((await rytmkolumner(u.avtal)).bedomning_ankare).toBeNull();
+    html = await sida(vy(u, 'bedomning'));
+    expect(identitetsbrister(html)).toEqual([]);
+    const forvantat = bedomningsrytmlage({ ...NVR_RYTM, ankare: ANKARE }, utcIdag());
+    expect(nastaTillfalle(rytmpanelen(html, andra))).toContain(forvantat.nasta!);
+    expect(rytmpanelen(html, andra)).not.toContain('/bedomning/ankare"');
+    expect(rytmpanelen(html, u.avtal)).toContain('/bedomning/ankare"');
+
+    // Med ankare på båda: varje panel räknar sin period, men formuläret väljer
+    // inget avtal åt David och förväljer därför ingen period.
+    await medAnkare(u.avtal);
+    html = await sida(vy(u, 'bedomning'));
+    expect(identitetsbrister(html)).toEqual([]);
+    for (const falt of periodfalt(html)) expect(falt).not.toMatch(/value="\d{4}-\d{2}-\d{2}"/);
+    for (const avtal of avtalen) {
+      expect(nastaTillfalle(rytmpanelen(html, avtal)), avtal).toContain(`perioden ${forvantat.period!.start} – ${forvantat.period!.slut}`);
+    }
+    // Negativ kontroll: samma kontroll fäller ett förval.
+    expect(datumfalt('<input type="date" name="period_start" value="2026-10-08" required>', 'period_start'))
+      .toMatch(/value="\d{4}-\d{2}-\d{2}"/);
+  });
+
+  it('B8 varför ingen period räknas följer rytmens läge och ankaret, på alla tre ytorna', () => {
+    const idag = '2026-10-09';
+    const lastNar = `${idag}T08:00:00.000Z`;
+    // Fyra lägen utan period. Varje fall har sin text och får inte låna något annat falls.
+    const fall = [
+      { namn: 'ingen rytm', rytm: { intervall_dagar: null, veckodag: null, ankare: null }, lage: 'rytm_saknas', text: INGEN_RYTM },
+      { namn: 'inget ankare', rytm: { intervall_dagar: 14, veckodag: 4, ankare: null }, lage: 'datum_saknas',
+        text: 'datum saknas — avtalets rytm har inget ankardatum' },
+      { namn: 'ankare på fel veckodag', rytm: { intervall_dagar: 14, veckodag: 4, ankare: '2026-10-07' }, lage: 'datum_saknas',
+        text: 'ankardatumet 2026-10-07 stämmer inte med avtalets rytm' },
+      { namn: 'ankare efter idag', rytm: { intervall_dagar: 14, veckodag: 4, ankare: '2026-10-22' }, lage: 'raknad',
+        text: 'ingen period räknas före ankardatumet 2026-10-22' },
+    ] as const;
+    for (const f of fall) {
+      const andra = fall.filter((g) => g.text !== f.text).map((g) => g.text);
+      const prova = (yta: string, text: string): void => {
+        expect(text, `${f.namn}, ${yta}`).toContain(esc(f.text));
+        for (const t of andra) expect(text, `${f.namn}, ${yta}: ${t}`).not.toContain(esc(t));
+        expect(okandaPastaenden(text), `${f.namn}, ${yta}`).toEqual([]);
+      };
+
+      // Undantagsvyns post bär läget och ankaret, och fältet Perioden följer dem.
+      const p = beskrivNyBedomning(begaransunderlag(f.rytm), '/app/c/bolag', lastNar);
+      expect(p.bedomning).toMatchObject({ period: null, rytmlage: f.lage, ankare: f.rytm.ankare });
+      const sid = undantagssida(companyId, {
+        utfall: 'poster', poster: [p], tackning: [], ofullstandig_tackning: [], aldsta_tackning: null,
+        hoppade: [], last_nar: lastNar,
+      }, { notis: '', idag }).value;
+      const a = artikeln(sid, p.id);
+      const i = a.indexOf('data-falt="period"');
+      prova('undantagsvyn', a.slice(i, a.indexOf('</dd>', i)));
+
+      // Läget och Bedömning läser samma läge ur läsvägen.
+      const utfall = bedomningsrytmlage(f.rytm, idag);
+      expect(utfall.lage, f.namn).toBe(f.lage);
+      const rytm = rytmlitteral({
+        bedomning_intervall_dagar: f.rytm.intervall_dagar, bedomning_veckodag: f.rytm.veckodag,
+        bedomning_ankare: f.rytm.ankare, bedomning_ankare_kalla: f.rytm.ankare === null ? null : `Davids uppgift ${f.rytm.ankare}`,
+        rytm_text: f.rytm.intervall_dagar === null ? null : 'Varannan torsdag', ...utfall,
+      });
+      prova('Läget', nastaTillfalle(uppfoljningspanel(companyId, 'projekt', 'avtal', [], rytm, idag).value));
+      prova('Bedömning', nastaTillfalle(rytmpanel(companyId, 'projekt', 'avtal', rytm, [], idag).value));
+    }
+  });
+
+  it('B9 en panels identitet skrivs bara av dess ram: inget id eller regionnamn delas i någon panel; planterade dubbletter fälls', () => {
+    const idag = '2026-10-09';
+    const utanAnkare = rytmlitteral({
+      rytm_text: 'Varannan torsdag', bedomning_intervall_dagar: 14, bedomning_veckodag: 4, lage: 'datum_saknas',
+    });
+    const medAnkaret = rytmlitteral({
+      rytm_text: 'Varannan torsdag', bedomning_intervall_dagar: 14, bedomning_veckodag: 4,
+      bedomning_ankare: ANKARE, bedomning_ankare_kalla: `Davids uppgift ${ANKARE}`,
+      ...bedomningsrytmlage({ ...NVR_RYTM, ankare: ANKARE }, idag),
+    });
+    const ref = [
+      { id: 'ca1e0001-1111-4222-8333-444455556666', titel_vid_lankning: 'Styrgruppen', handelse_datum: ANKARE },
+      { id: 'ca1e0002-1111-4222-8333-444455556666', titel_vid_lankning: null, handelse_datum: null },
+    ];
+    const rp = (avtal: string, rytm: Avtalsrytm, namn?: string): string =>
+      rytmpanel(companyId, 'projekt', avtal, rytm, ref, idag, namn).value;
+    const up = (avtal: string, rytm: Avtalsrytm, namn?: string): string =>
+      uppfoljningspanel(companyId, 'projekt', avtal, [], rytm, idag, namn).value;
+    // Ytorna som sidorna sätter ihop: ett och två avtal, med och utan formulär,
+    // och båda panelerna med samma avtal (Läget och Bedömning för ett avtal).
+    const ytor: Record<string, string> = {
+      'rytmpanelen med formulär och kalenderreferenser': rp('avtal-1', utanAnkare),
+      'två rytmpaneler med var sitt formulär': rp('avtal-1', utanAnkare, 'Avtal 1') + rp('avtal-2', utanAnkare, 'Avtal 2'),
+      'en rytmpanel med formulär och en utan': rp('avtal-1', utanAnkare, 'Avtal 1') + rp('avtal-2', medAnkaret, 'Avtal 2'),
+      'två uppföljningspaneler': up('avtal-1', utanAnkare, 'Avtal 1') + up('avtal-2', medAnkaret, 'Avtal 2'),
+      'båda panelerna för samma avtal': up('avtal-1', utanAnkare) + rp('avtal-1', utanAnkare),
+    };
+    for (const [namn, text] of Object.entries(ytor)) {
+      expect(identitetsbrister(text), namn).toEqual([]);
+      expect(antal(text, '<section'), namn).toBe(antal(text, 'aria-labelledby='));
+    }
+    expect(antal(ytor['två rytmpaneler med var sitt formulär']!, '<form'), 'två formulär').toBe(2);
+    // Med flera avtal säger varje knapp vilket avtal datumet sätts för.
+    const knappar = [...ytor['två rytmpaneler med var sitt formulär']!.matchAll(/<button[^>]*type="submit">([^<]*)<\/button>/g)]
+      .map((m) => m[1]!.replace(/\s+/g, ' ').trim());
+    expect(knappar).toEqual(['Sätt ankardatumet för Avtal 1', 'Sätt ankardatumet för Avtal 2']);
+
+    // Källan: bara panelens ram skriver ett id eller ett regionnamn i vyfilen.
+    const kalla = readFileSync(fileURLToPath(new URL('../src/http/view/uppdragUppfoljning.ts', import.meta.url)), 'utf8');
+    expect(identitetsskrivare(kalla)).toEqual([]);
+
+    // Negativa kontroller: fyra sätt att låna eller tappa en panels identitet.
+    const panel = rp('avtal-1', utanAnkare);
+    const planterad = (vad: string): string => panel.replace('<form ', `<form ${vad} `);
+    expect(identitetsbrister(planterad('aria-labelledby="rytm-avtal-1"')))
+      .toContain('aria-labelledby rytm-avtal-1 två gånger');
+    expect(identitetsbrister(planterad('aria-labelledby="ankare-avtal-1 rytm-avtal-1"')))
+      .toContain('aria-labelledby rytm-avtal-1 två gånger');
+    expect(identitetsbrister(planterad('id="rytm-avtal-1"'))).toContain('id rytm-avtal-1 två gånger');
+    expect(identitetsbrister(panel.replace('aria-labelledby="rytm-avtal-1"', 'aria-labelledby="rytm-avtal-9"')))
+      .toContain('aria-labelledby rytm-avtal-9 utan id');
+    expect(identitetsskrivare(`${kalla}\nconst f = html\`<form aria-labelledby="\${id}">\`;`))
+      .toEqual(['2 regionnamn, väntat 1']);
+    expect(identitetsskrivare(`${kalla}\nconst f = html\`<form aria-label="Ankardatum" id="ankare">\`;`))
+      .toEqual(['2 regionnamn, väntat 1', '2 id, väntat 1']);
+  });
 });
+
+/** Bedömningsformuläret på sidan: formuläret vars `action` slutar på `/bedomning"`. */
+function bedomningsformularet(html: string): string {
+  const i = html.search(/<form method="post" action="[^"]*\/bedomning"/);
+  expect(i, 'bedömningsformuläret').toBeGreaterThan(-1);
+  return html.slice(i, html.indexOf('</form>', i) + '</form>'.length);
+}
 
 // ---------------------------------------------------------------------------
 // D — dokumentationen (uppgift 9)
@@ -1245,7 +1669,7 @@ describe('D: dokumentationen', () => {
   /** Namnen som aldrig står ensamma i ett kodspann: Hermes prov handgrepp läser ett sådant spann som en åtgärd. */
   const ENSAMMA = [
     'satt_bedomningsankare', 'uppdrag_matt', 'rytm_text', 'bedomning_ankare', 'larmregel_lage', 'utfall_lage',
-    'harleds_ej', 'datum_saknas', 'rytm_saknas', 'matt_skapade',
+    'harleds_ej', 'datum_saknas', 'rytm_saknas', 'matt_skapade', 'avvikande_falt',
   ];
   /** Avsnittet från raden `## Uppdragsytan` till nästa rad som börjar med `## `, eller filens slut. */
   function uppdragsytan(md: string): string {

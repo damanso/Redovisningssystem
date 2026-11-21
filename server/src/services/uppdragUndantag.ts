@@ -11,7 +11,7 @@ import { listaVantandeKoposter, type Approval } from './approvals.js';
 import { describeApproval, explainApproval, type ApprovalExplanation } from './approvalSummary.js';
 import { listaBedomningar, lasDelsiffror, listaObesvaradeBegaranden, type Bedomningslage, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
 import { forbrukningsandringar, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
-import { bedomningsperiod, type Bedomningsrytm } from '../lib/bedomningsrytm.js';
+import { bedomningsrytmlage, type Bedomningsrytm, type Rytmlage } from '../lib/bedomningsrytm.js';
 import { lasBedomningsrytm, rytmen } from './uppdragRytm.js';
 import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
 import { OVRIGT_SCHEMA, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
@@ -109,11 +109,18 @@ export interface Begardbedomning {
     satt_nar: string; satt_av_namn: string | null; kommentar: string | null }>;
   andringar: Lasvarde<Andringsunderlag>;
   /**
-   * Perioden ur avtalets rytm (Story 2.3, `bedomningsperiod`). null utan
-   * ankare eller rytm: då anger David själv perioden han bedömer, och ingen
-   * kalendermånad föreslås.
+   * Perioden ur avtalets rytm (Story 2.3, `bedomningsrytmlage`). null utan
+   * rytm, utan ankare och före ankaret: då anger David själv perioden han
+   * bedömer, och ingen kalendermånad föreslås.
    */
   period: { start: string; slut: string } | null;
+  /**
+   * Rytmens läge och ankare, så att posten säger VARFÖR perioden saknas — ingen
+   * rytm inläst, inget ankare, ett ankare som inte stämmer med rytmen eller ett
+   * ankare som ännu inte är nått — och aldrig mer än kolumnerna vet.
+   */
+  rytmlage: Rytmlage;
+  ankare: string | null;
 }
 export interface Undantagspost {
   slag: Postslag;
@@ -512,6 +519,7 @@ interface Begaransunderlag {
 export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: string): Undantagspost {
   const r = u.begaran;
   const s = u.senaste;
+  const rytm = bedomningsrytmlage(u.rytm, lastNar.slice(0, 10));
   return { slag: 'ny_bedomning', id: r.id, identitet: 'begaran', atgard: null,
     foreslagen_av: 'human', skapad_nar: r.begard_nar,
     uppdrag: last(uppdragsref(u.uppdrag), KALLA_REDOVISNING, lastNar),
@@ -528,7 +536,9 @@ export function beskrivNyBedomning(u: Begaransunderlag, bas: string, lastNar: st
         period_start: s.period_start, period_slut: s.period_slut, satt_nar: s.created_at,
         satt_av_namn: s.satt_av_namn, kommentar: s.kommentar }, KALLA_REDOVISNING, lastNar),
       andringar: last(u.andringar, KALLA_REDOVISNING, lastNar),
-      period: bedomningsperiod(u.rytm, lastNar.slice(0, 10)),
+      period: rytm.period,
+      rytmlage: rytm.lage,
+      ankare: u.rytm.ankare,
     } };
 }
 

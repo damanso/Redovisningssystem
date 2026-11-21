@@ -518,6 +518,10 @@ it('P16: importsökningen fångar planterad nätverksimport, och läsvägen anro
     '../src/lib/leveranskontrakt.ts': [],
     // Story 2.3: rytmregeln är ren och importerar ingenting.
     '../src/lib/bedomningsrytm.ts': [],
+    // Story 2.3 (AI-Review): rytmens läsväg är en ny granne på undantagsvyns
+    // läsväg och får sin egen lista, så att nätverksförbudet följer med in i den.
+    '../src/services/uppdragRytm.ts': ['pg', '../lib/bedomningsrytm.js', '../lib/errors.js', '../lib/lasvarde.js',
+      '../lib/leveranskontrakt.js', '../lib/updateBuilder.js', './auditService.js'],
     '../src/lib/beslutsunderlag.ts': ['node:crypto', 'zod', '../domain/money.js', './validation.js', './scopeavgorande.js'],
     '../src/lib/avtalsdelsfalt.ts': ['zod', './validation.js', './beslutsunderlag.js', './leveranskontrakt.js'],
     '../src/lib/lasvarde.ts': DAGENS,

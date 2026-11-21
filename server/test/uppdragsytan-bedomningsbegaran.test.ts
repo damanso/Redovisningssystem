@@ -25,6 +25,7 @@ import { withTenantTransaction } from '../src/db/tx.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { BASELINEKOLUMNER } from '../src/lib/baselinekolumner.js';
 import { LEVERABELORD, kalendermanad, sammanfattaAndringar } from '../src/lib/bedomningsbegaran.js';
+import { INGEN_RYTM } from '../src/lib/bedomningsrytm.js';
 import { BEDOMNINGSLAGEN } from '../src/services/uppdragBedomning.js';
 import { BESLUTSRADEN } from '../src/services/uppdragUndantag.js';
 import { statusChip } from '../src/http/view/html.js';
@@ -1105,7 +1106,9 @@ describe('K6 vyn', () => {
   it('h Bedömning-sidan föreslår ingen kalendermånad: utan rytm står periodfälten tomma (Story 2.3)', async () => {
     const { start, slut } = kalendermanad(new Date().toISOString().slice(0, 10));
     const html = await sida(vy, `/app/c/${vy.id}/projects/${q.projectId}/bedomning`);
-    expect(html).toContain('rytm saknas i kontraktet');
+    // Vyn vet bara att ingen rytm är inläst, inte vad kontraktet säger (AI-Review).
+    expect(html).toContain(INGEN_RYTM);
+    expect(html).not.toContain('rytm saknas i kontraktet');
     for (const namn of ['period_start', 'period_slut']) {
       const falt = new RegExp(`<input type="date" name="${namn}"[^>]*>`).exec(html)?.[0];
       expect(falt, namn).toBeDefined();

@@ -89,6 +89,9 @@ export function post(slag: Postslag, over: Partial<Undantagspost> = {}): Undanta
       andringar: last({ sedan: null, forbrukning: [], leverabelrorelser: [], signaler: [], baselineandringar: [] },
         KALLA_REDOVISNING, TID),
       period: { start: '2026-10-01', slut: '2026-10-31' },
+      // Story 2.3: posten bär rytmens läge och ankare bredvid perioden.
+      rytmlage: 'raknad',
+      ankare: '2026-10-01',
     };
   }
   return { ...bas, ...over };
