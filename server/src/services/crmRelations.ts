@@ -389,6 +389,26 @@ export async function upsertOrganization(
     }
   }
 
+  // A-4: synkens nya variant väntar på ett människobeslut före varje skrivning.
+  if (origin.source === 'sync' && !hit) {
+    const candidates = await client.query<{ id: string; name: string }>(
+      `SELECT o.id, o.name FROM crm.organizations o
+       WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+         AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
+           WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
+       ORDER BY o.name, o.id FOR UPDATE`,
+      [companyId, writeName],
+    );
+    if (candidates.rows.length > 1) {
+      throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
+    }
+    const candidate = candidates.rows[0];
+    if (candidate) {
+      throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${candidate.name} — väntar på ditt beslut i Att göra`,
+        { organization_id: candidate.id, name: candidate.name });
+    }
+  }
+
   // Människans rättelse med känt id ändrar bara angivna fält. En utelämnad
   // kund får därför aldrig fyllas i av uppslaget, oavsett vilket fält som rättas.
   // Synken och upsert utan id behåller uppslaget när kopplingen saknas.
@@ -529,6 +549,23 @@ export async function upsertOrganization(
     },
   });
   return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, kept_customer_fields: keptCustomerFields, redirected_from: redirectedFrom };
+}
+
+/** Ett nej gäller just namnparet; loggen bär bara antal eftersom den överlever gallringen. */
+export async function saveOrganizationDistinction(
+  client: PoolClient, companyId: string, userId: string, organizationId: string, variantName: string,
+): Promise<{ saved: number }> {
+  const r = await client.query(
+    `INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+    [companyId, organizationId, variantName.trim(), userId],
+  );
+  const saved = r.rowCount ?? 0;
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.organization_distinction_saved', entityType: 'organization', entityId: organizationId,
+    details: { saved },
+  });
+  return { saved };
 }
 
 /**

@@ -2666,3 +2666,29 @@ Vägen vidare är `merge_crm_organizations` med de två relationernas id som
 Relationssidan visar namnkrocken som en notis med en länk till relationen och
 knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
 via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.
+
+## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)
+
+`ingest_crm_events` skapar ingen organisation när namnet utan exakt träff eller
+alias bara skiljer sig i bolagsform från exakt en befintlig relation och paret
+inte sparats som olika bolag. Händelsen hamnar i `skipped` med skälet
+«bolagsformsvariant av {relation} — väntar på ditt beslut i Att göra».
+Förslaget `merge_crm_name_variant` köas en gång per namnpar och redovisas i
+`merge_proposals` som «Alliance Optikk AS → Alliance Optikk (bolagsform)».
+Flera möjliga relationer ger skälet «bolagsformsvariant av flera relationer —
+slå ihop dem först» i skipped, «<namn> (flera möjliga)» i merge_proposals och
+ingen köpost.
+
+Åtgärden tar `{ organization_id, name }`, är `sensitive` med `tvafas` och
+avgörs av en människa i Att göra. Godkänt lägger namnet som alias; nästa synk
+styr om händelserna och redovisar det i `redirected_organizations`. Avvisat
+kräver ett skäl som sparas med beslutet och sparar paret i
+`crm.organization_distinctions`; nästa synk skapar den egna relationen.
+
+Godkänt ger `{ outcome, organization_id }` med outcome ur den slutna listan
+`alias_added`, `already_alias`, `name_exists`, `alias_elsewhere` eller
+`organization_missing`. Avvisat ger samma form under `result.vid_avslag`, med
+`distinction_saved`, `already_distinct` eller `organization_missing`. Ett
+redan avgjort eller saknat mål fastnar därmed inte i återförsök för affärsläget.
+Regeln gäller synkens skrivningar; en relation som skapas för hand prövas
+inte av den (handflödet byggs i berättelse 2.5).

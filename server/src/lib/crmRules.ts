@@ -176,3 +176,20 @@ export function mergeCandidate(value: unknown, candidateIds: readonly string[]):
   const id = value.toLowerCase();
   return candidateIds.includes(id) ? id : null;
 }
+
+/** Bara bolagsformsvarianten leder till förslag; namnkrocken och kundlåset betyder något annat. */
+export function nameVariantOrganization(error: { code: string; details?: unknown }): { organization_id: string; name: string } | null {
+  if (error.code !== 'name_variant_of') return null;
+  const details = error.details;
+  if (typeof details !== 'object' || details === null || Array.isArray(details)
+    || !Object.hasOwn(details, 'organization_id') || !Object.hasOwn(details, 'name')) return null;
+  const { organization_id: id, name } = details as Record<string, unknown>;
+  return typeof id === 'string' && UuidSchema.safeParse(id).success && typeof name === 'string' && name.trim()
+    ? { organization_id: id.toLowerCase(), name: name.trim() } : null;
+}
+
+/** Databasens nyckel bestämmer suffixet; bolagsformslistan finns bara i SQL (A-4). */
+export function companyFormSuffix(name: string, nameNorm: string): string | null {
+  const compact = name.trim().replace(/\s+/g, ' ');
+  return compact.toLowerCase().startsWith(`${nameNorm} `) ? compact.slice(nameNorm.length + 1).trim() || null : null;
+}

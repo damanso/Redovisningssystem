@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14) — 2026-11-21:**
+  Migration 0092 lägger sparade namnpar med sammansatt FK, FORCE RLS och bara
+  SELECT/INSERT. Synkens regel i `upsertOrganization` stoppar nya varianter;
+  `saveOrganizationDistinction` är enda skrivvägen för besked. Tvåfasåtgärden
+  `merge_crm_name_variant` ger alias vid ja och sparat par vid nej. Intaget
+  köar en gång per namnpar i händelsens savepoint och visar `merge_proposals`;
+  audit bär bara antal och fasta värden. Att göra-kortet förklarar båda valen.
+  `docs/MCP_ACTIONS.md` och `docs/crm/API_KONTRAKT.md` beskriver kontraktet.
+  BM1–BM3, BR1–BR2, BS1–BS5, BG1–BG4, BI1–BI9, BK1–BK2 och BD1 skrivna
+  före respektive kod. Registerrader tillagda i vy-kansliga-knappar,
+  forslagskort-klartext och uppdragsytan-mandat för den nya känsliga
+  tvåfasåtgärden; mandatprovets uttömmande likhet är skärpt.
+  `npm run typecheck` och `npm run build`: exit 0. Rena crm-rules:
+  först «2 failed | 92 passed (94)», sedan «94 passed (94)».
+  Separat körning av befintliga rena regler och källprov utan databashakar:
+  «113 passed | 16 skipped (129)», exit 0 (VK1–VK3 och sändvägens källprov).
+  Full `npm test` vid rött och grönt: exit 1 i globalSetup med
+  «connect EPERM 127.0.0.1:5433»; inga databasfall körda. Kedjan kör därför
+  migrationen, integrationen och full regression enligt uppdragets undantag.
+  Ingen grön fullsvit eller interaktiv webbläsarkontroll påstås. Bygget följer
+  husets ai-card, Public Sans, tokens, kontrast, focus-visible och naturliga
+  formulärordning; tomt läge, felnotis och serverrendering används som förut.
+  Den handskapade varianten (notisen och `distinct_from`) hör till 2.5.
+  Ingen rutt, CSS-klass, miljövariabel eller beroende tillkommer.
+  Externa prov inte körda; baslinjens röda adresskontrakt och bmadglidning har
+  inte omprövats. Ingen driftsättning gjord.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när
