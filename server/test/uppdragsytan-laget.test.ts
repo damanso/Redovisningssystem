@@ -395,8 +395,9 @@ describe('(e) Läget som yta', () => {
   it('fem kort med var sin farskhetsrad, och tröskeln daterad av svepet', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${projektId}/laget`);
     for (const id of KORTEN) expect(kort(html, id)).toContain('class="farskhet"');
-    // En per innehållsdel: fem kort och panelen Beslut, aldrig en sidstämpel.
-    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(6);
+    // En per innehållsdel: fem kort, panelen Beslut och scopelinjens panel för
+    // uppdragets enda avtal (Story 2.6), aldrig en sidstämpel.
+    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(7);
     expect(html.split('id="beslut"')[1]!.split('</section>')[0]!.match(/class="farskhet"/g) ?? []).toHaveLength(1);
 
     const ram = kort(html, 'kort-ram');

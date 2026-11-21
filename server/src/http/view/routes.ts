@@ -42,6 +42,7 @@ import { hamtaDriveKo, listaReferenser, tillReferensvisning, type Kopost } from 
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -3786,40 +3787,71 @@ function tillaggspanel(y: Kontraktsyta): Raw {
   </section>`;
 }
 
-/** En grupp scopelinjer: avtalets egna ord, med klausulen de står i. */
-function scopegrupp(rubrik: string, marke: Raw, rader: Scopelinjerad[], tomtext: string): Raw {
+/**
+ * En grupp scopelinjer: avtalets egna ord, med klausulen de står i.
+ * `radbrytning` bevarar styckebrytningen i ett stycke som åtgärden — utan
+ * blanktecken mellan texten och slutet av raden, som annars hade blivit en
+ * tom rad sist i stycket.
+ */
+function scopegrupp(rubrik: string, marke: Raw, rader: Scopelinjerad[], tomtext: string, radbrytning = false): Raw {
   return html`<h3 style="margin:14px 16px 4px">${marke} ${rubrik}</h3>
     ${rader.length === 0
       ? html`<p class="muted" style="margin:2px 16px 10px;font-size:12.5px">${tomtext}</p>`
       : html`<ul style="margin:4px 16px 12px;padding-left:20px">
-          ${rader.map((r) => html`<li style="margin-bottom:3px">${r.text}
-            ${r.klausul ? html` <span class="code">${r.klausul}</span>` : ''}</li>`)}
+          ${rader.map((r) => html`<li style="margin-bottom:3px${radbrytning ? ';white-space:pre-wrap' : ''}">${r.text}${
+            r.klausul ? html` <span class="code">${r.klausul}</span>` : ''}</li>`)}
         </ul>`}`;
 }
 
-/** Vad som ingår: innanför, utanför, och fraserna att lyssna efter. */
-function scopepanel(companyId: string, y: Kontraktsyta): Raw {
-  const av = (sort: Scopelinjerad['sort']): Scopelinjerad[] => y.scopelinje.filter((r) => r.sort === sort);
-  return html`<section class="panel" style="margin-top:14px" aria-labelledby="scope-${y.contract.id}">
-    <div class="panel__head"><h2 id="scope-${y.contract.id}">Vad som ingår</h2>
-      ${y.scopelinje.length === 0 ? chip('Ingen scopelinje', 'muted', '○') : chip(String(y.scopelinje.length), 'muted')}</div>
+// Story 2.6 (FR-6, FR-27): scopelinjens panel. Meningarna står var för sig på
+// en rad, så att proven kan läsa dem som de renderas.
+const SCOPE_SAKNAS = 'Saknas i kontraktet. Det gissas inte här — en ny kontraktsversion fyller det.';
+const SCOPE_UTKAST_EJ_INLAST = 'Avtalet är ett utkast. Scopelinjen läses in ur leveranskontraktets del 5 först när kontraktet är fryst och baselinen godkänd — till dess står den i handlingen.';
+const SCOPE_GALLANDE_EJ_INLAST = 'Ingen scopelinje är inläst för avtalet. Den läses ur leveranskontraktets del 5 när baselinen godkänns och skrivs aldrig här.';
+
+/**
+ * Vad som ingår: innanför, utanför, fraserna att lyssna efter och vad som görs
+ * när en av dem hörs. Den ENDA funktion som ritar scopelinjens panel — på
+ * Kontraktet och på Läget.
+ *
+ * Märkningen och det saknade räknas aldrig här: båda kommer ur `lage`, som
+ * läsvägen räknat med `scopelinjelage`. Utkast bär samma ockra som sidhuvudets
+ * tillstånd; en saknad del står kvar som grupp, med Saknas i stället för sitt
+ * vanliga märke (FR-27), och en panel utan rader säger att inget är inläst —
+ * aldrig att fyra delar saknas.
+ */
+function scopelinjepanel(
+  companyId: string, projectId: string, contractId: string, rader: readonly Scopelinjerad[],
+  lage: Scopelinjelage, avtalsnamn?: string, farskhet?: Raw,
+): Raw {
+  // Samma ord och samma märken som signalsidan använder för samma sak:
+  // Innanför ✓, Utanför →. Två vokabulärer för en och samma linje hade gjort
+  // gränsen till en tolkningsfråga.
+  const grupper: Record<Scopelinjesort, [rubrik: string, marke: Raw]> = {
+    innanfor: ['Innanför uppdraget', chip('Ingår', 'ok', '✓')],
+    utanfor: ['Utanför uppdraget', chip('Ingår inte', 'info', '→')],
+    fras: ['Fraser att lyssna efter', chip('Signal', 'muted', '○')],
+    atgard: ['När en signal tänds', chip('Åtgärd', 'muted', '→')],
+  };
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="scope-${contractId}">
+    <div class="panel__head"><h2 id="scope-${contractId}">Vad som ingår${avtalsnamn ? html` — ${avtalsnamn}` : ''}</h2>
+      ${lage.markning === 'gallande' ? chip('Gällande', 'ok', '✓') : tillstandChip('utkast')}</div>
     <div class="panel__body">
-      ${y.scopelinje.length === 0
-        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga scopelinjer ännu. De läses ur
-            leveranskontraktets text och skrivs aldrig här — en gräns som står i koden gäller för fel kund nästa gång.</p>`
+      ${lage.lage === 'ej_inlast'
+        ? html`<p class="muted" style="margin:8px 16px 12px">${
+            lage.markning === 'utkast' ? SCOPE_UTKAST_EJ_INLAST : SCOPE_GALLANDE_EJ_INLAST}</p>`
         : html`
-          ${/* Samma ord och samma märken som signalsidan använder för samma sak:
-                Innanför ✓, Utanför →. Två vokabulärer för en och samma linje
-                hade gjort gränsen till en tolkningsfråga. */ ''}
-          ${scopegrupp('Innanför uppdraget', chip('Ingår', 'ok', '✓'), av('innanfor'),
-            'Avtalet räknar inte upp något som uttryckligen ingår.')}
-          ${scopegrupp('Utanför uppdraget', chip('Ingår inte', 'info', '→'), av('utanfor'),
-            'Avtalet räknar inte upp något som uttryckligen ligger utanför.')}
-          ${scopegrupp('Fraser att lyssna efter', chip('Signal', 'muted', '○'), av('fras'),
-            'Kontraktet har inga signalfraser.')}
+          ${SCOPELINJESORTER.map((sort) => {
+            const [rubrik, marke] = grupper[sort];
+            // En grupp som inte saknas har alltid minst en rad, så tomtexten
+            // nås bara av en saknad grupp.
+            return scopegrupp(rubrik, lage.saknade.includes(sort) ? chip('Saknas', 'warn', '!') : marke,
+              rader.filter((r) => r.sort === sort), SCOPE_SAKNAS, sort === 'atgard');
+          })}
           <p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Fraserna tänds och avgörs under
-            <a href="/app/c/${companyId}/projects/${y.contract.project_id}/signaler">Signaler</a> — av en människa,
+            <a href="/app/c/${companyId}/projects/${projectId}/signaler">Signaler</a> — av en människa,
             aldrig av en maskin.</p>`}
+      ${farskhet ?? ''}
     </div>
   </section>`;
 }
@@ -3833,7 +3865,7 @@ function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean, id
     ${dokumentpanel(companyId, y, idag)}
     ${gallandepanel(y)}
     ${tillaggspanel(y)}
-    ${scopepanel(companyId, y)}`;
+    ${scopelinjepanel(companyId, y.contract.project_id, y.contract.id, y.scopelinje, y.scopelinje_lage)}`;
 }
 
 function kontraktssida(companyId: string, u: Kontraktsunderlag, idag: string): Raw {
@@ -4492,7 +4524,13 @@ function lagessida(
       ${kortKoposter(companyId, l, idag)}
     </div>
     ${ovrigtpanelen(companyId, l, anteckningar)}
-    ${beslutspanelen(companyId, l, idag)}`;
+    ${beslutspanelen(companyId, l, idag)}
+    ${/* Story 2.6: scopelinjen sist, en panel per avtal — samma panel som på
+          Kontraktet, med sin egen färskhetsrad. Gränsen läses när en signal
+          ska avgöras; den är inget av FR-18:s fem kort. */ ''}
+    ${l.avtal.map((a) => scopelinjepanel(companyId, p.project_id, a.contract_id, a.scopelinje, a.scopelinje_lage,
+      l.avtal.length > 1 ? a.contract_name : undefined,
+      farskhetsrad([direktFarskhet(l.farskhet.scopelinje, idag)])))}`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) => {

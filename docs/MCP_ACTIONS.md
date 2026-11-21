@@ -1259,7 +1259,9 @@ godkännandet, allt i samma transaktion:
 - `STYRNING` som del under `UPPDRAG` — **utan** rad i leverabelregistret,
 - en rad per leverabel i `uppdrag_leverabel` (kod, klausul,
   acceptanskriterium, uppföljningsmått, läsväg, status `ej_paborjad`),
-- `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul),
+- `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul och
+  åtgärden när en signal tänds; sorten är en av
+  `'innanfor' | 'utanfor' | 'fras' | 'atgard'`, migration 0094, Story 2.6),
 - `contracts.godkannare` / `godkannare_eskalering`.
 
 - **Utkastläget (Story 2.1, B-14).** En text med `kontrakt_tillstand: utkast`
@@ -1308,6 +1310,16 @@ godkännandet, allt i samma transaktion:
   och dess timmar ur timtabellens `-`-rad med samma namn (`| - | <namn> | 15 |`).
   Utan koden i texten finns ingen styrning. Svaret bär den under
   `forslag.styrning` (`{ kod, namn, cap_hours }` eller `null`).
+- **Del 5 i v3:s form (Story 2.6).** Scopelinjen läses bara ur avsnitt vars
+  rubrik nämner scopelinje, omfattning, innanför, utanför eller signalfras.
+  Innanför och utanför står som fetstilsstycken (`**Innanför, …:**`,
+  `**Utanför, §2.3:**`); en ensam paragrafhänvisning i etiketten blir klausulen.
+  Fraserna läses ur tabellens kolumn ”Det kunden säger” med klausulen ur
+  kolumnen Klausul. Ett stycke vars etikett säger att en signal tänder eller
+  tänds blir åtgärden, med styckebrytningen kvar och utan klausul; en annan
+  etikett (”Delning …”) avslutar stycket före och blir ingen rad. Texten lagras
+  som den står, och antalet fraser kommer ur tabellen. v1:s rubrikform ger
+  samma rader som förut. Förhandsvisningen och de saknade fälten har samma form.
 - Uppsättning och import är `write`, men importen skriver planen först genom
   den känsliga köposten `satt_baseline`. Ingen lagrad version går att skriva
   över, bekräftad eller obekräftad: 0079 är sista försvarslinjen.
@@ -1969,8 +1981,18 @@ känslig åtgärd och godkänns i **Att göra**.
   version per delkod som GÄLLER, med `valid_from`, `change_reason`, taket och
   `cap_status`), `tillagg` (varje version utöver den första, i tidsordning, med
   `valid_from` och orsaken) och `scopelinje` (avtalets egna innanför/utanför/
-  fraser i `ordning`). Okänt eller främmande avtal ger **404 `not_found`** —
+  fraser/åtgärd i `ordning`). Okänt eller främmande avtal ger **404 `not_found`** —
   aldrig en tom yta, som hade sett ut som "avtalet är tomt".
+- **Scopelinjens läge (Story 2.6, FR-6 och FR-27).** Svaret bär också
+  `scopelinje_lage: { markning, lage, saknade }`, räknat av den rena funktionen
+  `scopelinjelage` i `server/src/lib/leveranskontrakt.ts`. `markning` är
+  `'utkast' | 'gallande'` och härleds bara ur `contracts.kontrakt_tillstand`
+  (fryst ger gällande). `lage` är `'inlast' | 'ej_inlast'`: utan en enda rad är
+  scopelinjen inte inläst, och då är `saknade` tom i stället för att påstå fyra
+  saknade delar. Annars är `saknade` de sorter ur
+  `'innanfor' | 'utanfor' | 'fras' | 'atgard'` som saknar rad, i den ordningen.
+  Ett utkast får aldrig scopelinjer genom importen, eftersom baselinen bara skrivs
+  för ett fryst avtal efter Davids ja.
 - **Ytan är vägen till dokumentet och registret över dess läge — aldrig en
   kopia** (NFR-12). Svaret bär `source_file_id` och Drive-referensernas
   `extern_id` och ingenting mer om handlingen; `includeContent` anropas aldrig
@@ -2010,6 +2032,20 @@ där gäller; utkastets obesvarade frågor hänvisas till handlingen och återge
 aldrig. JS-fri serverrenderad HTML, inga externa anrop under rendering (NFR-6),
 ingen ny CSS och inga nya komponenter.
 
+**Vad som ingår (Story 2.6).** Panelen ritas av en enda funktion,
+`scopelinjepanel` i `server/src/http/view/routes.ts`, på Kontraktet och sist på
+Läget (en panel per avtal, efter **Beslut och utkast**, med egen färskhetsrad).
+Huvudets märke är markeringen ur svaret: *Gällande* (✓) för ett fryst avtal,
+*Utkast* (◔, samma ockra som sidhuvudet) för ett utkast. Inläst scopelinje
+visas i fyra grupper: *Innanför uppdraget*, *Utanför uppdraget*, *Fraser att
+lyssna efter* och *När en signal tänds*, där åtgärdens styckebrytning står kvar.
+En saknad del står kvar som grupp med märket *Saknas* och meningen ”Saknas i
+kontraktet. Det gissas inte här — en ny kontraktsversion fyller det.” Utan en
+enda rad säger panelen att scopelinjen inte är inläst, för ett utkast att den
+står i handlingen tills kontraktet är fryst. Panelens enda länk går till
+uppdragets Signaler. Ingen ny rutt, ingen delningsvy och ingen yta utan
+inloggning visar scopelinjen (NFR-9).
+
 ### Läget (S10.1, våg 6)
 
 - `las_uppdragslage` (read, ingen `kravManniska`) — `project_id`. Uppdragets läge
@@ -2025,7 +2061,10 @@ ingen ny CSS och inga nya komponenter.
   **`oppna_signaler`/`signalhistorik`/`avgjorda_signaler`** (`signalhistorik`
   är de avgjorda signalerna med alla sina avgöranden, Story 1.9; tilläggets
   version nås genom avgörandets `tillagg_approval_id` och
-  `beslut.registrerade[].approval_id`), samt uppdragets **`koposter`** och
+  `beslut.registrerade[].approval_id`), **`scopelinje`** (samma rader som
+  kontraktsytan, ur `lasScopelinjer`) och
+  `scopelinje_lage: { markning, lage, saknade }` (samma funktion som
+  kontraktsytan, med avtalets `contracts.kontrakt_tillstand`; Story 2.6), samt uppdragets **`koposter`** och
   **`beslut`** (Story 1.7: `registrerade` med val, fryst underlag, handling, källreferenser och beslutsfattare/tid, och sedan Story 1.16 `utkast` (`{ mottagare, amne, text }` eller `null`) och `utkast_markor` (sträng eller `null`); `mottagna` med bara `approval_id`, `atgard`, `utfall`, `beslutad_nar`) och **`farskhet`** (en post per innehållsdel, även `beslut`). Lägets panel **Beslut och utkast** visar mottagna mandat utan ny kvittens och registrerade beslut med skäl, källa och handling, och under ett registrerat nej på en kundförfrågan ur Övrigt svarsutkastet med en `mailto:`-länk som David själv skickar från. Ett upprepat svar på Att göra leder till beslutets ankare; vanliga lyckade svar leder tillbaka till Att göra. Okänt eller främmande `project_id` —
   och ett projekt UTAN avtal — ger **404 `not_found`**: ett projekt utan avtal är
   ett projekt, inte ett uppdrag, och en tom yta hade sagt att uppdraget saknade
@@ -2040,8 +2079,9 @@ ingen ny CSS och inga nya komponenter.
   signalerna ur `listaSignaler` och kön ur `listApprovals`. Tröskeln HÄMTAS ur
   `uppdrag_svepvarde` — att utvärdera FR-3:s dubbelvillkor en andra gång hade
   gett två svar på "larmar det?".
-- **Färskhet per källa, aldrig en sidstämpel (FR-35).** De fem direktlästa
-  delarna bär `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
+- **Färskhet per källa, aldrig en sidstämpel (FR-35).** De direktlästa
+  delarna, sedan Story 2.6 också `farskhet.scopelinje`, bär
+  `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
   `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
   skillnaden i stället för att visa ett gammalt värde som färskt.

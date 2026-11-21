@@ -31,6 +31,7 @@ import type { PoolClient } from 'pg';
 import { listContracts, type Delforbrukning, type Kontrakttillstand, type Takversion } from './contracts.js';
 import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
+import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
 
 export interface LasKontraktsytaInput {
   contract_id: string;
@@ -86,7 +87,7 @@ export interface Tillaggsversion {
 
 /** Avtalets egna ord om vad som ingår. Aldrig påhittade här (0068:190). */
 export interface Scopelinjerad {
-  sort: 'innanfor' | 'utanfor' | 'fras';
+  sort: Scopelinjesort;
   text: string;
   klausul: string | null;
   ordning: number;
@@ -115,6 +116,8 @@ export interface Kontraktsyta {
   gallande: Gallandedel[];
   tillagg: Tillaggsversion[];
   scopelinje: Scopelinjerad[];
+  /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn (Story 2.6). */
+  scopelinje_lage: Scopelinjelage;
 }
 
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
@@ -219,5 +222,6 @@ export async function lasKontraktsyta(
     gallande,
     tillagg,
     scopelinje: linjer.rows,
+    scopelinje_lage: scopelinjelage(avtal.kontrakt_tillstand, linjer.rows),
   };
 }

@@ -39,10 +39,17 @@
 //     samma namn (`| - | <namn> | 15 | … |`, kontraktets egen markering för
 //     ”ej leverabel”). Utan koden i texten finns ingen styrning; rubriken
 //     `### STYRNING …` vinner över tabellformen.
-//   * **Omfattningen (del 5)** — avsnitt vars rubrik nämner "innanför",
-//     "utanför" respektive "signalfras". Raderna läses ur en tabell
-//     (`Rad`/`Text`/`Fras` + valfri `Klausul`) eller ur en punktlista, och då
-//     är klausulen NULL.
+//   * **Omfattningen (del 5)** — bara avsnitt vars rubrik nämner scopelinje,
+//     omfattning, innanför, utanför eller signalfras (en sluten lista). v1:s
+//     rubrikform: en rubrik som nämner "innanför", "utanför" respektive
+//     "signalfras" ger sorten, och raderna läses ur en tabell
+//     (`Rad`/`Text`/`Fras`/`Det kunden säger` + valfri `Klausul`) eller ur en
+//     punktlista, och då är klausulen NULL. v3:s form: fetstilsstycken vars
+//     etikett ger sorten (`**Innanför, …:**`, `**Utanför, §2.3:**`) och
+//     ÅTGÄRDEN — ett stycke vars etikett säger att en signal tänder eller tänds
+//     (Story 2.6). Stycket lagras som det står, och en ensam paragrafhänvisning
+//     i etiketten blir klausulen. En annan etikett (”Delning …”) avslutar
+//     stycket före och blir ingen rad.
 //
 // Datumen bär sin egen precision: `2026-09` är en MÅNAD (`date_precision`
 // 'manad', slutdatumet blir månadens sista dag), `2026-09-01` är en DAG.
@@ -88,8 +95,15 @@ export interface Styrning {
   cap_hours: number | null;
 }
 
+/**
+ * Scopelinjens sorter — exakt CHECK-villkoret `uppdrag_scopelinje_sort_check`
+ * (0094). `atgard` är vad David gör när en signal tänds (FR-6, Story 2.6).
+ */
+export const SCOPELINJESORTER = ['innanfor', 'utanfor', 'fras', 'atgard'] as const;
+export type Scopelinjesort = (typeof SCOPELINJESORTER)[number];
+
 export interface Scopelinje {
-  sort: 'innanfor' | 'utanfor' | 'fras';
+  sort: Scopelinjesort;
   text: string;
   klausul: string | null;
 }
@@ -348,6 +362,112 @@ const SCOPESORTER: Array<{ nyckel: string; sort: Scopelinje['sort'] }> = [
   { nyckel: 'signalfras', sort: 'fras' },
 ];
 
+/**
+ * Avsnitten som får bära del 5: rubriker vars normaliserade text innehåller
+ * något av orden. Listan är sluten (Story 2.6). Ett avsnitt som bara NÄMNER
+ * signaler eller scopelinjen — uppföljningen, Davids svar, vad frysningen låser
+ * upp — läses aldrig som del 5.
+ */
+const SCOPEAVSNITT = ['scopelinje', 'omfattning', 'innanfor', 'utanfor', 'signalfras'];
+
+/** Kolumnerna som bär radens text. `Det kunden säger` är v3:s frasskolumn. */
+const SCOPETEXTKOLUMNER = ['rad', 'text', 'fras', 'beskrivning', 'detkundensager'];
+
+/**
+ * `**Etikett** resten` → etiketten och resten. Det avslutande `**` är det
+ * första efter det inledande, så fetstil längre in i stycket står kvar i texten.
+ */
+function etikettrad(rad: string): { etikett: string; rest: string } | null {
+  const t = rad.trim();
+  if (!t.startsWith('**')) return null;
+  const slut = t.indexOf('**', 2);
+  return slut < 0 ? null : { etikett: t.slice(2, slut), rest: t.slice(slut + 2) };
+}
+
+/**
+ * Ett fetstilsstyckes sort ur dess etikett, i ordning: innanför, utanför, och
+ * åtgärden när en signal tänds. Något annat (”Delning …”) är ingen scopelinje.
+ * Regeln läser bara ord, aldrig ett värde ur ett visst avtal.
+ */
+function etikettsort(etikett: string): Scopelinjesort | null {
+  const n = normalisera(etikett);
+  if (n.startsWith('innanfor')) return 'innanfor';
+  if (n.startsWith('utanfor')) return 'utanfor';
+  if (n.includes('tander') || n.includes('tands')) return 'atgard';
+  return null;
+}
+
+/** `Utanför, §2.3:` → `§2.3`. Bara en ensam paragrafhänvisning är en klausul — annars NULL. */
+function etikettklausul(etikett: string): string | null {
+  const m = /^[^\s,]+\s*,\s*(.+?)\s*[:.]?$/.exec(etikett.trim());
+  return m && /^§\d+(?:\.\d+)*$/.test(m[1]!) ? m[1]! : null;
+}
+
+/**
+ * Del 5 ur ett avsnitt, i textens radordning. Tre former:
+ *
+ *   * **tabellrader** — bara där rubriken ger en sort (`SCOPESORTER`);
+ *   * **fetstilsstycken** — etiketten ger sorten, och stycket är resten av
+ *     raden och raderna fram till nästa etikett, tabellrad eller avsnittets
+ *     slut, förenade med radbrytning och utan omformatering;
+ *   * **punktlistan** — som förut, bara där rubriken ger en sort och avsnittet
+ *     saknar tabellrader, och aldrig för en rad som hör till ett stycke.
+ */
+function scopelinjerIAvsnitt(a: Avsnitt): Scopelinje[] {
+  const titel = normalisera(a.titel);
+  const rubriksort = SCOPESORTER.find((s) => titel.includes(s.nyckel))?.sort ?? null;
+  const lasta: Array<{ linje: Scopelinje; punkt: boolean }> = [];
+  let tabellrader = false;
+  let i = 0;
+  while (i < a.rader.length) {
+    const rad = a.rader[i]!;
+    if (celler(rad)) {
+      let slut = i;
+      while (slut < a.rader.length && celler(a.rader[slut]!)) slut += 1;
+      if (rubriksort) {
+        for (const tabell of tabeller(a.rader.slice(i, slut))) {
+          const iText = kolumn(tabell.rubrik, SCOPETEXTKOLUMNER);
+          if (iText < 0) continue;
+          const iKlausul = kolumn(tabell.rubrik, ['klausul']);
+          for (const cellrad of tabell.rader) {
+            const radtext = text(cellrad[iText]);
+            if (!radtext) continue;
+            tabellrader = true;
+            lasta.push({
+              linje: { sort: rubriksort, text: radtext, klausul: iKlausul >= 0 ? text(cellrad[iKlausul]) : null },
+              punkt: false,
+            });
+          }
+        }
+      }
+      i = slut;
+      continue;
+    }
+    const etikett = etikettrad(rad);
+    if (etikett) {
+      let slut = i + 1;
+      while (slut < a.rader.length && !celler(a.rader[slut]!) && !etikettrad(a.rader[slut]!)) slut += 1;
+      const sort = etikettsort(etikett.etikett);
+      const stycke = [etikett.rest.replace(/^\s*:/, ''), ...a.rader.slice(i + 1, slut)].join('\n').trim();
+      if (sort && stycke) {
+        lasta.push({
+          linje: { sort, text: stycke, klausul: sort === 'atgard' ? null : etikettklausul(etikett.etikett) },
+          punkt: false,
+        });
+      }
+      i = slut;
+      continue;
+    }
+    // Punktlista i stället för tabell: raden finns, klausulen gör det inte.
+    if (rubriksort) {
+      const punkt = text(/^\s*[-*]\s+(.+?)\s*$/.exec(rad)?.[1]);
+      if (punkt) lasta.push({ linje: { sort: rubriksort, text: punkt, klausul: null }, punkt: true });
+    }
+    i += 1;
+  }
+  return lasta.filter((l) => !l.punkt || !tabellrader).map((l) => l.linje);
+}
+
 export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
   const avsnitten = avsnitt(kontraktstext);
 
@@ -478,36 +598,11 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     };
   }
 
-  // Del 5: innanför, utanför och signalfraserna.
-  const scopelinjer: Scopelinje[] = [];
-  for (const a of avsnitten) {
-    const titel = normalisera(a.titel);
-    const traff = SCOPESORTER.find((s) => titel.includes(s.nyckel));
-    if (!traff) continue;
-    let hittade = false;
-    for (const tabell of tabeller(a.rader)) {
-      const iText = kolumn(tabell.rubrik, ['rad', 'text', 'fras', 'beskrivning']);
-      if (iText < 0) continue;
-      const iKlausul = kolumn(tabell.rubrik, ['klausul']);
-      for (const rad of tabell.rader) {
-        const radtext = text(rad[iText]);
-        if (!radtext) continue;
-        hittade = true;
-        scopelinjer.push({
-          sort: traff.sort,
-          text: radtext,
-          klausul: iKlausul >= 0 ? text(rad[iKlausul]) : null,
-        });
-      }
-    }
-    if (hittade) continue;
-    // Punktlista i stället för tabell: raden finns, klausulen gör det inte.
-    for (const rad of a.rader) {
-      const punkt = /^\s*[-*]\s+(.+?)\s*$/.exec(rad);
-      const radtext = text(punkt?.[1]);
-      if (radtext) scopelinjer.push({ sort: traff.sort, text: radtext, klausul: null });
-    }
-  }
+  // Del 5: innanför, utanför, signalfraserna och åtgärden — bara ur avsnitt
+  // vars rubrik står i den slutna listan, i dokumentets ordning.
+  const scopelinjer: Scopelinje[] = avsnitten
+    .filter((a) => SCOPEAVSNITT.some((ord) => normalisera(a.titel).includes(ord)))
+    .flatMap(scopelinjerIAvsnitt);
 
   return {
     kontrakt_tillstand: dokumentfalt.get('kontrakttillstand') === 'fryst' ? 'fryst'
@@ -529,6 +624,37 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
       ?? dokumentfalt.get('godkannareeskalering'),
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Scopelinjens läge (Story 2.6, FR-6 och FR-27)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hur scopelinjen ska visas. `markning` följer avtalets tillstånd och inget
+ * annat. `saknade` är de sorter som saknar rad när något är inläst. Utan en
+ * enda rad går ”del 5 saknas” inte att skilja från ”inte inläst ännu”, och då
+ * säger `ej_inlast` det i stället för att påstå fyra saknade delar.
+ */
+export interface Scopelinjelage {
+  markning: 'utkast' | 'gallande';
+  lage: 'inlast' | 'ej_inlast';
+  saknade: Scopelinjesort[];
+}
+
+/**
+ * Den enda vägen till scopelinjens märkning och det saknade. Båda läsvägarna
+ * (`lasKontraktsyta`, `lasUppdragslage`) anropar den, och vyn ritar svaret —
+ * ingen vy räknar märkningen själv. Tillståndet tas som literalunion, eftersom
+ * filen inte importerar något (P16).
+ */
+export function scopelinjelage(
+  kontraktTillstand: 'utkast' | 'fryst', rader: ReadonlyArray<{ sort: Scopelinjesort }>,
+): Scopelinjelage {
+  const markning = kontraktTillstand === 'fryst' ? 'gallande' : 'utkast';
+  if (rader.length === 0) return { markning, lage: 'ej_inlast', saknade: [] };
+  const finns = new Set(rader.map((r) => r.sort));
+  return { markning, lage: 'inlast', saknade: SCOPELINJESORTER.filter((s) => !finns.has(s)) };
 }
 
 // ---------------------------------------------------------------------------
