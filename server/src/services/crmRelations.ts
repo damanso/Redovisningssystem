@@ -377,14 +377,15 @@ export async function upsertOrganization(
 
   // Namnbyte: krocken fångas här i stället för som ett rått unik-indexfel, och
   // svaret pekar mot rätt åtgärd — två rader för samma bolag ska slås ihop, inte
-  // döpas om till varandra.
+  // döpas om till varandra. Id:t och vägen låter anroparen gå vidare (FR-29).
   if (hit && writeName.toLowerCase() !== hit.name.toLowerCase()) {
-    const taken = await client.query(
-      'SELECT 1 FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
+    const taken = await client.query<{ id: string }>(
+      'SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) AND id <> $3',
       [companyId, writeName, hit.id],
     );
     if (taken.rows[0]) {
-      throw new BadRequestError('name_taken', 'en annan organisation heter redan så — slå ihop dem i stället');
+      throw new BadRequestError('name_taken', 'en annan organisation heter redan så — slå ihop dem i stället',
+        { organization_id: taken.rows[0].id, merge_action: 'merge_crm_organizations' });
     }
   }
 

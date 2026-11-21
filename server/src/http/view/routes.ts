@@ -61,7 +61,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -731,6 +731,7 @@ function parseCompanyId(value: unknown): string {
  * `lyckat` (valfri, Story 1.11) läser ett lyckat svar och ger platsen dit
  * redirecten leder, när den inte är `backTo` — undantagsvyn leder till
  * beslutets plats på Läget, och felen tillbaka till vyn.
+ * `felParametrar` bär valfria adressvärden från verksamhetsfelet till sidans notis.
  */
 const FORM_FEL = 'Något i formuläret gick inte att spara — kontrollera fälten (belopp med siffror, t.ex. 1234,50) och försök igen.';
 
@@ -743,6 +744,7 @@ async function runViewAction(
   backTo: string,
   avvikelse?: (result: ActionResult) => string | undefined,
   lyckat?: (result: Extract<ActionResult, { status: 'ok' }>) => Promise<string>,
+  felParametrar?: (err: BadRequestError | ConflictError) => Record<string, string> | undefined,
 ): Promise<void> {
   const userId = getUserId(req);
   let result;
@@ -758,7 +760,9 @@ async function runViewAction(
       return;
     }
     if (err instanceof BadRequestError || err instanceof ConflictError) {
-      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(err.message)}`);
+      const extra = Object.entries(felParametrar?.(err) ?? {})
+        .map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join('');
+      res.redirect(`${backTo}${backTo.includes('?') ? '&' : '?'}fel=${encodeURIComponent(err.message)}${extra}`);
       return;
     }
     throw err;
@@ -7369,8 +7373,13 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     // automatisk dubblettgissning — att avgöra att två rader är samma bolag är
     // ett omdöme, och ett felaktigt förslag som ser auktoritativt ut är
     // farligare än inget.
+    // Jämför hämtade id:n; adressens UUID kan ha ett annat skiftläge.
     const andra = (await listOrganizations(client, companyId))
-      .filter((r) => r.id !== orgId) as Array<{ id: string; name: string }>;
+      .filter((r) => r.id !== o.id) as Array<{ id: string; name: string }>;
+    const krockId = mergeCandidate(req.query.krock, andra.map((a) => a.id));
+    const krock = andra.find((a) => a.id === krockId);
+    const forval = oppetFormular === 'slaihop'
+      ? mergeCandidate(req.query.med, andra.map((a) => a.id)) : null;
     const thread = await relationThread(client, companyId, orgId, { filter });
     const eventFields = await getEventFields(client, companyId, {
       interaction_ids: thread.filter((e) => e.kind === 'interaction' && e.ref_id).map((e) => e.ref_id!),
@@ -7401,7 +7410,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
         <div class="actions">${orgStatusChip(o.status)}${
           o.customer_id ? '' : html` <a href="/app/c/${companyId}/relations/${o.id}?oppna=uppgifter">${chip('Ej i kundregistret', 'warn', '!')}</a>`
         }</div></div>
-      ${felNotis(req)}
+      ${krock ? html`<p class="notice">Namnet bärs redan av <a href="/app/c/${companyId}/relations/${krock.id}">${krock.name}</a>. Två rader för samma bolag slås ihop i stället för att döpas om. <a class="btn btn--ghost btn--sm" href="${back}?oppna=slaihop&med=${krock.id}">Slå ihop ${krock.name} hit…</a></p>` : felNotis(req)}
 
       <div class="relation">
         <aside class="relation__facts">
@@ -7557,13 +7566,13 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                två, och kortet ser komplett ut fast hälften saknas. */ ''}
           ${andra.length === 0 ? '' : html`<div class="factcard">
             <div class="factcard__head">Dubblett?</div>
-            <details class="rattaform">
+            <details class="rattaform"${oppetFormular === 'slaihop' ? html` open` : ''}>
               <summary>Slå ihop en annan relation hit</summary>
               <form method="post" action="/app/c/${companyId}/relations/${o.id}/merge">
                 <input type="hidden" name="back" value="${back}">
                 <label>Den här försvinner<select name="merge_id" required>
                   <option value="">Välj relation…</option>
-                  ${andra.map((a) => html`<option value="${a.id}">${a.name}</option>`)}
+                  ${andra.map((a) => html`<option value="${a.id}"${a.id === forval ? html` selected` : ''}>${a.name}</option>`)}
                 </select></label>
                 <button class="btn btn--ghost btn--sm" type="submit">Slå ihop</button>
                 <p class="hint">Kontakter, löften och personer flyttas hit. Tomma uppgifter fylls i. Vad som händer med statusen står på kortet i <a href="/app/c/${companyId}/approvals">Att göra</a>, och sammanslagningen går inte att ångra.</p>
@@ -8097,7 +8106,10 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
   }
   await runViewAction(req, res, companyId, 'upsert_crm_organization', {
     ...correctedOrganizationFields(body), organization_id: id,
-  }, back);
+  }, back, undefined, undefined, (err) => {
+    const krockId = nameTakenOrganization(err);
+    return krockId ? { krock: krockId } : undefined;
+  });
 }));
 
 /** Målet läses ur relationen; före-id:t skyddar bara en gammal flik mot omkoppling. */
