@@ -153,6 +153,43 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, måtten och rytmen ur kontraktets del 3 och del 4 (FR-19, FR-14, FR-26, FR-35, NFR-11):**
+  Migration `0095_matt_och_rytm.sql` skapar tabellen uppdrag_matt (BASELINE,
+  RLS och FORCE, sammansatt FK, SELECT och INSERT för `app`, triggern mot
+  avslutade uppdrag) och lägger sex nullbara rytmkolumner på `contracts` med
+  namngivna CHECK-villkor. Inga befintliga rader ändras. Parsern
+  (`lib/leveranskontrakt.ts`) läser del 3 och del 4 ur slutna listor:
+  läsvägen per mått (`mattlasvag`, okänt ger NULL och nyckeln
+  `uppfoljning.<namn>.lasvag` i `saknade_falt`), en enda utfallsläsare
+  (`mattlasare`, nedlagd tid mot ram ur redovisningen) och rytmen som hel cell
+  (`rytmregel`, v3 ger varannan torsdag, 14 dagar, veckodag 4, ”Styrgruppen,
+  hela”). Importen skriver måtten och rytmen först efter Davids ja, med rytmens
+  UPDATE ur en fast tillåtelselista och bara när något skiljer sig. Ny ren
+  `lib/bedomningsrytm.ts`: fem lägen, perioden bara i läget `raknad`, och
+  `INGEN_PERIOD` som enda källa till meningen om varför ingen period räknas.
+  Kalendermånaden har ingen anropare i produktionen längre. Ny åtgärd
+  `satt_bedomningsankare` (write, `kravManniska`, engångs, obligatorisk källa:
+  Davids uppgift eller avtalets kalenderreferens). Läget bär `matt` och `rytm`
+  per avtal och panelen *Uppföljning och rytm* sist (ny vyfil
+  `http/view/uppdragUppfoljning.ts`); Bedömning bär panelen
+  *Bedömningsrytmen* med ankarformuläret, och undantagsvyns begärda bedömning
+  följer rytmen (synliga periodfält utan period). Husets klasser; ingen ny CSS
+  och inget skript. Prov: ny `server/test/uppdragsytan-matt-rytm.test.ts`
+  (M1–M5, P1–P7, I1–I6, R1–R8, A1–A8, L1–L4, V1–V6, N1, B1–B7, T1, D1), ny
+  hjälpare `server/test/bedomningsrytmHelper.ts`, och omskrivna rigg- och
+  periodassertioner i bedömnings-, begärans-, undantagsvyns-, mobil-, besluts-
+  och referensproven; laget-provets färskhetsräkning är 8. Docs: MCP_ACTIONS
+  (import, ankaråtgärden, perioden, Läget och panelen) och ARKITEKTUR rad 34
+  och 36. **Inte kört:** `npm run typecheck` och `npm test` gav båda ”This
+  command requires approval” i sandlådan, så varken typecheck, build eller
+  något prov är kört av utvecklaren; kedjans körning är belägget. **Följd i
+  drift:** POST-rutten `/app/c/:companyId/projects/:projectId/bedomning/ankare`
+  är ny under `/app`. `server/kontrakt/navigation.v1.json` redigeras inte för
+  hand, så Hermes prov adresskontraktet står RÖTT (K2) tills Davids generator
+  har synkat kontraktet. NVR-001:s mått och rytm skrivs först när ett
+  `satt_baseline`-förslag godkänns, och Davids ankare (8 oktober) sätts av
+  honom på Bedömning efter driftsättningen. Hermes `MODULATGARDER` bör få
+  ankaråtgärden (egen berättelse i hermes-kedjan).
 - **2026-11-21 — Story 3.3 (crm), mottagaren tar emot löftets avslut och en borttagen deadline (FR-36, FR-8):**
   `ingest_crm_events` tar för löften `status` (`open`/`done`/`dropped`) och ett
   nullbart `due_date`; utelämnat är oförändrat och `null` tar bort datumet.
