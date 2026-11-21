@@ -94,7 +94,7 @@ export function provaTakbekraftelsekontrollen() {
 }
 
 export const SIGNALUNDERLAGSPROV = UNDERLAGSSORTER.map((sort) => ({
-  sort, extern_id: `${sort}-extra`, extern_nyckel: `${sort}-id`, extern_kalla: sort,
+  sort, extern_id: sort === 'mejl' ? 'mejl-extra@ilt.example' : `${sort}-extra`, extern_nyckel: `${sort}-id`, extern_kalla: sort,
 } satisfies Signalunderlag));
 
 /** Scopeproven måste använda varje sort som den befintliga ingången tillåter. */

@@ -19,6 +19,7 @@
 //   (4) **Historiken går inte att skriva om.** UPDATE och DELETE prövas som
 //       rollen `app` rakt mot tabellen: regeln ska gälla även för kod som inte
 //       går genom tjänstelagret.
+import { listaReferenser, skapaReferens } from '../src/services/uppdragReferens.js';
 import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -149,14 +150,20 @@ async function nyttUppdrag(namn: string, opts: {
 
 /** Svepets cache, skriven genom S7.3:s enda skrivväg — aldrig rakt mot tabellen. */
 async function skrivForslag(contractId: string, koder: string[], revision: number): Promise<void> {
-  await withTenantTransaction(user.userId, companyId, (client) => upsertSvepvarden(
-    client, companyId, contractId,
-    koder.map((kod) => ({
-      nyckel: `statusforslag:${kod}`,
-      kalla: 'drive',
-      varde: { leverabel_kod: kod, revision, extern_id: `1AbC_${kod}`, referensstatus: 'levande' },
-    })),
-  ));
+  await withTenantTransaction(user.userId, companyId, async (client) => {
+    const referenser = await listaReferenser(client, companyId, contractId);
+    const varden = [];
+    for (const kod of koder) {
+      const externId = `1AbC_${kod}`;
+      const referens = referenser.find((r) => r.extern_id === externId) ?? await skapaReferens(client, companyId, {
+        contract_id: contractId, sort: 'drive', extern_id: externId,
+        extern_nyckel: 'drive#file', extern_kalla: 'drive:locollabs',
+      });
+      varden.push({ nyckel: `statusforslag:${kod}`, kalla: 'drive',
+        varde: { leverabel_kod: kod, revision, extern_id: externId, referens_id: referens.id, referensstatus: referens.status } });
+    }
+    await upsertSvepvarden(client, companyId, contractId, varden);
+  });
 }
 
 beforeAll(async () => {
@@ -508,6 +515,12 @@ describe('vyn: statusförslaget på uppdragssidan', () => {
     // Underlaget: koden, Drive-revisionen och handlingen — i klartext.
     expect(html).toContain('Drive-revision');
     expect(html).toContain('1AbC_L6');
+    const ref = await withAdmin(async (c) => (await c.query(
+      "SELECT id FROM uppdrag_referens WHERE company_id = $1 AND contract_id = $2 AND extern_id = '1AbC_L6'", [companyId, avtalId],
+    )).rows[0]);
+    expect(ref).toBeDefined();
+    expect(html).toContain(`data-referens="${ref!.id}"`);
+    expect(html).toContain('Ej verifierad');
     expect(html).toContain('name="utfall" value="bekraftad"');
     expect(html).toContain('name="utfall" value="retur"');
     // JS-fritt, som resten av vyn.

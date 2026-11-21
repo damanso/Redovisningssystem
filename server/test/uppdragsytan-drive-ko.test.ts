@@ -270,8 +270,8 @@ describe('KRAV-5: importen köar kopian', () => {
     expect(rad.extern_id).toBe(`registerkopia:${contractId}`);
     expect(rad.ko_status).toBe('koad');
     expect(rad.ko_fel).toBeNull();
-    // Raden är en vanlig referens i övrigt: den föds levande och overifierad.
-    expect(rad.status).toBe('levande');
+    // Raden är en vanlig referens i övrigt: den föds overifierad.
+    expect(rad.status).toBe('overifierad');
   });
 
   it('en import som fälls lämnar varken registerrader eller köpost', async () => {

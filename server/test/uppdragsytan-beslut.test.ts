@@ -118,7 +118,7 @@ describe('P3 registreringskontraktet', () => {
   it('c källor fryses bara som egna id och typer', () => {
     const id = randomUUID(); const ref = randomUUID();
     const kallor = { varde: [{ typ: 'yta' as const, etikett: 'Läget', sokvag: '/app' },
-      { typ: 'referens' as const, referens_id: ref, sort: 'drive' as const, extern_id: 'extern', extern_kalla: null, titel: null }],
+      { typ: 'referens' as const, status: 'overifierad', senast_verifierad: null, handelse_datum: null, referens_id: ref, sort: 'drive' as const, extern_id: 'extern', extern_kalla: null, titel: null }],
     kalla: 'redovisning', last_nar: '2026-10-01T00:00:00Z', lage: 'last' as const };
     expect(frysKallor({ typ: 'kvitto', id }, kallor)).toEqual([{ typ: 'kvitto', id }, { typ: 'referens', id: ref }]);
     expect(frysKallor({ typ: 'koforslag', id }, kallor)).toEqual([{ typ: 'referens', id: ref }]);
