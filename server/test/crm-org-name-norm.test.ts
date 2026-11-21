@@ -648,6 +648,58 @@ describe('namnkrocken i vyn (story 2.1)', () => {
     expect(versaler.status, versaler.text).toBe(200);
     expect(versaler.text).not.toContain('<details class="rattaform" open>');
   });
+
+  // UUID är identiteter: samma relation får aldrig bli kandidat genom en annan stavning i adressen.
+  const idFormer = ['gemener', 'versaler', 'blandat'] as const;
+  function formateraId(id: string, form: typeof idFormer[number]) {
+    if (form === 'gemener') return id;
+    if (form === 'versaler') return id.toUpperCase();
+    return id.replace(/[a-f]/g, (bokstav, index: number) => index % 2 === 0 ? bokstav.toUpperCase() : bokstav);
+  }
+  it.each(idFormer)('V7 eget id utesluts ur båda adressvägarna när sidans id har %s', async (sidform) => {
+    for (const egetId of [alfaVy, betaVy, iota]) {
+      const adress = `/app/c/${companyId}/relations/${formateraId(egetId, sidform)}`;
+      for (const form of idFormer) {
+        const kandidat = formateraId(egetId, form);
+        const med = await ua.get(`${adress}?oppna=slaihop&med=${kandidat}`);
+        expect(med.status, med.text).toBe(200);
+        const oppna = med.text.split('<details class="rattaform" open>');
+        expect(oppna).toHaveLength(2);
+        const block = oppna[1]!.split('</details>')[0]!;
+        expect(block).toContain(`action="/app/c/${companyId}/relations/${egetId}/merge"`);
+        expect(block).not.toContain(' selected');
+        expect(block).not.toContain(`<option value="${egetId}"`);
+        expect(block).toContain('<option value="">Välj relation…</option>');
+        const krock = await ua.get(`${adress}?fel=${encodeURIComponent(feltext)}&krock=${kandidat}`);
+        expect(krock.status, krock.text).toBe(200);
+        expect(krock.text.match(/<p class="notice">/g)).toHaveLength(1);
+        expect(notistext(krock.text)).toBe(feltext);
+        expect(krock.text).not.toContain('Namnet bärs redan av');
+        expect(krock.text).not.toContain('oppna=slaihop');
+        expect(krock.text).not.toContain(`<option value="${egetId}"`);
+      }
+    }
+  });
+  it.each(idFormer)('V8 andra relationer fungerar i båda adressvägarna när sidans id har %s', async (sidform) => {
+    for (const [egetId, annatId, namn] of [[betaVy, alfaVy, 'Alfa Vy AB'], [alfaVy, betaVy, 'Beta Vy AB']] as const) {
+      const adress = `/app/c/${companyId}/relations/${formateraId(egetId, sidform)}`;
+      const kanonisk = `/app/c/${companyId}/relations/${egetId}`;
+      for (const form of idFormer) {
+        const kandidat = formateraId(annatId, form);
+        const r = await ua.get(`${adress}?oppna=slaihop&med=${kandidat}&krock=${kandidat}`);
+        expect(r.status, r.text).toBe(200);
+        expect(r.text.match(/<p class="notice">/g)).toHaveLength(1);
+        expect(notistext(r.text)).toBe(`Namnet bärs redan av ${namn}. Två rader för samma bolag slås ihop i stället för att döpas om. Slå ihop ${namn} hit…`);
+        expect(r.text.replace(/&amp;/g, '&')).toContain(`href="${kanonisk}?oppna=slaihop&med=${annatId}"`);
+        const oppna = r.text.split('<details class="rattaform" open>');
+        expect(oppna).toHaveLength(2);
+        const block = oppna[1]!.split('</details>')[0]!;
+        expect(block.match(/ selected/g)).toHaveLength(1);
+        expect(block).toContain(`<option value="${annatId}" selected>`);
+        expect(block).not.toContain(`<option value="${egetId}"`);
+      }
+    }
+  });
 });
 
 describe('dokumenten (story 2.1)', () => {

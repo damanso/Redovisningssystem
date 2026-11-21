@@ -7373,8 +7373,9 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     // automatisk dubblettgissning — att avgöra att två rader är samma bolag är
     // ett omdöme, och ett felaktigt förslag som ser auktoritativt ut är
     // farligare än inget.
+    // Jämför hämtade id:n; adressens UUID kan ha ett annat skiftläge.
     const andra = (await listOrganizations(client, companyId))
-      .filter((r) => r.id !== orgId) as Array<{ id: string; name: string }>;
+      .filter((r) => r.id !== o.id) as Array<{ id: string; name: string }>;
     const krockId = mergeCandidate(req.query.krock, andra.map((a) => a.id));
     const krock = andra.find((a) => a.id === krockId);
     const forval = oppetFormular === 'slaihop'

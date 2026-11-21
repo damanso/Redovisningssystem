@@ -153,6 +153,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
+  Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
+  hämtade `o.id` med databasens id, så den egna relationen utesluts även när
+  sidans adress har versaler eller blandat skiftläge. Samma lista styr notis,
+  förval och formulärets alternativ. V7/V8 utökar vyproven med tre relationer,
+  tre stavningar av både sidans och kandidatens id, eget id i båda parametrarna
+  och giltiga andra relationer i båda riktningar (72 GET totalt).
+  Testerna skrevs före källändringen. Ren kontroll av källans faktiska filter
+  och riktiga mergeCandidate: före «8 felaktiga självval av 12 fall», exit 1;
+  efter «0 felaktiga självval av 12 fall», exit 0; andra kandidater fungerade.
+  `npm run typecheck` och `npm run build`: exit 0. Rena crm-rules körda separat
+  utan databashakar: «Tests 92 passed (92)». Full `npm test` vid rött och grönt:
+  exit 1 före fallen, «connect EPERM 127.0.0.1:5433» i globalSetup. V7/V8 och
+  databasregressionen inväntar därför kedjan enligt föreskrivet undantag;
+  ingen grön fullsvit eller interaktiv webbläsarkontroll påstås.
+  Husets befintliga notice, rattaform, Public Sans, färgtokens och synliga
+  fokusmarkering består, liksom naturlig tangentbordsordning. Eget id ger
+  platshållaren eller vanlig felnotis; annan kandidat ger laddat förval.
+  Ingen kontraktsändring. Externa prov ej körda; tidigare baslinjes röda
+  adresskontrakt och bmadglidning har inte omprövats i detta omtag.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29):**
   `name_taken` behåller 400 och sin text men får `details` med krockens relations-id
   och sammanslagningsväg. De rena funktionerna `nameTakenOrganization` och
