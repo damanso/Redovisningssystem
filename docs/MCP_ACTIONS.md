@@ -2782,3 +2782,24 @@ förslag och dess auditrad sparas i samma savepoint.
 
 Regeln gäller synkens skrivningar. En relation som skapas för hand prövas
 inte av den i denna version.
+
+## Löftets avslut och borttagen deadline i intaget (crm 3.3)
+
+`ingest_crm_events` tar för löften två valfria fält: `status` (`open`, `done`
+eller `dropped`) och `due_date` som datum eller `null`. Utelämnat betyder
+oförändrat, och `due_date: null` tar bort förfallodatumet. Ett okänt
+statusvärde ger 400 `validation_error` för hela anropet, och ingenting skrivs.
+
+Ett statusbyte sätter `completed_at`, tomt vid `open`. En omsändning med samma
+status ändrar det inte och räknas som `commitments_unchanged`. En
+stängningshändelse för en okänd källnyckel skapar löftet stängt, med
+`completed_at` satt.
+
+En status eller ett förfallodatum som en människa satt eller bekräftat står
+kvar och redovisas i `kept_human_fields` som
+`"<organisation>: <källnyckel> status"` respektive `due_date`. En stängd status
+utan ursprungsrad skyddas på samma sätt, eftersom intaget inte skrev status
+förut. Övriga fält följer källan, och ingenting fryser hela löftet.
+
+`set_crm_commitment_status`, `update_crm_commitment` och
+`record_crm_commitment` är oförändrade.

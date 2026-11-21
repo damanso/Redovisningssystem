@@ -10,7 +10,7 @@
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
-import { isProjectCode, linkStatusOutcome } from '../lib/crmRules.js';
+import { isProjectCode, linkStatusOutcome, syncedCommitmentStatus } from '../lib/crmRules.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
   type ProvenanceEntry, type ProvenanceSource, type ProvenanceTarget, type ProvenanceWrite,
@@ -100,7 +100,7 @@ const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', '
 const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id', 'sfar'] as const;
 
 // Händelsens innehåll påstår något om världen. Mål och sfär är metadata;
-// löftets status är ett eget påstående som bara statusvägen skriver här.
+// löftets status är ett eget påstående som statusvägen och intaget skriver (A-2).
 const INTERACTION_PROVENANCE_FIELDS = ['occurred_at', 'channel', 'direction', 'summary'] as const;
 const COMMITMENT_PROVENANCE_FIELDS = ['direction', 'body', 'due_date', 'status', 'occurred_at'] as const;
 const INTERACTION_UPDATE_FIELDS = {
@@ -110,6 +110,11 @@ const INTERACTION_UPDATE_FIELDS = {
 const COMMITMENT_UPDATE_FIELDS = {
   person_id: 'person_id', organization_id: 'organization_id', direction: 'direction',
   body: 'body', due_date: 'due_date', occurred_at: 'occurred_at', sfar: 'sfar',
+} as const;
+// Omsändningens lista: intaget bär ärendets livscykel, så statusen och dess
+// tidpunkt skrivs i samma sats som innehållet (A-2).
+const COMMITMENT_SYNC_FIELDS = {
+  ...COMMITMENT_UPDATE_FIELDS, status: 'status', completed_at: 'completed_at',
 } as const;
 
 const INTERACTION_CORRECTION = {
@@ -1256,7 +1261,9 @@ export interface RecordCommitmentInput {
   organization_id?: string;
   direction: 'we_owe' | 'they_owe';
   body: string;
-  due_date?: string;
+  /** Bara intaget skickar dem (A-2): utelämnat är oförändrat, och null tar bort datumet. */
+  status?: 'open' | 'done' | 'dropped';
+  due_date?: string | null;
   occurred_at: string;
   source_system: SourceSystem;
   source_ref?: string;
@@ -1346,20 +1353,38 @@ export async function recordCommitment(
     direction: input.direction, body: input.body, due_date: input.due_date, occurred_at: input.occurred_at,
   };
   if (befintlig) {
-    const locked = (await client.query<{ id: string; sfar: Sfar; person_id: string | null; organization_id: string | null }>(
-      'SELECT id, sfar, person_id, organization_id FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE',
+    // Transaktionens tid, samma klocka som statusåtgärden, läst som text.
+    const locked = (await client.query<{
+      id: string; sfar: Sfar; person_id: string | null; organization_id: string | null;
+      status: 'open' | 'done' | 'dropped'; nu: string;
+    }>(
+      `SELECT id, sfar, person_id, organization_id, status, now()::text AS nu
+       FROM crm.commitments WHERE company_id = $1 AND id = $2 FOR UPDATE`,
       [companyId, befintlig.id])).rows[0];
     if (!locked) throw new NotFoundError('commitment');
     // Agentens sfärbyte prövas mot den låsta raden och går fortsatt via Att göra.
     if (origin.source !== 'human' && input.sfar !== undefined && locked.sfar !== input.sfar) {
       throw bytMedSetCrmSfar('atagande');
     }
-    const { input: patch, blocked } = await guardHumanFields(
-      client, companyId, { commitment_id: locked.id }, origin.source, values);
+    // Statusen går genom samma vakt som innehållet (A-1), och ett uttryckligt null
+    // mot ett människosatt datum är ett försök att ta bort det (A-2).
+    const guarded = await guardHumanFields(client, companyId, { commitment_id: locked.id }, origin.source,
+      { ...values, status: input.status }, { nullIsWrite: true });
+    // Vakten ser bara ursprungsrader; undantaget för en stängd status utan rad
+    // prövas därefter, på det vakten släppt igenom.
+    const statusSource = guarded.input.status === undefined ? null
+      : (await readProvenance(client, companyId, { commitment_id: locked.id })).get('status')?.source ?? null;
+    const statusKept = syncedCommitmentStatus(locked.status, statusSource, guarded.input.status) === 'kept_human';
+    const patch = statusKept ? { ...guarded.input, status: undefined } : guarded.input;
+    const blocked = statusKept ? [...new Set([...guarded.blocked, 'status'])].sort() : guarded.blocked;
+    // completed_at följer bara ett verkligt byte mot den låsta raden, så en
+    // omsändning med samma status flyttar aldrig tidpunkten.
+    const statusChanged = patch.status !== undefined && patch.status !== locked.status;
     // Mål och sfär står alltid i SET för sfärens UPDATE OF-trigger. Utelämnat
     // behåller den låsta radens värde: ett samtidigt sfärbyte väntar på låset.
-    const u = buildAllowlistedUpdate(COMMITMENT_UPDATE_FIELDS, {
-      ...patch, person_id: input.person_id ?? locked.person_id,
+    const u = buildAllowlistedUpdate(COMMITMENT_SYNC_FIELDS, {
+      ...patch, ...(statusChanged ? { completed_at: patch.status === 'open' ? null : locked.nu } : {}),
+      person_id: input.person_id ?? locked.person_id,
       organization_id: input.organization_id ?? locked.organization_id, sfar: input.sfar ?? locked.sfar,
     })!;
     const r = await client.query(
@@ -1369,28 +1394,32 @@ export async function recordCommitment(
       [...u.values, locked.id, companyId],
     );
     await recordProvenance(client, companyId, userId, { commitment_id: locked.id },
-      provenanceFor(COMMITMENT_PROVENANCE_FIELDS, patch, origin));
+      provenanceForKeys(COMMITMENT_PROVENANCE_FIELDS, patch, origin));
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.commitment_updated', entityType: 'commitment', entityId: locked.id,
       details: { source_system: input.source_system, sfar: r.rows[0]!.sfar as Sfar,
+        ...(statusChanged ? { status: patch.status } : {}),
         ...(blocked.length ? { kept_human_fields: blocked } : {}) },
     });
     return { ...r.rows[0], created: false, kept_human_fields: blocked };
   }
 
+  // Ett ärende som redan är stängt skapar löftet stängt; completed_at är mottagningstiden.
   const r = await client.query(
     `INSERT INTO crm.commitments (company_id, person_id, organization_id, direction, body, due_date,
-                                  occurred_at, source_system, source_ref, created_by, sfar)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                                  occurred_at, source_system, source_ref, created_by, sfar, status, completed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, CASE WHEN $12 = 'open' THEN NULL ELSE now() END)
      RETURNING ${COMMITMENT_RETURNING}`,
     [companyId, input.person_id ?? null, input.organization_id ?? null, input.direction, input.body,
-      input.due_date ?? null, input.occurred_at, input.source_system, input.source_ref ?? null, userId, sfar],
+      input.due_date ?? null, input.occurred_at, input.source_system, input.source_ref ?? null, userId, sfar,
+      input.status ?? 'open'],
   );
   await recordProvenance(client, companyId, userId, { commitment_id: r.rows[0]!.id as string },
-    provenanceFor(COMMITMENT_PROVENANCE_FIELDS, values, origin));
+    provenanceFor(COMMITMENT_PROVENANCE_FIELDS, { ...values, status: input.status }, origin));
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.commitment_recorded', entityType: 'commitment', entityId: r.rows[0]!.id as string,
-    details: { direction: input.direction, source_system: input.source_system, sfar },
+    details: { direction: input.direction, source_system: input.source_system, sfar,
+      ...(input.status ? { status: r.rows[0]!.status as string } : {}) },
   });
   return { ...r.rows[0], created: true, kept_human_fields: [] };
 }

@@ -131,6 +131,24 @@ omgivande blanktecken i namnet, även för äldre direktköade förslag.
 Efter låsväntan läser synken alias och sparade besked på nytt innan den avgör
 om ett förslag behövs.
 
+**9. Ett löfte följer ärendets livscykel.**
+
+En löfteshändelse får bära `status` (`open`, `done` eller `dropped`) och
+`due_date` som datum eller `null`. Utelämnat `status` lämnar statusen
+oförändrad, utelämnat `due_date` lämnar förfallodatumet oförändrat, och
+`due_date: null` tar bort det. Ett annat statusvärde avvisar hela anropet med
+400 `validation_error` innan något skrivs.
+
+En ändrad status sätter `completed_at` (tomt vid `open`). En omsändning med
+samma status ändrar det inte och räknas som `commitments_unchanged`. En
+stängningshändelse för en okänd källnyckel skapar löftet stängt.
+
+En status eller ett förfallodatum som en människa satt eller bekräftat skrivs
+inte över och redovisas i `kept_human_fields`. En status `done` eller
+`dropped` utan ursprungsrad räknas som satt av en människa, eftersom intaget
+inte skrev status före den här regeln. Övriga fält följer källan, och
+ingenting fryser hela löftet.
+
 ## Svaret
 
 ```jsonc
@@ -189,9 +207,10 @@ som en synk som lyckades helt.
 Även kontaktpunktens `occurred_at`, `channel`, `direction` och `summary`,
 och löftets `direction`, `body`, `due_date`, `status` och `occurred_at` bär
 ursprung per fält. Synken skriver inte över ett fält som en människa satt.
-Intaget skriver de fält som händelsen bär; löftets status skrivs av
-`set_crm_commitment_status` och ingår inte i intaget. Äldre värden utan
-ursprungsrad är oskyddade tills de skrivs på nytt; ingen bakåtfyllnad görs.
+Intaget skriver de fält som händelsen bär, också löftets `status` (regel 9),
+och `set_crm_commitment_status` är människans och agentens väg. Äldre värden
+utan ursprungsrad är oskyddade tills de skrivs på nytt, utom ett löftes
+`status` `done` eller `dropped` (regel 9); ingen bakåtfyllnad görs.
 
 Blockerade händelsefält redovisas i `kept_human_fields` med formen
 `"<organisation>: <källnyckel> <fält>"`.
