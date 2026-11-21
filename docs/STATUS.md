@@ -153,6 +153,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.6, scopelinjen med åtgärd ur del 5 (FR-6, FR-7, FR-27, NFR-9):**
+  Migration `0094_scopelinje_atgard.sql` vidgar CHECK-villkoret
+  `uppdrag_scopelinje_sort_check` med `atgard`. Inga rader ändras, och
+  tabellkommentaren, rättigheterna och policyerna är orörda. Parsern
+  (`lib/leveranskontrakt.ts`) läser del 5 bara ur avsnitt vars rubrik står i en
+  sluten lista, och ur dem tabellrader (ny kolumn ”Det kunden säger”) och
+  fetstilsstycken. Innanför och utanför står där med klausul ur etiketten, och
+  åtgärden är ett stycke vars etikett säger att en signal tänder eller tänds.
+  v3 ger nu elva rader i stället för noll, och v1-formen ger samma 4/4/7 som förut.
+  `SCOPELINJESORTER` och den rena `scopelinjelage` ger `scopelinje_lage`
+  (`markning` utkast/gallande bara ur `kontrakt_tillstand`, `lage`, `saknade`)
+  i `las_kontraktsyta` och per avtal i `las_uppdragslage`, plus
+  `farskhet.scopelinje`. Vyn: `scopelinjepanel` ersätter `scopepanel` på
+  Kontraktet och står sist på Läget, en per avtal och med egen färskhetsrad.
+  Panelen bär märket Gällande eller Utkast, en fjärde grupp ”När en signal
+  tänds” (pre-wrap), Saknas per saknad del och en egen mening när inget är
+  inläst. Husets `.panel`, chip och `.muted` används; ingen ny CSS, rutt eller skript.
+  Rapporten på Bedömning är oförändrad (bara li-markupens blanktecken).
+  Prov: ny `server/test/uppdragsytan-scopelinje.test.ts` med M1–M3, P1–P7,
+  I1–I2, L1–L4, V1–V6, R1–R7 och D1. I `uppdragsytan-laget.test.ts` räknas
+  färskhetsraderna på Läget nu exakt till 7 (fem kort, Beslut och scopelinjen).
+  Docs: MCP_ACTIONS (import, Kontraktsytan, Läget, vyerna) och ARKITEKTUR rad 36.
+  **Inte kört:** `npm run typecheck` och `npm test` gav båda ”This command
+  requires approval” i sandlådan. Varken typecheck, build eller något prov är
+  alltså kört här, och kedjans körning är belägget. Externa Hermes-prov och
+  webbläsarkontroll är inte körda. **Följd i drift:** driftsättningen kör 0094.
+  NVR-001 i drift får scopelinjen först vid en ny godkänd import (en
+  `redan_koad` text skriver inget). handgrepp ska stå kvar GRÖNT: inga ensamma
+  kodspann med understreck har tillkommit i avsnittet Uppdragsytan.
+
 - **2026-11-21 — Story 3.1, omtag Y6 (uppgift 5):**
   Kedjans röda vyprov delade HTML på ett taggslut som inte finns: Källornas
   befintliga dd har ett style-attribut efter data-falt. Provet återanvänder nu

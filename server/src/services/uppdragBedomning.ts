@@ -295,7 +295,10 @@ export interface Rapportunderlag {
 
 /** Avtalets egna ord om vad som ingår (0068). Läses levande, fryses aldrig. */
 export interface Scopelinje {
-  sort: 'innanfor' | 'utanfor' | 'fras';
+  // Samma fyra värden som `SCOPELINJESORTER` i lib/leveranskontrakt.ts. Unionen
+  // står inline: filen får bara de importer P16 tillåter, och M1 binder schemat
+  // till konstanten.
+  sort: 'innanfor' | 'utanfor' | 'fras' | 'atgard';
   text: string;
   klausul: string | null;
   ordning: number;

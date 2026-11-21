@@ -32,13 +32,15 @@
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
-import { listContracts, getContractUsage, type Delforbrukning } from './contracts.js';
+import { listContracts, getContractUsage, type Delforbrukning, type Kontrakttillstand } from './contracts.js';
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
-import { listaBedomningar, listaObesvaradeBegaranden, type Bedomningsrad, type Begaransrad } from './uppdragBedomning.js';
+import {
+  lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden, type Bedomningsrad, type Begaransrad, type Scopelinje,
+} from './uppdragBedomning.js';
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
-import { ROTKOD } from '../lib/leveranskontrakt.js';
+import { ROTKOD, scopelinjelage, type Scopelinjelage } from '../lib/leveranskontrakt.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
@@ -127,6 +129,10 @@ export interface Avtalslage {
    */
   signalhistorik: Signalrad[];
   avgjorda_signaler: number;
+  /** Avtalets scopelinje ur del 5, i `ordning` — samma rader som kontraktsytan (Story 2.6). */
+  scopelinje: Scopelinje[];
+  /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn. */
+  scopelinje_lage: Scopelinjelage;
 }
 
 /**
@@ -143,6 +149,7 @@ export interface Lagesfarskhet {
   signaler: Farskhet;
   koposter: Farskhet;
   beslut: Farskhet;
+  scopelinje: Farskhet;
 }
 
 export interface Beslutsrad {
@@ -305,7 +312,10 @@ export async function lasUppdragslage(
   client: PoolClient, companyId: string, input: LasUppdragslageInput,
 ): Promise<Uppdragslage> {
   const uppdrag = await kravUppdrag(client, companyId, input.project_id);
-  const avtalsrader = await listContracts(client, companyId, { project_id: input.project_id });
+  // `listContracts` ger otypade rader; tillståndet typas som i `lasKontraktsyta`.
+  const avtalsrader = (await listContracts(client, companyId, { project_id: input.project_id })) as unknown as {
+    id: string; kontrakt_tillstand: Kontrakttillstand;
+  }[];
   // Ett projekt utan ett enda avtal är inget uppdrag (1E Del 5): utan avtal
   // finns varken ram, register, bedömning eller signaler att läsa, och en tom
   // yta hade sagt att uppdraget saknade dem — inte att uppdraget saknades.
@@ -368,6 +378,8 @@ export async function lasUppdragslage(
     const signaler = await listaSignaler(client, companyId, contractId);
     const signalhistorik = signaler.filter((s) => s.avgjord !== null);
 
+    const scopelinje = await lasScopelinjer(client, companyId, contractId);
+
     avtal.push({
       contract_id: contractId,
       contract_name: usage.name,
@@ -388,6 +400,8 @@ export async function lasUppdragslage(
       oppna_signaler: signaler.filter((s) => s.avgjord === null),
       signalhistorik,
       avgjorda_signaler: signalhistorik.length,
+      scopelinje,
+      scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
     });
   }
 
@@ -422,6 +436,7 @@ export async function lasUppdragslage(
       signaler: direkt,
       koposter: direkt,
       beslut: direkt,
+      scopelinje: direkt,
     },
   };
 }
