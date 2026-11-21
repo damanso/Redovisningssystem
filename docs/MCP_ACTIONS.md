@@ -2666,3 +2666,33 @@ Vägen vidare är `merge_crm_organizations` med de två relationernas id som
 Relationssidan visar namnkrocken som en notis med en länk till relationen och
 knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
 via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.
+
+## Bolagsformsvarianten blir ett sammanslagningsförslag (crm 2.3)
+
+`ingest_crm_events` skapar ingen relation för ett namn som utan exakt träff
+eller alias bara skiljer sig i bolagsform från exakt en befintlig relation,
+om paret inte redan är sparat som olika bolag. Händelsen hamnar i `skipped`
+med skälet *bolagsformsvariant av {befintlig} — väntar på ditt beslut i Att göra*.
+Förslaget `merge_crm_name_variant` med `organization_id` och `name` köas en
+gång per namnpar och redovisas i `merge_proposals`, exempelvis
+"Alliance Optikk AS → Alliance Optikk (bolagsform)". Upprepade synker
+återanvänder ett väntande eller mottaget men ännu inte verkställt beslut.
+Händelsens person, kontaktpunkt och löfte skrivs först vid en ny synk efter beslutet.
+
+Flera möjliga relationer ger inget förslag och ingen relation. Händelsen
+redovisas i `skipped` med skälet *bolagsformsvariant av flera relationer — slå
+ihop dem först* och som `"<namn> (flera möjliga)"` i `merge_proposals`.
+
+Åtgärden är `sensitive` med `tvafas`: bara en människa kan godkänna eller
+avvisa. Godkänt lägger namnet som alias, så nästa synk skriver på relationen
+och redovisar omstyrningen i `redirected_organizations`. Avvisat kräver skäl,
+som sparas med beslutet, och sparar paret i `crm.organization_distinctions`.
+Nästa synk får då skapa namnets egen relation utan att fråga om paret igen.
+Förslag och namnfri audit skrivs i samma savepoint; rollback tar bort båda.
+
+Godkännandets slutna utfall är `alias_added`, `already_alias`, `name_exists`,
+`alias_elsewhere` och `organization_missing`. Avslagets utfall i
+`approval.result.vid_avslag` är `distinction_saved`, `already_distinct` eller
+`organization_missing`. Ändrade affärslägen ger ett slutresultat i stället för
+ett tekniskt återförsök. Regeln gäller synkens skrivningar; en relation som
+skapas för hand prövas inte av den.

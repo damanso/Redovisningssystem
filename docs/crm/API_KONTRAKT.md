@@ -112,6 +112,18 @@ För en okopplad organisation skrivs värdet som förut och används för kundup
 400 `org_number_on_customer` med `details.customer_id` och
 `details.update_action` = `update_customer`. Rätta då org.nr med `update_customer`.
 
+**8. En bolagsformsvariant blir ett sammanslagningsförslag, inte en ny relation.**
+Ett organisationsnamn utan exakt träff och utan alias, som bara skiljer sig
+i bolagsform från exakt en relation och vars par inte är sparat som olika
+bolag, skapar ingen relation. Händelsen hamnar i `skipped` med skälet
+*bolagsformsvariant av {befintlig} — väntar på ditt beslut i Att göra*.
+Förslaget `merge_crm_name_variant` köas en gång per namnpar i Att göra och
+redovisas i `merge_proposals`. Övriga händelser i batchen skrivs som vanligt.
+Godkänt styr nästa synk till relationen och redovisas i
+`redirected_organizations`; avvisat med skäl låter nästa synk skapa den egna
+relationen. Flera möjliga relationer ger ingen relation och inget förslag,
+bara skälet *bolagsformsvariant av flera relationer — slå ihop dem först*.
+
 ## Svaret
 
 ```jsonc
@@ -131,6 +143,7 @@ För en okopplad organisation skrivs värdet som förut och används för kundup
     "kept_human_fields": [],
     "kept_customer_fields": [],
     "redirected_organizations": [],
+    "merge_proposals": [],
     "skipped": []
   }
 }
@@ -149,6 +162,11 @@ bestämt dem. Se nästa avsnitt.
 `redirected_organizations` listar namn som styrts om till en organisation de
 slagits ihop med (`"Hermes → Hermes Bevakning AB"`). Se *Ett hopslaget namn
 återuppstår inte*.
+
+`merge_proposals` listar bolagsformsvarianter enligt regel 8:
+`"Alliance Optikk AS → Alliance Optikk (bolagsform)"` för ett nytt eller redan
+väntande förslag, och `"<namn> (flera möjliga)"` när relationen inte kan väljas
+utan en gissning. Händelserna ligger också i `skipped` med index och skäl.
 
 ## Människan vinner
 

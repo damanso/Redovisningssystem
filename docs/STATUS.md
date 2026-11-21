@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
+  Migration 0092 lägger Davids besked i `crm.organization_distinctions` med
+  sammansatt FK, FORCE RLS och bara SELECT/INSERT. Synkens regel i
+  `upsertOrganization` stoppar varianten före skrivning; `saveOrganizationDistinction`
+  är enda skrivvägen för ett nej. Tvåfasåtgärden `merge_crm_name_variant` lägger
+  alias vid ja och sparar paret vid nej med skäl. Intaget köar på samma klient
+  och savepoint, återanvänder väntande/mottagna beslut och redovisar
+  `merge_proposals`; flera kandidater redovisas utan gissning. Att göras kort
+  förklarar bolagsform och följden av ja/nej med befintlig typografi, tokens,
+  fokusmarkering och knappar. MCP-dokumentet och API-kontraktet är uppdaterade.
+  Täckning: BM1–BM3, BR1–BR2, BS1–BS5, BG1–BG4, BI1–BI9, BK1–BK2 och BD1.
+  Registerrader i `vy-kansliga-knappar`, `forslagskort-klartext` och
+  `uppdragsytan-mandat` följer den nya känsliga tvåfasåtgärden; mandatprovet
+  kontrollerar också hela tvåfasmängden exakt. Befintliga assertioner står kvar.
+  Tester skrevs före källan. `npm run typecheck` senast exit 0. Rena CRM-regler
+  körda separat med installerad Vitest: 94 passed (inklusive BR1/BR2).
+  Källtext-/register-/sändvägsprov: 19 passed, 16 databasberoende prov ej valda.
+  `npm test` försökt före/efter varje uppgift men globalSetup stoppar med
+  `connect EPERM 127.0.0.1:5433`; integration, renderad vy och migration är
+  därför inte körda i sandlådan. Kedjan kör hela sviten och migrationen.
+  Den handskapade varianten, notisen och `distinct_from` är berättelse 2.5.
+  Ingen rutt, CSS-klass, miljövariabel eller beroende tillkom. Ingen driftsättning.
+  Inga Hermes-prov körda; deras tidigare röda adresskontrakt/bmadglidning är
+  utanför detta bygge och har inte omprövats här.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när

@@ -12,7 +12,7 @@ import {
   snoozeCommitment, upsertOrganization, upsertPerson,
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
-import { mergeOrganizations, mergePeople, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
+import { acceptNameVariant, mergeOrganizations, mergePeople, rejectNameVariant, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
 import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { isThreadFilter, relationThread } from '../services/crmThread.js';
@@ -2988,6 +2988,21 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       removeOrganizationNameAlias(ctx.client, ctx.companyId, ctx.userId, i.name),
   }),
   def({
+    // A-4: David avgör paret; ja blir ett alias och nej ett sparat besked.
+    name: 'merge_crm_name_variant',
+    title: 'Räkna ett namn som bolagsformsvariant av en relation',
+    sensitivity: 'sensitive',
+    inputSchema: z.object({
+      organization_id: UuidSchema,
+      name: safeText(200).refine((v) => v.trim().length > 0, 'namnet får inte vara tomt'),
+    }).strict(),
+    tvafas: true,
+    handler: (ctx, i: { organization_id: string; name: string }) =>
+      acceptNameVariant(ctx.client, ctx.companyId, ctx.userId, i),
+    vidAvslag: (ctx, i: { organization_id: string; name: string }) =>
+      rejectNameVariant(ctx.client, ctx.companyId, ctx.userId, i),
+  }),
+  def({
     name: 'merge_crm_people',
     title: 'Slå ihop två personer (dubbletter)',
     sensitivity: 'sensitive',
@@ -3124,7 +3139,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
           .max(500),
       })
       .strict(),
-    handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events),
+    handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events, ctx.actor),
   }),
   def({
     name: 'get_crm_thread',
