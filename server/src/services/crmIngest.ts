@@ -97,15 +97,20 @@ export async function queueNameVariantProposal(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: { organization_id: string; name: string },
 ): Promise<{ approval_id: string; queued: boolean }> {
   const action = 'merge_crm_name_variant';
+  const canonical = { organization_id: input.organization_id.toLowerCase(), name: input.name.trim() };
   await client.query('SELECT id FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
-    [companyId, input.organization_id]);
-  const existing = await client.query<{ id: string }>(
-    `SELECT id FROM action_approvals WHERE company_id = $1 AND action = $4
-     AND input->>'organization_id' = $2 AND lower(input->>'name') = lower($3)
-     AND (status = 'pending' OR (${MOTTAGET_EJ_VERKSTALLT})) ORDER BY created_at, id LIMIT 1`,
-    [companyId, input.organization_id, input.name, action]);
-  if (existing.rows[0]) return { approval_id: existing.rows[0].id, queued: false };
-  const approval = await createApproval(client, companyId, userId, actor, action, input);
+    [companyId, canonical.organization_id]);
+  // Även direkt köade och äldre mandat har originalindata. Verkställigheten
+  // använder JS-trim och databasens lower; SQL-btrim missar bl.a. NBSP och BOM.
+  const pending = await client.query<{ id: string; name: string | null; requested_name: string }>(
+    `SELECT id, lower(input->>'name') AS name, lower($3::text) AS requested_name
+     FROM action_approvals WHERE company_id = $1 AND action = $4
+     AND lower(input->>'organization_id') = $2
+     AND (status = 'pending' OR (${MOTTAGET_EJ_VERKSTALLT})) ORDER BY created_at, id`,
+    [companyId, canonical.organization_id, canonical.name, action]);
+  const existing = pending.rows.find((row) => row.name?.trim() === row.requested_name);
+  if (existing) return { approval_id: existing.id, queued: false };
+  const approval = await createApproval(client, companyId, userId, actor, action, canonical);
   await writeAudit(client, {
     companyId, userId, action: 'action.approval_requested', entityType: 'approval', entityId: approval.id,
     details: { action, actor, reason: 'bolagsform' },

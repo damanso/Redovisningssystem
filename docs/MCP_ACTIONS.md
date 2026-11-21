@@ -2692,3 +2692,12 @@ Godkänt ger `{ outcome, organization_id }` med outcome ur den slutna listan
 redan avgjort eller saknat mål fastnar därmed inte i återförsök för affärsläget.
 Regeln gäller synkens skrivningar; en relation som skapas för hand prövas
 inte av den (handflödet byggs i berättelse 2.5).
+
+Dubblettkontrollen för synken jämför också direkt köade och äldre förslag
+med samma trimning och skiftlägesregler som verkställigheten. Den räknar
+även mottagna beslut som ännu inte verkställts. Kontroll och skapande
+samordnas per bolag och normaliserat namn, också när ingen relation finns.
+Sparade nej följer med till den kvarvarande relationen vid sammanslagning,
+med ursprunglig beslutsfattare och tid. Om kortets två namn inte längre
+har samma normaliserade nyckel visar det uttryckligen att underlaget behöver
+kontrolleras; följderna av godkänn och avvisa står fortfarande kvar.

@@ -124,6 +124,12 @@ nästa synk skapa den egna relationen. Flera möjliga relationer ger inget
 förslag, utan skälet «bolagsformsvariant av flera relationer — slå ihop dem
 först» i skipped och en redovisning i merge_proposals.
 
+Synken återanvänder även direkt köade förslag där relations-id skiljer sig
+i skiftläge eller namnet har omgivande blanktecken. Det gäller också mottagna
+beslut som väntar på verkställighet. Samtidiga intag samordnas per bolag och
+normaliserat namn, även när ingen relation ännu finns. Sparade besked om
+olika bolag följer med till den kvarvarande relationen vid sammanslagning.
+
 ## Svaret
 
 ```jsonc

@@ -321,6 +321,19 @@ export async function upsertOrganization(
     if (!c.rows[0]) throw new NotFoundError('customer');
   }
 
+  // Ta radlåsen utan beskedsfilter. Ett nej eller alias kan committas medan
+  // vi väntar; uppslagen nedan måste då få en ny READ COMMITTED-ögonblicksbild.
+  if (origin.source === 'sync' && !input.organization_id) {
+    // Även ett ännu tomt namnrum måste kunna låsas. Samma transaktionsbundna
+    // mekanism som husets övriga skapandespärrar; nyckeln räknas bara i SQL.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended(
+         'crm.organization_name:' || $1::uuid::text || ':' || crm.normalize_org_name($2), 0))`, [companyId, name]);
+    await client.query(
+      `SELECT id FROM crm.organizations WHERE company_id = $1
+       AND name_norm = crm.normalize_org_name($2) ORDER BY id FOR UPDATE`, [companyId, name]);
+  }
+
   const found = input.organization_id
     ? await client.query<OrgHit>(
         'SELECT id, name, customer_id, sfar, status, roll FROM crm.organizations WHERE company_id = $1 AND id = $2 FOR UPDATE',
@@ -396,7 +409,7 @@ export async function upsertOrganization(
        WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
          AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
            WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
-       ORDER BY o.name, o.id FOR UPDATE`,
+       ORDER BY o.name, o.id`,
       [companyId, writeName],
     );
     if (candidates.rows.length > 1) {
@@ -554,11 +567,12 @@ export async function upsertOrganization(
 /** Ett nej gäller just namnparet; loggen bär bara antal eftersom den överlever gallringen. */
 export async function saveOrganizationDistinction(
   client: PoolClient, companyId: string, userId: string, organizationId: string, variantName: string,
+  inherited?: { created_by: string | null; created_at: string },
 ): Promise<{ saved: number }> {
   const r = await client.query(
-    `INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by)
-     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-    [companyId, organizationId, variantName.trim(), userId],
+    `INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by, created_at)
+     VALUES ($1,$2,$3,$4,COALESCE($5::timestamptz, now())) ON CONFLICT DO NOTHING`,
+    [companyId, organizationId, variantName.trim(), inherited ? inherited.created_by : userId, inherited?.created_at ?? null],
   );
   const saved = r.rowCount ?? 0;
   await writeCrmAudit(client, {
@@ -566,6 +580,18 @@ export async function saveOrganizationDistinction(
     details: { saved },
   });
   return { saved };
+}
+
+/** Ett nej följer den kvarvarande relationen; CASCADE får bara ta den gamla kopian. */
+export async function inheritOrganizationDistinctions(
+  client: PoolClient, companyId: string, userId: string, keepId: string, mergeId: string,
+): Promise<void> {
+  const decisions = await client.query<{ variant_name: string; created_by: string | null; created_at: string }>(
+    `SELECT variant_name, created_by, created_at::text FROM crm.organization_distinctions
+     WHERE company_id = $1 AND organization_id = $2 ORDER BY lower(variant_name), variant_name`, [companyId, mergeId]);
+  for (const decision of decisions.rows) {
+    await saveOrganizationDistinction(client, companyId, userId, keepId, decision.variant_name, decision);
+  }
 }
 
 /**

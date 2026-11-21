@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14) — omtag 2026-11-21:**
+  Sju Review Follow-ups åtgärdade som fem felklasser. Kön jämför UUID i gemener
+  och namn med databasens lower + JS-trim även för direktköade/äldre mandat.
+  Synken låser namnrymden per bolag och SQL-normaliserat namn före uppslagen,
+  även utan befintlig rad; exakta namn, alias och nej läses efter radlåsväntan.
+  Sammanslagning ärver sparade nej via samma INSERT-väg, med ursprunglig
+  beslutsfattare/tid och dubblettskydd. Kortet kontrollerar lika namnnycklar
+  och redovisar felaktigt/ändrat underlag före båda valens följder.
+  RC1–RC5 tillagda först (17 parametriserade fall): kanonisering, mottagna
+  beslut, deterministiska låsväntor, tenantgräns, två sammanslagningar,
+  flera nej/dubbletter, namnbyte, HTML-escaping och giltigt underlag.
+  `npm run typecheck`: exit 0 för båda konfigurationerna; `npm run build`: exit 0.
+  Separat befintlig regel-/källsvit utan databashakar: «Test Files 3 passed (3)»,
+  «Tests 113 passed | 16 skipped (129)», exit 0. De 16 databasfallen valdes bort.
+  Full `npm test` försökt före/efter varje kodsteg och som slutgrind: exit 1,
+  «connect EPERM 127.0.0.1:5433» i globalSetup; inga databasfall körda.
+  Kedjan behöver köra RC-fallen, migrationerna och hela regressionssviten.
+  Ingen databas mockad; tillfällig provkonfiguration borttagen. Ingen ny
+  rutt, CSS-klass, miljövariabel eller beroende. Husets ai-card, Public Sans,
+  färgtokens, fokusring och formulärordning behålls för en sammanhållen yta;
+  befintliga tom-/felvyer och serverrenderat laddat läge gäller. Ingen
+  interaktiv tangentbords-/kontrastkontroll eller extern provkörning påstås.
+  Handvägen hör till 2.5. Åtgärdsdokument och intagskontrakt kompletterade.
+  Ingen driftåtgärd utförd; baslinjens externa provstatus har inte omprövats.
+
 - **Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14) — 2026-11-21:**
   Migration 0092 lägger sparade namnpar med sammansatt FK, FORCE RLS och bara
   SELECT/INSERT. Synkens regel i `upsertOrganization` stoppar nya varianter;

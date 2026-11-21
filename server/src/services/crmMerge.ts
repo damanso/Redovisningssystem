@@ -18,7 +18,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import { mergeStatusOutcome } from '../lib/crmRules.js';
 import { readProvenance } from './crmProvenance.js';
-import { writeCrmAudit, saveOrganizationDistinction } from './crmRelations.js';
+import { writeCrmAudit, saveOrganizationDistinction, inheritOrganizationDistinctions } from './crmRelations.js';
 import {
   arKundkopplad, harPrivataPersoner, privatGransFel, PRIVAT_PERSON_SKAL, sfarParameter, type Sfar, type SfarFilter,
 } from './crmSfar.js';
@@ -239,6 +239,7 @@ export async function mergeOrganizations(
     [companyId, gone.name, keepId, userId],
   );
 
+  await inheritOrganizationDistinctions(client, companyId, userId, keepId, mergeId);
   await client.query('DELETE FROM crm.organizations WHERE id = $1 AND company_id = $2', [mergeId, companyId]);
 
   const moved = {

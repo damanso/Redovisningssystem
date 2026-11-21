@@ -692,9 +692,15 @@ export async function explainApproval(
     const forms = [...new Set([
       companyFormSuffix(variant, normalized.name_norm), companyFormSuffix(organization.name, organization.name_norm),
     ].filter((form): form is string => form !== null))];
+    // Direkt köade förslag kan vara fel, och en väntande relations namn kan
+    // ändras. Beslutet ska visa dagens underlag, aldrig anta en namnlikhet.
+    const reason = normalized.name_norm === organization.name_norm
+      ? `Namnen skiljer sig bara i bolagsform${forms.length ? ` (${forms.join(', ')})` : ''}. `
+      : 'Underlaget behöver kontrolleras: namnen skiljer sig i mer än bolagsform. '
+        + 'Förslaget kan vara felaktigt eller relationen kan ha bytt namn. ';
     return {
       change: null,
-      why: `Namnen skiljer sig bara i bolagsform${forms.length ? ` (${forms.join(', ')})` : ''}. `
+      why: reason
         + `Godkänn: ${variant} räknas som ${organization.name}, och kommande händelser med det namnet hamnar där. `
         + `Avvisa: det är ett annat bolag — nästa synk skapar en egen relation för ${variant}.`,
       source: { label: 'Öppna relationen', href: `${base}/relations/${id}` },
