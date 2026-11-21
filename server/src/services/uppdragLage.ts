@@ -36,11 +36,15 @@ import { listContracts, getContractUsage, type Delforbrukning, type Kontrakttill
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import {
-  lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden, type Bedomningsrad, type Begaransrad, type Scopelinje,
+  lasBedomningsrytm, lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden,
+  type Avtalsrytm, type Bedomningsrad, type Begaransrad, type Scopelinje,
 } from './uppdragBedomning.js';
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
-import { ROTKOD, scopelinjelage, type Scopelinjelage } from '../lib/leveranskontrakt.js';
+import {
+  mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
+} from '../lib/leveranskontrakt.js';
+import { last, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
@@ -94,6 +98,23 @@ export interface Forbrukning {
   registrerade_minuter: number;
 }
 
+/**
+ * Tiden mot ramen: två tal, aldrig en kvot (NFR-11), och takets status ur
+ * samma förbrukning. Fälten är förbrukningens egna, så att måttet aldrig visar
+ * ett tak som en ram utan att säga om taket är bekräftat.
+ */
+export type Tidmotram = Pick<Forbrukning, 'minuter' | 'tak_minuter' | 'tak_status'>;
+
+/**
+ * Ett uppföljningsmått ur del 3 med sitt värde (Story 2.3, FR-19, FR-35).
+ * `varde` är `null` när utfallet inte härleds; annars bär det källa och
+ * lästid, också när källan inte kunde läsas.
+ */
+export interface Mattrad extends Uppfoljningsmatt {
+  ordning: number;
+  varde: Lasvarde<Tidmotram> | null;
+}
+
 /** Uppdragets senaste bedömning, med den första meningen ur kommentaren. */
 export interface Senastebedomning extends Bedomningsrad {
   /** Kommentarens första mening — hela kommentaren står på Bedömning-sidan. */
@@ -133,6 +154,10 @@ export interface Avtalslage {
   scopelinje: Scopelinje[];
   /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn. */
   scopelinje_lage: Scopelinjelage;
+  /** Uppföljningsmåtten ur del 3, i `ordning`, med sina värden (Story 2.3). */
+  matt: Mattrad[];
+  /** Rytmen ur del 4 och dess läge för läsvägens dag — ur rytmregeln, aldrig ur vyn. */
+  rytm: Avtalsrytm;
 }
 
 /**
@@ -150,6 +175,8 @@ export interface Lagesfarskhet {
   koposter: Farskhet;
   beslut: Farskhet;
   scopelinje: Farskhet;
+  matt: Farskhet;
+  rytm: Farskhet;
 }
 
 export interface Beslutsrad {
@@ -304,6 +331,37 @@ function rotdel(delar: Delforbrukning[]): Delforbrukning | null {
   return delar.find((d) => d.code === ROTKOD && d.parent_code === null) ?? null;
 }
 
+/** Avtalets uppföljningsmått ur del 3, i textens ordning (Story 2.3). */
+export async function lasUppfoljningsmatt(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Array<Uppfoljningsmatt & { ordning: number }>> {
+  const res = await client.query<Uppfoljningsmatt & { ordning: number }>(
+    `SELECT namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage, ordning
+       FROM uppdrag_matt
+      WHERE company_id = $1 AND contract_id = $2
+      ORDER BY ordning, namn`,
+    [companyId, contractId],
+  );
+  return res.rows;
+}
+
+/**
+ * Måttets värde ur sin läsväg (FR-19, FR-35). REN funktion.
+ *
+ * Ett utfall som inte härleds har inget värde. Ett mått med läsaren
+ * `tid_mot_ram` får förbrukningens `Lasvarde` oförändrat — samma `lage`,
+ * `kalla` och `last_nar` — så att en källa som inte kunde läsas visas som
+ * oläst och aldrig som noll. Ett härlett mått utan läsare har inget värde i
+ * underlaget, och det sägs som saknat i stället för att fyllas i.
+ */
+export function mattvarde(
+  matt: Pick<Uppfoljningsmatt, 'namn' | 'lasvag' | 'utfall_lage'>, forbrukning: Lasvarde<Tidmotram>,
+): Lasvarde<Tidmotram> | null {
+  if (matt.utfall_lage === 'harleds_ej') return null;
+  if (mattlasare(matt.namn, matt.lasvag) === 'tid_mot_ram') return forbrukning;
+  return saknas(KALLA_REDOVISNING, forbrukning.last_nar);
+}
+
 /**
  * Läget för ETT uppdrag: FR-18:s fem innehållsdelar, var och en ur den tjänst
  * som redan äger den, och var och en med sin egen färskhet.
@@ -380,18 +438,30 @@ export async function lasUppdragslage(
 
     const scopelinje = await lasScopelinjer(client, companyId, contractId);
 
+    const forbrukning: Forbrukning = {
+      minuter: rot?.billable_minutes ?? 0,
+      belopp_ore: rot?.amount_ore ?? 0,
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+      tak_ore: rot?.cap_amount_ore ?? null,
+      tak_status: rot?.cap_status ?? 'vet_ej',
+      tidposter,
+      registrerade_minuter: registreradeMinuter,
+    };
+    // Story 2.3: måttens värde är förbrukningen ovan, med samma källa och
+    // lästid som `farskhet.forbrukning` — inget tal räknas om här (FR-25), och
+    // takets status följer med talen.
+    const tidMotRam = last<Tidmotram>({
+      minuter: forbrukning.minuter, tak_minuter: forbrukning.tak_minuter, tak_status: forbrukning.tak_status,
+    }, direkt.kalla, direkt.last_nar);
+    const matt = (await lasUppfoljningsmatt(client, companyId, contractId))
+      .map((m): Mattrad => ({ ...m, varde: mattvarde(m, tidMotRam) }));
+    // Rytmen räknas på läsvägens egen klocka, samma dag som färskheten säger.
+    const rytm = await lasBedomningsrytm(client, companyId, contractId, lastNar.slice(0, 10));
+
     avtal.push({
       contract_id: contractId,
       contract_name: usage.name,
-      forbrukning: {
-        minuter: rot?.billable_minutes ?? 0,
-        belopp_ore: rot?.amount_ore ?? 0,
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
-        tak_ore: rot?.cap_amount_ore ?? null,
-        tak_status: rot?.cap_status ?? 'vet_ej',
-        tidposter,
-        registrerade_minuter: registreradeMinuter,
-      },
+      forbrukning,
       troskellarm: larm,
       leverabler: LEVERABELLAGEN.map((lage) => ({ lage, antal: rakning.get(lage) ?? 0 })),
       leverabler_totalt: register.length,
@@ -402,6 +472,8 @@ export async function lasUppdragslage(
       avgjorda_signaler: signalhistorik.length,
       scopelinje,
       scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
+      matt,
+      rytm,
     });
   }
 
@@ -437,6 +509,8 @@ export async function lasUppdragslage(
       koposter: direkt,
       beslut: direkt,
       scopelinje: direkt,
+      matt: direkt,
+      rytm: direkt,
     },
   };
 }

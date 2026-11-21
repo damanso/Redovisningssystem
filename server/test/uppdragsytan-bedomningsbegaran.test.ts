@@ -26,7 +26,9 @@ import { BASELINEKOLUMNER } from '../src/lib/baselinekolumner.js';
 import { LEVERABELORD, kalendermanad, sammanfattaAndringar } from '../src/lib/bedomningsbegaran.js';
 import { BEDOMNINGSLAGEN } from '../src/services/uppdragBedomning.js';
 import { BESLUTSRADEN } from '../src/services/uppdragUndantag.js';
-import { statusChip } from '../src/http/view/html.js';
+import { esc, statusChip } from '../src/http/view/html.js';
+import { INGEN_PERIOD } from '../src/lib/bedomningsrytm.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 describe('K0 de rena reglerna', () => {
   it('a perioden är läsdagens kalendermånad', h.provaKalendermanad);
@@ -813,7 +815,9 @@ describe('K5 läsvägarna', () => {
     for (const v of [p.uppdrag, p.forslag, p.skal, p.kallor, p.bedomning.senaste, p.bedomning.andringar]) {
       expect(v).toMatchObject({ kalla: 'redovisning', last_nar: svar.last_nar });
     }
-    expect(p.bedomning.period).toEqual(kalendermanad(svar.last_nar.slice(0, 10)));
+    // Story 2.3: avtalet kommer ur `create_contract` utan import och har ingen
+    // rytm, så ingen period räknas — aldrig kalendermånaden.
+    expect(p.bedomning.period).toEqual({ lage: 'rytm_saknas', start: null, slut: null });
     expect(p.bedomning.begaran).toEqual({
       id: r1Begaran.id, begard_av_namn: 'bedomningsbegaran', begard_nar: r1Begaran.begard_nar, kommentar: 'Kunden flyttade L3',
     });
@@ -970,6 +974,13 @@ describe('K5 läsvägarna', () => {
   });
 
   it('l ren beskrivning utan databas', h.provaRenNyBedomning);
+
+  it('m med rytm och ankare är perioden rytmens, aldrig kalendermånadens (Story 2.3)', async () => {
+    const r = await riggatUppdrag(las, 'R rytm');
+    const { period } = await saBedomningsrytm(r.contractId);
+    const b = await begar(las, r.contractId);
+    expect(postFor(await undantag(las), b.id).bedomning.period).toEqual({ lage: 'raknad', ...period });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1092,11 +1103,17 @@ describe('K6 vyn', () => {
     expect(kort(await sida(stangt, laget(stangt, z2)), 'kort-bedomning')).not.toContain('value="begar_bedomning"');
   });
 
-  it('h Bedömning-sidans period är oförändrad: läsdagens kalendermånad', async () => {
+  it('h Bedömning-sidans period följer rytmen: utan rytm ingen period och ingen kalendermånad (Story 2.3)', async () => {
     const { start, slut } = kalendermanad(new Date().toISOString().slice(0, 10));
     const html = await sida(vy, `/app/c/${vy.id}/projects/${q.projectId}/bedomning`);
-    expect(html).toContain(`name="period_start" value="${start}"`);
-    expect(html).toContain(`name="period_slut" value="${slut}"`);
+    // Avtalet kommer ur `create_contract` utan import: ingen rytm är inläst.
+    expect(html).toContain(esc(INGEN_PERIOD.rytm_saknas));
+    const falt = /<input[^>]*name="period_start"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(falt).toContain('name="period_start"');
+    expect(falt).not.toMatch(/value="\d{4}-\d{2}-\d{2}"/);
+    expect(html).not.toContain(`value="${start}"`);
+    expect(html).not.toContain(`value="${slut}"`);
+    expect(html).not.toContain('saknas i kontraktet');
   });
 });
 

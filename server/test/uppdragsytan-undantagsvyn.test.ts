@@ -31,6 +31,7 @@ import {
 import { beslutsraderFor, delversioner, iltUppdrag, kopostInput, ovrigtFraga, type Ilt } from './ovrigtRigg.js';
 import { ersattning, fragaUtanTimmar, tillstand } from './kompletteringRigg.js';
 import { amount } from '../src/http/view/html.js';
+import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
 const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
 const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs';
@@ -469,6 +470,9 @@ describe('V6 den begärda bedömningen', () => {
     for (const [i, f] of fall.entries()) {
       f.u = await frisktUppdrag(b, `Bedömning ${i + 1}`);
       f.begaran = (await ok(b, 'begar_ny_bedomning', { contract_id: f.u.contractId })).id as string;
+      // Story 2.3: perioden kommer ur avtalets rytm och ankare. Med en sådd rytm
+      // bär posten perioden i de dolda fälten, som formularet() läser.
+      await saBedomningsrytm(f.u.contractId);
     }
   }, 90_000);
 
@@ -508,6 +512,8 @@ describe('V6 den begärda bedömningen', () => {
 
   it('(c) agentens token får 403 human_required, och ingen rad tillkommer', async () => {
     const u = await frisktUppdrag(b, 'Bedömning agent');
+    // Med perioden ur en sådd rytm är indatat giltigt, så spärren — inte schemat — svarar.
+    await saBedomningsrytm(u.contractId);
     const begaran = (await ok(b, 'begar_ny_bedomning', { contract_id: u.contractId })).id as string;
     const data = await formularet(begaran);
     const { handling: _h, ...input } = data;
