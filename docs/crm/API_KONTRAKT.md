@@ -190,6 +190,7 @@ och prövar kopplingen på nytt efter eventuell väntan. Förlorar intaget denna
 krock rullas händelsens savepoint tillbaka och texten redovisas i `skipped`;
 vid omsändning ser uppslaget den upptagna kunden och relationen redovisas i
 `unlinked_organizations`.
+Namnkrockens `name_taken` är fortfarande 400 och bär `details: { organization_id, merge_action: 'merge_crm_organizations' }`, där `organization_id` är relationen som redan bär namnet och `merge_action` åtgärden som slår ihop dem (crm 2.1).
 En människas rättelse med `organization_id` gör inget automatiskt kunduppslag:
 utelämnat `customer_id` lämnar kopplingen, dess ursprung och en utelämnad status
 orörda även vid matchande namn eller org.nr. Synkens uppslag är oförändrat.

@@ -2648,3 +2648,21 @@ händelsen avvisas. Fältet redovisas i svarets `kept_customer_fields`
 Relationssidans rad *Org.nr* visar kundkortets värde med hinten *Sparas i
 kundregistret*. *Rätta uppgifter* har ett eget org.nr-formulär som sparar via
 `update_customer`.
+
+## Namnkrocken leder till sammanslagningen (crm 2.1)
+
+`upsert_crm_organization` som döper om en organisation till ett namn som en annan
+organisation i samma bolag redan bär (skiftlägesokänsligt) svarar fortfarande
+400 `name_taken`. Ingenting skrivs, och feltexten finns kvar. Fältet `details`
+bär `details: { organization_id, merge_action: 'merge_crm_organizations' }`:
+`organization_id` är relationen som redan bär namnet, och `merge_action` anger
+vägen vidare. Inga andra fel bär `merge_action`. MCP-verktyget får samma kropp
+som JSON i sin feltext.
+
+Vägen vidare är `merge_crm_organizations` med de två relationernas id som
+`keep_id` (den som behålls) och `merge_id` (den som försvinner). Åtgärden är
+`sensitive` och hamnar i Att göra för mänskligt godkännande innan något slås ihop.
+
+Relationssidan visar namnkrocken som en notis med en länk till relationen och
+knappen *Slå ihop {relation} hit…*. Den öppnar *Dubblett?* med relationen förvald
+via `?oppna=slaihop&med=<id>`; *Slå ihop* köar samma förslag i Att göra.

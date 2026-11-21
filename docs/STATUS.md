@@ -153,6 +153,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29):**
+  `name_taken` behåller 400 och sin text men får `details` med krockens relations-id
+  och sammanslagningsväg. De rena funktionerna `nameTakenOrganization` och
+  `mergeCandidate` samt formulärnamnet `slaihop` validerar adressens värden.
+  `runViewAction`:s valfria `felParametrar` bär id:t till relationssidans notis,
+  som länkar till relationen och öppnar Dubblett? med säkert förval; Slå ihop
+  köar samma känsliga förslag i Att göra. Dokumentavsnittet i `docs/MCP_ACTIONS.md`
+  och meningen om details i `docs/crm/API_KONTRAKT.md` beskriver kontraktet.
+  K1–K7, NK1–NK3, V1–V6 och D2 är tillagda utan ändringar i gamla assertioner.
+  `npm run typecheck` passerade vid varje grön fas. Den rena regelprovfilen
+  kördes separat utan databashakar: före kod 3 failed, 89 passed; efteråt
+  92 passed. D2 kördes separat med samma provkod: 1 failed före dokumenten,
+  1 passed efteråt (Vitest-transform i minnet, inga filer ändrade för isoleringen).
+  Första försöket att isolera D2 använde fel parameterplats och nådde i stället
+  filens HTTP-setup, som nekades med listen EPERM; korrekt isolering kör bara D2.
+  Full `npm test` vid rött och grönt: **inte körd förbi globalSetup —
+  connect EPERM 127.0.0.1:5433**, exit 1 före fallen. Databas- och genomgående
+  vyprov har inga påstådda gröna utfall; kedjan kör hela sviten efter bygget.
+  Slutlig typkontroll, `npm run build` och `git diff --check`: exit 0.
+  Befintliga VK1–VK3 kördes separat utan databashakar: 9 passed, 14 övriga
+  databasfall skipped; härledningen VK3.2 passerade. DoD prövad punkt för punkt
+  med det föreskrivna databasundantaget inför review.
+  Mekanismkontrollerna och läsningen av regressionsytan håller; inga rutter,
+  åtgärder, migrationer eller schemaändringar för indata tillkom.
+  Husets notice, små ghost-knappar och rattaform bevarar tokens, Public Sans,
+  skala och synlig fokusmarkering. Länkar, summary och select följer naturlig
+  tangentbordsordning; utan kandidat står Välj relation… kvar och vanlig felnotis
+  används. Laddat läge är serverrenderat enligt arkitekturen, utan klientkod.
+  Externa prov har inte körts: berättelsens baslinje anger adresskontraktet och
+  bmadglidning RÖDA sedan tidigare, av skäl utanför uppdraget.
+
 - **2026-11-20 — Story 1.8, kundkortets org.nr gäller för en kopplad relation (crm, FR-11, FR-10):**
   `upsertOrganization` avvisar org.nr på en redan kopplad relation för människa
   och agent med 400 `org_number_on_customer` och hänvisning till `update_customer`.

@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../src/lib/crmRules.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -296,5 +296,44 @@ describe('org.nr i kundkortsformuläret (story 1.8)', () => {
       .toEqual({ ok: true, fields: { org_number: ['556918-0002', '556918-0003'] } });
     expect(correctedCustomerFields({ org_number: '556918-0002', name: 'x', customer_id: 'x', organization_id: 'x', is_active: 'false' }))
       .toEqual({ ok: true, fields: { org_number: '556918-0002' } });
+  });
+});
+
+describe('namnkrockens adress (story 2.1)', () => {
+  const A = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+  const B = '2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e';
+  it('NK1 bara namnkrockens eget giltiga id leder vidare', () => {
+    expect(nameTakenOrganization({ code: 'name_taken', details: {
+      organization_id: A, merge_action: 'merge_crm_organizations',
+    } })).toBe(A);
+    expect(nameTakenOrganization({ code: 'name_taken', details: { organization_id: A.toUpperCase() } })).toBe(A);
+    const ogiltiga = [
+      { code: 'name_taken' },
+      { code: 'name_taken', details: null },
+      { code: 'name_taken', details: [A] },
+      { code: 'name_taken', details: { organization_id: 'inte-ett-id' } },
+      { code: 'name_taken', details: { organization_id: 42 } },
+      { code: 'name_taken', details: Object.create({ organization_id: A }) },
+      { code: 'customer_already_linked', details: { organization_id: A } },
+      { code: 'NAME_TAKEN', details: { organization_id: A } },
+    ];
+    for (const error of ogiltiga) expect(nameTakenOrganization(error)).toBeNull();
+  });
+  it('NK2 bara de exakta formulärnamnen öppnas', () => {
+    expect(parseOpenForm('slaihop')).toBe('slaihop');
+    expect(parseOpenForm('uppgifter')).toBe('uppgifter');
+    for (const value of ['SLAIHOP', 'slaihop ', 'slå ihop', 'slaIhop', ['slaihop']]) {
+      expect(parseOpenForm(value)).toBeNull();
+    }
+  });
+  it('NK3 bara en giltig sträng ur bolagets andra relationer blir kandidat', () => {
+    expect(mergeCandidate(A, [A, B])).toBe(A);
+    expect(mergeCandidate(A.toUpperCase(), [A, B])).toBe(A);
+    expect(mergeCandidate(B, [A, B])).toBe(B);
+    expect(mergeCandidate(A, [B])).toBeNull();
+    for (const value of ['inte-ett-id', '', undefined, null, 42, [A], { id: A }, ' ' + A,
+      '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f']) {
+      expect(mergeCandidate(value, [A, B])).toBeNull();
+    }
   });
 });

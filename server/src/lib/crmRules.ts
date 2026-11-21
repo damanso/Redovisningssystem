@@ -1,5 +1,5 @@
 // CRM 1.2: jämför mot det visade värdet, så en samtidig synk inte blir ett människobeslut.
-import { CustomerNumberSchema, EmailSchema, IsoDateSchema } from './validation.js';
+import { CustomerNumberSchema, EmailSchema, IsoDateSchema, UuidSchema } from './validation.js';
 
 type CorrectableKind = 'interaction' | 'commitment';
 const CORRECTION_FIELDS = {
@@ -65,7 +65,7 @@ export function correctedOrganizationFields(body: unknown): Record<string, unkno
   return patch;
 }
 
-const OPEN_FORMS = Object.freeze({ uppgifter: 'uppgifter' } as const);
+const OPEN_FORMS = Object.freeze({ uppgifter: 'uppgifter', slaihop: 'slaihop' } as const);
 type OpenForm = typeof OPEN_FORMS[keyof typeof OPEN_FORMS];
 
 /** Adressen får bara öppna kända formulär, aldrig ärvda objektnycklar. */
@@ -158,4 +158,21 @@ const PROJECT_CODE_PATTERN = /^[A-ZÅÄÖ]{2,6}-\d{3}$/;
 /** En projektkod är ett uppdrag, ingen motpart; en relation under koden gör att styrvyn räknar noll för kunden. */
 export function isProjectCode(name: string): boolean {
   return PROJECT_CODE_PATTERN.test(name.trim());
+}
+
+
+/** Bara namnkrocken leder till sammanslagning; en upptagen kundkoppling bär också ett relations-id. */
+export function nameTakenOrganization(error: { code: string; details?: unknown }): string | null {
+  if (error.code !== 'name_taken') return null;
+  const details = error.details;
+  if (typeof details !== 'object' || details === null || Array.isArray(details) || !Object.hasOwn(details, 'organization_id')) return null;
+  const id = (details as Record<string, unknown>).organization_id;
+  return typeof id === 'string' && UuidSchema.safeParse(id).success ? id.toLowerCase() : null;
+}
+
+/** Adressen kan skrivas för hand; bara bolagets andra relationer får förväljas eller visas i notisen. */
+export function mergeCandidate(value: unknown, candidateIds: readonly string[]): string | null {
+  if (typeof value !== 'string' || !UuidSchema.safeParse(value).success) return null;
+  const id = value.toLowerCase();
+  return candidateIds.includes(id) ? id : null;
 }
