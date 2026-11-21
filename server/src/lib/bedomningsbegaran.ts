@@ -2,10 +2,10 @@
 // REN fil: ingen databas och ingen klocka. Läsvägen (`beskrivNyBedomning` i
 // `services/uppdragUndantag.ts`) och Bedömning-sidan delar reglerna härifrån.
 //
-// En regel har en plats (architecture.md, Strukturmönster): perioden som
-// föreslås, jämförelsen mellan de frysta talen och dagens och texten i
-// förslagsfältet hade annars stått både i läsvägen och i vyn. Två kopior av
-// förvalsperioden hade kunnat föreslå olika månader för samma bedömning.
+// En regel har en plats (architecture.md, Strukturmönster): jämförelsen mellan
+// de frysta talen och dagens och texten i förslagsfältet hade annars stått både
+// i läsvägen och i vyn. Perioden som föreslås räknas inte här sedan Story 2.3,
+// utan ur avtalets rytm av `bedomningsrytmlage` i `lib/bedomningsrytm.ts`.
 //
 // Ingenting här känner ett bedömningsläge. Förslagsfältet visar underlaget,
 // aldrig ett förval (FR-15): indatatypen `Andringsunderlag` saknar läge, så
@@ -14,7 +14,9 @@ import { hhmm } from './duration.js';
 import { formatOre } from '../domain/money.js';
 
 /**
- * Förslaget till period: läsdagens kalendermånad, samma förval som Bedömning-sidan.
+ * Läsdagens kalendermånad, som sedan Story 2.3 inte är förvalet någonstans i
+ * produktionen: perioden följer avtalets rytm (`lib/bedomningsrytm.ts`), och
+ * ingen produktionsfil anropar funktionen. Den står kvar för sina enhetsfall.
  * `idag` är `YYYY-MM-DD`. Räknat i UTC, så att serverns zon aldrig flyttar månaden.
  */
 export function kalendermanad(idag: string): { start: string; slut: string } {

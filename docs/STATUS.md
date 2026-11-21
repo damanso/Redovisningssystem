@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, omtag efter granskningen (sex Review Follow-ups):**
+  Varje fynd lagat som klass. (1) **Diffen bär implementationen:** kedjan
+  committar bara statusrader som är nya sedan byggstarten, och berättelsens
+  filer var rester från ett tidigare försök. File Lists filer under `server/`
+  och `docs/` läggs därför uttryckligen i indexet (`git add -- <sökvägarna>`,
+  aldrig `-A`; `.env.fore-losen-…` och `.story-1-3-checks/` rörs inte), så att
+  statusraderna blir nya. Ingen commit av utvecklaren. (2) **Perioden i
+  dokumentet:** ny_bedomning-postens period i MCP_ACTIONS har rytmregelns form
+  `{ lage, start, slut }`, och docstringen till `kalendermanad` säger att den
+  inte längre är förvalet; prov D2 fäller varje mening i dokumentet och
+  modulens källfiler som beskriver perioden som kalendermånaden. (3) **Ett avtal
+  i taget på Bedömning:** `?avtal=` väljer avtalet (okänt värde ger det första,
+  som `?fy=`), och rytmpanelen, ankarformuläret, perioden, rapporten och
+  formuläret följer valet. Växeln *Avtalet du bedömer* ersätter formulärets
+  avtalsselect, en begäran på ett annat avtal pekar dit, Lägets länk går till
+  samma avtals ankarformulär, och ankarets POST leder tillbaka till avtalet
+  (B8). (4) **En väg in för ankarets källa:** åtgärden godtar exakt de
+  kalenderposter som `kalenderreferenser` erbjuder formuläret, så en trasig
+  post eller en post utanför spärren ger 400 (A3, och A9 över varje status i
+  schemat). (5) **Inga tysta utfall i importen:** svaret bär
+  `{ matt_avvikande, matt_kvarstaende, rytm_kvarstaende }` och auditraden
+  antalen; fältlistan härleds ur typen `Uppfoljningsmatt` (I7). (6) **Inget om
+  kontraktet:** ”ram saknas i kontraktet” blev ”ingen timram är inläst för
+  avtalet”, och migrationens och ARKITEKTURs ”saknad i kontraktet” säger nu att
+  ingen läsväg kunde härledas ur cellen; V7 ritar varje läge och läser vyernas
+  textkällor. **Inte kört:** `npm run typecheck` gav ”This command requires
+  approval”; kedjans körning är belägget. **Följd i drift** som i raden nedan;
+  Bedömningens adress kan nu bära `?avtal=`, och ingen ny rutt har tillkommit.
 - **2026-11-21 — Story 2.3, måtten och rytmen ur kontraktets del 3 och del 4 (FR-19, FR-14, FR-26, FR-35, NFR-11):**
   Migration `0095_matt_och_rytm.sql` skapar tabellen uppdrag_matt (BASELINE,
   RLS och FORCE, sammansatt FK, SELECT och INSERT för `app`, triggern mot
