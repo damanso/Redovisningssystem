@@ -153,6 +153,78 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, kontrollomtag efter röda CRM-regressioner (FR-14):**
+  Aliasomläsningen i `crmRelations.ts` låste även aliasraden med FOR UPDATE,
+  trots att migration 0059 avsiktligt inte ger app-rollen UPDATE på alias.
+  Frågan nekades även utan träff; intaget hoppade över nya organisationer och
+  deras följdrader. Låset omfattar nu bara målorganisationen, enligt det
+  befintliga aliasuppslaget. Inga utökade rättigheter eller migrationsändringar.
+  Nya BS6 i `crm-org-name-norm.test.ts`: tre namnformer i två bolag, verklig
+  app-roll med SELECT men utan UPDATE på alias, skapande och exakt omkörning.
+  Fem namngivna fel i crm-provenance, crm-review-fixes, crm-schema och
+  crm-sfar-3 härledda till samma skrivväg; deras assertioner och fixturer bevarade.
+  `npm run typecheck` före/efter och `npm run build`: exit 0.
+  Separat Vitest utan databashakar:
+  `Test Files 1 passed (1)`, `Tests 94 passed (94)`, exit 0 (crm-rules).
+  `npm test` före/efter: exit 1 i globalSetup före fallen,
+  `connect EPERM 127.0.0.1:5433`. BS6, de rapporterade regressionerna och
+  helsviten måste därför verifieras av kedjan enligt nätundantaget.
+  Mekanismkontroller 8.3 a–g och BD1:s dokumentkontroller: PASS;
+  `git diff --check` utan fynd. API-kontraktet ändras inte av denna rättning.
+  Befintliga ai-card, tokens, typografi och tangentbordsfokus följer husets stil.
+  Fullsviten även försökt i slutgrinden: samma EPERM före fallen.
+  Story/sprint åter till review efter punktvis DoD med nätundantag.
+  Externa prov och interaktiv webbläsarkontroll ej körda. Ingen tjänst startad.
+
+- **2026-11-21 — Story 2.3, omtag efter fem Review Follow-ups (crm, FR-14):**
+  Dubblettspärren i `crmIngest` normaliserar även äldre direktköade UUID och
+  namn med Unicode-blanksteg, i pending och mottagna beslut; andra namn för
+  samma mål förblir egna par. `crmRelations` låser kandidatunderlaget först
+  och läser sedan alias och sparade besked på nytt; nytillkomna kandidater
+  kräver också lås före beslut. Ett samtidigt ja eller nej följs därmed av
+  samma skrivväg. `approvalSummary` påstår bara bolagsformsrelation när de
+  aktuella SQL-nycklarna är lika; olika och omdöpta namn får korrekt underlag.
+  15 nya parametriserade provinstanser i `crm-org-name-norm.test.ts` täcker
+  19 scenarier, inklusive verklig låsväntan med `pg_blocking_pids`, verkställt
+  nej, äldre köposter och renderade kort. Kontrakt och MCP_ACTIONS förtydligade.
+  Faktisk utdata: `npm run typecheck` exit 0, `npm run build` exit 0;
+  separat Vitest utan databashakar: `94 passed (94)` och
+  `13 passed | 22 skipped (35)`, båda exit 0. BD1:s dokumentkontroller och
+  mekanismkontroller 8.3 a–g PASS; `git diff --check` utan fynd.
+  `npm test` körd före/efter lagningarna och i slutgrinden: exit 1,
+  `connect EPERM 127.0.0.1:5433` i globalSetup före fallen. Nya databas-/vyprov
+  och full regression är därför inte verifierade här; kedjan kör dem enligt
+  nätundantaget. Inget nytt paket, migrationssteg, tjänst, rutt eller CSS.
+  Kortet använder husets ockra, tokens, typografi, synliga skälfält och fokus.
+  Story/sprint lämnas till review efter punktvis DoD med nätundantag.
+  Ingen commit, push, driftsättning eller tjänstestart utförd.
+
+- **2026-11-21 — Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14):**
+  Migration 0092 ger parvisa besked med sammansatt FK, FORCE RLS och bara
+  SELECT/INSERT. Synkens regel i `upsertOrganization` kastar före skrivning;
+  `saveOrganizationDistinction` är enda skrivvägen. Den känsliga tvåfasåtgärden
+  `merge_crm_name_variant` lägger alias vid ja och sparar besked vid nej med skäl.
+  Intaget köar med radlås i händelsens savepoint och redovisar `merge_proposals`;
+  audit bär antal och fasta nycklar, aldrig namn. Kortet visar skälet och båda
+  beslutsföljderna i husets befintliga ai-card, med dess typografi, knappar,
+  synliga skälfält och fokusmarkering. Kontraktet och MCP_ACTIONS är utökade.
+  Fall: BM1–BM3, BR1–BR2, BS1–BS5, BG1–BG4, BI1–BI9, BK1–BK2 och BD1.
+  Registerrader i vy-kansliga-knappar (båda känsliga handlers),
+  forslagskort-klartext (exempelindata) och uppdragsytan-mandat (uttrycklig
+  tvåfaslista med likhetskontroll). Inga befintliga assertioner försvagade.
+  Den handskapade varianten, notisen och `distinct_from` är berättelse 2.5.
+  Rött–grönt per uppgift: `npm run typecheck` körd; senaste avslutade exit 0.
+  Rena crm-rules: före 2 failed | 92 passed, efter 94 passed (94), exit 0.
+  Separata VK1–VK3 och sändspärrskontroller: 13 passed, exit 0.
+  Slutligt rent/statiskt urval: 107 passed | 22 skipped, exit 0. Bygge exit 0.
+  Story och sprintstatus: review efter punktvis DoD med nätundantag.
+  `npm test` körd i båda faserna per uppgift men stoppas i globalSetup med
+  «connect EPERM 127.0.0.1:5433», exit 1. Databasfallen, full regression och
+  interaktiv webbläsarkontroll är därför inte verifierade i sandlådan; kedjan
+  kör dem enligt nätundantaget. Inget påstående om grön helsvit.
+  Ingen rutt, CSS-klass, miljövariabel eller beroende tillkom. Den kända
+  GDPR-gränsen för sparade besked följer AC1 och kräver senare beslut.
+
 - **2026-11-21 — Story 2.1, namnkrocken leder till sammanslagningen (crm, FR-29), granskningsomtag:**
   Båda High-fynden gäller UUID-identitet: kandidatlistan jämför nu relationens
   hämtade `o.id` med databasens id, så den egna relationen utesluts även när

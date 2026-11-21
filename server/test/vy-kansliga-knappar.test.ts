@@ -104,6 +104,7 @@ const KANSLIGA_FUNKTIONER: Record<string, readonly string[]> = {
   merge_crm_organizations: ['mergeOrganizations'],
   merge_crm_people: ['mergePeople'],
   purge_crm_data: ['purgeCrmData'],
+  merge_crm_name_variant: ['acceptNameVariant', 'rejectNameVariant'],
   book_invoice: ['bookInvoice'],
   book_receipt: ['bookReceipt'],
   register_invoice_payment: ['recordInvoicePayment'],

@@ -389,6 +389,57 @@ export async function upsertOrganization(
     }
   }
 
+  // A-4: synkens nya namn får ingen egen relation innan David avgjort paret.
+  // Exakt träff och alias har redan företräde; varje kast sker före skrivning.
+  if (origin.source === 'sync' && !hit) {
+    let candidates: { id: string; name: string }[];
+    for (;;) {
+      // Lås utan beskedsfilter först. Frågan som väntar behåller sin gamla
+      // ögonblicksbild; beslut och alias måste läsas i NYA satser efter låset.
+      const locked = await client.query<{ id: string }>(
+        `SELECT id FROM crm.organizations WHERE company_id = $1 AND name_norm = crm.normalize_org_name($2)
+         ORDER BY name, id FOR UPDATE`, [companyId, writeName],
+      );
+      const exactNow = await client.query<{ id: string }>(
+        'SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2) FOR UPDATE',
+        [companyId, writeName],
+      );
+      // Alias ändras inte på plats och saknar UPDATE-rättighet (0059).
+      // Lås bara målorganisationen, som i det första aliasuppslaget.
+      const aliasNow = !exactNow.rows[0] ? await client.query<{ id: string }>(
+        `SELECT o.id FROM crm.organization_name_aliases a
+         JOIN crm.organizations o ON o.id = a.organization_id AND o.company_id = a.company_id
+         WHERE a.company_id = $1 AND lower(a.name) = lower($2) FOR UPDATE OF o`,
+        [companyId, writeName],
+      ) : null;
+      if (exactNow.rows[0] || aliasNow?.rows[0]) {
+        // Återanvänd den vanliga skrivvägen; låsen håller den nya träffen kvar.
+        return upsertOrganization(client, companyId, userId, rawInput, origin);
+      }
+      const current = await client.query<{ id: string; name: string }>(
+        `SELECT o.id, o.name FROM crm.organizations o
+         WHERE o.company_id = $1 AND o.name_norm = crm.normalize_org_name($2)
+           AND NOT EXISTS (SELECT 1 FROM crm.organization_distinctions d
+             WHERE d.company_id = $1 AND d.organization_id = o.id AND lower(d.variant_name) = lower($2))
+         ORDER BY o.name, o.id`,
+        [companyId, writeName],
+      );
+      const lockedIds = new Set(locked.rows.map((row) => row.id));
+      // En nytillkommen kandidat måste också låsas före en ny beslutsläsning.
+      if (current.rows.some((row) => !lockedIds.has(row.id))) continue;
+      candidates = current.rows;
+      break;
+    }
+    if (candidates.length > 1) {
+      throw new BadRequestError('name_variant_ambiguous', 'bolagsformsvariant av flera relationer — slå ihop dem först');
+    }
+    const candidate = candidates[0];
+    if (candidate) {
+      throw new BadRequestError('name_variant_of', `bolagsformsvariant av ${candidate.name} — väntar på ditt beslut i Att göra`,
+        { organization_id: candidate.id, name: candidate.name });
+    }
+  }
+
   // Människans rättelse med känt id ändrar bara angivna fält. En utelämnad
   // kund får därför aldrig fyllas i av uppslaget, oavsett vilket fält som rättas.
   // Synken och upsert utan id behåller uppslaget när kopplingen saknas.
@@ -529,6 +580,23 @@ export async function upsertOrganization(
     },
   });
   return { ...r.rows[0]!, created: false, kept_human_fields: keptHumanFields, kept_customer_fields: keptCustomerFields, redirected_from: redirectedFrom };
+}
+
+/** Ett nej gäller paret även nästa synk; auditloggen bär bara antalet, aldrig namnet. */
+export async function saveOrganizationDistinction(
+  client: PoolClient, companyId: string, userId: string, organizationId: string, variantName: string,
+): Promise<{ saved: number }> {
+  const r = await client.query(
+    `INSERT INTO crm.organization_distinctions (company_id, organization_id, variant_name, created_by)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+    [companyId, organizationId, variantName.trim(), userId],
+  );
+  const saved = r.rowCount ?? 0;
+  await writeCrmAudit(client, {
+    companyId, userId, action: 'crm.organization_distinction_saved', entityType: 'organization', entityId: organizationId,
+    details: { saved },
+  });
+  return { saved };
 }
 
 /**
