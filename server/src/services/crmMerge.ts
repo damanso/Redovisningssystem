@@ -429,16 +429,24 @@ export async function acceptNameVariant(
   const existing = await client.query(
     'SELECT id FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2)', [companyId, name]);
   if (existing.rows[0]) return { outcome: 'name_exists', organization_id: input.organization_id };
-  const alias = await client.query<{ organization_id: string }>(
-    'SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)',
-    [companyId, name]);
-  if (alias.rows[0]) {
-    return { outcome: alias.rows[0].organization_id === organization.rows[0].id ? 'already_alias' : 'alias_elsewhere',
-      organization_id: input.organization_id };
+  for (;;) {
+    const alias = await client.query<{ organization_id: string }>(
+      'SELECT organization_id FROM crm.organization_name_aliases WHERE company_id = $1 AND lower(name) = lower($2)',
+      [companyId, name]);
+    if (alias.rows[0]) {
+      return { outcome: alias.rows[0].organization_id === organization.rows[0].id ? 'already_alias' : 'alias_elsewhere',
+        organization_id: input.organization_id };
+    }
+    // Olika mål har olika radlås. Det unika indexet avgör därför vem som
+    // får namnet, utan ett fel som förgiftar tvåfasens transaktion.
+    const inserted = await client.query(
+      `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by)
+       VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+      [companyId, name, organization.rows[0].id, userId]);
+    if (inserted.rowCount) break;
+    // Ny sats ser vinnaren efter låsväntan. Har aliaset hunnit tas bort
+    // försöker vi insättningen igen i stället för att gissa ett utfall.
   }
-  await client.query(
-    `INSERT INTO crm.organization_name_aliases (company_id, name, organization_id, created_by) VALUES ($1,$2,$3,$4)`,
-    [companyId, name, organization.rows[0].id, userId]);
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.name_variant_accepted', entityType: 'organization', entityId: organization.rows[0].id,
     details: { alias_added: 1 },

@@ -153,6 +153,27 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14) — andra omtaget 2026-11-21:**
+  Två nya High-fynd gäller samma alias-krockklass. `acceptNameVariant` låter
+  det befintliga unika indexet avgöra insättningen med ON CONFLICT DO NOTHING
+  och läser vinnande alias i en färsk sats. Ett borttaget alias ger nytt försök;
+  endast faktisk insättning ger acceptansrad i domänaudit. Ingen fångad
+  databaskrock och inget övertramp på ett annat måls alias. RC6 skrevs först:
+  fyra parametriserade fall med två/tre verkliga REST-godkännanden, identiskt
+  namn, skiftläge, Unicode-trim och bolagsgräns. Ett SHARE-tabellås i testets
+  tenanttransaktion och pg_blocking_pids kräver samtidig väntan på INSERT.
+  Alla beslut ska ge 200/executed; ett alias och en domänaudit ska finnas.
+  `npm run typecheck`: exit 0 för källa och tester. `npm run build`: exit 0.
+  Befintliga regel-/källprov utan databashakar: «Test Files 3 passed (3)»,
+  «Tests 113 passed | 16 skipped (129)», exit 0. Full `npm test` före/efter
+  kod: exit 1 i globalSetup, «connect EPERM 127.0.0.1:5433», inga fall körda.
+  RC6 och databasregressionen återstår hos kedjan enligt uppdragets undantag.
+  Åtgärdsdokumentet kompletterat; befintliga svarsfält och intagskontrakt gäller.
+  Husets ai-card, Public Sans, färg- och fokustokens behålls för sammanhållen
+  läsning i Att göra; samma fokusordning, tom-/felläge och serverrenderade
+  laddade läge. Ingen interaktiv UI-kontroll eller driftåtgärd utförd.
+  Inga nya beroenden, rutter, CSS-klasser eller miljövariabler. Handvägen är 2.5.
+
 - **Story 2.3, en bolagsformsvariant blir ett sammanslagningsförslag (crm, FR-14) — omtag 2026-11-21:**
   Sju Review Follow-ups åtgärdade som fem felklasser. Kön jämför UUID i gemener
   och namn med databasens lower + JS-trim även för direktköade/äldre mandat.

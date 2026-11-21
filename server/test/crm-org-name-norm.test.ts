@@ -1200,6 +1200,91 @@ describe('dokumenten (story 2.3)', () => {
 });
 
 describe('granskningsomtagets namnpar (story 2.3)', () => {
+  it.each([
+    { suffix: 'Identiskt', forms: ['', ''] },
+    { suffix: 'Skiftläge', forms: ['', 'upper'] },
+    { suffix: 'Blanktecken', forms: ['space', 'upper'] },
+    { suffix: 'Tre mål', forms: ['', 'upper', 'space'] },
+  ])('RC6 samtidiga godkännanden för samma alias avslutas atomiskt: $suffix', async ({ suffix, forms }) => {
+    const name = `Aliasracet ${suffix} AS`;
+    const proposals: { id: string; organizationId: string }[] = [];
+    for (const [index, form] of forms.entries()) {
+      const target = await act('upsert_crm_organization', { name: `Aliasracets mål ${suffix} ${index}` });
+      expect(target.status, JSON.stringify(target.body)).toBe(200);
+      const organizationId = target.body.result.id as string;
+      const inputName = form === 'upper' ? name.toUpperCase() : form === 'space' ? ` \u00a0\u2003${name}\ufeff ` : name;
+      const queued = await act('merge_crm_name_variant', { organization_id: organizationId, name: inputName });
+      expect(queued.status, JSON.stringify(queued.body)).toBe(202);
+      proposals.push({ id: queued.body.approval.id, organizationId });
+    }
+    let pending: Promise<Awaited<ReturnType<typeof act>>[]> | undefined;
+    let responses: Awaited<ReturnType<typeof act>>[] = [];
+    try {
+      await withTenantTransaction(user.userId, companyId, async (c) => {
+        // SHARE tillåter uppslagen men stoppar INSERT. Alla godkännanden måste
+        // nå insättningen utan alias innan låset släpps; ingen tidsbaserad gissning.
+        await c.query('LOCK TABLE crm.organization_name_aliases IN SHARE MODE');
+        const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+        pending = Promise.all(proposals.map(({ id }) => api.post(`/api/companies/${companyId}/approvals/${id}/approve`)
+          .set('Authorization', `Bearer ${user.token}`).send({}).then((response) => response)));
+        void pending.catch(() => {});
+        await withAdmin(async (db) => {
+          for (let attempt = 0; attempt < 200; attempt++) {
+            const waiting = await db.query<{ n: number }>(
+              `SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database()
+               AND $1::int = ANY(pg_blocking_pids(pid))
+               AND query LIKE 'INSERT INTO crm.organization_name_aliases%'`, [pid]);
+            if (waiting.rows[0]!.n === proposals.length) return;
+            await new Promise((done) => setTimeout(done, 25));
+          }
+          throw new Error('alla godkännanden nådde inte aliasinsättningen — samtidighetsfallet prövades inte');
+        });
+      });
+      responses = await pending!;
+    } finally {
+      if (pending) await Promise.allSettled([pending]);
+    }
+    for (const [index, response] of responses.entries()) {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.approval.status).toBe('executed');
+      expect(response.body.result.organization_id).toBe(proposals[index]!.organizationId);
+      expect(response.body.approval.result).toEqual(response.body.result);
+    }
+    expect(responses.map((r) => r.body.result.outcome).sort())
+      .toEqual(['alias_added', ...Array(proposals.length - 1).fill('alias_elsewhere')].sort());
+    const winner = responses.find((r) => r.body.result.outcome === 'alias_added')!.body.result.organization_id as string;
+    expect(await withAdmin(async (db) => (await db.query(
+      `SELECT organization_id, name FROM crm.organization_name_aliases
+       WHERE company_id = $1 AND lower(name) = lower($2)`, [companyId, name])).rows))
+      .toEqual([{ organization_id: winner, name: expect.any(String) }]);
+    expect(await withAdmin(async (db) => (await db.query(
+      `SELECT entity_id, details FROM crm.audit_log WHERE company_id = $1
+       AND action = 'crm.name_variant_accepted' AND entity_id = ANY($2::uuid[])`,
+      [companyId, proposals.map((p) => p.organizationId)])).rows))
+      .toEqual([{ entity_id: winner, details: { alias_added: 1 } }]);
+    expect(await antal(`SELECT count(*)::int AS n FROM action_approvals WHERE company_id = $1
+      AND id = ANY($2::uuid[]) AND (status <> 'executed' OR result IS NULL)`,
+    [companyId, proposals.map((p) => p.id)])).toBe(0);
+    expect(await antal(`SELECT count(*)::int AS n FROM audit_log WHERE company_id = $1
+      AND action = 'action.approved_executed' AND entity_id = ANY($2::uuid[])`,
+    [companyId, proposals.map((p) => p.id)])).toBe(proposals.length);
+
+    // Samma aliasnamn i grannbolaget är ett separat beslut och kan också vinna.
+    const neighborTarget = await api.post(`/api/companies/${grannbolag}/actions/upsert_crm_organization`)
+      .set('Authorization', `Bearer ${granne.token}`).send({ name: `Aliasgrannen ${suffix}` });
+    expect(neighborTarget.status, JSON.stringify(neighborTarget.body)).toBe(200);
+    const neighborProposal = await api.post(`/api/companies/${grannbolag}/actions/merge_crm_name_variant`)
+      .set('Authorization', `Bearer ${granne.token}`).send({ organization_id: neighborTarget.body.result.id, name });
+    expect(neighborProposal.status, JSON.stringify(neighborProposal.body)).toBe(202);
+    const neighborApproval = await api.post(`/api/companies/${grannbolag}/approvals/${neighborProposal.body.approval.id}/approve`)
+      .set('Authorization', `Bearer ${granne.token}`).send({});
+    expect(neighborApproval.status, JSON.stringify(neighborApproval.body)).toBe(200);
+    expect(neighborApproval.body.approval.status).toBe('executed');
+    expect(neighborApproval.body.result).toEqual({ outcome: 'alias_added', organization_id: neighborTarget.body.result.id });
+    expect(await antal(`SELECT count(*)::int AS n FROM crm.organization_name_aliases
+      WHERE company_id = $1 AND lower(name) = lower($2) AND organization_id = $3`, [companyId, name, winner])).toBe(1);
+  });
+
   async function waitForBlockedBy(pid: number) {
     await withAdmin(async (db) => {
       for (let attempt = 0; attempt < 200; attempt++) {

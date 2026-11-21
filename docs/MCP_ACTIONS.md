@@ -2701,3 +2701,9 @@ Sparade nej följer med till den kvarvarande relationen vid sammanslagning,
 med ursprunglig beslutsfattare och tid. Om kortets två namn inte längre
 har samma normaliserade nyckel visar det uttryckligen att underlaget behöver
 kontrolleras; följderna av godkänn och avvisa står fortfarande kvar.
+
+Samtidiga godkännanden som försöker lägga samma aliasnamn mot olika relationer
+avgörs atomiskt av aliasets unika namn inom bolaget. Ett beslut lägger aliaset
+och får `alias_added`; övriga läser det vinnande aliaset och får
+`alias_elsewhere`, utan att skriva om aliaset eller lämna beslutet overkställt.
+Bara beslutet som faktiskt lade aliaset skriver domänens acceptansrad i audit.
