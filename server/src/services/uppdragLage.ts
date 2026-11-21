@@ -98,11 +98,12 @@ export interface Forbrukning {
   registrerade_minuter: number;
 }
 
-/** Tiden mot ramen: två tal, aldrig en kvot (NFR-11). */
-export interface Tidmotram {
-  minuter: number;
-  tak_minuter: number | null;
-}
+/**
+ * Tiden mot ramen: två tal, aldrig en kvot (NFR-11), och takets status ur
+ * samma förbrukning. Fälten är förbrukningens egna, så att måttet aldrig visar
+ * ett tak som en ram utan att säga om taket är bekräftat.
+ */
+export type Tidmotram = Pick<Forbrukning, 'minuter' | 'tak_minuter' | 'tak_status'>;
 
 /**
  * Ett uppföljningsmått ur del 3 med sitt värde (Story 2.3, FR-19, FR-35).
@@ -447,9 +448,11 @@ export async function lasUppdragslage(
       registrerade_minuter: registreradeMinuter,
     };
     // Story 2.3: måttens värde är förbrukningen ovan, med samma källa och
-    // lästid som `farskhet.forbrukning` — inget tal räknas om här (FR-25).
-    const tidMotRam = last({ minuter: forbrukning.minuter, tak_minuter: forbrukning.tak_minuter },
-      direkt.kalla, direkt.last_nar);
+    // lästid som `farskhet.forbrukning` — inget tal räknas om här (FR-25), och
+    // takets status följer med talen.
+    const tidMotRam = last<Tidmotram>({
+      minuter: forbrukning.minuter, tak_minuter: forbrukning.tak_minuter, tak_status: forbrukning.tak_status,
+    }, direkt.kalla, direkt.last_nar);
     const matt = (await lasUppfoljningsmatt(client, companyId, contractId))
       .map((m): Mattrad => ({ ...m, varde: mattvarde(m, tidMotRam) }));
     // Rytmen räknas på läsvägens egen klocka, samma dag som färskheten säger.

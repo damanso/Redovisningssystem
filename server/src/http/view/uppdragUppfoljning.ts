@@ -7,7 +7,7 @@
  * server. Allt ritas med husets `html`, `chip` och klasser; filen har ingen
  * egen CSS och inget skript.
  *
- * Tre regler bär vyn:
+ * Fyra regler bär vyn:
  *  - **Ett värde visas med sin källa och lästid, eller som oläst.** Ett mått
  *    vars utfall inte härleds säger det rakt ut, och inget värde matas in för
  *    hand här — panelen har inget formulär.
@@ -15,6 +15,9 @@
  *    aldrig en kvot, och registret har inget utfall här (NFR-11).
  *  - **Varför ingen period räknas står i `INGEN_PERIOD`.** Läget, Bedömning och
  *    undantagsvyn ritar samma mening, och den här filen skriver ingen egen.
+ *  - **Vyn säger vad databasen har, aldrig vad kontraktet innehåller.** Ett
+ *    tomt fält är ”inte inläst”, och ett tak som inte är läst har husets ord
+ *    och husets takstatus, samma som kortet Förbrukning mot ram.
  */
 import { INGEN_PERIOD, type Rytmutfall } from '../../lib/bedomningsrytm.js';
 import { hhmm } from '../../lib/duration.js';
@@ -40,12 +43,28 @@ const LARMREGEL_HARLEDS_EJ = 'larmregel HÄRLEDS EJ';
 const LARMREGEL_KRAVER_SVAR = 'larmregel HÄRLEDS EJ — kräver Davids svar';
 const UTFALL_HARLEDS_EJ = 'utfall HÄRLEDS EJ';
 
+/**
+ * Husets ord för ett tak som inte är läst — kortet Förbrukning mot ram, Pengar
+ * och måttets värde säger samma sak. Ett tak som saknas i underlaget kan bero
+ * på annat än kontraktets text, så orden påstår ingenting om kontraktet.
+ */
+export const TAK_INTE_LAST = 'ett tak som inte är läst';
+
+/**
+ * Takets status: bekräftat, eller ”vet ej” — ett oläst tak varnar aldrig och
+ * spärrar aldrig, och det ska stå i stället för att gissas. Samma chip på
+ * kontraktsytan, i kortet Förbrukning mot ram och i måttets värde.
+ */
+export const takstatusChipYta = (status: 'bekraftat' | 'vet_ej'): Raw =>
+  status === 'bekraftat' ? chip('Bekräftat', 'ok', '✓') : chip('Vet ej', 'muted', '○');
+
 const kallnamn = (kalla: string): string => (kalla === 'redovisning' ? 'redovisningen' : kalla);
 
 /**
- * Måttets utfall. Läst: tiden mot ramen och värdets egen färskhetsrad. Oläst:
- * källan och senaste lästid i `.tomt`, aldrig en nolla. Saknat: sagt som saknat.
- * Inget värde: utfallet härleds inte, och det står i klartext.
+ * Måttets utfall. Läst: tiden mot ramen med takets status och värdets egen
+ * färskhetsrad. Oläst: källan och senaste lästid i `.tomt`, aldrig en nolla.
+ * Saknat: sagt som saknat. Inget värde: utfallet härleds inte, och det står i
+ * klartext.
  */
 function utfall(m: Mattrad, idag: string): Raw {
   const v = m.varde;
@@ -59,7 +78,8 @@ function utfall(m: Mattrad, idag: string): Raw {
   }
   const t = v.varde;
   return html`<p class="num" style="margin:6px 0 0">${hhmm(t.minuter)} nedlagda mot ramen ${
-    t.tak_minuter === null ? html`<span class="muted">— ram saknas i kontraktet</span>` : hhmm(t.tak_minuter)}</p>
+    t.tak_minuter === null ? html`<span class="muted">— ${TAK_INTE_LAST}</span>` : hhmm(t.tak_minuter)}</p>
+    <p class="muted" style="margin:4px 0 0;font-size:12.5px">Taket: ${takstatusChipYta(t.tak_status)}</p>
     ${farskhetsrad([direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)])}`;
 }
 
@@ -75,7 +95,7 @@ function larmrad(m: Mattrad): Raw {
       ? chip(LARMREGEL_KRAVER_SVAR, 'warn', '!')
       : chip(LARMREGEL_HARLEDS_EJ, 'muted', '○');
   return html`<p style="margin:6px 0 0;font-size:13px"><span class="muted">Larmar när:</span> ${
-    m.larmregel === null ? html`<span class="muted">ingen larmregel i raden</span>` : html`<span>${m.larmregel}</span>`} ${markering}</p>`;
+    m.larmregel === null ? html`<span class="muted">ingen larmregel inläst</span>` : html`<span>${m.larmregel}</span>`} ${markering}</p>`;
 }
 
 /** Ett mått: namnet och läsvägen först, sedan var och hur ofta, utfallet och larmregeln. */
@@ -83,7 +103,7 @@ function mattrad(m: Mattrad, idag: string, forsta: boolean): Raw {
   return html`<li data-matt="${String(m.ordning)}" style="padding:12px 0;${forsta ? '' : 'border-top:1px solid var(--line)'}">
     <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b>${m.namn}</b>${
       m.lasvag === null ? chip('Läsväg saknas', 'neg', '!') : chip(LASVAGSETIKETT[m.lasvag], 'info', '→')}</div>
-    <p class="muted" style="margin:3px 0 0;font-size:12.5px">${m.hur_ofta ?? 'Frekvens anges inte'} · Läses ur: ${m.kallreferenser ?? '—'}</p>
+    <p class="muted" style="margin:3px 0 0;font-size:12.5px">${m.hur_ofta ?? 'Frekvens inte inläst'} · Läses ur: ${m.kallreferenser ?? '—'}</p>
     ${utfall(m, idag)}
     ${larmrad(m)}
   </li>`;
@@ -104,7 +124,31 @@ export function nastaTillfalle(rytm: Rytmutfall, vagVidare: Raw | '' = ''): Raw 
     INGEN_PERIOD[rytm.lage]}${rytm.lage === 'fore_forsta' ? html` · <span class="code">${rytm.nasta}</span>` : ''}${vagVidare}</p>`;
 }
 
-/** Rytmen som den står i kontraktet och ankaret med sin källa — bara det som är inläst. */
+/**
+ * Det panelerna behöver veta om uppdraget för att avgöra vägen till ankaret:
+ * projektets status och avtalens id i uppdragets ordning. Läget och Bedömning
+ * läser båda avtalen med `listContracts`, i samma ordning.
+ */
+export interface Uppdragsram {
+  status: string;
+  avtal: readonly string[];
+}
+
+/**
+ * Var ankardatumet kan sättas i vyn — den enda regeln, och både Läget (länken
+ * dit) och Bedömning (formuläret och länken ”nedan”) läser den. En väg vidare
+ * visas bara där ett ja kan lyckas, så ingen länk leder till en sida utan
+ * formulär och inget formulär kan bara ge 409:
+ *  - uppdraget är aktivt — ett avslutat uppdrag tar inte emot ankaret (FR-8);
+ *  - avtalet är uppdragets första — Bedömning ritar en enda rytmpanel, för det
+ *    avtal som formulärets period gäller;
+ *  - rytmen är inläst och inget ankare är satt (`datum_saknas`).
+ */
+export function ankaretKanSattas(ram: Uppdragsram, contractId: string, rytm: Rytmutfall): boolean {
+  return ram.status === 'active' && ram.avtal[0] === contractId && rytm.lage === 'datum_saknas';
+}
+
+/** Rytmen som den är inläst ur kontraktet och ankaret med sin källa — bara det som är inläst. */
 function rytmrader(rytm: Avtalsrytm): Raw {
   return html`${rytm.rytm_text === null ? '' : html`<p style="margin:0">Rytm: <b>${rytm.rytm_text}</b>${
     rytm.rapport_mottagarkrets === null ? '' : html` · till ${rytm.rapport_mottagarkrets}`}</p>`}
@@ -114,14 +158,15 @@ function rytmrader(rytm: Avtalsrytm): Raw {
 
 /**
  * Panelen Uppföljning och rytm på Läget, en per avtal. Den enda funktion som
- * ritar den. Ankaret sätts på Bedömning: utan ankare är länken dit vägen
- * vidare, och panelen själv har inget formulär och inget inmatningsfält.
+ * ritar den. Ankaret sätts på Bedömning: där ankaret kan sättas
+ * (`ankaretKanSattas`) är länken dit vägen vidare, och panelen själv har inget
+ * formulär och inget inmatningsfält.
  */
 export function uppfoljningspanel(
   companyId: string, projectId: string, contractId: string, matt: readonly Mattrad[], rytm: Avtalsrytm,
-  idag: string, avtalsnamn?: string, farskhet?: Raw,
+  idag: string, ram: Uppdragsram, avtalsnamn?: string, farskhet?: Raw,
 ): Raw {
-  const vagVidare = rytm.lage === 'datum_saknas'
+  const vagVidare = ankaretKanSattas(ram, contractId, rytm)
     ? html` <a href="/app/c/${companyId}/projects/${projectId}/bedomning">Ankardatumet sätts på Bedömning</a>`
     : '';
   return html`<section class="panel" style="margin-top:14px" aria-labelledby="uppfoljning-${contractId}">
@@ -175,23 +220,23 @@ function ankarformular(
 /**
  * Rytmen på Bedömning: exakt en panel, för det avtal formulärets period gäller.
  * Nästa tillfälle ritas av samma hjälpare som på Läget. Ankarformuläret är
- * vägen vidare för `datum_saknas` och visas bara då — med en rytm inläst och
- * inget ankare satt kan ett ja lyckas, och ingen knapp som bara kan ge 409 visas.
+ * vägen vidare och visas bara där `ankaretKanSattas` säger ja — samma regel som
+ * Lägets länk hit, så att ingen knapp som bara kan ge 409 visas.
  * `idag` är underlagets UTC-dag, samma dag som perioden räknas på.
  */
 export function rytmpanel(
   companyId: string, projectId: string, contractId: string, rytm: Avtalsrytm,
-  kalenderref: readonly Kalenderreferens[], idag: string,
+  kalenderref: readonly Kalenderreferens[], idag: string, ram: Uppdragsram,
 ): Raw {
-  const utanAnkare = rytm.lage === 'datum_saknas';
+  const medFormular = ankaretKanSattas(ram, contractId, rytm);
   return html`<section class="panel" style="margin-top:16px" aria-labelledby="rytm-${contractId}">
     <div class="panel__head"><h2 id="rytm-${contractId}">Bedömningsrytmen</h2></div>
     <div class="panel__body">
-      <div style="padding:12px 16px ${utanAnkare ? '4px' : '14px'}">
+      <div style="padding:12px 16px ${medFormular ? '4px' : '14px'}">
         ${rytmrader(rytm)}
-        ${nastaTillfalle(rytm, utanAnkare ? html` <a href="#ankare-${contractId}">Sätt ankardatumet nedan</a>` : '')}
+        ${nastaTillfalle(rytm, medFormular ? html` <a href="#ankare-${contractId}">Sätt ankardatumet nedan</a>` : '')}
       </div>
-      ${utanAnkare ? ankarformular(companyId, projectId, contractId, kalenderref, idag) : ''}
+      ${medFormular ? ankarformular(companyId, projectId, contractId, kalenderref, idag) : ''}
     </div>
   </section>`;
 }

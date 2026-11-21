@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
+  (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
+  `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar
+  409 `uppdrag_avslutat`, och `0095_matt_och_rytm.sql` (ännu inte i drift) får
+  avslutstriggern `contracts_rytm_vagrar_avslutat` på de sex kolumnerna, så att
+  också importens rytmskrivning fälls. (2) En regel, `ankaretKanSattas` i
+  `http/view/uppdragUppfoljning.ts`, styr både Lägets länk och Bedömningens
+  ankarformulär: aktivt uppdrag, det avtal Bedömning visar, rytm men inget
+  ankare — ingen länk till en sida utan formulär. Med flera avtal säger
+  bedömningsformuläret vilket avtals period förvalet är. (3) Kalenderkällan
+  prövas mot samma `kalenderreferenser` som formuläret listar (trasig och utanför
+  spärrmappen är ingen källa). (4–5) Måttets tak har husets ord ”ett tak som inte
+  är läst” och samma takstatus-chip som kortet Förbrukning mot ram
+  (`takstatusChipYta` och `TAK_INTE_LAST` flyttade till uppdragUppfoljning.ts),
+  och `Tidmotram` bär `tak_status`; tomma fält står som ”inte inläst”. Nya fall
+  M6, A9, A10, V7 och B8 i `server/test/uppdragsytan-matt-rytm.test.ts`; L1, L2,
+  V2 och kontraktspåståendets kontroll skärpta. **Inte kört i den här
+  sessionen:** `npm run typecheck` och `npm test` — sandlådan svarade ”This
+  command requires approval”; kedjans körning är belägget.
 - **2026-11-21 — Story 2.3 (uppdragsytan), måtten och rytmen ur kontraktets del 3 och del 4 (FR-19, FR-14, FR-26, FR-35, NFR-11):**
   Migration `0095_matt_och_rytm.sql`: tabellen `uppdrag_matt` (kategori
   BASELINE, RLS, sammansatt FK, SELECT + INSERT för `app`, avslutstriggern) och

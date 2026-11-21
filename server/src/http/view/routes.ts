@@ -113,7 +113,7 @@ import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../servic
 import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
-import { rytmpanel, uppfoljningspanel } from './uppdragUppfoljning.js';
+import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
 
 export const viewRouter = Router();
 // AD-10:s prejudikat i http/app.ts: stora formulär läses av sin egen parser
@@ -2695,7 +2695,8 @@ const bedomningsChip = (lage: string): Raw => {
  * dagen de två glider isär vet ingen vilket av dem som gäller (KRAV-4).
  */
 interface Bedomningshistorik {
-  projekt: { id: string; number: number; name: string };
+  /** `status` avgör om ankaret kan sättas (Story 2.3): ett avslutat uppdrag tar inte emot det. */
+  projekt: { id: string; number: number; name: string; status: string };
   avtal: { id: string; name: string }[];
   historik: (Bedomningsrad & { avtalsnamn: string })[];
 }
@@ -2723,7 +2724,7 @@ interface Bedomningsunderlag extends Bedomningshistorik {
 async function bedomningshistorik(
   client: PoolClient, companyId: string, projectId: string,
 ): Promise<Bedomningshistorik> {
-  const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
+  const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string; status: string };
   const avtal = (await listContracts(client, companyId, { project_id: projectId }))
     .map((a) => ({ id: a.id as string, name: a.name as string }));
   const historik: (Bedomningsrad & { avtalsnamn: string })[] = [];
@@ -2908,6 +2909,13 @@ function bedomningsformular(companyId: string, u: Bedomningsunderlag): Raw {
       <label class="field" style="margin:0;flex:0 1 168px"><span>till och med</span>
         <input type="date" name="period_slut"${slut ? html` value="${slut}"` : ''} required></label>
     </div>
+    ${/* Story 2.3: perioden räknas ur det förvalda avtalets rytm. Med flera
+          avtal säger formuläret vilket, så att förvalet aldrig läses som
+          perioden för ett annat avtal i listan. */ ''}
+    ${flera && u.period.lage === 'raknad'
+      ? html`<p class="muted" style="margin:2px 16px 0;font-size:12px">Förvalet är perioden för ${u.avtal[0]!.name}.
+          Gäller bedömningen ett annat avtal anger du dess period.</p>`
+      : ''}
     <fieldset style="border:0;margin:0;padding:6px 16px 0">
       <legend style="padding:0;font-size:12.5px;font-weight:550;color:var(--ink-2)">Läge</legend>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
@@ -2973,7 +2981,8 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, 
             <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
         : html`${/* Story 2.3: rytmen först, för den säger vilken period som
                 bedöms — eller varför ingen period räknas och vägen vidare. */ ''}
-          ${u.rytm ? rytmpanel(companyId, u.projekt.id, u.avtal[0]!.id, u.rytm, u.kalenderref, u.idag) : ''}
+          ${u.rytm ? rytmpanel(companyId, u.projekt.id, u.avtal[0]!.id, u.rytm, u.kalenderref, u.idag,
+            { status: u.projekt.status, avtal: u.avtal.map((a) => a.id) }) : ''}
           ${bedomningsrapport(companyId, u, idag)}
           <div class="panel" id="satt-bedomningen" style="margin-top:16px">
             <div class="panel__head"><h2>Sätt bedömningen</h2></div>
@@ -3736,8 +3745,8 @@ async function kontraktsunderlag(
 const tillstandChip = (t: Kontraktsyta['contract']['kontrakt_tillstand']): Raw =>
   t === 'fryst' ? chip('Fryst', 'ok', '✓') : chip('Utkast', 'warn', '◔');
 
-const takstatusChipYta = (status: 'bekraftat' | 'vet_ej'): Raw =>
-  status === 'bekraftat' ? chip('Bekräftat', 'ok', '✓') : chip('Vet ej', 'muted', '○');
+// `takstatusChipYta` och `TAK_INTE_LAST` står i uppdragUppfoljning.ts (Story
+// 2.3): måttets värde på Läget visar taket med samma chip och samma ord.
 
 /** Vägen till handlingen: husets egen fil, och pekarna ut till Drive. */
 function dokumentpanel(companyId: string, y: Kontraktsyta, idag: string): Raw {
@@ -4214,9 +4223,9 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
         )
         : html`<div class="kpi-grid" style="padding:10px 16px 2px">
             ${kpiCell('Timmar', html`${hhmm(f.minuter)} av ${
-              f.tak_minuter === null ? html`<span class="muted">ett tak som inte är läst</span>` : html`${hhmm(f.tak_minuter)}`}`)}
+              f.tak_minuter === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : html`${hhmm(f.tak_minuter)}`}`)}
             ${kpiCell('Kronor', html`${kronor(f.belopp_ore)} av ${
-              f.tak_ore === null ? html`<span class="muted">ett tak som inte är läst</span>` : kronor(f.tak_ore)}`)}
+              f.tak_ore === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : kronor(f.tak_ore)}`)}
           </div>
           ${/* Två tal, aldrig en kvot (1D §4.1 och NFR-11): en procentsats döljer
                 vilket av talen som rörde sig. */ ''}
@@ -4588,6 +4597,7 @@ function lagessida(
           egen färskhetsrad. Måtten och rytmen läses ur avtalet; panelen har
           inget formulär, och ankaret sätts på Bedömning. */ ''}
     ${l.avtal.map((a) => uppfoljningspanel(companyId, p.project_id, a.contract_id, a.matt, a.rytm, idag,
+      { status: p.status, avtal: l.avtal.map((x) => x.contract_id) },
       l.avtal.length > 1 ? a.contract_name : undefined,
       farskhetsrad([direktFarskhet(l.farskhet.matt, idag)])))}`;
 }
@@ -5425,7 +5435,7 @@ function ramblock(b: Rambild, harSvep: boolean): Raw {
       b.forbrukatEtikett === null
         ? html`<span class="muted">Ingen förbrukande tid är registrerad på avtalet ännu.</span>`
         : html`Registrerat <strong>${b.forbrukatEtikett}</strong> av ${
-          b.takEtikett === null ? html`<span class="muted">ett tak som inte är läst</span>` : b.takEtikett}`}</p>
+          b.takEtikett === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : b.takEtikett}`}</p>
     ${kurva ?? ''}
     ${ramdatumtext(b, harSvep)}
   </div>`;

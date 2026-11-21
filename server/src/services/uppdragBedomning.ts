@@ -579,8 +579,11 @@ export interface Kalenderreferens {
 }
 
 /**
- * Avtalets kalenderreferenser för ankarformuläret. En trasig länk eller en
- * referens utanför spärrmappen är ingen källa att peka på.
+ * Avtalets kalenderreferenser som kan vara ankarets källa. En trasig länk eller
+ * en referens utanför spärrmappen är ingen källa att peka på. Den enda
+ * definitionen av urvalet: formuläret erbjuder de här raderna, och
+ * `sattBedomningsankare` tar bara emot en av dem — API:t godtar aldrig en källa
+ * som vyn vägrar erbjuda.
  */
 export async function kalenderreferenser(
   client: PoolClient, companyId: string, contractId: string,
@@ -612,9 +615,12 @@ const ANKARE_REDAN_SATT = 'Ankardatumet är redan satt. Det ändras bara genom e
 
 /**
  * Sätter avtalets ankardatum, en gång. Avtalet låses först, och UPDATE:n
- * kräver ett tomt ankare — två samtidiga anrop kan aldrig båda skriva. Källan
- * är obligatorisk: Davids uppgift eller en kalenderreferens ur avtalets egna,
- * och en kalenderpost med ett annat datum är ingen källa till det här.
+ * kräver ett tomt ankare — två samtidiga anrop kan aldrig båda skriva. Ankaret
+ * är BASELINE, så ett avslutat uppdrag tar inte emot det (FR-8); statusen läses
+ * i samma låsta fråga, och avslutstriggern på kolumnerna (0095) är spärren
+ * bakom. Källan är obligatorisk: Davids uppgift eller en av avtalets
+ * kalenderreferenser ur `kalenderreferenser`, samma urval som formuläret, och
+ * en kalenderpost med ett annat datum är ingen källa till det här.
  * Auditraden bär id, datum och källans typ, ingen fritext (lärdom 10).
  */
 export async function sattBedomningsankare(
@@ -622,12 +628,21 @@ export async function sattBedomningsankare(
 ): Promise<{ contract_id: string; bedomning_ankare: string; bedomning_ankare_kalla: string; nasta: string | null }> {
   const avtal = (await client.query<{
     id: string; bedomning_intervall_dagar: number | null; bedomning_veckodag: number | null; bedomning_ankare: string | null;
+    projektstatus: string;
   }>(
-    `SELECT id, bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare::text AS bedomning_ankare
-       FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    `SELECT c.id, c.bedomning_intervall_dagar, c.bedomning_veckodag, c.bedomning_ankare::text AS bedomning_ankare,
+            p.status AS projektstatus
+       FROM contracts c
+       JOIN projects p ON p.id = c.project_id AND p.company_id = c.company_id
+      WHERE c.id = $1 AND c.company_id = $2
+        FOR UPDATE OF c`,
     [input.contract_id, companyId],
   )).rows[0];
   if (!avtal) throw new NotFoundError('contract');
+  if (avtal.projektstatus === 'closed') {
+    throw new ConflictError('uppdrag_avslutat',
+      'Uppdraget är avslutat. Baselinen tar inte emot skrivningar, och ankardatumet sätts inte.');
+  }
   if (avtal.bedomning_intervall_dagar === null) {
     throw new ConflictError('rytm_saknas',
       'Avtalet har ingen bedömningsrytm inläst. Rytmen läses ur leveranskontraktets del 4 när baselinen godkänns, och först då kan ankardatumet sättas.');
@@ -638,12 +653,13 @@ export async function sattBedomningsankare(
       `Ankardatumet ${input.ankare} faller inte på rytmens veckodag. Välj ett datum på rytmens dag.`);
   }
   if (input.kalla.typ === 'kalender') {
-    const ref = (await client.query<{ sort: string; handelse_datum: string | null }>(
-      `SELECT sort, handelse_datum::text AS handelse_datum FROM uppdrag_referens
-        WHERE id = $1 AND company_id = $2 AND contract_id = $3`,
-      [input.kalla.referens_id, companyId, avtal.id],
-    )).rows[0];
-    if (!ref || ref.sort !== 'kalender') {
+    // Samma urval som formuläret erbjuder, ur samma funktion: en referens som
+    // vyn inte visar (en annan sort, ett annat avtal, en trasig länk eller en
+    // post utanför spärrmappen) tas inte emot här heller. Postgres skriver
+    // uuid med gemener; schemat godtar också versaler.
+    const referensId = input.kalla.referens_id.toLowerCase();
+    const ref = (await kalenderreferenser(client, companyId, avtal.id)).find((r) => r.id === referensId);
+    if (!ref) {
       throw new BadRequestError('okand_kalenderreferens', 'Kalenderreferensen finns inte bland avtalets kalenderposter.');
     }
     if (ref.handelse_datum !== null && ref.handelse_datum !== input.ankare) {

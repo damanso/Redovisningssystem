@@ -6,13 +6,15 @@
 -- parsern läste dem inte, och Bedömning föreslog kalendermånaden — en husrytm
 -- som avtalet aldrig lovat.
 --
--- Filen gör fyra saker, i den här ordningen:
+-- Filen gör fem saker, i den här ordningen:
 --   1. tabellen `uppdrag_matt` (kategori BASELINE) med sammansatt FK, unik nyckel
 --      per avtal och namn och tre namngivna CHECK-villkor;
 --   2. kommentaren, RLS och rättigheterna: `app` har SELECT + INSERT, eftersom
 --      importen bara lägger till rader (ON CONFLICT DO NOTHING);
 --   3. avslutstriggern med 0068:s oförändrade funktion;
---   4. rytmkolumnerna på `contracts`, med namngivna villkor och kommentarer.
+--   4. rytmkolumnerna på `contracts`, med namngivna villkor och kommentarer;
+--   5. avslutstriggern för de sex kolumnerna: ett avslutat uppdrag tar varken
+--      rytmen eller ankaret (FR-8).
 --
 -- Värdena i villkoren är exakt `MATTLASVAGAR` och `MATTLAGEN` i
 -- server/src/lib/leveranskontrakt.ts, och provet härleder schemat ur konstanterna.
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS uppdrag_matt (
   -- Cellen ”Var siffran läses” som den står: en pekare i kontraktets ord, aldrig
   -- en kopia av källan (FR-26).
   kallreferenser text,
-  -- NULL = läsvägen saknas i kontraktet. Den gissas aldrig.
+  -- NULL = cellen gav ingen läsväg ur den slutna listan. Den gissas aldrig.
   lasvag         text,
   -- Larmregeln ordagrant ur kontraktet.
   larmregel      text,
@@ -134,3 +136,33 @@ COMMENT ON COLUMN contracts.bedomning_ankare_kalla IS
   'BASELINE: ankarets källa — Davids uppgift eller en kalenderreferens. Satt om och endast om ankaret är satt.';
 COMMENT ON COLUMN contracts.rapport_mottagarkrets IS
   'BASELINE: vem rapporten går till, ur samma rad i del 4 som rytmen.';
+
+-- ---------------------------------------------------------------------------
+-- 5) Ett avslutat uppdrag tar varken rytmen eller ankaret
+-- ---------------------------------------------------------------------------
+-- De sex kolumnerna ovan är BASELINE, och på ett avslutat uppdrag avvisas
+-- skrivförsök mot baselinen (FR-8). 0068:s avslutstrigger täcker contract_parts
+-- och uppdrag_*-tabellerna men inte `contracts`, och dess funktion läser
+-- `rad.contract_id`, som `contracts` inte har. Därför en egen funktion här, och
+-- triggern lyssnar bara på de sex kolumnerna (`UPDATE OF`): avtalets övriga
+-- kolumner skrivs som förut, också på ett avslutat uppdrag (`avsluta_uppdrag`
+-- fryser själv `avslutat_med_oppna` där). Tjänsterna prövar statusen först och
+-- svarar med sin egen kod; triggern är spärren bakom dem, för varje väg in.
+CREATE OR REPLACE FUNCTION contracts_rytm_vagrar_avslutat() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM projects p
+     WHERE p.id = NEW.project_id AND p.company_id = NEW.company_id AND p.status = 'closed'
+  ) THEN
+    RAISE EXCEPTION 'uppdraget är avslutat — rytmen och ankaret på % går inte att skriva', TG_TABLE_NAME;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS contracts_rytm_vagrar_avslutat ON contracts;
+CREATE TRIGGER contracts_rytm_vagrar_avslutat
+  BEFORE UPDATE OF rytm_text, bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare,
+                   bedomning_ankare_kalla, rapport_mottagarkrets ON contracts
+  FOR EACH ROW EXECUTE FUNCTION contracts_rytm_vagrar_avslutat();

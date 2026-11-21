@@ -1430,12 +1430,19 @@ David sätter det, med sin källa.
 - **Källan är obligatorisk.** `kalla` är antingen
   `{ typ: 'davids_uppgift', datum }` eller `{ typ: 'kalender', referens_id }`;
   schemat är strikt och har ingen standardkälla, så ett datum utan källa ger
-  400. En kalenderreferens måste vara en rad i referenstabellen med sorten
-  kalender för samma avtal och bolag (annars 400
-  `error: 'okand_kalenderreferens'`), och har den ett händelsedatum ska det vara
+  400. En kalenderreferens måste vara en av avtalets kalenderposter i
+  referenstabellen, och en trasig länk eller en post utanför spärrmappen är
+  ingen källa — samma urval som ankarformuläret erbjuder, ur samma funktion, så
+  API:t tar aldrig emot en källa som vyn inte visar (annars 400
+  `error: 'okand_kalenderreferens'`). Har posten ett händelsedatum ska det vara
   ankaret (annars 400 `error: 'kalla_annat_datum'`). Källan lagras som text i
   `contracts.bedomning_ankare_kalla`: ”Davids uppgift <datum>” eller
   ”Kalenderreferens <id>”.
+- **Ett avslutat uppdrag tar inte emot ankaret.** Ankaret är BASELINE, och på
+  ett avslutat uppdrag avvisas skrivförsök mot baselinen (FR-8): 409
+  `error: 'uppdrag_avslutat'`, före varje skrivning. Spärren bakom tjänsten är
+  avslutstriggern på avtalets sex rytm- och ankarkolumner (0095), som fäller
+  varje skrivning av dem på ett avslutat uppdrag, också importens.
 - **En gång per avtal.** Avtalet låses, och skrivningen kräver att
   `contracts.bedomning_ankare` är NULL. Ett satt ankare ger 409
   `error: 'ankare_redan_satt'` med texten ”Ankardatumet är redan satt. Det
@@ -1467,8 +1474,12 @@ formuläret har förvalt: rytmen som den står i kontraktet, ankaret med sin kä
 och nästa bedömningstillfälle med perioden — eller meningen om varför ingen
 period räknas. Perioden är formulärets förval och rapportens period. Utan
 period ritas rapporten inte, och periodfälten är tomma och obligatoriska.
-Saknas bara ankaret står ankarformuläret i panelen (datumet och källan: Davids
-uppgift förvald, och avtalets kalenderreferenser bredvid). Det postar till
+Har uppdraget flera avtal säger formuläret vilket avtals period förvalet är.
+Ankarformuläret står i panelen (datumet och källan: Davids uppgift förvald, och
+avtalets kalenderreferenser bredvid) bara där ett ja kan lyckas: uppdraget är
+aktivt, avtalet är det som panelen gäller, rytmen är inläst och inget ankare är
+satt. Samma regel styr länken dit från Läget, så ingen väg vidare leder till en
+sida utan formulär. Formuläret postar till
 `/app/c/:id/projects/:projectId/bedomning/ankare`, som kör åtgärden med actor
 `human` och leder tillbaka till Bedömning, med `?fel=` vid fel.
 
@@ -2157,9 +2168,10 @@ inloggning visar scopelinjen (NFR-9).
   (`{ namn, hur_ofta, kallreferenser, lasvag, larmregel, larmregel_lage, utfall_lage, ordning }`)
   med `varde`: `null` när utfallet inte härleds, annars ett `Lasvarde` med
   källa och lästid. ”Nedlagd tid mot ram” bär avtalets förbrukning som
-  `{ minuter, tak_minuter }` — två tal, aldrig en kvot — med samma källa, lästid
-  och läge som förbrukningen, så att en källa som inte kunde läsas visas som
-  oläst och aldrig som noll. `rytm` är rytmkolumnerna, ankaret och dess källa
+  `{ minuter, tak_minuter, tak_status }` — två tal, aldrig en kvot, och takets
+  status — med samma källa, lästid och läge som förbrukningen, så att en källa
+  som inte kunde läsas visas som oläst och aldrig som noll, och ett obekräftat
+  tak aldrig visas som en ram. `rytm` är rytmkolumnerna, ankaret och dess källa
   plus `{ lage, period, nasta }` ur rytmregeln för läsvägens UTC-dag. Färskheten
   får `farskhet.matt` och `farskhet.rytm`, båda direktlästa ur redovisningen.
 - **Beslutens referenser (Story 3.1):** `beslut.registrerade[].referenser[]`
@@ -2202,13 +2214,19 @@ rendering (NFR-6).
 Sist på Läget står sedan Story 2.3 panelen *Uppföljning och rytm*, en per
 avtal med sin egen `.farskhet`-rad. Varje mått visas med namnet, läsvägen som
 chip (en saknad läsväg i rött), hur ofta, var siffran läses och larmregeln
-ordagrant. Utfallet är tiden mot ramen med sin färskhet, ett oläst värde i
-`.tomt` med källan och senaste lästid, eller ”utfall HÄRLEDS EJ”. En larmregel
+ordagrant. Utfallet är tiden mot ramen med sin färskhet och takets status med
+samma chip som kortet Förbrukning mot ram (ett tak som inte är läst står med
+husets ord, aldrig som något kontraktet skulle sakna), ett oläst värde i
+`.tomt` med källan och senaste lästid, eller ”utfall HÄRLEDS EJ”. Ett tomt fält
+står som inte inläst. En larmregel
 som inte härleds märks ”larmregel HÄRLEDS EJ”, och ”— kräver Davids svar” läggs
 till när regeln kräver en andel. Rytmen visar texten, mottagarkretsen, ankaret
 med sin källa och nästa bedömningstillfälle, eller i `.tomt` samma mening som
-Bedömning och undantagsvyn visar; utan ankare leder länken till Bedömning, där
-ankaret sätts. Panelen har inget formulär och inget inmatningsfält.
+Bedömning och undantagsvyn visar. Länken till Bedömning, där ankaret sätts,
+står bara där Bedömning har ankarformuläret (samma regel: aktivt uppdrag, det
+avtal Bedömning visar, rytm men inget ankare); ett avslutat uppdrag och ett
+avtal som Bedömning inte visar har meningen men ingen länk. Panelen har inget
+formulär och inget inmatningsfält.
 
 ### Övrigt — anteckningsloggen (överlämning #268)
 
