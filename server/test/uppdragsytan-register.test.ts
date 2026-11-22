@@ -148,9 +148,10 @@ describe('leverabelregistret för det importerade kontraktet', () => {
   it('radidentiteten är (contract_id, kod) — ingen contract_part_id i svaret', () => {
     expect(rader.every((r) => r.contract_id === contractId)).toBe(true);
     for (const rad of rader) {
+      // Story 2.4: `namn` ur avtalsdelens första version (beslut B6).
       expect(Object.keys(rad).sort()).toEqual([
         'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
-        'matt_lasvag', 'status', 'uppfoljningsmatt',
+        'matt_lasvag', 'namn', 'status', 'uppfoljningsmatt',
       ]);
     }
   });

@@ -153,6 +153,53 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter kedjans körning (ett rött prov, lagat som klass):**
+  Kedjans `npm test` gav ett rött fall: D1 i `uppdragsytan-matt-rytm.test.ts`
+  fann `bedomning_ankare` ensamt i ett kodspann i avsnittet Uppdragsytan i
+  MCP_ACTIONS (Hermes prov handgrepp läser ett sådant spann som en åtgärd).
+  Klassen: berättelsens nya namn stod ensamma (manifestets nycklar, lägena,
+  svarets och auditradens fält, felkoden, källans värde), och tre sammansatta
+  spann bröts över en rad, så att en radläsare parar fel. Dokumentet skrivet om:
+  varje nytt namn står kvalificerat (`contracts.…`, `input.manifest`), i ett
+  sammansatt spann (objekt eller union) eller citerat, och inget spann bryts
+  över en rad. D1 i `uppdragsytan-kontraktsluckor.test.ts` fäller nu klassen:
+  en lista härledd ur lib-filens konstanter (manifestnycklarna, ankarets och
+  mottagarpartens lägen, luckfälten, källans värde) plus svarets, auditradens
+  och felets namn och den rena regelns funktioner, prövad över hela avsnittet
+  läst både som rader och som markdown, med negativa kontroller för fyra slags
+  ensamma namn och ett brutet spann. **Inte kört här:** sandlådan svarade ”This
+  command requires approval” på `npm run typecheck`; kedjans körning avgör.
+- **2026-11-22 — Story 2.4 (uppdragsytan), saknade kontraktsfält, mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13, FR-14):**
+  Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets schema
+  (`KontraktsmanifestSchema`, strikt, källa obligatorisk), luckorna över den
+  slutna listan `LUCKFALT` med en textkälla (`LUCKTEXT`), parterna ur en källa
+  per avtal (`kontraktsparter`), mottagarpartens tre lägen (`mottagarpartlage`:
+  angiven, saknas, ej_inlast), ankarets åtta lägen (`manifestankare`) och det
+  tekniska importfelet (`OLASTA`). Parsern läser fältet Mottagarpart som reserv
+  för Godkännare. Migration **0096_kontraktsparter.sql**: `contracts.godkannandeform`
+  och `contracts.godkannare_kalla` (nullbara, BASELINE-kommentarer på de fyra
+  partskolumnerna) och avslutstriggern `contracts_parter_vagrar_avslutat`; inga
+  rader ändras. `importera_leveranskontrakt` och `satt_baseline` tar det valfria
+  `manifest`; importens källa är trippeln (avtal, text, manifest); svaret bär
+  `forslag.luckor`, `forslag.parter` och `forslag.ankare`; en oläsbar text ger
+  400 `kontrakt_olasbart` före varje skrivning (fallet för okänt tillstånd i
+  `uppdragsytan-import.test.ts` omskrivet). Godkännandet skriver parterna ur en
+  källa och manifestets ankare bara i lägena lagras/andras, aldrig transmittalen.
+  `las_leverabelregister` bär `namn` (avtalsdelens första version, NULL när
+  namnet är koden), `las_kontraktsyta` bär `parter` och `luckor` genom nya
+  `lasKontraktsparter`. Leveranserna fick kolumnen Namn, luckorden ur `LUCKTEXT`
+  och en mottagarpartrad; Kontraktet fick panelen ”Parterna och luckorna”.
+  Förslaget i undantagsvyn och på Att göra visar parterna, formen och ankaret som
+  från → till och luckorna i skälen. Sex nya etiketter i `FIELD_LABELS`.
+  Docs: MCP_ACTIONS (import, register, kontraktsyta) och ARKITEKTUR. Prov:
+  `server/test/uppdragsytan-kontraktsluckor.test.ts` (R0–R7, M1–M3, I1–I8,
+  G1–G7, L1–L3, S1, V1–V3, U1–U5, D1); register-provets nyckellista uppdaterad.
+  **Inte kört i den här sessionen:** `npm run typecheck`, `npm test` och vitest
+  på enskilda filer — sandlådan svarade ”This command requires approval” på
+  varje körning; kedjans körning är belägget. Ingen ny rutt (navigationskontraktet
+  orört). I drift: migrationen 0096 lägger två nullbara kolumner och en trigger;
+  NVR-001:s parter och ankare skrivs först när ett `satt_baseline` med manifestet
+  godkänns (Hermes lämnar manifestet i Story 2.5).
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar

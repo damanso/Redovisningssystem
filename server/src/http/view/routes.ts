@@ -42,8 +42,9 @@ import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { hamtaDriveKo, listaReferenser, tillReferensvisning, type Kopost } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
-import { lasKontraktsyta, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
+import { lasKontraktsparter, lasKontraktsyta, type Kontraktsyta, type Lagradeparter, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
+import { KALLA_SAKNAS, LUCKTEXT, MOTTAGARPART_EJ_INLAST, godkannandeformtext, mottagarpartlage } from '../../lib/kontraktsluckor.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -3918,7 +3919,59 @@ function scopelinjepanel(
   </section>`;
 }
 
-/** Ett avtal: läget, vägen dit, det som gäller, tilläggen och scopelinjen. */
+// Story 2.4 (FR-13, FR-27): parternas panel. Meningen står på en rad, så att
+// proven kan läsa den som den renderas.
+const INGA_LUCKOR = 'Inga luckor i de kontraktsburna fälten.';
+
+/** Ett fält i panelens beskrivningslista — samma form som undantagsvyns poster. */
+function parterfalt(etikett: string, innehall: Raw | string): Raw {
+  return html`<dt style="font-size:12.5px;color:var(--ink-3);margin-top:8px">${etikett}</dt><dd style="margin:2px 0 0">${innehall}</dd>`;
+}
+
+/**
+ * Vem som tar emot och godkänner, hur ett godkännande får lämnas, varifrån det
+ * kommer — och vad kontraktet inte anger.
+ *
+ * Panelen ritar bara de lagrade partskolumnerna och luckorna ur läsvägen,
+ * aldrig en rad ur kontraktstexten (ytan är registret, inte en kopia), och
+ * varje text om en lucka, mottagarparten eller formen kommer ur
+ * `lib/kontraktsluckor.ts`. Ett kontrakt som inte är inläst säger bara det —
+ * aldrig att något saknas i kontraktet. Luckorna står med vad, var och vad ett
+ * ja innebär, så att en lucka syns före leveransen och inte vid den.
+ */
+function parterpanel(y: Kontraktsyta): Raw {
+  const p = y.parter;
+  const id = `parter-${y.contract.id}`;
+  const ejInlast = p.lage === 'ej_inlast';
+  return html`<section class="panel" style="margin-top:14px" aria-labelledby="${id}">
+    <div class="panel__head"><h2 id="${id}">Parterna och luckorna</h2>
+      ${ejInlast ? chip('Inte inläst', 'muted', '○')
+        : y.luckor.length === 0 ? chip('Inga luckor', 'ok', '✓')
+        : chip(y.luckor.length === 1 ? '1 lucka' : `${String(y.luckor.length)} luckor`, 'warn', '!')}</div>
+    <div class="panel__body" style="overflow-wrap:anywhere">
+      ${ejInlast
+        ? html`<p class="muted" style="margin:8px 16px 12px">${MOTTAGARPART_EJ_INLAST}</p>`
+        : html`<dl style="margin:0;padding:10px 16px 4px">
+            ${parterfalt('Mottagarpart och godkännare', p.godkannare ?? saknatFalt(LUCKTEXT.mottagarpart.vad))}
+            ${parterfalt('Eskalering', p.godkannare_eskalering ?? saknatFalt('—'))}
+            ${parterfalt('Godkännandeform', p.godkannandeform ?? saknatFalt(godkannandeformtext(null)))}
+            ${parterfalt('Källa', p.kalla ?? saknatFalt(KALLA_SAKNAS))}
+          </dl>
+          ${y.luckor.length === 0
+            ? html`<p class="muted" style="margin:10px 16px 12px">${INGA_LUCKOR}</p>`
+            : html`<ul style="margin:12px 16px 12px;padding-left:20px">
+                ${y.luckor.map((l) => html`<li style="margin-bottom:8px">
+                  <strong>${l.vad}</strong> <span class="muted">— ${l.var}.</span>
+                  <div class="muted" style="font-size:12.5px;margin-top:2px">${l.ja_innebar}</div></li>`)}
+              </ul>`}
+          <p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Parterna läses ur kontraktets fält eller
+            manifestet för projektet när baselinen godkänns och skrivs aldrig här. En lucka står kvar tills en ny
+            kontraktsversion fyller den, och den blir inget eget ärende.</p>`}
+    </div>
+  </section>`;
+}
+
+/** Ett avtal: läget, vägen dit, det som gäller, tilläggen, parterna och scopelinjen. */
 function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean, idag: string): Raw {
   return html`${flera
       ? html`<h2 style="margin:22px 0 0">${y.contract.name}
@@ -3927,6 +3980,7 @@ function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean, id
     ${dokumentpanel(companyId, y, idag)}
     ${gallandepanel(y)}
     ${tillaggspanel(y)}
+    ${parterpanel(y)}
     ${scopelinjepanel(companyId, y.contract.project_id, y.contract.id, y.scopelinje, y.scopelinje_lage)}`;
 }
 
@@ -4990,6 +5044,8 @@ interface Leveransavtal {
   contractId: string;
   namn: string;
   rader: Leverabelrad[];
+  /** Story 2.4: avtalets lagrade parter, ur samma läsväg som kontraktsytan. */
+  parter: Lagradeparter;
 }
 
 interface Leveransunderlag {
@@ -5014,6 +5070,7 @@ async function leveransunderlag(
       contractId,
       namn: String(a.name ?? ''),
       rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
+      parter: await lasKontraktsparter(client, companyId, contractId),
     });
   }
   return { projekt, avtal };
@@ -5061,11 +5118,15 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  * det står för att se rätt ut.
  */
 function leverabelkort(bas: string, contractId: string, r: Leverabelrad): Raw {
+  // Story 2.4: namnet på en egen rad under koden — aldrig i `.code`, som är
+  // kodens bärare — och en lucka med samma ord som registret och kontraktsytan
+  // (`LUCKTEXT`). Kortet nämner inte acceptanskriteriet: tabellen bär det.
   return html`<li class="leverabelkort">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <strong class="code">${r.kod}</strong>${statusChip(r.status)}</div>
+    <div style="font-size:13px;margin-top:4px;line-height:1.35">${r.namn ?? saknatFalt(LUCKTEXT.namn.vad)}</div>
     <div class="muted" style="font-size:12.5px;margin-top:3px">${
-      r.klausul === null ? 'Ingen klausul angavs' : html`Klausul ${r.klausul}`}</div>
+      r.klausul === null ? LUCKTEXT.klausul.vad : html`Klausul ${r.klausul}`}</div>
     <div class="muted" style="font-size:12.5px;margin-top:2px">${dagarILaget(r.dagar_i_laget)}</div>
     ${leverabelhandgrepp(bas, contractId, r)}
   </li>`;
@@ -5174,16 +5235,19 @@ function bradlage(bas: string, a: Leveransavtal): Raw {
  */
 function tabellage(a: Leveransavtal): Raw {
   return html`<div class="table-wrap" style="margin-top:14px"><table>
-      <thead><tr><th>Kod</th><th>Klausul</th><th>Acceptanskriterium</th><th>Uppföljningsmått</th>
+      <thead><tr><th>Kod</th><th>Namn</th><th>Klausul</th><th>Acceptanskriterium</th><th>Uppföljningsmått</th>
         <th>Måttets läsväg</th><th>Läge</th><th class="num">Dagar i läget</th></tr></thead>
       ${/* NULL står som saknat i sin egen ruta — aldrig som ett tomt fält och
             aldrig ifyllt med en gissning. L6 i NVR-001 saknar med flit sin
-            läsväg, och det ska SYNAS att avtalet inte angav någon. */ ''}
+            läsväg, och det ska SYNAS att avtalet inte angav någon. De fyra
+            kontraktsburna fälten säger luckan med `LUCKTEXT` (Story 2.4), samma
+            ord som kontraktsytan och förslaget; läsvägen är inget av dem. */ ''}
       <tbody>${a.rader.map((r) => html`<tr>
         <td class="code">${r.kod}</td>
-        <td class="code">${r.klausul ?? saknatFalt('Ingen klausul')}</td>
-        <td>${r.acceptanskriterium ?? saknatFalt('Inget kriterium angavs')}</td>
-        <td>${r.uppfoljningsmatt ?? saknatFalt('Inget mått angavs')}</td>
+        <td>${r.namn ?? saknatFalt(LUCKTEXT.namn.vad)}</td>
+        <td class="code">${r.klausul ?? saknatFalt(LUCKTEXT.klausul.vad)}</td>
+        <td>${r.acceptanskriterium ?? saknatFalt(LUCKTEXT.acceptanskriterium.vad)}</td>
+        <td>${r.uppfoljningsmatt ?? saknatFalt(LUCKTEXT.uppfoljningsmatt.vad)}</td>
         <td>${r.matt_lasvag ?? saknatFalt('Ingen läsväg angavs')}</td>
         <td>${statusChip(r.status)}</td>
         <td class="num">${String(r.dagar_i_laget)}</td></tr>`)}
@@ -5202,6 +5266,23 @@ function lagesvaxel(bas: string, tabell: boolean): Raw {
   return html`${chip(tabell ? 'Tabellen' : 'Brädan', 'info', tabell ? '▤' : '▦')}
     <a class="btn btn--ghost btn--sm" href="${bas}/leveranserna${tabell ? '' : '?lage=tabell'}">${
       tabell ? 'Visa brädan' : 'Visa tabellen'}</a>`;
+}
+
+/**
+ * Avtalets mottagarpart över brädan och tabellen (Story 2.4, FR-13, FR-27): vem
+ * som tar emot och godkänner leveranserna — eller att kontraktet inte anger det,
+ * redan före första överlämningen. Läget och texten kommer ur
+ * `mottagarpartlage`, och raden nämner ingen leverabelkod. Bara ett avtal med
+ * register får raden, och då är kontraktet inläst. En angiven part är
+ * sammanhang och står dämpad; en lucka bär färg, form och ord och pekar dit den
+ * förklaras.
+ */
+function mottagarpartrad(bas: string, contractId: string, p: Lagradeparter): Raw {
+  const { lage, text } = mottagarpartlage(p, p.lage !== 'ej_inlast');
+  if (lage !== 'saknas') return html`<p class="muted" style="margin:12px 0 0;font-size:13px">${text}</p>`;
+  return html`<p style="margin:12px 0 0;font-size:13px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+    ${chip('Lucka', 'warn', '!')}<span>${text}</span>
+    <a href="${bas}/kontraktet#parter-${contractId}">Parterna och luckorna på Kontraktet</a></p>`;
 }
 
 /** Ett avtal utan register: varför det är tomt, och var det fylls (KRAV-8). */
@@ -5241,7 +5322,8 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean)
           utan en människa som gjorde eller fick något. Steget Pågår → Levererad bekräftas i stället bland
           statusförslagen på <a href="${bas}">uppdragets förstasida</a>.</p>
         ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
-          ${a.rader.length === 0 ? tomtRegister(bas) : tabell ? tabellage(a) : bradlage(bas, a)}`)}`}`;
+          ${a.rader.length === 0 ? tomtRegister(bas)
+            : html`${mottagarpartrad(bas, a.contractId, a.parter)}${tabell ? tabellage(a) : bradlage(bas, a)}`}`)}`}`;
 }
 
 // ---------------------------------------------------------------------------

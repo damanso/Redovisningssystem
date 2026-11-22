@@ -18,6 +18,12 @@
 //     bärs därför inte av kolumnen utan av FR-19-provet, som läser just den här
 //     funktionens svar. Tjänsten döljer alltså aldrig en lucka och fyller den
 //     aldrig med en gissning — den redovisar den som NULL.
+//   * **`namn` läses ur avtalsdelens FÖRSTA version** (Story 2.4, beslut B6) —
+//     importens, som skriver koden som namn bara när kontraktet saknade namnet.
+//     Ett senare baselinebeslut ger delen ett namn i en ny version, men det är
+//     Davids beslut och inte kontraktets: registret visar fortsatt att namnet
+//     saknas i kontraktet. NULL när namnet är koden. Ingen kolumn på
+//     `uppdrag_leverabel`, så ingenting behöver efterfyllas.
 //   * **`dagar_i_laget` HÄRLEDS, den lagras aldrig** (FR-37). Åldern räknas i
 //     SELECT:en ur den append-only historiken (`uppdrag_leverabel_handelse`,
 //     0068:132 — "status utan historik är en gissning"). En `status_sedan`-kolumn
@@ -34,6 +40,8 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
+  /** Leverabelns namn som kontraktet angav det. NULL = namnet saknas i kontraktet. */
+  namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
   uppfoljningsmatt: string | null;
@@ -79,7 +87,11 @@ export async function lasLeverabelregister(
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
   const res = await client.query<Leverabelrad>(
-    `SELECT l.contract_id, l.kod, l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
+    `SELECT l.contract_id, l.kod,
+            NULLIF((SELECT p.name FROM contract_parts p
+                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h
