@@ -188,12 +188,12 @@ describe('dämpningen går att ångra', () => {
 describe('sökträffen på en person öppnar hennes relation', () => {
   it('länken går till organisationen, inte till en ofiltrerad lista', async () => {
     const org = await nyOrg('Sökbolaget AB');
-    await act('upsert_crm_person', { name: 'Petra Sök', email: 'petra@sok.example', organization_id: org });
+    const petra = await act('upsert_crm_person', { name: 'Petra Sök', email: 'petra@sok.example', organization_id: org });
+    expect(petra.status, JSON.stringify(petra.body)).toBe(200);
 
     const res = await ua.get(`/app/c/${companyId}/sok?q=Petra`);
     expect(res.status).toBe(200);
-    expect(res.text).toContain(`href="/app/c/${companyId}/relations/${org}"`);
-    expect(res.text).not.toContain('?person=');
+    expect(res.text).toContain(`href="/app/c/${companyId}/relations/${org}?person=${petra.body.result.id}"`);
   });
 });
 

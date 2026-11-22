@@ -84,16 +84,32 @@ export function isThreadTime(v: string): boolean {
  * avrundas till millisekunder, eftersom poolen ger en `Date` med millisekunder;
  * värdet som sorteras, jämförs och returneras är då ett och samma, och en
  * markör ur en returnerad rad pekar exakt på den raden.
+ *
+ * Med `person_id` är det personläget (A-7, story 4.3): samma fråga, ordning och
+ * markör, men bara kontaktpunkter och löften där personen är part. Pengar ingår
+ * inte, eftersom en faktura gäller relationen och inte en person. Personen måste
+ * höra till organisationen, annars 404 — samma mängd som kortet Personer visar.
  */
 export async function relationThread(
   client: PoolClient, companyId: string, organizationId: string,
-  opts: { filter?: ThreadFilter; limit?: number; before?: { at: string; kind: ThreadKind; ref_id: string } } = {},
+  opts: {
+    filter?: ThreadFilter; limit?: number; before?: { at: string; kind: ThreadKind; ref_id: string }; person_id?: string;
+  } = {},
 ): Promise<ThreadEvent[]> {
   const org = await client.query<{ id: string; customer_id: string | null }>(
     'SELECT id, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2',
     [organizationId, companyId],
   );
   if (!org.rows[0]) throw new NotFoundError('organization');
+  if (opts.person_id !== undefined) {
+    // Samma tillhörighet som assertPersonInOrganization, skriven här så att
+    // trådtjänsten inte beror på relationstjänsten.
+    const person = await client.query(
+      'SELECT 1 FROM crm.people WHERE company_id = $1 AND id = $2 AND organization_id = $3',
+      [companyId, opts.person_id, organizationId],
+    );
+    if (!person.rows[0]) throw new NotFoundError('person');
+  }
 
   const kinds = THREAD_FILTERS[opts.filter ?? 'allt'];
   const limit = opts.limit ?? THREAD_PAGE_SIZE;
@@ -113,6 +129,8 @@ export async function relationThread(
        LEFT JOIN crm.people p ON p.id = i.person_id AND p.company_id = i.company_id
        WHERE i.company_id = $1
          AND (i.organization_id = $2::uuid OR i.person_id IN (SELECT id FROM folk))
+         -- Personläget: bara där personen är part.
+         AND ($9::uuid IS NULL OR i.person_id = $9::uuid)
 
        UNION ALL
        -- Löftet när det gavs.
@@ -122,6 +140,7 @@ export async function relationThread(
        LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
        WHERE c.company_id = $1
          AND (c.organization_id = $2::uuid OR c.person_id IN (SELECT id FROM folk))
+         AND ($9::uuid IS NULL OR c.person_id = $9::uuid)
 
        UNION ALL
        -- ...och när det stängdes. Två händelser, för att det ÄR två händelser.
@@ -131,9 +150,11 @@ export async function relationThread(
        LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
        WHERE c.company_id = $1 AND c.completed_at IS NOT NULL
          AND (c.organization_id = $2::uuid OR c.person_id IN (SELECT id FROM folk))
+         AND ($9::uuid IS NULL OR c.person_id = $9::uuid)
 
        UNION ALL
        -- Bokförda fakturor. Utkast hör inte hemma i en historik — de har inte hänt.
+       -- Pengar hör till relationen, aldrig till en person: personläget har inga.
        SELECT inv.invoice_date::timestamptz, 'invoice', inv.status,
               'Faktura ' || lpad(inv.effective_invoice_number::text, 7, '0'),
               NULL, NULL, NULL, inv.total_ore, inv.id::text, inv.id::text AS invoice_id
@@ -141,6 +162,7 @@ export async function relationThread(
        WHERE inv.company_id = $1 AND inv.voucher_id IS NOT NULL
          AND inv.status <> 'cancelled'
          AND inv.customer_id = $3::uuid
+         AND $9::uuid IS NULL
 
        UNION ALL
        -- Betalningar: bokförda betalningsverifikat mot bolagets fakturor.
@@ -153,6 +175,7 @@ export async function relationThread(
        JOIN invoices inv ON inv.id::text = v.source_id AND inv.company_id = v.company_id
        WHERE v.company_id = $1 AND v.source_type = 'payment'
          AND inv.customer_id = $3::uuid
+         AND $9::uuid IS NULL
      ),
      -- Samma tio kolumner, med tidpunkten avrundad till det poolen kan bära.
      trad AS (
@@ -167,7 +190,7 @@ export async function relationThread(
      LIMIT $5`,
     [
       companyId, organizationId, org.rows[0].customer_id, kinds ? [...kinds] : null, limit,
-      before?.at ?? null, before?.kind ?? null, before?.ref_id ?? null,
+      before?.at ?? null, before?.kind ?? null, before?.ref_id ?? null, opts.person_id ?? null,
     ],
   );
 

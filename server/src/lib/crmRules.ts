@@ -123,10 +123,10 @@ export function correctedCustomerFields(body: unknown):
 }
 
 /** En sluten mängd hindrar okända handgrepp från att välja en skrivväg. */
-const EDIT_TARGETS = Object.freeze({ kundkort: 'kundkort' } as const);
+const EDIT_TARGETS = Object.freeze({ kundkort: 'kundkort', person: 'person' } as const);
 
 /** Utan grenval bevaras organisations- och händelseformulärens befintliga väg. */
-export function parseEditTarget(value: unknown): 'organisation' | 'kundkort' | null {
+export function parseEditTarget(value: unknown): 'organisation' | 'kundkort' | 'person' | null {
   if (value === undefined) return 'organisation';
   return typeof value === 'string' && Object.hasOwn(EDIT_TARGETS, value)
     ? EDIT_TARGETS[value as keyof typeof EDIT_TARGETS] : null;
@@ -257,4 +257,50 @@ export function formatThreadCursor(row: { at: unknown; kind: string; ref_id: str
   if (time === null || Number.isNaN(time.getTime()) || row.ref_id === null) return null;
   const cursor = `${time.toISOString()}|${row.kind}|${row.ref_id.toLowerCase()}`;
   return parseThreadCursor(cursor) ? cursor : null;
+}
+
+/** Fast text: säger vad som är fel och vad David gör, utan att återge adressen (story 4.3). */
+export const PERSON_PARAM_ERROR = 'Adressens person går inte att läsa. Öppna relationen igen och välj personen under Personer.';
+
+/**
+ * `?person=<uuid>` tolkad som tillåtelselista som aldrig kastar (A-7): en tom,
+ * upprepad eller handskriven parameter blir null, och vyn svarar då med en
+ * 400-sida i stället för att låta Postgres fälla id:t som 500. Gemener, eftersom
+ * vyn jämför id:t med personernas `id` som text.
+ */
+export function parsePersonParam(value: unknown): string | null {
+  return typeof value === 'string' && UuidSchema.safeParse(value).success ? value.toLowerCase() : null;
+}
+
+/** Personhuvudet rättar namn, roll och telefon; e-posten är personens nyckel och rättas inte här. */
+const PERSON_CORRECTION_FIELDS = Object.freeze(['name', 'role_title', 'phone'] as const);
+
+/** Samma regel som organisationens rättelse: bara ändringar mot det visade blir människobeslut, och tomt är oförändrat. */
+export function correctedPersonFields(body: unknown): Record<string, unknown> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return {};
+  const values = body as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const field of PERSON_CORRECTION_FIELDS) {
+    if (!Object.hasOwn(values, field)) continue;
+    const value = values[field];
+    if (typeof value !== 'string') {
+      patch[field] = value;
+      continue;
+    }
+    const previous = Object.hasOwn(values, `fore_${field}`) ? values[`fore_${field}`] : undefined;
+    const before = typeof previous === 'string' ? previous.trim() : '';
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== before) patch[field] = trimmed;
+  }
+  return patch;
+}
+
+/**
+ * Hela dygn från `day` till `today`, båda kalenderdatum räknade som UTC-midnatt,
+ * så att personhuvudets «N d sedan» inte beror på serverns zon. Ett datum som
+ * inte finns ger null i stället för NaN på sidan.
+ */
+export function daysSince(day: string, today: string): number | null {
+  if (!IsoDateSchema.safeParse(day).success || !IsoDateSchema.safeParse(today).success) return null;
+  return Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`)) / 86_400_000);
 }

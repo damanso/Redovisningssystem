@@ -2829,9 +2829,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'upsert_crm_person',
     title: 'Lägg upp/uppdatera person',
     sensitivity: 'write',
+    // Ett objekt med superRefine, inte z.union: MCP kräver type:"object" överst.
     inputSchema: z
       .object({
-        name: safeText(150),
+        // Anges när personen redan är känd (rättning i vyn, story 4.3): uppslaget
+        // görs då på id och aldrig på namn eller e-post, och namnet får utelämnas.
+        person_id: UuidSchema.optional(),
+        name: safeText(150).optional(),
         email: EmailSchema.optional(),
         phone: safeText(40).optional(),
         role_title: safeText(150).optional(),
@@ -2842,7 +2846,13 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // Utelämnad: ny person blir 'foretag', befintlig behåller sin.
         sfar: SfarSchema.optional(),
       })
-      .strict(),
+      .strict()
+      .superRefine((v, ctx) => {
+        // Utan id är namnet nyckeln.
+        if (v.person_id === undefined && v.name === undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'name krävs utan person_id', path: ['name'] });
+        }
+      }),
     handler: (ctx, i) => upsertPerson(ctx.client, ctx.companyId, ctx.userId, i as never,
       { source: sourceForActor(ctx.actor) }),
   }),
@@ -3186,15 +3196,19 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         kind: z.enum(['interaction', 'commitment', 'commitment_closed', 'invoice', 'payment']),
         ref_id: UuidSchema,
       }).strict().optional(),
+      // Personläget (A-7, story 4.3): bara personens kontaktpunkter och löften,
+      // inga pengar. Personen måste höra till organisationen, annars 404.
+      person_id: UuidSchema.optional(),
     }).strict(),
     handler: (ctx, i: {
       organization_id: string; filter?: string; limit?: number;
-      before?: { at: string; kind: ThreadKind; ref_id: string };
+      before?: { at: string; kind: ThreadKind; ref_id: string }; person_id?: string;
     }) =>
       relationThread(ctx.client, ctx.companyId, i.organization_id, {
         filter: isThreadFilter(i.filter) ? i.filter : 'allt', limit: i.limit,
         // Postgres skriver uuid:er med gemener, och jämförelsen är en textjämförelse.
         before: i.before ? { ...i.before, ref_id: i.before.ref_id.toLowerCase() } : undefined,
+        person_id: i.person_id,
       }),
   }),
   def({

@@ -179,7 +179,7 @@ describe('4. skälet är en öppningsreplik, inte en räknare', () => {
     expect(res.text, 'den gamla, innehållslösa formuleringen ska vara borta')
       .not.toContain('vi har lovat något som passerat sitt datum');
     // Kontaktpersonen ska inte klistras ihop med skälet.
-    expect(res.text).toContain('— kontakt: Eva Larsson');
+    expect(res.text).toMatch(/— kontakt: <a href="\/app\/c\/[0-9a-f-]+\/relations\/[0-9a-f-]+\?person=[0-9a-f-]+" class="entity">Eva Larsson<\/a>/);
   });
 });
 
