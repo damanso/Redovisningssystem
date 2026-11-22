@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 4.1 (crm), omtag efter kodgranskningen (tre fynd):**
+  (1) `get_crm_thread`:s `before.at` prövas nu med `isThreadTime` i
+  `server/src/services/crmThread.ts` (exakt `toISOString`-form, år 0001–9999,
+  datumet finns) i stället för bara `IsoDateTimeSchema`, så zonen +16:00 (som
+  Postgres avvisar med 22009 och som gav 500) ger 400 `validation_error`; vyns
+  `parseThreadCursor` har samma regel, och crm-rules TC6 kräver att de två svarar
+  lika över en lista med 20 tidpunkter. (2) `tradensSidor` i
+  `server/src/http/view/routes.ts` läser början ur `harAldre`, inte ur att
+  markören saknas: en äldre rad vars tidpunkt markören inte bär (år före 1 eller
+  efter 9999) ger en fast text om att läsvägen inte når längre, i stället för en
+  länk som försvinner tyst eller ett falskt «första registrerade händelse».
+  (3) Filtret `pengar` sidas nu över samma ögonblick. Prov: TC6–TC7 i
+  `server/test/crm-rules.test.ts`; TP2 (elva tidpunkter), TP4b (två fakturor,
+  en betalning, kontakter och löften i samma ögonblick, alla fyra filtren vid
+  varje sidstorlek, med negativ kontroll) och TP8b (relationer med år före 1 och
+  efter 9999) i `server/test/crm-thread-paging.test.ts`. Avsnittet i
+  `docs/MCP_ACTIONS.md` säger formen för `before.at`. Ingen migration, rutt,
+  åtgärd, tabell, CSS-klass, importsats eller beroende. **Inte kört i den här
+  sessionen:** `npm run typecheck` och `npm test` — sandlådan svarade ”This
+  command requires approval”; kedjans körning är belägget. **Rött utanför
+  repot:** som i raden nedan; inget av de icke-gröna Hermes-proven gäller den
+  här berättelsen.
 - **2026-11-22 — Story 4.1 (crm), trådens läsväg till det äldsta (FR-17):**
   Markören är en ren funktion: `parseThreadCursor` (tillåtelselista som aldrig
   kastar: tidpunkt i exakt `toISOString`-form som går fram och tillbaka, år från

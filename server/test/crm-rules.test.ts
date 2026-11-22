@@ -1,7 +1,7 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
 import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_KINDS } from '../src/lib/crmRules.js';
-import { THREAD_FILTERS } from '../src/services/crmThread.js';
+import { isThreadTime, THREAD_FILTERS } from '../src/services/crmThread.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -481,6 +481,39 @@ describe('trådens markör (story 4.1)', () => {
     for (const namn of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
       expect(namn in {}, namn).toBe(true);
       expect(parseThreadCursor(markor(TID, namn, UUID)), namn).toBeNull();
+    }
+  });
+
+  it('TC6 vyns markör och åtgärdens before godtar exakt samma tidpunkter, och bara sådana som Postgres tolkar', () => {
+    // Två vägar in, en regel. Listan bär zonerna som Date.parse godtar men Postgres
+    // avvisar (22009), datum som inte finns och år som markörens form inte bär.
+    const giltiga = [TID, '0001-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z', '2024-02-29T00:00:00.000Z'];
+    const ogiltiga = [
+      '2026-01-02T09:00:00.000+16:00', '2026-01-02T09:00:00.000-16:00', '2026-01-02T09:00:00.000+23:59',
+      '2026-01-02T09:00:00+1600', '2026-01-02T09:00:00.000+01:00', '2026-01-02T09:00:00Z',
+      '2026-01-02T09:00:00.000000Z', '0000-01-01T00:00:00.000Z', '-000001-01-01T00:00:00.000Z',
+      '+012026-01-02T09:00:00.000Z', '2026-02-30T09:00:00.000Z', '2025-02-29T09:00:00.000Z',
+      '2026-13-01T09:00:00.000Z', '2026-01-02T24:00:00.000Z', '2026-01-02T09:00:60.000Z', '',
+    ];
+    for (const tid of giltiga) {
+      expect(isThreadTime(tid), tid).toBe(true);
+      expect(parseThreadCursor(markor(tid, 'interaction', UUID)), tid).toEqual({ at: tid, kind: 'interaction', ref_id: UUID });
+    }
+    for (const tid of ogiltiga) {
+      expect(() => isThreadTime(tid), tid).not.toThrow();
+      expect(isThreadTime(tid), tid).toBe(false);
+      expect(parseThreadCursor(markor(tid, 'interaction', UUID)), tid).toBeNull();
+    }
+  });
+
+  it('TC7 en giltig Date utanför åren 1–9999 går inte att skriva som markör', () => {
+    // Postgres lagrar år före vår tideräkning och efter 9999; markörens form bär dem
+    // inte, så vyn måste klara en äldre rad utan markör (story 4.1, granskningen).
+    for (const tid of ['0000-06-01T12:00:00.000Z', '-000001-06-01T12:00:00.000Z', '+012026-01-01T09:00:00.000Z']) {
+      const at = new Date(tid);
+      expect(Number.isNaN(at.getTime()), tid).toBe(false);
+      expect(() => formatThreadCursor({ at, kind: 'interaction', ref_id: UUID }), tid).not.toThrow();
+      expect(formatThreadCursor({ at, kind: 'interaction', ref_id: UUID }), tid).toBeNull();
     }
   });
 });

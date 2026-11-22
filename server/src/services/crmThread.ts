@@ -55,6 +55,22 @@ export function isThreadFilter(v: unknown): v is ThreadFilter {
   return typeof v === 'string' && Object.hasOwn(THREAD_FILTERS, v);
 }
 
+/** Exakt den form trådens `at` har i svaret (`toISOString()`), med fyrsiffrigt år. */
+const THREAD_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * `before.at` godtas bara i trådens egen form, med ett år 0001–9999 och ett datum
+ * som finns: den formen tolkar Postgres alltid. En zon som +16:00 släpper
+ * `Date.parse` igenom men Postgres avvisar med 22009, som blir 500. Vyns markör
+ * prövas med samma regel i crmRules, som inte får bero på tjänsten; crm-rules
+ * TC6 kräver att de två svarar lika (story 4.1, granskningen).
+ */
+export function isThreadTime(v: string): boolean {
+  if (!THREAD_TIME_PATTERN.test(v) || v.startsWith('0000')) return false;
+  const time = new Date(v);
+  return !Number.isNaN(time.getTime()) && time.toISOString() === v;
+}
+
 /**
  * Hela relationens historia i en ordning.
  *

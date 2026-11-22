@@ -6801,11 +6801,16 @@ function threadChip(e: ThreadEvent): Raw {
 /** Trådens läsväg under listan (FR-17, UX K6, story 4.1): länkarna i en nav som
  *  bara finns när den har en länk, så sidan aldrig får ett tomt landmärke;
  *  intervallet som text; och på en sida nådd bakåt utan något äldre, att det
- *  här är början. Varje href byggs som en hel sträng och interpoleras som ett
- *  värde, så att mallen skriver `&` som `&amp;`. */
+ *  här är början. Början och spärren läses ur `harAldre`, aldrig ur att
+ *  markören saknas: en äldre rad vars tidpunkt markören inte bär (år före 1
+ *  eller efter 9999) ger ingen länk, och då säger sidan det i stället för att
+ *  tiga eller påstå att det är början. Varje href byggs som en hel sträng och
+ *  interpoleras som ett värde, så att mallen skriver `&` som `&amp;`. */
 function tradensSidor(
-  back: string, filter: ThreadFilter, harFore: boolean, nastaMarkor: string | null, rader: readonly ThreadEvent[],
+  back: string, filter: ThreadFilter,
+  lage: { harFore: boolean; harAldre: boolean; nastaMarkor: string | null }, rader: readonly ThreadEvent[],
 ): Raw {
+  const { harFore, harAldre, nastaMarkor } = lage;
   const nyasteHref = `${back}?visa=${filter}`;
   const aldreHref = nastaMarkor === null ? null : `${back}?visa=${filter}&fore=${encodeURIComponent(nastaMarkor)}`;
   const nyast = rader[0];
@@ -6822,7 +6827,11 @@ function tradensSidor(
       ? html`<p class="muted">Visar ${rader.length} ${rader.length === 1 ? 'händelse' : 'händelser'}, från ${dayOf(aldst.at)} till ${dayOf(nyast.at)}.</p>`
       : ''
   }${
-    harFore && aldreHref === null && rader.length > 0
+    harAldre
+      ? aldreHref === null
+        ? html`<p class="muted">Det finns äldre händelser, men läsvägen når dem inte: den äldsta visade händelsen har en tidpunkt utanför åren 1–9999. Rätta tidpunkten för att bläddra vidare.</p>`
+        : ''
+      : harFore && rader.length > 0
       ? html`<p class="muted">Det här är relationens första registrerade händelse.</p>`
       : ''
   }</div>`;
@@ -7881,7 +7890,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               // En gammal eller handskriven läsposition: relationen har
               // händelser, bara inga äldre — inte samma läge som en tom tråd.
               ? html`<div class="empty"><div class="big">Inga äldre händelser före den här positionen.</div></div>${
-                  tradensSidor(back, filter, harFore, nastaMarkor, thread)}`
+                  tradensSidor(back, filter, { harFore, harAldre, nastaMarkor }, thread)}`
               : thread.length === 0
               ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
                   Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
@@ -7918,7 +7927,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     ${rattaHandelse(e.kind, falt, {
                       action: `${back}/edit`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id ?? '' },
                     }, `${back}?visa=${filter}`, new Date().toISOString().slice(0, 10))}
-                  </div></li>`; })}</ol>${tradensSidor(back, filter, harFore, nastaMarkor, thread)}`
+                  </div></li>`; })}</ol>${tradensSidor(back, filter, { harFore, harAldre, nastaMarkor }, thread)}`
           }
         </div>
       </div>`;

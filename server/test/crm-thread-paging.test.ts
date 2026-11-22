@@ -9,7 +9,7 @@
 import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { api, app, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 type Rad = Record<string, unknown>;
@@ -30,6 +30,11 @@ const act = (name: string, body: Record<string, unknown>) =>
 const nn = (n: number): string => String(n).padStart(2, '0');
 /** Den 1 januari 2026 klockan nio UTC plus `plus` dagar. */
 const dag = (plus: number): string => new Date(Date.UTC(2026, 0, 1 + plus, 9)).toISOString();
+/** En inkommande kontaktpunkt i intagets form. */
+const kontakt = (org: string, occurred_at: string, summary: string, source_ref: string) => ({
+  kind: 'interaction', organization: { name: org }, occurred_at, channel: 'email', direction: 'inbound',
+  summary, source_system: 'gmail', source_ref,
+});
 
 /** Tråden genom åtgärden; svaret ska vara en lista. */
 async function trad(org: string, extra: Record<string, unknown> = {}): Promise<Rad[]> {
@@ -57,6 +62,19 @@ function exaktEnGang(alla: Rad[], sidor: Rad[][]): boolean {
     && alla.every((rad) => sammanslagen.filter((s) => s === id(rad)).length === 1);
 }
 
+/** Varje sida i ett filter, med `before` ur föregående sidas sista rad, tills en sida inte är full. */
+async function allaSidor(org: string, filter: string, limit: number): Promise<Rad[][]> {
+  const sidor: Rad[][] = [];
+  let before: Record<string, unknown> | undefined;
+  for (let varv = 0; varv < 50; varv++) {
+    const s = await trad(org, { filter, limit, ...(before ? { before } : {}) });
+    sidor.push(s);
+    if (s.length < limit) return sidor;
+    before = markorAv(s.at(-1));
+  }
+  throw new Error(`${filter} med ${limit} per sida tar inte slut efter 50 sidor`);
+}
+
 async function sida(adress: string): Promise<{ status: number; text: string }> {
   const res = await agent.get(adress);
   return { status: res.status, text: res.text };
@@ -73,10 +91,6 @@ beforeAll(async () => {
   user = await registerUser('tradsidor');
   bolag = await createCompany(user.token, 'Trådsidorna AB');
 
-  const kontakt = (org: string, occurred_at: string, summary: string, source_ref: string) => ({
-    kind: 'interaction', organization: { name: org }, occurred_at, channel: 'email', direction: 'inbound',
-    summary, source_system: 'gmail', source_ref,
-  });
   const events: Array<Record<string, unknown>> = [];
   // A: 61 händelser, den äldsta den 1 januari och den nyaste den 2 mars.
   for (let n = 1; n <= 61; n++) {
@@ -159,7 +173,7 @@ describe('get_crm_thread med before och limit (story 4.1)', () => {
     expect([...forsta, ...andra].map(id)).toEqual(alla.map(id));
   });
 
-  it('TP2 en giltig before ger en lista; limit 201, okänt slag, extra nyckel, saknad ref_id och ett orimligt datum ger 400', async () => {
+  it('TP2 en giltig before ger en lista; limit 201, okänt slag, extra nyckel, saknad ref_id, ett orimligt datum och en tidpunkt utanför trådens form ger 400', async () => {
     const rad60 = markorAv((await trad(orgA, { limit: 200 }))[59]);
     const ok = await act('get_crm_thread', { organization_id: orgA, before: rad60 });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
@@ -179,6 +193,23 @@ describe('get_crm_thread med before och limit (story 4.1)', () => {
     // Schemat eller databasen fäller datumet; felkoden asserteras inte, men aldrig 500.
     const orimlig = await act('get_crm_thread', { organization_id: orgA, before: { ...rad60, at: '2026-02-30T09:00:00.000Z' } });
     expect(orimlig.status, JSON.stringify(orimlig.body)).toBe(400);
+
+    // `before.at` godtas bara i trådens egen form (granskningen): zonerna över
+    // ±15:59 släpper Date.parse igenom men Postgres avvisar med 22009, som annars
+    // blir 500. Samma lista som vyns markör i crm-rules TC6.
+    for (const at of [
+      '2026-01-02T09:00:00.000+16:00', '2026-01-02T09:00:00.000-16:00', '2026-01-02T09:00:00.000+23:59',
+      '2026-01-02T09:00:00+1600', '2026-01-02T09:00:00.000+01:00', '2026-01-02T09:00:00Z',
+      '0000-01-01T00:00:00.000Z', '+012026-01-02T09:00:00.000Z', '2026-02-30T09:00:00.000Z',
+      '2025-02-29T09:00:00.000Z', '2026-01-02T24:00:00.000Z',
+    ]) {
+      const res = await act('get_crm_thread', { organization_id: orgA, before: { ...rad60, at } });
+      expect(res.status, `${at}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body.error, at).toBe('validation_error');
+    }
+    const egenForm = await act('get_crm_thread', { organization_id: orgA, before: { ...rad60, at: '2026-01-02T09:00:00.000Z' } });
+    expect(egenForm.status, JSON.stringify(egenForm.body)).toBe(200);
+    expect(Array.isArray(egenForm.body.result), JSON.stringify(egenForm.body)).toBe(true);
   });
 
   it('TP3 en relation i ett annat bolag ger 404, också med en giltig before', async () => {
@@ -207,6 +238,75 @@ describe('get_crm_thread med before och limit (story 4.1)', () => {
     expect([l1.length, l2.length]).toEqual([1, 1]);
     expect([...l1, ...l2].map((r) => r.kind)).toEqual(['commitment', 'commitment']);
     expect(exaktEnGang(loftenAlla, [l1, l2])).toBe(true);
+  });
+
+  it('TP4b samma ögonblick under alla fyra filtren: fakturor, betalning, kontakter och löften exakt en gång vid varje sidstorlek', async () => {
+    // F: två fakturor och en betalning samma dag delar `at` (datumet som tidpunkt
+    // ger midnatt), som de gör i drift. Kontakterna och löftena flyttas till samma
+    // ögonblick, så att ordningen avgörs av `kind` och `ref_id` på varje sidgräns.
+    const NAMN = 'Pengadagen AB';
+    await createFiscalYear(bolag, auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    const kund = await api.post(`/api/companies/${bolag}/customers`).set(auth()).send({ name: NAMN });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    const ingest = await act('ingest_crm_events', {
+      events: [
+        kontakt(NAMN, '2026-04-01T09:00:00Z', 'TP-F kontakt 1.', 'gmail:af4101'),
+        kontakt(NAMN, '2026-04-02T09:00:00Z', 'TP-F kontakt 2.', 'gmail:af4102'),
+        ...['1', '2'].map((n) => ({
+          kind: 'commitment', organization: { name: NAMN }, commitment_direction: 'we_owe', body: `TP-F löfte ${n}.`,
+          occurred_at: '2026-04-03T09:00:00Z', source_system: 'gmail', source_ref: `gmail:af41c${n}`,
+        })),
+      ],
+    });
+    expect(ingest.status, JSON.stringify(ingest.body)).toBe(200);
+    expect(ingest.body.result.skipped, JSON.stringify(ingest.body.result.skipped)).toEqual([]);
+    const orgF = ((await act('list_crm_organizations', {})).body.result as Array<{ id: string; name: string }>)
+      .find((o) => o.name === NAMN)?.id;
+    expect(orgF, NAMN).toBeDefined();
+
+    const godkann = async (svar: { status: number; body: { approval?: { id?: string } } }) => {
+      expect(svar.status, JSON.stringify(svar.body)).toBe(202);
+      const ok = await api.post(`/api/companies/${bolag}/approvals/${svar.body.approval?.id}/approve`).set(auth()).send({});
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    };
+    const fakturor: string[] = [];
+    for (const rad of ['TP-F arbete 1', 'TP-F arbete 2']) {
+      const inv = await act('create_invoice', {
+        customer_id: kund.body.customer.id, invoice_date: '2026-04-10', due_date: '2026-05-10',
+        lines: [{ description: rad, quantity: 1, unit: 'h', unit_price_ore: 100_000, vat_rate: 25 }],
+      });
+      expect(inv.status, JSON.stringify(inv.body)).toBe(200);
+      await godkann(await act('book_invoice', { invoice_id: inv.body.result.id }));
+      fakturor.push(inv.body.result.id as string);
+    }
+    await godkann(await act('register_invoice_payment', { invoice_id: fakturor[0], payment_date: '2026-04-10' }));
+
+    const pengar = await trad(orgF ?? '', { filter: 'pengar', limit: 200 });
+    expect(pengar.map((r) => r.kind)).toEqual(['payment', 'invoice', 'invoice']);
+    const at = pengar[0]?.at;
+    expect(pengar.map((r) => r.at)).toEqual([at, at, at]);
+    await withAdmin(async (db) => {
+      const k = await db.query('UPDATE crm.interactions SET occurred_at = $1 WHERE company_id = $2 AND source_ref = ANY($3)',
+        [at, bolag, ['gmail:af4101', 'gmail:af4102']]);
+      expect(k.rowCount, 'kontakterna').toBe(2);
+      const l = await db.query('UPDATE crm.commitments SET occurred_at = $1 WHERE company_id = $2 AND source_ref = ANY($3)',
+        [at, bolag, ['gmail:af41c1', 'gmail:af41c2']]);
+      expect(l.rowCount, 'löftena').toBe(2);
+    });
+
+    for (const [filter, antal] of [['allt', 7], ['kontakt', 2], ['pengar', 3], ['loften', 2]] as const) {
+      const alla = await trad(orgF ?? '', { filter, limit: 200 });
+      expect(alla, filter).toHaveLength(antal);
+      expect(alla.every((r) => r.at === at), `${filter}: samma at`).toBe(true);
+      for (let storlek = 1; storlek <= antal; storlek++) {
+        const sidor = await allaSidor(orgF ?? '', filter, storlek);
+        expect(exaktEnGang(alla, sidor), `${filter}, ${storlek} per sida`).toBe(true);
+        expect(sidor.flat().map(id), `${filter}, ${storlek} per sida`).toEqual(alla.map(id));
+      }
+    }
+    // Negativ kontroll: på bara tid når ingen andra sida förbi det gemensamma ögonblicket.
+    const tidEnsam = pengar.filter((r) => Date.parse(String(r.at)) < Date.parse(String(at)));
+    expect(exaktEnGang(pengar, [pengar.slice(0, 1), tidEnsam])).toBe(false);
   });
 
   it('TP5 tre händelser inom samma millisekund läses två plus en, var och en exakt en gång', async () => {
@@ -274,6 +374,61 @@ describe('relationssidans läsväg (story 4.1)', () => {
     expect(nyasteHref(s.text)).toBe(`${relation(orgA)}?visa=allt`);
     expect(s.text).not.toContain('Äldre händelser →');
     expect(s.text.split(NAV)).toHaveLength(2);
+  });
+
+  it('TP8b äldre rader som markören inte kan peka på: ingen länk, inget påstående om första händelsen, och sidan säger varför', async () => {
+    const FORSTA = 'Det här är relationens första registrerade händelse.';
+    const SPARRAD = '<p class="muted">Det finns äldre händelser, men läsvägen når dem inte: den äldsta visade händelsen har en tidpunkt utanför åren 1–9999. Rätta tidpunkten för att bläddra vidare.</p>';
+    // G: 61 händelser, där de två äldsta flyttas före vår tideräkning (rad 60 får
+    // året 0000 i JavaScript, rad 61 året -1). H: 61 händelser, där de 60 nyaste
+    // flyttas förbi år 9999. Postgres lagrar båda; markörens form bär ingen av dem.
+    const events: Array<Record<string, unknown>> = [];
+    for (let n = 1; n <= 61; n++) {
+      events.push(kontakt('Före vår tid AB', dag(n - 1), `TP-G händelse ${nn(n)}.`, `gmail:ag41${nn(n)}`));
+      events.push(kontakt('Långt fram AB', dag(n - 1), `TP-H händelse ${nn(n)}.`, `gmail:ah41${nn(n)}`));
+    }
+    const ingest = await act('ingest_crm_events', { events });
+    expect(ingest.status, JSON.stringify(ingest.body)).toBe(200);
+    expect(ingest.body.result.skipped, JSON.stringify(ingest.body.result.skipped)).toEqual([]);
+    await withAdmin(async (db) => {
+      for (const [ref, ar] of [['gmail:ag4101', 2027], ['gmail:ag4102', 2026]] as const) {
+        const r = await db.query('UPDATE crm.interactions SET occurred_at = occurred_at - make_interval(years => $1::int) WHERE company_id = $2 AND source_ref = $3',
+          [ar, bolag, ref]);
+        expect(r.rowCount, ref).toBe(1);
+      }
+      const h = await db.query("UPDATE crm.interactions SET occurred_at = occurred_at + interval '10000 years' WHERE company_id = $1 AND source_ref = ANY($2)",
+        [bolag, Array.from({ length: 60 }, (_, i) => `gmail:ah41${nn(i + 2)}`)]);
+      expect(h.rowCount, 'H').toBe(60);
+    });
+    const orgs = (await act('list_crm_organizations', {})).body.result as Array<{ id: string; name: string }>;
+    const orgG = orgs.find((o) => o.name === 'Före vår tid AB')?.id;
+    const orgH = orgs.find((o) => o.name === 'Långt fram AB')?.id;
+    expect([orgG, orgH].every(Boolean), 'G och H').toBe(true);
+
+    // En giltig läsposition som är nyare än allt i G: alla 61 ligger före den.
+    const nyare = encodeURIComponent('2027-01-01T00:00:00.000Z|payment|ffffffff-ffff-4fff-bfff-ffffffffffff');
+    const sparrade: Array<[string, string, boolean]> = [
+      ['G utan fore', relation(orgG ?? ''), false],
+      ['G med fore', `${relation(orgG ?? '')}?fore=${nyare}`, true],
+      ['H utan fore', relation(orgH ?? ''), false],
+    ];
+    for (const [namn, adress, medFore] of sparrade) {
+      const s = await sida(adress);
+      expect(s.status, `${namn}: ${s.text}`).toBe(200);
+      expect(fragment(s.text), namn).toHaveLength(60);
+      expect(s.text, namn).not.toContain('Äldre händelser →');
+      expect(s.text, namn).not.toContain(FORSTA);
+      expect(s.text, namn).toContain(SPARRAD);
+      expect(nyasteHref(s.text), namn).toBe(medFore ? `${relation(orgG ?? '')}?visa=allt` : null);
+    }
+
+    // Kontrollerna: med en markör visas länken, och utan äldre rader står texten om början.
+    const forsta = await sida(relation(orgA));
+    expect(aldreHref(forsta.text), 'A, första sidan').not.toBeNull();
+    expect(forsta.text, 'A, första sidan').not.toContain(SPARRAD);
+    const sista = await sida(aldreHref(forsta.text) ?? '');
+    expect(sista.text, 'A, sista sidan').toContain(FORSTA);
+    expect(sista.text, 'A, sista sidan').not.toContain(SPARRAD);
   });
 
   it('TP9 ?visa=kontakt följer med åt båda hållen', async () => {

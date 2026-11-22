@@ -2962,12 +2962,17 @@ ingen sida läses med offset, så en ny händelse flyttar inte gränsen mellan
 `limit` är som förut högst 200, och standard är 60. `at` returneras avrundat
 till millisekunder, samma värde som ordningen och jämförelsen använder; svaret
 bar redan millisekunder. Svaret är fortfarande en lista, och en tom lista
-betyder att det inte finns något äldre. Ett okänt slag i `kind`, en extra
-nyckel i `before`, ett `ref_id` som inte är en uuid eller ett `limit` över 200
-ger 400 `validation_error`. En relation i ett annat bolag ger 404, också med
-ett giltigt `before`.
+betyder att det inte finns något äldre. `at` i `before` skickas exakt som
+radens `at`, till exempel `2026-03-02T09:00:00.000Z`: tre decimaler, `Z` och ett
+år från 0001 till 9999. En annan zon, ett datum som inte finns och ett år
+utanför det spannet ger 400 `validation_error`, liksom ett okänt slag i
+`kind`, en extra nyckel i `before`, ett `ref_id` som inte är en uuid eller ett
+`limit` över 200. En relation i ett annat bolag ger 404, också med ett giltigt
+`before`.
 
 I vyn har relationssidans tråd länkarna «Äldre händelser →» och «← Nyaste» i
 en navigering under listan, och adressen bär läspositionen som
 `?fore=<at>|<kind>|<ref_id>`. En ogiltig läsposition ger en 400-sida i
-klartext, aldrig 500.
+klartext, aldrig 500. Har den äldsta visade händelsen en tidpunkt utanför åren
+1–9999 går ingen läsposition att bygga; sidan säger då att det finns äldre
+händelser som läsvägen inte når, i stället för att påstå att tråden börjar där.
