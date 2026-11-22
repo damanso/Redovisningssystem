@@ -153,6 +153,76 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, andra omtaget (ett rött prov: G1):** Kedjans `npm test`
+  fällde G1 i `server/test/uppdragsytan-kontraktsluckor.test.ts` med `column
+  "created_at" does not exist`: provets läsare av auditloggen sorterade på
+  `created_at`, men `audit_log` har `occurred_at` (0003). **Felklassen:** provets
+  egna läsare av databasen byggdes på ett antaget schema och visades aldrig träffa
+  något — en sådan läsare kastar vid fel kolumn och svarar tomt vid fel villkor, och
+  fyra fall i filen kräver just tomhet. **Mekanismen:** en enda läsare av
+  auditloggen (`auditdetaljer`, sorterad på identitetsnyckeln `id` som i
+  matt-rytm-provet, aldrig på en tidsstämpel), och varje läsare som kräver tomhet
+  har ett fall där samma läsare hittar en rad: G4 hittar ankaråtgärdens rad (S1
+  kräver att den saknas) och läser de tre godkännandenas rader i skrivordning, S1
+  hittar bolagets import, och G6 godkänner L1 så att transmittalens händelse bär
+  Styrgruppen som mottagare. Samma klass i produktionskoden: `explainApproval`
+  läste de två nya läsningarna inne i en `catch { return none }`, där ett fel i en
+  sats hade blivit en tom förklaring i en förgiftad transaktion (lärdom 2). De står
+  nu utanför fångsten. Varje ny sats i ändringen är stämd mot migrationerna.
+  **Inte kört i den här sessionen:** sandlådan svarade ”This command requires
+  approval” på `npm test --prefix … -- uppdragsytan-kontraktsluckor` och på `git
+  diff`; kedjans körning är belägget.
+
+- **2026-11-22 — Story 2.4, omtag efter kedjans körning (tre röda prov, varav två synliga):**
+  Kedjans `npm test` fällde V1 (`<th>Namn</th>` saknades) och V3 (”sidan saknar
+  <main>”) i `server/test/uppdragsytan-kontraktsluckor.test.ts`; det första av
+  de tre felen syntes inte i utdragen. **Felklassen** låg i provet, inte i
+  vyn: provet läste vyfunktionens råa markup, men layouten skriver om sidan —
+  `staplabaraTabeller` ger varje tabell med minst fyra kolumner `role` och
+  `data-etikett` på th, tr och td — och `koder` anropade `huvud` på ett utdrag
+  som redan var skuret (utan `</main>`). **Mekanismen byttes:** en enda uppsättning
+  läsare för den renderade sidan (`huvud` idempotent och tolerant för attribut
+  på `<main>`, `tabellrubriker`, `tabellrad`, `tabellcell`, `bradkort`), som
+  läser taggar med valfria attribut och fäller en rad, kolumn eller ett kort som
+  inte finns. Nytt fall V0 prövar läsarna mot både den råa och den av
+  `staplabaraTabeller` renderade tabellen (med förutsättningen att renderingen
+  faktiskt skriver om den), mot `huvud(huvud(x))` och mot ett element med en
+  annan klass. V1 jämför nu varje kontraktsburen cell med registrets svar eller
+  `LUCKTEXT` på rätt rad och i rätt kolumn. Ingen produktionskod ändrades.
+  **Inte kört i den här sessionen:** sandlådan svarade ”This command requires
+  approval” på `npm test`, `npm run typecheck` och `git diff`; kedjans körning
+  är belägget.
+
+- **2026-11-22 — Story 2.4 (uppdragsytan), saknade kontraktsfält, mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13, FR-14), nyckel `2-4-saknade-kontraktsfalt-mottagarpart-och-godkannare-visas-arligt`:**
+  Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets strikta schema
+  (`KontraktsmanifestSchema`), luckorna över en sluten fältlista (`LUCKFALT`,
+  `LUCKTEXT` som ordens enda källa), parterna med en källa per avtal
+  (`kontraktsparter`), mottagarpartens tre lägen (`mottagarpartlage`), ankaret
+  ur manifestet i åtta lägen (`manifestankare`, `ANKARORSAK`) och de två
+  tekniska importfelen (`OLASTA`). Parsern läser fältparet `Mottagarpart` när
+  `Godkännare` saknas. Migration `0096_kontraktsparter.sql`: `contracts.godkannandeform`
+  och `godkannare_kalla`, BASELINE-kommentarer på de fyra partskolumnerna och
+  avslutstriggern `contracts_parter_vagrar_avslutat`. `importera_leveranskontrakt`
+  och `satt_baseline` tar det valfria `manifest`; källan är trippeln (avtal,
+  text, manifest); svaret bär `forslag.parter`, `ankare` och `luckor`; okänt
+  tillstånd eller en fryst text utan leverabler ger 400 `kontrakt_olasbart`
+  före varje skrivning. `sattBaseline` skriver parterna (steg g, allowlist) och
+  manifestets ankare (nytt steg j, bara `lagras`/`andras`), och auditraden får
+  `parter_andrade` och `ankare` (läget) utan fritext. Registret får `namn` ur
+  avtalsdelens första version; kontraktsytan får `parter` (genom den nya
+  `lasKontraktsparter`) och `luckor`. Leveranserna får kolumnen Namn, luckornas
+  text ur `LUCKTEXT` och en mottagarpartrad; Kontraktet får panelen ”Parterna
+  och luckorna”. `explainApproval` lägger parterna, formen och ankaret som
+  från → till och skillnaderna, ankarets orsak och luckorna i skälen, med
+  texter bara ur lib; `FIELD_LABELS` har de sex nya nycklarna. Import-provets
+  fall för okänt tillstånd skrevs om till 400, och register-provets nyckellista
+  fick `namn`. Nya fall R0–R8, M1–M3, I1–I8, G1–G7, L1–L3, S1, V1–V3, U1–U5 och
+  D1 i `server/test/uppdragsytan-kontraktsluckor.test.ts`. MCP_ACTIONS och
+  ARKITEKTUR speglade. **Inte kört i den här sessionen:** `npm run typecheck`,
+  `npm run build` och `npm test` — sandlådan svarade ”This command requires
+  approval” på `npm test`, `npm run typecheck` och direkt vitest; kedjans
+  körning är belägget. Ingen kod, ingen migration och inget prov har körts.
+
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar
