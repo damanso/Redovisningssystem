@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 7.4 (crm), en affär som stått stilla blir ett skäl i
+  kontaktförslagen (FR-22):** Regeln `stalledDealReason` i
+  `server/src/lib/crmRules.ts` (ren, med den slutna etikettabellen
+  `DEAL_STAGE_LABELS`) ger *affären {titel} ({skede}) har stått stilla i {N}
+  dagar* för den affär som stått stilla längst, när stilleståndet är minst
+  relationens tystnadsgräns (kadensen, annars bolagets standard), med *skede
+  okänt* för allt utanför tabellen och *(och N till)* när fler står stilla.
+  `contactSuggestions` i `server/src/services/crmDerivations.ts` läser
+  affärerna bara genom `openDeals` och bara när `as_of` är dagens datum, lägger
+  skälet efter tystnaden och väger stilleståndet som tystnaden (högst 365);
+  tystade och uppskjutna relationer lämnas som förut före varje skäl.
+  `todayView` för sin klocka (`now`) vidare, så Idag, relationsvyn, `crm_today`
+  och `crm_contact_suggestions` ger samma skäl ur samma funktion; ingen rutt,
+  handler eller markup är ändrad. Nytt avsnitt sist i `docs/MCP_ACTIONS.md`.
+  Nya fall sist i `server/test/crm-deals.test.ts` (19): R1–R5 regeln, N1–N3
+  negativa kontroller (gammal ögonblicksbild, skäl utan skede), A1–A6
+  förslagen (skälet, gränsen och kadensen, *skede okänt*, dämpningen,
+  tenantgränsen), F1–F3 färskheten (saknad, 27 timmar, framtida tidpunkt, tom,
+  `as_of` i går), I1 samma svar på Idag, i `crm_today`, i
+  `crm_contact_suggestions` och i relationsvyn, och D5 dokumentet; 7.1:s fall
+  är orörda. **Inte kört:** sandlådan nekade `npm run typecheck` (kräver
+  godkännande), så byggaren har inte kört något kommando; kedjans typkontroll
+  och svit avgör. I drift syns affärsskälen först när Hermes skickar färska
+  ögonblicksbilder (Story 7.2); tills dess säger läsningen okänt och
+  förslagen är oförändrade.
 - **2026-11-22 — Story 5.2 (crm), omtaget efter code-review (tre fynd,
   lagade som felklasser):** (1) Märket *ärendet skapat* läste radens
   källsystem i stället för löftesdagens eget ursprung, så en dag som David

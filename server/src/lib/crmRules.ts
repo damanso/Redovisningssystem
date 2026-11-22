@@ -356,6 +356,37 @@ export function idleDays(lastActivityAt: string, now: string): number {
   return Math.max(0, daysSince(lastActivityAt.slice(0, 10), now.slice(0, 10)) ?? 0);
 }
 
+// Skedenas etiketter i affärsskälet. Vyns statusetiketter säger samma sak, men
+// regelfilen läser inte vylagret; provet låser att de två är lika.
+const DEAL_STAGE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  idea: 'Idé', dialogue: 'Dialog', proposal: 'Offert', negotiation: 'Förhandling',
+});
+
+/**
+ * Affärsskälet i kontaktförslagen (FR-22): förslagens tredje grund efter
+ * löftena och tystnaden. En affär är stillastående när den stått stilla minst
+ * relationens tystnadsgräns, samma gräns som tystnadsskälet, så ingen ny
+ * konstant behövs. Den som stått stilla längst nämns, den första vid lika, och
+ * fler läggs till som antal, som i skälet för förfallna löften: skälet ska gå
+ * att läsa som en öppningsreplik. Skedet står alltid med, och allt utanför
+ * tabellen blir «skede okänt» i stället för ett rått värde.
+ */
+export function stalledDealReason(
+  deals: readonly { title: string; stage: string | null; idle_days: number }[], thresholdDays: number,
+): { reason: string; idle_days: number } | null {
+  const stalled = deals.filter((deal) => deal.idle_days >= thresholdDays);
+  let longest = stalled[0];
+  if (!longest) return null;
+  for (const deal of stalled) if (deal.idle_days > longest.idle_days) longest = deal;
+  const label = (longest.stage !== null && Object.hasOwn(DEAL_STAGE_LABELS, longest.stage)
+    ? DEAL_STAGE_LABELS[longest.stage] : undefined) ?? 'skede okänt';
+  const more = stalled.length > 1 ? ` (och ${stalled.length - 1} till)` : '';
+  return {
+    reason: `affären ${longest.title} (${label}) har stått stilla i ${longest.idle_days} dagar${more}`,
+    idle_days: longest.idle_days,
+  };
+}
+
 /** Vägar som kan fånga kontakter. Sluten: en ny väg kräver en fras i tabellen nedan (story 5.1). */
 export type ContactCapturePath = 'mail' | 'calendar' | 'issues';
 /** Vägar som kan fånga löften. Sluten av samma skäl. */
