@@ -24,6 +24,12 @@
 //     hade varit ett andra ställe där samma sanning står, och den dag en skrivväg
 //     glömmer den driftar kolumnen ifrån historiken utan att någon ser det.
 //     Härledningen kan per definition inte drifta.
+//   * **`namn` läses ur avtalsdelen, och NULL betyder att kontraktet inte angav
+//     något** (Story 2.4, beslut B6). Namnet står i avtalsdelens första version
+//     med samma kod, och importen skriver koden som namn bara när texten saknar
+//     ett — ett namn som är lika med koden är alltså ett saknat namn. Ingen
+//     kolumn på registret: den hade krävt en efterfyllnad som avslutstriggern
+//     fäller på avslutade uppdrag.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
 
@@ -34,6 +40,8 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
+  /** Leverabelns namn ur kontraktet. NULL = namnet saknas i kontraktet (beslut B6). */
+  namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
   uppfoljningsmatt: string | null;
@@ -79,7 +87,11 @@ export async function lasLeverabelregister(
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
   const res = await client.query<Leverabelrad>(
-    `SELECT l.contract_id, l.kod, l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
+    `SELECT l.contract_id, l.kod,
+            NULLIF((SELECT p.name FROM contract_parts p
+                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h

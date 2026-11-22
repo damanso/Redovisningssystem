@@ -153,6 +153,62 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter kedjans körning (tre röda prov, två felklasser):**
+  Kedjans `npm test` gav tre röda: klartextprovet T4.2 och T4.3 (ordet
+  `manifest` syntes två gånger på Att göra) och G1 (`column "created_at" does
+  not exist`). (1) `manifest` blev en nyckel i `satt_baseline`, och luckans text
+  `LUCKTEXT.mottagarpart.var` slutade på ”projektets manifest” — ett nyckelnamn
+  som eget ord i förslagskortets skäl. Samma klass fanns i etiketten
+  `FIELD_LABELS.manifest` (”Projektets manifest”, syns så fort ett förslag bär
+  manifestet) och i schemats felmeddelande (`godkannare`). Lagat: texten säger
+  ”projektmanifestet”, etiketten ”Projektmanifest”, meddelandet ”godkännare”.
+  Klassen prövas nu i berättelsens fil med klartextprovets egen mätare (samma
+  urval av köbara åtgärder, ordgräns och undantag): R7 mäter varje text regeln
+  kan visa (alla luckor, alla åtta ankarorsaker, mottagarpartens lägen) och U5
+  hela Att göra-sidan med fem förslag som tillsammans går igenom varje gren i
+  förklaringen (fem luckor, båda skillnaderna, fyra ankarlägen och manifestets
+  fält), båda med negativa kontroller. (2) Provets auditfråga sorterade på en
+  kolumn som inte finns: `audit_log` har `occurred_at` och identiteten `id`
+  (0003). Sorteras nu på `id`; provfilens övriga SQL är genomgången mot
+  migrationerna. **Inte kört i den här sessionen:** sandlådan svarade ”This
+  command requires approval” på `npm run typecheck`, så kedjans körning är
+  belägget.
+
+- **2026-11-22 — Story 2.4 (uppdragsytan), saknade kontraktsfält, mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13, FR-14):**
+  Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets strikta schema
+  (`KontraktsmanifestSchema`), luckorna över den slutna fältlistan `LUCKFALT`
+  med en enda textkälla `LUCKTEXT`, parterna med en källa per avtal
+  (`kontraktsparter`), mottagarpartens tre lägen (`mottagarpartlage`, där
+  `ej_inlast` aldrig säger att något saknas i kontraktet), ankaret ur
+  manifestet med åtta lägen (`manifestankare`, bara `lagras`/`andras` skriver)
+  och de två tekniska importfelen (`OLASTA`). Parsern läser fältet Mottagarpart
+  när Godkännare saknas. Migration `0096_kontraktsparter.sql`: nullbara
+  `contracts.godkannandeform` och `contracts.godkannare_kalla`, BASELINE-
+  kommentarer på de fyra partskolumnerna och avslutstriggern
+  `contracts_parter_vagrar_avslutat` (egen funktion, 0095 orörd).
+  `importera_leveranskontrakt` och `satt_baseline` tar emot det valfria
+  `manifest`; importens källa är trippeln (avtal, text, manifest); ett tekniskt
+  importfel ger 400 `kontrakt_olasbart` med `details.olast` före varje
+  skrivning; förslaget bär `luckor`, `parter` och `ankare`. Godkännandet
+  skriver parterna ur en regel (steg g, ingen COALESCE längre) och ankaret i
+  ett nytt steg (j); auditraden får `parter_andrade` och ankarets läge, inga
+  namn. Registret bär `namn` ur avtalsdelen (NULL när namnet är koden),
+  kontraktsytan `parter` (genom nya `lasKontraktsparter`) och `luckor`.
+  Leveranserna: kolumnen Namn, luckorna ur `LUCKTEXT`, namnet på kortet och en
+  mottagarpartrad per avtal med register. Kontraktet: panelen ”Parterna och
+  luckorna”. Undantagsvyns baselineförslag visar parterna, ankaret (från →
+  till), skillnaden mot kontraktstexten och luckorna. `FIELD_LABELS` fick
+  etiketter för manifestets nycklar (klartextprovet T1.1 kräver etikett för
+  varje nyckel i en köad åtgärd). Nya prov: `server/test/uppdragsytan-kontraktsluckor.test.ts`
+  (R0–R6, M1–M3, I1–I7, G1–G7, L1–L3, S1, V1–V3, U1–U4, D1); ändrade:
+  import-provets fall för okänt tillstånd (nu 400) och register-provets
+  nyckellista (`namn`). **Inte kört i den här sessionen:** `npm run typecheck`,
+  `npm run build` och `npm test` — sandlådan svarade ”This command requires
+  approval” på `npm test -- uppdragsytan-register` och `npm run typecheck`, så
+  inget rött eller grönt är belagt här; kedjans körning är belägget.
+  Designskillen `impeccable` gick inte att starta (”Execute skill:
+  impeccable”); panelen följer husets klasser och undantagsvyns `dl`-mönster.
+
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar

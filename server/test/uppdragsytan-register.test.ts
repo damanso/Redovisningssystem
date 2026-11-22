@@ -150,7 +150,7 @@ describe('leverabelregistret för det importerade kontraktet', () => {
     for (const rad of rader) {
       expect(Object.keys(rad).sort()).toEqual([
         'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
-        'matt_lasvag', 'status', 'uppfoljningsmatt',
+        'matt_lasvag', 'namn', 'status', 'uppfoljningsmatt',
       ]);
     }
   });

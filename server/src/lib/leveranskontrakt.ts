@@ -19,7 +19,8 @@
 //     diakriter och skiljetecken), så "Uppföljningsmått" och "uppfoljningsmatt"
 //     är samma nyckel. Första förekomsten vinner.
 //   * **Ramen och rapporteringen** läses ur dokumentets fältpar UTANFÖR
-//     leverabelrubrikerna: `Takvolym` (h), `Takbelopp` (kr), `Godkännare`,
+//     leverabelrubrikerna: `Takvolym` (h), `Takbelopp` (kr), `Godkännare`
+//     (med `Mottagarpart` som samma uppgift när `Godkännare` saknas, Story 2.4),
 //     `Eskalering`.
 //   * **Bilaga 1** — en tabell med kolumnerna `Kod`, `Ström` (namnet), `Start`,
 //     `Slut`. Utan `Kod` kan strömmen inte bli en avtalsdel, och då läses den
@@ -835,7 +836,9 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     scopelinjer,
     matt: mattIAvsnitten(avsnitten),
     rytm: rytmIAvsnitten(avsnitten),
-    godkannare: text(dokumentfalt.get('godkannare')),
+    // Mottagarparten och godkännaren är samma uppgift (Story 2.4, beslut B1):
+    // fältet Mottagarpart läses bara när Godkännare saknas.
+    godkannare: text(dokumentfalt.get('godkannare') ?? dokumentfalt.get('mottagarpart')),
     godkannare_eskalering: text(
       dokumentfalt.get('eskalering')
       ?? dokumentfalt.get('eskaleringsinstans')
