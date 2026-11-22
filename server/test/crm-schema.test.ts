@@ -200,7 +200,8 @@ describe('gränsen mot bokföringen', () => {
   it('affärsobjektet (E3) är förberett men obyggt — tabellen står tom', async () => {
     const n = await withAdmin(async (a) => (await a.query('SELECT count(*)::int AS n FROM crm.deals')).rows[0].n);
     expect(n).toBe(0);
-    expect(ACTIONS.filter((a) => a.name.includes('deal'))).toHaveLength(0);
+    // Affärscachens två åtgärder (7.1) läser och skriver cachen, aldrig affärsobjektet.
+    expect(ACTIONS.filter((a) => a.name.includes('deal')).map((a) => a.name).sort()).toEqual(['crm_open_deals', 'sync_crm_deals']);
   });
 });
 

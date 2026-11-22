@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 7.1 (crm), affärscachen och kontraktet för affärer
+  (FR-25, mottagarsidan):** Migrationen `server/migrations/0096_crm_deal_snapshots.sql`
+  med två CACHE-tabeller: `crm.deal_snapshots` (en rad per öppen affär,
+  primärnyckel `(company_id, source_ref)`, sammansatt FK mot relationen med
+  `ON DELETE CASCADE`, fem CHECK-villkor, app har SELECT, INSERT och DELETE men
+  aldrig UPDATE) och `crm.deal_snapshot_observations` (tidpunkt och antal för
+  bolagets senaste ögonblicksbild, också när den var tom). Båda med ENABLE +
+  FORCE RLS. Tjänsten `server/src/services/crmDeals.ts`: `syncDealSnapshot`
+  skriver observationsraden först, raderar hela bolagets cache och lägger in
+  varje rad i en egen sparpunkt; organisationen går genom `upsertOrganization`
+  och en bolagsformsvariant genom `queueNameVariantProposal`, som intaget.
+  `openDeals` läser affärerna bara när grinden `dealSnapshotStatus` säger `ok`
+  (`DEAL_SNAPSHOT_MAX_AGE_HOURS` = 26 och `idleDays` i
+  `server/src/lib/crmRules.ts`). Två åtgärder i registret efter
+  `ingest_crm_events`: `sync_crm_deals` (`write`) och `crm_open_deals` (`read`).
+  Skedenas etiketter *Idé*, *Dialog*, *Offert* och *Förhandling* i `STATUS` i
+  `server/src/http/view/html.ts`. `purgeCrmRelationData` i
+  `server/src/services/gdpr.ts` raderar relationens cacherader uttryckligen,
+  eftersom organisationsraden behålls och kaskaden aldrig når dit. E3-fallet i
+  `server/test/crm-schema.test.ts` kräver nu exakt `crm_open_deals` och
+  `sync_crm_deals` bland åtgärderna med `deal` i namnet, och affärsobjektet
+  står fortfarande tomt. Avsnitten «Affärerna» i `docs/crm/API_KONTRAKT.md` och
+  «Affärscachen och kontraktet för affärer (crm 7.1)» i `docs/MCP_ACTIONS.md`.
+  Prov i `server/test/crm-deals.test.ts`, 39 fall: M1–M7 (katalogen, kedjan
+  igen, etiketterna härledda ur CHECK-villkoret, kaskaden, RLS som app), S1–S8
+  och O0 (ersättningen fält för fält, S2 negativ kontroll med A ∪ B, tom mängd,
+  ogiltigt indata, trasiga rader, kundkoppling, audit med bara antal,
+  grannbolaget), V1–V5 (bolagsformsvarianten, ett förslag per par, intaget
+  återanvänder förslaget, flera möjliga, aliaset), P1–P6 (grinden och
+  stilleståndet), O1–O6 (*OK*, *TOMT*, *OKÄNT*, 25 och 27 timmar, överhoppade
+  rader, grannbolaget), G1–G2 (GDPR-raderingen och sammanslagningen), E1–E2
+  (bara två filer nämner cachen, ingen av dem affärsobjektet; negativ kontroll)
+  och D1–D2 (dokumenten). Ingen ny rutt, vy, CSS-klass eller beroende.
+  **Inte kört i den här sessionen:** `npm run typecheck` och `npm test` —
+  sandlådan svarade ”This command requires approval”; kedjans körning är
+  belägget. **I drift:** Hermes skickar ingen ögonblicksbild förrän Story 7.2
+  är driftsatt; tills dess svarar `crm_open_deals` ärligt *OKÄNT* för varje
+  bolag. **Rött utanför repot:** som i raden nedan; inget av de icke-gröna
+  Hermes-proven gäller den här berättelsen.
 - **2026-11-22 — Story 5.1 (crm), fångstvägarna på ett ställe och ärliga
   tomlägen (FR-31, PRD lucka 21):** Konstanten `CAPTURE_PATHS_IN_OPERATION` i
   `server/src/services/crmDerivations.ts` (fryst; kontakter `mail`, `issues`,

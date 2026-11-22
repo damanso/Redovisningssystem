@@ -15,6 +15,7 @@ import { sourceForActor } from '../services/crmProvenance.js';
 import { acceptNameVariant, rejectNameVariant, mergeOrganizations, mergePeople, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
 import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
+import { openDeals, syncDealSnapshot, DEAL_STAGES, type DealSnapshotInput } from '../services/crmDeals.js';
 import { isThreadFilter, isThreadTime, relationThread, type ThreadKind } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 import { ORG_ROLLER, SFARER, SFARFILTER, type SfarFilter } from '../services/crmSfar.js';
@@ -3180,6 +3181,42 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       })
       .strict(),
     handler: (ctx, i) => ingestCrmEvents(ctx.client, ctx.companyId, ctx.userId, (i as { events: never[] }).events, ctx.actor),
+  }),
+  // Affärscachen (FR-25, K-2): Hermes skickar de öppna affärerna i
+  // ärendeplattformen som en ögonblicksbild. Hela mängden ersätter cachen, och
+  // en tom mängd betyder att det inte finns några öppna affärer.
+  def({
+    name: 'sync_crm_deals',
+    title: 'Ta emot ögonblicksbilden av de öppna affärerna (API-kontraktet)',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        observed_at: IsoDateTimeSchema,
+        // Ingen .min(1): en tom mängd är ett giltigt besked.
+        deals: z
+          .array(
+            z.object({
+              // Ärendets nyckel i plattformen, unik per bolag.
+              source_ref: safeText(300),
+              title: safeText(200),
+              organization: z.object({ name: safeText(200) }).strict(),
+              stage: z.enum(DEAL_STAGES).nullable().optional(),
+              value_ore: OreSchema.nullable().optional(),
+              next_step: safeText(200).nullable().optional(),
+              last_activity_at: IsoDateTimeSchema,
+            }).strict(),
+          )
+          .max(500),
+      })
+      .strict(),
+    handler: (ctx, i: DealSnapshotInput) => syncDealSnapshot(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i),
+  }),
+  def({
+    name: 'crm_open_deals',
+    title: 'Öppna affärer ur affärscachen, med när de lästes',
+    sensitivity: 'read',
+    inputSchema: z.object({}).strict(),
+    handler: (ctx) => openDeals(ctx.client, ctx.companyId),
   }),
   def({
     name: 'get_crm_thread',

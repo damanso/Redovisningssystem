@@ -305,6 +305,39 @@ export function daysSince(day: string, today: string): number | null {
   return Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`)) / 86_400_000);
 }
 
+/**
+ * Hur länge en ögonblicksbild av affärerna räknas som aktuell: en natt och
+ * marginalen för en sen körning (arkitekturens K-2). Äldre än så visas den
+ * aldrig som aktuell.
+ */
+export const DEAL_SNAPSHOT_MAX_AGE_HOURS = 26;
+
+/** Affärsläsningens tre utfall, engelska koder som resten av CRM; vyn sätter orden OK, TOMT och OKÄNT. */
+export type DealSnapshotStatus = 'ok' | 'empty' | 'unknown';
+
+/**
+ * Grinden för affärscachen, på ett ställe. Okänt när ingen ögonblicksbild
+ * finns, när tidpunkten inte går att läsa eller när den är mer än 26 timmar
+ * gammal; tomt när Hermes skickade en tom mängd; annars ok. Tomt läses ur
+ * antalet Hermes skickade, inte ur antalet cachade rader, så en ögonblicksbild
+ * där varje rad hoppades över aldrig ser ut som «inga öppna affärer».
+ */
+export function dealSnapshotStatus(observedAt: string | null, received: number, now: string): DealSnapshotStatus {
+  if (observedAt === null) return 'unknown';
+  const age = Date.parse(now) - Date.parse(observedAt);
+  if (Number.isNaN(age) || age > DEAL_SNAPSHOT_MAX_AGE_HOURS * 3_600_000) return 'unknown';
+  return received === 0 ? 'empty' : 'ok';
+}
+
+/**
+ * Hela kalenderdygn sedan affärens senaste aktivitet, räknade som `daysSince`
+ * i UTC. Aldrig under noll: en aktivitet i framtiden (avsändarens klocka) eller
+ * ett datum som inte går att läsa ger 0 i stället för ett negativt stillestånd.
+ */
+export function idleDays(lastActivityAt: string, now: string): number {
+  return Math.max(0, daysSince(lastActivityAt.slice(0, 10), now.slice(0, 10)) ?? 0);
+}
+
 /** Vägar som kan fånga kontakter. Sluten: en ny väg kräver en fras i tabellen nedan (story 5.1). */
 export type ContactCapturePath = 'mail' | 'calendar' | 'issues';
 /** Vägar som kan fånga löften. Sluten av samma skäl. */
