@@ -1026,8 +1026,8 @@ function agiRestFromAccounts(balance: AccountLine[], agi: AgiPart[]): Ore {
 
 /**
  * Likviditet i tre kalendermånader ur kassa och betalningar med belagd förfallodag,
- * och det obelagda för sig med belopp och skäl. Styrvyn och åtgärden
- * `liquidity_by_month` läser samma funktion.
+ * och det obelagda för sig med belopp och skäl. Åtgärden `liquidity_by_month`
+ * läser funktionen, och styrvyns likviditetstabell ska läsa samma (Story 6.3).
  */
 export async function liquidityByMonth(client: PoolClient, companyId: string, asOf?: string): Promise<LiquidityByMonth> {
   // Databasens dag löses en gång, så att alla underlag gäller samma as_of.
@@ -1061,8 +1061,9 @@ export async function liquidityByMonth(client: PoolClient, companyId: string, as
   });
 
   // Det obelagda byggs efter rullningen och förs aldrig in i den, så inget av
-  // beloppen kan nå en månad. Varje tal kommer ur samma läsning som prognosen
-  // eller styrvyn redan gör — ingen andra definition.
+  // beloppen kan nå en månad. Talen läses ur samma källor som prognosen och
+  // styrvyn läser. Bara restsaldot på 2710/2730 räknas annorlunda än
+  // prognosens rest, se agiRestFromAccounts.
   const balance = await accountSums(client, companyId, { to: cash.as_of });
   const recurringMonth = await recurringMonthOre(client, companyId, cash.as_of);
   const unbilled = await unbilledTimeReport(client, companyId, { to: cash.as_of });

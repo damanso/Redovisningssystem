@@ -3125,24 +3125,44 @@ föreslås fortfarande inte. Indata och svarsform är oförändrade: skälet st�
 ## Likviditet per kalendermånad (crm 6.5)
 
 `liquidity_by_month` (`read`) tar indata `{ as_of? }`, ett datum som är dagens
-datum när det utelämnas. Styrvyn läser samma funktion, så åtgärden och vyn ger
-samma svar.
+datum när det utelämnas. Det är samma funktion som styrvyns likviditetstabell
+ska läsa när den byggs (crm 6.3), så att vyn och åtgärden ger samma svar.
 
 Svaret gäller tre kalendermånader från `as_of`, och `horizon_end` är sista dagen
-i den tredje. `months` har per månad ingående saldo, belagda in- och
-utbetalningar, utgående saldo och varav förfallet (`overdue_inflow_ore`,
-`overdue_outflow_ore`). `outcome` är `deficit`, `no_deficit` eller `unknown`,
-`first_deficit` är den första månaden med negativt utgående saldo och `need_ore`
-det största underskottet. `counted` är källorna som räknas in, med belopp och
-förfallet: kundfakturor, leverantörsfakturor och obetalda lönebesked på sin
-periods förfallodag. `unknown` listar en källa som inte gick att mäta, med skäl,
-och då är saldona och behovet `null`, aldrig noll. Det som förfaller efter
-horisonten står i `beyond_horizon`.
+i den tredje. `months` har per månad `ym`, `from` och `to` (den första månaden
+börjar på `as_of`), ingående saldo `opening_ore`, belagda in- och utbetalningar
+`inflow_ore` och `outflow_ore`, utgående saldo `closing_ore` och varav förfallet
+`overdue_inflow_ore` och `overdue_outflow_ore`. Ingående saldo i första månaden
+är kassan på 1900–1999 per `as_of`. En betalning vars förfallodag har passerat
+ligger i första månaden och räknas som förfallen.
+
+`counted` är källorna som räknas in, var och en med `id`, `side`, belopp inom
+horisonten (`amount_ore`) och varav förfallet (`overdue_ore`): `kundfakturor`,
+`leverantorsfakturor` och `agi_lonebesked`, alltså obetalda lönebesked på sin
+periods förfallodag. Det som förfaller efter horisonten står bara i
+`beyond_horizon` (`inflow_ore`, `outflow_ore`).
+
+`unknown` listar varje källa som inte gick att mäta, med `source` och `reason`.
+`complete` är `true` bara när `unknown` är tom. Vad en okänd källa gör med
+talen beror på vilken källa det är:
+
+- Okänd kassa (`kassa_19xx`, inga bokförda rader på 1900–1999): ingående och
+  utgående saldo är `null` i alla tre månaderna, aldrig noll.
+- Okänd leverantörsreskontra (`leverantorsfakturor`, bolaget har aldrig bokfört
+  en leverantörsfaktura): saldona räknas när kassan är känd, men utan
+  utbetalningar till leverantörer. Siffror i saldona betyder alltså inte att
+  inget är okänt; läs `complete`.
+
+`outcome` är `deficit` eller `no_deficit` när `complete` är `true` och annars
+`unknown`. `first_deficit` är den första månaden med negativt utgående saldo
+(`ym` och underskottet som `amount_ore`), annars `null`. `need_ore` är det
+största underskottet, och 0 när inget finns. När `complete` är `false` är både
+`first_deficit` och `need_ore` `null`, också när saldona har siffror.
 
 `not_counted` är det obelagda: poster utan belagd betalningstidpunkt. De
-räknas aldrig in i månaderna. De står för sig med belopp (`amount_ore`), skäl
-(`reason`), `next_due_date` och `reservation`, en rad per post i fast ordning,
-också när beloppet är 0:
+räknas aldrig in i månaderna. Varje rad har `id`, `side`, belopp (`amount_ore`,
+med tecken), skäl (`reason`), `next_due_date` och `reservation`, och det finns
+en rad per post i fast ordning, också när beloppet är 0:
 
 - `abonnemang` — aktiva abonnemang, tre månader av radsumman exklusive moms; inget betalningsdatum förrän fakturan är ställd.
 - `ofakturerad_tid` — godkänd tid som inte fakturerats, samma tal som rapporten Ofakturerad tid.
@@ -3154,9 +3174,14 @@ också när beloppet är 0:
 - `ovriga_kortfristiga_2890` — övriga kortfristiga skulder på 2890–2899, utan förfallodag.
 
 `moms_26xx` och `agi_rest_2710_2730` är periodlösa kontosaldon. De bär nästa
-förfallodag i `next_due_date` och underlagets egen reservation i
-`reservation`; de övriga har `null` i båda.
+förfallodag för momsdeklarationen respektive arbetsgivardeklarationen i
+`next_due_date`, eller `null` när ingen ligger inom skatteöversiktens horisont,
+och underlagets egen reservation i `reservation`. Båda fälten sätts per post
+oavsett belopp; de sex övriga har `null` i båda. Ett negativt momsnetto är en
+fordran, och datumet är då momsdeklarationens förfallodag, inte dagen då
+fordran betalas ut. `liquidity_forecast` ger en sådan fordran ingen förfallodag
+alls, eftersom Skatteverket bestämmer när den betalas.
 
 Öppna affärer ingår aldrig, varken i månaderna eller i `not_counted`.
-`liquidity_forecast` är oförändrad: prognosen i hinkar om 30 dagar (förfallet,
-30, 60, 90 dagar och senare) med källredovisning.
+`liquidity_forecast` är oförändrad: prognosen i hinkar (förfallet, inom 30
+dagar, 31–60, 61–90 dagar och senare) med källredovisning.

@@ -713,3 +713,243 @@ describe('liquidity_by_month — läsåtgärden (6.5 T)', () => {
     expect(avsnitt).not.toMatch(/\bLinear\b/);
   });
 });
+
+// ---- Granskningens uppföljning (6.5 F) ----------------------------------------
+// Fynd 1 är ett avsnitt som säger något annat om svaret än svaret självt; därför
+// prövas avsnittet mot svarens egna nycklar och mot hur saldona blir per okänd
+// källa. Fynd 2 är en gren som bara prövats på ena sidan; båda sidorna prövas för
+// restsaldots filter, momsens förfallodag och varje fält i den rena funktionen.
+// Fynd 3 är två åtgärder som säger olika saker om samma belopp; det prövas där
+// regeln är avgjord.
+
+const saldon = (svar: LiquidityByMonth) => svar.months.map((m) => [m.opening_ore, m.closing_ore]);
+
+/** Svarets ordförråd: varje nyckel på varje djup, utfallet och varje käll-id. */
+function svarsOrd(svar: LiquidityByMonth): Set<string> {
+  const ord = new Set<string>([
+    svar.outcome,
+    ...svar.unknown.map((u) => u.source),
+    ...svar.counted.map((c) => c.id),
+    ...svar.not_counted.map((r) => r.id),
+  ]);
+  const samla = (varde: unknown): void => {
+    if (Array.isArray(varde)) varde.forEach(samla);
+    else if (varde !== null && typeof varde === 'object') {
+      for (const [nyckel, under] of Object.entries(varde)) {
+        ord.add(nyckel);
+        samla(under);
+      }
+    }
+  };
+  samla(svar);
+  return ord;
+}
+
+/** Listpunkterna i en text, med en punkts fortsättningsrader hopslagna. */
+function punkter(text: string): string[] {
+  const ut: string[] = [];
+  let punkt: string | null = null;
+  for (const rad of [...text.split('\n'), '']) {
+    if (punkt !== null && /^\s+\S/.test(rad)) {
+      punkt += ` ${rad.trim()}`;
+      continue;
+    }
+    if (punkt !== null) ut.push(punkt);
+    punkt = rad.startsWith('- ') ? rad : null;
+  }
+  return ut;
+}
+
+async function likviditetsavsnitt(): Promise<string> {
+  const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+  return doc.split('## Likviditet per kalendermånad (crm 6.5)')[1]!.split('\n## ')[0]!;
+}
+
+describe('liquidityByMonth — okänt per källa, avsnittet och prognosen (6.5 F)', () => {
+  let user: TestUser;
+  let okandKassa: string;
+  let arsmoms: string;
+  let alltOkant: string;
+  let underskott: string;
+  beforeAll(async () => {
+    user = await registerUser('uppfoljning65');
+    // En bokförd leverantörsfaktura men inga 19xx-rader: bara kassan är okänd.
+    okandKassa = await createCompany(user.token, 'Okänd kassa AB');
+    const fyKassa = await createFiscalYear(okandKassa, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await supplierInvoice(user, okandKassa, fyKassa.id, '2026-11-10', '2027-01-15', 160000);
+    // Kassa men aldrig en leverantörsfaktura: bara reskontran är okänd. Helårsmomsen
+    // för 2025 förföll 2026-02-12, så momsnettot har ingen nästa förfallodag.
+    arsmoms = await createCompany(user.token, 'Årsmoms AB');
+    const fyArs = await createFiscalYear(arsmoms, auth(user), { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    await action(user, arsmoms, 'set_vat_period', { vat_period: 'yearly' });
+    await cashSeed(user, arsmoms, fyArs.id, '2025-09-01', 1000000);
+    await approveAction(user, arsmoms, 'post_voucher', {
+      fiscal_year_id: fyArs.id, voucher_date: '2025-05-31', description: 'Momsskuld',
+      lines: [{ account_number: 1510, debit_ore: 250000 }, { account_number: 2611, credit_ore: 250000 }],
+    });
+    alltOkant = await createCompany(user.token, 'Allt okänt AB');
+    await createFiscalYear(alltOkant, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    // Fullständigt underlag: underskott i december, och momsnettot 600 000 är en skuld.
+    underskott = await createCompany(user.token, 'Underskott AB');
+    const fyUnder = await createFiscalYear(underskott, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await cashSeed(user, underskott, fyUnder.id, '2026-09-01', 100000);
+    await customerInvoice(user, underskott, fyUnder.id, '2026-11-10', '2027-01-20', 4000000);
+    await supplierInvoice(user, underskott, fyUnder.id, '2026-11-10', '2026-12-15', 1600000);
+  });
+
+  it('F1: okänd kassa gör saldona null; en annan okänd källa räknar saldona men lämnar behovet null', async () => {
+    const fall = [
+      { namn: 'Okänd kassa AB', id: okandKassa, kallor: ['kassa_19xx'], saldonNull: true },
+      { namn: 'Årsmoms AB', id: arsmoms, kallor: ['leverantorsfakturor'], saldonNull: false },
+      { namn: 'Allt okänt AB', id: alltOkant, kallor: ['kassa_19xx', 'leverantorsfakturor'], saldonNull: true },
+      { namn: 'Underskott AB', id: underskott, kallor: [], saldonNull: false },
+    ];
+    for (const f of fall) {
+      const svar = await byMonth(user, f.id);
+      expect(svar.unknown.map((u) => u.source), f.namn).toStrictEqual(f.kallor);
+      const komplett = f.kallor.length === 0;
+      expect(svar.complete, f.namn).toBe(komplett);
+      for (const par of saldon(svar)) {
+        if (f.saldonNull) expect(par, f.namn).toStrictEqual([null, null]);
+        else expect(par.every((s) => Number.isSafeInteger(s)), `${f.namn}: ${JSON.stringify(par)}`).toBe(true);
+      }
+      if (komplett) expect(svar.outcome, f.namn).not.toBe('unknown');
+      else expect([svar.outcome, svar.first_deficit, svar.need_ore], f.namn).toStrictEqual(['unknown', null, null]);
+    }
+    const svar = await byMonth(user, underskott);
+    expect(saldon(svar)).toStrictEqual([[100000, 100000], [100000, -1900000], [-1900000, 3100000]]);
+    expect(svar).toMatchObject({ outcome: 'deficit', first_deficit: { ym: '2026-12', amount_ore: 1900000 }, need_ore: 1900000 });
+    expect(saldon(await byMonth(user, arsmoms))).toStrictEqual([[1000000, 1000000], [1000000, 1000000], [1000000, 1000000]]);
+  });
+
+  it('F2: avsnittet nämner varje fält och id i svaren, och säger per okänd källa om saldona är null', async () => {
+    const avsnitt = await likviditetsavsnitt();
+    const ord = new Set<string>();
+    for (const id of [okandKassa, arsmoms, alltOkant, underskott]) {
+      for (const o of svarsOrd(await byMonth(user, id))) ord.add(o);
+    }
+    for (const kant of ['complete', 'first_deficit', 'source', 'overdue_ore', 'kassa_19xx', 'deficit']) expect([...ord], kant).toContain(kant);
+    expect([...ord].filter((o) => !avsnitt.includes('`' + o + '`'))).toStrictEqual([]);
+    const lista = punkter(avsnitt);
+    for (const [kalla, id] of [['kassa_19xx', okandKassa], ['leverantorsfakturor', arsmoms]] as const) {
+      const svar = await byMonth(user, id);
+      expect(svar.unknown.map((u) => u.source)).toStrictEqual([kalla]);
+      const punkt = lista.filter((p) => p.includes('`' + kalla + '`'));
+      expect(punkt, `${kalla}: ${JSON.stringify(lista)}`).toHaveLength(1);
+      const nollade = saldon(svar).every(([o, c]) => o === null && c === null);
+      expect(punkt[0]!.includes('`null`'), `${kalla}: ${punkt[0]}`).toBe(nollade);
+      if (!nollade) expect(punkt[0], kalla).toContain('`complete`');
+    }
+  });
+
+  it('F3: utan momsförfallodag inom horisonten är next_due_date null, och reservationen står kvar', async () => {
+    const svar = await byMonth(user, arsmoms);
+    const tax = await action(user, arsmoms, 'tax_overview', { as_of: '2026-11-20' });
+    const deadlines = tax.deadlines as { type: string; due_date: string }[];
+    expect(deadlines.filter((d) => d.type === 'vat')).toStrictEqual([]);
+    const moms = svar.not_counted.find((r) => r.id === 'moms_26xx')!;
+    expect(moms).toMatchObject({ amount_ore: 250000, next_due_date: null, reservation: VAT_UNSETTLED_NOTE.trim() });
+    const agiDag = deadlines.find((d) => d.type === 'agi' && d.due_date >= '2026-11-20')!.due_date;
+    expect(svar.not_counted.find((r) => r.id === 'agi_rest_2710_2730')!.next_due_date).toBe(agiDag);
+  });
+
+  it('F4: där regeln är avgjord säger prognosen och läsåtgärden samma sak om samma belopp', async () => {
+    const par = [
+      ['moms', 'moms_26xx'], ['bolagsskatt', 'bolagsskatt'],
+      ['semesterloner_2920', 'semesterloner_2920'], ['ovriga_kortfristiga_2890', 'ovriga_kortfristiga_2890'],
+    ] as const;
+    const momsDagar: (string | null)[] = [];
+    for (const [namn, id] of [['Underskott AB', underskott], ['Årsmoms AB', arsmoms]] as const) {
+      const svar = await byMonth(user, id);
+      const prognos = await action(user, id, 'liquidity_forecast', { as_of: '2026-11-20' }) as Liquidity;
+      for (const [kalla, radId] of par) {
+        const kallrad = prognos.sources.find((s) => s.id === kalla)!;
+        const rad = svar.not_counted.find((r) => r.id === radId)!;
+        expect(rad.amount_ore, `${namn} ${radId}`).toBe(kallrad.amount_ore);
+        // Ett momsnetto som är noll eller en fordran bär datum per regel 4, medan
+        // prognosen inte ger det något; den frågan ligger hos David.
+        if (radId !== 'moms_26xx' || rad.amount_ore > 0) expect(rad.next_due_date, `${namn} ${radId}`).toBe(kallrad.due_date);
+      }
+      momsDagar.push(svar.not_counted.find((r) => r.id === 'moms_26xx')!.next_due_date);
+    }
+    // Båda momsgrenarna är prövade: ett daterat och ett odaterat positivt netto.
+    expect(momsDagar[0]).toEqual(expect.any(String));
+    expect(momsDagar[1]).toBeNull();
+  });
+});
+
+describe('liquidityByMonth — restsaldot på båda sidor om brytpunkten (6.5 F)', () => {
+  let user: TestUser;
+  let kontant: string;
+  let brytpunkt: string;
+  let agiKontant = 0;
+  let agiAugusti = 0;
+  let agiSeptember = 0;
+  async function lonebesked(companyId: string, perioder: [string, string][]): Promise<number[]> {
+    const employee = await action(user, companyId, 'create_employee', { name: 'Lönetagare', monthly_salary_ore: 1000000, tax_rate: 23 });
+    const agi: number[] = [];
+    for (const [period, payment_date] of perioder) {
+      const payslip = await action(user, companyId, 'create_payslip', { employee_id: employee.id, period, payment_date });
+      agi.push(payslip.tax_ore + payslip.employer_contribution_ore);
+      await approveAction(user, companyId, 'book_payslip', { payslip_id: payslip.id });
+    }
+    return agi;
+  }
+  beforeAll(async () => {
+    user = await registerUser('brytpunkt65');
+    // 2026-08 ligger före brytpunkten: kontantmetoden bokför bara nettolönen.
+    kontant = await createCompany(user.token, 'Kontantmetod AB');
+    const fyKontant = await createFiscalYear(kontant, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await cashSeed(user, kontant, fyKontant.id, '2026-01-15', 5000000);
+    const [augusti] = await lonebesked(kontant, [['2026-08', '2026-08-25']]);
+    agiKontant = augusti!;
+    // 2026-09 är brytpunktens egen period och krediterar 2710 och 2731.
+    brytpunkt = await createCompany(user.token, 'Brytpunkt AB');
+    const fyBryt = await createFiscalYear(brytpunkt, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await cashSeed(user, brytpunkt, fyBryt.id, '2026-01-15', 5000000);
+    const [fore, vid] = await lonebesked(brytpunkt, [['2026-08', '2026-08-25'], ['2026-09', '2026-09-25']]);
+    agiAugusti = fore!;
+    agiSeptember = vid!;
+    await approveAction(user, brytpunkt, 'post_voucher', {
+      fiscal_year_id: fyBryt.id, voucher_date: '2026-10-15', description: 'Manuell personalskatt',
+      lines: [{ account_number: 7010, debit_ore: 12345 }, { account_number: 2710, credit_ore: 12345 }],
+    });
+  });
+  const rest = (svar: LiquidityByMonth) => svar.not_counted.find((r) => r.id === 'agi_rest_2710_2730')!.amount_ore;
+  const agiRaknad = (svar: LiquidityByMonth) => svar.counted.find((s) => s.id === 'agi_lonebesked');
+
+  it('F5: en obetald period före brytpunkten ligger inte på kontona och dras inte av från restsaldot', async () => {
+    const svar = await byMonth(user, kontant);
+    expect(agiKontant).toBeGreaterThan(0);
+    expect(rest(svar)).toBe(0);
+    expect(agiRaknad(svar)).toStrictEqual({ id: 'agi_lonebesked', side: 'out', amount_ore: agiKontant, overdue_ore: agiKontant });
+  });
+  it('F6: brytpunktens period dras av, perioden före inte, och en manuell skuld på 2710 blir rest', async () => {
+    const svar = await byMonth(user, brytpunkt);
+    expect(agiAugusti).toBeGreaterThan(0);
+    expect(agiSeptember).toBeGreaterThan(0);
+    expect(rest(svar)).toBe(12345);
+    const summa = agiAugusti + agiSeptember;
+    expect(agiRaknad(svar)).toStrictEqual({ id: 'agi_lonebesked', side: 'out', amount_ore: summa, overdue_ore: summa });
+  });
+});
+
+describe('notCountedRows — varje fält och båda datumen (6.5 F)', () => {
+  const med = (falt: keyof NotCountedInput, varde: number | string | null) => ({ ...NOLL, [falt]: varde }) as NotCountedInput;
+  it('F7: ett ogiltigt belopp i vart och ett av de åtta fälten och ett ogiltigt datum i vart och ett av de två kastar', () => {
+    const belopp = (Object.keys(NOLL) as (keyof NotCountedInput)[]).filter((k) => k.endsWith('_ore'));
+    expect(belopp).toHaveLength(8);
+    for (const falt of belopp) {
+      for (const varde of [10.5, Number.MAX_SAFE_INTEGER + 2, Number.NaN]) {
+        expect(() => notCountedRows(med(falt, varde)), `${falt}=${varde}`).toThrow();
+      }
+      expect(() => notCountedRows(med(falt, -7)), falt).not.toThrow();
+    }
+    for (const falt of ['next_vat_due', 'next_agi_due'] as const) {
+      for (const varde of ['2026-02-30', '2026-13-01', '20261120', '']) {
+        expect(() => notCountedRows(med(falt, varde)), `${falt}=${varde}`).toThrow();
+      }
+      expect(() => notCountedRows(med(falt, '2026-12-14')), falt).not.toThrow();
+    }
+  });
+});

@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 6.5 (crm), omtag efter granskningen (fyra fynd):**
+  Avsnittet *Likviditet per kalendermånad (crm 6.5)* i `docs/MCP_ACTIONS.md` är
+  omskrivet. Det skiljer nu okänd kassa (`kassa_19xx`, saldona `null`) från en
+  okänd leverantörsreskontra (saldona räknas, men `need_ore` och
+  `first_deficit` är `null`), beskriver `complete` och varje fält i svaret, och
+  säger att styrvyn ska läsa funktionen först i Story 6.3. Två kommentarer i
+  `liquidityByMonth` som påstod samma sak eller att inget tal hade en andra
+  definition är rättade. Nya fall sist i `server/test/steering-liquidity.test.ts`
+  (F1–F7): okänt per källa i fyra bolag; avsnittet prövat mot svarens egna
+  nycklar och mot saldona per okänd källa; momsens förfallodag `null` för
+  helårsmoms; prognosen och läsåtgärden ger samma belopp och datum där regeln
+  är avgjord; restsaldot med en period före brytpunkten (0) och med
+  brytpunktens egen period plus en manuell skuld på 2710; varje beloppsfält och
+  båda datumen i `notCountedRows`. Ingen beteendeändring. Ett negativt eller
+  noll momsnetto som får nästa förfallodag (regel 4) står som fråga till David
+  i berättelsen. Det dubbla arbetet per anrop (`accountSums`,
+  `unpaidPayrollPeriods`, hela tidsrapporten) är övervägt men inte ändrat:
+  skattetjänsten, tidsrapporterna och `agiPartsFor` får inte röras i 6.5.
+  **Inte kört:** sandlådan kräver godkännande för `npm run typecheck`.
+  Kedjans typkontroll och svit avgör.
 - **2026-11-22 — Story 6.5 (crm), det obelagda redovisas för sig och
   likviditeten blir en läsåtgärd (FR-44):** `liquidityByMonth` i
   `server/src/services/reports.ts` returnerar nu `LiquidityByMonth`, alltså
