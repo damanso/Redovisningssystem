@@ -22,8 +22,11 @@
 //     importens, som skriver koden som namn bara när kontraktet saknade namnet.
 //     Ett senare baselinebeslut ger delen ett namn i en ny version, men det är
 //     Davids beslut och inte kontraktets: registret visar fortsatt att namnet
-//     saknas i kontraktet. NULL när namnet är koden. Ingen kolumn på
+//     saknas i kontraktet. NULL när namnet är koden (`delnamn`). Ingen kolumn på
 //     `uppdrag_leverabel`, så ingenting behöver efterfyllas.
+//   * **Ett blankt fält är ett saknat fält** (`angivet`, samma regel som
+//     luckorna). Läsvägen ger NULL för det, så att ingen yta som läser registret
+//     ritar ett tomt fält där lucklistan säger att fältet saknas.
 //   * **`dagar_i_laget` HÄRLEDS, den lagras aldrig** (FR-37). Åldern räknas i
 //     SELECT:en ur den append-only historiken (`uppdrag_leverabel_handelse`,
 //     0068:132 — "status utan historik är en gissning"). En `status_sedan`-kolumn
@@ -32,6 +35,7 @@
 //     Härledningen kan per definition inte drifta.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
+import { angivet, delnamn } from '../lib/kontraktsluckor.js';
 
 export interface LasLeverabelregisterInput {
   contract_id: string;
@@ -86,11 +90,11 @@ export async function lasLeverabelregister(
   client: PoolClient, companyId: string, input: LasLeverabelregisterInput,
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
-  const res = await client.query<Leverabelrad>(
+  const res = await client.query<Omit<Leverabelrad, 'namn'> & { forsta_namn: string | null }>(
     `SELECT l.contract_id, l.kod,
-            NULLIF((SELECT p.name FROM contract_parts p
-                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
-                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            (SELECT p.name FROM contract_parts p
+              WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+              ORDER BY p.valid_from LIMIT 1) AS forsta_namn,
             l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
@@ -102,5 +106,15 @@ export async function lasLeverabelregister(
       ORDER BY l.kod`,
     [companyId, input.contract_id],
   );
-  return res.rows;
+  return res.rows.map(({ forsta_namn, ...r }) => ({
+    contract_id: r.contract_id,
+    kod: r.kod,
+    namn: delnamn(r.kod, forsta_namn),
+    klausul: angivet(r.klausul),
+    acceptanskriterium: angivet(r.acceptanskriterium),
+    uppfoljningsmatt: angivet(r.uppfoljningsmatt),
+    matt_lasvag: angivet(r.matt_lasvag),
+    status: r.status,
+    dagar_i_laget: r.dagar_i_laget,
+  }));
 }

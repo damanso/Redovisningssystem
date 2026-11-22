@@ -44,7 +44,9 @@ import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragR
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsparter, lasKontraktsyta, type Kontraktsyta, type Lagradeparter, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
-import { KALLA_SAKNAS, LUCKTEXT, MOTTAGARPART_EJ_INLAST, godkannandeformtext, mottagarpartlage } from '../../lib/kontraktsluckor.js';
+import {
+  KALLA_SAKNAS, LUCKTEXT, MOTTAGARPART_EJ_INLAST, angivet, delnamnsvisning, godkannandeformtext, mottagarpartlage,
+} from '../../lib/kontraktsluckor.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -3787,6 +3789,18 @@ function dokumentpanel(companyId: string, y: Kontraktsyta, idag: string): Raw {
   </section>`;
 }
 
+/**
+ * En dels namn i Kontraktets tabell (Story 2.4). Ett namn som är koden är ett
+ * saknat namn: en leverabel får luckans ord dämpat — samma ord som panelen
+ * Parterna och luckorna — och en annan del ett dämpat streck, eftersom koden
+ * redan står i cellen bredvid och ingen lucklista nämner den.
+ */
+function delnamnscell(kod: string, namn: string): Raw | string {
+  const visat = delnamnsvisning(kod, namn);
+  if (visat === null) return saknatFalt('—');
+  return visat.lucka ? saknatFalt(visat.text) : visat.text;
+}
+
 /** Det som gäller — eller, för ett osignerat avtal, det som bara föreslås. */
 function gallandepanel(y: Kontraktsyta): Raw {
   const utkast = y.contract.kontrakt_tillstand === 'utkast';
@@ -3810,7 +3824,7 @@ function gallandepanel(y: Kontraktsyta): Raw {
               <th>Tak</th><th>Taket läst</th></tr></thead>
             <tbody>${y.gallande.map((g) => html`<tr>
               <td class="code">${g.code}</td>
-              <td>${g.name}${g.active ? '' : html` ${chip('Avslutad', 'muted', '×')}`}
+              <td>${delnamnscell(g.code, g.name)}${g.active ? '' : html` ${chip('Avslutad', 'muted', '×')}`}
                 ${g.parent_code ? html`<span class="muted" style="font-size:12.5px"> · under ${g.parent_code}</span>` : ''}</td>
               <td class="code">${g.valid_from ?? '—'}</td>
               <td>${takText(g.cap_hours, g.cap_amount_ore)}${
@@ -3952,10 +3966,13 @@ function parterpanel(y: Kontraktsyta): Raw {
       ${ejInlast
         ? html`<p class="muted" style="margin:8px 16px 12px">${MOTTAGARPART_EJ_INLAST}</p>`
         : html`<dl style="margin:0;padding:10px 16px 4px">
-            ${parterfalt('Mottagarpart och godkännare', p.godkannare ?? saknatFalt(LUCKTEXT.mottagarpart.vad))}
-            ${parterfalt('Eskalering', p.godkannare_eskalering ?? saknatFalt('—'))}
-            ${parterfalt('Godkännandeform', p.godkannandeform ?? saknatFalt(godkannandeformtext(null)))}
-            ${parterfalt('Källa', p.kalla ?? saknatFalt(KALLA_SAKNAS))}
+            ${/* Samma blankregel som mottagarpartens läge (`angivet`): ett blankt
+                  fält står som saknat, aldrig som en tom rad bredvid ett chip
+                  som säger att något saknas. */ ''}
+            ${parterfalt('Mottagarpart och godkännare', angivet(p.godkannare) ?? saknatFalt(LUCKTEXT.mottagarpart.vad))}
+            ${parterfalt('Eskalering', angivet(p.godkannare_eskalering) ?? saknatFalt('—'))}
+            ${parterfalt('Godkännandeform', angivet(p.godkannandeform) ?? saknatFalt(godkannandeformtext(null)))}
+            ${parterfalt('Källa', angivet(p.kalla) ?? saknatFalt(KALLA_SAKNAS))}
           </dl>
           ${y.luckor.length === 0
             ? html`<p class="muted" style="margin:10px 16px 12px">${INGA_LUCKOR}</p>`
@@ -3965,8 +3982,8 @@ function parterpanel(y: Kontraktsyta): Raw {
                   <div class="muted" style="font-size:12.5px;margin-top:2px">${l.ja_innebar}</div></li>`)}
               </ul>`}
           <p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Parterna läses ur kontraktets fält eller
-            manifestet för projektet när baselinen godkänns och skrivs aldrig här. En lucka står kvar tills en ny
-            kontraktsversion fyller den, och den blir inget eget ärende.</p>`}
+            manifestet för projektet när baselinen godkänns och skrivs aldrig här. Vad ett ja innebär står under
+            varje lucka, och en lucka blir inget eget ärende.</p>`}
     </div>
   </section>`;
 }

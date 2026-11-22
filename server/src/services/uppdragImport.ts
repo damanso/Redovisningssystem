@@ -31,13 +31,15 @@ import {
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
 import {
-  baselineunderlag, kontraktsluckor, kontraktsparter, manifestankare, OLASTA, olastaFormer,
-  type Kontraktsmanifest,
+  baselineunderlag, kontraktsparter, manifestankare, OLASTA, olastaFormer, registerluckor, registerplan,
+  type Kontraktsmanifest, type RegisterfaltSomFylls,
 } from '../lib/kontraktsluckor.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
+import { lasKontraktsparter } from './uppdragKontrakt.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
 // Importcykeln uppdragImport → uppdragSvep → uppdragUndantag → approvalSummary →
 // uppdragImport är ofarlig i ESM så länge inget importerat namn läses på modulnivå.
 import { UTKASTFRAGENYCKEL, upsertSvepvarden } from './uppdragSvep.js';
@@ -96,6 +98,18 @@ const PARTER_UPDATE: Readonly<Record<string, string>> = {
   godkannare_eskalering: 'godkannare_eskalering',
   godkannandeform: 'godkannandeform',
   godkannare_kalla: 'godkannare_kalla',
+};
+
+/**
+ * Registrets kolumner som en ny kontraktsversion fyller när de är tomma (Story
+ * 2.4, `REGISTERFALT_SOM_FYLLS`). Nycklad på typen, så att listan i lib och
+ * tillåtelselistan här inte kan glida isär. Aldrig `status` och aldrig `kod`.
+ */
+const REGISTER_FYLL: Readonly<Record<RegisterfaltSomFylls, string>> = {
+  klausul: 'klausul',
+  acceptanskriterium: 'acceptanskriterium',
+  uppfoljningsmatt: 'uppfoljningsmatt',
+  matt_lasvag: 'matt_lasvag',
 };
 
 /**
@@ -394,8 +408,10 @@ export async function importeraLeveranskontrakt(
       `Kontraktstexten kunde inte läsas: ${olast.map((f) => OLASTA[f]).join('; ')}. Ingenting skrevs.`, { olast });
   }
   // Parterna, ankaret och luckorna räknas med samma anrop som förslagets
-  // underlag i undantagsvyn (`explainApproval`), så att de aldrig skiljer sig.
-  const underlag = baselineunderlag(kontrakt, input.manifest ?? null, avtal);
+  // underlag i undantagsvyn (`explainApproval`), så att de aldrig skiljer sig,
+  // och luckorna över registret som Davids ja lämnar efter sig.
+  const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
+  const underlag = baselineunderlag(kontrakt, input.manifest ?? null, avtal, register);
   const forslag = {
     uppdrag: { code: ROTKOD, ...kontrakt.ram },
     strommar: kontrakt.strommar,
@@ -502,20 +518,44 @@ export async function sattBaseline(
     })));
   }
 
-  // (e) Leverabelregistret. UNIQUE (contract_id, kod) bär idempotensen: en rad
-  // som redan finns rörs inte, för dess `status` är modulens egen sanning och
-  // en import ska aldrig nollställa någons framsteg.
+  // (e) Leverabelregistret, efter samma plan som förslaget visade
+  // (`registerplan`, Story 2.4): en ny leverabel skapas, och ett tomt
+  // kontraktsfält i en befintlig rad fylls ur den nya kontraktsversionen. Ett
+  // värde som står skrivs aldrig över, och `status` rörs aldrig — den är
+  // modulens egen sanning, och en import ska aldrig nollställa någons framsteg.
+  // Raderna låses före planen, så att ingen annan skrivning hinner fylla ett
+  // fält mellan läsningen och skrivningen; UNIQUE (contract_id, kod) bär
+  // idempotensen för de nya raderna.
+  await client.query(
+    `SELECT id FROM uppdrag_leverabel WHERE company_id = $1 AND contract_id = $2 FOR UPDATE`,
+    [companyId, input.contract_id],
+  );
+  const plan = registerplan(
+    await lasLeverabelregister(client, companyId, { contract_id: input.contract_id }), kontrakt.leverabler,
+  );
   let nyaLeverabelrader = 0;
-  for (const leverabel of kontrakt.leverabler) {
+  for (const rad of plan.nya) {
     const res = await client.query(
       `INSERT INTO uppdrag_leverabel
          (company_id, contract_id, kod, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT ON CONSTRAINT uppdrag_leverabel_kod_uk DO NOTHING`,
-      [companyId, input.contract_id, leverabel.kod, leverabel.klausul, leverabel.acceptanskriterium,
-        leverabel.uppfoljningsmatt, leverabel.matt_lasvag],
+      [companyId, input.contract_id, rad.kod, rad.klausul, rad.acceptanskriterium,
+        rad.uppfoljningsmatt, rad.matt_lasvag],
     );
     nyaLeverabelrader += res.rowCount ?? 0;
+  }
+  let fylldaLeverabelrader = 0;
+  for (const { kod, varden } of plan.fyllda) {
+    const update = buildAllowlistedUpdate(REGISTER_FYLL, varden);
+    if (!update) continue;
+    const n = update.values.length;
+    const res = await client.query(
+      `UPDATE uppdrag_leverabel SET ${update.setSql}
+        WHERE company_id = $${n + 1} AND contract_id = $${n + 2} AND kod = $${n + 3}`,
+      [...update.values, companyId, input.contract_id, kod],
+    );
+    fylldaLeverabelrader += res.rowCount ?? 0;
   }
 
   // (e2) Registret har ändrats — alltså ska den frysta kopian skrivas om. Kön
@@ -648,7 +688,7 @@ export async function sattBaseline(
     }
   }
 
-  const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
+  const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0 && fylldaLeverabelrader === 0
     && nyaScopelinjer === 0 && !parterAndrade && mattSkapade === 0 && !rytmAndrad && !ankareSkrivet;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
@@ -664,15 +704,22 @@ export async function sattBaseline(
       scopelinjer_skapade: nyaScopelinjer,
       matt_skapade: mattSkapade,
       rytm_andrad: rytmAndrad,
-      // Story 2.4: om parterna skrevs och ankarets läge — ett ord ur
-      // `ANKARLAGEN`. Inga namn och ingen källa: ingen fritext (lärdom 10).
+      // Story 2.4: hur många registerrader som fick ett tomt fält fyllt, om
+      // parterna skrevs och ankarets läge — ett ord ur `ANKARLAGEN`. Inga namn
+      // och ingen källa: ingen fritext (lärdom 10).
+      leverabelrader_fyllda: fylldaLeverabelrader,
       parter_andrade: parterAndrade,
       ankare: ankare.lage,
       saknade_falt: saknadeFalt(kontrakt),
     },
   });
 
-  const efterAvtal = await hamtaAvtal(client, companyId, input.contract_id);
+  // Parterna och luckorna efter steget läses genom samma läsvägar som
+  // Kontraktet och Leveranserna (`lasKontraktsparter`, `lasLeverabelregister`)
+  // och räknas med samma anrop (`registerluckor`), så att svaret och ytorna
+  // aldrig säger olika saker om samma avtal.
+  const parterEfter = await lasKontraktsparter(client, companyId, input.contract_id);
+  const registerEfter = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
   return {
     contract_id: input.contract_id,
     oforandrad,
@@ -685,22 +732,23 @@ export async function sattBaseline(
     styrning: kontrakt.styrning !== null,
     avtalsdelar_skrivna: skrivnaDelar,
     leverabelrader_skapade: nyaLeverabelrader,
+    leverabelrader_fyllda: fylldaLeverabelrader,
     scopelinjer_skapade: nyaScopelinjer,
     matt_skapade: mattSkapade,
     rytm_andrad: rytmAndrad,
-    godkannare: efterAvtal.godkannare,
-    godkannare_eskalering: efterAvtal.godkannare_eskalering,
+    godkannare: parterEfter.godkannare,
+    godkannare_eskalering: parterEfter.godkannare_eskalering,
     // Story 2.4: avtalets parter efter steget, skillnaderna mot texten, ankarets
-    // utfall och luckorna med den mottagarpart godkännandet lämnade efter sig.
+    // utfall och luckorna över registret och mottagarparten efter steget.
     parter: {
-      godkannare: efterAvtal.godkannare,
-      godkannare_eskalering: efterAvtal.godkannare_eskalering,
-      godkannandeform: efterAvtal.godkannandeform,
-      kalla: efterAvtal.godkannare_kalla,
+      godkannare: parterEfter.godkannare,
+      godkannare_eskalering: parterEfter.godkannare_eskalering,
+      godkannandeform: parterEfter.godkannandeform,
+      kalla: parterEfter.kalla,
     },
     parter_skillnader: parter.skillnader,
     ankare,
-    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: efterAvtal.godkannare }),
+    luckor: registerluckor(registerEfter, parterEfter.godkannare),
     saknade_falt: saknadeFalt(kontrakt),
     avtal: await getContractUsage(client, companyId, input.contract_id),
   };

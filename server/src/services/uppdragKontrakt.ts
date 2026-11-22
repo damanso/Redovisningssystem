@@ -33,7 +33,7 @@ import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
-import { kontraktsluckor, mottagarpartlage, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
+import { angivet, mottagarpartlage, registerluckor, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
 
 export interface LasKontraktsytaInput {
   contract_id: string;
@@ -146,7 +146,9 @@ export interface Lagradeparter {
  * De lagrade parterna och mottagarpartens läge. Det ENDA stället där det avgörs
  * om kontraktet är inläst (avtalet har registerrader), så att ett oläst
  * kontrakt aldrig sägs sakna sin mottagarpart; varje läsväg som visar de
- * lagrade parterna går hit. Ett avtal utanför bolaget ger 404.
+ * lagrade parterna går hit. Ett blankt fält ges som NULL (`angivet`, samma
+ * regel som mottagarpartens läge), så att ingen yta ritar ett tomt fält där
+ * läget säger att mottagarparten saknas. Ett avtal utanför bolaget ger 404.
  */
 export async function lasKontraktsparter(
   client: PoolClient, companyId: string, contractId: string,
@@ -160,8 +162,13 @@ export async function lasKontraktsparter(
     [contractId, companyId],
   )).rows[0];
   if (!rad) throw new NotFoundError('contract');
-  const { inlast, ...parter } = rad;
-  return { ...parter, lage: mottagarpartlage(parter, inlast).lage };
+  const parter = {
+    godkannare: angivet(rad.godkannare),
+    godkannare_eskalering: angivet(rad.godkannare_eskalering),
+    godkannandeform: angivet(rad.godkannandeform),
+    kalla: angivet(rad.kalla),
+  };
+  return { ...parter, lage: mottagarpartlage(parter, rad.inlast).lage };
 }
 
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
@@ -252,10 +259,10 @@ export async function lasKontraktsyta(
   );
 
   // Story 2.4: parterna ur samma läsväg som Leveranserna och förslaget, och
-  // luckorna ur samma regel som importens svar. Utan register är inget inläst.
+  // luckorna ur samma anrop som godkännandets svar. Utan register är inget inläst.
   const parter = await lasKontraktsparter(client, companyId, input.contract_id);
   const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
-  const luckor = register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare });
+  const luckor = registerluckor(register, parter.godkannare);
 
   return {
     contract: {

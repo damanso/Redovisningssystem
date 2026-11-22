@@ -10,8 +10,10 @@
 //   * **En lucka är en beräknad lista, aldrig en post.** `kontraktsluckor`
 //     räknar dem över den slutna fältlistan `LUCKFALT`. Ingen tabell, ingen
 //     köpost och ingen undantagspost skapas per lucka; luckan står i
-//     baselineförslagets underlag och fältet förblir saknat tills en ny
-//     kontraktsversion fyller det. Transmittalens fält (mottagare,
+//     baselineförslagets underlag. Listan räknas alltid över registret — som
+//     det står (`registerluckor`) eller som det står efter ett ja
+//     (`registerplan`, samma plan som godkännandet skriver) — så att varje yta
+//     säger samma sak om samma avtal. Transmittalens fält (mottagare,
 //     överlämningsdatum, revision) står inte i listan: de är tomma före första
 //     överlämningen, och det är ett giltigt läge (FR-9).
 //   * **En textkälla.** Varje text som underlaget, registret och kontraktsytan
@@ -24,8 +26,18 @@
 //     sägs aldrig sakna något.
 import { z } from 'zod';
 import { isoVeckodag } from './bedomningsrytm.js';
-import type { Leverabel, Leveranskontrakt } from './leveranskontrakt.js';
+import { LEVERABELKOD, type Leverabel, type Leveranskontrakt } from './leveranskontrakt.js';
 import { IsoDateSchema, safeText } from './validation.js';
+
+/**
+ * Ett värde som står, eller NULL. Ett blankt värde är inget värde. Den enda
+ * blankregeln: luckorna, mottagarpartens läge, godkännandeformen, namnet och
+ * läsvägarna för registret och parterna använder den, så att ingen yta ritar
+ * ett tomt fält där en annan säger att fältet saknas.
+ */
+export function angivet(v: string | null | undefined): string | null {
+  return v === null || v === undefined || v.trim() === '' ? null : v;
+}
 
 // ---------------------------------------------------------------------------
 // Manifestet (FR-13, FR-14)
@@ -108,11 +120,19 @@ export interface Lucktext {
 }
 
 const VAR_LEVERANSKARTAN = 'Leveranskartan, raden {kod}';
+/** Sant: godkännandet fyller ett tomt registerfält ur en ny kontraktsversion (`registerplan`). */
 const JA_LEVERABELFALT = 'Ett ja lämnar fältet saknat tills en ny kontraktsversion fyller det.';
+/**
+ * Namnet fylls aldrig: det läses ur avtalsdelens första version (`delnamn`), och
+ * en lagrad baselineversion skrivs aldrig över — en senare text med namnet ger
+ * 409 `version_finns`, och ett namn som David beslutar är hans, inte kontraktets.
+ */
+const JA_NAMN = 'Ett ja lämnar namnet saknat. Namnet läses ur den första inlästa kontraktsversionen, '
+  + 'så en senare kontraktsversion fyller det inte.';
 
 /** Den enda källan till luckornas texter. Nycklad på fälten, så att ett nytt fält fäller typkontrollen. */
 export const LUCKTEXT: Readonly<Record<Luckfalt, Readonly<Lucktext>>> = {
-  namn: { vad: 'Namn saknas i kontraktet', var: VAR_LEVERANSKARTAN, ja_innebar: JA_LEVERABELFALT },
+  namn: { vad: 'Namn saknas i kontraktet', var: VAR_LEVERANSKARTAN, ja_innebar: JA_NAMN },
   klausul: { vad: 'Klausulhänvisning saknas i kontraktet', var: VAR_LEVERANSKARTAN, ja_innebar: JA_LEVERABELFALT },
   acceptanskriterium: { vad: 'Acceptanskriterium saknas i kontraktet', var: VAR_LEVERANSKARTAN, ja_innebar: JA_LEVERABELFALT },
   uppfoljningsmatt: { vad: 'Uppföljningsmått saknas i kontraktet', var: VAR_LEVERANSKARTAN, ja_innebar: JA_LEVERABELFALT },
@@ -139,7 +159,7 @@ export interface Luckunderlag {
   mottagarpart: string | null;
 }
 
-const saknas = (v: string | null | undefined): boolean => v === null || v === undefined || v.trim() === '';
+const saknas = (v: string | null | undefined): boolean => angivet(v) === null;
 
 function lucka(falt: Luckfalt, kod: string | null): Lucka {
   const t = LUCKTEXT[falt];
@@ -166,6 +186,121 @@ export function kontraktsluckor(underlag: Luckunderlag): Lucka[] {
 /** En lucka som mening i förslagets skäl: vad, var och vad ett ja innebär. */
 export function luckmening(l: Lucka): string {
   return `${l.vad} — ${l.var}. ${l.ja_innebar}`;
+}
+
+// ---------------------------------------------------------------------------
+// Registret: samma lista på varje yta, före och efter Davids ja
+// ---------------------------------------------------------------------------
+
+/** En rad i leverabelregistret med de fält som luckorna räknas över. Registrets läsväg och parserns leverabler passar båda. */
+export interface Registerfalt {
+  kod: string;
+  namn: string | null;
+  klausul: string | null;
+  acceptanskriterium: string | null;
+  uppfoljningsmatt: string | null;
+  matt_lasvag: string | null;
+}
+
+/**
+ * Registrets kolumner som kontraktstexten bär och som en ny kontraktsversion
+ * fyller när de är tomma. Ett värde som står skrivs aldrig över: en text som
+ * tappat ett fält har inte sagt att fältet är tomt. Namnet står inte här — det
+ * läses ur avtalsdelens första version (`delnamn`), som aldrig skrivs om.
+ */
+export const REGISTERFALT_SOM_FYLLS = ['klausul', 'acceptanskriterium', 'uppfoljningsmatt', 'matt_lasvag'] as const;
+export type RegisterfaltSomFylls = (typeof REGISTERFALT_SOM_FYLLS)[number];
+
+/**
+ * En dels namn som kontraktet angav det, eller NULL. Importen skriver koden som
+ * namn när kontraktet saknade namnet (`planeraDelar`), så ett namn som är koden
+ * — eller blankt — är ett saknat namn. Registret, Kontraktet och förslaget
+ * läser regeln här.
+ */
+export function delnamn(kod: string, namn: string | null): string | null {
+  const n = angivet(namn);
+  return n === null || n === kod ? null : n;
+}
+
+/**
+ * Ett delnamn som det visas: kontraktets namn, för en leverabel utan namn
+ * luckans text — samma ord som lucklistan bredvid — och för en annan del utan
+ * namn ingenting. En ström eller styrningen har ingen namnlucka i `LUCKFALT`,
+ * så den sägs inte sakna något; koden står redan i sin egen cell.
+ */
+export function delnamnsvisning(kod: string, namn: string | null): { text: string; lucka: boolean } | null {
+  const n = delnamn(kod, namn);
+  if (n !== null) return { text: n, lucka: false };
+  return LEVERABELKOD.test(kod) ? { text: LUCKTEXT.namn.vad, lucka: true } : null;
+}
+
+/** Vad godkännandet gör med registret, och registret efteråt. */
+export interface Registerplan {
+  /** Registret som det står efter Davids ja, i registrets ordning (koden). */
+  efter: Registerfalt[];
+  /** Leverabler som inte står i registret och skapas, med textens värden. */
+  nya: Registerfalt[];
+  /** Tomma fält i befintliga rader som texten fyller. */
+  fyllda: Array<{ kod: string; varden: Partial<Record<RegisterfaltSomFylls, string>> }>;
+}
+
+const kodordning = (a: Registerfalt, b: Registerfalt): number => (a.kod < b.kod ? -1 : a.kod > b.kod ? 1 : 0);
+
+/**
+ * Den enda regeln för vad en kontraktstext gör med registret. Godkännandet
+ * skriver planen, och förslaget och importens svar räknar luckorna över
+ * `efter` — så att förslaget aldrig visar ett annat register än det Davids ja
+ * lämnar efter sig. En ny leverabel skapas med textens fält. En befintlig rad
+ * får ett tomt fält i `REGISTERFALT_SOM_FYLLS` fyllt ur texten och behåller
+ * allt annat; `status` rörs aldrig. En rad som texten inte längre nämner står
+ * kvar. Står samma kod två gånger i texten gäller den första.
+ */
+export function registerplan(
+  register: ReadonlyArray<Registerfalt>,
+  leverabler: ReadonlyArray<Pick<Leverabel, 'kod' | 'namn' | 'klausul' | 'acceptanskriterium' | 'uppfoljningsmatt' | 'matt_lasvag'>>,
+): Registerplan {
+  const befintliga = new Map(register.map((r) => [r.kod, r]));
+  const efter = new Map<string, Registerfalt>(register.map((r) => [r.kod, {
+    kod: r.kod, namn: r.namn, klausul: r.klausul, acceptanskriterium: r.acceptanskriterium,
+    uppfoljningsmatt: r.uppfoljningsmatt, matt_lasvag: r.matt_lasvag,
+  }]));
+  const nya: Registerfalt[] = [];
+  const fyllda: Registerplan['fyllda'] = [];
+  const sedda = new Set<string>();
+  for (const l of leverabler) {
+    if (sedda.has(l.kod)) continue;
+    sedda.add(l.kod);
+    const fore = befintliga.get(l.kod);
+    if (fore === undefined) {
+      const rad: Registerfalt = {
+        kod: l.kod, namn: delnamn(l.kod, l.namn), klausul: l.klausul, acceptanskriterium: l.acceptanskriterium,
+        uppfoljningsmatt: l.uppfoljningsmatt, matt_lasvag: l.matt_lasvag,
+      };
+      nya.push(rad);
+      efter.set(l.kod, rad);
+      continue;
+    }
+    const varden: Partial<Record<RegisterfaltSomFylls, string>> = {};
+    for (const falt of REGISTERFALT_SOM_FYLLS) {
+      const ny = angivet(l[falt]);
+      if (saknas(fore[falt]) && ny !== null) varden[falt] = ny;
+    }
+    if (Object.keys(varden).length > 0) {
+      fyllda.push({ kod: l.kod, varden });
+      efter.set(l.kod, { ...efter.get(l.kod)!, ...varden });
+    }
+  }
+  return { efter: [...efter.values()].sort(kodordning), nya, fyllda };
+}
+
+/**
+ * Luckorna som registret och avtalets mottagarpart visar — samma anrop på
+ * Kontraktet, i godkännandets svar och, över `registerplan(...).efter`, i
+ * förslaget. Ett register utan rader är ett kontrakt som inte är inläst, och då
+ * vet ingen yta vad det saknar.
+ */
+export function registerluckor(register: ReadonlyArray<Registerfalt>, mottagarpart: string | null): Lucka[] {
+  return register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart });
 }
 
 // ---------------------------------------------------------------------------
@@ -250,8 +385,8 @@ export const KALLA_SAKNAS = 'källa saknas';
 export function mottagarpartlage(
   parter: Pick<Kontraktsparter, 'godkannare' | 'godkannare_eskalering' | 'kalla'>, inlast: boolean,
 ): { lage: Mottagarpartlage; text: string } {
-  const godkannare = parter.godkannare;
-  if (godkannare !== null && godkannare.trim() !== '') {
+  const godkannare = angivet(parter.godkannare);
+  if (godkannare !== null) {
     const eskalering = saknas(parter.godkannare_eskalering) ? '' : `, eskalering ${parter.godkannare_eskalering!}`;
     const kalla = saknas(parter.kalla) ? ` · ${KALLA_SAKNAS}` : ` · källa ${parter.kalla!}`;
     return { lage: 'angiven', text: `Mottagarpart: ${godkannare}${eskalering}${kalla}` };
@@ -263,7 +398,8 @@ export function mottagarpartlage(
 
 /** Godkännandeformen som text. Panelen och förslaget ritar den bara härifrån. */
 export function godkannandeformtext(form: string | null): string {
-  return form !== null && form.trim() !== '' ? `Godkännandeform: ${form}` : 'Godkännandeform saknas';
+  const f = angivet(form);
+  return f !== null ? `Godkännandeform: ${f}` : 'Godkännandeform saknas';
 }
 
 // ---------------------------------------------------------------------------
@@ -367,21 +503,26 @@ export interface Lagratavtal {
 /**
  * Parterna, ankaret och luckorna som baselineförslaget visar. Importens svar och
  * förslagets underlag anropar båda den här funktionen med samma indata, så att
- * de aldrig kan säga olika saker. Luckorna räknas med den mottagarpart som
- * godkännandet lämnar efter sig.
+ * de aldrig kan säga olika saker. Luckorna räknas över registret som Davids ja
+ * lämnar efter sig (`registerplan`, samma plan som godkännandet skriver) och
+ * med den mottagarpart som godkännandet lämnar efter sig — alltså samma lista
+ * som Kontraktet och Leveranserna visar efter ett ja. `inlast` säger om
+ * registret har rader efter ett ja.
  */
 export function baselineunderlag(
   kontrakt: Pick<Leveranskontrakt, 'godkannare' | 'godkannare_eskalering' | 'rytm' | 'leverabler'>,
-  manifest: Kontraktsmanifest | null, avtal: Lagratavtal,
-): { parter: Kontraktsparter; ankare: Ankarutfall; luckor: Lucka[] } {
+  manifest: Kontraktsmanifest | null, avtal: Lagratavtal, register: ReadonlyArray<Registerfalt>,
+): { parter: Kontraktsparter; ankare: Ankarutfall; luckor: Lucka[]; inlast: boolean } {
   const parter = kontraktsparter(kontrakt, manifest);
   const rytm: Ankarrytm = kontrakt.rytm !== null
     ? { intervall_dagar: kontrakt.rytm.bedomning_intervall_dagar, veckodag: kontrakt.rytm.bedomning_veckodag }
     : { intervall_dagar: avtal.bedomning_intervall_dagar, veckodag: avtal.bedomning_veckodag };
+  const efter = registerplan(register, kontrakt.leverabler).efter;
   return {
     parter,
     ankare: manifestankare(manifest, rytm, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla }),
-    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? avtal.godkannare }),
+    luckor: registerluckor(efter, parter.godkannare ?? avtal.godkannare),
+    inlast: efter.length > 0,
   };
 }
 

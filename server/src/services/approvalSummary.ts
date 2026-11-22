@@ -12,7 +12,7 @@ import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 import {
-  KontraktsmanifestSchema, LUCKRUBRIK, ankardatumtext, baselineunderlag, godkannandeformtext, luckmening,
+  KontraktsmanifestSchema, LUCKRUBRIK, ankardatumtext, baselineunderlag, delnamnsvisning, godkannandeformtext, luckmening,
   mottagarpartlage, skillnadstext,
 } from '../lib/kontraktsluckor.js';
 import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
@@ -20,6 +20,7 @@ import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
 import { lasKontraktsparter } from './uppdragKontrakt.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 export const CARD_TEXT = {
@@ -502,7 +503,10 @@ export async function explainApproval(
       const placering = d.parent_code ? ` under ${d.parent_code}` : '';
       const datum = leverabel && d.start_date === null && d.end_date === null
         ? 'ärver stegets intervall' : `${leverabel ? 'eget datum: ' : ''}${visaIntervall(d.start_date, d.end_date, d.date_precision)}`;
-      return `${d.code}${leverabel ? placering : ''} ${datum} — ${d.name}`
+      // Story 2.4: ett namn som är koden är ett saknat namn. En leverabel får
+      // luckans ord, samma som skälens lucklista; en annan del inget namn alls.
+      const namn = delnamnsvisning(d.code, d.name);
+      return `${d.code}${leverabel ? placering : ''} ${datum}${namn === null ? '' : ` — ${namn.text}`}`
         + `${d.date_precision ? ` (${d.date_precision})` : ''}`
         + `${d.cap_hours !== null ? `; tak ${d.cap_hours} h` : ''}`
         + `${d.cap_amount_ore !== null ? `; tak ${kr(d.cap_amount_ore)}` : ''}`;
@@ -522,18 +526,19 @@ export async function explainApproval(
     const tolkat = KontraktsmanifestSchema.safeParse(input.manifest);
     const manifest = tolkat.success ? tolkat.data : null;
     const lagrade = await lasKontraktsparter(client, companyId, contractId);
-    const { parter, ankare, luckor } = baselineunderlag(kontrakt, manifest, {
+    const register = await lasLeverabelregister(client, companyId, { contract_id: contractId });
+    const { parter, ankare, luckor, inlast } = baselineunderlag(kontrakt, manifest, {
       godkannare: lagrade.godkannare,
       bedomning_intervall_dagar: avtal.bedomning_intervall_dagar,
       bedomning_veckodag: avtal.bedomning_veckodag,
       bedomning_ankare: avtal.bedomning_ankare,
       bedomning_ankare_kalla: avtal.bedomning_ankare_kalla,
-    });
+    }, register);
     // Parterna efter godkännandet: ur en källa, annars står de lagrade kvar (beslut B3).
     const efterParter = parter.godkannare !== null ? parter : lagrade;
-    // Godkännandet läser in kontraktet, så till-sidan säger aldrig ”inte inläst”.
-    // Från-sidan bär läsvägens läge: ett oläst kontrakt sägs aldrig sakna något.
-    const tillDelar = [mottagarpartlage(efterParter, true).text];
+    // Till-sidan bär registrets läge efter ett ja, från-sidan läsvägens läge:
+    // ett kontrakt som inte är inläst sägs aldrig sakna något.
+    const tillDelar = [mottagarpartlage(efterParter, inlast).text];
     const franDelar = [mottagarpartlage(lagrade, lagrade.lage !== 'ej_inlast').text];
     if (efterParter.godkannandeform !== lagrade.godkannandeform) {
       franDelar.push(godkannandeformtext(lagrade.godkannandeform));

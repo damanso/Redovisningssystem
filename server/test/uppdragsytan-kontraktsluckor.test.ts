@@ -32,11 +32,12 @@ import { withTenantTransaction } from '../src/db/tx.js';
 import { bedomningsrytmlage } from '../src/lib/bedomningsrytm.js';
 import { parseLeveranskontrakt } from '../src/lib/leveranskontrakt.js';
 import {
-  ANKARLAGEN, KALLA_LEVERANSKONTRAKTET, KontraktsmanifestFalt, KontraktsmanifestSchema, LUCKFALT, LUCKRUBRIK, LUCKTEXT,
-  MOTTAGARPART_EJ_INLAST, NYCKELORD, ankardatumtext, ankarorsak, godkannandeformtext, kontraktsluckor,
-  kontraktsparter, luckmening, manifestankare, mottagarpartlage, nyckelordI, skillnadstext,
+  ANKARLAGEN, KALLA_LEVERANSKONTRAKTET, KALLA_SAKNAS, KontraktsmanifestFalt, KontraktsmanifestSchema, LUCKFALT, LUCKRUBRIK,
+  LUCKTEXT, MOTTAGARPART_EJ_INLAST, NYCKELORD, REGISTERFALT_SOM_FYLLS, angivet, ankardatumtext, ankarorsak,
+  baselineunderlag, delnamn, delnamnsvisning, godkannandeformtext, kontraktsluckor, kontraktsparter, luckmening,
+  manifestankare, mottagarpartlage, nyckelordI, registerluckor, registerplan, skillnadstext,
   type Ankarlage, type Ankarrytm, type Befintligtankare, type Kontraktsmanifest, type Lucka, type Luckfalt,
-  type Mottagarpartlage,
+  type Mottagarpartlage, type Registerfalt,
 } from '../src/lib/kontraktsluckor.js';
 import { FIELD_LABELS, explainApproval } from '../src/services/approvalSummary.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
@@ -167,8 +168,8 @@ function koder(html: string): string[] {
 }
 
 /** Undantagsvyns poster för ett avtal. */
-async function undantagsposter(contractId: string): Promise<Array<Record<string, any>>> {
-  const res = await ok('las_undantag', {});
+async function undantagsposter(contractId: string, id = bolag): Promise<Array<Record<string, any>>> {
+  const res = await ok('las_undantag', {}, human(), id);
   return (res.poster as Array<Record<string, any>>).filter((p) => p.uppdrag?.varde?.contract_id === contractId);
 }
 
@@ -204,6 +205,18 @@ const LUCKKONTRAKT = LEVERANSKONTRAKT_SYNTETISK_V3FORM
   .replace('§1.2', '')
   .replace('Underlaget publicerat', '')
   .replace('Mottagen, binärt', '');
+
+/** Luckkontraktets fyra planterade luckor: fältet, raden och texten som tas bort. */
+const PLANTERADE: ReadonlyArray<readonly [Exclude<Luckfalt, 'mottagarpart'>, string, string]> = [
+  ['namn', 'L1', 'Kartläggning av nuläget'],
+  ['klausul', 'L2', '§1.2'],
+  ['acceptanskriterium', 'L3', 'Underlaget publicerat'],
+  ['uppfoljningsmatt', 'L4', 'Mottagen, binärt'],
+];
+
+/** Den syntetiska texten med de planterade luckorna för de givna fälten, och inga andra. */
+const medLuckor = (falt: readonly Luckfalt[]): string => PLANTERADE.filter(([f]) => falt.includes(f))
+  .reduce((t, [, , text]) => t.replaceAll(text, ''), LEVERANSKONTRAKT_SYNTETISK_V3FORM);
 
 /**
  * En dokumentrad direkt efter raden som börjar med ”**Kund:**”. Där läser
@@ -459,6 +472,98 @@ describe('R: den rena regeln', () => {
     expect(nyckelordI('manifestet för projektet')).toEqual([]);
     expect(nyckelordI('se beslutsunderlag', KOBARA_NYCKLAR)).toEqual(['beslutsunderlag']);
     expect(nyckelordI('se beslutsunderlag')).toEqual([]);
+  });
+
+  // Omtag efter granskningen 2026-11-22: luckorna räknades över den nya texten i
+  // förslaget och svaret men över registret på Kontraktet och Leveranserna.
+  // Felklassen är två källor till samma lista. R8 prövar den enda regeln för
+  // registret efter ett ja i varje form en återimport kan ha.
+  it('R8 registret efter ett ja: nya rader skapas, tomma fält fylls, inget skrivs över och ingen rad försvinner', () => {
+    /** En rad i registret, och en leverabel som parsern ger den. */
+    const rad = (kod: string, falt: Partial<Registerfalt> = {}): Registerfalt => ({
+      kod, namn: `Namn ${kod}`, klausul: `§${kod}`, acceptanskriterium: `Kriterium ${kod}`,
+      uppfoljningsmatt: `Mått ${kod}`, matt_lasvag: 'register', ...falt,
+    });
+    type Textleverabel = Parameters<typeof registerplan>[1][number];
+    const text = (kod: string, falt: Partial<Textleverabel> = {}): Textleverabel => ({
+      kod, namn: `Namn ${kod}`, klausul: `§${kod}`, acceptanskriterium: `Kriterium ${kod}`,
+      uppfoljningsmatt: `Mått ${kod}`, matt_lasvag: 'register', ...falt,
+    });
+    expect(REGISTERFALT_SOM_FYLLS).toEqual(['klausul', 'acceptanskriterium', 'uppfoljningsmatt', 'matt_lasvag']);
+
+    // (a) Tomt register: varje leverabel i texten är ny, och namnet följer namnregeln.
+    const forsta = registerplan([], [text('L2'), text('L1', { namn: 'L1' })]);
+    expect(forsta.nya.map((r) => r.kod)).toEqual(['L2', 'L1']);
+    expect(forsta.fyllda).toEqual([]);
+    expect(forsta.efter.map((r) => [r.kod, r.namn])).toEqual([['L1', null], ['L2', 'Namn L2']]);
+
+    // (b) Ett tomt fält fylls ur texten; ett blankt fält är också tomt.
+    const fyll = registerplan([rad('L1', { klausul: null, matt_lasvag: '  ' })], [text('L1')]);
+    expect(fyll.nya).toEqual([]);
+    expect(fyll.fyllda).toEqual([{ kod: 'L1', varden: { klausul: '§L1', matt_lasvag: 'register' } }]);
+    expect(fyll.efter).toEqual([rad('L1')]);
+
+    // (c) Ett värde som står skrivs aldrig över — varken av ett annat värde eller av ett tomt.
+    const star = registerplan([rad('L1')], [text('L1', { klausul: '§9.9', acceptanskriterium: null, uppfoljningsmatt: '  ' })]);
+    expect(star.fyllda).toEqual([]);
+    expect(star.efter).toEqual([rad('L1')]);
+
+    // (d) En rad som texten inte längre nämner står kvar, och en ny kod läggs till i kodordning.
+    const blandat = registerplan([rad('L1'), rad('L3', { uppfoljningsmatt: null })], [text('L1'), text('L2', { klausul: null })]);
+    expect(blandat.nya.map((r) => r.kod)).toEqual(['L2']);
+    expect(blandat.efter.map((r) => r.kod)).toEqual(['L1', 'L2', 'L3']);
+    expect(blandat.efter.find((r) => r.kod === 'L3')!.uppfoljningsmatt).toBeNull();
+
+    // (e) Namnet fylls aldrig: det läses ur avtalsdelens första version.
+    const namnet = registerplan([rad('L1', { namn: null })], [text('L1', { namn: 'Kartläggning' })]);
+    expect(namnet.fyllda).toEqual([]);
+    expect(namnet.efter[0]!.namn).toBeNull();
+
+    // (f) Samma kod två gånger i texten: den första gäller, som INSERT … ON CONFLICT DO NOTHING.
+    const dubbel = registerplan([], [text('L1', { klausul: null }), text('L1')]);
+    expect(dubbel.nya).toHaveLength(1);
+    expect(dubbel.efter[0]!.klausul).toBeNull();
+
+    // Luckorna efter ett ja räknas över planen, med samma anrop som Kontraktet.
+    expect(registerluckor(blandat.efter, 'Styrgruppen')).toEqual([forvantadLucka('klausul', 'L2'), forvantadLucka('uppfoljningsmatt', 'L3')]);
+    expect(registerluckor([], null), 'ett register utan rader är inte inläst').toEqual([]);
+    expect(registerluckor([rad('L1')], '  ')).toEqual([forvantadLucka('mottagarpart', null)]);
+
+    // Förslagets underlag räknar över registret efter ett ja, inte över texten. Negativ
+    // kontroll: samma text räknad ensam hade gett en annan lista.
+    const luck = parseLeveranskontrakt(LUCKKONTRAKT);
+    const register = registerplan([], luck.leverabler).efter;
+    const atertext = parseLeveranskontrakt(medLuckor(['namn', 'acceptanskriterium', 'uppfoljningsmatt']));
+    const avtal = { godkannare: null, bedomning_intervall_dagar: null, bedomning_veckodag: null, bedomning_ankare: null, bedomning_ankare_kalla: null };
+    const underlag = baselineunderlag(atertext, null, avtal, register);
+    expect(underlag.luckor).toEqual(R1_LUCKOR.filter((l) => l.falt !== 'klausul'));
+    expect(underlag.inlast).toBe(true);
+    const droppad = parseLeveranskontrakt(LUCKKONTRAKT.split('\n').filter((r) => !r.startsWith('| L4 |')).join('\n'));
+    expect(droppad.leverabler.map((l) => l.kod), 'förutsättning: L4 är borta ur texten').toEqual(['L1', 'L2', 'L3']);
+    expect(baselineunderlag(droppad, null, avtal, register).luckor).toEqual(R1_LUCKOR);
+    expect(kontraktsluckor({ leverabler: droppad.leverabler, mottagarpart: null })).not.toEqual(R1_LUCKOR);
+    // En fryst text utan leverabler mot ett tomt register läser inte in något, och då sägs inget saknas.
+    expect(baselineunderlag({ ...atertext, leverabler: [] }, null, avtal, [])).toMatchObject({ luckor: [], inlast: false });
+  });
+
+  it('R9 en blankregel och en namnregel: blankt är saknat, och ett namn som är koden är inget namn', () => {
+    expect([angivet(null), angivet(undefined), angivet(''), angivet(' \t '), angivet('x')]).toEqual([null, null, null, null, 'x']);
+    expect(delnamn('L1', 'L1')).toBeNull();
+    expect(delnamn('L1', '  ')).toBeNull();
+    expect(delnamn('L1', null)).toBeNull();
+    expect(delnamn('L1', 'Kartläggning')).toBe('Kartläggning');
+    // En leverabel utan namn får luckans ord; en annan del utan namn ingenting.
+    expect(delnamnsvisning('L1', 'L1')).toEqual({ text: LUCKTEXT.namn.vad, lucka: true });
+    expect(delnamnsvisning('L12', '')).toEqual({ text: LUCKTEXT.namn.vad, lucka: true });
+    expect(delnamnsvisning('DEL3', 'DEL3')).toBeNull();
+    expect(delnamnsvisning('STYRNING', 'STYRNING')).toBeNull();
+    expect(delnamnsvisning('DEL1', 'Analys')).toEqual({ text: 'Analys', lucka: false });
+    expect(delnamnsvisning('L2', 'Kravspecifikation')).toEqual({ text: 'Kravspecifikation', lucka: false });
+    // Samma blankregel i mottagarpartens läge, godkännandeformen och luckorna.
+    expect(mottagarpartlage({ godkannare: '\t', godkannare_eskalering: null, kalla: null }, true).lage).toBe('saknas');
+    expect(mottagarpartlage({ godkannare: 'Styrgruppen', godkannare_eskalering: ' ', kalla: ' ' }, true).text)
+      .toBe(`Mottagarpart: Styrgruppen · ${KALLA_SAKNAS}`);
+    expect(godkannandeformtext('\n')).toBe('Godkännandeform saknas');
   });
 });
 
@@ -891,6 +996,108 @@ describe('L och S: läsvägarna', () => {
     expect(spar.ankaratgard).toEqual([]);
     expect(spar.transmittal).toEqual([]);
   });
+
+  // Omtag efter granskningen 2026-11-22: en återimport. Varje yta som visar
+  // luckorna — förslagets svar, undantagsvyns skäl, godkännandets svar,
+  // Kontraktet och Leveranserna — ska säga samma sak om samma avtal, och
+  // ja-texten ska säga det systemet gör. Fallen går i ett eget bolag, eftersom
+  // namnfallets godkännande fälls och står kvar som mottaget beslut.
+  it('L4 en återimport som fyller ett fält: samma luckor på varje yta, och ja-texten håller för varje fält', async () => {
+    const l4 = await createCompany(user.token, 'L4 Återimport AB');
+    await createFiscalYear(l4, human(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    expect(medLuckor(LEVERABELFALT), 'förutsättning: de planterade luckorna är luckkontraktets').toBe(LUCKKONTRAKT);
+    /** Lovar ja-texten att en ny kontraktsversion fyller fältet? */
+    const lovarFyllning = (falt: Luckfalt): boolean => LUCKTEXT[falt].ja_innebar.includes('tills en ny kontraktsversion fyller det');
+
+    for (const [falt, kod] of PLANTERADE) {
+      const a = await nyttAvtal(`L4 ${falt}`, l4);
+      await importeraGodkant(a.contractId, LUCKKONTRAKT, undefined, l4);
+      const text = medLuckor(LEVERABELFALT.filter((f) => f !== falt));
+      // Förutsättning: den nya texten bär fältet, och bara det av de fyra.
+      expect(parseLeveranskontrakt(text).leverabler.find((l) => l.kod === kod)![falt], falt).not.toBeNull();
+
+      const forslag = await ok('importera_leveranskontrakt', { contract_id: a.contractId, kontraktstext: text }, human(), l4);
+      expect(forslag.redan_koad, falt).toBe(false);
+      const post = (await undantagsposter(a.contractId, l4)).find((p) => p.id === forslag.approval_id);
+      expect(post, `${falt}: posten för återimporten saknas`).toBeTruthy();
+      const godkant = await api.post(`${bas(l4)}/approvals/${forslag.approval_id}/approve`).set(human()).send({});
+
+      const fylls = lovarFyllning(falt);
+      const forvantat = fylls ? R1_LUCKOR.filter((l) => l.falt !== falt) : R1_LUCKOR;
+      const register = (await ok('las_leverabelregister', { contract_id: a.contractId }, human(), l4)) as unknown as Array<Record<string, unknown>>;
+      // Ja-texten säger det systemet gör: fältet står ifyllt efter Davids ja exakt när texten lovar det.
+      expect(register.find((r) => r.kod === kod)![falt] !== null, `${falt}: ${LUCKTEXT[falt].ja_innebar}`).toBe(fylls);
+
+      expect(forslag.forslag.luckor, `förslaget, ${falt}`).toEqual(forvantat);
+      for (const l of R1_LUCKOR) {
+        expect((post!.skal.varde as string).includes(luckmening(l)), `skälen, ${falt}: ${String(l.kod)} ${l.falt}`)
+          .toBe(forvantat.some((f) => f.falt === l.falt && f.kod === l.kod));
+      }
+      expect((await ok('las_kontraktsyta', { contract_id: a.contractId }, human(), l4)).luckor, `Kontraktet, ${falt}`).toEqual(forvantat);
+      const tabell = huvud(await sida(`/app/c/${l4}/projects/${a.projectId}/leveranserna?lage=tabell`));
+      expect(tabellrad(tabell, kod).includes(LUCKTEXT[falt].vad), `Leveranserna, ${falt}`).toBe(!fylls);
+      if (fylls) {
+        expect(godkant.status, JSON.stringify(godkant.body)).toBe(200);
+        expect(godkant.body.result.luckor, `svaret, ${falt}`).toEqual(forvantat);
+        expect(godkant.body.result).toMatchObject({ leverabelrader_fyllda: 1, leverabelrader_skapade: 0, oforandrad: false });
+      } else {
+        // En senare text som ändrar ett delnamn godkänns inte: en lagrad
+        // baselineversion skrivs aldrig över (409 version_finns, B-7).
+        expect(godkant.status, JSON.stringify(godkant.body)).toBe(202);
+        expect(godkant.body.result).toBeNull();
+      }
+    }
+    // Förutsättning: fallen prövar båda grenarna — tre fält som fylls och namnet, som inte gör det.
+    expect(LEVERABELFALT.filter((f) => !lovarFyllning(f))).toEqual(['namn']);
+  });
+
+  it('L5 en återimport som byter, tappar och lägger till: registret skriver aldrig över, och varje yta räknar över det', async () => {
+    const a = await nyttAvtal('L5');
+    await importeraGodkant(a.contractId, medLuckor(['uppfoljningsmatt']));
+    // Den nya texten byter L2:s klausul, tappar L3:s kriterium och hela L4,
+    // lägger till L5 utan klausul och anger mottagarparten.
+    const text = medRad(LEVERANSKONTRAKT_SYNTETISK_V3FORM, '**Mottagarpart:** Styrgruppen')
+      .replace('| L2 | Kravspecifikation | §1.2 |', '| L2 | Kravspecifikation | §9.9 |')
+      .replace('Underlaget publicerat', '')
+      .replace(/^(\| L3 \| Upphandlingsunderlag \|.*)$/m, '$1\n| L5 | Uppföljning |  | Uppföljningen godkänd | Datum för uppföljningen |')
+      .split('\n').filter((r) => !r.startsWith('| L4 |')).join('\n');
+    const tolkad = parseLeveranskontrakt(text);
+    expect(tolkad.leverabler.map((l) => [l.kod, l.namn, l.klausul, l.acceptanskriterium]), 'förutsättning: textens leverabler').toEqual([
+      ['L1', 'Kartläggning av nuläget', '§1.1', 'Kartan godkänd av beställaren'],
+      ['L2', 'Kravspecifikation', '§9.9', 'Specifikationen signerad'],
+      ['L3', 'Upphandlingsunderlag', '§1.3', null],
+      ['L5', 'Uppföljning', null, 'Uppföljningen godkänd'],
+    ]);
+    expect(tolkad.godkannare).toBe('Styrgruppen');
+
+    const forvantat = [forvantadLucka('uppfoljningsmatt', 'L4'), forvantadLucka('klausul', 'L5')];
+    // Negativ kontroll: räknat över texten ensam hade förslaget sagt något annat än registret.
+    expect(kontraktsluckor({ leverabler: tolkad.leverabler, mottagarpart: tolkad.godkannare })).not.toEqual(forvantat);
+
+    const forslag = await ok('importera_leveranskontrakt', { contract_id: a.contractId, kontraktstext: text });
+    expect(forslag.forslag.luckor, 'förslaget').toEqual(forvantat);
+    const post = (await undantagsposter(a.contractId)).find((p) => p.id === forslag.approval_id);
+    for (const l of forvantat) expect(post!.skal.varde, 'skälen').toContain(luckmening(l));
+    expect(post!.skal.varde, 'skälen').not.toContain(luckmening(forvantadLucka('acceptanskriterium', 'L3')));
+    const svar = await godkann(forslag.approval_id as string);
+    expect(svar.luckor, 'svaret').toEqual(forvantat);
+    expect(svar).toMatchObject({ leverabelrader_skapade: 1, leverabelrader_fyllda: 0 });
+    expect((await ok('las_kontraktsyta', { contract_id: a.contractId })).luckor, 'Kontraktet').toEqual(forvantat);
+
+    const register = (await ok('las_leverabelregister', { contract_id: a.contractId })) as unknown as Array<Record<string, unknown>>;
+    expect(register.map((r) => [r.kod, r.klausul, r.acceptanskriterium, r.uppfoljningsmatt])).toEqual([
+      ['L1', '§1.1', 'Kartan godkänd av beställaren', 'Datum för godkännandet'],
+      ['L2', '§1.2', 'Specifikationen signerad', 'Antal signerade avsnitt'],
+      ['L3', '§1.3', 'Underlaget publicerat', 'Publiceringsdatum'],
+      ['L4', '§1.4', 'Rapporten mottagen', null],
+      ['L5', null, 'Uppföljningen godkänd', 'Datum för uppföljningen'],
+    ]);
+    const tabell = huvud(await sida(`/app/c/${bolag}/projects/${a.projectId}/leveranserna?lage=tabell`));
+    expect(tabellrad(tabell, 'L3')).not.toContain(LUCKTEXT.acceptanskriterium.vad);
+    expect(tabellrad(tabell, 'L4')).toContain(LUCKTEXT.uppfoljningsmatt.vad);
+    expect(tabellrad(tabell, 'L5')).toContain(LUCKTEXT.klausul.vad);
+    expect(tabell).not.toContain(LUCKTEXT.mottagarpart.vad);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1187,84 @@ describe('V: vyerna', () => {
     const main = huvud(await sida(`/app/c/${bolag}/projects/${a.projectId}/leveranserna`));
     expect(main).toContain('Registret är tomt');
     expect(main).not.toContain('Mottagarpart');
+  });
+
+  // Omtag efter granskningen 2026-11-22: samma yta fick inte säga två saker om
+  // samma fält. Felklassen är ett namn som är koden och visas som namn bredvid en
+  // lucklista som säger att namnet saknas — på Kontraktet och i förslaget.
+  it('V4 ett namn som är koden står med luckans ord på Kontraktet och i förslaget, och en ström utan namn sägs inte sakna något', async () => {
+    const a = await nyttAvtal('V4');
+    const text = LUCKKONTRAKT.replace('| DEL3 | Avslut |', '| DEL3 |  |');
+    expect(parseLeveranskontrakt(text).strommar.find((s) => s.kod === 'DEL3')!.namn, 'förutsättning: DEL3 saknar namn').toBeNull();
+    const forslag = await ok('importera_leveranskontrakt', { contract_id: a.contractId, kontraktstext: text });
+    const namnluckor = (forslag.forslag.luckor as Lucka[]).filter((l) => l.falt === 'namn').map((l) => l.kod);
+    expect(namnluckor).toEqual(['L1']);
+
+    // Förslaget: lika många namn med luckans ord som namnluckor i skälen, och aldrig koden som namn.
+    const post = (await undantagsposter(a.contractId)).find((p) => p.id === forslag.approval_id);
+    const till = post!.forslag.varde.till as string;
+    expect(till.split(`— ${LUCKTEXT.namn.vad}`).length - 1).toBe(namnluckor.length);
+    for (const kod of ['L1', 'DEL3']) expect(till, kod).not.toContain(`— ${kod}`);
+    expect(till).toContain('— Kravspecifikation');
+    expect(till).toContain('— Analys');
+
+    // Kontraktet: tabellen Det som gäller nu och panelen Parterna och luckorna säger samma sak.
+    await godkann(forslag.approval_id as string);
+    const html = await sida(`/app/c/${bolag}/projects/${a.projectId}/kontraktet`);
+    const start = html.indexOf(`aria-labelledby="gallande-${a.contractId}"`);
+    expect(start, 'panelen Det som gäller nu saknas').toBeGreaterThan(-1);
+    const gallande = html.slice(start, html.indexOf('</section>', start));
+    /** Namncellen på delens rad, som text. */
+    const namncell = (kod: string): string => {
+      const cell = /<td[^>]*>([\s\S]*?)<\/td>/.exec(tabellrad(gallande, kod).slice(1));
+      expect(cell, `namncellen för ${kod} saknas`).not.toBeNull();
+      return cell![1]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    };
+    expect(namncell('L1').startsWith(LUCKTEXT.namn.vad), namncell('L1')).toBe(true);
+    expect(namncell('L1')).not.toMatch(/^L1\b/);
+    expect(namncell('DEL3'), 'en ström utan namn').not.toContain('DEL3');
+    expect(namncell('DEL3')).not.toContain('saknas');
+    expect(namncell('L2').startsWith('Kravspecifikation')).toBe(true);
+    expect(namncell('DEL1').startsWith('Analys')).toBe(true);
+    const panel = parterpanelen(html, a.contractId);
+    expect(gallande.split(LUCKTEXT.namn.vad).length - 1)
+      .toBe(panel.split(`<strong>${LUCKTEXT.namn.vad}</strong>`).length - 1);
+  });
+
+  // Omtag efter granskningen 2026-11-22: panelen ritade ett blankt partsfält som
+  // ett tomt fält bredvid ett chip som sa att mottagarparten saknas. Felklassen är
+  // en yta med en egen blankregel. Varje partsfält och ett registerfält sås blanka.
+  it('V5 ett blankt fält är ett saknat fält på varje yta: läsvägarna, Kontraktet och Leveranserna', async () => {
+    const a = await nyttAvtal('V5');
+    await importeraGodkant(a.contractId,
+      medRad(LEVERANSKONTRAKT_SYNTETISK_V3FORM, '**Godkännare:** Ledningsgruppen', '**Eskalering:** Anna Ek'));
+    // Negativ kontroll före sådden: lagrade värden ritas som sig själva.
+    const fore = parterpanelen(await sida(`/app/c/${bolag}/projects/${a.projectId}/kontraktet`), a.contractId);
+    for (const varde of ['Ledningsgruppen', 'Anna Ek', KALLA_LEVERANSKONTRAKTET]) expect(fore, varde).toContain(varde);
+    // De blanka värdena sås som ägaren, som statusbyte-provet sår en godkännare.
+    await withAdmin(async (c) => {
+      await c.query(
+        `UPDATE contracts SET godkannare = '  ', godkannare_eskalering = ' ', godkannandeform = E'\\t', godkannare_kalla = '  '
+          WHERE id = $1`, [a.contractId]);
+      await c.query("UPDATE uppdrag_leverabel SET acceptanskriterium = '   ' WHERE contract_id = $1 AND kod = 'L3'", [a.contractId]);
+    });
+    const forvantat = [forvantadLucka('acceptanskriterium', 'L3'), forvantadLucka('mottagarpart', null)];
+
+    const y = await ok('las_kontraktsyta', { contract_id: a.contractId });
+    expect(y.parter).toEqual({ godkannare: null, godkannare_eskalering: null, godkannandeform: null, kalla: null, lage: 'saknas' });
+    expect(y.luckor).toEqual(forvantat);
+    const register = (await ok('las_leverabelregister', { contract_id: a.contractId })) as unknown as Array<Record<string, unknown>>;
+    expect(register.find((r) => r.kod === 'L3')!.acceptanskriterium).toBeNull();
+
+    const panel = parterpanelen(await sida(`/app/c/${bolag}/projects/${a.projectId}/kontraktet`), a.contractId);
+    for (const t of [LUCKTEXT.mottagarpart.vad, godkannandeformtext(null), KALLA_SAKNAS]) expect(panel, t).toContain(t);
+    expect(panel.match(/<dd[^>]*>\s*<\/dd>/g) ?? [], 'ett partsfält ritades tomt').toEqual([]);
+    for (const l of forvantat) expect(panel).toContain(`<strong>${l.vad}</strong>`);
+    for (const borta of ['Ledningsgruppen', 'Anna Ek']) expect(panel, borta).not.toContain(borta);
+
+    const tabell = huvud(await sida(`/app/c/${bolag}/projects/${a.projectId}/leveranserna?lage=tabell`));
+    expect(tabellrad(tabell, 'L3')).toContain(LUCKTEXT.acceptanskriterium.vad);
+    expect(tabell).toContain(LUCKTEXT.mottagarpart.vad);
   });
 });
 
@@ -1099,8 +1384,9 @@ const DOK_ENSAMMA = [...new Set([
   'manifest', ...Object.keys(KontraktsmanifestFalt.shape), ...ANKARLAGEN, ...Object.keys(MOTTAGARPARTLAGEN), ...LUCKFALT,
   'godkannare_kalla', KALLA_LEVERANSKONTRAKTET, 'kontrakt_olasbart',
   'parter', 'parter_skillnader', 'parter_andrade', 'ankare', 'luckor', 'oforandrad', 'skillnader',
-  'vad', 'var', 'ja_innebar',
-  ...[kontraktsluckor, kontraktsparter, mottagarpartlage, manifestankare, godkannandeformtext].map((f) => f.name),
+  'vad', 'var', 'ja_innebar', 'leverabelrader_fyllda',
+  ...[kontraktsluckor, kontraktsparter, mottagarpartlage, manifestankare, godkannandeformtext,
+    registerplan, registerluckor, delnamn, delnamnsvisning, angivet].map((f) => f.name),
 ])].filter((n) => !ENSAMMA_FORE_2_4.includes(n));
 
 /**
@@ -1139,8 +1425,10 @@ describe('D: dokumentationen', () => {
     // svarets och auditradens fält och den rena regelns funktioner.
     for (const namn of [
       'manifest', 'bedomning_ankare', 'fel_veckodag', 'ej_inlast', 'mottagarpart', 'leveranskontraktet',
-      'kontrakt_olasbart', 'parter_andrade', 'ja_innebar', 'kontraktsluckor',
+      'kontrakt_olasbart', 'parter_andrade', 'ja_innebar', 'kontraktsluckor', 'leverabelrader_fyllda', 'registerplan',
     ]) expect(DOK_ENSAMMA, namn).toContain(namn);
+    // Omtaget: importens avsnitt nämner att registret fylls, i ett sammansatt spann.
+    expect(ospannade(avsnitt, ['leverabelrader_fyllda'])).toEqual([]);
     expect(ensamma(uppdragsytanAvsnitt(mcp))).toEqual([]);
 
     // Negativa kontroller, i minnet. Orden bara i löptext är inte nämnda i ett spann.
@@ -1160,5 +1448,40 @@ describe('D: dokumentationen', () => {
     // Ett sammansatt, ett kvalificerat och ett citerat spann är inga ensamma namn, och
     // ett namn som stod ensamt före berättelsen är undantaget.
     expect(ensamma("`{ parter, ankare }`, `'lagras' | 'andras'`, `contracts.godkannare_kalla` och `kalla`.")).toEqual([]);
+  });
+
+  // Omtag efter granskningen 2026-11-22: dokumentet räknade fyra paneler när
+  // Kontraktet fått fem. Felklassen är en uppräkning i dokumentet som glider från
+  // sidan. Provet läser rubrikerna ur den renderade sidan och kräver att
+  // vyavsnittet räknar dem rätt och nämner var och en.
+  it('D2 MCP_ACTIONS räknar och nämner Kontraktets paneler som sidan ritar dem', async () => {
+    const TALORD = ['noll', 'en', 'två', 'tre', 'fyra', 'fem', 'sex', 'sju', 'åtta', 'nio', 'tio'];
+    /** Det som är fel i vyavsnittets uppräkning mot rubrikerna. Tom lista = rätt. */
+    const panelfel = (vyn: string, rubriker: readonly string[]): string[] => {
+      const m = /(\p{L}+) paneler per avtal/u.exec(vyn);
+      const fel = TALORD.indexOf(m?.[1]?.toLowerCase() ?? '') === rubriker.length
+        ? [] : [`antalet ${m?.[1] ?? 'saknas'} mot ${String(rubriker.length)} paneler`];
+      return [...fel, ...rubriker.filter((r) => !vyn.includes(`**${r}**`))];
+    };
+
+    const a = await nyttAvtal('D2');
+    await importeraGodkant(a.contractId, LUCKKONTRAKT);
+    const main = huvud(await sida(`/app/c/${bolag}/projects/${a.projectId}/kontraktet`));
+    const rubriker = [...main.matchAll(new RegExp(
+      `<section class="panel"[^>]*aria-labelledby="[a-z]+-${a.contractId}"[^>]*>\\s*<div class="panel__head"><h2[^>]*>([\\s\\S]*?)</h2>`, 'g',
+    ))].map((r) => r[1]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+    // Förutsättning: sökaren hittar varje panel för avtalet, också Story 2.4:s.
+    expect(rubriker).toContain('Parterna och luckorna');
+    expect(rubriker.length).toBe((main.match(/<section class="panel"/g) ?? []).length);
+
+    const mcp = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const start = mcp.indexOf('**Vyn:** `/app/c/:id/projects/:projectId/kontraktet`');
+    expect(start, 'Kontraktets vyavsnitt saknas').toBeGreaterThan(-1);
+    const vyn = mcp.slice(start, mcp.indexOf('\n\n', start));
+    expect(panelfel(vyn, rubriker)).toEqual([]);
+
+    // Negativa kontroller: en uppräkning som räknar fel eller tappar en panel fälls.
+    expect(panelfel(vyn.replace(/\p{L}+ paneler per avtal/u, 'Fyra paneler per avtal'), rubriker)).toHaveLength(1);
+    expect(panelfel(vyn.replace('**Parterna och luckorna**', 'Parterna och luckorna'), rubriker)).toEqual(['Parterna och luckorna']);
   });
 });

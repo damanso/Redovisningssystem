@@ -153,6 +153,23 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter code-review (fyra fynd, lagade som klasser):**
+  (1) Luckorna räknades över den nya texten i förslaget och godkännandets svar
+  men över registret på Kontraktet och Leveranserna, och registret följde aldrig
+  en ny kontraktsversion. Klassen är två källor till samma lista. Mekanismen nu:
+  en regel för registret efter ett ja (`registerplan` i `lib/kontraktsluckor.ts`)
+  som godkännandet skriver och förslaget räknar över, och svaret läser registret
+  och parterna efter skrivningen genom samma läsvägar som Kontraktet. En ny
+  kontraktsversion fyller ett tomt registerfält (klausul, kriterium, mått,
+  läsväg) och skriver aldrig över; svaret och auditraden bär
+  `leverabelrader_fyllda`. Namnet fylls aldrig (B6, B-7), och dess ja-text säger
+  nu det. (2) Ett namn som är koden visades som namn på Kontraktet och i
+  förslaget: en namnregel (`delnamn`, `delnamnsvisning`) överallt. (3) Ett blankt
+  partsfält ritades tomt: en blankregel (`angivet`) i lib, läsvägarna ger NULL
+  för blankt. (4) MCP_ACTIONS räknade fyra paneler: fem, och D2 prövar
+  uppräkningen mot sidans rubriker. Nya fall R8, R9, L4, L5, V4, V5 och D2.
+  **Inte kört här:** sandlådan svarade ”This command requires approval” på
+  `npm --prefix /opt/redovisning/server run typecheck`; kedjans körning avgör.
 - **2026-11-22 — Story 2.4, omtag efter kedjans körning (ett rött prov, lagat som klass):**
   Kedjans `npm test` gav ett rött fall: D1 i `uppdragsytan-matt-rytm.test.ts`
   fann `bedomning_ankare` ensamt i ett kodspann i avsnittet Uppdragsytan i

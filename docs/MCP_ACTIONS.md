@@ -1387,8 +1387,12 @@ importen, godkännandet, läsvägarna, vyerna och förslagets underlag anropar d
 - **Svarets nya fält.** `forslag.luckor` är de kontraktsburna fält som saknas,
   `[{ falt, kod, vad, var, ja_innebar }]` över den slutna listan
   `'namn' | 'klausul' | 'acceptanskriterium' | 'uppfoljningsmatt' | 'mottagarpart'`
-  (`kod` är NULL för mottagarparten). Inget transmittalfält står i listan: tomma
-  transmittalfält före första överlämningen är ett giltigt läge.
+  (`kod` är NULL för mottagarparten). Listan räknas över registret som Davids
+  ja lämnar efter sig — samma plan som godkännandet skriver — och med den
+  mottagarpart godkännandet lämnar efter sig, så att förslaget visar samma
+  luckor som Kontraktet och Leveranserna visar efter ett ja. Inget
+  transmittalfält står i listan: tomma transmittalfält före första
+  överlämningen är ett giltigt läge.
   `forslag.parter` är `{ godkannare, godkannare_eskalering, godkannandeform, kalla, skillnader }`,
   och `forslag.ankare` är `{ lage, ankare, kalla, orsak }` med läget ett av
   `'ej_angivet' | 'utan_kalla' | 'kalla_utan_ankare' | 'rytm_saknas' | 'fel_veckodag' | 'lagras' | 'oforandrat' | 'andras'`.
@@ -1404,14 +1408,28 @@ importen, godkännandet, läsvägarna, vyerna och förslagets underlag anropar d
   ankare bara i lägena `'lagras' | 'andras'` — ett ankare utan källa eller på
   fel veckodag lagras aldrig, och källan är alltid manifestets egen text. Svaret
   bär `{ parter, parter_skillnader, ankare, luckor, oforandrad }`, och
-  oförändrad tar hänsyn till parterna och ankaret. Auditraden får
+  oförändrad tar hänsyn till parterna och ankaret. Svarets parter och luckor
+  läses efter skrivningen genom samma läsvägar som Kontraktet. Auditraden får
   `details: { parter_andrade, ankare }` (en boolean och läget), utan namn och
   utan källa. Ingenting skrivs till transmittalen: den fylls först vid
   överlämningen.
+- **Registret följer en ny kontraktsversion.** En ny leverabel skapas som förut.
+  En befintlig rad får ett tomt fält fyllt ur den nya texten — klausulen,
+  acceptanskriteriet, uppföljningsmåttet och läsvägen — men ett värde som står
+  skrivs aldrig över, och raden står kvar också när texten inte längre nämner
+  den. Statusen rörs aldrig, och raderna låses före skrivningen. Svaret och
+  auditraden räknar raderna i `{ leverabelrader_skapade, leverabelrader_fyllda }`,
+  och en fylld rad gör att oförändrad är falsk. Namnet fylls aldrig: det läses
+  ur avtalsdelens första version, och en senare text som ändrar ett delnamn ger
+  409 `version_finns` som förut.
 - **Luckorna blir inga egna poster.** De står i baselineförslagets underlag i
-  undantagsvyn med vad som saknas, var och vad ett ja innebär (fältet förblir
-  saknat tills en ny kontraktsversion fyller det). Förslaget visar också
-  mottagarparten och, när de ändras, godkännandeformen och ankaret som från → till.
+  undantagsvyn med vad som saknas, var och vad ett ja innebär. För klausulen,
+  acceptanskriteriet och uppföljningsmåttet förblir fältet saknat tills en ny
+  kontraktsversion fyller det; för namnet säger texten att en senare version
+  inte fyller det; för mottagarparten att en ny kontraktsversion eller
+  manifestet anger den. Förslaget visar också mottagarparten och, när de
+  ändras, godkännandeformen och ankaret som från → till, och en leverabel vars
+  namn saknas med luckans ord i stället för koden.
 - `godkann_leverabel` ger fortsatt **409 `saknad_mottagare`** när avtalet saknar
   godkännare.
 
@@ -1572,7 +1590,9 @@ sida utan formulär. Formuläret postar till
   namn i en ny version, men det är Davids beslut och inte kontraktets: `namn`
   är fortsatt NULL. Ingen kolumn på `uppdrag_leverabel` och ingen efterfyllnad.
   Leveranserna och kontraktsytan säger ett saknat fält med samma ord
-  (”Namn saknas i kontraktet” och så vidare) ur `LUCKTEXT`.
+  (”Namn saknas i kontraktet” och så vidare) ur `LUCKTEXT`. Ett blankt fält
+  ges som NULL, med samma blankregel som luckorna, så att ingen yta ritar ett
+  tomt fält där lucklistan säger att fältet saknas.
 - **`dagar_i_laget` är HÄRLETT, aldrig lagrat (S3.3, våg 5 — FR-37).** Hela dagar
   (avrundat nedåt) sedan leverabelns senaste rad i append-only-tabellen
   `uppdrag_leverabel_handelse` — alltså hur länge den stått still i sitt
@@ -2186,7 +2206,7 @@ känslig åtgärd och godkänns i **Att göra**.
   mottagarpart. Läget är `parter.lage: 'angiven' | 'saknas' | 'ej_inlast'` och
   avgörs i `lasKontraktsparter`: ett avtal utan registerrader är inte inläst,
   och då är listan med luckor tom i stället för att påstå att kontraktet saknar
-  något.
+  något. Ett blankt partsfält ges som NULL, med samma regel som läget.
 
 **Referensfält (Story 3.1).** `dokument.referenser[]` bär även
 `handelse_datum` (null = datum saknas). Drive-referenser i `utanfor_sparr`
@@ -2195,11 +2215,11 @@ utesluts ur registerdokumenten och redovisas med sina id i
 
 **Vyn:** `/app/c/:id/projects/:projectId/kontraktet`, undersida till uppdraget
 (knappen **Kontraktet** sist i knappbandet, efter *Planen* — husets ruttmönster,
-ingen `.subnav`: menyn ägs av S10.7). Fyra paneler per avtal, i läsarens
+ingen `.subnav`: menyn ägs av S10.7). Fem paneler per avtal, i läsarens
 frågeordning: **Vägen till dokumentet** (länk till husets dokumentarkiv för
 `source_file_id`, och Drive-pekarna med härledd öppningslänk, id, nyckelrymd,
 källa, status, verifieringstid och händelsedatum), **Det som gäller nu**, **Tilläggen** med orsaken i den
-bredaste kolumnen, och **Vad som ingår**. Ett avtal i `kontrakt_tillstand =
+bredaste kolumnen, **Parterna och luckorna** (Story 2.4, nedan) och **Vad som ingår**. Ett avtal i `kontrakt_tillstand =
 'utkast'` byter rubrik till **Utkastets delar** och säger rakt ut att ingenting
 där gäller; utkastets obesvarade frågor hänvisas till handlingen och återges
 aldrig. JS-fri serverrenderad HTML, inga externa anrop under rendering (NFR-6),
@@ -2208,7 +2228,10 @@ ingen ny CSS och inga nya komponenter.
 **Parterna och luckorna (Story 2.4).** En panel mellan Tilläggen och Vad som
 ingår: mottagarparten och godkännaren, eskaleringen, godkännandeformen och
 källan i en beskrivningslista, och luckorna med vad som saknas, var och vad ett
-ja innebär. Ett kontrakt som inte är inläst säger bara det. Leveranserna får
+ja innebär. Ett blankt partsfält står som saknat, med samma ord som chipet och
+lucklistan. Ett kontrakt som inte är inläst säger bara det. I panelen Det som
+gäller nu står en leverabel vars namn är koden med ”Namn saknas i kontraktet”,
+samma ord som lucklistan, och en annan del utan namn med ett streck. Leveranserna får
 kolumnen Namn efter Kod, samma luckord i tabellen och på brädans kort, och en
 rad om mottagarparten över brädan och tabellen för varje avtal med register.
 
