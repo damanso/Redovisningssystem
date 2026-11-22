@@ -63,7 +63,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations, listPeople } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields, captureTexts } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields, captureTexts, promisedAtFromForm } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { CAPTURE_PATHS_IN_OPERATION, contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -8027,7 +8027,8 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                avskriva — men inte skapa ett. Samma felklass som hela
                ombyggnaden handlade om: ett handgrepp utan knapp, så det enda
                sättet att registrera ett löfte som sades i ett samtal var att be
-               AI:t om det. */ ''}
+               AI:t om det. Lovades är valfritt och tomt betyder nu (FR-32);
+               max är UTC-dagen som i Rätta, och servern är spärren. */ ''}
           <details class="loftesform">
             <summary>Lova något</summary>
             <form method="post" action="/app/c/${companyId}/relations/${o.id}/commit">
@@ -8039,6 +8040,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                   <option value="they_owe">De lovade</option>
                 </select></label>
                 <label>Senast<input type="date" name="due_date"></label>
+                <label>Lovades<input type="date" name="occurred_at" max="${new Date().toISOString().slice(0, 10)}"></label>
               </div>
               <button class="btn btn--primary btn--sm" type="submit">Spara löftet</button>
               <p class="hint">${CAPTURE_TEXTS.promiseFormHint}</p>
@@ -8424,6 +8426,15 @@ viewRouter.post('/c/:companyId/relations/:id/commit', page(async (req, res) => {
   const companyId = parseCompanyId(req.params.companyId);
   const id = UuidSchema.parse(req.params.id);
   const b = req.body as Record<string, unknown>;
+  const back = backToCrm(req, companyId, `relations/${id}`);
+  // FR-32: löftestiden är den David anger i Lovades, så att ett löfte som skrivs
+  // in dagen efter samtalet får dagen det gavs; tomt betyder anropstillfället.
+  // Ett datum i framtiden avvisas här, innan någon åtgärd körs och något skrivs.
+  const lovades = promisedAtFromForm(b.occurred_at, new Date());
+  if (!lovades.ok) {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(lovades.message)}`);
+    return;
+  }
   const text = (k: string): string | undefined => {
     const v = b[k];
     return typeof v === 'string' && v.trim() ? v.trim() : undefined;
@@ -8433,11 +8444,9 @@ viewRouter.post('/c/:companyId/relations/:id/commit', page(async (req, res) => {
     direction: text('direction') === 'they_owe' ? 'they_owe' : 'we_owe',
     body: text('body') ?? '',
     ...(text('due_date') ? { due_date: text('due_date') } : {}),
-    // Löftet sades nu. Ett påhittat datum bakåt i tiden vore en förfalskning av
-    // när det gavs — och tråden bygger på att occurred_at är sann.
-    occurred_at: new Date().toISOString(),
+    occurred_at: lovades.occurred_at,
     source_system: 'manual',
-  }, backToCrm(req, companyId, `relations/${id}`));
+  }, back);
 }));
 
 // F5: kadensen. Tomt fält = återgå till bolagets standard, vilket är något
