@@ -77,7 +77,7 @@ describe('inget tomt tillstånd är en återvändsgränd', () => {
 
   it('tom åtagandelista leder vidare i stället för att bara konstatera', async () => {
     const res = await ua.get(`/app/c/${companyId}/commitments`);
-    expect(res.text).toContain('Inga åtaganden här');
+    expect(res.text).toContain('Inga öppna löften.');
     expect(res.text).toContain(`href="/app/c/${companyId}/idag"`);
   });
 

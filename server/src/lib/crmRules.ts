@@ -304,3 +304,90 @@ export function daysSince(day: string, today: string): number | null {
   if (!IsoDateSchema.safeParse(day).success || !IsoDateSchema.safeParse(today).success) return null;
   return Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`)) / 86_400_000);
 }
+
+/** Vägar som kan fånga kontakter. Sluten: en ny väg kräver en fras i tabellen nedan (story 5.1). */
+export type ContactCapturePath = 'mail' | 'calendar' | 'issues';
+/** Vägar som kan fånga löften. Sluten av samma skäl. */
+export type CommitmentCapturePath = 'issues_waiting_external' | 'ai_conversation' | 'promise_form';
+
+export interface CapturePaths {
+  readonly contacts: readonly ContactCapturePath[];
+  readonly commitments: readonly CommitmentCapturePath[];
+}
+
+export interface CaptureTexts {
+  todayQuiet: string;
+  relationsLede: string;
+  relationsEmpty: string;
+  commitmentsOpenEmpty: string;
+  promiseFormHint: string;
+  customerCardEmpty: string;
+}
+
+/**
+ * Frastabellerna. Nyckelordningen är den kanoniska: texterna följer den och inte
+ * konstantens ordning. `Record` över de slutna nyckeltyperna gör att en ny väg
+ * utan fras fäller typkontrollen. Kalendern (5.9) och AI-samtalet (5.11) står
+ * här redan, så att en väg som tas i drift bara ändrar konstanten; AI-samtalets
+ * fraser är provisoriska och ägs av 5.11.
+ */
+const CONTACT_PATH_WORDS: Readonly<Record<ContactCapturePath, string>> = Object.freeze({
+  mail: 'mail',
+  calendar: 'möten',
+  issues: 'ärenden',
+} as const);
+
+/** `outOf` är ur-formen i hinten, `from` från-formen i tomlägena; bara automatiska vägar har en ur-form. */
+type CommitmentPhrase =
+  | { readonly automatic: true; readonly outOf: string; readonly from: string }
+  | { readonly automatic: false; readonly from: string };
+
+const COMMITMENT_PATH_PHRASES: Readonly<Record<CommitmentCapturePath, CommitmentPhrase>> = Object.freeze({
+  issues_waiting_external: { automatic: true, outOf: 'ur ärenden märkta Väntar-extern', from: 'från ärenden märkta Väntar-extern' },
+  ai_conversation: { automatic: true, outOf: 'som du nämner för AI:n', from: 'när du nämner det för AI:n' },
+  promise_form: { automatic: false, from: 'från Lova något på relationen' },
+} as const);
+
+/** Tabellens rader i tabellens ordning, bara de vars nyckel står i listan; dubbletter i listan ger ingen dubbeltext. */
+function inOperation<K extends string, V>(table: Readonly<Record<K, V>>, paths: readonly K[]): V[] {
+  return (Object.entries(table) as [K, V][]).filter(([key]) => paths.includes(key)).map(([, value]) => value);
+}
+
+/** «a», «a och b», «a, b och c». */
+function joinList(items: readonly string[], conjunction: 'och' | 'eller'): string {
+  const head = items.slice(0, -1);
+  const last = items.slice(-1).join('');
+  return head.length === 0 ? last : `${head.join(', ')} ${conjunction} ${last}`;
+}
+const andList = (items: readonly string[]): string => joinList(items, 'och');
+const orList = (items: readonly string[]): string => joinList(items, 'eller');
+
+/**
+ * De sex fångstmeningarna i Idag, Relationer, åtagandevyn, *Lova något* och
+ * kundkortet (FR-31, PRD lucka 21). Ett tomläge får bara nämna vägar i drift:
+ * annars läses en tom lista som avbetad fast den bara är oläst. Funktionen läser
+ * aldrig konstanten själv, så att vyn och proven ger den samma lista.
+ */
+export function captureTexts(paths: CapturePaths): CaptureTexts {
+  const contactWords = inOperation(CONTACT_PATH_WORDS, paths.contacts);
+  const commitmentPhrases = inOperation(COMMITMENT_PATH_PHRASES, paths.commitments);
+  const automatic = commitmentPhrases.filter((p): p is Extract<CommitmentPhrase, { automatic: true }> => p.automatic);
+  const byHand = paths.commitments.includes('promise_form');
+  const saidInPerson = 'Det här är för det som sades i ett samtal eller möte.';
+  return {
+    todayQuiet: contactWords.length > 0
+      ? `Kommer något in via ${orList(contactWords)} dyker det upp av sig självt.` : '',
+    relationsLede: `Senaste kontakt, öppna löften och vad relationen är värd — härlett ur ${
+      andList([...contactWords, 'bokförda fakturor'])}. Ingen inmatning krävs.`,
+    relationsEmpty: contactWords.length > 0
+      ? `De flesta dyker upp av sig själva när ${andList(contactWords)} kommer in.` : '',
+    commitmentsOpenEmpty: automatic.length > 0
+      ? `Löften kommer in av sig själva ${andList(automatic.map((p) => p.from))}${
+        byHand ? ', och du kan lägga till ett under Lova något på en relation.' : '.'}`
+      : byHand ? 'Du kan lägga till ett under Lova något på en relation.' : '',
+    promiseFormHint: automatic.length > 0
+      ? `Löften ${andList(automatic.map((p) => p.outOf))} kommer in av sig själva. ${saidInPerson}` : saidInPerson,
+    customerCardEmpty: commitmentPhrases.length > 0
+      ? `Inga öppna löften. Löften kommer ${andList(commitmentPhrases.map((p) => p.from))}.` : 'Inga öppna löften.',
+  };
+}

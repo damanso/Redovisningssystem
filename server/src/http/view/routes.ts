@@ -63,9 +63,9 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations, listPeople } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields, captureTexts } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
-import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
+import { CAPTURE_PATHS_IN_OPERATION, contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
 import { ORG_ROLLER, SFARFILTER, type SfarFilter } from '../../services/crmSfar.js';
 import {
@@ -114,6 +114,11 @@ import { createFiscalYear, listFiscalYears } from '../../services/accounting/fis
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
+
+// En väg in för varje fångstmening i tomlägen och hintar (FR-31): ytorna skriver
+// ingen egen, så att de bara nämner vägar i drift och följer konstanten när en
+// ny väg tas i drift.
+const CAPTURE_TEXTS = captureTexts(CAPTURE_PATHS_IN_OPERATION);
 
 export const viewRouter = Router();
 // AD-10:s prejudikat i http/app.ts: stora formulär läses av sin egen parser
@@ -7214,7 +7219,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
     ${
       t.quiet
         ? html`<div class="empty"><div class="big">Avbetat för i dag 🎉</div>
-            Loggade kontakter och stängda löften försvinner härifrån. Kommer något in via mail eller kalender dyker det upp automatiskt.</div>`
+            Loggade kontakter och stängda löften försvinner härifrån. ${CAPTURE_TEXTS.todayQuiet}</div>`
         : ''
     }
     ${
@@ -7329,7 +7334,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
   const suggestions = await contactSuggestions(client, companyId, { rows: state });
   const policy = await getRetention(client, companyId);
   return html`<div class="page-head"><div>${eyebrow('Relationer')}<h1>Vem vi pratar med</h1>
-      <p class="lede">Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten och bokförda fakturor. Ingen inmatning krävs.</p></div>
+      <p class="lede">${CAPTURE_TEXTS.relationsLede}</p></div>
       <div class="actions"><a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/relations/privata-forslag">Förslag: privata poster →</a></div></div>
     ${/* Utan notisen försvinner varje fel från handgreppen som landar här —
          formuläret ser ut att inte ha gjort någonting alls. Exakt den tystnad
@@ -7353,7 +7358,7 @@ viewRouter.get('/c/:companyId/relations', pageFor('relations', 'Relationer', asy
     ${
       state.length === 0
         ? html`<div class="empty"><div class="big">Inga relationer ännu</div>
-            De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.
+            ${CAPTURE_TEXTS.relationsEmpty}
             Vill du börja nu lägger du upp den första nedan — det tar tio sekunder och kräver ingen AI.</div>`
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Organisation</th><th>Läge</th><th>Senaste kontakt</th><th class="num">Öppna löften</th><th class="num">Omsättning 12 mån</th><th class="num">Andel</th><th></th></tr></thead>
@@ -7980,7 +7985,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 <label>Senast<input type="date" name="due_date"></label>
               </div>
               <button class="btn btn--primary btn--sm" type="submit">Spara löftet</button>
-              <p class="hint">Löften fångas normalt ur mail och möten av sig själva. Det här är för det som sades i ett samtal.</p>
+              <p class="hint">${CAPTURE_TEXTS.promiseFormHint}</p>
             </form>
           </details>
 
@@ -8075,12 +8080,15 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
       </div></div>
     ${felNotis(req)}
     ${
+      // En tom lista säger bara att inget står här, aldrig att den är avbetad
+      // (FR-31): fångstmeningen kommer ur CAPTURE_TEXTS och bara Öppna bär den.
       rows.length === 0
-        ? html`<div class="empty"><div class="big">Inga åtaganden här</div>
-            Löften fångas ur mail, möten och ärenden — ingen behöver komma ihåg att registrera dem.
-            ${filter === 'open'
-              ? html`Är listan tom är den avbetad. Se <a href="${lank('done', sfar)}">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.`
-              : html`Gå tillbaka till <a href="${lank('open', sfar)}">de öppna</a>.`}</div>`
+        ? filter === 'open'
+          ? html`<div class="empty"><div class="big">Inga öppna löften.</div>
+              ${CAPTURE_TEXTS.commitmentsOpenEmpty}
+              Se <a href="${lank('done', sfar)}">klara löften</a> eller gå till <a href="/app/c/${companyId}/idag">Idag</a>.</div>`
+          : html`<div class="empty"><div class="big">${filter === 'done' ? 'Inga klara löften.' : 'Inga avskrivna löften.'}</div>
+              Gå tillbaka till <a href="${lank('open', sfar)}">de öppna</a>.</div>`
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
             <tbody>${rows.map((c) => {
@@ -9876,7 +9884,7 @@ async function partyBackrefs(
       antal(comm.length),
       comm.length === 0
         ? tomt(isCustomer
-            ? 'Inga öppna löften. Löften fångas ur mail, möten och ärenden via relationen.'
+            ? CAPTURE_TEXTS.customerCardEmpty
             : 'Löften hör till relationsregistret, och en relation kopplas till kundregistret — inte till leverantörsregistret. Därför kan det aldrig stå något här.')
         : html`<div class="table-wrap" style="border:0;box-shadow:none"><table>
             <thead><tr><th>Riktning</th><th>Vad</th><th>Senast</th><th>Relation</th></tr></thead><tbody>

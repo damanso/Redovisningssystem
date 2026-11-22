@@ -153,6 +153,32 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 5.1 (crm), fångstvägarna på ett ställe och ärliga
+  tomlägen (FR-31, PRD lucka 21):** Konstanten `CAPTURE_PATHS_IN_OPERATION` i
+  `server/src/services/crmDerivations.ts` (fryst; kontakter `mail`, `issues`,
+  löften `issues_waiting_external`, `promise_form`). Den rena textbyggaren
+  `captureTexts(paths)` i `server/src/lib/crmRules.ts` med två slutna
+  frastabeller (`Record` över nyckeltyperna, kalendern och AI-samtalet finns
+  redan som rader) och sex fält. I `server/src/http/view/routes.ts` en enda
+  modulkonstant `CAPTURE_TEXTS`, som fem ytor läser: åtagandevyns tomläge (nu
+  tre grenar: «Inga öppna löften.» med fångstmeningen, «Inga klara löften.»,
+  «Inga avskrivna löften.»; ordet «avbetad» är borta), hinten i *Lova något*,
+  kundkortets tomma *Åtaganden* (kund; leverantörens text orörd), Idags
+  avbetade läge («Avbetat för i dag» står kvar) och Relationers ingress och
+  tomläge. Ingen yta nämner längre kalendern eller möten som fångstväg. En
+  ändrad assertion: `server/test/crm-finish.test.ts` kräver «Inga öppna
+  löften.» i stället för «Inga åtaganden här». Prov: P1–P8 (rena),
+  A1–A4, H1, C1, D1, R1, R2 (ytorna genom hela stacken) i
+  `server/test/crm-capture-paths.test.ts`; M0–M5 (negativ kontroll: `vi.mock`
+  byter konstanten mot en utökad och alla fem ytor följer med) i
+  `server/test/crm-capture-paths-mock.test.ts`. Berättelserna 5.9 (kalendern)
+  och 5.11 (AI-samtalet) ändrar bara konstanten. Personregistrets ingress och
+  kundkortets rad under *Kontaktpersoner* nämner fortfarande möten; de ligger
+  utanför 5.1:s fem ytor och är en fråga till David. Ingen migration, rutt,
+  åtgärd, tabell, CSS-klass eller beroende. **Inte kört i den här sessionen:**
+  `npm run typecheck` och `npm test` — sandlådan svarade ”This command requires
+  approval”; kedjans körning är belägget. **Rött utanför repot:** som i raden
+  nedan; inget av de icke-gröna Hermes-proven gäller den här berättelsen.
 - **2026-11-22 — Story 4.3 (crm), personperspektivet i relationens tråd (FR-40):**
   Rena funktioner i `server/src/lib/crmRules.ts`: `parsePersonParam` (tolkar
   `?person=` som tillåtelselista som aldrig kastar; uuid med gemener eller
