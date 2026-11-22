@@ -13,6 +13,7 @@
 // Spärr: systemet FÖRESLÅR. Ingenting skickas till någon kund härifrån.
 import type { PoolClient } from 'pg';
 import { sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
+import type { CapturePaths } from '../lib/crmRules.js';
 
 export interface RelationRow {
   organization_id: string;
@@ -171,6 +172,18 @@ export const DEFAULT_TODAY_LIMIT = 5;
 
 /** Standardgräns för tystnad. Ett vägval — därför en parameter, inte en sanning. */
 export const DEFAULT_SILENCE_DAYS = 30;
+
+/**
+ * Fångstvägarna i drift, på ett ställe (FR-31, PRD lucka 21). Tomlägen och
+ * hintar läser dem genom `captureTexts` i lib/crmRules.ts och nämner därför
+ * bara det som faktiskt fångar kontakter och löften. Konstanten ändras i samma
+ * ändring som en väg tas i drift: 5.9 lägger till `calendar`, 5.11
+ * `ai_conversation`.
+ */
+export const CAPTURE_PATHS_IN_OPERATION: CapturePaths = Object.freeze({
+  contacts: Object.freeze(['mail', 'issues'] as const),
+  commitments: Object.freeze(['issues_waiting_external', 'promise_form'] as const),
+});
 
 export interface SilenceReport {
   as_of: string;
