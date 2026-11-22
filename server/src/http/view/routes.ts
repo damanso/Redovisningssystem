@@ -63,7 +63,7 @@ import {
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate } from '../../lib/crmRules.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -78,7 +78,7 @@ import { arEpostnamn, markeraOlikaPersoner, namnetAvviker, namnforslag, rattaPer
 import { steeringOverview } from '../../services/steering.js';
 import { contractUsageReport, unbilledTimeReport, type CapStatusLabel } from '../../services/timeReports.js';
 import { OSORTERAT } from '../../services/timeProposals.js';
-import { isThreadFilter, relationThread, type ThreadEvent, type ThreadFilter, type ThreadKind } from '../../services/crmThread.js';
+import { isThreadFilter, relationThread, THREAD_PAGE_SIZE, type ThreadEvent, type ThreadFilter, type ThreadKind } from '../../services/crmThread.js';
 import { consolidatedOverview } from '../../services/consolidated.js';
 import { inviteMember, listMembers, removeMember, setMemberRole } from '../../services/team.js';
 import { expenseBreakdown, keyRatios, topCustomers } from '../../services/analytics.js';
@@ -87,7 +87,7 @@ import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
 import type { Referensvisning } from '../../lib/referens.js';
-import { aiMarkning, amount, chip, direktFarskhet, entityLink, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, referensvisning, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, direktFarskhet, entityLink, errorPage, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, referensvisning, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -6798,6 +6798,36 @@ function threadChip(e: ThreadEvent): Raw {
   }
 }
 
+/** Trådens läsväg under listan (FR-17, UX K6, story 4.1): länkarna i en nav som
+ *  bara finns när den har en länk, så sidan aldrig får ett tomt landmärke;
+ *  intervallet som text; och på en sida nådd bakåt utan något äldre, att det
+ *  här är början. Varje href byggs som en hel sträng och interpoleras som ett
+ *  värde, så att mallen skriver `&` som `&amp;`. */
+function tradensSidor(
+  back: string, filter: ThreadFilter, harFore: boolean, nastaMarkor: string | null, rader: readonly ThreadEvent[],
+): Raw {
+  const nyasteHref = `${back}?visa=${filter}`;
+  const aldreHref = nastaMarkor === null ? null : `${back}?visa=${filter}&fore=${encodeURIComponent(nastaMarkor)}`;
+  const nyast = rader[0];
+  const aldst = rader.at(-1);
+  // .actions saknar egen marginal; utan avståndet ligger knapparna mot trådens ram.
+  return html`<div style="margin-top:12px">${
+    harFore || aldreHref !== null
+      ? html`<nav class="actions" aria-label="Trådens sidor">${
+          harFore ? html`<a class="btn btn--ghost btn--sm" href="${nyasteHref}">← Nyaste</a>` : ''
+        }${aldreHref !== null ? html`<a class="btn btn--ghost btn--sm" href="${aldreHref}">Äldre händelser →</a>` : ''}</nav>`
+      : ''
+  }${
+    nyast && aldst
+      ? html`<p class="muted">Visar ${rader.length} ${rader.length === 1 ? 'händelse' : 'händelser'}, från ${dayOf(aldst.at)} till ${dayOf(nyast.at)}.</p>`
+      : ''
+  }${
+    harFore && aldreHref === null && rader.length > 0
+      ? html`<p class="muted">Det här är relationens första registrerade händelse.</p>`
+      : ''
+  }</div>`;
+}
+
 /** Källsystemet med versal, som ett namn och inte som en nyckel. */
 const kanalKalla = (s: string): string => (Object.hasOwn(KALLNAMN, s) ? KALLNAMN[s] : undefined) ?? 'För hand';
 
@@ -7534,6 +7564,15 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
   const companyId = parseCompanyId(req.params.companyId);
   const orgId = parseApprovalId(req.params.orgId);
   const filter: ThreadFilter = isThreadFilter(req.query.visa) ? req.query.visa : 'allt';
+  // Läspositionen prövas före transaktionen (A-7): en ogiltig adress får husets
+  // 400-sida med en fast text i stället för page():s "Något gick fel.", och
+  // ingen fråga körs med den. Tom eller upprepad fore är också ogiltig.
+  const harFore = req.query.fore !== undefined;
+  const fore = harFore ? parseThreadCursor(req.query.fore) : null;
+  if (harFore && fore === null) {
+    res.status(400).type('html').send(errorPage(400, THREAD_CURSOR_ERROR).value);
+    return;
+  }
   const oppetFormular = parseOpenForm(req.query.oppna);
   const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
@@ -7569,7 +7608,14 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const krock = andra.find((a) => a.id === krockId);
     const forval = oppetFormular === 'slaihop'
       ? mergeCandidate(req.query.med, andra.map((a) => a.id)) : null;
-    const thread = await relationThread(client, companyId, orgId, { filter });
+    // En rad extra avgör om det finns något äldre; bara de 60 första visas.
+    const rader = await relationThread(client, companyId, orgId, {
+      filter, limit: THREAD_PAGE_SIZE + 1, before: fore ?? undefined,
+    });
+    const harAldre = rader.length > THREAD_PAGE_SIZE;
+    const thread = rader.slice(0, THREAD_PAGE_SIZE);
+    const sistaVisade = thread.at(-1);
+    const nastaMarkor = harAldre && sistaVisade ? formatThreadCursor(sistaVisade) : null;
     const eventFields = await getEventFields(client, companyId, {
       interaction_ids: thread.filter((e) => e.kind === 'interaction' && e.ref_id).map((e) => e.ref_id!),
       commitment_ids: thread.filter((e) => e.kind === 'commitment' && e.ref_id).map((e) => e.ref_id!),
@@ -7831,7 +7877,12 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
           </div>
 
           ${
-            thread.length === 0
+            thread.length === 0 && harFore
+              // En gammal eller handskriven läsposition: relationen har
+              // händelser, bara inga äldre — inte samma läge som en tom tråd.
+              ? html`<div class="empty"><div class="big">Inga äldre händelser före den här positionen.</div></div>${
+                  tradensSidor(back, filter, harFore, nastaMarkor, thread)}`
+              : thread.length === 0
               ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
                   Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
               : html`<ol class="thread">${thread.map((e) => {
@@ -7867,7 +7918,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     ${rattaHandelse(e.kind, falt, {
                       action: `${back}/edit`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id ?? '' },
                     }, `${back}?visa=${filter}`, new Date().toISOString().slice(0, 10))}
-                  </div></li>`; })}</ol>`
+                  </div></li>`; })}</ol>${tradensSidor(back, filter, harFore, nastaMarkor, thread)}`
           }
         </div>
       </div>`;

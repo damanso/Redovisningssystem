@@ -1,6 +1,7 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_KINDS } from '../src/lib/crmRules.js';
+import { THREAD_FILTERS } from '../src/services/crmThread.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
 const original = {
@@ -407,5 +408,79 @@ describe('löftets status från synken (story 3.3)', () => {
       }
     }
     expect(skiljer).toEqual([['done', 'open'], ['done', 'done'], ['done', 'dropped'], ['dropped', 'open'], ['dropped', 'done'], ['dropped', 'dropped']]);
+  });
+});
+
+describe('trådens markör (story 4.1)', () => {
+  const TID = '2026-01-02T09:00:00.000Z';
+  const UUID = '3f2b6c1e-8a4d-4e2f-9b1a-0c5d7e9f1a2b';
+  const markor = (tid: string, slag: string, id: string): string => `${tid}|${slag}|${id}`;
+  const GILTIG = markor(TID, 'interaction', UUID);
+
+  it('TC1 en giltig markör ger sina tre värden, och uuid:n med versaler ger gemener', () => {
+    expect(parseThreadCursor(GILTIG)).toEqual({ at: TID, kind: 'interaction', ref_id: UUID });
+    expect(parseThreadCursor(markor(TID, 'interaction', UUID.toUpperCase()))).toEqual({ at: TID, kind: 'interaction', ref_id: UUID });
+  });
+
+  it('TC2 markörens slag är exakt trådens slag, och vart och ett godtas', () => {
+    const tradensSlag = new Set<string>();
+    for (const lista of Object.values(THREAD_FILTERS)) for (const slag of lista ?? []) tradensSlag.add(slag);
+    expect([...tradensSlag].sort()).toEqual(Object.keys(THREAD_CURSOR_KINDS).sort());
+    for (const slag of tradensSlag) {
+      expect(parseThreadCursor(markor(TID, slag, UUID)), slag).toEqual({ at: TID, kind: slag, ref_id: UUID });
+    }
+  });
+
+  it('TC3 sjutton ogiltiga värden ger null utan att kasta', () => {
+    const lang = `${GILTIG}${'0'.repeat(101 - GILTIG.length)}`;
+    expect(lang).toHaveLength(101);
+    const ogiltiga: Array<[string, unknown]> = [
+      ['M1', undefined],
+      ['M2', [GILTIG, markor(TID, 'payment', UUID)]],
+      ['M3', 1],
+      ['M4', { at: TID, kind: 'interaction', ref_id: UUID }],
+      ['M5', ''],
+      ['M6', markor('2026-02-30T09:00:00.000Z', 'interaction', UUID)],
+      ['M7', markor('2026-01-02T09:00:00Z', 'interaction', UUID)],
+      ['M8', markor('2026-01-02T09:00:00.000+01:00', 'interaction', UUID)],
+      ['M9', markor(TID, 'constructor', UUID)],
+      ['M10', markor(TID, 'INTERACTION', UUID)],
+      ['M11', `${TID}|interaction`],
+      ['M12', `${GILTIG}|interaction`],
+      ['M13', lang],
+      ['M14', markor(TID, 'interaction', 'inte-en-uuid')],
+      ['M15', markor('2026-01-02T09:00:00.000000Z', 'interaction', UUID)],
+      ['M16', markor('2026-13-01T09:00:00.000Z', 'interaction', UUID)],
+      ['M17', markor('0000-01-01T00:00:00.000Z', 'interaction', UUID)],
+    ];
+    expect(ogiltiga).toHaveLength(17);
+    for (const [namn, varde] of ogiltiga) {
+      expect(() => parseThreadCursor(varde), namn).not.toThrow();
+      expect(parseThreadCursor(varde), namn).toBeNull();
+    }
+  });
+
+  it('TC4 rundgång: det formatThreadCursor bygger läser parseThreadCursor, och trasiga rader ger null', () => {
+    const somDatum = { at: new Date(TID), kind: 'commitment', ref_id: UUID };
+    expect(parseThreadCursor(formatThreadCursor(somDatum))).toEqual({ at: TID, kind: 'commitment', ref_id: UUID });
+    const somText = { at: '2026-01-02T09:00:00.123456Z', kind: 'payment', ref_id: UUID };
+    expect(parseThreadCursor(formatThreadCursor(somText))).toEqual({ at: '2026-01-02T09:00:00.123Z', kind: 'payment', ref_id: UUID });
+    for (const [namn, rad] of [
+      ['slaget constructor', { at: new Date(TID), kind: 'constructor', ref_id: UUID }],
+      ['ref_id null', { at: new Date(TID), kind: 'interaction', ref_id: null }],
+      ['at som ogiltig text', { at: 'inte-en-tid', kind: 'interaction', ref_id: UUID }],
+      ['at som ogiltigt Date', { at: new Date('inte-en-tid'), kind: 'interaction', ref_id: UUID }],
+    ] as const) {
+      expect(() => formatThreadCursor(rad), namn).not.toThrow();
+      expect(formatThreadCursor(rad), namn).toBeNull();
+    }
+  });
+
+  it('TC5 negativ kontroll: prototypens namn finns på ett vanligt objekt men godtas aldrig som slag', () => {
+    expect(parseThreadCursor(markor(TID, 'commitment_closed', UUID))).toEqual({ at: TID, kind: 'commitment_closed', ref_id: UUID });
+    for (const namn of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(namn in {}, namn).toBe(true);
+      expect(parseThreadCursor(markor(TID, namn, UUID)), namn).toBeNull();
+    }
   });
 });
