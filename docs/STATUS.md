@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 4.2 (crm), källan på varje rad är en länk (FR-17, FR-31):**
+  En källrad i en funktion: `kallrad()` i `server/src/http/view/routes.ts`, med
+  den slutna namntabellen `KALLNAMN` (Gmail, Ärende, Kalender, För hand),
+  tillåtelselistan `KALLNYCKEL` (hela nyckeln mot källsystemets grammatik) och
+  `gmailAdress`, det enda stället där Gmail-mallen står. Tråden, åtagandevyns
+  kolumn Källa och Idags löfteskort använder den: namnet, nyckeln i maskinstil,
+  «Öppna ↗» (`target="_blank" rel="noopener"` och `aria-label`) till Gmail, till
+  ärendet under `/vy/arende/` eller till fakturans sida, och tillägget «rättad av
+  dig». En nyckel utan formen visas som escapad text utan länk. Ärendeplattformen
+  heter Ärende också i ursprungsmärkets titel. Trådens rader bär `invoice_id`
+  (`server/src/services/crmThread.ts`), så att fakturans och betalningens rad
+  leder till fakturan; `ref_id` är oförändrat. Idag läser löftenas fält i en
+  samlad fråga för tillägget. Min sidas mejlänk byggs genom `gmailAdress`, med
+  oförändrad utdata. Avsnittet «Källan på varje rad (crm 4.2)» i
+  `docs/MCP_ACTIONS.md`. Prov: KL1–KL13 i `server/test/crm-views.test.ts`
+  (egen fixtur i eget bolag). Ingen migration, rutt, åtgärd, tabell, CSS-klass,
+  import eller beroende. **Inte kört i den här sessionen:** `npm run typecheck`
+  och `npm test` — sandlådan svarade ”This command requires approval”; kedjans
+  körning är belägget. **Rött utanför repot:** enligt berättelsens baslinje
+  (provvaktens körning c7affc90486e) är 19 Hermes-prov inte gröna, och inget av
+  dem gäller den här berättelsen. **Gmail-mallen är ännu inte provad mot ett
+  verkligt meddelande:** efter driftsättningen öppnar David «Öppna ↗» på en
+  mailrad i en relations tråd (en kontaktpunkt ur nattintaget, nyckel
+  `gmail:<id>`) i sin inloggade webbläsare och antecknar här om meddelandet
+  visas. Leder mallen fel ändras bara `gmailAdress` i en egen ändring.
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar
