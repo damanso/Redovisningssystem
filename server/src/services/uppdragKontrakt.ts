@@ -31,7 +31,7 @@ import type { PoolClient } from 'pg';
 import { listContracts, type Delforbrukning, type Kontrakttillstand, type Takversion } from './contracts.js';
 import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
-import { lasLeverabelregister } from './uppdragRegister.js';
+import { lasLeverabelregister, type Leverabelrad } from './uppdragRegister.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
 import { kontraktsluckor, mottagarpartlage, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
 
@@ -122,7 +122,7 @@ export interface Kontraktsyta {
   scopelinje_lage: Scopelinjelage;
   /** Avtalets parter med mottagarpartens läge, ur `lasKontraktsparter` (Story 2.4). */
   parter: Kontraktsparterlage;
-  /** Luckorna i de kontraktsburna fälten. Tom för ett avtal utan register: inget är inläst än. */
+  /** Luckorna i de kontraktsburna fälten, ur `lasKontraktsluckor`. Tom för ett oläst avtal — se `parter.inlast`. */
   luckor: Lucka[];
 }
 
@@ -137,13 +137,20 @@ export interface Kontraktsparterlage {
   godkannandeform: string | null;
   kalla: string | null;
   lage: Mottagarpartlage;
+  /**
+   * Har avtalet registerrader? Läget ovan säger `angiven` för en godkännare
+   * också före inläsningen, så inläsningen står för sig själv: en yta som ska
+   * säga "inga luckor" frågar här, aldrig läget (lärdom 7, granskningens fynd 3).
+   */
+  inlast: boolean;
 }
 
 /**
  * Den enda läsningen av avtalets lagrade parter. Kontraktet räknas som inläst
- * när avtalet har registerrader — det avgörs här och bara här, så att läget
- * `ej_inlast` har ett enda ursprung och ingen vy säger att något saknas i ett
- * kontrakt som aldrig lästs. Ett avtal utanför bolaget ger 404.
+ * när avtalet har registerrader — det avgörs här och bara här, så att `inlast`
+ * och läget `ej_inlast` har ett enda ursprung och ingen vy säger att något
+ * saknas, eller att inget saknas, i ett kontrakt som aldrig lästs. Ett avtal
+ * utanför bolaget ger 404.
  */
 export async function lasKontraktsparter(
   client: PoolClient, companyId: string, contractId: string,
@@ -162,7 +169,31 @@ export async function lasKontraktsparter(
   const rad = res.rows[0];
   if (!rad) throw new NotFoundError('contract');
   const { inlast, ...parter } = rad;
-  return { ...parter, lage: mottagarpartlage(parter, inlast).lage };
+  return { ...parter, lage: mottagarpartlage(parter, inlast).lage, inlast };
+}
+
+/** Avtalets register, parter och luckor som de står lagrade. */
+export interface Kontraktslage {
+  parter: Kontraktsparterlage;
+  register: Leverabelrad[];
+  luckor: Lucka[];
+}
+
+/**
+ * Den enda läsningen av luckorna i det lagrade (Story 2.4). Kontraktsytan,
+ * Leveranserna och godkännandets svar läser härifrån, och förslaget räknar
+ * samma sak före godkännandet med samma regler (`luckorEfterGodkannande` i
+ * uppdragImport.ts) — så att alla ytor säger samma sak om samma tillstånd.
+ * Ett oläst avtal har inga luckor att räkna: listan är tom, och `inlast` säger
+ * varför, så att ingen yta tar det tomma för ett luckfritt kontrakt.
+ */
+export async function lasKontraktsluckor(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Kontraktslage> {
+  const parter = await lasKontraktsparter(client, companyId, contractId);
+  const register = await lasLeverabelregister(client, companyId, { contract_id: contractId });
+  const luckor = parter.inlast ? kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare }) : [];
+  return { parter, register, luckor };
 }
 
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
@@ -252,12 +283,9 @@ export async function lasKontraktsyta(
     [companyId, input.contract_id],
   );
 
-  // Story 2.4: parterna och luckorna ur samma regler som importen och
-  // förslaget. Luckorna räknas över registrets rader, så ett avtal utan
-  // register har inga — läget säger då att kontraktet inte är inläst.
-  const parter = await lasKontraktsparter(client, companyId, input.contract_id);
-  const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
-  const luckor = register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare });
+  // Story 2.4: parterna och luckorna ur den enda läsningen av det lagrade.
+  // Ett oläst avtal har inga luckor, och `parter.inlast` säger det.
+  const { parter, luckor } = await lasKontraktsluckor(client, companyId, input.contract_id);
 
   return {
     contract: {

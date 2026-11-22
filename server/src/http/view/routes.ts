@@ -43,7 +43,7 @@ import { hamtaDriveKo, listaReferenser, tillReferensvisning, type Kopost } from 
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import {
-  lasKontraktsparter, lasKontraktsyta, type Kontraktsparterlage, type Kontraktsyta, type Scopelinjerad,
+  lasKontraktsluckor, lasKontraktsyta, type Kontraktsparterlage, type Kontraktsyta, type Scopelinjerad,
 } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
 import { LUCKTEXT, mottagarpartlage } from '../../lib/kontraktsluckor.js';
@@ -3924,6 +3924,7 @@ function scopelinjepanel(
 // Story 2.4 (FR-13, FR-27): parternas panel. Meningarna står var för sig, så
 // att proven kan läsa dem som de renderas.
 const INGA_LUCKOR = 'Inga luckor i de kontraktsburna fälten.';
+const LUCKOR_EJ_RAKNADE = 'Leveranskartan är inte inläst, så luckorna i de kontraktsburna fälten går inte att räkna.';
 
 /** En rad i parternas definitionslista — samma form och tokens som undantagsvyns underlag. */
 const partsfalt = (etikett: string, innehall: Raw | string): Raw =>
@@ -3931,14 +3932,16 @@ const partsfalt = (etikett: string, innehall: Raw | string): Raw =>
 
 /**
  * Parterna och luckorna: vem som godkänner en leverabel, hur och enligt vilken
- * källa — och vad kontraktet inte angav. Läget och luckorna kommer ur
- * läsvägen (`lasKontraktsparter`, `kontraktsluckor`) och räknas aldrig här.
+ * källa — och vad kontraktet inte angav. Läget, inläsningen och luckorna
+ * kommer ur läsvägen (`lasKontraktsluckor`) och räknas aldrig här.
  *
  * Tre beslut styr panelen:
  *
- *  1. **Ett oläst kontrakt saknar ingenting.** I läget `ej_inlast` står bara
- *     den meningen: ingen definitionslista med fyra saknade fält, och ingen
- *     mening om att luckorna är noll (lärdom 7).
+ *  1. **Ett oläst kontrakt saknar ingenting — och är inte luckfritt.** I läget
+ *     `ej_inlast` står bara den meningen: ingen definitionslista med fyra
+ *     saknade fält. Noll luckor sägs bara om ett inläst kontrakt (`inlast`,
+ *     aldrig läget): har avtalet parter men inga registerrader står parterna
+ *     och meningen att luckorna inte går att räkna (lärdom 7).
  *  2. **Varje lucka säger vad, var och vad ett ja innebär,** med samma ord som
  *     förslaget i undantagsvyn och registrets tabell (`LUCKTEXT`). En lucka är
  *     ingen uppgift att göra här: den fylls av en ny kontraktsversion.
@@ -3951,7 +3954,7 @@ function parterpanel(y: Kontraktsyta): Raw {
   const antal = y.luckor.length;
   return html`<section class="panel" style="margin-top:14px" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">Parterna och luckorna</h2>
-      ${p.lage === 'ej_inlast' ? chip('Inte inläst', 'muted', '○')
+      ${!p.inlast ? chip('Inte inläst', 'muted', '○')
         : antal === 0 ? chip('Inga luckor', 'ok', '✓')
           : chip(antal === 1 ? '1 lucka' : `${String(antal)} luckor`, 'warn', '!')}</div>
     <div class="panel__body">
@@ -3963,14 +3966,16 @@ function parterpanel(y: Kontraktsyta): Raw {
             ${partsfalt('Godkännandeform', p.godkannandeform ?? saknatFalt('Godkännandeform saknas'))}
             ${partsfalt('Källa', p.kalla ?? saknatFalt('Källa saknas'))}
           </dl>
-          ${antal === 0
-            ? html`<p class="muted" style="margin:8px 16px 12px;font-size:12.5px">${INGA_LUCKOR}</p>`
-            : html`<h3 style="margin:14px 16px 4px">Luckor i kontraktet</h3>
-              <ol style="margin:4px 16px 12px;padding-left:20px">
-                ${y.luckor.map((l) => html`<li style="margin-bottom:8px">
-                  <strong style="font-weight:600">${l.vad}</strong> — ${l.var}.
-                  <div class="muted" style="font-size:12.5px;margin-top:2px">${l.ja_innebar}</div></li>`)}
-              </ol>`}`}
+          ${!p.inlast
+            ? html`<p class="muted" style="margin:8px 16px 12px;font-size:12.5px">${LUCKOR_EJ_RAKNADE}</p>`
+            : antal === 0
+              ? html`<p class="muted" style="margin:8px 16px 12px;font-size:12.5px">${INGA_LUCKOR}</p>`
+              : html`<h3 style="margin:14px 16px 4px">Luckor i kontraktet</h3>
+                <ol style="margin:4px 16px 12px;padding-left:20px">
+                  ${y.luckor.map((l) => html`<li style="margin-bottom:8px">
+                    <strong style="font-weight:600">${l.vad}</strong> — ${l.var}.
+                    <div class="muted" style="font-size:12.5px;margin-top:2px">${l.ja_innebar}</div></li>`)}
+                </ol>`}`}
     </div>
   </section>`;
 }
@@ -5048,7 +5053,7 @@ interface Leveransavtal {
   contractId: string;
   namn: string;
   rader: Leverabelrad[];
-  /** Avtalets parter och mottagarpartens läge, ur `lasKontraktsparter` (Story 2.4). */
+  /** Avtalets parter och mottagarpartens läge, ur `lasKontraktsluckor` (Story 2.4). */
   parter: Kontraktsparterlage;
 }
 
@@ -5070,12 +5075,10 @@ async function leveransunderlag(
   const avtal: Leveransavtal[] = [];
   for (const a of await listContracts(client, companyId, { project_id: projectId })) {
     const contractId = a.id as string;
-    avtal.push({
-      contractId,
-      namn: String(a.name ?? ''),
-      rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
-      parter: await lasKontraktsparter(client, companyId, contractId),
-    });
+    // Registret och parterna ur samma läsning som kontraktsytan (Story 2.4), så
+    // att Leveranserna och Kontraktet aldrig säger olika om samma avtal.
+    const { register, parter } = await lasKontraktsluckor(client, companyId, contractId);
+    avtal.push({ contractId, namn: String(a.name ?? ''), rader: register, parter });
   }
   return { projekt, avtal };
 }
@@ -5085,7 +5088,7 @@ async function leveransunderlag(
  * aldrig själv om kontraktet är inläst: ett oläst kontrakt sägs aldrig sakna
  * något, och samma mening står på Leveranserna och Kontraktet.
  */
-const mottagarparttext = (p: Kontraktsparterlage): string => mottagarpartlage(p, p.lage !== 'ej_inlast').text;
+const mottagarparttext = (p: Kontraktsparterlage): string => mottagarpartlage(p, p.inlast).text;
 
 /**
  * Raden om mottagarparten över brädan eller tabellen. En saknad mottagarpart

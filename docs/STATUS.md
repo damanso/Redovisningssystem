@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter code-review (tre fynd, en felklass):**
+  Granskningen fann tre exempel på att två ytor räknade samma sak ur olika
+  källor: registrets namn ur avtalsdelens FÖRSTA version mot kontraktsytans
+  gällande; förslagets och svarets luckor ur parserns utdata mot ett register
+  som skrevs med `ON CONFLICT DO NOTHING` och aldrig fylldes; panelens ”Inga
+  luckor” om ett avtal med parter men utan register (en direkt `satt_baseline`
+  med en fryst text utan leverabler gick igenom). Mekanismen byttes i stället
+  för att lägga till fall: (1) namnet läses med husets enda regel för gällande
+  version (`gallandeIdag`, ny export i `contracts.ts` ur `gallandeVersion`,
+  oförändrad i sak); (2) en ny kontraktsversion fyller bara saknade
+  registerfält (`registerfyllning`, tillåtelselistan `REGISTER_FYLL`, statusen
+  och angivna värden rörs aldrig), och luckorna räknas på exakt två ställen —
+  `lasKontraktsluckor` (det lagrade: kontraktsytan, Leveranserna, svaret) och
+  `luckorEfterGodkannande` (förslaget och undantagsvyn, med godkännandets egna
+  regler `registerEfterImport`, `planeraDelar` och `parterEfterGodkannande`);
+  (3) formprovet `kravLasbart` körs också i `sattBaseline`, och `parter.inlast`
+  bär inläsningen så att panelen aldrig säger noll luckor om ett oläst kontrakt.
+  Nya fall R8, R9 (källkoden har exakt två anrop av `kontraktsluckor`), L4, G8,
+  G9 och V4, med en mätare som läser förslaget, undantagsvyn, svaret,
+  kontraktsytan, registret, Leveranserna och panelen för samma tillstånd.
+  **Inte kört i den här sessionen:** `npm run typecheck` gav ordagrant ”This
+  command requires approval”; kedjans körning är belägget.
+
 - **2026-11-22 — Story 2.4, omtag efter kedjans körning (tre röda prov, två felklasser):**
   Kedjans `npm test` gav tre röda: klartextprovet T4.2 och T4.3 (ordet
   `manifest` syntes två gånger på Att göra) och G1 (`column "created_at" does

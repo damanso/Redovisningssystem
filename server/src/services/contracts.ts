@@ -101,10 +101,20 @@ async function hamtaDelar(
  * tidigaste — den är det enda villkor som finns, och att svara "inget tak" när
  * ett tak står skrivet vore värre än att svara för tidigt.
  */
-function gallandeVersion(versioner: AvtalsdelRad[], idag: string): AvtalsdelRad {
+function gallandeVersion<T extends { valid_from: string }>(versioner: readonly T[], idag: string): T {
   const sorterade = [...versioner].sort((a, b) => a.valid_from.localeCompare(b.valid_from));
   const ikraft = sorterade.filter((v) => v.valid_from <= idag);
   return (ikraft.length ? ikraft[ikraft.length - 1] : sorterade[0])!;
+}
+
+/**
+ * Den version som gäller i dag, med samma regel och samma dag som
+ * `Delforbrukning.part_id`. Exporterad för leverabelregistrets namn (Story
+ * 2.4): två svar på "vilken version gäller?" i samma hus är ett fel, inte en
+ * nyans. Listan får inte vara tom.
+ */
+export function gallandeIdag<T extends { valid_from: string }>(versioner: readonly T[]): T {
+  return gallandeVersion(versioner, idagsdatum());
 }
 
 export interface Takversion {

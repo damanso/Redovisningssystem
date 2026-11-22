@@ -12,12 +12,12 @@ import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 import {
-  KontraktsmanifestSchema, kontraktsluckor, kontraktsparter, manifestankare, mottagarpartlage,
+  KontraktsmanifestSchema, kontraktsparter, manifestankare, mottagarpartlage, parterEfterGodkannande,
 } from '../lib/kontraktsluckor.js';
 import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
-import { ankarrytm, lasBaselineandring } from './uppdragImport.js';
+import { ankarrytm, lasBaselineandring, luckorEfterGodkannande } from './uppdragImport.js';
 import { lasKontraktsparter } from './uppdragKontrakt.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
@@ -482,8 +482,9 @@ export async function explainApproval(
   if (action === 'satt_baseline') {
     const contractId = asUuid(input.contract_id);
     if (!contractId || typeof input.kontraktstext !== 'string') return none;
-    const avtal = await one<{ name: string; project_id: string }>(client,
-      'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
+    const avtal = await one<{ name: string; project_id: string; signed_date: string | null }>(client,
+      'SELECT name, project_id, signed_date::text AS signed_date FROM contracts WHERE id = $1 AND company_id = $2',
+      [contractId, companyId]);
     if (!avtal) return none;
     const kontrakt = parseLeveranskontrakt(input.kontraktstext);
     let andring: Awaited<ReturnType<typeof lasBaselineandring>>;
@@ -533,11 +534,14 @@ export async function explainApproval(
       ankarrytm(kontrakt, ankarrad ?? { bedomning_intervall_dagar: null, bedomning_veckodag: null }),
       { ankare: lagratAnkare, kalla: lagradKalla });
     const skriverAnkare = ankare.lage === 'lagras' || ankare.lage === 'andras';
-    // Godkännandet läser in kontraktet, och utan godkännare i källan står de lagrade parterna kvar.
-    const efter = parter.godkannare !== null ? parter : lagrade;
-    const luckor = kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: efter.godkannare });
+    // Efter godkännandet: parterna och luckorna med godkännandets egna regler,
+    // samma anrop som importens förslag — registret som det blir, inte parserns
+    // utdata ensam, och de lagrade parterna när källan inte anger en godkännare.
+    const efter = parterEfterGodkannande(parter, lagrade);
+    const luckor = await luckorEfterGodkannande(client, companyId,
+      { id: contractId, name: avtal.name, signed_date: avtal.signed_date }, kontrakt, efter.godkannare);
     // Före godkännandet: läget ur läsvägen, så att ett oläst kontrakt aldrig sägs sakna något.
-    const fore = mottagarpartlage(lagrade, lagrade.lage !== 'ej_inlast').text;
+    const fore = mottagarpartlage(lagrade, lagrade.inlast).text;
     const ankardel = (datum: string | null, kalla: string | null): string =>
       (datum === null ? 'Ankardatum: datum saknas' : `Ankardatum ${datum} (${kalla ?? 'källa saknas'})`);
     const PARTSORD = { godkannare: 'godkännaren', godkannare_eskalering: 'eskaleringen' } as const;

@@ -25,13 +25,17 @@
 //     glömmer den driftar kolumnen ifrån historiken utan att någon ser det.
 //     Härledningen kan per definition inte drifta.
 //   * **`namn` läses ur avtalsdelen, och NULL betyder att kontraktet inte angav
-//     något** (Story 2.4, beslut B6). Namnet står i avtalsdelens första version
-//     med samma kod, och importen skriver koden som namn bara när texten saknar
-//     ett — ett namn som är lika med koden är alltså ett saknat namn. Ingen
-//     kolumn på registret: den hade krävt en efterfyllnad som avslutstriggern
-//     fäller på avslutade uppdrag.
+//     något** (Story 2.4, beslut B6). Namnet står i den version av avtalsdelen
+//     med samma kod som GÄLLER, med samma regel som `Delforbrukning.part_id`
+//     (`gallandeIdag` i contracts.ts) — så att registret, Leveranserna och
+//     kontraktsytans "Det som gäller nu" aldrig säger olika, och så att ett
+//     tillägg som namnger en namnlös leverabel stänger luckan. Importen skriver
+//     koden som namn bara när texten saknar ett, så ett namn som är lika med
+//     koden är ett saknat namn. Ingen kolumn på registret: den hade krävt en
+//     efterfyllnad som avslutstriggern fäller på avslutade uppdrag.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
+import { gallandeIdag } from './contracts.js';
 
 export interface LasLeverabelregisterInput {
   contract_id: string;
@@ -40,7 +44,7 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
-  /** Leverabelns namn ur kontraktet. NULL = namnet saknas i kontraktet (beslut B6). */
+  /** Leverabelns namn ur den gällande avtalsdelen. NULL = namnet saknas i kontraktet (beslut B6). */
   namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
@@ -86,11 +90,8 @@ export async function lasLeverabelregister(
   client: PoolClient, companyId: string, input: LasLeverabelregisterInput,
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
-  const res = await client.query<Leverabelrad>(
+  const res = await client.query<Omit<Leverabelrad, 'namn'>>(
     `SELECT l.contract_id, l.kod,
-            NULLIF((SELECT p.name FROM contract_parts p
-                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
-                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
             l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
@@ -102,5 +103,39 @@ export async function lasLeverabelregister(
       ORDER BY l.kod`,
     [companyId, input.contract_id],
   );
-  return res.rows;
+  const versioner = await lasDelversioner(client, companyId, input.contract_id);
+  return res.rows.map((r) => ({ ...r, namn: gallandeNamn(r.kod, versioner.get(r.kod)) }));
+}
+
+/** En version av en avtalsdel: dagen den gäller från och namnet den bär. */
+export interface Delversion {
+  valid_from: string;
+  name: string;
+}
+
+/** Avtalets avtalsdelar per kod, med alla versioner. Datumet som text, aldrig som JS-`Date`. */
+export async function lasDelversioner(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<Map<string, Delversion[]>> {
+  const res = await client.query<Delversion & { code: string }>(
+    `SELECT code, valid_from::text AS valid_from, name FROM contract_parts
+      WHERE company_id = $1 AND contract_id = $2`,
+    [companyId, contractId],
+  );
+  const perKod = new Map<string, Delversion[]>();
+  for (const r of res.rows) perKod.set(r.code, [...(perKod.get(r.code) ?? []), { valid_from: r.valid_from, name: r.name }]);
+  return perKod;
+}
+
+/**
+ * Leverabelns namn ur den version som gäller (beslut B6, granskningens fynd 1).
+ * Regeln är husets enda (`gallandeIdag`), inte en egen: registrets namn och
+ * kontraktsytans gällande del kan därför aldrig peka på olika versioner. NULL
+ * när koden saknar avtalsdel eller när namnet är koden — då angav kontraktet
+ * inget namn.
+ */
+export function gallandeNamn(kod: string, versioner: ReadonlyArray<Delversion> | undefined): string | null {
+  if (versioner === undefined || versioner.length === 0) return null;
+  const namn = gallandeIdag(versioner).name;
+  return namn === kod ? null : namn;
 }

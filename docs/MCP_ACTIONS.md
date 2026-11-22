@@ -1268,7 +1268,11 @@ Ur texten skrivs efter godkännandet, allt i samma transaktion:
 - leverablerna under sin ström med sitt tak och **ärvt** intervall (NULL),
 - `STYRNING` som del under `UPPDRAG` — **utan** rad i leverabelregistret,
 - en rad per leverabel i `uppdrag_leverabel` (kod, klausul,
-  acceptanskriterium, uppföljningsmått, läsväg, status `ej_paborjad`),
+  acceptanskriterium, uppföljningsmått, läsväg, status `ej_paborjad`). En rad
+  som redan finns behåller sin status och sina angivna värden; en ny
+  kontraktsversion fyller bara de kontraktsburna fält som saknas i raden (Story
+  2.4, regeln `registerfyllning()` i `server/src/lib/kontraktsluckor.ts`), så att
+  en lucka som den nya versionen stänger också stängs i registret,
 - `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul och
   åtgärden när en signal tänds; sorten är en av
   `'innanfor' | 'utanfor' | 'fras' | 'atgard'`, migration 0094, Story 2.6),
@@ -1326,7 +1330,12 @@ Ur texten skrivs efter godkännandet, allt i samma transaktion:
 - **Luckorna, parterna och ankaret i svaret (Story 2.4, FR-27).** Förslaget
   bär `forslag.luckor`, `forslag.parter` och `forslag.ankare`. Luckorna räknas
   över en sluten fältlista — namn, klausul, acceptanskriterium,
-  uppföljningsmått och mottagarpart — och varje lucka har formen
+  uppföljningsmått och mottagarpart — och över registret som godkännandet
+  lämnar efter sig, aldrig över parserns utdata ensam: de lagrade raderna
+  ifyllda med godkännandets egen regel, namnet ur den avtalsdel som då gäller
+  och mottagarparten som står kvar. Importens förslag, undantagsvyns underlag,
+  godkännandets svar och kontraktsytan säger därför samma sak om samma
+  tillstånd. Varje lucka har formen
   `{ falt, kod, vad, var, ja_innebar }` (vad som saknas, var i kontraktet och
   att ett ja lämnar fältet saknat tills en ny kontraktsversion fyller det).
   Listan nämner inget transmittalfält: en tom transmittal före första
@@ -1346,12 +1355,16 @@ Ur texten skrivs efter godkännandet, allt i samma transaktion:
   `details: { olast: ['leverabler'] }`; tenanttransaktionen rullas tillbaka,
   ingen köpost skapas och ingen fråga går till David. Svaret är driftens
   signal. Ett utkast och en fryst text med leverabler beter sig som förut.
+  Godkännandet av en direkt begärd `satt_baseline` gör samma formprov, så en
+  fryst text utan leverabel ger aldrig en baseline utan register.
 - **Godkännandets svar (Story 2.4).** `satt_baseline` svarar också med
-  `parter` (avtalets värden efter steget), `parter_skillnader`, `ankare` och
-  `luckor` med den mottagarpart som då står på avtalet, och `oforandrad` är
-  falsk när parterna eller ankaret skrevs. Auditraden
-  `uppdrag.leveranskontrakt_importerat` får ett boolean för om parterna
-  ändrades och ankarets läge som ett ord, aldrig namn eller källa.
+  `parter` (avtalets värden efter steget), `parter_skillnader`, `ankare`,
+  `{ leverabelfalt_fyllda }` (antalet registerfält som den nya versionen
+  fyllde) och `luckor`, lästa ur det som nu står lagrat genom samma läsning
+  som kontraktsytan. `oforandrad` är falsk när parterna, ankaret eller ett
+  registerfält skrevs. Auditraden `uppdrag.leveranskontrakt_importerat` får
+  antalet ifyllda fält, ett boolean för om parterna ändrades och ankarets läge
+  som ett ord, aldrig namn eller källa.
 - **Importen sätter ALDRIG `cap_confirmed`.** David gör en ren bekräftelse
   genom `upsert_contract_part` via kön (bara nyckelfält och
   `cap_confirmed: true`), och det kräver ett fryst kontrakt. Ett tak
@@ -1549,10 +1562,13 @@ sida utan formulär. Formuläret postar till
   `klausul`, `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status`
   (FR-9) och `dagar_i_laget` (FR-37).
   Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
-  **Namnet läses ur avtalsdelen (Story 2.4, beslut B6):** avtalsdelens första
-  version med samma kod, och NULL när namnet är lika med koden — importen
-  skriver koden som namn bara när texten saknar ett namn. NULL betyder alltså
-  att namnet saknas i kontraktet, och vyn skriver det så.
+  **Namnet läses ur avtalsdelen (Story 2.4, beslut B6):** den version med
+  samma kod som gäller, med samma regel som avtalsdelens gällande version i
+  `get_contract_usage` och kontraktsytan (den senaste som trätt i kraft, annars
+  den tidigaste), och NULL när namnet är lika med koden — importen skriver
+  koden som namn bara när texten saknar ett namn. NULL betyder alltså att
+  namnet saknas i kontraktet, och vyn skriver det så. Ett tillägg som namnger
+  en namnlös leverabel stänger luckan från den dag det gäller.
   **Radidentiteten är `(contract_id, kod)`** — aldrig `contract_part_id`:
   avtalsdelen versioneras vid ett tilläggsavtal, leverabeln L6 är samma
   leverabel före och efter. Ett avtal som inte finns eller tillhör ett annat
@@ -2151,13 +2167,17 @@ känslig åtgärd och godkänns i **Att göra**.
   Ett utkast får aldrig scopelinjer genom importen, eftersom baselinen bara skrivs
   för ett fryst avtal efter Davids ja.
 - **Parterna och luckorna (Story 2.4, FR-13 och FR-27).** Svaret bär
-  `parter: { godkannare, godkannare_eskalering, godkannandeform, kalla, lage }`
+  `parter: { godkannare, godkannare_eskalering, godkannandeform, kalla, lage, inlast }`
   och `luckor` (samma form som importens luckor). Parterna läses bara genom
-  `lasKontraktsparter` i `server/src/services/uppdragKontrakt.ts`, och läget är
-  `'angiven' | 'saknas' | 'ej_inlast'`: utan registerrader är kontraktet inte
-  inläst, och då säger ytan aldrig att något saknas i kontraktet. Luckorna
-  räknas över registrets rader och mottagarparten, så ett avtal utan register
-  har en tom lista. Vyn Kontraktet visar dem i panelen "Parterna och luckorna".
+  `lasKontraktsparter` och luckorna bara genom `lasKontraktsluckor`, båda i
+  `server/src/services/uppdragKontrakt.ts`; Leveranserna och godkännandets
+  svar läser samma väg. Läget är `'angiven' | 'saknas' | 'ej_inlast'`, och
+  `parter.inlast` säger om avtalet har registerrader: utan dem är kontraktet
+  inte inläst, ytan säger aldrig att något saknas i kontraktet, och luckorna
+  är en tom lista som inte betyder luckfritt. Läget kan vara angiven före
+  inläsningen, så en yta som säger noll luckor frågar `parter.inlast`, aldrig
+  läget. Vyn Kontraktet visar dem i panelen "Parterna och luckorna", och utan
+  inläst leveranskarta står där att luckorna inte går att räkna.
 - **Ytan är vägen till dokumentet och registret över dess läge — aldrig en
   kopia** (NFR-12). Svaret bär `source_file_id` och Drive-referensernas
   `extern_id` och ingenting mer om handlingen; `includeContent` anropas aldrig

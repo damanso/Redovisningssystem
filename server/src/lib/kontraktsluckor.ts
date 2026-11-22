@@ -7,13 +7,19 @@
 // registret, kontraktsytan och undantagsvyn (Story 2.3: tre vyer som säger tre
 // olika saker om samma tillstånd är ett fel, inte en nyans).
 //
-// Fyra regler bär filen:
+// Fem regler bär filen:
 //
 //   * **En lucka är en beräknad lista, aldrig en post.** `kontraktsluckor` räknar
 //     luckorna över den slutna fältlistan `LUCKFALT`, och texten står en gång, i
 //     `LUCKTEXT`. Ingen tabell, ingen köpost och ingen undantagspost skapas per
 //     lucka (kriterium 7). Listan nämner inget transmittalfält: en tom transmittal
 //     före första överlämningen är giltig och fälls aldrig (FR-9).
+//   * **Luckorna räknas över registret, före och efter godkännandet med samma
+//     regler.** En ny kontraktsversion fyller bara ett saknat registerfält
+//     (`registerfyllning`), och förslaget räknar registret efteråt med samma
+//     regel (`registerEfterImport`) och parterna med `parterEfterGodkannande`.
+//     Parserns utdata ensam är aldrig underlaget för en lucka: den vet inte vad
+//     registret redan bär.
 //   * **Parterna har en källa per avtal** (beslut B3). Anger manifestet en
 //     godkännare kommer alla tre partsfälten därifrån; annars kommer godkännaren
 //     och eskaleringen ur kontraktstexten. Skillnaden mot texten returneras, så
@@ -127,7 +133,7 @@ export interface Lucka {
   ja_innebar: string;
 }
 
-/** Leverablerna ur parserns utdata eller ur registrets rader — båda passar. */
+/** Registrets rader, lagrade eller räknade efter godkännandet (`registerEfterImport`). */
 export interface Luckunderlag {
   leverabler: ReadonlyArray<{
     kod: string;
@@ -158,6 +164,69 @@ export function kontraktsluckor(underlag: Luckunderlag): Lucka[] {
   }
   if (saknas(underlag.mottagarpart)) ut.push(lucka('mottagarpart', null));
   return ut;
+}
+
+// ---------------------------------------------------------------------------
+// Registret efter en ny kontraktsversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Registrets kontraktsburna fält, som en ny kontraktsversion får fylla. Sluten:
+ * statusen står inte här, för den är modulens egen sanning och ingen import
+ * nollställer någons framsteg.
+ */
+export const REGISTERFALT = ['klausul', 'acceptanskriterium', 'uppfoljningsmatt', 'matt_lasvag'] as const;
+export type Registerfalt = (typeof REGISTERFALT)[number];
+
+/** En registerrads kontraktsburna fält — ur registret eller ur parserns leverabel, båda passar. */
+export type Registerrad = { kod: string } & Readonly<Record<Registerfalt, string | null>>;
+
+/** En rad i registret efter godkännandet, med namnet ur den version som då gäller. */
+export type Registerunderlag = Registerrad & { namn: string | null };
+
+/**
+ * Den enda regeln för vad en ny kontraktsversion skriver i en registerrad som
+ * redan finns: de fält som saknas i raden och som texten anger. Ett angivet
+ * värde rörs aldrig, inte heller när texten säger något annat eller ingenting
+ * (Story 2.4, granskningens fynd 2). Godkännandet skriver precis det här, och
+ * förslaget räknar registret efteråt med samma regel — så att förslaget,
+ * godkännandets svar och kontraktsytan säger samma sak om samma tillstånd.
+ */
+export function registerfyllning(lagrad: Registerrad, ny: Registerrad): Partial<Record<Registerfalt, string>> {
+  const ut: Partial<Record<Registerfalt, string>> = {};
+  for (const falt of REGISTERFALT) {
+    const varde = ny[falt];
+    if (saknas(lagrad[falt]) && varde !== null && !saknas(varde)) ut[falt] = varde;
+  }
+  return ut;
+}
+
+/** Bara registrets fält, så att parserns övriga fält aldrig följer med. */
+const registerrad = (r: Registerrad): Registerrad => ({
+  kod: r.kod, klausul: r.klausul, acceptanskriterium: r.acceptanskriterium,
+  uppfoljningsmatt: r.uppfoljningsmatt, matt_lasvag: r.matt_lasvag,
+});
+
+/**
+ * Registret som ett godkännande av texten lämnar efter sig, med godkännandets
+ * egna regler: en lagrad rad får sin `registerfyllning`, en ny kod får textens
+ * rad som den står, och en lagrad rad som texten inte nämner står kvar — ingen
+ * rad raderas. Namnet ger anroparen, ur den version som gäller efteråt.
+ * Sorterat på kod, som registrets läsväg.
+ */
+export function registerEfterImport(
+  lagrade: ReadonlyArray<Registerrad>,
+  leverabler: ReadonlyArray<Registerrad>,
+  namn: (kod: string) => string | null,
+): Registerunderlag[] {
+  const efter = new Map(lagrade.map((r) => [r.kod, registerrad(r)]));
+  for (const l of leverabler) {
+    const lagrad = efter.get(l.kod);
+    efter.set(l.kod, lagrad ? { ...lagrad, ...registerfyllning(lagrad, l) } : registerrad(l));
+  }
+  return [...efter.values()]
+    .sort((a, b) => (a.kod < b.kod ? -1 : a.kod > b.kod ? 1 : 0))
+    .map((r) => ({ ...r, namn: namn(r.kod) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +290,30 @@ export function kontraktsparter(
     godkannandeform: null,
     kalla: kontrakt.godkannare !== null ? KALLA_KONTRAKTET : null,
     skillnader: [],
+  };
+}
+
+/** Avtalets lagrade parter: de fyra kolumnerna som godkännandets steg (g) skriver. */
+export interface LagradeParter {
+  godkannare: string | null;
+  godkannare_eskalering: string | null;
+  godkannandeform: string | null;
+  kalla: string | null;
+}
+
+/**
+ * Parterna som står på avtalet efter godkännandets steg (g): de valda när de
+ * anger en godkännare, annars de lagrade — en källa som inte gav någon
+ * godkännare har inte sagt att parterna är tomma. Godkännandet skriver precis
+ * det här, och förslaget och förklaringen i undantagsvyn räknar med samma regel.
+ */
+export function parterEfterGodkannande(valda: Kontraktsparter, lagrade: LagradeParter): LagradeParter {
+  const kalla = valda.godkannare !== null ? valda : lagrade;
+  return {
+    godkannare: kalla.godkannare,
+    godkannare_eskalering: kalla.godkannare_eskalering,
+    godkannandeform: kalla.godkannandeform,
+    kalla: kalla.kalla,
   };
 }
 

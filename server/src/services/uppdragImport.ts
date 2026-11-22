@@ -26,8 +26,9 @@ import type { PoolClient } from 'pg';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
 import {
-  kontraktsluckor, kontraktsparter, manifestankare, OLASTA, olastaFormer,
-  type Kontraktsmanifest, type Lucka,
+  kontraktsluckor, kontraktsparter, manifestankare, OLASTA, olastaFormer, parterEfterGodkannande,
+  registerEfterImport, registerfyllning,
+  type Kontraktsmanifest, type LagradeParter, type Lucka, type Registerrad,
 } from '../lib/kontraktsluckor.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import {
@@ -37,7 +38,9 @@ import {
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
+import { lasKontraktsluckor } from './uppdragKontrakt.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
+import { gallandeNamn, lasDelversioner } from './uppdragRegister.js';
 // Importcykeln uppdragImport → uppdragSvep → uppdragUndantag → approvalSummary →
 // uppdragImport är ofarlig i ESM så länge inget importerat namn läses på modulnivå.
 import { UTKASTFRAGENYCKEL, upsertSvepvarden } from './uppdragSvep.js';
@@ -107,6 +110,42 @@ const ANKARE_UPDATE: Readonly<Record<string, string>> = {
   bedomning_ankare: 'bedomning_ankare',
   bedomning_ankare_kalla: 'bedomning_ankare_kalla',
 };
+
+/**
+ * Registerfälten som en ny kontraktsversion får fylla i en befintlig rad
+ * (Story 2.4, `REGISTERFALT`). Aldrig `status`: den är modulens egen sanning.
+ */
+const REGISTER_FYLL: Readonly<Record<string, string>> = {
+  klausul: 'klausul',
+  acceptanskriterium: 'acceptanskriterium',
+  uppfoljningsmatt: 'uppfoljningsmatt',
+  matt_lasvag: 'matt_lasvag',
+};
+
+/** Avtalets lagrade parter i regelns form. */
+const lagradeParter = (avtal: Avtalsrad): LagradeParter => ({
+  godkannare: avtal.godkannare,
+  godkannare_eskalering: avtal.godkannare_eskalering,
+  godkannandeform: avtal.godkannandeform,
+  kalla: avtal.godkannare_kalla,
+});
+
+/**
+ * Ett tekniskt importfel (Story 2.4, kriterium 8) fälls före varje skrivning,
+ * och i båda vägarna in: importen och godkännandet av en direkt begärd
+ * `satt_baseline`. En fryst text utan en enda leverabel hade annars gett en
+ * baseline utan register — ett kontrakt som ser läst ut men inte är det.
+ */
+function kravLasbart(kontrakt: Leveranskontrakt): void {
+  const olast = olastaFormer(kontrakt);
+  if (olast.length > 0) {
+    throw new BadRequestError(
+      'kontrakt_olasbart',
+      `kontraktet kunde inte läsas: ${olast.map((f) => OLASTA[f]).join('; ')}. Ingenting skrevs.`,
+      { olast },
+    );
+  }
+}
 
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
@@ -395,6 +434,40 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
   return saknas;
 }
 
+/**
+ * Luckorna som ett godkännande av texten lämnar efter sig (Story 2.4,
+ * granskningens fynd 1 och 2). Registret räknas med godkännandets egna regler:
+ * `registerEfterImport` för fälten, och för namnet den version som gäller när
+ * godkännandet lagt till sin — `planeraDelar` på avtalets datum, och bara för en
+ * kod som saknar version där, eftersom en lagrad version aldrig skrivs om
+ * (B-7). Mottagarparten är den som står kvar efter steg (g). Importens förslag
+ * och förklaringen i undantagsvyn anropar den, och godkännandets svar och
+ * kontraktsytan läser samma regler ur det lagrade (`lasKontraktsluckor`), så att
+ * alla säger samma sak om samma tillstånd. Läser bara.
+ */
+export async function luckorEfterGodkannande(
+  client: PoolClient, companyId: string, avtal: Pick<Avtalsrad, 'id' | 'name' | 'signed_date'>,
+  kontrakt: Leveranskontrakt, mottagarpart: string | null,
+): Promise<Lucka[]> {
+  const lagrade = await client.query<Registerrad>(
+    `SELECT kod, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag FROM uppdrag_leverabel
+      WHERE company_id = $1 AND contract_id = $2`,
+    [companyId, avtal.id],
+  );
+  const versioner = await lasDelversioner(client, companyId, avtal.id);
+  const leverabelkoder = new Set(kontrakt.leverabler.map((l) => l.kod));
+  for (const del of planeraDelar(kontrakt, avtal.name)) {
+    if (!leverabelkoder.has(del.code)) continue;
+    const egna = versioner.get(del.code) ?? [];
+    // Utan undertecknandedatum (bara ett utkast når hit) kan textens version inte
+    // dateras: den står då bara för en kod som saknar lagrad version.
+    const laggsTill = avtal.signed_date === null ? egna.length === 0 : !egna.some((v) => v.valid_from === avtal.signed_date);
+    if (laggsTill) versioner.set(del.code, [...egna, { valid_from: avtal.signed_date ?? '', name: del.name }]);
+  }
+  const register = registerEfterImport(lagrade.rows, kontrakt.leverabler, (kod) => gallandeNamn(kod, versioner.get(kod)));
+  return kontraktsluckor({ leverabler: register, mottagarpart });
+}
+
 export async function importeraLeveranskontrakt(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: ImporteraLeveranskontraktInput,
 ): Promise<Record<string, unknown>> {
@@ -404,14 +477,7 @@ export async function importeraLeveranskontrakt(
   // tenanttransaktionen rullas tillbaka, ingen köpost skapas och ingen fråga går
   // till David. 400-svaret är driftens signal, och `olast` säger vad som inte
   // kunde läsas — ett 200-svar med tillståndet NULL såg ut som en lyckad import.
-  const olast = olastaFormer(kontrakt);
-  if (olast.length > 0) {
-    throw new BadRequestError(
-      'kontrakt_olasbart',
-      `kontraktet kunde inte läsas: ${olast.map((f) => OLASTA[f]).join('; ')}. Ingenting skrevs.`,
-      { olast },
-    );
-  }
+  kravLasbart(kontrakt);
   const manifest = input.manifest ?? null;
   const parter = kontraktsparter(kontrakt, manifest);
   const forslag = {
@@ -421,12 +487,13 @@ export async function importeraLeveranskontrakt(
     styrning: kontrakt.styrning,
     saknade_falt: saknadeFalt(kontrakt),
     // Story 2.4: parterna, ankaret och luckorna som godkännandet lämnar efter
-    // sig. Mottagarparten är den som står kvar: parternas om de anger en
-    // godkännare, annars avtalets lagrade.
+    // sig, räknade med godkännandets egna regler — registret som det blir och
+    // mottagarparten som står kvar efter steg (g).
     parter,
     ankare: manifestankare(manifest, ankarrytm(kontrakt, avtal),
       { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla }),
-    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? avtal.godkannare }),
+    luckor: await luckorEfterGodkannande(client, companyId, avtal, kontrakt,
+      parterEfterGodkannande(parter, lagradeParter(avtal)).godkannare),
   };
   const svar = { contract_id: input.contract_id, kontrakt_tillstand: kontrakt.kontrakt_tillstand, forslag };
   if (kontrakt.kontrakt_tillstand === 'utkast') {
@@ -485,6 +552,9 @@ export async function sattBaseline(
   if (kontrakt.kontrakt_tillstand !== 'fryst') {
     throw new BadRequestError('kontrakt_not_frozen', 'baseline kräver kontrakt_tillstand: fryst i kontraktstexten');
   }
+  // Samma formprov som importen (Story 2.4, granskningens fynd 3): en direkt
+  // begärd `satt_baseline` med en fryst text utan leverabler skriver ingenting.
+  kravLasbart(kontrakt);
   const avtal = await hamtaAvtal(client, companyId, input.contract_id);
   const validFrom = avtal.signed_date;
   if (!validFrom) {
@@ -523,20 +593,44 @@ export async function sattBaseline(
     })));
   }
 
-  // (e) Leverabelregistret. UNIQUE (contract_id, kod) bär idempotensen: en rad
-  // som redan finns rörs inte, för dess `status` är modulens egen sanning och
-  // en import ska aldrig nollställa någons framsteg.
+  // (e) Leverabelregistret. UNIQUE (contract_id, kod) bär idempotensen: en ny
+  // kod får en rad, och en rad som redan finns behåller sin `status`, för den är
+  // modulens egen sanning och en import ska aldrig nollställa någons framsteg.
+  // En ny kontraktsversion fyller bara de kontraktsburna fält som saknas i raden
+  // (Story 2.4, `registerfyllning`), och ett angivet värde rörs aldrig. Raderna
+  // låses före läsningen, och förslaget räknade registret efteråt med samma
+  // regel — så att förslaget, svaret och kontraktsytan säger samma sak.
+  const lagradeRader = new Map((await client.query<Registerrad>(
+    `SELECT kod, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag FROM uppdrag_leverabel
+      WHERE company_id = $1 AND contract_id = $2 FOR UPDATE`,
+    [companyId, input.contract_id],
+  )).rows.map((r) => [r.kod, r]));
   let nyaLeverabelrader = 0;
+  let fylldaLeverabelfalt = 0;
   for (const leverabel of kontrakt.leverabler) {
-    const res = await client.query(
-      `INSERT INTO uppdrag_leverabel
-         (company_id, contract_id, kod, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT ON CONSTRAINT uppdrag_leverabel_kod_uk DO NOTHING`,
-      [companyId, input.contract_id, leverabel.kod, leverabel.klausul, leverabel.acceptanskriterium,
-        leverabel.uppfoljningsmatt, leverabel.matt_lasvag],
+    const lagrad = lagradeRader.get(leverabel.kod);
+    if (lagrad === undefined) {
+      const res = await client.query(
+        `INSERT INTO uppdrag_leverabel
+           (company_id, contract_id, kod, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT ON CONSTRAINT uppdrag_leverabel_kod_uk DO NOTHING`,
+        [companyId, input.contract_id, leverabel.kod, leverabel.klausul, leverabel.acceptanskriterium,
+          leverabel.uppfoljningsmatt, leverabel.matt_lasvag],
+      );
+      nyaLeverabelrader += res.rowCount ?? 0;
+      continue;
+    }
+    const fyllning = registerfyllning(lagrad, leverabel);
+    const update = buildAllowlistedUpdate(REGISTER_FYLL, fyllning);
+    if (!update) continue;
+    const n = update.values.length;
+    await client.query(
+      `UPDATE uppdrag_leverabel SET ${update.setSql}
+        WHERE company_id = $${n + 1} AND contract_id = $${n + 2} AND kod = $${n + 3}`,
+      [...update.values, companyId, input.contract_id, leverabel.kod],
     );
-    nyaLeverabelrader += res.rowCount ?? 0;
+    fylldaLeverabelfalt += n;
   }
 
   // (e2) Registret har ändrats — alltså ska den frysta kopian skrivas om. Kön
@@ -578,16 +672,18 @@ export async function sattBaseline(
   // tomma. Annars skrivs alla fyra, också NULL, så att ett fält aldrig blandar
   // två källor. Skillnaden mot texten står i svaret och i förslaget.
   const parter = kontraktsparter(kontrakt, input.manifest ?? null);
-  const parterAndrade = parter.godkannare !== null && (parter.godkannare !== avtal.godkannare
-    || parter.godkannare_eskalering !== avtal.godkannare_eskalering
-    || parter.godkannandeform !== avtal.godkannandeform
-    || parter.kalla !== avtal.godkannare_kalla);
+  const fore = lagradeParter(avtal);
+  const efter = parterEfterGodkannande(parter, fore);
+  const parterAndrade = efter.godkannare !== fore.godkannare
+    || efter.godkannare_eskalering !== fore.godkannare_eskalering
+    || efter.godkannandeform !== fore.godkannandeform
+    || efter.kalla !== fore.kalla;
   if (parterAndrade) {
     const update = buildAllowlistedUpdate(PARTER_UPDATE, {
-      godkannare: parter.godkannare,
-      godkannare_eskalering: parter.godkannare_eskalering,
-      godkannandeform: parter.godkannandeform,
-      godkannare_kalla: parter.kalla,
+      godkannare: efter.godkannare,
+      godkannare_eskalering: efter.godkannare_eskalering,
+      godkannandeform: efter.godkannandeform,
+      godkannare_kalla: efter.kalla,
     });
     if (update) {
       await client.query(
@@ -667,7 +763,7 @@ export async function sattBaseline(
     }
   }
 
-  const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
+  const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0 && fylldaLeverabelfalt === 0
     && nyaScopelinjer === 0 && !parterAndrade && mattSkapade === 0 && !rytmAndrad && !ankareSkrivet;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
@@ -680,11 +776,12 @@ export async function sattBaseline(
       oforandrad,
       avtalsdelar_skrivna: skrivnaDelar,
       leverabelrader_skapade: nyaLeverabelrader,
+      leverabelfalt_fyllda: fylldaLeverabelfalt,
       scopelinjer_skapade: nyaScopelinjer,
       matt_skapade: mattSkapade,
       rytm_andrad: rytmAndrad,
-      // Story 2.4: ett boolean och ett läge ur `ANKARLAGEN` — inga namn och
-      // ingen källa, för auditraden överlever gallringen (lärdom 10).
+      // Story 2.4: ett tal, ett boolean och ett läge ur `ANKARLAGEN` — inga namn
+      // och ingen källa, för auditraden överlever gallringen (lärdom 10).
       parter_andrade: parterAndrade,
       ankare: ankare.lage,
       saknade_falt: saknadeFalt(kontrakt),
@@ -698,7 +795,8 @@ export async function sattBaseline(
     godkannandeform: efterAvtal.godkannandeform,
     kalla: efterAvtal.godkannare_kalla,
   };
-  const luckor: Lucka[] = kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: efterAvtal.godkannare });
+  // Luckorna ur det som nu står lagrat, genom samma läsning som kontraktsytan.
+  const { luckor } = await lasKontraktsluckor(client, companyId, input.contract_id);
   return {
     contract_id: input.contract_id,
     oforandrad,
@@ -711,13 +809,14 @@ export async function sattBaseline(
     styrning: kontrakt.styrning !== null,
     avtalsdelar_skrivna: skrivnaDelar,
     leverabelrader_skapade: nyaLeverabelrader,
+    leverabelfalt_fyllda: fylldaLeverabelfalt,
     scopelinjer_skapade: nyaScopelinjer,
     matt_skapade: mattSkapade,
     rytm_andrad: rytmAndrad,
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     // Story 2.4: avtalets parter efter steget, skillnaden mot kontraktstexten,
-    // ankarets läge och luckorna med den mottagarpart som nu står på avtalet.
+    // ankarets läge och luckorna i det som nu står lagrat.
     parter: parterEfter,
     parter_skillnader: parter.skillnader,
     ankare,
