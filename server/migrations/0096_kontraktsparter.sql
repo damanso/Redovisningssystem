@@ -11,7 +11,9 @@
 --
 -- Filen gör tre saker, i den här ordningen:
 --   1. kolumnerna `godkannandeform` och `godkannare_kalla` på `contracts`;
---   2. kommentarerna på de fyra partskolumnerna, alla med kategorin BASELINE;
+--   2. kommentarerna på de fyra partskolumnerna, alla med kategorin BASELINE,
+--      och på ankarets två kolumner, som nu har två skrivvägar (Story 2.4):
+--      kommentaren ur 0095 nämnde bara `satt_bedomningsankare`;
 --   3. avslutstriggern för de fyra kolumnerna, med en egen funktion: ett
 --      avslutat uppdrag tar inte emot nya parter (FR-8).
 --
@@ -39,6 +41,12 @@ COMMENT ON COLUMN contracts.godkannandeform IS
   'BASELINE: hur ett godkännande ges och loggas, ur projektets manifest. NULL = formen saknas; kontraktstexten har inget fält för den.';
 COMMENT ON COLUMN contracts.godkannare_kalla IS
   'BASELINE: källan för godkannare, godkannare_eskalering och godkannandeform — manifestets namn eller leveranskontraktet. NULL = källa saknas.';
+-- Ankaret (0095) har sedan Story 2.4 två skrivvägar, båda Davids egna. Kommentaren
+-- säger båda, så att katalogen inte påstår en regel som koden bryter.
+COMMENT ON COLUMN contracts.bedomning_ankare IS
+  'BASELINE: det första bedömningstillfället. Sätts av David: med satt_bedomningsankare (en gång, när inget ankare är satt) eller genom hans ja på satt_baseline när manifestets ankare står i läget lagras eller andras. Ändras bara genom en baselineändring. NULL = datum saknas.';
+COMMENT ON COLUMN contracts.bedomning_ankare_kalla IS
+  'BASELINE: ankarets källa — Davids uppgift eller en kalenderreferens (satt_bedomningsankare), eller manifestets egen källtext (satt_baseline). Satt om och endast om ankaret är satt.';
 
 -- ---------------------------------------------------------------------------
 -- 3) Ett avslutat uppdrag tar inte emot nya parter

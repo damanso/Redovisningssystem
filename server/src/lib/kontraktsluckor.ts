@@ -132,6 +132,58 @@ export function kontraktsluckor(underlag: Luckunderlag): Lucka[] {
 }
 
 // ---------------------------------------------------------------------------
+// Registret efter godkännandet
+// ---------------------------------------------------------------------------
+
+export type Luckleverabel = Luckunderlag['leverabler'][number];
+
+/**
+ * De kontraktsburna fält som leverabelregistret självt bär. Sluten och härledd
+ * ur `LUCKFALT`: namnet bor i avtalsdelen och mottagarparten på avtalet.
+ */
+export const REGISTERFALT = ['klausul', 'acceptanskriterium', 'uppfoljningsmatt'] as const satisfies ReadonlyArray<Leverabelfalt>;
+export type Registerfalt = (typeof REGISTERFALT)[number];
+
+/**
+ * Det en senare kontraktsversion fyller i en registerrad som redan finns: bara
+ * ett fält som raden saknar och texten anger. Ett ifyllt fält rörs aldrig, och
+ * ett fält som texten saknar suddar aldrig radens värde. Godkännandets steg (e)
+ * och `registerEfterGodkannande` använder samma regel, så att förslaget visar
+ * exakt det registret får.
+ */
+export function registerfyllnad(
+  rad: Pick<Luckleverabel, Registerfalt>, urTexten: Pick<Luckleverabel, Registerfalt>,
+): Partial<Record<Registerfalt, string>> {
+  const fyll: Partial<Record<Registerfalt, string>> = {};
+  for (const falt of REGISTERFALT) {
+    const varde = urTexten[falt];
+    if (saknas(rad[falt]) && varde !== null && !saknas(varde)) fyll[falt] = varde;
+  }
+  return fyll;
+}
+
+/**
+ * Registret som det står när baselinen för `urTexten` är godkänd: en rad som
+ * finns behåller namnet och varje ifyllt fält och får bara `registerfyllnad`,
+ * och en kod som saknas läggs till ur texten. Ordningen är kodens, som i
+ * registrets läsväg. Luckorna i förslaget räknas över just det här, så att de
+ * är samma luckor som registret och kontraktsytan visar efter Davids ja.
+ */
+export function registerEfterGodkannande(
+  lagrade: ReadonlyArray<Luckleverabel>, urTexten: ReadonlyArray<Luckleverabel>,
+): Luckleverabel[] {
+  const rad = (l: Luckleverabel): Luckleverabel => ({
+    kod: l.kod, namn: l.namn, klausul: l.klausul, acceptanskriterium: l.acceptanskriterium, uppfoljningsmatt: l.uppfoljningsmatt,
+  });
+  const per = new Map(lagrade.map((l) => [l.kod, rad(l)]));
+  for (const l of urTexten) {
+    const finns = per.get(l.kod);
+    per.set(l.kod, finns ? { ...finns, ...registerfyllnad(finns, l) } : rad(l));
+  }
+  return [...per.values()].sort((a, b) => (a.kod < b.kod ? -1 : a.kod > b.kod ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
 // Parterna (FR-13, FR-27)
 // ---------------------------------------------------------------------------
 
@@ -223,6 +275,38 @@ export function lagradMottagarparttext(parter: {
   godkannare: string | null; godkannare_eskalering: string | null; kalla: string | null; lage: Mottagarpartlage;
 }): string {
   return mottagarpartlage(parter, parter.lage !== 'ej_inlast').text;
+}
+
+/** De fyra partsfält som godkännandet skriver tillsammans ur en källa (steg g). */
+export interface Parterna {
+  godkannare: string | null;
+  godkannare_eskalering: string | null;
+  godkannandeform: string | null;
+  kalla: string | null;
+}
+
+/** Fälten i `Parterna`, sluten: varje fält som godkännandet skriver står här. */
+export const PARTSFALTEN = ['godkannare', 'godkannare_eskalering', 'godkannandeform', 'kalla'] as const satisfies ReadonlyArray<keyof Parterna>;
+
+/** Godkännandeformen när den saknas — samma ord på Kontraktet och i förslaget. */
+export const GODKANNANDEFORM_SAKNAS = 'Godkännandeform saknas';
+
+/**
+ * Parterna i förslagets från- och till-text. Är mottagarparten angiven står
+ * vart och ett av `PARTSFALTEN` i texten, så att ett byte av vilket partsfält
+ * som helst syns som ”från → till” och aldrig skrivs över i tysthet. Utan
+ * mottagarpart står bara lägets text: formen hör till godkännaren (beslut B3).
+ */
+export function partertext(parter: Parterna, inlast: boolean): string {
+  const m = mottagarpartlage(parter, inlast);
+  if (m.lage !== 'angiven') return m.text;
+  const form = saknas(parter.godkannandeform) ? GODKANNANDEFORM_SAKNAS : `Godkännandeform: ${parter.godkannandeform}`;
+  return `${m.text} · ${form}`;
+}
+
+/** `partertext` för lagrade parter vars läge läsvägen redan avgjort. */
+export function lagradPartertext(parter: Parterna & { lage: Mottagarpartlage }): string {
+  return partertext(parter, parter.lage !== 'ej_inlast');
 }
 
 // ---------------------------------------------------------------------------

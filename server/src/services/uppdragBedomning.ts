@@ -531,8 +531,9 @@ export async function listaBedomningar(
 // den rena `bedomningsrytmlage` — här räknas inget eget läge. Ankardatumet står
 // inte i kontraktet, så David sätter det, en gång per avtal och med sin källa.
 // Ett satt ankare ändras bara genom en baselineändring: åtgärden skriver bara
-// när kolumnen är NULL, `update_contract` saknar kolumnerna och importen rör
-// dem aldrig.
+// när kolumnen är NULL, `update_contract` saknar kolumnerna, och importen
+// skriver dem bara genom Davids ja på `satt_baseline`, när manifestets ankare
+// står i läget lagras eller andras (Story 2.4) — aldrig när den köar förslaget.
 // ---------------------------------------------------------------------------
 
 /** Rytmkolumnerna på avtalet, som de lagras. NULL = inte satt. */

@@ -12,13 +12,15 @@ import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
 import {
-  KontraktsmanifestSchema, kontraktsluckor, kontraktsparter, lagradMottagarparttext, manifestankare, mottagarpartlage,
+  KontraktsmanifestSchema, LUCKTEXT, REGISTERFALT, kontraktsparter, lagradPartertext, manifestankare, partertext,
+  registerfyllnad, type Registerfalt,
 } from '../lib/kontraktsluckor.js';
 import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
-import { lasKontraktsparter } from './uppdragKontrakt.js';
+import { lasKontraktsluckor, lasKontraktsparter } from './uppdragKontrakt.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 export const CARD_TEXT = {
@@ -477,6 +479,11 @@ const ROLL_ORD = { kund: 'Kund', leverantor: 'Leverantör', partner: 'Partner', 
 /** Partsfälten i ord, för skillnaden mellan kontraktstexten och manifestet (Story 2.4). */
 const PARTSFALT_ORD = { godkannare: 'godkännaren', godkannare_eskalering: 'eskaleringen' } as const;
 
+/** Registrets kontraktsburna fält i ord, för en registerrad som fylls (Story 2.4). */
+const REGISTERFALT_ORD: Readonly<Record<Registerfalt, string>> = {
+  klausul: 'Klausulhänvisning', acceptanskriterium: 'Acceptanskriterium', uppfoljningsmatt: 'Uppföljningsmått',
+};
+
 export async function explainApproval(
   client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, base: string,
 ): Promise<ApprovalExplanation> {
@@ -515,11 +522,14 @@ export async function explainApproval(
     const egnaDatum = [...new Set([...andring.efter, ...andring.andraVersioner].filter((d) => /^L[1-9]\d?$/.test(d.code)
       && (d.start_date !== null || d.end_date !== null)).map((d) => d.code))];
 
-    // Story 2.4 (FR-27, FR-13, FR-14): parterna, ankaret, skillnaderna mot
-    // texten och luckorna — samma rena regler som importen och godkännandet.
-    // Ett ogiltigt eller saknat manifest är inget manifest; förklaringen fäller
-    // aldrig. De lagrade parterna läses genom sin enda läsväg, så att ett avtal
-    // utan register får ”inte inläst” och aldrig ”saknas i kontraktet”.
+    // Story 2.4 (FR-27, FR-13, FR-14): parterna, ankaret, registret, skillnaderna
+    // mot texten och luckorna — samma regler och läsvägar som importen och
+    // godkännandet. Ett ogiltigt eller saknat manifest är inget manifest;
+    // förklaringen fäller aldrig. De lagrade parterna läses genom sin enda
+    // läsväg, så att ett avtal utan register får ”inte inläst” och aldrig
+    // ”saknas i kontraktet”. Varje värde som godkännandet skriver över står som
+    // från → till: alla fyra partsfälten (`partertext`), ankaret och varje
+    // registerfält som en senare kontraktsversion fyller (`registerfyllnad`).
     const tolkat = KontraktsmanifestSchema.safeParse(input.manifest);
     const manifest = tolkat.success ? tolkat.data : null;
     const lagrade = await lasKontraktsparter(client, companyId, contractId);
@@ -530,7 +540,17 @@ export async function explainApproval(
       : { intervall_dagar: avtal.bedomning_intervall_dagar, veckodag: avtal.bedomning_veckodag };
     const ankare = manifestankare(manifest, rytm, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla });
     const ankarSkrivs = ankare.lage === 'lagras' || ankare.lage === 'andras';
-    const luckor = kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? lagrade.godkannare });
+    const register = new Map((await lasLeverabelregister(client, companyId, { contract_id: contractId })).map((r) => [r.kod, r]));
+    const fyllnad = kontrakt.leverabler.flatMap((l) => {
+      const rad = register.get(l.kod);
+      if (!rad) return [];
+      const fyll = registerfyllnad(rad, l);
+      return REGISTERFALT.flatMap((falt) => {
+        const varde = fyll[falt];
+        return varde === undefined ? [] : [{ kod: l.kod, falt, varde }];
+      });
+    });
+    const luckor = await lasKontraktsluckor(client, companyId, contractId, parter.godkannare ?? lagrade.godkannare, kontrakt.leverabler);
     const tillagg = [
       ...parter.skillnader.map((s) => `Kontraktstexten anger ${PARTSFALT_ORD[s.falt]} ${s.kontraktstext}; manifestet (${parter.kalla}) `
         + `anger ${s.manifest ?? 'inget'}, och manifestets värde gäller.`),
@@ -541,13 +561,15 @@ export async function explainApproval(
     return {
       change: {
         from: (andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet')
-          + `${SEP}${lagradMottagarparttext(lagrade)}`
+          + `${SEP}${lagradPartertext(lagrade)}`
           + (ankarSkrivs
             ? `${SEP}${avtal.bedomning_ankare === null ? 'Ankardatum: datum saknas' : `Ankardatum ${avtal.bedomning_ankare} (${avtal.bedomning_ankare_kalla})`}`
-            : ''),
+            : '')
+          + fyllnad.map((f) => `${SEP}${f.kod}: ${LUCKTEXT[f.falt].vad}`).join(''),
         to: beskriv(andring.efter) + andraVersioner
-          + `${SEP}${mottagarpartlage(parterEfter, true).text}`
-          + (ankarSkrivs ? `${SEP}Ankardatum ${ankare.ankare} (${ankare.kalla})` : ''),
+          + `${SEP}${partertext(parterEfter, true)}`
+          + (ankarSkrivs ? `${SEP}Ankardatum ${ankare.ankare} (${ankare.kalla})` : '')
+          + fyllnad.map((f) => `${SEP}${f.kod}: ${REGISTERFALT_ORD[f.falt]} ${f.varde}`).join(''),
       },
       why: `${andring.finnsBaseline ? `Återimporten uppdaterar avtalsdelarnas version från ${andring.valid_from}.` : 'Avtalets datum blir baseline v1.'} `
         + (egnaDatum.length > 0

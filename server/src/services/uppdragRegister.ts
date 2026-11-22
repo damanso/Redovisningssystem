@@ -18,10 +18,13 @@
 //     bärs därför inte av kolumnen utan av FR-19-provet, som läser just den här
 //     funktionens svar. Tjänsten döljer alltså aldrig en lucka och fyller den
 //     aldrig med en gissning — den redovisar den som NULL.
-//   * **`namn` läses ur avtalsdelen, det lagras inte här** (Story 2.4, FR-27).
-//     Importen är den enda skrivaren av en leverabels avtalsdel och skriver
-//     koden som namn bara när texten saknar ett; därför betyder ett namn lika med
-//     koden ”namn saknas i kontraktet”, och svaret säger det med NULL.
+//   * **`namn` läses ur avtalsdelens GÄLLANDE version, det lagras inte här**
+//     (Story 2.4, FR-27). Vilken version som gäller avgörs av husets enda regel
+//     (`forbrukningForAvtal`, samma som taket och kontraktsytans `gallande`), så
+//     att en ny version som ger leverabeln ett namn syns här samma dag som där.
+//     Importen skriver koden som namn bara när texten saknar ett; därför betyder
+//     ett namn lika med koden ”namn saknas i kontraktet”, och svaret säger det
+//     med NULL.
 //   * **`dagar_i_laget` HÄRLEDS, den lagras aldrig** (FR-37). Åldern räknas i
 //     SELECT:en ur den append-only historiken (`uppdrag_leverabel_handelse`,
 //     0068:132 — "status utan historik är en gissning"). En `status_sedan`-kolumn
@@ -30,6 +33,7 @@
 //     Härledningen kan per definition inte drifta.
 import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
+import { forbrukningForAvtal } from './contracts.js';
 
 export interface LasLeverabelregisterInput {
   contract_id: string;
@@ -39,8 +43,8 @@ export interface Leverabelrad {
   contract_id: string;
   kod: string;
   /**
-   * Leverabelns namn ur avtalsdelens första version med samma kod (Story 2.4).
-   * NULL när kontraktet saknar namnet: importen skriver då koden som delens
+   * Leverabelns namn ur den gällande versionen av avtalsdelen med samma kod
+   * (Story 2.4). NULL när namnet saknas: importen skriver då koden som delens
    * namn, eftersom `contract_parts.name` är NOT NULL, och koden är inget namn.
    */
   namn: string | null;
@@ -88,11 +92,8 @@ export async function lasLeverabelregister(
   client: PoolClient, companyId: string, input: LasLeverabelregisterInput,
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
-  const res = await client.query<Leverabelrad>(
+  const res = await client.query<Omit<Leverabelrad, 'namn'>>(
     `SELECT l.contract_id, l.kod,
-            NULLIF((SELECT p.name FROM contract_parts p
-                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
-                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
             l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
@@ -104,5 +105,11 @@ export async function lasLeverabelregister(
       ORDER BY l.kod`,
     [companyId, input.contract_id],
   );
-  return res.rows;
+  // Namnet ur den version som GÄLLER — ingen egen versionsregel här.
+  const gallande = new Map((await forbrukningForAvtal(client, companyId, { contractId: input.contract_id }))
+    .map((d) => [d.code, d.name]));
+  return res.rows.map(({ contract_id, kod, ...resten }) => {
+    const namn = gallande.get(kod);
+    return { contract_id, kod, namn: namn === undefined || namn === kod ? null : namn, ...resten };
+  });
 }

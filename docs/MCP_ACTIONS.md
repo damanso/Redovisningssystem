@@ -1269,6 +1269,20 @@ parallell väg in till avtalsdelarna.
   `kalla`, `skillnader`) och `forslag.ankare` (`lage`, `ankare`, `kalla`,
   `orsak`). En lucka blir aldrig en egen post eller köpost: den står i
   baselineförslagets underlag.
+- **Luckorna räknas över registret, inte över texten.** `forslag.luckor` är
+  luckorna i leverabelregistret som det står efter godkännandet, med den
+  mottagarpart godkännandet lämnar: en registerrad som redan finns står kvar,
+  och en kod som saknas läggs till ur texten. Godkännandets `luckor`,
+  `las_kontraktsyta` och Leveranserna räknar över det lagrade registret genom
+  samma läsväg, så alla fyra säger samma sak om samma lucka.
+- **En senare kontraktsversion fyller registret, men suddar aldrig.** Ett
+  kontraktsburet registerfält (klausul, acceptanskriterium eller
+  uppföljningsmått) som en befintlig rad saknar fylls när en ny text anger det,
+  efter Davids ja. Ett ifyllt fält, radens status och läsvägen rörs aldrig, och
+  ett fält som texten saknar suddar aldrig radens värde. Förslaget visar varje
+  sådant fält som från → till (”L2: Klausulhänvisning saknas i kontraktet” →
+  ”L2: Klausulhänvisning §1.2”), och godkännandets svar och auditrad räknar
+  raderna i `{ leverabelrader_skapade, leverabelrader_fyllda }`.
 - **Ett tekniskt importfel** ger **400 `kontrakt_olasbart`** med
   `details.olast`, före varje skrivning: `kontrakt_tillstand` (texten anger
   varken fryst eller utkast) eller `leverabler` (en fryst text utan en enda
@@ -1320,9 +1334,12 @@ manifestet skrivs efter godkännandet, allt i samma transaktion:
   (Story 2.4). Annars skriver importen aldrig ankaret.
 
 Godkännandets svar bär också `parter` (avtalets värden efter steget),
-`parter_skillnader`, `ankare` och `luckor`. Auditraden
-`uppdrag.leveranskontrakt_importerat` får `parter_andrade` (sant eller falskt) och
-`ankare` (läget) — inga namn och ingen källa.
+`parter_skillnader`, `ankare` och `luckor` (det lagrade registrets luckor
+efter steget). Auditraden `uppdrag.leveranskontrakt_importerat` får
+`parter_andrade` (sant eller falskt), `ankare` (läget) och antalet fyllda
+registerrader — inga namn, inga fältvärden och ingen källa. I förslaget står
+mottagarparten, eskaleringen, källan och godkännandeformen både före och efter,
+så att ett byte av vilket partsfält som helst syns som från → till.
 
 - **Utkastläget (Story 2.1, B-14).** En text med `kontrakt_tillstand: utkast`
   förhandsvisas, också utan `signed_date`: ingen baseline, inget register och
@@ -1353,7 +1370,8 @@ Godkännandets svar bär också `parter` (avtalets värden efter steget),
   varnar.
 - **Idempotent.** Delarna matchas på `code`, registret bärs av
   `UNIQUE (contract_id, kod)` och scopelinjerna läses innan de skrivs. En rad
-  som redan står som importen vill ha den skrivs INTE om. Svaret säger
+  som redan står som importen vill ha den skrivs INTE om, och en registerrad
+  får bara de kontraktsburna fält den saknar (Story 2.4). Svaret säger
   `oforandrad: true`, `avtalsdelar_skrivna: 0`. En lagrad rad som skiljer sig
   ger **409 `version_finns`**: hela godkännandet rullas tillbaka, också register
   och scopelinjer. En rättelse efter lagring kräver en ny version med orsak.
@@ -1457,7 +1475,9 @@ Svaret är den skrivna raden.
   och sådana rader renderas som förut, utan siffror (FR-16/FR-20/FR-32).
 - **Perioden följer avtalets rytm (Story 2.3, FR-14, B-14).** Rytmen kommer ur
   leveranskontraktets del 4 genom importen och ankardatumet ur Davids egen
-  uppgift. Varje period räknas av den rena regeln i
+  uppgift: satt med `satt_bedomningsankare { contract_id, ankare, kalla }`,
+  eller ur projektets manifest genom Davids ja på `satt_baseline` (Story 2.4).
+  Varje period räknas av den rena regeln i
   `server/src/lib/bedomningsrytm.ts`: tillfällena är ankaret plus ett helt antal
   intervall, perioden börjar på det senaste tillfället som är i dag eller
   tidigare och är ett intervall lång, och nästa tillfälle är det första som är i
@@ -1499,8 +1519,12 @@ David sätter det, med sin källa.
 - **En gång per avtal.** Avtalet låses, och skrivningen kräver att
   `contracts.bedomning_ankare` är NULL. Ett satt ankare ger 409
   `error: 'ankare_redan_satt'` med texten ”Ankardatumet är redan satt. Det
-  ändras bara genom en baselineändring med orsak.” Varken update_contract eller
-  importen kan skriva kolumnerna; ändringsvägen hör till baselineförslaget.
+  ändras bara genom en baselineändring med orsak.” Ankaret har två skrivvägar,
+  och båda är Davids egna: den här åtgärden, och hans ja på `satt_baseline` när
+  manifestets ankare står i läget lagras eller ändras (Story 2.4, se
+  importen ovan) — det är baselineförslaget som är ändringsvägen.
+  update_contract kan inte skriva kolumnerna, och importen skriver dem bara
+  genom Davids ja på `satt_baseline`, aldrig när den köar förslaget.
 - **Rytmen först.** Ett avtal utan inläst rytm ger 409 `error: 'rytm_saknas'`,
   och ett ankare som inte faller på rytmens veckodag ger 400
   `error: 'fel_veckodag'`. Ett okänt eller främmande avtal ger 404
@@ -1541,9 +1565,11 @@ sida utan formulär. Formuläret postar till
 - `las_leverabelregister` (read) — `contract_id`. Avtalets rader ur
   `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `namn`,
   `klausul`, `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status`
-  (FR-9) och `dagar_i_laget` (FR-37). `namn` (Story 2.4) läses ur avtalsdelens
-  första version med samma kod och är NULL när kontraktet saknar namnet — då bär
-  avtalsdelen koden som namn, och koden är inget namn.
+  (FR-9) och `dagar_i_laget` (FR-37). `namn` (Story 2.4) läses ur den gällande
+  versionen av avtalsdelen med samma kod — husets enda versionsregel, samma som
+  taket och kontraktsytans `gallande` — och är NULL när namnet saknas: då bär
+  avtalsdelen koden som namn, och koden är inget namn. En ny version som ger
+  leverabeln ett namn syns alltså här samma dag som den börjar gälla.
   Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
   **Radidentiteten är `(contract_id, kod)`** — aldrig `contract_part_id`:
   avtalsdelen versioneras vid ett tilläggsavtal, leverabeln L6 är samma
@@ -2144,8 +2170,9 @@ känslig åtgärd och godkänns i **Att göra**.
   för ett fryst avtal efter Davids ja.
 - **Parterna och luckorna (Story 2.4, FR-13 och FR-27).** Svaret bär `parter`
   (`godkannare`, `godkannare_eskalering`, `godkannandeform`, `kalla` och `lage`)
-  ur `lasKontraktsparter`, och `luckor` ur den rena `kontraktsluckor` över
-  registrets rader. `lage` är `'angiven' | 'saknas' | 'ej_inlast'`: ”saknas i
+  ur `lasKontraktsparter`, och `luckor` ur `lasKontraktsluckor` — den enda
+  läsvägen till luckorna, som importens förslag och godkännandets svar också
+  går genom — över registrets rader. `lage` är `'angiven' | 'saknas' | 'ej_inlast'`: ”saknas i
   kontraktet” sägs bara om ett avtal med register, och ett avtal utan register
   får `lage: 'ej_inlast'` och `luckor: []`.
 - **Ytan är vägen till dokumentet och registret över dess läge — aldrig en

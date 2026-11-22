@@ -28,7 +28,8 @@
 //
 // Story 2.4 lägger till parterna och luckorna: mottagarparten, godkännandeformen
 // och källan ur `lasKontraktsparter`, och de kontraktsburna fält som saknas ur
-// den rena `kontraktsluckor` över registrets rader. Inga egna texter här.
+// `lasKontraktsluckor` — den enda vägen till luckorna, också för importens
+// förslag och godkännandets svar. Inga egna texter här.
 //
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
 import type { PoolClient } from 'pg';
@@ -37,7 +38,9 @@ import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
-import { kontraktsluckor, mottagarpartlage, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
+import {
+  kontraktsluckor, mottagarpartlage, registerEfterGodkannande, type Lucka, type Luckleverabel, type Mottagarpartlage,
+} from '../lib/kontraktsluckor.js';
 
 export interface LasKontraktsytaInput {
   contract_id: string;
@@ -174,6 +177,26 @@ export async function lasKontraktsparter(
   return { ...parter, lage: mottagarpartlage(parter, rad.inlast).lage };
 }
 
+/**
+ * Den enda vägen till ett avtals luckor (FR-27). De räknas över
+ * leverabelregistret — det registret och Leveranserna visar — aldrig över en
+ * kontraktstext för sig. Med `plan` (leverablerna i en text som ännu inte är
+ * godkänd) räknas de över registret som det står efter godkännandet
+ * (`registerEfterGodkannande`, samma regel som godkännandets steg e), så att
+ * förslaget, godkännandets svar och kontraktsytan säger samma sak om samma lucka.
+ * `mottagarpart` är den mottagarpart avtalet bär, eller får av godkännandet.
+ * Ett avtal utan register och utan plan är inte inläst och har inga luckor.
+ */
+export async function lasKontraktsluckor(
+  client: PoolClient, companyId: string, contractId: string,
+  mottagarpart: string | null, plan: ReadonlyArray<Luckleverabel> | null = null,
+): Promise<Lucka[]> {
+  const register = await lasLeverabelregister(client, companyId, { contract_id: contractId });
+  if (plan === null && register.length === 0) return [];
+  const leverabler = plan === null ? register : registerEfterGodkannande(register, plan);
+  return kontraktsluckor({ leverabler, mottagarpart });
+}
+
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
 function versionerITid(del: Delforbrukning): Takversion[] {
   return [...del.versions].sort((a, b) => a.valid_from.localeCompare(b.valid_from));
@@ -261,11 +284,10 @@ export async function lasKontraktsyta(
     [companyId, input.contract_id],
   );
 
-  // Story 2.4 (FR-27): parterna ur sin enda läsväg, och luckorna ur registrets
-  // rader. Ett avtal utan register är inte inläst och har inga luckor att visa.
+  // Story 2.4 (FR-27): parterna och luckorna ur var sin enda läsväg. Ett avtal
+  // utan register är inte inläst och har inga luckor att visa.
   const parter = await lasKontraktsparter(client, companyId, input.contract_id);
-  const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
-  const luckor = register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare });
+  const luckor = await lasKontraktsluckor(client, companyId, input.contract_id, parter.godkannare);
 
   return {
     contract: {

@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter code-review (fem fynd, lagade som klasser):**
+  (1) *Ett dokument påstod en regel som koden bryter.* Ankaret har sedan
+  berättelsen två skrivvägar, båda Davids egna (`satt_bedomningsankare` och hans
+  ja på `satt_baseline` i manifestankarets lägen lagras och andras). Rättat i
+  `docs/ARKITEKTUR.md`, `docs/MCP_ACTIONS.md` (ankaråtgärden och rytmavsnittet),
+  kommentaren i `uppdragBedomning.ts` (”importen rör dem aldrig”) och
+  kolumnkommentarerna på `bedomning_ankare` och `bedomning_ankare_kalla` (i
+  `0096`, eftersom 0095:s kommentar bara nämnde den ena vägen). Nytt prov D2 läser
+  båda dokumenten, varje kommentar i `server/src` och katalogens
+  kolumnkommentarer, och fäller varje mening som säger att ankaret bara skrivs av
+  ankaråtgärden eller att importen aldrig skriver det; negativa kontroller med
+  granskningens meningar och 0095:s kommentar. (2) *”Exakt en” prövades mot ett
+  förfiltrerat urval.* U1, I5 och I7 jämför nu hela kön och hela undantagsvyn
+  före och efter (`helaKoOchVy`, `tillkommet`), med en negativ kontroll där en
+  planterad post av annat slag och en köpost med annan åtgärd syns; U2–U4 slår
+  upp posten på köpostens id. (3) *Ett skrivet fält syntes inte i från → till.*
+  `partertext` (ren) tar med alla fyra partsfält (`PARTSFALTEN`), också
+  godkännandeformen; R7 byter varje fält för sig, U5 gör det genom förklaringen
+  och genom undantagsvyn och Davids ja. (4) *Två ytor räknade luckorna ur olika
+  källor.* En enda läsväg, `lasKontraktsluckor` (uppdragKontrakt.ts), räknar
+  luckorna över registret som det står eller som det står efter godkännandet
+  (`registerEfterGodkannande`); importens förslag, godkännandets svar,
+  förklaringen och kontraktsytan går genom den. För att ja-texten (kriterium 7:
+  ”tills en ny kontraktsversion fyller det”) ska vara sann fyller godkännandets
+  steg e nu ett kontraktsburet registerfält som raden saknar (`registerfyllnad`,
+  samma regel i förslaget), och suddar aldrig ett ifyllt fält eller en status;
+  fyllnaden står som från → till i förslaget och räknas i
+  `leverabelrader_fyllda` (svar och audit, utan fältvärden). R8, G8 och U6 prövar
+  fyllnaden, att inget suddas och att förslaget, svaret, kontraktsytan och
+  Leveranserna säger samma sak. (5) *Namnet lästes ur en annan version än ytan
+  i övrigt.* `namn` läses ur den gällande versionen genom husets enda
+  versionsregel (`forbrukningForAvtal`); L4 namnger L1 med en ny version och
+  visar att registret, kontraktsytans `gallande` och luckorna följer, med den
+  första versionen som negativ kontroll. **Körningarna: inte kört.** `npx vitest
+  run test/uppdragsytan-kontraktsluckor.test.ts -t R0` gav ordagrant ”This command
+  requires approval”; kedjans körning är belägget. Vyändringen är bara att
+  Kontraktets ”Godkännandeform saknas” nu kommer ur konstanten
+  `GODKANNANDEFORM_SAKNAS` (samma ord, ingen ny markup eller CSS).
+
 - **2026-11-22 — Story 2.4, omtag efter kedjans körning (ett rött prov, V1):**
   Kedjans `npm test` fällde V1 i `server/test/uppdragsytan-kontraktsluckor.test.ts`
   på `toContain('<th>Kod</th><th>Namn</th>')`. Vyn var rätt; provet var fel.

@@ -46,7 +46,7 @@ import {
   lasKontraktsparter, lasKontraktsyta, type Kontraktsyta, type LagradeParter, type Scopelinjerad,
 } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
-import { LUCKTEXT, MOTTAGARPART_EJ_INLAST, lagradMottagarparttext } from '../../lib/kontraktsluckor.js';
+import { GODKANNANDEFORM_SAKNAS, LUCKTEXT, MOTTAGARPART_EJ_INLAST, lagradMottagarparttext } from '../../lib/kontraktsluckor.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -3948,7 +3948,7 @@ function parterpanel(y: Kontraktsyta): Raw {
         : html`<dl style="margin:0;padding:10px 16px 4px">
             ${partsfalt('Mottagarpart', p.godkannare ?? saknatFalt(LUCKTEXT.mottagarpart.vad))}
             ${partsfalt('Eskalering', p.godkannare_eskalering ?? saknatFalt('Eskalering saknas'))}
-            ${partsfalt('Godkännandeform', p.godkannandeform ?? saknatFalt('Godkännandeform saknas'))}
+            ${partsfalt('Godkännandeform', p.godkannandeform ?? saknatFalt(GODKANNANDEFORM_SAKNAS))}
             ${partsfalt('Källa', p.kalla ?? saknatFalt('Källa saknas'))}
           </dl>
           ${y.luckor.length === 0

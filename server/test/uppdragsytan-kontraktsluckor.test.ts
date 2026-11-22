@@ -19,7 +19,8 @@
 // Förväntade värden härleds ur fixturens rader och ur konstanterna i
 // lib/kontraktsluckor.ts, aldrig ur en avskrift. Varje fall som importerar har
 // ett eget avtal, så att det går att köra ensamt.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadMigrations } from '../src/db/migrate.js';
@@ -28,9 +29,10 @@ import { staplabaraTabeller } from '../src/http/view/html.js';
 import { INGEN_PERIOD, bedomningsrytmlage } from '../src/lib/bedomningsrytm.js';
 import { parseLeveranskontrakt } from '../src/lib/leveranskontrakt.js';
 import {
-  ANKARLAGEN, ANKARORSAK, KontraktsmanifestSchema, LUCKFALT, LUCKTEXT, MOTTAGARPART_EJ_INLAST, OLASTA,
-  kontraktsluckor, kontraktsparter, manifestankare, mottagarpartlage,
-  type Ankarlage, type Befintligtankare, type Kontraktsmanifest, type Lucka, type Luckfalt,
+  ANKARLAGEN, ANKARORSAK, GODKANNANDEFORM_SAKNAS, KontraktsmanifestSchema, LUCKFALT, LUCKTEXT, MOTTAGARPART_EJ_INLAST,
+  OLASTA, PARTSFALTEN, REGISTERFALT,
+  kontraktsluckor, kontraktsparter, manifestankare, mottagarpartlage, partertext, registerEfterGodkannande, registerfyllnad,
+  type Ankarlage, type Befintligtankare, type Kontraktsmanifest, type Lucka, type Luckfalt, type Luckleverabel, type Parterna,
 } from '../src/lib/kontraktsluckor.js';
 import { explainApproval } from '../src/services/approvalSummary.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
@@ -62,6 +64,16 @@ const BORTTAGET = {
 const LUCKKONTRAKT = LEVERANSKONTRAKT_SYNTETISK_V3FORM
   .replaceAll(BORTTAGET.namn, '')
   .replace(BORTTAGET.klausul, '|  |')
+  .replace(BORTTAGET.acceptanskriterium, '|  |')
+  .replace(BORTTAGET.uppfoljningsmatt, '|  |');
+
+/**
+ * En senare kontraktsversion av luckkontraktet som anger L2:s klausul. Allt
+ * annat är detsamma — också avtalsdelarna, eftersom klausulen bara bor i
+ * registret — så ett godkännande av den skriver bara fyllnaden.
+ */
+const MED_L2_KLAUSUL = LEVERANSKONTRAKT_SYNTETISK_V3FORM
+  .replaceAll(BORTTAGET.namn, '')
   .replace(BORTTAGET.acceptanskriterium, '|  |')
   .replace(BORTTAGET.uppfoljningsmatt, '|  |');
 
@@ -325,6 +337,61 @@ describe('R: den rena regeln', () => {
     // Reserven gäller bara godkännaren: eskaleringen läses som förut.
     expect(parseLeveranskontrakt(medRad(LUCKKONTRAKT, '**Mottagarpart:** B')).godkannare_eskalering).toBeNull();
   });
+
+  it('R7 partertext: ett byte av vilket partsfält som helst ändrar texten, och varje värde står i den', () => {
+    const bas: Parterna = {
+      godkannare: NVR001_MANIFEST.godkannare, godkannare_eskalering: NVR001_MANIFEST.godkannare_eskalering,
+      godkannandeform: NVR001_MANIFEST.godkannandeform, kalla: NVR001_MANIFEST.kalla,
+    };
+    const text = partertext(bas, true);
+    expect(Object.keys(bas).sort()).toEqual([...PARTSFALTEN].sort());
+    for (const falt of PARTSFALTEN) {
+      expect(text, falt).toContain(bas[falt]!);
+      // Ett annat värde och ett saknat värde, ett fält i taget och inget annat.
+      for (const annat of [`annan ${falt}`, null]) {
+        expect(partertext({ ...bas, [falt]: annat }, true), `${falt} → ${String(annat)}`).not.toBe(text);
+      }
+    }
+    // Den angivna mottagarparten börjar som `mottagarpartlage`, och en saknad form har sitt ord.
+    expect(text.startsWith(mottagarpartlage(bas, true).text)).toBe(true);
+    expect(partertext({ ...bas, godkannandeform: null }, true)).toContain(GODKANNANDEFORM_SAKNAS);
+    // Utan mottagarpart står bara lägets text — ”inte inläst” säger aldrig att något saknas.
+    expect(partertext({ ...bas, godkannare: null }, false)).toBe(MOTTAGARPART_EJ_INLAST);
+    expect(partertext({ ...bas, godkannare: null }, true)).toBe(LUCKTEXT.mottagarpart.vad);
+    // Negativ kontroll: lägets text ensam är blind för ett byte av formen — granskningens fall.
+    expect(mottagarpartlage({ ...bas, godkannandeform: 'annan form' }, true).text).toBe(mottagarpartlage(bas, true).text);
+  });
+
+  it('R8 registerfyllnad: en ny text fyller bara det som saknas och suddar aldrig; registret efter godkännandet följer samma regel', () => {
+    // Den slutna listan är LUCKFALT utan namnet (avtalsdelen) och mottagarparten (avtalet).
+    expect([...REGISTERFALT]).toEqual(LUCKFALT.filter((f) => f !== 'namn' && f !== 'mottagarpart'));
+    const tom = { klausul: null, acceptanskriterium: null, uppfoljningsmatt: null };
+    expect(registerfyllnad(tom, { klausul: '§1.2', acceptanskriterium: null, uppfoljningsmatt: 'Mottagen' }))
+      .toEqual({ klausul: '§1.2', uppfoljningsmatt: 'Mottagen' });
+    // Ett ifyllt fält skrivs aldrig över, och ett fält som texten saknar suddar inget.
+    const ifylld = { klausul: '§1.1', acceptanskriterium: 'Publicerat', uppfoljningsmatt: null };
+    expect(registerfyllnad(ifylld, { klausul: '§9.9', acceptanskriterium: null, uppfoljningsmatt: null })).toEqual({});
+    // En blank text är inget värde, åt båda hållen.
+    expect(registerfyllnad({ ...tom, klausul: '  ' }, { ...tom, klausul: '§1.2' })).toEqual({ klausul: '§1.2' });
+    expect(registerfyllnad(tom, { ...tom, klausul: '  ' })).toEqual({});
+
+    const rad = (kod: string, falt: Partial<Luckleverabel> = {}): Luckleverabel =>
+      ({ kod, namn: `Namn ${kod}`, klausul: `§${kod}`, acceptanskriterium: 'Klart', uppfoljningsmatt: 'Binärt', ...falt });
+    const lagrade = [rad('L1', { namn: null, klausul: null }), rad('L3', { acceptanskriterium: 'Lagrat' })];
+    const urTexten = [rad('L1', { namn: 'Nytt namn', klausul: '§1.2' }), rad('L2'), rad('L3', { acceptanskriterium: null })];
+    expect(registerEfterGodkannande(lagrade, urTexten)).toEqual([
+      // L1 finns: namnet står kvar (avtalsdelen ändras inte här), klausulen fylls.
+      rad('L1', { namn: null, klausul: '§1.2' }),
+      // L2 är ny: raden kommer ur texten.
+      rad('L2'),
+      // L3 finns: textens saknade kriterium suddar inte det lagrade.
+      rad('L3', { acceptanskriterium: 'Lagrat' }),
+    ]);
+    // En lagrad kod som texten inte nämner står kvar, och utan lagrade rader är det textens rader.
+    expect(registerEfterGodkannande(lagrade, []).map((l) => l.kod)).toEqual(['L1', 'L3']);
+    const k = parseLeveranskontrakt(LUCKKONTRAKT);
+    expect(kontraktsluckor({ leverabler: registerEfterGodkannande([], k.leverabler), mottagarpart: null })).toEqual(LUCKKONTRAKTETS_LUCKOR);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -436,6 +503,40 @@ async function undantagsposter(): Promise<string[]> {
   return (r.body.result.poster as Array<{ id: string }>).map((p) => p.id).sort();
 }
 
+type Kopost = { id: string; action: string; input: Record<string, unknown> };
+type Ogonblick = { ko: Kopost[]; poster: Array<Record<string, any>> };
+
+/**
+ * Bolagets HELA kö och HELA undantagsvy, ofiltrerade. Ett ”exakt en” eller
+ * ”inget eget ärende” prövas mot allt som tillkommit här, aldrig mot ett urval
+ * som redan filtrerats på det väntade slaget eller den väntade åtgärden — då
+ * hade ett ärende av ett annat slag gått igenom osett.
+ */
+async function helaKoOchVy(): Promise<Ogonblick> {
+  const ko = await withAdmin(async (c) => (await c.query<Kopost>(
+    'SELECT id, action, input FROM action_approvals WHERE company_id = $1 ORDER BY created_at, id', [bolag])).rows);
+  const r = await act('las_undantag', {});
+  expect(r.status, JSON.stringify(r.body)).toBe(200);
+  return { ko, poster: r.body.result.poster };
+}
+
+/** Det som tillkommit mellan två ögonblick, oavsett åtgärd och slag. */
+function tillkommet(fore: Ogonblick, efter: Ogonblick): { ko: Array<{ id: string; action: string }>; poster: Array<{ id: string; slag: string }> } {
+  const koFore = new Set(fore.ko.map((k) => k.id));
+  const posterFore = new Set(fore.poster.map((p) => p.id as string));
+  return {
+    ko: efter.ko.filter((k) => !koFore.has(k.id)).map((k) => ({ id: k.id, action: k.action })),
+    poster: efter.poster.filter((p) => !posterFore.has(p.id)).map((p) => ({ id: p.id, slag: p.slag })),
+  };
+}
+
+/** Undantagsvyns post för en köpost — uppslagen på id, aldrig den första i ett filtrerat urval. */
+async function postFor(approvalId: string): Promise<Record<string, any>> {
+  const post = (await helaKoOchVy()).poster.find((p) => p.id === approvalId);
+  expect(post, `undantagsvyn saknar posten ${approvalId}`).toBeTruthy();
+  return post!;
+}
+
 describe('I: importens ingång', () => {
   it('I1 v3 med NVR-001:s manifest köar ett förslag med parterna, ankaret och inga luckor — och skriver ingenting', async () => {
     const { contractId } = await nyttAvtal('I1 manifest');
@@ -507,13 +608,14 @@ describe('I: importens ingång', () => {
     expect(Object.keys(kopost!.input).sort()).toEqual(['contract_id', 'kontraktstext']);
   });
 
-  it('I5 luckkontraktet utan manifest: luckorna ur R1 i svaret, saknade_falt som förut och en köpost', async () => {
+  it('I5 luckkontraktet utan manifest: luckorna ur R1 i svaret, saknade_falt som förut och exakt en köpost i hela kön', async () => {
     const { contractId } = await nyttAvtal('I5 luckor');
+    const fore = await helaKoOchVy();
     const svar = await importera({ contract_id: contractId, kontraktstext: LUCKKONTRAKT });
     expect(svar.forslag.luckor).toEqual(LUCKKONTRAKTETS_LUCKOR);
     expect(svar.forslag.saknade_falt).toEqual(expect.arrayContaining(['L2.klausul', 'L3.acceptanskriterium', 'L4.uppfoljningsmatt']));
     expect(svar.forslag.ankare.lage).toBe('ej_angivet');
-    expect(await baselinekoposter(contractId)).toHaveLength(1);
+    expect(tillkommet(fore, await helaKoOchVy()).ko).toEqual([{ id: svar.approval_id, action: 'satt_baseline' }]);
   });
 
   it('I6 ett tekniskt importfel ger 400 kontrakt_olasbart, skriver ingenting och blir ingen post i undantagsvyn', async () => {
@@ -539,6 +641,7 @@ describe('I: importens ingång', () => {
   it('I7 ett ankare på fel veckodag köas med orsaken, och resten av importen påverkas inte', async () => {
     const { contractId } = await nyttAvtal('I7 fel veckodag');
     const manifest = { ...NVR001_MANIFEST, bedomning_ankare: '2026-10-07' };
+    const fore = await helaKoOchVy();
     const svar = await importera({ contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001_V3, manifest });
     expect(svar.forslag.ankare).toEqual({
       lage: 'fel_veckodag', ankare: '2026-10-07', kalla: manifest.bedomning_ankare_kalla,
@@ -546,7 +649,7 @@ describe('I: importens ingång', () => {
     });
     expect(svar.forslag.parter).toEqual(NVR001_PARTER);
     expect(svar.forslag.leverabler).toHaveLength(6);
-    expect(await baselinekoposter(contractId)).toHaveLength(1);
+    expect(tillkommet(fore, await helaKoOchVy()).ko).toEqual([{ id: svar.approval_id, action: 'satt_baseline' }]);
   });
 });
 
@@ -587,10 +690,13 @@ describe('G: godkännandet', () => {
     expect(svar.parter_skillnader).toEqual([]);
     expect(svar.luckor).toEqual([]);
     expect(svar.oforandrad).toBe(false);
+    // Svarets parter är de fält godkännandet skriver — samma slutna lista som förslagets partstext.
+    expect(Object.keys(svar.parter).sort()).toEqual([...PARTSFALTEN].sort());
+    expect(svar).toMatchObject({ leverabelrader_skapade: 6, leverabelrader_fyllda: 0 });
 
     const [audit, ...ovriga] = await importauditer(contractId);
     expect(ovriga).toEqual([]);
-    expect(audit).toMatchObject({ parter_andrade: true, ankare: 'lagras' });
+    expect(audit).toMatchObject({ parter_andrade: true, ankare: 'lagras', leverabelrader_fyllda: 0 });
     const text = JSON.stringify(audit);
     for (const namn of [NVR001_MANIFEST.godkannare, 'Eva Larsson', NVR001_MANIFEST.kalla, NVR001_MANIFEST.bedomning_ankare_kalla, 'telefon']) {
       expect(text, namn).not.toContain(namn);
@@ -705,6 +811,55 @@ describe('G: godkännandet', () => {
       "SELECT status FROM uppdrag_leverabel WHERE contract_id = $1 AND kod = 'L1'", [contractId])).rows[0]!.status);
     expect(status).toBe('levererad');
   });
+
+  it('G8 en ny kontraktsversion fyller en registerlucka och suddar aldrig — förslaget, svaret, kontraktsytan och Leveranserna säger samma sak', async () => {
+    // (a) Luckkontraktet godkänns, och en senare version anger L2:s klausul.
+    const { contractId, projectId } = await nyttAvtal('G8 fyllnad');
+    await importeraOchGodkann(bolag, human(), { contract_id: contractId, kontraktstext: LUCKKONTRAKT });
+    await withAdmin((c) => c.query(
+      "UPDATE uppdrag_leverabel SET status = 'pagar' WHERE contract_id = $1 AND kod = 'L2'", [contractId]));
+    const l2 = parseLeveranskontrakt(MED_L2_KLAUSUL).leverabler.find((l) => l.kod === 'L2')!;
+    expect(l2.klausul).not.toBeNull();
+    const kvar = LUCKKONTRAKTETS_LUCKOR.filter((l) => !(l.kod === 'L2' && l.falt === 'klausul'));
+    const forslag = await importera({ contract_id: contractId, kontraktstext: MED_L2_KLAUSUL });
+    expect(forslag.forslag.luckor).toEqual(kvar);
+    const ja = await godkann(forslag.approval_id);
+    expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+    expect(ja.body.result).toMatchObject({ leverabelrader_fyllda: 1, leverabelrader_skapade: 0, avtalsdelar_skrivna: 0, oforandrad: false });
+    expect(ja.body.result.luckor).toEqual(kvar);
+    expect((await kontraktsyta(contractId)).luckor).toEqual(kvar);
+    const l2rad = (await register(contractId)).find((r) => r.kod === 'L2')!;
+    // Fyllnaden rör bara fältet: statusen står kvar.
+    expect(l2rad).toMatchObject({ klausul: l2.klausul, status: 'pagar' });
+    const ua = await inloggad();
+    const t = lasTabell(huvud(await sida(ua, `/app/c/${bolag}/projects/${projectId}/leveranserna?lage=tabell`)));
+    const luckceller = t.rader.flatMap((rad) => FALTKOLUMN
+      .filter(([falt, rubrik]) => rad[rubrik] === LUCKTEXT[falt].vad).map(([falt]) => `${rad.Kod}.${falt}`));
+    expect(luckceller).toEqual(kvar.filter((l) => l.kod !== null).map((l) => `${l.kod}.${l.falt}`));
+    // Auditraden räknar raden, men bär inget fältvärde.
+    const auditer = await importauditer(contractId);
+    expect(auditer.map((a) => a.leverabelrader_fyllda).sort()).toEqual([0, 1]);
+    expect(JSON.stringify(auditer)).not.toContain(l2.klausul!);
+
+    // (b) Omvänt: en version som saknar ett fält registret bär suddar det inte,
+    // och ingen yta påstår att det saknas. Textens egen lucka står i saknade_falt.
+    const full = await nyttAvtal('G8 inget sudd');
+    await importeraOchGodkann(bolag, human(), { contract_id: full.contractId, kontraktstext: LEVERANSKONTRAKT_SYNTETISK_V3FORM });
+    const lagrat = (await register(full.contractId)).find((r) => r.kod === 'L3')!.acceptanskriterium;
+    expect(lagrat).not.toBeNull();
+    const utanKriterium = LEVERANSKONTRAKT_SYNTETISK_V3FORM.replace(BORTTAGET.acceptanskriterium, '|  |');
+    expect(parseLeveranskontrakt(utanKriterium).leverabler.find((l) => l.kod === 'L3')!.acceptanskriterium).toBeNull();
+    const baraMottagarparten = [vantadLucka('mottagarpart', null)];
+    const forslag2 = await importera({ contract_id: full.contractId, kontraktstext: utanKriterium });
+    expect(forslag2.forslag.luckor).toEqual(baraMottagarparten);
+    expect(forslag2.forslag.saknade_falt).toContain('L3.acceptanskriterium');
+    const ja2 = await godkann(forslag2.approval_id);
+    expect(ja2.status, JSON.stringify(ja2.body)).toBe(200);
+    expect(ja2.body.result).toMatchObject({ leverabelrader_fyllda: 0, oforandrad: true });
+    expect(ja2.body.result.luckor).toEqual(baraMottagarparten);
+    expect((await kontraktsyta(full.contractId)).luckor).toEqual(baraMottagarparten);
+    expect((await register(full.contractId)).find((r) => r.kod === 'L3')!.acceptanskriterium).toBe(lagrat);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -778,6 +933,34 @@ describe('L och S: läsvägarna', () => {
       expect(r.status, `${atgard}: ${JSON.stringify(r.body)}`).toBe(404);
       expect(r.body.error).toBe('not_found');
     }
+  });
+
+  it('L4 namnet kommer ur avtalsdelens gällande version: en ny version som namnger L1 fyller luckan i registret och på kontraktsytan', async () => {
+    const { contractId } = await nyttAvtal('L4 gällande version');
+    await importeraOchGodkann(bolag, human(), { contract_id: contractId, kontraktstext: LUCKKONTRAKT });
+    expect((await register(contractId)).find((r) => r.kod === 'L1')!.namn).toBeNull();
+    const del = await withAdmin(async (c) => (await c.query<{ parent_part_id: string | null }>(
+      "SELECT parent_part_id FROM contract_parts WHERE contract_id = $1 AND code = 'L1'", [contractId])).rows[0]!);
+    // En ny version av avtalsdelen, som börjat gälla, ger leverabeln kontraktets namn.
+    const begaran = await act('andra_baseline', {
+      contract_id: contractId, code: 'L1', name: BORTTAGET.namn, valid_from: '2026-10-01',
+      ...(del.parent_part_id ? { parent_part_id: del.parent_part_id } : {}),
+      change_reason: 'Tillägget namnger leverabeln',
+    });
+    expect(begaran.status, JSON.stringify(begaran.body)).toBe(202);
+    const ja = await godkann(begaran.body.approval.id);
+    expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+
+    // Registret och kontraktsytans gällande del säger samma namn, och luckan är borta.
+    expect((await register(contractId)).find((r) => r.kod === 'L1')!.namn).toBe(BORTTAGET.namn);
+    const y = await kontraktsyta(contractId);
+    expect((y.gallande as Array<{ code: string; name: string }>).find((d) => d.code === 'L1')!.name).toBe(BORTTAGET.namn);
+    expect(y.luckor).toEqual(LUCKKONTRAKTETS_LUCKOR.filter((l) => !(l.kod === 'L1' && l.falt === 'namn')));
+    // Negativ kontroll: den första versionen bär fortfarande koden, så den som
+    // läste den hade sagt ”Namn saknas i kontraktet” om en leverabel som har namn.
+    const forsta = await withAdmin(async (c) => (await c.query<{ name: string }>(
+      "SELECT name FROM contract_parts WHERE contract_id = $1 AND code = 'L1' ORDER BY valid_from LIMIT 1", [contractId])).rows[0]!.name);
+    expect(forsta).toBe('L1');
   });
 
   it('S1 v3 och NVR-001:s manifest: registret och avtalet bär kontraktets och manifestets värden, och inget är inmatat för hand', async () => {
@@ -999,40 +1182,49 @@ describe('V: vyerna', () => {
 // U: förslagets underlag i undantagsvyn (uppgift 7)
 // ---------------------------------------------------------------------------
 
-/** Undantagsvyns baselineposter för ett avtal. */
-async function baselineposter(contractId: string): Promise<Array<Record<string, any>>> {
-  const r = await act('las_undantag', {});
-  expect(r.status, JSON.stringify(r.body)).toBe(200);
-  return (r.body.result.poster as Array<Record<string, any>>)
-    .filter((p) => p.slag === 'baselineandring' && p.uppdrag.varde?.contract_id === contractId);
-}
-
 describe('U: förslagets underlag', () => {
-  it('U1 luckorna står i baselineförslagets underlag och blir inga egna ärenden', async () => {
+  it('U1 luckorna står i baselineförslagets underlag och blir inga egna ärenden — prövat mot hela kön och hela vyn', async () => {
     const { contractId } = await nyttAvtal('U1 underlaget');
-    await importera({ contract_id: contractId, kontraktstext: LUCKKONTRAKT });
-    const [post, ...ovriga] = await baselineposter(contractId);
-    expect(ovriga).toEqual([]);
-    expect(post!.slag).toBe('baselineandring');
-    const skal = post!.skal.varde as string;
+    const fore = await helaKoOchVy();
+    const svar = await importera({ contract_id: contractId, kontraktstext: LUCKKONTRAKT });
+    const efter = await helaKoOchVy();
+    // Exakt en köpost och exakt en post tillkom i bolaget — oavsett åtgärd och slag.
+    expect(tillkommet(fore, efter)).toEqual({
+      ko: [{ id: svar.approval_id, action: 'satt_baseline' }],
+      poster: [{ id: svar.approval_id, slag: 'baselineandring' }],
+    });
+    // Och avtalet har, oavsett slag, bara den posten i vyn.
+    expect(efter.poster.filter((p) => p.uppdrag?.varde?.contract_id === contractId).map((p) => p.id)).toEqual([svar.approval_id]);
+    // Negativ kontroll: en lucka som blivit en egen post av ett annat slag, eller
+    // en egen köpost med en annan åtgärd, syns i samma kontroll.
+    const planterat: Ogonblick = {
+      ko: [...efter.ko, { id: 'planterad-kopost', action: 'avsluta_uppdrag', input: {} }],
+      poster: [...efter.poster, { id: 'planterad-post', slag: 'avslut', uppdrag: { varde: { contract_id: contractId } } }],
+    };
+    expect(tillkommet(fore, planterat)).toEqual({
+      ko: [{ id: svar.approval_id, action: 'satt_baseline' }, { id: 'planterad-kopost', action: 'avsluta_uppdrag' }],
+      poster: [{ id: svar.approval_id, slag: 'baselineandring' }, { id: 'planterad-post', slag: 'avslut' }],
+    });
+
+    const post = efter.poster.find((p) => p.id === svar.approval_id)!;
+    const skal = post.skal.varde as string;
     expect(skal).toContain('Luckor i kontraktet:');
     for (const l of LUCKKONTRAKTETS_LUCKOR) expect(skal, l.falt).toContain(`${l.vad} — ${l.var}. ${l.ja_innebar}`);
     // Före godkännandet har avtalet inget register: kontraktet är inte inläst.
-    const fran = post!.forslag.varde.fran as string;
+    const fran = post.forslag.varde.fran as string;
     expect(fran).toContain(MOTTAGARPART_EJ_INLAST);
     expect(fran).not.toContain('saknas i kontraktet');
-    expect(await baselinekoposter(contractId)).toHaveLength(1);
   });
 
   it('U2 olika godkännare i texten och manifestet: förslaget visar manifestets värde och skillnaden', async () => {
     const { contractId } = await nyttAvtal('U2 skillnaden');
-    await importera({
+    const svar = await importera({
       contract_id: contractId, kontraktstext: medRad(LUCKKONTRAKT, '**Godkännare:** Ledningsgruppen'),
       manifest: { kalla: 'projekt.yaml', godkannare: 'Styrgruppen' },
     });
-    const [post] = await baselineposter(contractId);
-    expect(post!.forslag.varde.till).toContain('Mottagarpart: Styrgruppen');
-    expect(post!.skal.varde).toContain(
+    const post = await postFor(svar.approval_id);
+    expect(post.forslag.varde.till).toContain('Mottagarpart: Styrgruppen');
+    expect(post.skal.varde).toContain(
       'Kontraktstexten anger godkännaren Ledningsgruppen; manifestet (projekt.yaml) anger Styrgruppen, och manifestets värde gäller.');
   });
 
@@ -1043,25 +1235,80 @@ describe('U: förslagets underlag', () => {
       contract_id: contractId, ankare: '2026-10-08', kalla: { typ: 'davids_uppgift', datum: '2026-10-07' },
     });
     expect(satt.status, JSON.stringify(satt.body)).toBe(200);
-    await importera({
+    const steg4 = await importera({
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001_V3,
       manifest: { ...NVR001_MANIFEST, bedomning_ankare: '2026-10-22' },
     });
-    const [post, ...ovriga] = await baselineposter(contractId);
-    expect(ovriga).toEqual([]);
-    expect(post!.forslag.varde.fran).toContain('2026-10-08');
-    expect(post!.forslag.varde.till).toContain('Ankardatum 2026-10-22');
+    const post = await postFor(steg4.approval_id);
+    expect(post.forslag.varde.fran).toContain('2026-10-08');
+    expect(post.forslag.varde.till).toContain('Ankardatum 2026-10-22');
     expect(await avtalsrad(contractId)).toMatchObject({ bedomning_ankare: '2026-10-08' });
   });
 
   it('U4 (regression) v1 utan manifest: posten och ett direkt anrop ger samma förklaring', async () => {
     const { contractId } = await nyttAvtal('U4 v1');
-    await importera({ contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
-    const [post] = await baselineposter(contractId);
+    const svar = await importera({ contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    const post = await postFor(svar.approval_id);
     const forkl = await withTenantTransaction(user.userId, bolag, (c) => explainApproval(c, bolag, 'satt_baseline',
       { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 }, `/app/c/${bolag}`));
-    expect(post!.forslag.varde).toEqual({ fran: forkl.change!.from, till: forkl.change!.to, belopp_ore: null });
-    expect(post!.skal.varde).toBe(forkl.why);
+    expect(post.forslag.varde).toEqual({ fran: forkl.change!.from, till: forkl.change!.to, belopp_ore: null });
+    expect(post.skal.varde).toBe(forkl.why);
+  });
+
+  it('U5 varje partsfält som godkännandet skriver står som från → till — också när manifestet bara byter godkännandeformen', async () => {
+    const { contractId } = await nyttAvtal('U5 partsfälten');
+    await importeraOchGodkann(bolag, human(), {
+      contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001_V3, manifest: NVR001_MANIFEST,
+    });
+    const forklara = (manifest: Kontraktsmanifest) => withTenantTransaction(user.userId, bolag, (c) => explainApproval(c, bolag,
+      'satt_baseline', { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001_V3, manifest }, `/app/c/${bolag}`));
+    const lagrad = partertext(NVR001_PARTER, true);
+    // Ett manifest per partsfält, som byter just det fältet och inget annat.
+    const byten: Record<(typeof PARTSFALTEN)[number], Kontraktsmanifest> = {
+      godkannare: { ...NVR001_MANIFEST, godkannare: 'Ledningsgruppen' },
+      godkannare_eskalering: { ...NVR001_MANIFEST, godkannare_eskalering: 'Anna Ek' },
+      godkannandeform: { ...NVR001_MANIFEST, godkannandeform: 'skriftligt godkännande från styrgruppen' },
+      kalla: { ...NVR001_MANIFEST, kalla: 'projekt-v2.yaml' },
+    };
+    for (const falt of PARTSFALTEN) {
+      const efter = kontraktsparter(parseLeveranskontrakt(LEVERANSKONTRAKT_NVR001_V3), byten[falt]);
+      expect(partertext(efter, true), falt).not.toBe(lagrad);
+      const forkl = await forklara(byten[falt]);
+      expect(forkl.change!.from, falt).toContain(lagrad);
+      expect(forkl.change!.to, falt).toContain(partertext(efter, true));
+      expect(forkl.change!.to, falt).not.toContain(lagrad);
+    }
+    // Granskningens fall genom undantagsvyn: bara formen byts, och Davids ja skriver den.
+    const nyForm = byten.godkannandeform.godkannandeform!;
+    const svar = await importera({ contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001_V3, manifest: byten.godkannandeform });
+    const post = await postFor(svar.approval_id);
+    expect(post.forslag.varde.fran).toContain(NVR001_MANIFEST.godkannandeform);
+    expect(post.forslag.varde.till).toContain(nyForm);
+    expect(post.forslag.varde.till).not.toContain(NVR001_MANIFEST.godkannandeform);
+    const ja = await godkann(svar.approval_id);
+    expect(ja.status, JSON.stringify(ja.body)).toBe(200);
+    expect(ja.body.result).toMatchObject({ oforandrad: false });
+    expect((await avtalsrad(contractId)).godkannandeform).toBe(nyForm);
+  });
+
+  it('U6 ett registerfält som en ny kontraktsversion fyller står som från → till, och luckan lämnar underlaget', async () => {
+    const { contractId } = await nyttAvtal('U6 fyllnaden');
+    await importeraOchGodkann(bolag, human(), { contract_id: contractId, kontraktstext: LUCKKONTRAKT });
+    const l2 = parseLeveranskontrakt(MED_L2_KLAUSUL).leverabler.find((l) => l.kod === 'L2')!;
+    const svar = await importera({ contract_id: contractId, kontraktstext: MED_L2_KLAUSUL });
+    const post = await postFor(svar.approval_id);
+    const fran = (post.forslag.varde.fran as string).split(' · ');
+    const till = (post.forslag.varde.till as string).split(' · ');
+    expect(fran).toContain(`L2: ${LUCKTEXT.klausul.vad}`);
+    expect(till).not.toContain(`L2: ${LUCKTEXT.klausul.vad}`);
+    expect(till.filter((d) => d.startsWith('L2: ') && d.endsWith(` ${l2.klausul}`))).toHaveLength(1);
+    // Ingen annan registerrad fylls: de andra luckorna står kvar som luckor i underlaget.
+    expect(fran.filter((d) => /^L\d+: /.test(d))).toEqual([`L2: ${LUCKTEXT.klausul.vad}`]);
+    const lucktext = (l: Lucka) => `${l.vad} — ${l.var}. ${l.ja_innebar}`;
+    const skal = post.skal.varde as string;
+    for (const l of LUCKKONTRAKTETS_LUCKOR) {
+      expect(skal.includes(lucktext(l)), `${String(l.kod)}.${l.falt}`).toBe(!(l.kod === 'L2' && l.falt === 'klausul'));
+    }
   });
 });
 
@@ -1087,5 +1334,107 @@ describe('D: dokumentationen', () => {
     // Negativ kontroll: samma kontroll fäller en text utan orden.
     expect(saknade('Importen köar ett förslag per källa.', IMPORTORD)).toEqual([...IMPORTORD]);
     expect(saknade('kallan ar paret (contract_id, kontraktstext)', ARKITEKTURORD)).toEqual([...ARKITEKTURORD]);
+  });
+
+  /** Ankarets två skrivvägar sedan Story 2.4. Båda är Davids egna. */
+  const ANKARVAGAR = ['satt_bedomningsankare', 'satt_baseline'] as const;
+  const ord = (monster: string): RegExp => new RegExp(`(?<![\\p{L}\\p{N}_])(?:${monster})(?![\\p{L}\\p{N}_])`, 'iu');
+  const ANKARORD = /ankar|bedomning_ankare/i;
+  const ENSAMRATT = ord('bara|endast|enda|ensam|uteslutande');
+  const NEKAR = ord('aldrig|varken|inte|ej');
+  const IMPORTEN = ord('import|importen|importens');
+  const SKRIVER = ord('skriv\\p{L}*|rör\\p{L}*|ror|sätt\\p{L}*|satt');
+  const ANNARS = ord('annars');
+
+  /**
+   * Texten i stycken: tomrader och punkter skiljer stycken åt. I källkod läses
+   * bara kommentarerna — en kodrad blir en tomrad — så att varje påstående om
+   * koden prövas och ingen kod läses som ett påstående.
+   */
+  function stycken(text: string, kallkod: boolean): string[] {
+    const rader = text.split('\n').map((r) => {
+      if (!kallkod) return r;
+      const m = /^\s*(?:\/\/+|\/\*\*?|\*\/?)(.*)$/.exec(r);
+      return m ? m[1]! : '';
+    });
+    const ut: string[] = [];
+    let nu: string[] = [];
+    for (const r of rader) {
+      if (r.trim() === '' || /^\s*(?:[-*]|\d+\.)\s/.test(r)) {
+        if (nu.length > 0) ut.push(nu.join(' '));
+        nu = [];
+      }
+      if (r.trim() !== '') nu.push(r.trim());
+    }
+    if (nu.length > 0) ut.push(nu.join(' '));
+    return ut;
+  }
+
+  /**
+   * Påståenden om vem som skriver ankaret som koden bryter (granskningens fynd,
+   * som klass): en mening som säger att ankaret bara skrivs av
+   * `satt_bedomningsankare`, eller att importen aldrig skriver det, utan att
+   * nämna den andra vägen eller ett villkor.
+   */
+  function ankarbrister(styckena: readonly string[]): string[] {
+    const brister: string[] = [];
+    for (const stycke of styckena) {
+      if (!ANKARORD.test(stycke)) continue;
+      for (const mening of stycke.split(/(?<=[.;:!?])\s+/)) {
+        if (mening.includes('satt_baseline')) continue;
+        const baraAnkaratgarden = mening.includes('satt_bedomningsankare') && ENSAMRATT.test(mening);
+        const importenAldrig = IMPORTEN.test(mening) && NEKAR.test(mening) && SKRIVER.test(mening) && !ANNARS.test(mening);
+        if (baraAnkaratgarden || importenAldrig) brister.push(mening);
+      }
+    }
+    return brister;
+  }
+
+  it('D2 ankaret har två skrivvägar: inget dokument, ingen kodkommentar och ingen kolumnkommentar påstår att det bara har en', async () => {
+    // Negativa kontroller först: granskningens två meningar, kommentaren i
+    // ankartjänsten och två egna formuleringar fälls var för sig.
+    for (const gammal of [
+      'Rytmen skrivs bara av importens godkannande, ankaret bara av `satt_bedomningsankare`, ingen av de sex kolumnerna skrivs pa ett avslutat uppdrag.',
+      '- **En gång per avtal.** Ett satt ankare ger 409. Varken update_contract eller importen kan skriva kolumnerna; ändringsvägen hör till baselineförslaget.',
+      'Ett satt ankare ändras bara genom en baselineändring: åtgärden skriver bara när kolumnen är NULL, `update_contract` saknar kolumnerna och importen rör dem aldrig.',
+      'Ankaret skrivs endast av satt_bedomningsankare.',
+      'Importen rör aldrig ankaret.',
+    ]) expect(ankarbrister(stycken(gammal, false)), gammal).toHaveLength(1);
+    // En villkorad eller fullständig mening fälls inte.
+    for (const riktig of [
+      'Annars skriver importen aldrig ankaret.',
+      'Ankaret skrivs bara av `satt_bedomningsankare` och av Davids ja på `satt_baseline`.',
+    ]) expect(ankarbrister(stycken(riktig, false)), riktig).toEqual([]);
+    // I källkod läses kommentaren men aldrig koden.
+    expect(ankarbrister(stycken('const a = 1;\n  // Importen rör aldrig ankaret.\nconst b = 2;', true))).toHaveLength(1);
+    expect(ankarbrister(stycken("const s = 'Importen rör aldrig ankaret.';", true))).toEqual([]);
+
+    // Hela underlaget: de två dokumenten, varje kommentar i server/src och
+    // kolumnkommentarerna i katalogen.
+    const kallor = new Map<string, string[]>([
+      ['docs/ARKITEKTUR.md', stycken(dokument('ARKITEKTUR.md'), false)],
+      ['docs/MCP_ACTIONS.md', stycken(dokument('MCP_ACTIONS.md'), false)],
+    ]);
+    const src = fileURLToPath(new URL('../src/', import.meta.url));
+    for (const fil of readdirSync(src, { recursive: true })) {
+      if (typeof fil === 'string' && fil.endsWith('.ts')) kallor.set(`server/src/${fil}`, stycken(readFileSync(`${src}/${fil}`, 'utf8'), true));
+    }
+    expect(kallor.has('server/src/services/uppdragBedomning.ts'), 'källträdet lästes inte').toBe(true);
+    const kommentarer = await withAdmin(async (c) => (await c.query<{ attname: string; kommentar: string | null }>(
+      `SELECT a.attname, col_description(a.attrelid, a.attnum) AS kommentar FROM pg_attribute a
+        WHERE a.attrelid = 'contracts'::regclass AND a.attname IN ('bedomning_ankare', 'bedomning_ankare_kalla')
+        ORDER BY a.attname`,
+    )).rows);
+    expect(kommentarer.map((k) => k.attname)).toEqual(['bedomning_ankare', 'bedomning_ankare_kalla']);
+    for (const k of kommentarer) kallor.set(`contracts.${k.attname}`, [k.kommentar ?? '']);
+    expect([...kallor].flatMap(([kalla, s]) => ankarbrister(s).map((m) => `${kalla}: ${m}`))).toEqual([]);
+
+    // Kolumnkommentarerna nämner båda vägarna. Negativ kontroll: kommentaren ur
+    // 0095, läst ur migrationen, nämnde bara den ena.
+    for (const k of kommentarer) expect(ANKARVAGAR.filter((v) => !(k.kommentar ?? '').includes(v)), k.attname).toEqual([]);
+    const m0095 = (await loadMigrations()).find((x) => x.name === 'matt_och_rytm');
+    const gammal = /COMMENT ON COLUMN contracts\.bedomning_ankare IS\s*'([^']*)'/.exec(m0095?.sql ?? '')?.[1];
+    expect(gammal, '0095:s kommentar på bedomning_ankare').toBeTruthy();
+    expect(ANKARVAGAR.filter((v) => !gammal!.includes(v))).toEqual(['satt_baseline']);
   });
 });
