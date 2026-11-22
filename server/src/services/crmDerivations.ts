@@ -13,7 +13,8 @@
 // Spärr: systemet FÖRESLÅR. Ingenting skickas till någon kund härifrån.
 import type { PoolClient } from 'pg';
 import { sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
-import type { CapturePaths } from '../lib/crmRules.js';
+import { openDeals, type OpenDeal } from './crmDeals.js';
+import { stalledDealReason, type CapturePaths } from '../lib/crmRules.js';
 
 export interface RelationRow {
   organization_id: string;
@@ -256,11 +257,29 @@ export async function contactSuggestions(
   //
   // `ataganden_i_egen_sfar`: samma regel som i relationState, för det citerade
   // löftet. Den som skickar in `rows` ska ha räknat dem med samma värde.
-  opts: { as_of?: string; silence_days?: number; rows?: RelationRow[]; ataganden_i_egen_sfar?: boolean } = {},
+  //
+  // `now` är klockan som dagen och affärsläget räknas ur. Den kommer aldrig ur
+  // indata: åtgärdernas scheman saknar fältet, och todayView för sin egen vidare.
+  opts: { as_of?: string; silence_days?: number; rows?: RelationRow[]; ataganden_i_egen_sfar?: boolean; now?: Date } = {},
 ): Promise<{ as_of: string; silence_days: number; suggestions: ContactSuggestion[] }> {
   const days = opts.silence_days ?? DEFAULT_SILENCE_DAYS;
   const rows = opts.rows ?? await relationState(client, companyId, opts);
-  const asOf = opts.as_of ?? new Date().toISOString().slice(0, 10);
+  const now = opts.now ?? new Date();
+  const today = now.toISOString().slice(0, 10);
+  const asOf = opts.as_of ?? today;
+
+  // Affärsläget (FR-22): ögonblicksbilden beskriver nuläget, så för en annan dag
+  // är affärsläget okänt och ger inga skäl. Färskheten avgörs bara av grinden i
+  // openDeals, som ger affärer enbart när ögonblicksbilden är aktuell; okänt och
+  // tomt blir en tom karta, och då går slingan exakt den gamla vägen.
+  const dealsByOrg = new Map<string, OpenDeal[]>();
+  if (asOf === today) {
+    for (const deal of (await openDeals(client, companyId, now)).deals) {
+      const list = dealsByOrg.get(deal.organization_id);
+      if (list) list.push(deal);
+      else dealsByOrg.set(deal.organization_id, [deal]);
+    }
+  }
 
   // Kontaktpersonen: den som senast var i kontakt, annars den enda som finns.
   const contacts = await client.query<{ organization_id: string; id: string; name: string; email: string | null }>(
@@ -332,6 +351,14 @@ export async function contactSuggestions(
         : `tyst i ${r.days_silent} dagar`);
       priority += Math.min(r.days_silent, 365);
     }
+    // F5:s tredje grund: en affär som stått stilla minst lika länge som relationen
+    // får vara tyst. Samma gräns och samma vikt som tystnaden, så en relation med
+    // bara ett affärsskäl inte alltid hamnar sist.
+    const stalled = stalledDealReason(dealsByOrg.get(r.organization_id) ?? [], grans);
+    if (stalled) {
+      reasons.push(stalled.reason);
+      priority += Math.min(stalled.idle_days, 365);
+    }
     if (reasons.length === 0) continue;
 
     // Kundkoncentrationen ska synas, inte döljas: en tyst relation som bär en
@@ -395,16 +422,18 @@ export interface TodayView {
  */
 export async function todayView(
   client: PoolClient, companyId: string,
-  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter } = {},
+  // `now` förs vidare till förslagen, så dagen och affärsläget räknas ur samma tidpunkt.
+  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter; now?: Date } = {},
 ): Promise<TodayView> {
-  const asOf = opts.as_of ?? new Date().toISOString().slice(0, 10);
+  const now = opts.now ?? new Date();
+  const asOf = opts.as_of ?? now.toISOString().slice(0, 10);
   const limit = opts.limit ?? DEFAULT_TODAY_LIMIT;
   const sfar = sfarParameter(opts.sfar);
 
   const alla = await relationState(client, companyId, { as_of: asOf, ataganden_i_egen_sfar: true });
   const rows = sfar ? alla.filter((r) => r.sfar === sfar) : alla;
   const { suggestions } = await contactSuggestions(client, companyId, {
-    as_of: asOf, silence_days: opts.silence_days, rows, ataganden_i_egen_sfar: true,
+    as_of: asOf, silence_days: opts.silence_days, rows, ataganden_i_egen_sfar: true, now,
   });
 
   // Löften inom horisonten. Sju dagar framåt som standard: tillräckligt nära för

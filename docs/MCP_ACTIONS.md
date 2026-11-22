@@ -3099,3 +3099,25 @@ statusens ursprung är synken ur ärendeplattformen och att källnyckeln har
 ärendets form `linear:<ärende>`. Ett löfte en människa stängt får inte den
 texten, och inte heller ett löfte som stängdes innan statusens ursprung började
 sparas.
+
+## Affärsskälet i kontaktförslagen (crm 7.4)
+
+`crm_contact_suggestions` och `crm_today` har fått förslagens tredje grund,
+efter förfallna löften och tystnad: skälet *affären {titel} ({skede}) har
+stått stilla i {N} dagar*. Idag och förslagstabellen på relationssidan läser
+samma funktion och visar samma skäl. Det ges när en öppen affär i
+ärendeplattformen har stått stilla minst relationens tystnadsgräns, samma gräns
+som tystnadsskälet: kadensen när relationen har en egen, annars bolagets
+standard eller `silence_days`. Skedet står med svensk etikett (Idé, Dialog,
+Offert eller Förhandling) och som «skede okänt» när affären saknar skede. Står
+flera affärer stilla för samma relation nämns den som stått stilla längst, med
+«(och N till)» efter. Stilleståndet väger som tystnaden i förslagens ordning,
+högst 365.
+
+Affärerna läses genom samma läsning som `crm_open_deals` och bara när den säger
+`ok`. En ögonblicksbild som saknas, är äldre än 26 timmar eller var tom ger
+inget affärsskäl, och inget annat i förslagen ändras: samma relationer, samma
+skäl och samma prioritet. Ögonblicksbilden beskriver nuläget, så ett `as_of` en
+annan dag än i dag ger aldrig affärsskäl. Tystade och uppskjutna relationer
+föreslås fortfarande inte. Indata och svarsform är oförändrade: skälet står i
+`reasons` som de andra skälen.

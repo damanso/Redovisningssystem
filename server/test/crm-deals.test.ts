@@ -12,15 +12,23 @@
 // Hermes, tabellerna som rollen app och som ägare, och de rena funktionerna
 // (grinden och stilleståndet). Varje negativ kontroll är en ren funktion här i
 // filen som får ett planterat fel, aldrig en planterad rad i drift.
+//
+// Story 7.4, FR-22: en affär som stått stilla ska bli ett skäl i
+// kontaktförslagen. Risken är tre sätt att föreslå fel: en affär som står
+// stilla syns inte bland förslagen, en gammal ögonblicksbild ger ett skäl den
+// inte borde ge, och Idag och AI:n säger olika saker om samma relation. Lagren:
+// regeln som ren funktion, förslagen och Idag genom åtgärderna med supertest,
+// och den inloggade vyn (Idag och relationsvyn).
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import pg, { type QueryResultRow } from 'pg';
+import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { migrate } from '../src/db/migrate.js';
 import { pool } from '../src/db/pool.js';
 import { harStatusEtikett, statusChip } from '../src/http/view/html.js';
-import { aheadOfClock, dealSnapshotStatus, idleDays } from '../src/lib/crmRules.js';
-import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { aheadOfClock, dealSnapshotStatus, idleDays, stalledDealReason } from '../src/lib/crmRules.js';
+import { api, app, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 interface Bolag { user: TestUser; id: string; agent: string }
 type Lasare = <T extends QueryResultRow>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
@@ -301,6 +309,80 @@ async function affarsavsnitten(): Promise<[string, string][]> {
     ['docs/MCP_ACTIONS.md', mcp.split('## Affärscachen och kontraktet för affärer (crm 7.1)')[1]?.split('\n## ')[0] ?? ''],
     ['docs/crm/API_KONTRAKT.md', kontrakt.split('\n## Affärerna\n')[1]?.split('\n## ')[0] ?? ''],
   ];
+}
+
+/** Ett kontaktförslag med de fält provet läser; resten jämförs som det står. */
+interface Forslag { organization_id: string; organization: string; reasons: string[]; priority: number; [falt: string]: unknown }
+
+/** Kräver 200 med kroppen i meddelandet och ger åtgärdens resultat. */
+function ok(svar: supertest.Response) {
+  expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+  return svar.body.result;
+}
+
+/** De godtagbara affärsskälen: ett för varje stillestånd som `stillestand` godtar. */
+function skalFor(titel: string, etikett: string, aktivitet: string, fore: number, efter: number): string[] {
+  return stillestand(aktivitet, fore, efter).map((n) => `affären ${titel} (${etikett}) har stått stilla i ${n} dagar`);
+}
+
+let kontaktNr = 0;
+/**
+ * En kund och dess relation med en kontaktpunkt `kontaktTimmarSedan` timmar
+ * bakåt, genom åtgärderna. Relationen kopplas till kunden med samma namn och
+ * blir kund, så skälet för prospekt aldrig blandas in. Ger relationens id.
+ */
+async function relationMedKontakt(b: Bolag, namn: string, kontaktTimmarSedan: number): Promise<string> {
+  const kund = await api.post(`/api/companies/${b.id}/customers`)
+    .set('Authorization', `Bearer ${b.user.token}`).send({ name: namn });
+  expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+  kontaktNr += 1;
+  const intag = ok(await act(b.agent, b.id, 'ingest_crm_events', { events: [{
+    kind: 'interaction', organization: { name: namn }, occurred_at: tid(kontaktTimmarSedan), channel: 'email',
+    direction: 'inbound', summary: 'Kort avstämning.', source_system: 'gmail', source_ref: `gmail:k74-${kontaktNr}`,
+  }] }));
+  expect(intag.skipped, namn).toEqual([]);
+  const rader = ok(await act(b.user.token, b.id, 'list_crm_organizations', {})) as { id: string; name: string }[];
+  const rad = rader.find((o) => o.name === namn);
+  expect(rad, namn).toBeDefined();
+  return rad!.id;
+}
+
+/** Kontaktförslagen som David får dem genom åtgärden. */
+async function forslag(b: Bolag, indata: Record<string, unknown> = {}): Promise<Forslag[]> {
+  return ok(await act(b.user.token, b.id, 'crm_contact_suggestions', indata)).suggestions;
+}
+
+/** Ett affärsskäl bär alltid en av de fem parenteserna före stilleståndet. Facit som literal. */
+const SKEDET_I_SKALET = / \((Idé|Dialog|Offert|Förhandling|skede okänt)\) har stått stilla i \d+ dagar/;
+
+/**
+ * En brist för varje affärsskäl när ögonblicksbilden inte var färsk, och för
+ * varje affärsskäl utan skedet. Rent, ingen databas.
+ */
+function affarsskalbrister(forslag: readonly { organization: string; reasons: readonly string[] }[], farsk: boolean): string[] {
+  const brister: string[] = [];
+  for (const { organization, reasons } of forslag) {
+    for (const skal of reasons) {
+      if (!skal.startsWith('affären ')) continue;
+      if (!farsk) brister.push(`affärsskäl ur gammal ögonblicksbild: ${organization}`);
+      else if (!SKEDET_I_SKALET.test(skal)) brister.push(`skälet saknar skedet: ${organization}`);
+    }
+  }
+  return brister;
+}
+
+/**
+ * Idags relationskort i sidans ordning: relationens id ur kortets första länk
+ * och skälraden fram till kontaktpersonen. Avsnittet slutar vid nästa rubrik,
+ * så löftenas kort aldrig kommer med; att räkna sluttaggar hade brustit på
+ * kortens inre div.
+ */
+function idagsKort(sida: string): { id: string; skal: string }[] {
+  const avsnitt = sida.split('Att höra av sig till</h2>')[1]?.split('<h2')[0] ?? '';
+  return avsnitt.split('<article class="today__card">').slice(1).map((kort) => ({
+    id: /href="\/app\/c\/[^/"]+\/relations\/([^/"?#]+)"/.exec(kort)?.[1] ?? '',
+    skal: /<p class="today__why">([\s\S]*?)(?:<span|<\/p>)/.exec(kort)?.[1]?.trim() ?? '',
+  }));
 }
 
 describe('migrationen och skedena (7.1 M)', () => {
@@ -1155,5 +1237,311 @@ describe('dokumenten (7.1 D)', () => {
       .toEqual(['stage lovas alltid: «- `ok` — `stage` finns alltid.»']);
     expect(nullbrister('`observed_at` och `received` är `null` när ingen ögonblicksbild har kommit.', ['observed_at', 'received']))
       .toEqual([]);
+  });
+});
+
+describe('regeln för affärsskälet (7.4 R)', () => {
+  it('R1 en offert som stått stilla i 40 dagar mot gränsen 30 ger skälet ordagrant och stilleståndet', () => {
+    expect(stalledDealReason([{ title: 'Ny webbplats', stage: 'proposal', idle_days: 40 }], 30)).toEqual({
+      reason: 'affären Ny webbplats (Offert) har stått stilla i 40 dagar', idle_days: 40,
+    });
+  });
+
+  it('R2 gränsen räknas med större än eller lika med, och en tom lista ger inget skäl', () => {
+    expect(stalledDealReason([{ title: 'Kantfallet', stage: 'idea', idle_days: 30 }], 30)).toEqual({
+      reason: 'affären Kantfallet (Idé) har stått stilla i 30 dagar', idle_days: 30,
+    });
+    expect(stalledDealReason([{ title: 'Kantfallet', stage: 'idea', idle_days: 29 }], 30)).toBeNull();
+    expect(stalledDealReason([], 30)).toBeNull();
+  });
+
+  it('R3 de fyra skedena ger sina svenska etiketter, samma som vyns', () => {
+    expect(Object.keys(SKEDEN)).toEqual(['idea', 'dialogue', 'proposal', 'negotiation']);
+    for (const [kod, etikett] of Object.entries(SKEDEN)) {
+      expect(stalledDealReason([{ title: 'Avtalet', stage: kod, idle_days: 40 }], 30)?.reason, kod)
+        .toBe(`affären Avtalet (${etikett}) har stått stilla i 40 dagar`);
+      expect(statusChip(kod).value, kod).toContain(`>${etikett}</span>`);
+    }
+  });
+
+  it('R4 ett saknat, ett okänt och ett ärvt skede ger skede okänt', () => {
+    for (const stage of [null, 'won', 'constructor']) {
+      expect(stalledDealReason([{ title: 'Förstudie', stage, idle_days: 40 }], 30)?.reason, String(stage))
+        .toBe('affären Förstudie (skede okänt) har stått stilla i 40 dagar');
+    }
+  });
+
+  it('R5 den affär som stått stilla längst nämns, med antalet till; vid lika vinner den första', () => {
+    expect(stalledDealReason([
+      { title: 'A', stage: 'idea', idle_days: 50 },
+      { title: 'B', stage: 'proposal', idle_days: 40 },
+      { title: 'C', stage: 'dialogue', idle_days: 5 },
+    ], 30)).toEqual({ reason: 'affären A (Idé) har stått stilla i 50 dagar (och 1 till)', idle_days: 50 });
+    expect(stalledDealReason([
+      { title: 'Första', stage: 'proposal', idle_days: 45 },
+      { title: 'Andra', stage: 'negotiation', idle_days: 45 },
+    ], 30)).toEqual({ reason: 'affären Första (Offert) har stått stilla i 45 dagar (och 1 till)', idle_days: 45 });
+  });
+});
+
+describe('affärsskälets negativa kontroller (7.4 N)', () => {
+  it('N1 negativ kontroll: ett planterat affärsskäl ur en gammal ögonblicksbild fälls', () => {
+    expect(affarsskalbrister([
+      { organization: 'Planterad AB', reasons: ['affären Ny webbplats (Offert) har stått stilla i 40 dagar'] },
+    ], false)).toEqual(['affärsskäl ur gammal ögonblicksbild: Planterad AB']);
+  });
+
+  it('N2 negativ kontroll: ett planterat affärsskäl utan skedet fälls', () => {
+    expect(affarsskalbrister([
+      { organization: 'Planterad AB', reasons: ['affären Ny webbplats har stått stilla i 40 dagar'] },
+    ], true)).toEqual(['skälet saknar skedet: Planterad AB']);
+  });
+
+  it('N3 en riktig lista ger inga brister, med och utan färsk ögonblicksbild', () => {
+    const tyst = { organization: 'Tyst AB', reasons: ['tyst i 45 dagar'] };
+    expect(affarsskalbrister([
+      { organization: 'Offert AB', reasons: ['affären Ny webbplats (Offert) har stått stilla i 40 dagar'] },
+      tyst,
+    ], true)).toEqual([]);
+    expect(affarsskalbrister([tyst], false)).toEqual([]);
+  });
+});
+
+describe('affärsskälet i förslagen (7.4 A)', () => {
+  let a: Bolag;
+  let g: Bolag;
+  /** Bolaget A: en relation per rad, kontakt för två dygn sedan och en affär var. */
+  const FIXTUR: { namn: string; nudge?: Record<string, unknown>; ref: string; title: string; stage?: string; dygn: number }[] = [
+    { namn: 'Offertkunden AB', ref: 'linear:LOC-701', title: 'Ny webbplats', stage: 'proposal', dygn: 40 },
+    { namn: 'Färska affären AB', ref: 'linear:LOC-702', title: 'Supportavtal', stage: 'dialogue', dygn: 10 },
+    { namn: 'Långsamma kadensen AB', nudge: { cadence_days: 60 }, ref: 'linear:LOC-703', title: 'Årsavtal', stage: 'negotiation', dygn: 40 },
+    { namn: 'Täta kadensen AB', nudge: { cadence_days: 14 }, ref: 'linear:LOC-704', title: 'Workshop', stage: 'idea', dygn: 20 },
+    { namn: 'Okänt skede AB', ref: 'linear:LOC-705', title: 'Förstudie', dygn: 40 },
+    { namn: 'Tystade AB', nudge: { muted: true }, ref: 'linear:LOC-706', title: 'Underhåll', stage: 'proposal', dygn: 40 },
+    { namn: 'Uppskjutna AB', nudge: { snooze_days: 14 }, ref: 'linear:LOC-707', title: 'Licens', stage: 'proposal', dygn: 40 },
+  ];
+  const aktivitet = new Map<string, string>();
+  beforeAll(async () => {
+    a = await bolag('affar-a74');
+    g = await bolag('affar-a74-granne');
+    for (const r of FIXTUR) {
+      const id = await relationMedKontakt(a, r.namn, 48);
+      if (r.nudge) ok(await act(a.user.token, a.id, 'set_crm_relation_nudge', { organization_id: id, ...r.nudge }));
+      aktivitet.set(r.namn, tid(r.dygn * 24));
+    }
+    expect(await synk(a, tid(1), FIXTUR.map((r) => affar(r.ref, r.namn, {
+      title: r.title, ...(r.stage ? { stage: r.stage } : {}), last_activity_at: aktivitet.get(r.namn)!,
+    })))).toMatchObject({ cached: FIXTUR.length, skipped: [] });
+    await relationMedKontakt(g, 'Grannens kund AB', 48);
+    expect(await synk(g, tid(1), [affar('linear:LOC-708', 'Grannens kund AB', {
+      title: 'Grannens offert', stage: 'proposal', last_activity_at: tid(960),
+    })])).toMatchObject({ cached: 1, skipped: [] });
+  });
+
+  it('A1 en offert som stått stilla i 40 dagar ger skälet ordagrant och stilleståndet som prioritet', async () => {
+    const fore = Date.now();
+    const s = await forslag(a);
+    const efter = Date.now();
+    expect(s.map((f) => f.organization).sort()).toEqual(['Offertkunden AB', 'Okänt skede AB', 'Täta kadensen AB']);
+    const offert = s.find((f) => f.organization === 'Offertkunden AB')!;
+    expect(offert.reasons).toHaveLength(1);
+    expect(skalFor('Ny webbplats', 'Offert', aktivitet.get('Offertkunden AB')!, fore, efter)).toContain(offert.reasons[0]);
+    expect(stillestand(aktivitet.get('Offertkunden AB')!, fore, efter)).toContain(offert.priority);
+    expect(affarsskalbrister(s, true)).toEqual([]);
+  });
+
+  it('A2 en affär som stått stilla kortare än gränsen ger inget skäl, och relationen föreslås inte', async () => {
+    expect((await forslag(a)).map((f) => f.organization)).not.toContain('Färska affären AB');
+    // Affären finns i läsningen: det är stilleståndet som håller relationen borta, inte en saknad affär.
+    const las = ok(await act(a.user.token, a.id, 'crm_open_deals', {}));
+    expect(las.status).toBe('ok');
+    expect(las.deals.map((d: { title: string }) => d.title)).toContain('Supportavtal');
+  });
+
+  it('A3 relationens egen kadens är gränsen, och bolagets standard gäller resten', async () => {
+    const fore = Date.now();
+    const s = await forslag(a);
+    const efter = Date.now();
+    const tata = s.find((f) => f.organization === 'Täta kadensen AB');
+    expect(tata, JSON.stringify(s)).toBeDefined();
+    expect(tata!.reasons).toHaveLength(1);
+    expect(skalFor('Workshop', 'Idé', aktivitet.get('Täta kadensen AB')!, fore, efter)).toContain(tata!.reasons[0]);
+    expect(s.map((f) => f.organization)).not.toContain('Långsamma kadensen AB');
+    expect((await forslag(a, { silence_days: 50 })).map((f) => f.organization)).toEqual(['Täta kadensen AB']);
+  });
+
+  it('A4 en affär utan skede ger skede okänt', async () => {
+    const fore = Date.now();
+    const s = await forslag(a);
+    const efter = Date.now();
+    const okant = s.find((f) => f.organization === 'Okänt skede AB');
+    expect(okant, JSON.stringify(s)).toBeDefined();
+    expect(skalFor('Förstudie', 'skede okänt', aktivitet.get('Okänt skede AB')!, fore, efter)).toContain(okant!.reasons[0]);
+    expect(affarsskalbrister(s, true)).toEqual([]);
+  });
+
+  it('A5 tystade och uppskjutna relationer föreslås inte, trots affärer som stått stilla i 40 dagar', async () => {
+    const namn = (await forslag(a)).map((f) => f.organization);
+    expect(namn).not.toContain('Tystade AB');
+    expect(namn).not.toContain('Uppskjutna AB');
+    const titlar = ok(await act(a.user.token, a.id, 'crm_open_deals', {})).deals.map((d: { title: string }) => d.title);
+    expect(titlar).toEqual(expect.arrayContaining(['Underhåll', 'Licens']));
+  });
+
+  it('A6 grannbolagets stillastående affär syns aldrig i våra förslag, och grannen når inte vårt bolag', async () => {
+    expect((await forslag(a)).map((f) => f.organization)).not.toContain('Grannens kund AB');
+    const vara = new Set(FIXTUR.map((r) => r.namn));
+    expect((await forslag(g)).filter((f) => vara.has(f.organization))).toEqual([]);
+    const intrang = await act(g.user.token, a.id, 'crm_contact_suggestions', {});
+    expect(intrang.status, JSON.stringify(intrang.body)).toBe(404);
+  });
+});
+
+describe('färskheten (7.4 F)', () => {
+  let f: Bolag;
+  /** Förslagen utan ögonblicksbild, räknade en gång så att fallen inte beror på varandra. */
+  let S0: Forslag[];
+  let affarensAktivitet: string;
+  const affaren = () => affar('linear:LOC-711', 'Affärskunden AB', {
+    title: 'Licensförnyelse', stage: 'proposal', last_activity_at: affarensAktivitet,
+  });
+  const affarsskal = (s: readonly Forslag[]) => s.flatMap((x) => x.reasons).filter((r) => r.startsWith('affären '));
+  beforeAll(async () => {
+    f = await bolag('affar-f74');
+    await relationMedKontakt(f, 'Tysta kunden AB', 1080);
+    await relationMedKontakt(f, 'Affärskunden AB', 48);
+    affarensAktivitet = tid(960);
+    S0 = await forslag(f);
+  });
+
+  it('F1 ingen ögonblicksbild och en som är 27 timmar gammal ändrar ingenting; en färsk ger skälet', async () => {
+    expect(S0.map((x) => x.organization)).toEqual(['Tysta kunden AB']);
+    expect(affarsskal(S0)).toEqual([]);
+    await synk(f, tid(27), [affaren()]);
+    const gammal = await forslag(f);
+    expect(gammal).toEqual(S0);
+    expect(affarsskalbrister(gammal, false)).toEqual([]);
+    // Positiv kontroll: samma affär i en färsk ögonblicksbild ger skälet.
+    await synk(f, tid(1), [affaren()]);
+    const fore = Date.now();
+    const farsk = await forslag(f);
+    const efter = Date.now();
+    const kund = farsk.find((x) => x.organization === 'Affärskunden AB');
+    expect(kund, JSON.stringify(farsk)).toBeDefined();
+    expect(kund!.reasons).toHaveLength(1);
+    expect(skalFor('Licensförnyelse', 'Offert', affarensAktivitet, fore, efter)).toContain(kund!.reasons[0]);
+    expect(farsk.find((x) => x.organization === 'Tysta kunden AB')).toEqual(S0[0]);
+    expect(affarsskalbrister(farsk, true)).toEqual([]);
+  });
+
+  it('F2 en tidpunkt fram i tiden och en färsk tom ögonblicksbild ger samma förslag som utan ögonblicksbild', async () => {
+    await synk(f, tid(1), [affaren()]);
+    const planterad = await withAdmin((db) => db.query(
+      "UPDATE crm.deal_snapshot_observations SET observed_at = now() + interval '1 hour' WHERE company_id = $1", [f.id]));
+    expect(planterad.rowCount).toBe(1);
+    expect(ok(await act(f.user.token, f.id, 'crm_open_deals', {})).status).toBe('unknown');
+    expect(await forslag(f)).toEqual(S0);
+    await synk(f, tid(1), []);
+    expect(ok(await act(f.user.token, f.id, 'crm_open_deals', {})).status).toBe('empty');
+    expect(await forslag(f)).toEqual(S0);
+  });
+
+  it('F3 en färsk ögonblicksbild ger inget affärsskäl för i går, men för i dag och utan as_of', async () => {
+    await synk(f, tid(1), [affaren()]);
+    // Dagen räknas ur provets klocka före anropet. Byter UTC-datumet under
+    // anropet görs det om en gång, så fallet håller över midnatt.
+    const vidDag = async (indata: (idag: string) => Record<string, unknown>) => {
+      for (let forsok = 0; ; forsok += 1) {
+        const fore = Date.now();
+        const idag = new Date(fore).toISOString().slice(0, 10);
+        const s = await forslag(f, indata(idag));
+        const efter = Date.now();
+        if (new Date(efter).toISOString().slice(0, 10) === idag || forsok > 0) return { s, fore, efter };
+      }
+    };
+    const igar = (idag: string) => new Date(Date.parse(`${idag}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const forra = (await vidDag((idag) => ({ as_of: igar(idag) }))).s;
+    expect(affarsskal(forra)).toEqual([]);
+    expect(forra.map((x) => x.organization)).toEqual(['Tysta kunden AB']);
+    const dagar: [string, (idag: string) => Record<string, unknown>][] = [
+      ['as_of i dag', (idag) => ({ as_of: idag })],
+      ['utan as_of', () => ({})],
+    ];
+    for (const [namn, indata] of dagar) {
+      const { s, fore, efter } = await vidDag(indata);
+      const kund = s.find((x) => x.organization === 'Affärskunden AB');
+      expect(kund, `${namn}: ${JSON.stringify(s)}`).toBeDefined();
+      expect(skalFor('Licensförnyelse', 'Offert', affarensAktivitet, fore, efter), namn).toContain(kund!.reasons[0]);
+    }
+  });
+});
+
+describe('samma svar på Idag och i åtgärderna (7.4 I)', () => {
+  let v: Bolag;
+  let ua: ReturnType<typeof supertest.agent>;
+  let aktivitet: string;
+  beforeAll(async () => {
+    v = await bolag('affar-i74');
+    await relationMedKontakt(v, 'Offertkunden V AB', 48);
+    await relationMedKontakt(v, 'Tysta V AB', 1080);
+    aktivitet = tid(960);
+    expect(await synk(v, tid(1), [affar('linear:LOC-721', 'Offertkunden V AB', {
+      title: 'Ny webbplats', stage: 'proposal', last_activity_at: aktivitet,
+    })])).toMatchObject({ cached: 1, skipped: [] });
+    ua = supertest.agent(app);
+    const login = await ua.post('/app/login').type('form').send({ email: v.user.email, password: 'mycket-hemligt-losen-123' });
+    expect(login.status, JSON.stringify(login.body)).toBe(302);
+  });
+
+  it('I1 Idag, crm_today och crm_contact_suggestions ger samma relationer och skäl, med skedet i alla tre', async () => {
+    const fore = Date.now();
+    const sida = await ua.get(`/app/c/${v.id}/idag`);
+    const idag: Forslag[] = ok(await act(v.user.token, v.id, 'crm_today', {})).relations;
+    const forslagen = await forslag(v);
+    const relationsvyn = await ua.get(`/app/c/${v.id}/relations`);
+    const efter = Date.now();
+    expect(sida.status, sida.text.slice(0, 500)).toBe(200);
+    expect(relationsvyn.status, relationsvyn.text.slice(0, 500)).toBe(200);
+
+    const rader = (lista: readonly Forslag[]) => lista.map((x) => ({ id: x.organization_id, skal: x.reasons.join(' · ') }));
+    const kort = idagsKort(sida.text);
+    expect(kort).toHaveLength(2);
+    expect(kort).toEqual(rader(forslagen));
+    expect(rader(idag)).toEqual(rader(forslagen));
+
+    const offert = forslagen.find((x) => x.organization === 'Offertkunden V AB');
+    expect(offert, JSON.stringify(forslagen)).toBeDefined();
+    expect(offert!.reasons).toHaveLength(1);
+    expect(skalFor('Ny webbplats', 'Offert', aktivitet, fore, efter)).toContain(offert!.reasons[0]);
+    for (const [yta, skal] of [
+      ['Idag', kort.map((k) => k.skal)],
+      ['crm_today', idag.flatMap((x) => x.reasons)],
+      ['crm_contact_suggestions', forslagen.flatMap((x) => x.reasons)],
+    ] as const) {
+      expect(skal.some((s) => s.includes('(Offert) har stått stilla i')), yta).toBe(true);
+    }
+    for (const skal of forslagen.flatMap((x) => x.reasons)) expect(relationsvyn.text, skal).toContain(skal);
+    expect(affarsskalbrister(forslagen, true)).toEqual([]);
+    expect(affarsskalbrister(idag, true)).toEqual([]);
+  });
+});
+
+describe('dokumentet (7.4 D)', () => {
+  it('D5 åtgärdsdokumentet beskriver affärsskälet i ett eget avsnitt efter crm 7.1', async () => {
+    const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const rubrik = '## Affärsskälet i kontaktförslagen (crm 7.4)';
+    expect(doc.split(rubrik)).toHaveLength(2);
+    const foregaende = doc.indexOf('## Affärscachen och kontraktet för affärer (crm 7.1)');
+    expect(foregaende).toBeGreaterThan(-1);
+    expect(doc.indexOf(rubrik)).toBeGreaterThan(foregaende);
+    const avsnitt = doc.split(rubrik)[1]!.split('\n## ')[0]!;
+    expect(avsnitt).not.toMatch(/^###/m);
+    for (const term of ['crm_contact_suggestions', 'crm_today', 'crm_open_deals', 'as_of']) {
+      expect(avsnitt, term).toContain('`' + term + '`');
+    }
+    for (const ord of ['skede okänt', '26 timmar', 'kadensen']) expect(avsnitt, ord).toContain(ord);
+    // Beslut #24: affärerna bor i ärendeplattformen, som ersatt Linear.
+    expect(avsnitt).not.toMatch(/\bLinear\b/);
+    expect(avsnitt).toContain('ärendeplattformen');
   });
 });
