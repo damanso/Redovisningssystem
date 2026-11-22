@@ -15,7 +15,7 @@ import { sourceForActor } from '../services/crmProvenance.js';
 import { acceptNameVariant, rejectNameVariant, mergeOrganizations, mergePeople, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
 import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
-import { isThreadFilter, relationThread } from '../services/crmThread.js';
+import { isThreadFilter, isThreadTime, relationThread, type ThreadKind } from '../services/crmThread.js';
 import { addContact, addNote, getPartyCrm, listContacts, listNotes, setTags, upsertContact } from '../services/crm.js';
 import { ORG_ROLLER, SFARER, SFARFILTER, type SfarFilter } from '../services/crmSfar.js';
 import { setCrmSfar } from '../services/crmSfarByte.js';
@@ -3179,10 +3179,22 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       organization_id: UuidSchema,
       filter: z.enum(['allt', 'kontakt', 'pengar', 'loften']).optional(),
       limit: z.number().int().min(1).max(200).optional(),
+      // Nyckelpaginering (A-7): sista radens tre fält på föregående sida.
+      before: z.object({
+        // Bara trådens egen form når databasen; annat blir 400, aldrig 500.
+        at: IsoDateTimeSchema.refine(isThreadTime, 'at anges exakt som radens at, t.ex. 2026-03-02T09:00:00.000Z'),
+        kind: z.enum(['interaction', 'commitment', 'commitment_closed', 'invoice', 'payment']),
+        ref_id: UuidSchema,
+      }).strict().optional(),
     }).strict(),
-    handler: (ctx, i: { organization_id: string; filter?: string; limit?: number }) =>
+    handler: (ctx, i: {
+      organization_id: string; filter?: string; limit?: number;
+      before?: { at: string; kind: ThreadKind; ref_id: string };
+    }) =>
       relationThread(ctx.client, ctx.companyId, i.organization_id, {
         filter: isThreadFilter(i.filter) ? i.filter : 'allt', limit: i.limit,
+        // Postgres skriver uuid:er med gemener, och jämförelsen är en textjämförelse.
+        before: i.before ? { ...i.before, ref_id: i.before.ref_id.toLowerCase() } : undefined,
       }),
   }),
   def({

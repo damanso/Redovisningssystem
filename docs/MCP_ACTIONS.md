@@ -2949,3 +2949,30 @@ byggs bara ur nyckelns id och bara när hela nyckeln har källsystemets form; en
 nyckel som inte har den väntade formen visas som text utan länk. Kalendern och
 handvägen får ingen länk. Servern läser aldrig Gmail: adressen är en sträng i
 länken, och mallen provas mot ett verkligt meddelande efter driftsättningen.
+
+## Trådens läsväg bakåt (crm 4.1)
+
+`get_crm_thread` tar ett valfritt `before` med fälten `at`, `kind` och
+`ref_id`, tagna ur sista raden på föregående sida. Svaret är raderna strikt
+efter den raden i trådens totala ordning: `at`, sedan `kind`, sedan `ref_id`,
+alla fallande. Händelser med samma tidpunkt hamnar därför på exakt en sida, och
+ingen sida läses med offset, så en ny händelse flyttar inte gränsen mellan
+äldre sidor.
+
+`limit` är som förut högst 200, och standard är 60. `at` returneras avrundat
+till millisekunder, samma värde som ordningen och jämförelsen använder; svaret
+bar redan millisekunder. Svaret är fortfarande en lista, och en tom lista
+betyder att det inte finns något äldre. `at` i `before` skickas exakt som
+radens `at`, till exempel `2026-03-02T09:00:00.000Z`: tre decimaler, `Z` och ett
+år från 0001 till 9999. En annan zon, ett datum som inte finns och ett år
+utanför det spannet ger 400 `validation_error`, liksom ett okänt slag i
+`kind`, en extra nyckel i `before`, ett `ref_id` som inte är en uuid eller ett
+`limit` över 200. En relation i ett annat bolag ger 404, också med ett giltigt
+`before`.
+
+I vyn har relationssidans tråd länkarna «Äldre händelser →» och «← Nyaste» i
+en navigering under listan, och adressen bär läspositionen som
+`?fore=<at>|<kind>|<ref_id>`. En ogiltig läsposition ger en 400-sida i
+klartext, aldrig 500. Har den äldsta visade händelsen en tidpunkt utanför åren
+1–9999 går ingen läsposition att bygga; sidan säger då att det finns äldre
+händelser som läsvägen inte når, i stället för att påstå att tråden börjar där.

@@ -25,6 +25,9 @@ export const THREAD_FILTERS = {
   loften: ['commitment', 'commitment_closed'],
 } as const satisfies Record<string, readonly ThreadKind[] | null>;
 
+/** Sidstorleken i vyn (A-7); åtgärden når högst 200 per läsning. */
+export const THREAD_PAGE_SIZE = 60;
+
 export type ThreadFilter = keyof typeof THREAD_FILTERS;
 
 export interface ThreadEvent {
@@ -52,16 +55,39 @@ export function isThreadFilter(v: unknown): v is ThreadFilter {
   return typeof v === 'string' && Object.hasOwn(THREAD_FILTERS, v);
 }
 
+/** Exakt den form trådens `at` har i svaret (`toISOString()`), med fyrsiffrigt år. */
+const THREAD_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * `before.at` godtas bara i trådens egen form, med ett år 0001–9999 och ett datum
+ * som finns: den formen tolkar Postgres alltid. En zon som +16:00 släpper
+ * `Date.parse` igenom men Postgres avvisar med 22009, som blir 500. Vyns markör
+ * prövas med samma regel i crmRules, som inte får bero på tjänsten; crm-rules
+ * TC6 kräver att de två svarar lika (story 4.1, granskningen).
+ */
+export function isThreadTime(v: string): boolean {
+  if (!THREAD_TIME_PATTERN.test(v) || v.startsWith('0000')) return false;
+  const time = new Date(v);
+  return !Number.isNaN(time.getTime()) && time.toISOString() === v;
+}
+
 /**
  * Hela relationens historia i en ordning.
  *
  * Läses i EN fråga med UNION ALL i stället för fem frågor som sorteras i JS —
  * annars kan gränsen (LIMIT) inte tillämpas på den sammanslagna kronologin, och
  * en pratsam kanal skulle tränga ut de viktiga raderna.
+ *
+ * Ordningen är total (`at`, `kind`, `ref_id`, alla fallande) och nästa sida läses
+ * med markören `before`, aldrig med offset: händelser med samma tidpunkt får
+ * då en bestämd plats och hamnar på exakt en sida (A-7, story 4.1). `at`
+ * avrundas till millisekunder, eftersom poolen ger en `Date` med millisekunder;
+ * värdet som sorteras, jämförs och returneras är då ett och samma, och en
+ * markör ur en returnerad rad pekar exakt på den raden.
  */
 export async function relationThread(
   client: PoolClient, companyId: string, organizationId: string,
-  opts: { filter?: ThreadFilter; limit?: number } = {},
+  opts: { filter?: ThreadFilter; limit?: number; before?: { at: string; kind: ThreadKind; ref_id: string } } = {},
 ): Promise<ThreadEvent[]> {
   const org = await client.query<{ id: string; customer_id: string | null }>(
     'SELECT id, customer_id FROM crm.organizations WHERE id = $1 AND company_id = $2',
@@ -70,7 +96,8 @@ export async function relationThread(
   if (!org.rows[0]) throw new NotFoundError('organization');
 
   const kinds = THREAD_FILTERS[opts.filter ?? 'allt'];
-  const limit = opts.limit ?? 60;
+  const limit = opts.limit ?? THREAD_PAGE_SIZE;
+  const before = opts.before;
 
   const r = await client.query<ThreadEvent & { amount_ore: string | null }>(
     `WITH folk AS (
@@ -126,12 +153,22 @@ export async function relationThread(
        JOIN invoices inv ON inv.id::text = v.source_id AND inv.company_id = v.company_id
        WHERE v.company_id = $1 AND v.source_type = 'payment'
          AND inv.customer_id = $3::uuid
+     ),
+     -- Samma tio kolumner, med tidpunkten avrundad till det poolen kan bära.
+     trad AS (
+       SELECT date_trunc('milliseconds', at) AS at, kind, tag, title, who,
+              source_system, source_ref, amount_ore, ref_id, invoice_id
+       FROM ev
      )
-     SELECT * FROM ev
+     SELECT * FROM trad
      WHERE at IS NOT NULL AND ($4::text[] IS NULL OR kind = ANY($4))
-     ORDER BY at DESC
+       AND ($6::timestamptz IS NULL OR (at, kind, ref_id) < ($6::timestamptz, $7::text, $8::text))
+     ORDER BY at DESC, kind DESC, ref_id DESC
      LIMIT $5`,
-    [companyId, organizationId, org.rows[0].customer_id, kinds ? [...kinds] : null, limit],
+    [
+      companyId, organizationId, org.rows[0].customer_id, kinds ? [...kinds] : null, limit,
+      before?.at ?? null, before?.kind ?? null, before?.ref_id ?? null,
+    ],
   );
 
   return r.rows.map((x) => ({ ...x, amount_ore: x.amount_ore === null ? null : Number(x.amount_ore) }));

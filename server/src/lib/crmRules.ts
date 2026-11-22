@@ -210,3 +210,51 @@ export function companyFormSuffix(name: string, nameNorm: string): string | null
   return normalized.toLowerCase().startsWith(`${nameNorm} `)
     ? normalized.slice(nameNorm.length + 1).trim() || null : null;
 }
+
+/**
+ * Trådens fem slag, en egen sluten tabell så att lib inte beror på trådtjänsten.
+ * Unionen är densamma som `ThreadKind`, så rutten som skickar markören vidare
+ * fäller typkontrollen om de glider isär (story 4.1).
+ */
+export const THREAD_CURSOR_KINDS = Object.freeze({
+  interaction: 'interaction', commitment: 'commitment', commitment_closed: 'commitment_closed',
+  invoice: 'invoice', payment: 'payment',
+} as const);
+type ThreadCursorKind = typeof THREAD_CURSOR_KINDS[keyof typeof THREAD_CURSOR_KINDS];
+
+/** Exakt den form `toISOString()` ger; allt annat är en handskriven adress. */
+const CURSOR_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Fast text: säger vad som är fel och vad David gör, utan att återge adressen. */
+export const THREAD_CURSOR_ERROR = 'Adressens läsposition i tråden går inte att läsa. Öppna relationen igen för att se de nyaste händelserna.';
+
+/**
+ * `?fore=<at>|<kind>|<ref_id>` tolkad som tillåtelselista som aldrig kastar
+ * (A-7). Tidpunkten måste gå fram och tillbaka genom `toISOString()` och ha ett
+ * år från 0001, eftersom Postgres avvisar 2026-02-30 och år 0 och vyns sidor
+ * gör ett databasfel till 500. Slaget slås upp med `hasOwn`, inte `in`.
+ */
+export function parseThreadCursor(value: unknown): { at: string; kind: ThreadCursorKind; ref_id: string } | null {
+  if (typeof value !== 'string' || value.length > 100) return null;
+  const parts = value.split('|');
+  if (parts.length !== 3) return null;
+  const [at, kind, refId] = parts as [string, string, string];
+  if (!CURSOR_TIME_PATTERN.test(at) || at.startsWith('0000')) return null;
+  const time = new Date(at);
+  if (Number.isNaN(time.getTime()) || time.toISOString() !== at) return null;
+  if (!Object.hasOwn(THREAD_CURSOR_KINDS, kind) || !UuidSchema.safeParse(refId).success) return null;
+  return { at, kind: THREAD_CURSOR_KINDS[kind as keyof typeof THREAD_CURSOR_KINDS], ref_id: refId.toLowerCase() };
+}
+
+/**
+ * Markören ur en visad rad, och bara om `parseThreadCursor` läser den: formen är
+ * då densamma åt båda hållen. Trådens `at` är en `Date` vid körning; ett ogiltigt
+ * datum ger null innan `toISOString()` hinner kasta, så vyn aldrig visar en
+ * trasig länk.
+ */
+export function formatThreadCursor(row: { at: unknown; kind: string; ref_id: string | null }): string | null {
+  const time = row.at instanceof Date ? row.at : typeof row.at === 'string' ? new Date(row.at) : null;
+  if (time === null || Number.isNaN(time.getTime()) || row.ref_id === null) return null;
+  const cursor = `${time.toISOString()}|${row.kind}|${row.ref_id.toLowerCase()}`;
+  return parseThreadCursor(cursor) ? cursor : null;
+}
