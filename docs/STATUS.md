@@ -153,18 +153,40 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 5.2 (crm), omtaget efter code-review (tre fynd,
+  lagade som felklasser):** (1) Märket *ärendet skapat* läste radens
+  källsystem i stället för löftesdagens eget ursprung, så en dag som David
+  rättat i Rätta stod märkt som ärendets skapad-datum. `lovatVarde` tar nu
+  löftesdagens ursprungsrad som obligatorisk parameter och märker bara när
+  källsystemet är `linear` och ursprunget är synken eller saknas. Åtagandevyn
+  och tråden skickar `falt?.provenance.occurred_at`. Nya fall U1–U5 prövar
+  båda ytorna för varje sort: David rättade Lovades, också efter en ny synk
+  (U1, inget märke), AI:t skrev dagen (U2, inget märke), David rättade bara
+  Senast (U3, märket står), ingen ursprungsrad (U4, märket står) och synkens
+  dag (U5, märket står). (2) Texter som påstod mer än koden: rättat här
+  («Formuläret Rätta behåller *Lovades*»; Lova något har inget sådant fält),
+  i Completion Notes och i `docs/MCP_ACTIONS.md`, där «överallt där de visas»
+  nu är de fyra ytorna, och där Min sida och Idags relationskort står
+  uttryckligen som ytor utan namnen. (3) Provets datum: klockan läses en gång
+  för hela provfilen (`NU`), och förfallodatumen är konstanter som fixtur och
+  facit delar, så att en körning över UTC-midnatt inte fäller A1, V5, V7 eller
+  I1. Provfilen har nu 31 fall. **Inte kört:** sandlådan nekade `npm test`
+  och `npm run typecheck` (kräver godkännande). Kedjans typkontroll och svit
+  avgör.
 - **2026-11-22 — Story 5.2 (crm), löftets tre tider och löften som stängts
   av källan (FR-31, FR-2, FR-36):** `listCommitments` väljer `c.created_at`, så
   varje rad i `list_crm_commitments` bär `occurred_at` (Lovat), `created_at`
   (registrerat) och `due_date` (Senast); inget fält borttaget. Åtagandevyn har
   kolumnen *Lovat* mellan *Vem* och *Senast*, med *registrerat {datum}* som
   andra rad när registreringsdagen är en annan UTC-dag, och märket *ärendet
-  skapat* efter löftesdagen för löften ur ärendeplattformen (`lovatVarde`,
-  bara `linear`). De tre namnen står i konstanten `LOFTETS_TIDER` i
-  `server/src/http/view/routes.ts` och skrivs därifrån i åtagandevyn, i
+  skapat* efter löftesdagen när den är ärendets skapad-datum (`lovatVarde`:
+  källsystemet `linear` och löftesdagens ursprung synken eller ingen
+  ursprungsrad; villkoret kom i omtaget ovan). De tre namnen står i
+  konstanten `LOFTETS_TIDER` i `server/src/http/view/routes.ts` och skrivs
+  därifrån i åtagandevyn, i
   trådens nya rad *Lovat* för ett löfte, i gissningsraden (i dag *Lovades*,
   nu *Lovat*) och på Idags löfteskort (i dag «· sades», nu «· Lovat»).
-  Formulären Rätta och Lova något behåller *Lovades*. Under Klara och
+  Formuläret Rätta behåller *Lovades*. Under Klara och
   Avskrivna säger kolumnen Källa «Ärendet {id} stängdes» när synken stängde
   löftet (`stangdAvKallan`: status klar eller avskriven, statusens ursprung
   `sync`, källsystemet `linear` och nyckeln i `KALLNYCKEL.linear`s form);

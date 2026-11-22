@@ -3075,19 +3075,23 @@ släpps igenom, som för händelserna.
 
 Varje rad i `list_crm_commitments` bär tre tider. `occurred_at` är löftestiden,
 när löftet gavs; för ett löfte ur ärendeplattformen är det ärendets
-skapad-datum. `created_at` är registreringstiden, när raden skrevs, satt av
-databasen. `due_date` är förfallodatumet, ett datum eller `null`. `created_at`
-är nytt. Övriga fält och åtgärdens indata är oförändrade, och svaret är
-fortfarande en lista.
+skapad-datum, tills någon rättar det. `created_at` är registreringstiden, när
+raden skrevs, satt av databasen. `due_date` är förfallodatumet, ett datum eller
+`null`. `created_at` är nytt. Övriga fält och åtgärdens indata är oförändrade,
+och svaret är fortfarande en lista.
 
-I vyn heter tiderna Lovat, Senast och registrerat överallt där de visas:
-åtagandevyns kolumner Lovat och Senast, med «registrerat {datum}» under
-löftesdagen när registreringsdagen är en annan, trådens rad Lovat,
-gissningsraden och Idags löfteskort. Datumen är UTC-dagar.
+I vyn heter tiderna Lovat, Senast och registrerat på fyra ytor: åtagandevyns
+kolumner Lovat och Senast, med «registrerat {datum}» under löftesdagen när
+registreringsdagen är en annan, trådens rad Lovat, gissningsraden och Idags
+löfteskort. Min sida och skälraden på Idags relationskort visar
+förfallodatumet utan namnet, som «förföll {datum}» eller bara datumet.
+Datumen är UTC-dagar.
 
-Ett löfte ur ärendeplattformen har märket «ärendet skapat» efter Lovat i
-åtagandevyn och tråden, eftersom datumet är ärendets skapad-datum och inte
-nödvändigtvis dagen då löftet gavs.
+Märket «ärendet skapat» står efter Lovat i åtagandevyn och tråden när dagen är
+ärendets skapad-datum: löftet kommer ur ärendeplattformen och löftesdagens
+ursprung är synken, eller så saknar dagen ursprungsrad (ett löfte från innan
+ursprunget sparades). Har David rättat Lovades, eller har AI:t skrivit dagen,
+står dagen utan märket. Synken skriver inte över en dag som David rättat.
 
 Ett löfte som synken stängt för att ärendet stängdes visas under Klara eller
 Avskrivna med «Ärendet {id} stängdes» i kolumnen Källa. Texten kräver att

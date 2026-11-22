@@ -5,8 +5,8 @@
 // som ett löfte i går. Och ett löfte som källan stängt får inte se ut som Davids
 // eget handgrepp. Provet går genom REST → executeAction → listCommitments →
 // Postgres för listan, och genom den inloggade webbvyn (åtagandevyn, tråden och
-// Idag) för namnen, märket och texten. Facit är literaler ur epics.md och
-// berättelsens Dev Notes, aldrig räknade ur koden som prövas.
+// Idag) för namnen, märket och texten. Facit är literaler, eller förfallodatum
+// räknade ur provets egen klocka, och aldrig hämtade ur koden som prövas.
 import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -30,8 +30,22 @@ async function atgard(bolagId: string, token: string, namn: string, indata: Reco
   return r.body;
 }
 
-/** UTC-datumet n dagar från i dag, som Idag själv räknar dagens datum. */
-const dag = (n: number): string => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+/**
+ * UTC-datumet n dagar från provets ögonblick. Klockan läses en gång för hela
+ * filen, så fixturen och facit räknar varje datum ur samma ögonblick, också när
+ * körningen korsar UTC-midnatt mellan beforeAll och ett fall.
+ */
+const NU = Date.now();
+const dag = (n: number): string => new Date(NU + n * 86_400_000).toISOString().slice(0, 10);
+
+// Förfallodatumen räknas en gång här, och fixturen och facit läser samma konstant.
+const SENAST_L1 = dag(60);
+const SENAST_G1 = dag(61);
+const SENAST_I1 = dag(2);
+const SENAST_M1 = dag(62);
+const SENAST_AI = dag(63);
+const SENAST_SENARE = dag(80);
+const SENAST_RATTAT = dag(90);
 
 /** En sida i vyn med den inloggade agenten. */
 async function las(sokvag: string): Promise<string> {
@@ -69,8 +83,21 @@ async function loftesId(sourceSystem: string, sourceRef: string): Promise<string
   return id!;
 }
 
+/** Ursprunget för ett av löftets fält, eller null när ursprungsraden saknas. */
+async function ursprunget(id: string, falt: string): Promise<string | null> {
+  return withAdmin(async (db) => (await db.query<{ source: string }>(
+    `SELECT source FROM crm.field_provenance WHERE company_id = $1 AND commitment_id = $2 AND field = $3`,
+    [bolag, id, falt])).rows[0]?.source ?? null);
+}
+
 // S1–S4, S9, H1, H2 och L0 gavs samma dag och förfaller långt efter Idags horisont.
 const STANGDA_NAR = '2026-09-08T09:00:00Z';
+// R1–R4: ärendelöften vars löftesdag eller förfallodatum någon rättat, eller
+// vars löftesdag saknar ursprungsrad. Ärendets dag och den rättade dagen.
+const ARENDETS_DAG = '2026-09-09T09:00:00Z';
+const RATTAD_DAG = '2026-09-01';
+
+let agentnyckel: string;
 
 beforeAll(async () => {
   user = await registerUser('loftestider');
@@ -80,12 +107,12 @@ beforeAll(async () => {
 
   // Intag 1 i B. L1 skickas uttryckligen öppet, så att det är öppet och ändå
   // har statusens ursprung sync ur linear (S8 prövar statusvillkoret med det).
-  const senare = dag(80);
+  const senare = SENAST_SENARE;
   await intag(bolag, user.token, [
-    loftet('linear', 'linear:LOC-5201', 'they_owe', 'Ärendelöftet L1.', '2026-09-02T09:00:00Z', dag(60), 'open'),
-    loftet('gmail', 'gmail:5201a1', 'we_owe', 'Mailöftet G1.', '2026-09-03T09:00:00Z', dag(61)),
+    loftet('linear', 'linear:LOC-5201', 'they_owe', 'Ärendelöftet L1.', '2026-09-02T09:00:00Z', SENAST_L1, 'open'),
+    loftet('gmail', 'gmail:5201a1', 'we_owe', 'Mailöftet G1.', '2026-09-03T09:00:00Z', SENAST_G1),
     loftet('calendar', 'calendar:TIDER5201', 'we_owe', 'Kalenderlöftet K1.', '2026-09-04T09:00:00Z', null),
-    loftet('gmail', 'gmail:5201b1', 'we_owe', 'Idaglöftet I1.', '2026-09-02T09:00:00Z', dag(2)),
+    loftet('gmail', 'gmail:5201b1', 'we_owe', 'Idaglöftet I1.', '2026-09-02T09:00:00Z', SENAST_I1),
     loftet('linear', 'linear:LOC-5202', 'they_owe', 'Stängt ärende S1.', STANGDA_NAR, senare),
     loftet('linear', 'linear:LOC-5203', 'they_owe', 'Avbrutet ärende S2.', STANGDA_NAR, senare),
     loftet('linear', 'linear:LOC-5205', 'they_owe', 'Stängt från början S3.', STANGDA_NAR, senare, 'done'),
@@ -95,6 +122,10 @@ beforeAll(async () => {
     loftet('linear', 'linear:LOC-5208', 'they_owe', 'Gammalt klart L0.', STANGDA_NAR, senare),
     // Samma form som KL42:s B6: nyckeln har ärendets form, källsystemet är ett annat.
     loftet('gmail', 'linear:LOC-5209', 'they_owe', 'Fel källsystem S9.', STANGDA_NAR, senare, 'done'),
+    loftet('linear', 'linear:LOC-5210', 'they_owe', 'Davids löftesdag R1.', ARENDETS_DAG, senare),
+    loftet('linear', 'linear:LOC-5211', 'they_owe', 'AI:ts löftesdag R2.', ARENDETS_DAG, senare),
+    loftet('linear', 'linear:LOC-5212', 'they_owe', 'Davids förfallodatum R3.', ARENDETS_DAG, senare),
+    loftet('linear', 'linear:LOC-5213', 'they_owe', 'Löftesdag utan ursprung R4.', ARENDETS_DAG, senare),
   ]);
 
   const org = await withAdmin(async (db) => (await db.query<{ id: string }>(
@@ -105,16 +136,17 @@ beforeAll(async () => {
   // M1 för hand, med användarens nyckel.
   await atgard(bolag, user.token, 'record_crm_commitment', {
     organization_id: relation, direction: 'we_owe', body: 'Handlöftet M1.',
-    occurred_at: '2026-09-06T09:00:00Z', due_date: dag(62), source_system: 'manual',
+    occurred_at: '2026-09-06T09:00:00Z', due_date: SENAST_M1, source_system: 'manual',
   });
 
   // AI-löftet, med en agentnyckel: fälten får ursprunget ai och visas som gissningar.
   const nyckel = await api.post(`/api/companies/${bolag}/agent-tokens`)
     .set('Authorization', `Bearer ${user.token}`).send({ name: 'Tidsagenten' });
   expect(nyckel.status, JSON.stringify(nyckel.body)).toBe(201);
-  await atgard(bolag, nyckel.body.token as string, 'record_crm_commitment', {
+  agentnyckel = nyckel.body.token as string;
+  await atgard(bolag, agentnyckel, 'record_crm_commitment', {
     organization_id: relation, direction: 'we_owe', body: 'AI-löftet T3.',
-    occurred_at: '2026-09-07T09:00:00Z', due_date: dag(63), source_system: 'manual',
+    occurred_at: '2026-09-07T09:00:00Z', due_date: SENAST_AI, source_system: 'manual',
   });
 
   // Intag 2 i B: ärendena bakom S1 och S2 stängs i källan.
@@ -153,6 +185,31 @@ beforeAll(async () => {
     expect(r.status, r.text).toBe(302);
   }
 
+  // Löftesdagens eget ursprung, ett fall per sort. R1: David rättar Lovades i
+  // formuläret Rätta, och synken skickar sedan ärendets dag igen utan att få
+  // skriva över den. R2: AI:t rättar löftesdagen. R3: David rättar bara
+  // Senast, så löftesdagen är fortfarande synkens. R4: löftesdagen saknar
+  // ursprungsrad, som ett löfte från innan ursprunget började sparas.
+  const ratta = async (id: string, falt: Record<string, string>) => {
+    const r = await agent.post(`/app/c/${bolag}/relations/${relation}/edit`).type('form')
+      .send({ commitment_id: id, back: `/app/c/${bolag}/relations/${relation}`, ...falt });
+    expect(r.status, r.text).toBe(302);
+    expect(r.headers.location ?? '', 'rättelsen ska inte ge ett fel').not.toContain('fel=');
+  };
+  await ratta(await loftesId('linear', 'linear:LOC-5210'), {
+    occurred_at: RATTAD_DAG, fore_occurred_at: ARENDETS_DAG.slice(0, 10),
+  });
+  await intag(bolag, user.token, [
+    loftet('linear', 'linear:LOC-5210', 'they_owe', 'Davids löftesdag R1.', ARENDETS_DAG, senare),
+  ]);
+  await atgard(bolag, agentnyckel, 'update_crm_commitment', {
+    commitment_id: await loftesId('linear', 'linear:LOC-5211'), occurred_at: `${RATTAD_DAG}T09:00:00Z`,
+  });
+  await ratta(await loftesId('linear', 'linear:LOC-5212'), { due_date: SENAST_RATTAT, fore_due_date: senare });
+  const r4 = await loftesId('linear', 'linear:LOC-5213');
+  await withAdmin((db) => db.query(
+    `DELETE FROM crm.field_provenance WHERE company_id = $1 AND commitment_id = $2 AND field = 'occurred_at'`, [bolag, r4]));
+
   // Grannbolagets löfte, med grannens nyckel.
   await intag(grannbolag, granne.token, [
     loftet('gmail', 'gmail:5203aa', 'we_owe', 'Grannens löfte A3.', '2026-09-02T09:00:00Z', null, undefined, 'Grannens kund AB'),
@@ -172,7 +229,7 @@ describe('löftets tre tider i listan', () => {
     const l1 = raden(rader, 'Ärendelöftet L1.');
     expect(l1.occurred_at).toBe('2026-09-02T09:00:00.000Z');
     expect(l1.created_at).toBe('2026-09-05T08:00:00.000Z');
-    expect(l1.due_date).toBe(dag(60));
+    expect(l1.due_date).toBe(SENAST_L1);
     expect(raden(rader, 'Mailöftet G1.').created_at).toBe('2026-09-03T15:00:00.000Z');
     expect(raden(rader, 'Kalenderlöftet K1.').due_date).toBeNull();
   });
@@ -292,8 +349,8 @@ describe('åtagandevyns tider', () => {
   it('V5 Senast bär förfallodatumet och Lovat inte', async () => {
     const sida = await atagandevyn('open');
     const l1 = radenMed(sida, 'Ärendelöftet L1.');
-    expect(synlig(cellen(l1, 'Senast')).startsWith(dag(60))).toBe(true);
-    expect(cellen(l1, 'Lovat')).not.toContain(dag(60));
+    expect(synlig(cellen(l1, 'Senast')).startsWith(SENAST_L1)).toBe(true);
+    expect(cellen(l1, 'Lovat')).not.toContain(SENAST_L1);
     expect(synlig(cellen(radenMed(sida, 'Kalenderlöftet K1.'), 'Senast'))).toBe('—');
   });
 
@@ -321,7 +378,7 @@ describe('åtagandevyns tider', () => {
         const l1 = radenMed(sida, 'Ärendelöftet L1.');
         expect(cellen(l1, 'Lovat')).toContain('2026-09-02');
         expect(cellen(l1, 'Lovat')).toContain('2026-09-05');
-        expect(cellen(l1, 'Senast')).toContain(dag(60));
+        expect(cellen(l1, 'Senast')).toContain(SENAST_L1);
       }
       expect(sida).toContain('table[data-staplas] > tbody > tr > td[data-etikett]::before');
       expect(sida).toContain('content: attr(data-etikett)');
@@ -410,7 +467,7 @@ describe('tidernas namn i tråden och på Idag', () => {
     const sida = await las(`/app/c/${bolag}/idag`);
     const kort = kortet(sida, 'Idaglöftet I1.');
     expect(kort).toContain('<span class="muted"> · Lovat 2026-09-02 via ');
-    expect(kort).toContain(`>Senast ${dag(2)}</span>`);
+    expect(kort).toContain(`>Senast ${SENAST_I1}</span>`);
     expect(sida).not.toContain(' · sades ');
   });
 });
@@ -466,5 +523,54 @@ describe('löften som stängts av källan', () => {
 
   it('S9 stängt av synken med en nyckel i ärendets form men källsystemet gmail får ingen text', async () => {
     expect(kallcellen(await atagandevyn('done'), 'Fel källsystem S9.')).toBe('Gmail · <span class="thread__ref">linear:LOC-5209</span>');
+  });
+});
+
+/**
+ * Lovat för samma löfte i åtagandevyn och i tråden: dagen, och märket «ärendet
+ * skapat» efter den bara när `markt` är sant. Båda ytorna prövas varje gång.
+ */
+async function lovatPaBadaYtorna(text: string, dagen: string, markt: boolean): Promise<void> {
+  const cell = cellen(radenMed(await atagandevyn('open'), text), 'Lovat');
+  expect(synlig(cell).startsWith(markt ? `${dagen} ärendet skapat` : dagen), `åtagandevyn: ${synlig(cell)}`).toBe(true);
+  expect(cell.includes('ärendet skapat'), `åtagandevyn, märket: ${text}`).toBe(markt);
+  const handelse = handelsen(await traden(), text);
+  expect(handelse, `tråden: ${text}`)
+    .toContain(markt ? `Lovat ${dagen} <span class="muted">ärendet skapat</span></p>` : `Lovat ${dagen}</p>`);
+  expect(handelse.includes('ärendet skapat'), `tråden, märket: ${text}`).toBe(markt);
+}
+
+// Märket säger att dagen är ärendets skapad-datum. Det står när löftesdagens
+// ursprung är synken, eller när dagen saknar ursprungsrad och därför räknas
+// som ärendets. En dag som David eller AI:t skrivit är inte ärendets.
+describe('märket följer löftesdagens eget ursprung', () => {
+  it('U1 David rättade Lovades på ett ärendelöfte: hans dag står utan märket, också efter nästa synk', async () => {
+    const id = await loftesId('linear', 'linear:LOC-5210');
+    expect(await ursprunget(id, 'occurred_at')).toBe('human');
+    await lovatPaBadaYtorna('Davids löftesdag R1.', '2026-09-01', false);
+    expect(kallcellen(await atagandevyn('open'), 'Davids löftesdag R1.')).toBe(`${KALLA('LOC-5210')} · rättad av dig`);
+  });
+
+  it('U2 AI:t rättade löftesdagen på ett ärendelöfte: ingen märkning som ärendets dag', async () => {
+    expect(await ursprunget(await loftesId('linear', 'linear:LOC-5211'), 'occurred_at')).toBe('ai');
+    await lovatPaBadaYtorna('AI:ts löftesdag R2.', '2026-09-01', false);
+  });
+
+  it('U3 David rättade bara Senast: löftesdagen är fortfarande ärendets och bär märket', async () => {
+    const id = await loftesId('linear', 'linear:LOC-5212');
+    expect(await ursprunget(id, 'occurred_at')).toBe('sync');
+    expect(await ursprunget(id, 'due_date')).toBe('human');
+    await lovatPaBadaYtorna('Davids förfallodatum R3.', '2026-09-09', true);
+    expect(kallcellen(await atagandevyn('open'), 'Davids förfallodatum R3.')).toBe(`${KALLA('LOC-5212')} · rättad av dig`);
+  });
+
+  it('U4 löftesdagen saknar ursprungsrad, som före ursprungen: märket står', async () => {
+    expect(await ursprunget(await loftesId('linear', 'linear:LOC-5213'), 'occurred_at')).toBeNull();
+    await lovatPaBadaYtorna('Löftesdag utan ursprung R4.', '2026-09-09', true);
+  });
+
+  it('U5 löftesdagen är synkens: märket står', async () => {
+    expect(await ursprunget(await loftesId('linear', 'linear:LOC-5201'), 'occurred_at')).toBe('sync');
+    await lovatPaBadaYtorna('Ärendelöftet L1.', '2026-09-02', true);
   });
 });

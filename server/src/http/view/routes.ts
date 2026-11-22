@@ -7002,14 +7002,19 @@ function kallrad(companyId: string, kalla: Kalla, rattad: boolean): Raw {
 const LOFTETS_TIDER = Object.freeze({ lovat: 'Lovat', senast: 'Senast', registrerat: 'registrerat' } as const);
 
 /**
- * Löftesdagen, och efter den märket «ärendet skapat» för ett löfte ur
- * ärendeplattformen — FR-2:s mellanläge: ärendet bär bara sitt skapad-datum,
- * så dagen får inte läsas som dagen då löftet gavs. Bara källsystemet `linear`
- * får märket. Åtagandevyns cell och trådens rad delar funktionen; Idag visar
- * inte märket, det för berättelse 5.3 dit.
+ * Löftesdagen, och efter den märket «ärendet skapat» när dagen är ärendets
+ * skapad-datum — FR-2:s mellanläge: ärendet bär bara sitt skapad-datum, så
+ * dagen får inte läsas som dagen då löftet gavs. Märket påstår var dagen kom
+ * ifrån, så det läser löftesdagens eget ursprung och inte radens: källsystemet
+ * är `linear` och löftesdagen är synkens eller saknar ursprungsrad (från innan
+ * ursprunget sparades). En dag med ett annat ursprung, till exempel en som
+ * David rättat eller som AI:t skrivit, är inte ärendets och får inget märke.
+ * Åtagandevyns cell och trådens rad delar funktionen; Idag visar inte märket,
+ * det för berättelse 5.3 dit.
  */
-function lovatVarde(occurredAt: unknown, sourceSystem: unknown): Raw {
-  return html`${dayOf(occurredAt)}${sourceSystem === 'linear' ? html` <span class="muted">ärendet skapat</span>` : ''}`;
+function lovatVarde(occurredAt: unknown, sourceSystem: unknown, p: ProvenanceView | undefined): Raw {
+  const arendetsDag = sourceSystem === 'linear' && (!p || p.source === 'sync');
+  return html`${dayOf(occurredAt)}${arendetsDag ? html` <span class="muted">ärendet skapat</span>` : ''}`;
 }
 
 /**
@@ -8078,9 +8083,10 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     ${/* Löftestiden med sitt namn (FR-31): radens <time> är
                          händelsens tid, för ett löfte samma dag, men bara
                          namnet säger vilken av löftets tre tider det är.
-                         Stängningsraden får ingen. */ ''}
+                         Märket läser löftesdagens eget ursprung, som i
+                         åtagandevyn. Stängningsraden får ingen. */ ''}
                     ${e.kind === 'commitment'
-                      ? html`<p class="muted" style="margin:2px 0 0;font-size:12px">${LOFTETS_TIDER.lovat} ${lovatVarde(e.at, e.source_system)}</p>`
+                      ? html`<p class="muted" style="margin:2px 0 0;font-size:12px">${LOFTETS_TIDER.lovat} ${lovatVarde(e.at, e.source_system, falt?.provenance.occurred_at)}</p>`
                       : ''}
                     ${/* Källan, utskriven och öppningsbar (FR-17, UX K5): det
                          ska gå att styrka var något sades med ett klick. Länken
@@ -8177,7 +8183,7 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
                     Klassen är code, aldrig muted: 4.2:s prov hittar cellen
                     Källa som radens enda muted-cell. div:en håller ihop dagen
                     och raderna under som ett barn när cellen staplas. */ ''}
-              <td class="code"><div>${lovatVarde(c.occurred_at, c.source_system)}${registreratRad(c.occurred_at, c.created_at)}</div></td>
+              <td class="code"><div>${lovatVarde(c.occurred_at, c.source_system, falt?.provenance.occurred_at)}${registreratRad(c.occurred_at, c.created_at)}</div></td>
               <td class="code">${(c.due_date as string) ?? '—'}${
                 c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
               }${
