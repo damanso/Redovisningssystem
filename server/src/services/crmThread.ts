@@ -37,6 +37,9 @@ export interface ThreadEvent {
   source_ref: string | null;
   amount_ore: number | null;
   ref_id: string | null;
+  // Fakturans id för fakturan och betalningen, annars null. Betalningens ref_id
+  // är verifikatets id (unikt per betalning), men källan att öppna är fakturan.
+  invoice_id: string | null;
 }
 
 /**
@@ -76,7 +79,8 @@ export async function relationThread(
        -- Kontaktpunkter: mail, möten, samtal, ärenden.
        SELECT i.occurred_at AS at, 'interaction'::text AS kind, i.channel AS tag,
               i.summary AS title, p.name AS who,
-              i.source_system, i.source_ref, NULL::bigint AS amount_ore, i.id::text AS ref_id
+              i.source_system, i.source_ref, NULL::bigint AS amount_ore, i.id::text AS ref_id,
+              NULL::text AS invoice_id
        FROM crm.interactions i
        LEFT JOIN crm.people p ON p.id = i.person_id AND p.company_id = i.company_id
        WHERE i.company_id = $1
@@ -85,7 +89,7 @@ export async function relationThread(
        UNION ALL
        -- Löftet när det gavs.
        SELECT c.occurred_at, 'commitment', c.direction, c.body, p.name,
-              c.source_system, c.source_ref, NULL, c.id::text
+              c.source_system, c.source_ref, NULL, c.id::text, NULL
        FROM crm.commitments c
        LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
        WHERE c.company_id = $1
@@ -94,7 +98,7 @@ export async function relationThread(
        UNION ALL
        -- ...och när det stängdes. Två händelser, för att det ÄR två händelser.
        SELECT c.completed_at, 'commitment_closed', c.status, c.body, p.name,
-              NULL, NULL, NULL, c.id::text
+              NULL, NULL, NULL, c.id::text, NULL
        FROM crm.commitments c
        LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id
        WHERE c.company_id = $1 AND c.completed_at IS NOT NULL
@@ -104,19 +108,20 @@ export async function relationThread(
        -- Bokförda fakturor. Utkast hör inte hemma i en historik — de har inte hänt.
        SELECT inv.invoice_date::timestamptz, 'invoice', inv.status,
               'Faktura ' || lpad(inv.effective_invoice_number::text, 7, '0'),
-              NULL, NULL, NULL, inv.total_ore, inv.id::text
+              NULL, NULL, NULL, inv.total_ore, inv.id::text, inv.id::text
        FROM invoices inv
        WHERE inv.company_id = $1 AND inv.voucher_id IS NOT NULL
          AND inv.status <> 'cancelled'
          AND inv.customer_id = $3::uuid
 
        UNION ALL
-       -- Betalningar: bokförda betalningsverifikat mot bolagets fakturor.
+       -- Betalningar: bokförda betalningsverifikat mot bolagets fakturor. ref_id
+       -- är verifikatets id; invoice_id bär fakturan som betalningen gäller.
        SELECT v.voucher_date::timestamptz, 'payment', NULL,
               'Betalning · faktura ' || lpad(inv.effective_invoice_number::text, 7, '0'),
               NULL, NULL, NULL,
               (SELECT COALESCE(sum(vl.debit_ore), 0) FROM voucher_lines vl WHERE vl.voucher_id = v.id),
-              v.id::text
+              v.id::text, inv.id::text
        FROM vouchers v
        JOIN invoices inv ON inv.id::text = v.source_id AND inv.company_id = v.company_id
        WHERE v.company_id = $1 AND v.source_type = 'payment'

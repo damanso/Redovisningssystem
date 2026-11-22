@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 4.2 (crm), källan på varje rad är en länk (FR-17, FR-31):**
+  `kallrad()` i `server/src/http/view/routes.ts` skriver källraden på tre ytor:
+  tråden, åtagandevyns kolumn Källa och Idags löfteskort (”sades … via …”).
+  Namnet kommer ur den slutna tabellen `KALLNAMN` (Gmail, Ärende, Kalender, För
+  hand; Faktura och Betalning för trådens pengarader), nyckeln står kvar i
+  maskinstil, och ”Öppna ↗” (`target="_blank" rel="noopener"` och ett
+  `aria-label` som säger vart och ”ny flik”) byggs bara när nyckeln helt
+  matchar tillåtelselistan `KALLNYCKEL`; adressen byggs bara ur det fångade
+  id:t. Gmail-mallen står bara i `gmailAdress`, som också Min sidas mejlänk
+  använder (utdata oförändrad). Ursprungsmärkets titel säger Ärende i stället
+  för Linear. Trådens rader i `get_crm_thread` bär `invoice_id` (fakturans id
+  för faktura och betalning, annars null; `ref_id` oförändrat), beskrivet i
+  avsnittet ”Källan på varje rad (crm 4.2)” i `docs/MCP_ACTIONS.md`. Idag läser
+  löftenas ursprung med `getEventFields` i en samlad fråga, så tillägget
+  ”· rättad av dig” står på alla tre ytorna. Prov: KL1–KL13 i
+  `server/test/crm-views.test.ts` (describe ”4.2 källan på varje rad (story
+  4.2)”). Ingen migration, rutt, åtgärd, tabell, CSS-klass, import eller
+  beroende. **Inte kört i den här sessionen:** `npm run typecheck` och
+  `npm test` — sandlådan svarade ”This command requires approval”; kedjans
+  körning är belägget. **Återstår, Davids steg efter driftsättningen:**
+  Gmail-mallen är inte provad mot ett verkligt meddelande. David öppnar ”Öppna
+  ↗” på en mailrad i en relations tråd i sin inloggade webbläsare och antecknar
+  här om meddelandet visas; leder mallen fel ändras bara `gmailAdress`.
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar

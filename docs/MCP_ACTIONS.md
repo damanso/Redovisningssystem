@@ -2930,3 +2930,20 @@ förut. Övriga fält följer källan, och ingenting fryser hela löftet.
 
 `set_crm_commitment_status`, `update_crm_commitment` och
 `record_crm_commitment` är oförändrade.
+
+## Källan på varje rad (crm 4.2)
+
+Varje rad i svaret från `get_crm_thread` bär ett nytt fält, `invoice_id`. Det
+är fakturans id för raderna `invoice` och `payment` och `null` för alla andra
+rader. `ref_id` är oförändrat: för `invoice` fakturans id och för `payment`
+betalningsverifikatets id, som är unikt per betalning. Svaret är fortfarande en
+lista, inget fält har försvunnit och åtgärdens indata är oförändrade.
+
+I vyn har tråden, åtagandevyn och Idag samma källrad för samma händelse:
+källsystemets namn (Gmail, Ärende, Kalender eller För hand, och i tråden
+Faktura eller Betalning), nyckeln i maskinstil och länken «Öppna ↗», som öppnas
+i en ny flik. En nyckel `gmail:<id>` leder till mailet i Gmail, en nyckel
+`linear:LOC-NNN` till ärendet under `/vy/arende/`, och fakturans och
+betalningens rader till fakturans sida. En nyckel som inte har den väntade
+formen visas som text utan länk. Kalenderns och handvägens rader har ingen
+länk. Redovisningen läser aldrig Gmail: adressen är bara en sträng i en länk.

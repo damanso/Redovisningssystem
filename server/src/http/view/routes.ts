@@ -6800,11 +6800,98 @@ function threadChip(e: ThreadEvent): Raw {
 
 /** Källsystemet med versal, som ett namn och inte som en nyckel. */
 const kanalKalla = (s: string): string =>
-  s === 'gmail' ? 'Gmail' : s === 'calendar' ? 'Kalender' : s === 'linear' ? 'Linear' : 'För hand';
+  Object.hasOwn(KALLNAMN, s) ? KALLNAMN[s as keyof typeof KALLNAMN] : 'För hand';
 
 const kanalNamn = (c: string): string =>
   c === 'email' ? 'Mail' : c === 'call' ? 'Samtal' : c === 'meeting' ? 'Möte'
     : c === 'issue' ? 'Ärende' : 'Anteckning';
+
+// ---------------------------------------------------------------------------
+// Story 4.2 (FR-17, FR-31): källan på varje rad är en länk.
+//
+// Namnet kommer ur en sluten tabell över de fyra källsystem som CHECK-villkoret
+// tillåter (0052), aldrig ur det lagrade värdet. Ärendeplattformen heter Ärende
+// här, som i ursprungsmärket: en namntabell, inte två.
+// ---------------------------------------------------------------------------
+const KALLNAMN = {
+  gmail: 'Gmail',
+  linear: 'Ärende',
+  calendar: 'Kalender',
+  manual: 'För hand',
+} as const;
+
+/**
+ * Adressen till ett mail i Gmail, byggd ur Gmail-API:ts meddelande-id (den
+ * nyckel intaget skickar som `gmail:<id>`). Mallen står bara här, så att en
+ * mall som leder fel ändras på ett ställe (arkitekturen och UX K5). `/u/0/` är
+ * webbläsarens första inloggade Google-konto; är Davids arbetskonto inte det
+ * leder länken fel, och därför står nyckeln kvar bredvid som identifierare.
+ * Mallen provas mot ett verkligt meddelande efter driftsättningen. Servern
+ * läser aldrig Gmail: adressen är bara en sträng i en länk.
+ */
+function gmailAdress(id: string): string {
+  return `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Tillåtelselistan: hela nyckeln ska ha sitt källsystems form, annars byggs
+ * ingen länk och nyckeln står kvar som text. Bara det fångade id:t går in i en
+ * adress — aldrig prefixet, suffixet efter `#` eller något annat ur nyckeln.
+ * Kalendern får sin länk i story 5.9, och handvägen har ingen extern källa.
+ */
+const KALLNYCKEL = {
+  gmail: {
+    form: /^gmail:([0-9a-fA-F]{1,64})(?:#[A-Za-z0-9._-]{1,100})?$/,
+    adress: gmailAdress,
+    etikett: 'Öppna mailet i Gmail (ny flik)',
+  },
+  linear: {
+    // Samma form som ärende-id:t i Hermes yta, som äger /vy/arende/.
+    form: /^linear:([A-Z][A-Z0-9]{1,9}-[0-9]{1,7})(?:#[A-Za-z0-9._-]{1,100})?$/,
+    adress: (id: string) => `/vy/arende/${encodeURIComponent(id)}`,
+    etikett: 'Öppna ärendet i ärendeplattformen (ny flik)',
+  },
+} as const satisfies Partial<Record<keyof typeof KALLNAMN, { form: RegExp; adress: (id: string) => string; etikett: string }>>;
+
+/** En källa i tråden, åtagandevyn eller på Idag. Fälten kommer ur rader av typen
+ *  Record<string, unknown> och smalnas här, inte på ytorna. */
+type Kalla =
+  | { sort: 'handelse'; source_system: unknown; source_ref: unknown }
+  | { sort: 'invoice' | 'payment'; invoice_id: unknown };
+
+function kallLank(companyId: string, kalla: Kalla): { href: string; etikett: string } | null {
+  if (kalla.sort !== 'handelse') {
+    if (typeof kalla.invoice_id !== 'string' || !kalla.invoice_id) return null;
+    return {
+      href: `/app/c/${encodeURIComponent(companyId)}/invoices/${encodeURIComponent(kalla.invoice_id)}`,
+      etikett: kalla.sort === 'invoice' ? 'Öppna fakturan (ny flik)' : 'Öppna fakturan som betalningen gäller (ny flik)',
+    };
+  }
+  const { source_system: system, source_ref: nyckel } = kalla;
+  if (typeof system !== 'string' || typeof nyckel !== 'string' || !Object.hasOwn(KALLNYCKEL, system)) return null;
+  const grammatik = KALLNYCKEL[system as keyof typeof KALLNYCKEL];
+  const id = grammatik.form.exec(nyckel)?.[1];
+  return id ? { href: grammatik.adress(id), etikett: grammatik.etikett } : null;
+}
+
+/**
+ * Källraden (UX K5): namnet, nyckeln i maskinstil, «Öppna ↗» när nyckeln har
+ * sitt källsystems form och tillägget när en människa har rättat händelsen.
+ * Tråden, åtagandevyn och Idag skriver källan bara härigenom, så att samma
+ * händelse får samma rad på alla tre ytorna; ytorna lägger bara sin omgivning
+ * runt fragmentet. Ett namn skrivs alltid, aldrig ett rått systemvärde.
+ */
+function kallrad(companyId: string, kalla: Kalla, rattad: boolean): Raw {
+  const namn = kalla.sort === 'handelse'
+    ? kanalKalla(typeof kalla.source_system === 'string' ? kalla.source_system : '')
+    : kalla.sort === 'invoice' ? 'Faktura' : 'Betalning';
+  const nyckel = kalla.sort === 'handelse' && typeof kalla.source_ref === 'string' && kalla.source_ref
+    ? kalla.source_ref : null;
+  const lank = kallLank(companyId, kalla);
+  return html`${namn}${nyckel ? html` · <span class="thread__ref">${nyckel}</span>` : ''}${
+    lank ? html` · <a href="${lank.href}" target="_blank" rel="noopener" aria-label="${lank.etikett}">Öppna ↗</a>` : ''
+  }${rattad ? ' · rättad av dig' : ''}`;
+}
 
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
 function silenceChip(days: number | null): Raw {
@@ -6994,6 +7081,11 @@ const PERSONFALT = [
 // ---------------------------------------------------------------------------
 viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, companyId, req) => {
   const t = await todayView(client, companyId);
+  // Löftenas ursprung i en samlad fråga, så att källraden bär «rättad av dig»
+  // som i tråden och åtagandevyn.
+  const loftesfalt = await getEventFields(client, companyId, {
+    interaction_ids: [], commitment_ids: t.commitments.map((c) => c.id as string),
+  });
   const back = `/app/c/${companyId}/idag`;
   const antal = t.relations.length + t.commitments.length;
 
@@ -7041,7 +7133,9 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
     ${
       t.commitments.length > 0
         ? html`<h2 style="margin-top:18px">Löften som förfaller</h2>
-            <div class="today">${t.commitments.map((c) => html`<article class="today__card">
+            <div class="today">${t.commitments.map((c) => {
+              const falt = loftesfalt.commitments[c.id as string];
+              return html`<article class="today__card">
               <div class="today__head">
                 ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
                 ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
@@ -7053,7 +7147,9 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                   ? entityLink(companyId, 'relation', c.organization_id as string, c.organization_name, { class: 'today__who' })
                   : entityLink(companyId, 'relation', null, (c.person_name as string) ?? '—', { class: 'today__who' })}
               </div>
-              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${c.source_system as string}</span></p>
+              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${kallrad(companyId,
+                { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref },
+                Boolean(falt && rattadAvDig(falt.source_system, falt.provenance)))}</span></p>
               <div class="quick">
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/done`, 'Klar', { primary: true, back })}
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
@@ -7064,7 +7160,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                   menuAction(`/app/c/${companyId}/commitments/${c.id as string}/drop`, 'Avskriv löftet', { back, neg: true }),
                 ])}
               </div>
-            </article>`)}</div>`
+            </article>`; })}</div>`
         : ''
     }
     ${
@@ -7755,24 +7851,27 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               : html`<ol class="thread">${thread.map((e) => {
                   const falt = e.ref_id ? e.kind === 'interaction' ? eventFields.interactions[e.ref_id]
                     : e.kind === 'commitment' ? eventFields.commitments[e.ref_id] : undefined : undefined;
+                  const kalla: Kalla | null = e.kind === 'invoice' || e.kind === 'payment'
+                    ? { sort: e.kind, invoice_id: e.invoice_id }
+                    : e.source_system ? { sort: 'handelse', source_system: e.source_system, source_ref: e.source_ref } : null;
                   return html`<li class="thread__ev">
                   <time class="thread__when" datetime="${String(e.at)}">${dayOf(e.at)}</time>
                   <div class="thread__what">
                     <div class="thread__title">${threadChip(e)}${e.title}${
                       e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
                     }</div>
-                    ${/* Källan, utskriven. Vi länkar INTE till mailet: vi kan
-                         inte veta vilken adress just den här läsaren har hos
-                         Gmail, och en länk som kanske leder rätt är sämre än en
-                         nyckel som säkert går att söka på. Nyckeln sätts därför
-                         i maskinstil — den är en identifierare, inte prosa. */ ''}
+                    ${/* Källan, utskriven och möjlig att öppna (FR-17, UX K5).
+                         Länken byggs bara ur nyckelns id, med en mall på ett
+                         ställe. Vi kan inte veta vilket Google-konto just den
+                         här läsaren har först, så nyckeln står kvar i
+                         maskinstil: leder länken fel är den en identifierare
+                         som säkert går att söka på. Fakturan och betalningen
+                         leder till fakturans sida. */ ''}
                     ${
-                      e.who || e.source_system
+                      e.who || kalla
                         ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${
-                            e.who && e.source_system ? ' · ' : ''
-                          }${e.source_system ? html`${kanalKalla(e.source_system)}` : ''}${
-                            e.source_ref ? html` · <span class="thread__ref">${e.source_ref}</span>` : ''
-                          }${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</div>`
+                            e.who && kalla ? ' · ' : ''
+                          }${kalla ? kallrad(companyId, kalla, Boolean(falt && rattadAvDig(falt.source_system, falt.provenance))) : ''}</div>`
                         : ''
                     }
                     ${falt && (e.kind === 'interaction' || e.kind === 'commitment')
@@ -7850,7 +7949,8 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
               }${
                 c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</td>
+              <td class="muted">${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref },
+                Boolean(falt && rattadAvDig(falt.source_system, falt.provenance)))}</td>
               <td><div class="quick">${
                 c.status === 'open'
                   ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}
@@ -11047,7 +11147,7 @@ function minUnderlag(c: Record<string, unknown>): { href: string; label: string 
   const ut: { href: string; label: string }[] = [];
   const ref = typeof c.source_ref === 'string' ? c.source_ref : '';
   const gm = /^gmail:([0-9a-f]+)/i.exec(ref);
-  if (gm) ut.push({ href: `https://mail.google.com/mail/u/0/#all/${gm[1]}`, label: 'Mejltråden' });
+  if (gm) ut.push({ href: gmailAdress(gm[1]!), label: 'Mejltråden' });
   const body = typeof c.body === 'string' ? c.body : '';
   const sett = new Set<string>();
   for (const m of body.matchAll(/https:\/\/[^\s)"'<>\]]+/g)) {
