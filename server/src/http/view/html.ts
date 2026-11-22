@@ -243,6 +243,11 @@ const STATUS: Record<string, { label: string; kind: ChipKind; icon: string }> = 
   // Kvittobilagor (0075). `active` finns redan ovan.
   awaiting_upload: { label: 'Väntar på uppladdning', kind: 'warn', icon: '◔' }, // receipt_files
   uploaded: { label: 'Uppladdad, obekräftad', kind: 'info', icon: '→' },        // receipt_files
+  // Affärernas skeden (affärscachen, migration 0096)
+  idea: { label: 'Idé', kind: 'muted', icon: '○' },
+  dialogue: { label: 'Dialog', kind: 'info', icon: '◔' },
+  proposal: { label: 'Offert', kind: 'info', icon: '→' },
+  negotiation: { label: 'Förhandling', kind: 'warn', icon: '±' },
 };
 /**
  * Har det har statusvardet en svensk etikett?

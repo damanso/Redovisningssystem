@@ -68,6 +68,12 @@ async function purgeCrmRelationData(
   // raderna först försvinner (source_system, source_ref) — och nästa nattliga
   // synk som skickar om samma historiska mail återskapar allt vi just tog bort.
   // Gravstenen bär enbart källnycklar, inga personuppgifter.
+  //
+  // Affärscachen (migration 0096) ingår av samma skäl: nästa natt skickar
+  // Hermes samma ärenden igen, och utan gravstenen hade affärens titel och
+  // nästa steg kommit tillbaka. Cachen bär inget källsystem; mottagningen
+  // (sync_crm_deals) prövar gravstenen med källsystemet 'linear', samma kod som
+  // står här.
   await client.query(
     `INSERT INTO crm.erased_sources (company_id, source_system, source_ref)
      SELECT $1, source_system, source_ref FROM crm.interactions
@@ -79,6 +85,9 @@ async function purgeCrmRelationData(
       WHERE company_id = $1 AND source_ref IS NOT NULL
         AND (organization_id = ANY($2::uuid[])
           OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))
+     UNION
+     SELECT $1, 'linear', source_ref FROM crm.deal_snapshots
+      WHERE company_id = $1 AND organization_id = ANY($2::uuid[])
      ON CONFLICT DO NOTHING`,
     [companyId, orgIds],
   );
@@ -114,6 +123,15 @@ async function purgeCrmRelationData(
   // namn kan dessutom vara en enskild firma, alltså en fysisk person.
   await client.query(
     'DELETE FROM crm.organization_name_aliases WHERE company_id = $1 AND organization_id = ANY($2::uuid[])',
+    [companyId, orgIds],
+  );
+  // Affärscachen (migration 0096) dör med relationen genom kaskad — men här
+  // raderas relationen aldrig, den behålls av bokföringsskäl och skrivs om, så
+  // kaskaden når inte cachen. En affärs titel och nästa steg kan bära namn, och
+  // cachen har ingen bevarandegrund alls. Raderingen gäller därför också när
+  // identiteten behålls. Gravstenarna för raderna skrevs överst.
+  await client.query(
+    'DELETE FROM crm.deal_snapshots WHERE company_id = $1 AND organization_id = ANY($2::uuid[])',
     [companyId, orgIds],
   );
   await client.query(

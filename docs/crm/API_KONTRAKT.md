@@ -421,6 +421,115 @@ på servern. Utan `expected` är beteendet oförändrat. `work_date`, `duration`
 `description` och `contract_part_id` jämförs inte. Vyn skickar inte fältet.
 Batchens `propose_time_entries` ändras inte: en dubblett där skriver ingenting.
 
+## Affärerna
+
+De öppna affärerna bor i ärendeplattformen, som ärenden med affärsetiketten.
+Hermes skickar en ögonblicksbild av dem hit varje natt med `sync_crm_deals`, och
+relationsdelen läser den ur en cache. Riktningen är densamma som för
+händelserna: redovisningssystemet ringer aldrig ärendeplattformen. Affärsobjektet
+`crm.deals` används inte — cachen är en spegel av ärendena, inget eget
+affärsobjekt, och den skrivs om i sin helhet varje gång.
+
+`POST /api/companies/<company_id>/actions/sync_crm_deals`
+
+```jsonc
+{
+  "observed_at": "2026-11-22T02:00:00Z",
+  "deals": [
+    {
+      "source_ref": "linear:LOC-412",
+      "title": "Pilot för lagerprognosen",
+      "organization": { "name": "Nordic Vision Retail AB" },
+      "stage": "proposal",
+      "value_ore": 12500000,
+      "next_step": "Skicka offerten",
+      "last_activity_at": "2026-11-18T14:05:00Z"
+    }
+  ]
+}
+```
+
+`observed_at` är ögonblicksbildens tidpunkt och `last_activity_at` ärendets
+senaste aktivitet, båda ISO 8601 med zon. `source_ref` är ärendets källnyckel i
+husets form `<system>:<id>`, som `linear:LOC-412`: samma nyckel som ärendet bär
+i händelserna. Mottagaren jämför hela nyckeln, så en nyckel utan systemet är en
+annan nyckel, och då spärrar en gravsten för ärendet inte affären. Nyckeln är
+unik per bolag och trimmas, så en nyckel med blanktecken runt är samma nyckel.
+`stage` är `idea`, `dialogue`, `proposal` eller `negotiation` och får utelämnas
+eller vara `null`, liksom `value_ore` (heltal i ören) och `next_step`. Högst 500
+affärer per anrop. En okänd nyckel på någon nivå ger 400 `validation_error`, och
+då skrivs ingenting.
+
+Ingen tidpunkt får ligga mer än fem minuter före mottagarens klocka. Ett
+`observed_at` längre fram ger 400 `observed_at_in_future` och skriver
+ingenting: sparad hade ögonblicksbilden räknats som aktuell långt efter att
+nattjobbet slutat gå. En affär vars `last_activity_at` ligger längre fram hoppas
+över, eftersom den hade dolt sitt stillestånd.
+
+**Hela mängden ersätter cachen.** En affär som inte finns med i nästa
+ögonblicksbild försvinner — det är så en vunnen, förlorad eller stängd affär
+lämnar listan. Skicka därför alltid alla öppna affärer, aldrig bara de som
+ändrats. En tom mängd betyder «inga öppna affärer» och tömmer cachen;
+tidpunkten sparas ändå.
+
+Organisationen slås upp eller skapas ur sitt namn med samma regler som i
+*De fyra reglerna*: kopplingen till kundregistret, projektkodsspärren, aliaset
+efter en sammanslagning och bolagsformsvarianten. En variant hoppas över med
+samma skäl och köar samma förslag som en händelse, ett per namnpar. En titel
+eller en `source_ref` av bara blanktecken och en upprepad `source_ref` i samma
+ögonblicksbild hoppas också över. En trasig rad stoppar inte resten.
+
+Regel 4 gäller också affärerna. När en kund raderats enligt GDPR försvinner
+kundens affärer ur cachen och deras källnycklar sparas som gravstenar. Skickas
+samma `source_ref` igen hoppas affären över (`skipped` med skälet att källan är
+raderad enligt GDPR), och ingen relation skapas för den. Gravstenen är paret
+källsystem och nyckel, samma som för händelserna, så ett löfte eller en
+kontaktpunkt ur samma ärende som raderats med kunden spärrar också affären. En
+ny `source_ref` släpps igenom som vanligt: det är ny behandling med ny grund.
+
+```jsonc
+{
+  "status": "ok",
+  "action": "sync_crm_deals",
+  "result": {
+    "observed_at": "2026-11-22T02:00:00Z",
+    "received": 1,
+    "cached": 1,
+    "organizations_created": 0,
+    "organizations_linked": 1,
+    "unlinked_organizations": [],
+    "redirected_organizations": [],
+    "merge_proposals": [],
+    "skipped": []
+  }
+}
+```
+
+`received` är antalet Hermes skickade och `cached` antalet som ligger i cachen
+efteråt. `skipped` bär index och skäl för varje överhoppad affär,
+`merge_proposals` de bolagsformsvarianter som väntar på beslut, och
+`unlinked_organizations` de organisationer som inte gick att knyta till
+kundregistret — samma fält och samma former som i händelsernas svar.
+
+Läsningen är `crm_open_deals` (`{}`). Svaret bär `status` med ett av tre
+utfall, `observed_at` och `received` från den senaste ögonblicksbilden, och
+`deals`. Har ingen ögonblicksbild kommit är `observed_at` och `received` `null`;
+annars bär de ögonblicksbildens tidpunkt och antal, också när utfallet är
+`unknown`.
+
+- `ok` — den senaste ögonblicksbilden är högst 26 timmar gammal och Hermes
+  skickade minst en affär. `deals` listar affärerna med relationen, `stage`,
+  `value_ore`, `next_step` (`null` när affären saknar dem), `last_activity_at`
+  och stilleståndet i hela dygn, längst stillestånd först.
+- `empty` — den senaste ögonblicksbilden är högst 26 timmar gammal och var tom.
+- `unknown` — ingen ögonblicksbild har kommit, eller den senaste är äldre än 26
+  timmar (en missad nattkörning och marginalen) eller ligger mer än fem minuter
+  fram i tiden. `deals` är då alltid tom: en gammal lista visas aldrig som
+  aktuell, och okänt visas aldrig som tomt.
+
+En ögonblicksbild där varje affär hoppades över är `ok` utan affärer, aldrig
+`empty`: tomt betyder att Hermes skickade en tom mängd.
+
 ## Gallring
 
 `set_crm_retention` / `get_crm_retention` sätter och läser perioden i månader;

@@ -153,6 +153,83 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 7.1 (crm), andra omtaget efter code-review (två fynd,
+  lagade som felklasser):** (1) Källnyckelns form: förra omtaget hade bytt
+  exemplets `linear:LOC-412` mot `LOC-412`. Exemplet är återställt, och båda
+  dokumentavsnitten säger nu att `source_ref` har husets form `<system>:<id>`
+  (arkitekturen), samma som i händelserna, att mottagaren jämför hela nyckeln
+  och att en gravsten för ärendet därför spärrar affären. Kommentarerna om
+  nyckeln i `server/src/services/crmDeals.ts` och `server/src/actions/registry.ts`
+  säger detsamma. (2) Null i läsningen: kontraktet lovade «alltid
+  `observed_at`». Båda avsnitten säger nu att `observed_at` och `received` är
+  `null` när ingen ögonblicksbild har kommit, och att `stage`, `value_ore` och
+  `next_step` är `null` när affären saknar dem. Nya fall i
+  `server/test/crm-deals.test.ts` (47): D1 och D2 prövar nyckelns form med
+  `nyckelbrister`, D3 jämför läsningens verkliga null-fält med en literal och
+  kräver att båda avsnitten säger när vart och ett är null (`nullbrister`), D4
+  är den negativa kontrollen för båda hjälparna, och G4 visar att ett löftes
+  gravsten för `linear:LOC-7201` spärrar affären med samma nyckel. Ingen
+  ändring i beteendet. **Inte kört:** byggaren har inga kommandon i den här
+  körningen; kedjans körning av typkontrollen och sviten är belägget.
+- **2026-11-22 — Story 7.1 (crm), omtag efter code-review (fem fynd, lagade
+  som felklasser):** (1) GDPR-raderingen skriver gravstenar
+  `('linear', source_ref)` för kundens cacherader i samma sats som de övriga
+  gravstenarna, före varje radering (`purgeCrmRelationData`), och
+  `syncDealSnapshot` prövar `assertNotErased` först i varje rads sparpunkt,
+  före organisationen: samma `source_ref` hoppas över med husets skäl och skapar
+  ingen relation, en ny släpps igenom (FR-43, kontraktets regel 4). (2) Regeln
+  `aheadOfClock` med `DEAL_CLOCK_SKEW_MINUTES` = 5 i `server/src/lib/crmRules.ts`
+  gäller båda avsändartiderna: ett `observed_at` längre fram ger 400
+  `observed_at_in_future` före varje skrivning, en affär med `last_activity_at`
+  längre fram hoppas över, och grinden `dealSnapshotStatus` ger `unknown` för
+  samma tid. (3) O1 räknar stilleståndets facit ur klockan före och efter
+  anropet, så fallet håller över midnatt UTC. (4) `source_ref` trimmas på ett
+  ställe i tjänsten och råvärdet förs inte vidare; en tom nyckel hoppas över.
+  (5) Avsnittet «Affärerna» i API-kontraktet skriver ärendeplattformen, inte
+  Linear, och båda dokumentavsnitten beskriver gravstenen, klockmarginalen och
+  nyckeln. Nya fall i `server/test/crm-deals.test.ts`: S9, S10, P7, O7 och G3
+  (44 fall), och D1/D2 kräver de nya termerna och att avsnitten inte nämner
+  Linear. **Inte kört:** `npm test` och `npm run typecheck` — sandlådan svarade
+  ”This command requires approval”; kedjans körning är belägget.
+- **2026-11-22 — Story 7.1 (crm), affärscachen och kontraktet för affärer
+  (FR-25, mottagarsidan):** Migrationen `server/migrations/0096_crm_deal_snapshots.sql`
+  med två CACHE-tabeller: `crm.deal_snapshots` (en rad per öppen affär,
+  primärnyckel `(company_id, source_ref)`, sammansatt FK mot relationen med
+  `ON DELETE CASCADE`, fem CHECK-villkor, app har SELECT, INSERT och DELETE men
+  aldrig UPDATE) och `crm.deal_snapshot_observations` (tidpunkt och antal för
+  bolagets senaste ögonblicksbild, också när den var tom). Båda med ENABLE +
+  FORCE RLS. Tjänsten `server/src/services/crmDeals.ts`: `syncDealSnapshot`
+  skriver observationsraden först, raderar hela bolagets cache och lägger in
+  varje rad i en egen sparpunkt; organisationen går genom `upsertOrganization`
+  och en bolagsformsvariant genom `queueNameVariantProposal`, som intaget.
+  `openDeals` läser affärerna bara när grinden `dealSnapshotStatus` säger `ok`
+  (`DEAL_SNAPSHOT_MAX_AGE_HOURS` = 26 och `idleDays` i
+  `server/src/lib/crmRules.ts`). Två åtgärder i registret efter
+  `ingest_crm_events`: `sync_crm_deals` (`write`) och `crm_open_deals` (`read`).
+  Skedenas etiketter *Idé*, *Dialog*, *Offert* och *Förhandling* i `STATUS` i
+  `server/src/http/view/html.ts`. `purgeCrmRelationData` i
+  `server/src/services/gdpr.ts` raderar relationens cacherader uttryckligen,
+  eftersom organisationsraden behålls och kaskaden aldrig når dit. E3-fallet i
+  `server/test/crm-schema.test.ts` kräver nu exakt `crm_open_deals` och
+  `sync_crm_deals` bland åtgärderna med `deal` i namnet, och affärsobjektet
+  står fortfarande tomt. Avsnitten «Affärerna» i `docs/crm/API_KONTRAKT.md` och
+  «Affärscachen och kontraktet för affärer (crm 7.1)» i `docs/MCP_ACTIONS.md`.
+  Prov i `server/test/crm-deals.test.ts`, 39 fall: M1–M7 (katalogen, kedjan
+  igen, etiketterna härledda ur CHECK-villkoret, kaskaden, RLS som app), S1–S8
+  och O0 (ersättningen fält för fält, S2 negativ kontroll med A ∪ B, tom mängd,
+  ogiltigt indata, trasiga rader, kundkoppling, audit med bara antal,
+  grannbolaget), V1–V5 (bolagsformsvarianten, ett förslag per par, intaget
+  återanvänder förslaget, flera möjliga, aliaset), P1–P6 (grinden och
+  stilleståndet), O1–O6 (*OK*, *TOMT*, *OKÄNT*, 25 och 27 timmar, överhoppade
+  rader, grannbolaget), G1–G2 (GDPR-raderingen och sammanslagningen), E1–E2
+  (bara två filer nämner cachen, ingen av dem affärsobjektet; negativ kontroll)
+  och D1–D2 (dokumenten). Ingen ny rutt, vy, CSS-klass eller beroende.
+  **Inte kört i den här sessionen:** `npm run typecheck` och `npm test` —
+  sandlådan svarade ”This command requires approval”; kedjans körning är
+  belägget. **I drift:** Hermes skickar ingen ögonblicksbild förrän Story 7.2
+  är driftsatt; tills dess svarar `crm_open_deals` ärligt *OKÄNT* för varje
+  bolag. **Rött utanför repot:** som i raden nedan; inget av de icke-gröna
+  Hermes-proven gäller den här berättelsen.
 - **2026-11-22 — Story 5.1 (crm), fångstvägarna på ett ställe och ärliga
   tomlägen (FR-31, PRD lucka 21):** Konstanten `CAPTURE_PATHS_IN_OPERATION` i
   `server/src/services/crmDerivations.ts` (fryst; kontakter `mail`, `issues`,
