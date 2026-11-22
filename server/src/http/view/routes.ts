@@ -6799,12 +6799,87 @@ function threadChip(e: ThreadEvent): Raw {
 }
 
 /** Källsystemet med versal, som ett namn och inte som en nyckel. */
-const kanalKalla = (s: string): string =>
-  s === 'gmail' ? 'Gmail' : s === 'calendar' ? 'Kalender' : s === 'linear' ? 'Linear' : 'För hand';
+const kanalKalla = (s: string): string => (Object.hasOwn(KALLNAMN, s) ? KALLNAMN[s] : undefined) ?? 'För hand';
 
 const kanalNamn = (c: string): string =>
   c === 'email' ? 'Mail' : c === 'call' ? 'Samtal' : c === 'meeting' ? 'Möte'
     : c === 'issue' ? 'Ärende' : 'Anteckning';
+
+/** Källsystemens namn: en sluten tabell över CHECK-villkorets fyra värden
+ *  (0052). Ärendeplattformen heter Ärende, som i ytan i övrigt (story 4.2). */
+const KALLNAMN: Readonly<Record<string, string>> = {
+  gmail: 'Gmail', linear: 'Ärende', calendar: 'Kalender', manual: 'För hand',
+};
+
+/**
+ * Gmail-adressen till ett meddelande, på ett enda ställe (FR-17, UX K5).
+ * `#all/` öppnar meddelandet oavsett etikett, och `/u/0/` är webbläsarens
+ * första inloggade konto. Leder mallen fel för ett annat konto står nyckeln
+ * kvar i maskinstil och går att söka på, och då ändras bara den här funktionen.
+ * Mallen provas mot ett verkligt meddelande efter driftsättningen. Servern läser
+ * aldrig Gmail: adressen är bara en sträng i en länk som läsarens webbläsare öppnar.
+ */
+function gmailAdress(id: string): string {
+  return `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Tillåtelselistan för källans länk: en fullständig grammatik per länkbart
+ * källsystem, prövad mot hela nyckeln (`<system>:<id>`, med ett valfritt suffix
+ * efter `#`). Bara det fångade id:t går in i en adress, aldrig prefixet eller
+ * suffixet, och en nyckel utan formen visas som text. Kalendern får sin länk i
+ * story 5.9, och handvägen har ingen extern källa. Inga flaggor: `g` och `y`
+ * gör en prövning beroende av den förra.
+ */
+const KALLNYCKEL: Readonly<Record<string, RegExp>> = {
+  gmail: /^gmail:([0-9a-fA-F]{1,64})(?:#[A-Za-z0-9._-]{1,100})?$/,
+  linear: /^linear:([A-Z][A-Z0-9]{1,9}-[0-9]{1,7})(?:#[A-Za-z0-9._-]{1,100})?$/,
+};
+
+/** Källan bakom en rad: en händelse med källsystem och nyckel, eller trådens
+ *  pengarad med fakturans id. Fälten är okända, eftersom åtagandevyn och Idag
+ *  läser otypade rader; de smalnas här och inte på ytorna. */
+type Kalla =
+  | { sort: 'handelse'; source_system: unknown; source_ref: unknown }
+  | { sort: 'invoice' | 'payment'; invoice_id: unknown };
+
+/** Länken till källan, eller null. Fyra slutna sorter med var sin etikett. */
+function kallLank(companyId: string, kalla: Kalla): { href: string; etikett: string } | null {
+  if (kalla.sort !== 'handelse') {
+    if (typeof kalla.invoice_id !== 'string' || !kalla.invoice_id) return null;
+    return {
+      href: `/app/c/${encodeURIComponent(companyId)}/invoices/${encodeURIComponent(kalla.invoice_id)}`,
+      etikett: kalla.sort === 'invoice' ? 'Öppna fakturan (ny flik)' : 'Öppna fakturan som betalningen gäller (ny flik)',
+    };
+  }
+  const system = kalla.source_system;
+  const nyckel = kalla.source_ref;
+  if (typeof system !== 'string' || typeof nyckel !== 'string' || !Object.hasOwn(KALLNYCKEL, system)) return null;
+  const id = KALLNYCKEL[system]?.exec(nyckel)?.[1];
+  if (!id) return null;
+  switch (system) {
+    case 'gmail': return { href: gmailAdress(id), etikett: 'Öppna mailet i Gmail (ny flik)' };
+    case 'linear': return { href: `/vy/arende/${encodeURIComponent(id)}`, etikett: 'Öppna ärendet i ärendeplattformen (ny flik)' };
+    default: return null;
+  }
+}
+
+/**
+ * Källraden, samma form på tråden, åtagandevyns kolumn Källa och Idags
+ * löfteskort (FR-17, FR-31): namnet ur en sluten tabell, aldrig systemets
+ * nyckel; nyckeln i maskinstil som säker identifierare; «Öppna ↗» bara när
+ * nyckeln har källsystemets form; tillägget när en människa rättat en
+ * källhändelse. Ytorna lägger bara sin omgivning runt fragmentet.
+ */
+function kallrad(companyId: string, kalla: Kalla, rattad: boolean): Raw {
+  const namn = kalla.sort === 'handelse'
+    ? kanalKalla(typeof kalla.source_system === 'string' ? kalla.source_system : '')
+    : kalla.sort === 'invoice' ? 'Faktura' : 'Betalning';
+  const nyckel = kalla.sort === 'handelse' && typeof kalla.source_ref === 'string' && kalla.source_ref
+    ? kalla.source_ref : null;
+  const lank = kallLank(companyId, kalla);
+  return html`${namn}${nyckel ? html` · <span class="thread__ref">${nyckel}</span>` : ''}${lank ? html` · <a href="${lank.href}" target="_blank" rel="noopener" aria-label="${lank.etikett}">Öppna ↗</a>` : ''}${rattad ? ' · rättad av dig' : ''}`;
+}
 
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
 function silenceChip(days: number | null): Raw {
@@ -6994,6 +7069,13 @@ const PERSONFALT = [
 // ---------------------------------------------------------------------------
 viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, companyId, req) => {
   const t = await todayView(client, companyId);
+  // Kortets källrad bär samma tillägg som tråden och åtagandevyn, ur samma fält
+  // lästa i en samlad fråga över dagens löften.
+  const lofteFalt = await getEventFields(client, companyId, {
+    interaction_ids: [], commitment_ids: t.commitments.map((c) => c.id as string),
+  });
+  const rattade = new Set(Object.values(lofteFalt.commitments)
+    .filter((falt) => rattadAvDig(falt.source_system, falt.provenance)).map((falt) => falt.id));
   const back = `/app/c/${companyId}/idag`;
   const antal = t.relations.length + t.commitments.length;
 
@@ -7053,7 +7135,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                   ? entityLink(companyId, 'relation', c.organization_id as string, c.organization_name, { class: 'today__who' })
                   : entityLink(companyId, 'relation', null, (c.person_name as string) ?? '—', { class: 'today__who' })}
               </div>
-              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${c.source_system as string}</span></p>
+              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, rattade.has(c.id as string))}</span></p>
               <div class="quick">
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/done`, 'Klar', { primary: true, back })}
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
@@ -7755,24 +7837,27 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
               : html`<ol class="thread">${thread.map((e) => {
                   const falt = e.ref_id ? e.kind === 'interaction' ? eventFields.interactions[e.ref_id]
                     : e.kind === 'commitment' ? eventFields.commitments[e.ref_id] : undefined : undefined;
+                  const kalla: Kalla | null = e.kind === 'invoice' || e.kind === 'payment'
+                    ? { sort: e.kind, invoice_id: e.invoice_id }
+                    : e.source_system ? { sort: 'handelse', source_system: e.source_system, source_ref: e.source_ref } : null;
                   return html`<li class="thread__ev">
                   <time class="thread__when" datetime="${String(e.at)}">${dayOf(e.at)}</time>
                   <div class="thread__what">
                     <div class="thread__title">${threadChip(e)}${e.title}${
                       e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
                     }</div>
-                    ${/* Källan, utskriven. Vi länkar INTE till mailet: vi kan
-                         inte veta vilken adress just den här läsaren har hos
-                         Gmail, och en länk som kanske leder rätt är sämre än en
-                         nyckel som säkert går att söka på. Nyckeln sätts därför
-                         i maskinstil — den är en identifierare, inte prosa. */ ''}
+                    ${/* Källan, utskriven och öppningsbar (FR-17, UX K5): det
+                         ska gå att styrka var något sades med ett klick. Länken
+                         byggs ur nyckelns id med en mall på ett ställe, och bara
+                         när nyckeln har källsystemets form. Nyckeln står kvar i
+                         maskinstil som säker identifierare — leder mallen fel
+                         för ett annat Gmail-konto går nyckeln ändå att söka på.
+                         Fakturan och betalningen leder till fakturans sida. */ ''}
                     ${
-                      e.who || e.source_system
-                        ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${
-                            e.who && e.source_system ? ' · ' : ''
-                          }${e.source_system ? html`${kanalKalla(e.source_system)}` : ''}${
-                            e.source_ref ? html` · <span class="thread__ref">${e.source_ref}</span>` : ''
-                          }${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</div>`
+                      e.who || kalla
+                        ? html`<div class="thread__src">${e.who ? html`${e.who}` : ''}${e.who && kalla ? ' · ' : ''}${
+                            kalla ? kallrad(companyId, kalla, falt !== undefined && rattadAvDig(falt.source_system, falt.provenance)) : ''
+                          }</div>`
                         : ''
                     }
                     ${falt && (e.kind === 'interaction' || e.kind === 'commitment')
@@ -7850,7 +7935,7 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
               }${
                 c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="muted">${c.source_system as string}${c.source_ref ? html` · ${c.source_ref as string}` : ''}${falt && rattadAvDig(falt.source_system, falt.provenance) ? ' · rättad av dig' : ''}</td>
+              <td class="muted">${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, falt !== undefined && rattadAvDig(falt.source_system, falt.provenance))}</td>
               <td><div class="quick">${
                 c.status === 'open'
                   ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}
@@ -11047,7 +11132,8 @@ function minUnderlag(c: Record<string, unknown>): { href: string; label: string 
   const ut: { href: string; label: string }[] = [];
   const ref = typeof c.source_ref === 'string' ? c.source_ref : '';
   const gm = /^gmail:([0-9a-f]+)/i.exec(ref);
-  if (gm) ut.push({ href: `https://mail.google.com/mail/u/0/#all/${gm[1]}`, label: 'Mejltråden' });
+  // Gruppen är obligatorisk i uttrycket, så en träff bär alltid id:t.
+  if (gm) ut.push({ href: gmailAdress(gm[1]!), label: 'Mejltråden' });
   const body = typeof c.body === 'string' ? c.body : '';
   const sett = new Set<string>();
   for (const m of body.matchAll(/https:\/\/[^\s)"'<>\]]+/g)) {

@@ -2286,3 +2286,248 @@ describe('1.5 kundkortets fakturauppgifter', () => {
     });
   });
 });
+
+// Story 4.2 (FR-17, FR-31): källan på varje rad är en länk. Tråden, åtagandevyn
+// och Idag ska ge samma källrad för samma händelse: namnet ur en sluten tabell,
+// nyckeln i maskinstil och «Öppna ↗» bara när nyckeln har källsystemets form.
+// Provet letar inte efter fel former; varje ytas alla källrader ska vara exakt
+// ytans slutna facitlista, och jämförelsen fäller planterade fel (KL10).
+describe('4.2 källan på varje rad (story 4.2)', () => {
+  // Eget bolag: Idag visar högst fem löften, och filens bolag har redan fler.
+  let kl42User: TestUser;
+  let kl42Bolag: string;
+  let kl42Kund: string;
+  let kl42Org: string;
+  let kl42Faktura: string;
+  let kl42Agent: ReturnType<typeof supertest.agent>;
+  const kl42Auth = () => ({ Authorization: `Bearer ${kl42User.token}` });
+  const kl42Relation = () => `/app/c/${kl42Bolag}/relations/${kl42Org}`;
+  async function kl42Act(name: string, input: Record<string, unknown>, status = 200) {
+    const res = await api.post(`/api/companies/${kl42Bolag}/actions/${name}`).set(kl42Auth()).send(input);
+    expect(res.status, JSON.stringify(res.body)).toBe(status);
+    return res.body;
+  }
+  async function kl42Godkann(approvalId: string) {
+    const res = await api.post(`/api/companies/${kl42Bolag}/approvals/${approvalId}/approve`).set(kl42Auth()).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }
+  async function kl42Sida(path: string): Promise<string> {
+    const res = await kl42Agent.get(path);
+    expect(res.status, res.text).toBe(200);
+    return res.text;
+  }
+  // Datumet räknas i UTC, som Idag själv räknar dagens datum.
+  const kl42Dag = (dagar: number) => new Date(Date.now() + dagar * 86_400_000).toISOString().slice(0, 10);
+  type Kl42Yta = 'traden' | 'atagandevyn' | 'idag';
+  /** Källradernas innehåll på en yta, läst i ytans egen omgivning. */
+  function kl42Kallrader(sida: string, yta: Kl42Yta): string[] {
+    // Husets tabellrendering lägger till roll och etikett i cellens öppningstagg.
+    const omgivning = yta === 'traden' ? /<div class="thread__src">([\s\S]*?)<\/div>/g
+      : yta === 'atagandevyn' ? /<td class="muted"[^>]*>([\s\S]*?)<\/td>/g
+        : / · sades 2026-09-02 via ([\s\S]*?)<\/span><\/p>/g;
+    return [...sida.matchAll(omgivning)].map((m) => m[1]!);
+  }
+  const kl42Antal = (sida: string, yta: Kl42Yta, facit: string) =>
+    kl42Kallrader(sida, yta).filter((rad) => rad === facit).length;
+  /** Sant bara när listorna har samma innehåll räknat med antal; ordningen spelar ingen roll. */
+  function kl42BaraFacit(fangade: readonly string[], facit: readonly string[]): boolean {
+    const a = [...fangade].sort();
+    const b = [...facit].sort();
+    return a.length === b.length && a.every((rad, i) => rad === b[i]);
+  }
+  const KL42 = {
+    C1: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b7</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b7" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
+    C2: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b8#commit-1</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b8" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
+    C3: 'Ärende · <span class="thread__ref">linear:LOC-4201</span> · <a href="/vy/arende/LOC-4201" target="_blank" rel="noopener" aria-label="Öppna ärendet i ärendeplattformen (ny flik)">Öppna ↗</a> · rättad av dig',
+    C4: 'Kalender · <span class="thread__ref">calendar:Y2FsZW5kZXJLTDQ</span>',
+    C5: 'För hand',
+    I1: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b9</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b9" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
+    B1: 'Gmail · <span class="thread__ref">gmail:f0a1&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</span>',
+    B2: 'Gmail · <span class="thread__ref">gmail:javascript:alert(1)</span>',
+    B3: 'Gmail · <span class="thread__ref">gmail:f0a1 b2c3</span>',
+    B4: 'Ärende · <span class="thread__ref">linear:Projektet</span>',
+    B5: 'Ärende · <span class="thread__ref">linear:loc-4203</span>',
+    B6: 'Gmail · <span class="thread__ref">linear:LOC-4202</span>',
+  } as const;
+  const kl42FakturaFacit = () => `Faktura · <a href="/app/c/${kl42Bolag}/invoices/${kl42Faktura}" target="_blank" rel="noopener" aria-label="Öppna fakturan (ny flik)">Öppna ↗</a>`;
+  const kl42BetalningFacit = () => `Betalning · <a href="/app/c/${kl42Bolag}/invoices/${kl42Faktura}" target="_blank" rel="noopener" aria-label="Öppna fakturan som betalningen gäller (ny flik)">Öppna ↗</a>`;
+  const KL42_LOFTEN = [KL42.C1, KL42.C2, KL42.C3, KL42.C4, KL42.C5];
+  const KL42_BRUTNA = [KL42.B1, KL42.B2, KL42.B3, KL42.B4, KL42.B5, KL42.B6];
+  // Facitlistorna är slutna: blockets bolag har exakt de här händelserna och inga andra.
+  const kl42TradensFacit = () => [KL42.I1, ...KL42_LOFTEN, ...KL42_BRUTNA, kl42FakturaFacit(), kl42BetalningFacit()];
+
+  beforeAll(async () => {
+    kl42User = await registerUser('kallrad42');
+    kl42Bolag = await createCompany(kl42User.token, 'Källradsprovet AB');
+    await createFiscalYear(kl42Bolag, kl42Auth(), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    const kund = await api.post(`/api/companies/${kl42Bolag}/customers`).set(kl42Auth()).send({ name: 'Källradskunden AB' });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    kl42Kund = kund.body.customer.id;
+
+    // C1–C5 förfaller inom Idags horisont, B1–B6 långt efter den.
+    const snart = kl42Dag(2);
+    const senare = kl42Dag(60);
+    const lofte = (sourceSystem: string, sourceRef: string, body: string, dueDate: string) => ({
+      kind: 'commitment', organization: { name: 'Källradskunden AB' }, commitment_direction: 'we_owe',
+      body, due_date: dueDate, occurred_at: '2026-09-02T09:00:00Z', source_system: sourceSystem, source_ref: sourceRef,
+    });
+    const intaget = await kl42Act('ingest_crm_events', {
+      events: [
+        lofte('gmail', 'gmail:f0a1b2c3d4e5a6b7', 'Källrad Gmail KL.', snart),
+        lofte('gmail', 'gmail:f0a1b2c3d4e5a6b8#commit-1', 'Källrad Gmail med suffix KL.', snart),
+        lofte('linear', 'linear:LOC-4201', 'Källrad ärende KL.', snart),
+        lofte('calendar', 'calendar:Y2FsZW5kZXJLTDQ', 'Källrad kalender KL.', snart),
+        lofte('gmail', 'gmail:f0a1"><img src=x onerror=alert(1)>', 'Källrad B1 KL.', senare),
+        lofte('gmail', 'gmail:javascript:alert(1)', 'Källrad B2 KL.', senare),
+        lofte('gmail', 'gmail:f0a1 b2c3', 'Källrad B3 KL.', senare),
+        lofte('linear', 'linear:Projektet', 'Källrad B4 KL.', senare),
+        lofte('linear', 'linear:loc-4203', 'Källrad B5 KL.', senare),
+        lofte('gmail', 'linear:LOC-4202', 'Källrad B6 KL.', senare),
+        {
+          kind: 'interaction', organization: { name: 'Källradskunden AB' }, occurred_at: '2026-09-01T09:00:00Z',
+          channel: 'email', direction: 'inbound', summary: 'Källrad mail KL.', source_system: 'gmail', source_ref: 'gmail:f0a1b2c3d4e5a6b9',
+        },
+      ],
+    });
+    expect(intaget.result.skipped).toEqual([]);
+    const relationer = (await kl42Act('list_crm_organizations', {})).result as Array<{ id: string; name: string }>;
+    const relation = relationer.find((o) => o.name === 'Källradskunden AB');
+    expect(relation, 'relationen Källradskunden AB').toBeDefined();
+    kl42Org = relation!.id;
+
+    // C3 rättas av en människa, så att tillägget gäller för det löftet.
+    const oppna = (await kl42Act('list_crm_commitments', { status: 'open' })).result as Array<{ id: string; body: string }>;
+    const c3 = oppna.find((c) => c.body === 'Källrad ärende KL.');
+    expect(c3, 'löftet C3').toBeDefined();
+    await kl42Act('update_crm_commitment', { commitment_id: c3!.id, body: 'Källrad ärende rättad KL.' });
+    // C5 registreras för hand och har ingen extern källa.
+    await kl42Act('record_crm_commitment', {
+      organization_id: kl42Org, direction: 'we_owe', body: 'Källrad för hand KL.',
+      occurred_at: '2026-09-02T09:00:00Z', due_date: snart, source_system: 'manual',
+    });
+
+    // Fakturan, bokförd och betald: pengaraderna i tråden.
+    const faktura = await kl42Act('create_invoice', {
+      customer_id: kl42Kund, invoice_date: '2026-06-30', due_date: '2026-07-30',
+      lines: [{ description: 'Konsulttid', quantity: 10, unit: 'h', unit_price_ore: 110_000, vat_rate: 25 }],
+    });
+    kl42Faktura = faktura.result.id;
+    const bokning = await kl42Act('book_invoice', { invoice_id: kl42Faktura }, 202);
+    await kl42Godkann(bokning.approval.id);
+    const betalning = await kl42Act('register_invoice_payment', {
+      invoice_id: kl42Faktura, payment_date: '2026-07-12', amount_ore: 1_375_000,
+    }, 202);
+    await kl42Godkann(betalning.approval.id);
+
+    kl42Agent = supertest.agent(app);
+    await kl42Agent.post('/app/login').type('form').send({ email: kl42User.email, password: PASSWORD });
+  });
+
+  describe('tråden (story 4.2)', () => {
+    it('KL1 get_crm_thread bär invoice_id: fakturans id på fakturan och betalningen, annars null', async () => {
+      const trad = (await kl42Act('get_crm_thread', { organization_id: kl42Org })).result as Array<Record<string, unknown>>;
+      expect(Array.isArray(trad)).toBe(true);
+      expect(trad).toHaveLength(14);
+      const fakturor = trad.filter((e) => e.kind === 'invoice');
+      const betalningar = trad.filter((e) => e.kind === 'payment');
+      expect(fakturor).toHaveLength(1);
+      expect(betalningar).toHaveLength(1);
+      expect(fakturor[0]!.invoice_id).toBe(kl42Faktura);
+      expect(fakturor[0]!.ref_id).toBe(kl42Faktura);
+      // Betalningens ref_id är fortfarande verifikatets id; länken går genom invoice_id.
+      expect(betalningar[0]!.invoice_id).toBe(kl42Faktura);
+      expect(typeof betalningar[0]!.ref_id).toBe('string');
+      expect(betalningar[0]!.ref_id).not.toBe(kl42Faktura);
+      for (const e of trad.filter((x) => x.kind !== 'invoice' && x.kind !== 'payment')) {
+        expect(e.invoice_id, `${String(e.kind)}: ${String(e.title)}`).toBeNull();
+      }
+    });
+    it('KL2 mailraderna länkar till Gmail med mallen exakt, utan suffixet i adressen och med nyckeln hel', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      for (const facit of [KL42.I1, KL42.C1, KL42.C2]) expect(kl42Antal(sida, 'traden', facit), facit).toBe(1);
+    });
+    it('KL3 ärendet heter Ärende, länkar till /vy/arende/ och bär tillägget sist', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      expect(kl42Antal(sida, 'traden', KL42.C3), KL42.C3).toBe(1);
+    });
+    it('KL4 kalendern och handvägen får namn men ingen länk', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      for (const facit of [KL42.C4, KL42.C5]) expect(kl42Antal(sida, 'traden', facit), facit).toBe(1);
+    });
+    it('KL5 fakturan och betalningen länkar till fakturans sida', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      for (const facit of [kl42FakturaFacit(), kl42BetalningFacit()]) expect(kl42Antal(sida, 'traden', facit), facit).toBe(1);
+    });
+    it('KL6 en nyckel utan källsystemets form står som text, utan länk och escapad', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      for (const facit of KL42_BRUTNA) expect(kl42Antal(sida, 'traden', facit), facit).toBe(1);
+      expect(sida).not.toContain('<img src=x');
+    });
+    it('KL7 trådens alla källrader är exakt trådens facitlista', async () => {
+      const sida = await kl42Sida(kl42Relation());
+      const fangade = kl42Kallrader(sida, 'traden');
+      expect(kl42BaraFacit(fangade, kl42TradensFacit()), JSON.stringify(fangade, null, 1)).toBe(true);
+    });
+  });
+
+  describe('åtagandevyn (story 4.2)', () => {
+    const kl42Atagandevyn = () => kl42Sida(`/app/c/${kl42Bolag}/commitments?status=open`);
+    it('KL8 kolumnen Källa bär samma källrad som tråden, med länk och tillägg', async () => {
+      const sida = await kl42Atagandevyn();
+      for (const facit of KL42_LOFTEN) expect(kl42Antal(sida, 'atagandevyn', facit), facit).toBe(1);
+    });
+    it('KL9 en nyckel utan källsystemets form står som text i kolumnen, utan länk och escapad', async () => {
+      const sida = await kl42Atagandevyn();
+      for (const facit of KL42_BRUTNA) expect(kl42Antal(sida, 'atagandevyn', facit), facit).toBe(1);
+      expect(sida).not.toContain('<img src=x');
+    });
+    it('KL10 jämförelsen fäller ett rått systemnamn och facit fäller en annan mall', async () => {
+      // (a) Åtagandevyns alla källrader är facitlistan, och basens form fälls.
+      const sida = await kl42Atagandevyn();
+      const fangade = kl42Kallrader(sida, 'atagandevyn');
+      const facit = [...KL42_LOFTEN, ...KL42_BRUTNA];
+      expect(facit).toHaveLength(11);
+      expect(kl42BaraFacit(fangade, facit), JSON.stringify(fangade, null, 1)).toBe(true);
+      const raC1 = facit.map((rad) => (rad === KL42.C1 ? 'gmail · gmail:f0a1b2c3d4e5a6b7' : rad));
+      const raC5 = facit.map((rad) => (rad === KL42.C5 ? 'manual' : rad));
+      expect(raC1).not.toEqual(facit);
+      expect(raC5).not.toEqual(facit);
+      expect(kl42BaraFacit(raC1, facit)).toBe(false);
+      expect(kl42BaraFacit(raC5, facit)).toBe(false);
+      // (b) En länk med en annan Gmail-mall är inte C1:s facit.
+      for (const annan of ['#inbox/', '#search/']) {
+        const cell = `<td class="muted" role="cell" data-etikett="Källa">${KL42.C1.replace('#all/', annan)}</td>`;
+        expect(kl42Kallrader(cell, 'atagandevyn')).toHaveLength(1);
+        expect(kl42Antal(cell, 'atagandevyn', KL42.C1), annan).toBe(0);
+      }
+    });
+  });
+
+  describe('Idag och de tre ytorna (story 4.2)', () => {
+    it('KL11 löfteskortet säger via med samma källrad, och kortens källrader är Idags facitlista', async () => {
+      const sida = await kl42Sida(`/app/c/${kl42Bolag}/idag`);
+      for (const facit of KL42_LOFTEN) expect(kl42Antal(sida, 'idag', facit), facit).toBe(1);
+      const fangade = kl42Kallrader(sida, 'idag');
+      expect(kl42BaraFacit(fangade, KL42_LOFTEN), JSON.stringify(fangade, null, 1)).toBe(true);
+    });
+    it('KL12 samma händelse ger samma källrad i tråden, i åtagandevyn och på Idag', async () => {
+      const ytor: Array<[Kl42Yta, string]> = [
+        ['traden', await kl42Sida(kl42Relation())],
+        ['atagandevyn', await kl42Sida(`/app/c/${kl42Bolag}/commitments?status=open`)],
+        ['idag', await kl42Sida(`/app/c/${kl42Bolag}/idag`)],
+      ];
+      for (const facit of KL42_LOFTEN) {
+        for (const [yta, sida] of ytor) expect(kl42Antal(sida, yta, facit), `${yta}: ${facit}`).toBe(1);
+      }
+    });
+    it('KL13 dokumentet beskriver invoice_id och källraden i ett eget avsnitt', async () => {
+      const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+      const rubrik = '## Källan på varje rad (crm 4.2)';
+      expect(doc.split(rubrik)).toHaveLength(2);
+      expect(doc.indexOf(rubrik)).toBeGreaterThan(doc.indexOf('## Löftets avslut och borttagen deadline i intaget (crm 3.3)'));
+      const avsnitt = doc.split(rubrik)[1]!.split(/\n## /)[0]!;
+      for (const term of ['get_crm_thread', 'invoice_id', 'ref_id', 'payment', 'invoice']) expect(avsnitt).toContain('`' + term + '`');
+      expect(avsnitt).not.toMatch(/^### /m);
+    });
+  });
+});
