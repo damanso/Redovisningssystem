@@ -13,12 +13,23 @@
 // Organisationen slås upp med intagets regler, som bor på ett ställe:
 // upsertOrganization (projektkodsspärren, aliaset, bolagsformsregeln och
 // kundkopplingen) och queueNameVariantProposal (ett förslag per namnpar).
+// GDPR-gravstenen prövas med samma assertNotErased som händelserna: en affär
+// som raderats med kunden kommer inte tillbaka med nästa natts ögonblicksbild.
 import type { PoolClient } from 'pg';
 import { BadRequestError } from '../lib/errors.js';
-import { dealSnapshotStatus, idleDays, nameVariantOrganization, type DealSnapshotStatus } from '../lib/crmRules.js';
+import {
+  aheadOfClock, dealSnapshotStatus, idleDays, nameVariantOrganization, type DealSnapshotStatus,
+} from '../lib/crmRules.js';
 import type { Actor } from '../http/middleware/authenticate.js';
-import { upsertOrganization, writeCrmAudit } from './crmRelations.js';
+import { assertNotErased, upsertOrganization, writeCrmAudit, type SourceSystem } from './crmRelations.js';
 import { queueNameVariantProposal } from './crmIngest.js';
+
+/**
+ * Källsystemet för affärernas ursprung och gravstenar. GDPR-raderingen skriver
+ * gravstenen med samma kod (`purgeCrmRelationData`), och G3 i provet fäller ett
+ * par som glider isär.
+ */
+const DEAL_SOURCE_SYSTEM: SourceSystem = 'linear';
 
 /** Skedena i den ordning en affär går; registret bygger sitt z.enum av listan. */
 export const DEAL_STAGES = Object.freeze(['idea', 'dialogue', 'proposal', 'negotiation'] as const);
@@ -82,10 +93,20 @@ export interface OpenDeals {
  * stoppar inte resten: den rullas tillbaka till sin sparpunkt och redovisas i
  * `skipped`. Ett nattjobb som faller på en rad och tappar resten är värre än
  * ett som levererar resten och säger vad som fattades.
+ *
+ * En tidpunkt längre fram än klockmarginalen avvisar hela ögonblicksbilden
+ * före varje skrivning: sparad hade den räknats som aktuell långt efter att
+ * nattjobbet slutat gå.
  */
 export async function syncDealSnapshot(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: DealSnapshotInput,
+  now: Date = new Date(),
 ): Promise<SyncDealsResult> {
+  const nowText = now.toISOString();
+  if (aheadOfClock(input.observed_at, nowText)) {
+    throw new BadRequestError('observed_at_in_future',
+      'Ögonblicksbildens tidpunkt ligger i framtiden — kontrollera avsändarens klocka. Inget sparades.');
+  }
   await client.query(
     `INSERT INTO crm.deal_snapshot_observations (company_id, observed_at, received) VALUES ($1, $2, $3)
      ON CONFLICT (company_id) DO UPDATE SET observed_at = EXCLUDED.observed_at, received = EXCLUDED.received`,
@@ -104,26 +125,41 @@ export async function syncDealSnapshot(
   const proposals = new Set<string>();
   const firstIndex = new Map<string, number>();
 
-  for (const [index, deal] of input.deals.entries()) {
+  for (const [index, { source_ref: rawSourceRef, ...deal }] of input.deals.entries()) {
+    // En väg in för nyckeln: den trimmas här och bara här, och råvärdet förs
+    // inte vidare. Dubblettkontrollen, gravstenen och cachens primärnyckel ser
+    // därför samma nyckel, så « LOC-1» och «LOC-1» är en affär, inte två.
+    // min(1) i schemat släpper igenom blanktecken; en tom nyckel fälls här.
+    const sourceRef = rawSourceRef.trim();
+    if (!sourceRef) {
+      result.skipped.push({ index, reason: 'affären saknar källnyckel' });
+      continue;
+    }
     // Primärnyckeln hade fällt dubbletten med ett databasfel. Den första vinner,
     // och den senare redovisas utan att någon sparpunkt behövs.
-    const first = firstIndex.get(deal.source_ref);
+    const first = firstIndex.get(sourceRef);
     if (first !== undefined) {
       result.skipped.push({ index, reason: `dubblett av rad ${first} i ögonblicksbilden` });
       continue;
     }
-    firstIndex.set(deal.source_ref, index);
+    firstIndex.set(sourceRef, index);
 
     await client.query('SAVEPOINT crm_deal');
     try {
+      // Först gravstenen, före varje uppslag: en affär som raderats med kunden
+      // får varken komma tillbaka eller skapa en relation med kundens namn.
+      await assertNotErased(client, companyId, DEAL_SOURCE_SYSTEM, sourceRef);
       // min(1) i schemat släpper igenom blanktecken; en tom titel fälls här.
       const title = deal.title.trim();
       if (!title) throw new BadRequestError('invalid_deal', 'affären saknar titel');
+      if (aheadOfClock(deal.last_activity_at, nowText)) {
+        throw new BadRequestError('invalid_deal', 'affärens senaste aktivitet ligger i framtiden');
+      }
       const nextStep = deal.next_step?.trim() || null;
       let org: Awaited<ReturnType<typeof upsertOrganization>>;
       try {
         org = await upsertOrganization(client, companyId, userId, { name: deal.organization.name },
-          { source: 'sync', source_system: 'linear', source_ref: deal.source_ref });
+          { source: 'sync', source_system: DEAL_SOURCE_SYSTEM, source_ref: sourceRef });
       } catch (err) {
         // Bolagsformsvarianten, ordagrant som intaget: ingen relation före
         // Davids beslut, men ett förslag i Att göra.
@@ -142,7 +178,7 @@ export async function syncDealSnapshot(
         `INSERT INTO crm.deal_snapshots
            (company_id, source_ref, organization_id, title, stage, value_ore, next_step, last_activity_at, observed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [companyId, deal.source_ref, org.id, title, deal.stage ?? null, deal.value_ore ?? null, nextStep,
+        [companyId, sourceRef, org.id, title, deal.stage ?? null, deal.value_ore ?? null, nextStep,
           deal.last_activity_at, input.observed_at],
       );
       await client.query('RELEASE SAVEPOINT crm_deal');

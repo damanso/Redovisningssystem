@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 7.1 (crm), omtag efter code-review (fem fynd, lagade
+  som felklasser):** (1) GDPR-raderingen skriver gravstenar
+  `('linear', source_ref)` för kundens cacherader i samma sats som de övriga
+  gravstenarna, före varje radering (`purgeCrmRelationData`), och
+  `syncDealSnapshot` prövar `assertNotErased` först i varje rads sparpunkt,
+  före organisationen: samma `source_ref` hoppas över med husets skäl och skapar
+  ingen relation, en ny släpps igenom (FR-43, kontraktets regel 4). (2) Regeln
+  `aheadOfClock` med `DEAL_CLOCK_SKEW_MINUTES` = 5 i `server/src/lib/crmRules.ts`
+  gäller båda avsändartiderna: ett `observed_at` längre fram ger 400
+  `observed_at_in_future` före varje skrivning, en affär med `last_activity_at`
+  längre fram hoppas över, och grinden `dealSnapshotStatus` ger `unknown` för
+  samma tid. (3) O1 räknar stilleståndets facit ur klockan före och efter
+  anropet, så fallet håller över midnatt UTC. (4) `source_ref` trimmas på ett
+  ställe i tjänsten och råvärdet förs inte vidare; en tom nyckel hoppas över.
+  (5) Avsnittet «Affärerna» i API-kontraktet skriver ärendeplattformen, inte
+  Linear, och båda dokumentavsnitten beskriver gravstenen, klockmarginalen och
+  nyckeln. Nya fall i `server/test/crm-deals.test.ts`: S9, S10, P7, O7 och G3
+  (44 fall), och D1/D2 kräver de nya termerna och att avsnitten inte nämner
+  Linear. **Inte kört:** `npm test` och `npm run typecheck` — sandlådan svarade
+  ”This command requires approval”; kedjans körning är belägget.
 - **2026-11-22 — Story 7.1 (crm), affärscachen och kontraktet för affärer
   (FR-25, mottagarsidan):** Migrationen `server/migrations/0096_crm_deal_snapshots.sql`
   med två CACHE-tabeller: `crm.deal_snapshots` (en rad per öppen affär,

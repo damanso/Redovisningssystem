@@ -19,8 +19,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { migrate } from '../src/db/migrate.js';
 import { pool } from '../src/db/pool.js';
 import { harStatusEtikett, statusChip } from '../src/http/view/html.js';
-import { dealSnapshotStatus, idleDays } from '../src/lib/crmRules.js';
-import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { aheadOfClock, dealSnapshotStatus, idleDays } from '../src/lib/crmRules.js';
+import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 interface Bolag { user: TestUser; id: string; agent: string }
 type Lasare = <T extends QueryResultRow>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
@@ -84,6 +84,18 @@ async function asUser<T>(userId: string, bolagsId: string, fn: (las: Lasare) => 
 function tid(timmarSedan: number): string {
   const ms = Math.floor((Date.now() - timmarSedan * 3_600_000) / 1000) * 1000;
   return new Date(ms).toISOString().replace('.000Z', 'Z');
+}
+
+/**
+ * Stilleståndet som facit, räknat här i provet: hela dygn från aktivitetens
+ * UTC-datum till serverns. Servern läser sin klocka någon gång mellan `fore`
+ * och `efter`, så facit räknas ur samma klocka. Byter UTC-datumet under
+ * anropet är båda värdena rätt; annars är facit ett enda värde.
+ */
+function stillestand(aktivitet: string, fore: number, efter: number): number[] {
+  const dygn = (ms: number) => Math.round((Date.parse(`${new Date(ms).toISOString().slice(0, 10)}T00:00:00Z`)
+    - Date.parse(`${aktivitet.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
+  return [...new Set([dygn(fore), dygn(efter)])];
 }
 
 /** En affär med två dygn gammal aktivitet; det som inte anges utelämnas ur indatat. */
@@ -155,12 +167,13 @@ const JAMFORDA_FALT = ['title', 'organization_name', 'stage', 'value_ore', 'next
  */
 function ersattningsbrister(cache: readonly CacheRad[], skickat: readonly Affar[]): string[] {
   const brister: string[] = [];
-  const skickade = new Set(skickat.map((d) => d.source_ref));
+  // Nyckeln jämförs trimmad, som mottagningen sparar den.
+  const skickade = new Set(skickat.map((d) => d.source_ref.trim()));
   for (const rad of cache) {
     if (!skickade.has(rad.source_ref)) brister.push(`${rad.source_ref} ligger i cachen men skickades inte`);
   }
   for (const d of skickat) {
-    const rad = cache.find((r) => r.source_ref === d.source_ref);
+    const rad = cache.find((r) => r.source_ref === d.source_ref.trim());
     if (!rad) {
       brister.push(`${d.source_ref} skickades men saknas i cachen`);
       continue;
@@ -364,12 +377,16 @@ describe('ögonblicksbilden ersätter cachen (7.1 S)', () => {
   let revision: Bolag;
   let tyst: Bolag;
   let granne: Bolag;
+  let framtid: Bolag;
+  let kant: Bolag;
   beforeAll(async () => {
     vart = await bolag('affar-s');
     regler = await bolag('affar-s-regler');
     revision = await bolag('affar-s-audit');
     tyst = await bolag('affar-s-tyst');
     granne = await bolag('affar-s-granne');
+    framtid = await bolag('affar-s-framtid');
+    kant = await bolag('affar-s-kant');
   });
   // Mängd A och mängd B: A2 ändras, A4 är ny, A1 och A3 försvinner.
   const A: Affar[] = [
@@ -528,6 +545,58 @@ describe('ögonblicksbilden ersätter cachen (7.1 S)', () => {
     expect(await observation(vart.id)).toEqual(fore.obs);
   });
 
+  it('S9 en tidpunkt fram i tiden: ögonblicksbilden avvisas hel, en affär hoppas över, och klockmarginalen släpps igenom', async () => {
+    await synk(framtid, tid(2), [affar('s9-1', 'Framtid Kontroll AB')]);
+    const fore = { cache: await cacheRader(framtid.id), obs: await observation(framtid.id) };
+    expect(fore.cache.map((r) => r.source_ref)).toEqual(['s9-1']);
+    // En ögonblicksbild från framtiden hade räknats som aktuell långt efter att
+    // nattjobbet slutat gå. Den avvisas före varje skrivning.
+    for (const [namn, observedAt] of [['en timme fram', tid(-1)], ['en vecka fram', tid(-168)]] as const) {
+      const r = await act(framtid.agent, framtid.id, 'sync_crm_deals', { observed_at: observedAt, deals: [affar('s9-2', 'Framtid AB')] });
+      expect(r.status, `${namn}: ${JSON.stringify(r.body)}`).toBe(400);
+      expect(r.body.error, namn).toBe('observed_at_in_future');
+    }
+    expect(await cacheRader(framtid.id)).toEqual(fore.cache);
+    expect(await observation(framtid.id)).toEqual(fore.obs);
+    // En affär vars senaste aktivitet ligger fram i tiden hade dolt sitt stillestånd.
+    const r = await synk(framtid, tid(1), [
+      affar('s9-3', 'Framtid AB', { last_activity_at: tid(-1) }),
+      affar('s9-4', 'Framtid AB', { last_activity_at: tid(-24 * 365) }),
+      affar('s9-5', 'Framtid AB'),
+    ]);
+    expect(r).toMatchObject({ received: 3, cached: 1 });
+    expect(r.skipped).toEqual([0, 1].map((index) => ({ index, reason: 'affärens senaste aktivitet ligger i framtiden' })));
+    expect((await cacheRader(framtid.id)).map((x) => x.source_ref)).toEqual(['s9-5']);
+    // En minut fram ryms i klockmarginalen, för båda tidpunkterna.
+    const nara = tid(-1 / 60);
+    expect(await synk(framtid, nara, [affar('s9-6', 'Framtid AB', { last_activity_at: nara })]))
+      .toMatchObject({ observed_at: nara, cached: 1, skipped: [] });
+    expect(await observation(framtid.id)).toEqual({ observed_at: nara, received: 1 });
+  });
+
+  it('S10 nyckeln och texten trimmas: en tom nyckel hoppas över och en kantad nyckel är samma nyckel', async () => {
+    const r = await synk(kant, tid(1), [
+      affar(' s10-1 ', '  Kantad Relation AB  ', { title: '  Kantad titel  ', next_step: '  Ring tillbaka  ' }),
+      affar('s10-1', 'Kantad Relation AB', { title: 'Samma nyckel utan kant' }),
+      affar('   ', 'Kantad Relation AB', { title: 'Utan nyckel' }),
+      affar('\ts10-2\n', 'Kantad Relation AB', { title: 'Andra affären', next_step: '   ' }),
+    ]);
+    expect(r).toMatchObject({ received: 4, cached: 2, organizations_created: 1, unlinked_organizations: ['Kantad Relation AB'] });
+    expect(r.skipped).toEqual([
+      { index: 1, reason: 'dubblett av rad 0 i ögonblicksbilden' },
+      { index: 2, reason: 'affären saknar källnyckel' },
+    ]);
+    expect((await cacheRader(kant.id)).map(({ source_ref, organization_name, title, next_step }) =>
+      ({ source_ref, organization_name, title, next_step }))).toEqual([
+      { source_ref: 's10-1', organization_name: 'Kantad Relation AB', title: 'Kantad titel', next_step: 'Ring tillbaka' },
+      { source_ref: 's10-2', organization_name: 'Kantad Relation AB', title: 'Andra affären', next_step: null },
+    ]);
+    // Nästa ögonblicksbild med nyckeln utan kant ersätter samma rad, ingen andra.
+    expect(await synk(kant, tid(0), [affar('s10-1', 'Kantad Relation AB', { title: 'Ny titel' })]))
+      .toMatchObject({ cached: 1, skipped: [] });
+    expect((await cacheRader(kant.id)).map((x) => [x.source_ref, x.title])).toEqual([['s10-1', 'Ny titel']]);
+  });
+
   it('O0 utan ögonblicksbild är läget okänt, och en okänd nyckel ger 400', async () => {
     const r = await act(tyst.user.token, tyst.id, 'crm_open_deals', {});
     expect(r.status, JSON.stringify(r.body)).toBe(200);
@@ -649,6 +718,16 @@ describe('grinden och stilleståndet (7.1 P)', () => {
     expect(idleDays('2026-11-21T23:59:59Z', '2026-11-22T00:00:01Z')).toBe(1);
     expect(idleDays('inte ett datum', NU)).toBe(0);
   });
+  it('P7 en tidpunkt längre fram än klockmarginalen är okänd, aldrig aktuell och aldrig tom', () => {
+    // Fem minuter är marginalen för två klockor som inte går exakt lika.
+    expect(aheadOfClock('2026-11-22T12:05:00Z', NU)).toBe(false);
+    expect(aheadOfClock('2026-11-22T12:05:01Z', NU)).toBe(true);
+    expect(aheadOfClock('inte en tidpunkt', NU)).toBe(false);
+    expect(dealSnapshotStatus('2026-11-22T12:05:00Z', 3, NU)).toBe('ok');
+    expect(dealSnapshotStatus('2026-11-22T12:05:01Z', 3, NU)).toBe('unknown');
+    expect(dealSnapshotStatus('2026-11-29T12:00:00Z', 3, NU)).toBe('unknown');
+    expect(dealSnapshotStatus('2026-11-29T12:00:00Z', 0, NU)).toBe('unknown');
+  });
 });
 
 describe('crm_open_deals (7.1 O)', () => {
@@ -674,21 +753,31 @@ describe('crm_open_deals (7.1 O)', () => {
       affar('o1-b', 'Läsning Två AB', { last_activity_at: treDygn }),
       affar('o1-a', 'Läsning Ett AB', { stage: 'proposal', value_ore: 1_250_000, next_step: 'Boka mötet', last_activity_at: tioDygn }),
     ]);
-    expect(await las(o)).toStrictEqual({
+    const ettId = await relationsId('Läsning Ett AB');
+    const tvaId = await relationsId('Läsning Två AB');
+    const fore = Date.now();
+    const svar = await las(o);
+    const efter = Date.now();
+    expect(svar).toStrictEqual({
       status: 'ok', observed_at: obs, received: 2,
       deals: [
         {
-          source_ref: 'o1-a', title: 'Affär o1-a', organization_id: await relationsId('Läsning Ett AB'),
+          source_ref: 'o1-a', title: 'Affär o1-a', organization_id: ettId,
           organization_name: 'Läsning Ett AB', stage: 'proposal', value_ore: 1_250_000, next_step: 'Boka mötet',
-          last_activity_at: tioDygn, idle_days: 10,
+          last_activity_at: tioDygn, idle_days: expect.any(Number),
         },
         {
-          source_ref: 'o1-b', title: 'Affär o1-b', organization_id: await relationsId('Läsning Två AB'),
+          source_ref: 'o1-b', title: 'Affär o1-b', organization_id: tvaId,
           organization_name: 'Läsning Två AB', stage: null, value_ore: null, next_step: null,
-          last_activity_at: treDygn, idle_days: 3,
+          last_activity_at: treDygn, idle_days: expect.any(Number),
         },
       ],
     });
+    // 10 och 3 när UTC-datumet står still under provet; facit räknas ur samma
+    // klocka som servern, så fallet håller också över midnatt.
+    expect(stillestand(tioDygn, fore, efter)).toContain(svar.deals[0].idle_days);
+    expect(stillestand(treDygn, fore, efter)).toContain(svar.deals[1].idle_days);
+    expect(stillestand(tioDygn, Date.parse(tioDygn) + 240 * 3_600_000, Date.parse(tioDygn) + 240 * 3_600_000)).toEqual([10]);
   });
 
   it('O2 TOMT: Hermes skickade en tom mängd', async () => {
@@ -724,11 +813,23 @@ describe('crm_open_deals (7.1 O)', () => {
     const intrang = await act(granne.user.token, o.id, 'crm_open_deals', {});
     expect(intrang.status, JSON.stringify(intrang.body)).toBe(404);
   });
+
+  it('O7 OK: en ögonblicksbild en minut fram ryms i klockmarginalen och läses som aktuell', async () => {
+    const obs = tid(-1 / 60);
+    await synk(o, obs, [affar('o7-1', 'Klockmarginal AB')]);
+    const r = await las(o);
+    expect(r).toMatchObject({ status: 'ok', observed_at: obs, received: 1 });
+    expect(r.deals.map((d: { source_ref: string }) => d.source_ref)).toEqual(['o7-1']);
+  });
 });
 
 describe('radering och affärsobjektet (7.1 G/E)', () => {
   let g: Bolag;
-  beforeAll(async () => { g = await bolag('affar-g'); });
+  let gs: Bolag;
+  beforeAll(async () => {
+    g = await bolag('affar-g');
+    gs = await bolag('affar-g-gravsten');
+  });
   const organisationsId = (namn: string) => withAdmin(async (db) => (await db.query<{ id: string }>(
     'SELECT id FROM crm.organizations WHERE company_id = $1 AND name = $2', [g.id, namn])).rows[0]!.id);
 
@@ -758,6 +859,73 @@ describe('radering och affärsobjektet (7.1 G/E)', () => {
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.result).toMatchObject({ status: 'ok', received: 2 });
     expect(r.body.result.deals.map((d: { source_ref: string }) => d.source_ref)).toEqual(['g2-1']);
+  });
+
+  it('G3 en GDPR-raderad kunds affärer kommer inte tillbaka med nästa ögonblicksbild, med eller utan behållen identitet', async () => {
+    // FR-43 och API-kontraktets regel 4: samma källnyckel avvisas, en ny släpps igenom.
+    const SKAL = 'källan är raderad enligt GDPR och får inte återskapas';
+    const auth = { Authorization: `Bearer ${gs.user.token}` };
+    const kund = async (namn: string) => {
+      const r = await api.post(`/api/companies/${gs.id}/customers`).set(auth).send({ name: namn });
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      return r.body.customer.id as string;
+    };
+    const relationer = (namn: string) => withAdmin(async (db) => (await db.query<{ status: string }>(
+      'SELECT status FROM crm.organizations WHERE company_id = $1 AND lower(name) = lower($2)', [gs.id, namn])).rows);
+    // Kunden utan bokförd affär förlorar namnet; kunden med en bokförd faktura
+    // behåller det (bokföringslagen), och då träffar namnet samma relation igen.
+    const raderad = await kund('Gravsten Raderad AB');
+    const behallen = await kund('Gravsten Behållen AB');
+    const ar = await createFiscalYear(gs.id, auth, { label: '2025', start_date: '2025-01-01', end_date: '2025-12-31' });
+    const faktura = await api.post(`/api/companies/${gs.id}/invoices`).set(auth).send({
+      customer_id: behallen, invoice_date: '2025-03-01',
+      lines: [{ description: 'Tjänst', quantity: 1, unit_price_ore: 100000, vat_rate: 25 }],
+    });
+    expect(faktura.status, JSON.stringify(faktura.body)).toBe(201);
+    const bokford = await api.post(`/api/companies/${gs.id}/invoices/${faktura.body.invoice.id}/book`)
+      .set(auth).send({ fiscal_year_id: ar.id });
+    expect(bokford.status, JSON.stringify(bokford.body)).toBe(200);
+
+    const natten = [
+      affar('g3-r1', 'Gravsten Raderad AB', { title: 'Avtalet med Gravsten', next_step: 'Ring Gravsten' }),
+      affar('g3-r2', 'Gravsten Raderad AB'),
+      affar('g3-b1', 'Gravsten Behållen AB'),
+      affar('g3-k1', 'Gravsten Kontroll AB'),
+    ];
+    expect(await synk(gs, tid(3), natten)).toMatchObject({ cached: 4, organizations_linked: 2, skipped: [] });
+    for (const [id, behalls] of [[raderad, false], [behallen, true]] as const) {
+      const svar = await godkann(gs, await act(gs.user.token, gs.id, 'anonymize_party', { party_type: 'customer', party_id: id }));
+      expect(svar.result.accounting_identity_retained, id).toBe(behalls);
+    }
+    expect((await cacheRader(gs.id)).map((x) => x.source_ref)).toEqual(['g3-k1']);
+    // Gravstenarna bär bara källnycklarna för de raderade kundernas affärer.
+    const gravstenar = () => withAdmin(async (db) => (await db.query(
+      'SELECT source_system, source_ref FROM crm.erased_sources WHERE company_id = $1 ORDER BY source_ref', [gs.id])).rows);
+    const vantade = ['g3-b1', 'g3-r1', 'g3-r2'].map((ref) => ({ source_system: 'linear', source_ref: ref }));
+    expect(await gravstenar()).toEqual(vantade);
+    const antal = async () => withAdmin(async (db) => (await db.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM crm.organizations WHERE company_id = $1', [gs.id])).rows[0]!.n);
+    const relationerFore = await antal();
+
+    // Nästa natt skickar Hermes samma ärenden igen, ett av dem med blanktecken runt nyckeln.
+    const omsandning = await act(gs.agent, gs.id, 'sync_crm_deals', {
+      observed_at: tid(1), deals: [natten[0], { ...natten[1]!, source_ref: '  g3-r2 ' }, natten[2], natten[3]],
+    });
+    expect(omsandning.status, JSON.stringify(omsandning.body)).toBe(200);
+    expect(omsandning.body.result).toMatchObject({ received: 4, cached: 1, organizations_created: 0 });
+    expect(omsandning.body.result.skipped).toEqual([0, 1, 2].map((index) => ({ index, reason: SKAL })));
+    // Den interna felkoden lämnar inte tjänsten, som i intagets svar.
+    expect(JSON.stringify(omsandning.body)).not.toContain('erased_source');
+    expect((await cacheRader(gs.id)).map((x) => x.source_ref)).toEqual(['g3-k1']);
+    expect(await antal()).toBe(relationerFore);
+    expect(await relationer('Gravsten Raderad AB')).toEqual([]);
+    expect(await relationer('Gravsten Behållen AB')).toEqual([{ status: 'archived' }]);
+    expect(await gravstenar()).toEqual(vantade);
+
+    // En ny källnyckel är ny behandling med ny grund och släpps igenom.
+    expect(await synk(gs, tid(0), [affar('g3-b2', 'Gravsten Behållen AB'), affar('g3-k1', 'Gravsten Kontroll AB')]))
+      .toMatchObject({ received: 2, cached: 2, skipped: [] });
+    expect((await cacheRader(gs.id)).map((x) => x.source_ref)).toEqual(['g3-b2', 'g3-k1']);
   });
 
   it('E1 bara två filer under server/src nämner cachen, ingen av dem affärsobjektet, och affärsobjektet står tomt', async () => {
@@ -798,8 +966,12 @@ describe('dokumenten (7.1 D)', () => {
     for (const term of [
       'sync_crm_deals', 'crm_open_deals', 'observed_at', 'deals', 'source_ref', 'last_activity_at', 'received', 'cached',
       'skipped', 'merge_proposals', 'unlinked_organizations', 'redirected_organizations', 'idle_days',
-      'crm.deal_snapshots', 'crm.deal_snapshot_observations',
+      'crm.deal_snapshots', 'crm.deal_snapshot_observations', 'crm.erased_sources', 'observed_at_in_future',
     ]) expect(avsnitt, term).toContain('`' + term + '`');
+    expect(avsnitt).toContain('fem minuter');
+    // Beslut #24: affärerna bor i ärendeplattformen, som ersatt Linear.
+    expect(avsnitt).not.toMatch(/\bLinear\b/);
+    expect(avsnitt).toContain('ärendeplattformen');
   });
 
   it('D2 API-kontraktet har avsnittet Affärerna före Gallring, och de befintliga rubrikerna står en gång var', async () => {
@@ -812,9 +984,15 @@ describe('dokumenten (7.1 D)', () => {
     expect(avsnitt).not.toMatch(/^###/m);
     for (const term of [
       'sync_crm_deals', 'crm_open_deals', 'observed_at', 'source_ref', 'last_activity_at', 'skipped', 'merge_proposals',
-      'unlinked_organizations', 'crm.deals',
+      'unlinked_organizations', 'crm.deals', 'observed_at_in_future',
     ]) expect(avsnitt, term).toContain('`' + term + '`');
     expect(avsnitt).toContain('26 timmar');
+    // Regel 4 gäller också affärerna, och klockmarginalen står i klartext.
+    expect(avsnitt).toContain('raderad enligt GDPR');
+    expect(avsnitt).toContain('fem minuter');
+    // Beslut #24: affärerna bor i ärendeplattformen, som ersatt Linear.
+    expect(avsnitt).not.toMatch(/\bLinear\b/);
+    expect(avsnitt).toContain('ärendeplattformen');
     for (const heading of ['De fyra reglerna', 'Svaret', 'Människan vinner', 'Kadens, dubbletter och sökning']) {
       expect(kontrakt.match(new RegExp('^## ' + heading + '$', 'gm')), heading).toHaveLength(1);
     }

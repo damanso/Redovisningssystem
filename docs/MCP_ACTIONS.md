@@ -3021,7 +3021,12 @@ nyckel, unik per bolag), `title` (högst 200 tecken), `organization` med `name`,
 `last_activity_at` (ISO 8601 med zon) och de valfria `stage` (`idea`,
 `dialogue`, `proposal` eller `negotiation`), `value_ore` (heltal i ören) och
 `next_step` (högst 200 tecken). En okänd nyckel på någon nivå ger 400
-`validation_error`, och då skrivs ingenting.
+`validation_error`, och då skrivs ingenting. `source_ref` trimmas på ett ställe
+i tjänsten, så dubblettkontrollen, gravstenen och cachen ser samma nyckel.
+Ingen tidpunkt får ligga mer än fem minuter före mottagarens klocka: ett
+`observed_at` längre fram ger 400 `observed_at_in_future` och skriver
+ingenting, och en affär vars `last_activity_at` ligger längre fram hoppas över.
+Grinden i läsningen ger `unknown` för samma framtida tidpunkt.
 
 Hela mängden ersätter bolagets cache i en transaktion: en affär som inte finns
 i den nya mängden försvinner ur `crm.deal_snapshots`. En tom mängd är ett
@@ -3032,8 +3037,8 @@ Organisationen slås upp eller skapas ur sitt namn med samma regler som
 `ingest_crm_events`: projektkodsspärren, aliaset efter en sammanslagning,
 bolagsformsregeln och kundkopplingen. En bolagsformsvariant hoppas över med
 intagets skäl och köar samma `merge_crm_name_variant`, ett förslag per namnpar.
-En titel av bara blanktecken och en upprepad `source_ref` hoppas också över. En
-trasig rad stoppar inte resten.
+En titel eller en `source_ref` av bara blanktecken och en upprepad `source_ref`
+hoppas också över. En trasig rad stoppar inte resten.
 
 Svaret redovisar `observed_at`, `received` (antalet Hermes skickade),
 `cached`, `organizations_created`, `organizations_linked`,
@@ -3052,4 +3057,9 @@ senaste aktivitet), längst stillestånd först. `empty`: den senaste
 affär hoppades över är `ok` utan affärer, aldrig `empty`.
 
 En relation som raderas tar sina rader i cachen med sig, och GDPR-raderingen av
-en kund tar dem uttryckligen, också när kundens identitet behålls.
+en kund tar dem uttryckligen, också när kundens identitet behålls. Raderingen
+sparar först radernas källnycklar som gravstenar i `crm.erased_sources`
+(källsystemet `linear`), och `sync_crm_deals` prövar gravstenen före
+organisationen: skickar Hermes samma `source_ref` igen hoppas affären över med
+skälet att källan är raderad enligt GDPR, och ingen relation skapas. En ny
+`source_ref` släpps igenom, som för händelserna.

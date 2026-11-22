@@ -423,11 +423,12 @@ Batchens `propose_time_entries` ändras inte: en dubblett där skriver ingenting
 
 ## Affärerna
 
-De öppna affärerna bor i Linear, som ärenden med affärsetiketten. Hermes skickar
-en ögonblicksbild av dem hit varje natt med `sync_crm_deals`, och relationsdelen
-läser den ur en cache. Riktningen är densamma som för händelserna: redovisningssystemet ringer
-aldrig Linear. Affärsobjektet `crm.deals` används inte — cachen är en spegel av
-ärendena, inget eget affärsobjekt, och den skrivs om i sin helhet varje gång.
+De öppna affärerna bor i ärendeplattformen, som ärenden med affärsetiketten.
+Hermes skickar en ögonblicksbild av dem hit varje natt med `sync_crm_deals`, och
+relationsdelen läser den ur en cache. Riktningen är densamma som för
+händelserna: redovisningssystemet ringer aldrig ärendeplattformen. Affärsobjektet
+`crm.deals` används inte — cachen är en spegel av ärendena, inget eget
+affärsobjekt, och den skrivs om i sin helhet varje gång.
 
 `POST /api/companies/<company_id>/actions/sync_crm_deals`
 
@@ -436,7 +437,7 @@ aldrig Linear. Affärsobjektet `crm.deals` används inte — cachen är en spege
   "observed_at": "2026-11-22T02:00:00Z",
   "deals": [
     {
-      "source_ref": "linear:LOC-412",
+      "source_ref": "LOC-412",
       "title": "Pilot för lagerprognosen",
       "organization": { "name": "Nordic Vision Retail AB" },
       "stage": "proposal",
@@ -450,10 +451,17 @@ aldrig Linear. Affärsobjektet `crm.deals` används inte — cachen är en spege
 
 `observed_at` är ögonblicksbildens tidpunkt och `last_activity_at` ärendets
 senaste aktivitet, båda ISO 8601 med zon. `source_ref` är ärendets nyckel och
-unik per bolag. `stage` är `idea`, `dialogue`, `proposal` eller `negotiation`
+unik per bolag; den trimmas, så en nyckel med blanktecken runt är samma nyckel.
+`stage` är `idea`, `dialogue`, `proposal` eller `negotiation`
 och får utelämnas, liksom `value_ore` (heltal i ören) och `next_step`. Högst 500
 affärer per anrop. En okänd nyckel på någon nivå ger 400 `validation_error`, och
 då skrivs ingenting.
+
+Ingen tidpunkt får ligga mer än fem minuter före mottagarens klocka. Ett
+`observed_at` längre fram ger 400 `observed_at_in_future` och skriver
+ingenting: sparad hade ögonblicksbilden räknats som aktuell långt efter att
+nattjobbet slutat gå. En affär vars `last_activity_at` ligger längre fram hoppas
+över, eftersom den hade dolt sitt stillestånd.
 
 **Hela mängden ersätter cachen.** En affär som inte finns med i nästa
 ögonblicksbild försvinner — det är så en vunnen, förlorad eller stängd affär
@@ -464,9 +472,15 @@ tidpunkten sparas ändå.
 Organisationen slås upp eller skapas ur sitt namn med samma regler som i
 *De fyra reglerna*: kopplingen till kundregistret, projektkodsspärren, aliaset
 efter en sammanslagning och bolagsformsvarianten. En variant hoppas över med
-samma skäl och köar samma förslag som en händelse, ett per namnpar. En titel av
-bara blanktecken och en upprepad `source_ref` i samma ögonblicksbild hoppas
-också över. En trasig rad stoppar inte resten.
+samma skäl och köar samma förslag som en händelse, ett per namnpar. En titel
+eller en `source_ref` av bara blanktecken och en upprepad `source_ref` i samma
+ögonblicksbild hoppas också över. En trasig rad stoppar inte resten.
+
+Regel 4 gäller också affärerna. När en kund raderats enligt GDPR försvinner
+kundens affärer ur cachen och deras källnycklar sparas som gravstenar. Skickas
+samma `source_ref` igen hoppas affären över (`skipped` med skälet att källan är
+raderad enligt GDPR), och ingen relation skapas för den. En ny `source_ref`
+släpps igenom som vanligt: det är ny behandling med ny grund.
 
 ```jsonc
 {
@@ -501,8 +515,9 @@ Läsningen är `crm_open_deals` (`{}`), med ett av tre utfall och alltid
   stillestånd först.
 - `empty` — den senaste ögonblicksbilden är högst 26 timmar gammal och var tom.
 - `unknown` — ingen ögonblicksbild har kommit, eller den senaste är äldre än 26
-  timmar (en missad nattkörning och marginalen). `deals` är då alltid tom: en
-  gammal lista visas aldrig som aktuell, och okänt visas aldrig som tomt.
+  timmar (en missad nattkörning och marginalen) eller ligger mer än fem minuter
+  fram i tiden. `deals` är då alltid tom: en gammal lista visas aldrig som
+  aktuell, och okänt visas aldrig som tomt.
 
 En ögonblicksbild där varje affär hoppades över är `ok` utan affärer, aldrig
 `empty`: tomt betyder att Hermes skickade en tom mängd.

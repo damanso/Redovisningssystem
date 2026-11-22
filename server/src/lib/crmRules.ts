@@ -312,20 +312,38 @@ export function daysSince(day: string, today: string): number | null {
  */
 export const DEAL_SNAPSHOT_MAX_AGE_HOURS = 26;
 
+/**
+ * Hur långt före vår klocka avsändarens tidpunkt får ligga. Två klockor går
+ * aldrig exakt lika, men en tid längre fram än så är ett fel hos avsändaren.
+ */
+export const DEAL_CLOCK_SKEW_MINUTES = 5;
+
+/**
+ * Ligger tidpunkten mer än klockmarginalen före `now`? En ögonblicksbild från
+ * framtiden hade räknats som aktuell långt efter att nattjobbet slutat gå, och
+ * en aktivitet från framtiden hade dolt stilleståndet. Samma regel avvisar
+ * båda i mottagningen och fäller ögonblicksbilden i grinden. En tid som inte
+ * går att läsa räknas inte här; den fångas av sin egen regel.
+ */
+export function aheadOfClock(at: string, now: string): boolean {
+  return Date.parse(at) - Date.parse(now) > DEAL_CLOCK_SKEW_MINUTES * 60_000;
+}
+
 /** Affärsläsningens tre utfall, engelska koder som resten av CRM; vyn sätter orden OK, TOMT och OKÄNT. */
 export type DealSnapshotStatus = 'ok' | 'empty' | 'unknown';
 
 /**
  * Grinden för affärscachen, på ett ställe. Okänt när ingen ögonblicksbild
- * finns, när tidpunkten inte går att läsa eller när den är mer än 26 timmar
- * gammal; tomt när Hermes skickade en tom mängd; annars ok. Tomt läses ur
- * antalet Hermes skickade, inte ur antalet cachade rader, så en ögonblicksbild
- * där varje rad hoppades över aldrig ser ut som «inga öppna affärer».
+ * finns, när tidpunkten inte går att läsa, när den är mer än 26 timmar gammal
+ * eller när den ligger längre fram än klockmarginalen; tomt när Hermes skickade
+ * en tom mängd; annars ok. Tomt läses ur antalet Hermes skickade, inte ur
+ * antalet cachade rader, så en ögonblicksbild där varje rad hoppades över
+ * aldrig ser ut som «inga öppna affärer».
  */
 export function dealSnapshotStatus(observedAt: string | null, received: number, now: string): DealSnapshotStatus {
   if (observedAt === null) return 'unknown';
   const age = Date.parse(now) - Date.parse(observedAt);
-  if (Number.isNaN(age) || age > DEAL_SNAPSHOT_MAX_AGE_HOURS * 3_600_000) return 'unknown';
+  if (Number.isNaN(age) || age > DEAL_SNAPSHOT_MAX_AGE_HOURS * 3_600_000 || aheadOfClock(observedAt, now)) return 'unknown';
   return received === 0 ? 'empty' : 'ok';
 }
 

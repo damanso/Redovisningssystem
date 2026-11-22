@@ -3196,7 +3196,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         deals: z
           .array(
             z.object({
-              // Ärendets nyckel i plattformen, unik per bolag.
+              // Ärendets nyckel i plattformen, unik per bolag. Tjänsten trimmar
+              // den på ett ställe och hoppar över en nyckel av bara blanktecken.
               source_ref: safeText(300),
               title: safeText(200),
               organization: z.object({ name: safeText(200) }).strict(),
