@@ -437,7 +437,7 @@ affärsobjekt, och den skrivs om i sin helhet varje gång.
   "observed_at": "2026-11-22T02:00:00Z",
   "deals": [
     {
-      "source_ref": "LOC-412",
+      "source_ref": "linear:LOC-412",
       "title": "Pilot för lagerprognosen",
       "organization": { "name": "Nordic Vision Retail AB" },
       "stage": "proposal",
@@ -450,10 +450,13 @@ affärsobjekt, och den skrivs om i sin helhet varje gång.
 ```
 
 `observed_at` är ögonblicksbildens tidpunkt och `last_activity_at` ärendets
-senaste aktivitet, båda ISO 8601 med zon. `source_ref` är ärendets nyckel och
-unik per bolag; den trimmas, så en nyckel med blanktecken runt är samma nyckel.
-`stage` är `idea`, `dialogue`, `proposal` eller `negotiation`
-och får utelämnas, liksom `value_ore` (heltal i ören) och `next_step`. Högst 500
+senaste aktivitet, båda ISO 8601 med zon. `source_ref` är ärendets källnyckel i
+husets form `<system>:<id>`, som `linear:LOC-412`: samma nyckel som ärendet bär
+i händelserna. Mottagaren jämför hela nyckeln, så en nyckel utan systemet är en
+annan nyckel, och då spärrar en gravsten för ärendet inte affären. Nyckeln är
+unik per bolag och trimmas, så en nyckel med blanktecken runt är samma nyckel.
+`stage` är `idea`, `dialogue`, `proposal` eller `negotiation` och får utelämnas
+eller vara `null`, liksom `value_ore` (heltal i ören) och `next_step`. Högst 500
 affärer per anrop. En okänd nyckel på någon nivå ger 400 `validation_error`, och
 då skrivs ingenting.
 
@@ -479,8 +482,10 @@ eller en `source_ref` av bara blanktecken och en upprepad `source_ref` i samma
 Regel 4 gäller också affärerna. När en kund raderats enligt GDPR försvinner
 kundens affärer ur cachen och deras källnycklar sparas som gravstenar. Skickas
 samma `source_ref` igen hoppas affären över (`skipped` med skälet att källan är
-raderad enligt GDPR), och ingen relation skapas för den. En ny `source_ref`
-släpps igenom som vanligt: det är ny behandling med ny grund.
+raderad enligt GDPR), och ingen relation skapas för den. Gravstenen är paret
+källsystem och nyckel, samma som för händelserna, så ett löfte eller en
+kontaktpunkt ur samma ärende som raderats med kunden spärrar också affären. En
+ny `source_ref` släpps igenom som vanligt: det är ny behandling med ny grund.
 
 ```jsonc
 {
@@ -506,13 +511,16 @@ efteråt. `skipped` bär index och skäl för varje överhoppad affär,
 `unlinked_organizations` de organisationer som inte gick att knyta till
 kundregistret — samma fält och samma former som i händelsernas svar.
 
-Läsningen är `crm_open_deals` (`{}`), med ett av tre utfall och alltid
-`observed_at`:
+Läsningen är `crm_open_deals` (`{}`). Svaret bär `status` med ett av tre
+utfall, `observed_at` och `received` från den senaste ögonblicksbilden, och
+`deals`. Har ingen ögonblicksbild kommit är `observed_at` och `received` `null`;
+annars bär de ögonblicksbildens tidpunkt och antal, också när utfallet är
+`unknown`.
 
 - `ok` — den senaste ögonblicksbilden är högst 26 timmar gammal och Hermes
-  skickade minst en affär. `deals` listar affärerna med relationen, skedet,
-  värdet, nästa steg, `last_activity_at` och stilleståndet i hela dygn, längst
-  stillestånd först.
+  skickade minst en affär. `deals` listar affärerna med relationen, `stage`,
+  `value_ore`, `next_step` (`null` när affären saknar dem), `last_activity_at`
+  och stilleståndet i hela dygn, längst stillestånd först.
 - `empty` — den senaste ögonblicksbilden är högst 26 timmar gammal och var tom.
 - `unknown` — ingen ögonblicksbild har kommit, eller den senaste är äldre än 26
   timmar (en missad nattkörning och marginalen) eller ligger mer än fem minuter

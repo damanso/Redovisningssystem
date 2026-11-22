@@ -236,6 +236,73 @@ function etikettbrister(koder: readonly string[], etikettFor: Readonly<Record<st
   return brister;
 }
 
+/**
+ * Husets källnyckel för ett ärende (arkitekturen: `<system>:<källans id>`,
+ * `linear:LOC-NNN`, valfritt suffix efter `#`). Facit står här som literal.
+ */
+const ARENDENYCKEL = /^linear:[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}(?:#[A-Za-z0-9._-]{1,100})?$/;
+/** Något som ser ut som en ärendenyckel, med eller utan systemet framför. */
+const NAGON_ARENDENYCKEL = /[A-Z][A-Z0-9]{1,9}-[0-9]{1,7}/;
+
+/**
+ * En brist för varje nyckel i avsnittet som inte har husets form — exemplens
+ * `"source_ref"` och varje kodformaterad ärendenyckel i texten — och för ett
+ * avsnitt som inte säger formen eller inte visar någon nyckel. Mottagaren
+ * jämför hela nyckeln, så ett exempel utan systemet ger samma ärende två
+ * identiteter, och ett löftes gravsten spärrar då inte affären. Rent.
+ */
+function nyckelbrister(avsnitt: string): string[] {
+  const brister: string[] = [];
+  const nycklar = [
+    ...[...avsnitt.matchAll(/"source_ref":\s*"([^"]*)"/g)].map((m) => m[1]!),
+    ...[...avsnitt.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`\n]+)`/g)].map((m) => m[1]!)
+      .filter((kod) => NAGON_ARENDENYCKEL.test(kod)),
+  ];
+  for (const nyckel of nycklar) {
+    if (!ARENDENYCKEL.test(nyckel)) brister.push(`nyckeln «${nyckel}» saknar formen linear:<id>`);
+  }
+  if (nycklar.length === 0) brister.push('avsnittet visar ingen ärendenyckel');
+  if (!avsnitt.includes('`<system>:<id>`')) brister.push('avsnittet säger inte att nyckeln har formen `<system>:<id>`');
+  return brister;
+}
+
+/** Avsnittets meningar utan kodblock: stycken och punkter för sig, sedan delade vid punkt. */
+function meningar(avsnitt: string): string[] {
+  return avsnitt.replace(/```[\s\S]*?```/g, '\n\n')
+    .split(/\n\s*\n|\n(?=- )/)
+    .flatMap((stycke) => stycke.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/))
+    .filter((mening) => mening.length > 0);
+}
+
+/**
+ * En brist för varje fält som läsningen kan ge som `null` utan att avsnittet
+ * säger det i någon mening, och för varje mening som lovar fältet «alltid»
+ * utan att nämna `null`. En konsument som läser kontraktet ordagrant ska inte
+ * kunna ta `null` för ett värde. Rent.
+ */
+function nullbrister(avsnitt: string, nullbara: readonly string[]): string[] {
+  const brister: string[] = [];
+  const delar = meningar(avsnitt);
+  for (const falt of nullbara) {
+    const om = delar.filter((mening) => mening.includes('`' + falt + '`'));
+    if (!om.some((mening) => mening.includes('`null`'))) brister.push(`${falt} sägs aldrig kunna vara null`);
+    for (const mening of om) {
+      if (/\balltid\b/.test(mening) && !mening.includes('`null`')) brister.push(`${falt} lovas alltid: «${mening}»`);
+    }
+  }
+  return brister;
+}
+
+/** De två dokumentens avsnitt om affärerna, vart och ett klippt vid nästa rubrik. */
+async function affarsavsnitten(): Promise<[string, string][]> {
+  const mcp = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+  const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+  return [
+    ['docs/MCP_ACTIONS.md', mcp.split('## Affärscachen och kontraktet för affärer (crm 7.1)')[1]?.split('\n## ')[0] ?? ''],
+    ['docs/crm/API_KONTRAKT.md', kontrakt.split('\n## Affärerna\n')[1]?.split('\n## ')[0] ?? ''],
+  ];
+}
+
 describe('migrationen och skedena (7.1 M)', () => {
   let vart: Bolag;
   let granne: Bolag;
@@ -928,6 +995,42 @@ describe('radering och affärsobjektet (7.1 G/E)', () => {
     expect((await cacheRader(gs.id)).map((x) => x.source_ref)).toEqual(['g3-b2', 'g3-k1']);
   });
 
+  it('G4 ett löftes gravsten spärrar affären med samma källnyckel: ett ärende har en identitet', async () => {
+    // Arkitekturen: källnyckeln är `<system>:<källans id>` i händelserna och i
+    // affärerna, och källidentiteten är paret (source_system, source_ref).
+    // Samma ärende ger därför en gravsten, inte två, och den spärrar affären.
+    const SKAL = 'källan är raderad enligt GDPR och får inte återskapas';
+    const gl = await bolag('affar-g-lofte');
+    const kund = await api.post(`/api/companies/${gl.id}/customers`)
+      .set('Authorization', `Bearer ${gl.user.token}`).send({ name: 'Löftesgrav AB' });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    const intag = await act(gl.agent, gl.id, 'ingest_crm_events', {
+      events: [{
+        kind: 'commitment', organization: { name: 'Löftesgrav AB' }, commitment_direction: 'we_owe',
+        body: 'Skicka offerten för piloten.', occurred_at: tid(30), source_system: 'linear', source_ref: 'linear:LOC-7201',
+      }],
+    });
+    expect(intag.status, JSON.stringify(intag.body)).toBe(200);
+    expect(intag.body.result).toMatchObject({ commitments_created: 1, skipped: [] });
+    await godkann(gl, await act(gl.user.token, gl.id, 'anonymize_party', { party_type: 'customer', party_id: kund.body.customer.id }));
+    const gravstenar = () => withAdmin(async (db) => (await db.query(
+      'SELECT source_system, source_ref FROM crm.erased_sources WHERE company_id = $1 ORDER BY source_ref', [gl.id])).rows);
+    expect(await gravstenar()).toEqual([{ source_system: 'linear', source_ref: 'linear:LOC-7201' }]);
+
+    // Hermes skickar ärendet som affär, under en annan organisation, och ett nytt ärende.
+    const r = await synk(gl, tid(1), [
+      affar('linear:LOC-7201', 'Spärrad Ägare AB'),
+      affar('linear:LOC-7202', 'Släppt Ägare AB'),
+    ]);
+    expect(r).toMatchObject({ received: 2, cached: 1, organizations_created: 1, skipped: [{ index: 0, reason: SKAL }] });
+    expect((await cacheRader(gl.id)).map((x) => [x.source_ref, x.organization_name]))
+      .toEqual([['linear:LOC-7202', 'Släppt Ägare AB']]);
+    expect(await withAdmin(async (db) => (await db.query(
+      "SELECT 1 FROM crm.organizations WHERE company_id = $1 AND name = 'Spärrad Ägare AB'", [gl.id])).rows)).toEqual([]);
+    // Ingen andra identitet för ärendet: fortfarande en gravsten.
+    expect(await gravstenar()).toEqual([{ source_system: 'linear', source_ref: 'linear:LOC-7201' }]);
+  });
+
   it('E1 bara två filer under server/src nämner cachen, ingen av dem affärsobjektet, och affärsobjektet står tomt', async () => {
     const filer = await kallfiler();
     expect(filer.has('services/crmDeals.ts')).toBe(true);
@@ -972,6 +1075,8 @@ describe('dokumenten (7.1 D)', () => {
     // Beslut #24: affärerna bor i ärendeplattformen, som ersatt Linear.
     expect(avsnitt).not.toMatch(/\bLinear\b/);
     expect(avsnitt).toContain('ärendeplattformen');
+    // Nyckeln har husets form, så händelserna och affärerna delar identitet.
+    expect(nyckelbrister(avsnitt)).toEqual([]);
   });
 
   it('D2 API-kontraktet har avsnittet Affärerna före Gallring, och de befintliga rubrikerna står en gång var', async () => {
@@ -993,8 +1098,62 @@ describe('dokumenten (7.1 D)', () => {
     // Beslut #24: affärerna bor i ärendeplattformen, som ersatt Linear.
     expect(avsnitt).not.toMatch(/\bLinear\b/);
     expect(avsnitt).toContain('ärendeplattformen');
+    // Exemplet och texten visar nyckeln i husets form, som intagets exempel.
+    expect(nyckelbrister(avsnitt)).toEqual([]);
     for (const heading of ['De fyra reglerna', 'Svaret', 'Människan vinner', 'Kadens, dubbletter och sökning']) {
       expect(kontrakt.match(new RegExp('^## ' + heading + '$', 'gm')), heading).toHaveLength(1);
     }
+  });
+
+  it('D3 båda dokumenten säger när läsningens fält är null, och fälten är de som läsningen faktiskt ger som null', async () => {
+    // Facit som literal: fälten som crm_open_deals kan ge som null.
+    const NULLBARA = ['next_step', 'observed_at', 'received', 'stage', 'value_ore'];
+    const d = await bolag('affar-d');
+    const nullfalt = (o: Record<string, unknown>) => Object.keys(o).filter((k) => o[k] === null);
+    const tom = await act(d.user.token, d.id, 'crm_open_deals', {});
+    expect(tom.status, JSON.stringify(tom.body)).toBe(200);
+    // Svaret på ögonblicksbilden har inga null-fält.
+    expect(nullfalt(await synk(d, tid(1), [affar('linear:LOC-7301', 'Nullfält AB')]))).toEqual([]);
+    const las = await act(d.user.token, d.id, 'crm_open_deals', {});
+    expect(las.status, JSON.stringify(las.body)).toBe(200);
+    expect(las.body.result).toMatchObject({ status: 'ok', received: 1 });
+    expect(las.body.result.deals).toHaveLength(1);
+    const verkliga = [...new Set([
+      ...nullfalt(tom.body.result), ...nullfalt(las.body.result), ...nullfalt(las.body.result.deals[0]),
+    ])].sort();
+    expect(verkliga).toEqual(NULLBARA);
+    for (const [fil, avsnitt] of await affarsavsnitten()) {
+      expect(avsnitt.length, fil).toBeGreaterThan(0);
+      expect(nullbrister(avsnitt, NULLBARA), fil).toEqual([]);
+    }
+  });
+
+  it('D4 negativ kontroll: en nyckel utan systemet och ett null som lovas alltid finnas fälls', () => {
+    // Ett exempel utan systemet, en kodformaterad nyckel utan systemet och ingen form i texten.
+    expect(nyckelbrister('```jsonc\n{ "source_ref": "LOC-412" }\n```\n\nNyckeln är `LOC-413`.')).toEqual([
+      'nyckeln «LOC-412» saknar formen linear:<id>',
+      'nyckeln «LOC-413» saknar formen linear:<id>',
+      'avsnittet säger inte att nyckeln har formen `<system>:<id>`',
+    ]);
+    expect(nyckelbrister('Nyckeln är ärendets.')).toEqual([
+      'avsnittet visar ingen ärendenyckel',
+      'avsnittet säger inte att nyckeln har formen `<system>:<id>`',
+    ]);
+    expect(nyckelbrister('```jsonc\n{ "source_ref": "linear:LOC-412" }\n```\n\nFormen är `<system>:<id>`, som `linear:LOC-413#2`.'))
+      .toEqual([]);
+    // Granskarens exempel: «alltid `observed_at`», och ett fält som aldrig sägs vara null.
+    expect(nullbrister(
+      'Läsningen är `crm_open_deals`, med ett av tre utfall och alltid\n`observed_at`.\n\n`received` är antalet Hermes skickade.',
+      ['observed_at', 'received'],
+    )).toEqual([
+      'observed_at sägs aldrig kunna vara null',
+      'observed_at lovas alltid: «Läsningen är `crm_open_deals`, med ett av tre utfall och alltid `observed_at`.»',
+      'received sägs aldrig kunna vara null',
+    ]);
+    // Ett fält som sägs vara null i en mening men lovas alltid i en annan fälls också.
+    expect(nullbrister('- `ok` — `stage` finns alltid.\n- `stage` är `null` när skedet saknas.', ['stage']))
+      .toEqual(['stage lovas alltid: «- `ok` — `stage` finns alltid.»']);
+    expect(nullbrister('`observed_at` och `received` är `null` när ingen ögonblicksbild har kommit.', ['observed_at', 'received']))
+      .toEqual([]);
   });
 });

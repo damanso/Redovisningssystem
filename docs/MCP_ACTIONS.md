@@ -3017,12 +3017,15 @@ inte.
 
 `sync_crm_deals` tar `observed_at` (ögonblicksbildens tidpunkt, ISO 8601 med
 zon) och `deals`, högst 500 affärer. Varje affär har `source_ref` (ärendets
-nyckel, unik per bolag), `title` (högst 200 tecken), `organization` med `name`,
+källnyckel i husets form `<system>:<id>`, som `linear:LOC-412`, unik per
+bolag), `title` (högst 200 tecken), `organization` med `name`,
 `last_activity_at` (ISO 8601 med zon) och de valfria `stage` (`idea`,
 `dialogue`, `proposal` eller `negotiation`), `value_ore` (heltal i ören) och
-`next_step` (högst 200 tecken). En okänd nyckel på någon nivå ger 400
-`validation_error`, och då skrivs ingenting. `source_ref` trimmas på ett ställe
-i tjänsten, så dubblettkontrollen, gravstenen och cachen ser samma nyckel.
+`next_step` (högst 200 tecken), som också får vara `null`. En okänd nyckel på
+någon nivå ger 400 `validation_error`, och då skrivs ingenting. Mottagaren
+jämför hela nyckeln: ärendet har samma nyckel som i händelserna, och en nyckel
+utan systemet är en annan nyckel. `source_ref` trimmas på ett ställe i
+tjänsten, så dubblettkontrollen, gravstenen och cachen ser samma nyckel.
 Ingen tidpunkt får ligga mer än fem minuter före mottagarens klocka: ett
 `observed_at` längre fram ger 400 `observed_at_in_future` och skriver
 ingenting, och en affär vars `last_activity_at` ligger längre fram hoppas över.
@@ -3047,11 +3050,13 @@ Svaret redovisar `observed_at`, `received` (antalet Hermes skickade),
 `crm.deals_synced` bär bara antal, aldrig titlar eller namn.
 
 `crm_open_deals` tar `{}` och svarar med `status`, `observed_at`, `received`
-och `deals`, med ett av tre utfall. `ok`: den senaste ögonblicksbilden är högst
-26 timmar gammal och Hermes skickade minst en affär. `deals` listar då
-affärerna med relationens `organization_id` och `organization_name`, `stage`,
-`value_ore`, `next_step`, `last_activity_at` och `idle_days` (hela dygn sedan
-senaste aktivitet), längst stillestånd först. `empty`: den senaste
+och `deals`, med ett av tre utfall. `observed_at` och `received` är den senaste
+ögonblicksbildens tidpunkt och antal, och `null` när ingen ögonblicksbild har
+kommit. `ok`: den senaste ögonblicksbilden är högst 26 timmar gammal och Hermes
+skickade minst en affär. `deals` listar då affärerna med relationens
+`organization_id` och `organization_name`, `stage`, `value_ore`, `next_step`
+(`null` när affären saknar dem), `last_activity_at` och `idle_days` (hela dygn
+sedan senaste aktivitet), längst stillestånd först. `empty`: den senaste
 ögonblicksbilden var tom. `unknown`: ingen ögonblicksbild finns, eller den är
 äldre än 26 timmar, och då är `deals` alltid tom. En ögonblicksbild där varje
 affär hoppades över är `ok` utan affärer, aldrig `empty`.
@@ -3061,5 +3066,7 @@ en kund tar dem uttryckligen, också när kundens identitet behålls. Raderingen
 sparar först radernas källnycklar som gravstenar i `crm.erased_sources`
 (källsystemet `linear`), och `sync_crm_deals` prövar gravstenen före
 organisationen: skickar Hermes samma `source_ref` igen hoppas affären över med
-skälet att källan är raderad enligt GDPR, och ingen relation skapas. En ny
-`source_ref` släpps igenom, som för händelserna.
+skälet att källan är raderad enligt GDPR, och ingen relation skapas. Gravstenen
+är paret källsystem och nyckel, så ett löfte eller en kontaktpunkt ur samma
+ärende som raderats med kunden spärrar också affären. En ny `source_ref`
+släpps igenom, som för händelserna.

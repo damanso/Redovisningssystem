@@ -128,7 +128,9 @@ export async function syncDealSnapshot(
   for (const [index, { source_ref: rawSourceRef, ...deal }] of input.deals.entries()) {
     // En väg in för nyckeln: den trimmas här och bara här, och råvärdet förs
     // inte vidare. Dubblettkontrollen, gravstenen och cachens primärnyckel ser
-    // därför samma nyckel, så « LOC-1» och «LOC-1» är en affär, inte två.
+    // därför samma nyckel, så « linear:LOC-1» och «linear:LOC-1» är en affär,
+    // inte två. Formen (`<system>:<id>`, som i händelserna) prövas inte här:
+    // hela nyckeln jämförs, och kontraktet säger formen.
     // min(1) i schemat släpper igenom blanktecken; en tom nyckel fälls här.
     const sourceRef = rawSourceRef.trim();
     if (!sourceRef) {

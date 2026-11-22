@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 7.1 (crm), andra omtaget efter code-review (två fynd,
+  lagade som felklasser):** (1) Källnyckelns form: förra omtaget hade bytt
+  exemplets `linear:LOC-412` mot `LOC-412`. Exemplet är återställt, och båda
+  dokumentavsnitten säger nu att `source_ref` har husets form `<system>:<id>`
+  (arkitekturen), samma som i händelserna, att mottagaren jämför hela nyckeln
+  och att en gravsten för ärendet därför spärrar affären. Kommentarerna om
+  nyckeln i `server/src/services/crmDeals.ts` och `server/src/actions/registry.ts`
+  säger detsamma. (2) Null i läsningen: kontraktet lovade «alltid
+  `observed_at`». Båda avsnitten säger nu att `observed_at` och `received` är
+  `null` när ingen ögonblicksbild har kommit, och att `stage`, `value_ore` och
+  `next_step` är `null` när affären saknar dem. Nya fall i
+  `server/test/crm-deals.test.ts` (47): D1 och D2 prövar nyckelns form med
+  `nyckelbrister`, D3 jämför läsningens verkliga null-fält med en literal och
+  kräver att båda avsnitten säger när vart och ett är null (`nullbrister`), D4
+  är den negativa kontrollen för båda hjälparna, och G4 visar att ett löftes
+  gravsten för `linear:LOC-7201` spärrar affären med samma nyckel. Ingen
+  ändring i beteendet. **Inte kört:** byggaren har inga kommandon i den här
+  körningen; kedjans körning av typkontrollen och sviten är belägget.
 - **2026-11-22 — Story 7.1 (crm), omtag efter code-review (fem fynd, lagade
   som felklasser):** (1) GDPR-raderingen skriver gravstenar
   `('linear', source_ref)` för kundens cacherader i samma sats som de övriga
