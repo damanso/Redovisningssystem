@@ -18,6 +18,10 @@
 //     bärs därför inte av kolumnen utan av FR-19-provet, som läser just den här
 //     funktionens svar. Tjänsten döljer alltså aldrig en lucka och fyller den
 //     aldrig med en gissning — den redovisar den som NULL.
+//   * **`namn` läses ur avtalsdelen, det lagras inte här** (Story 2.4, FR-27).
+//     Importen är den enda skrivaren av en leverabels avtalsdel och skriver
+//     koden som namn bara när texten saknar ett; därför betyder ett namn lika med
+//     koden ”namn saknas i kontraktet”, och svaret säger det med NULL.
 //   * **`dagar_i_laget` HÄRLEDS, den lagras aldrig** (FR-37). Åldern räknas i
 //     SELECT:en ur den append-only historiken (`uppdrag_leverabel_handelse`,
 //     0068:132 — "status utan historik är en gissning"). En `status_sedan`-kolumn
@@ -34,6 +38,12 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
+  /**
+   * Leverabelns namn ur avtalsdelens första version med samma kod (Story 2.4).
+   * NULL när kontraktet saknar namnet: importen skriver då koden som delens
+   * namn, eftersom `contract_parts.name` är NOT NULL, och koden är inget namn.
+   */
+  namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
   uppfoljningsmatt: string | null;
@@ -79,7 +89,11 @@ export async function lasLeverabelregister(
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
   const res = await client.query<Leverabelrad>(
-    `SELECT l.contract_id, l.kod, l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
+    `SELECT l.contract_id, l.kod,
+            NULLIF((SELECT p.name FROM contract_parts p
+                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h

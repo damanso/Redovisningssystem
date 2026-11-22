@@ -153,6 +153,62 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 2.4, omtag efter kedjans körning (ett rött prov, V1):**
+  Kedjans `npm test` fällde V1 i `server/test/uppdragsytan-kontraktsluckor.test.ts`
+  på `toContain('<th>Kod</th><th>Namn</th>')`. Vyn var rätt; provet var fel.
+  Layouten kör husets `staplabaraTabeller` på sidan, och den skriver om varje
+  `<th>` till `<th role="columnheader">` och ger `<tr>` och `<td>` roller och
+  etiketter, så en literal tagg i ett vyprov kan aldrig matcha. Klassen lagad i
+  V-avsnittets läsare: en strukturell tabelläsare (`lasTabell`) som matchar varje
+  tagg med godtyckliga attribut och ger rubrikerna och en post per rad, och
+  `huvud` och `kort` utan literala taggar (samma mönster som radläsarna i
+  `uppdragsytan-plan` och `crm-views`). V1 börjar med att läsarna ger samma svar
+  för markup före och efter `staplabaraTabeller` och fäller en tabell utan Kod och
+  ett saknat kort. Kontrollerna är nu slutna: alla sexton celler för de fyra
+  fälten är lika med parserns värde eller exakt `LUCKTEXT`, luckorna i tabellen
+  är exakt luckkontraktets fyra, mottagarparten står på sidan men i ingen rad,
+  och varje kort bär namnet eller namnluckan och klausulen eller klausulluckan,
+  men aldrig kriteriet, måttet eller mottagarparten. Ingen kod utanför provfilen
+  ändrades. **Körningarna: inte kört.** `npx vitest run …` och `npm run
+  typecheck` gav ordagrant ”This command requires approval”; kedjans körning är
+  belägget.
+
+- **2026-11-22 — Story 2.4 (2-4-saknade-kontraktsfalt-mottagarpart-och-godkannare-visas-arligt), dev-story:**
+  Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets schema
+  (`KontraktsmanifestSchema`), luckorna över en sluten fältlista med en textkälla
+  (`LUCKFALT`, `LUCKTEXT`, `kontraktsluckor`), parterna med en källa per avtal
+  (`kontraktsparter`), mottagarpartens tre lägen (`mottagarpartlage`), ankaret
+  med åtta lägen (`manifestankare`, `ANKARORSAK`) och det tekniska importfelet
+  (`OLASTA`). Parsern läser `Mottagarpart` när `Godkännare` saknas. Migration
+  `0096_kontraktsparter.sql` (ännu inte i drift): `contracts.godkannandeform` och
+  `godkannare_kalla`, BASELINE-kommentarer på de fyra partskolumnerna och en egen
+  avslutstrigger; inga rader ändras. `importera_leveranskontrakt` och
+  `satt_baseline` tar valfritt `manifest`; källan är trippeln (avtal, text,
+  manifest); en text utan tillstånd eller en fryst text utan leverabler ger 400
+  `kontrakt_olasbart` före varje skrivning (det befintliga fallet för okänt
+  tillstånd i import-provet skrevs om i samma ändring). Davids ja skriver parterna
+  (steg g) och manifestets ankare (nytt steg j) och auditraden får
+  `parter_andrade` och `ankare` utan fritext. Registret får `namn`, kontraktsytan
+  `parter` och `luckor`, Leveranserna kolumnen Namn, namnraden på kortet och en
+  mottagarpartrad, Kontraktet panelen ”Parterna och luckorna”, och
+  baselineförslaget i undantagsvyn och Att göra parterna, ankaret, skillnaderna och
+  luckorna. Nya prov: `server/test/uppdragsytan-kontraktsluckor.test.ts` (R0–R6,
+  M1–M3, I1–I7, G1–G7, L1–L3, S1, V1–V3, U1–U4, D1). Ändrade prov:
+  import-provets fall för okänt tillstånd och register-provets nyckellista.
+  Avvikelse från berättelsens texttabell: lucktextens `var` för mottagarparten
+  slutar ”och manifestet för projektet” i stället för ”och projektets manifest”,
+  eftersom `manifest` nu är en nyckel i `satt_baseline` och Att göra-provet
+  (forslagskort-klartext T4.2) fäller ett ensamt nyckelnamn i synlig text.
+  `FIELD_LABELS` fick svenska etiketter för manifestets nycklar (T1.1).
+  **Körningarna: inte kört.** `npm run typecheck` och `npx vitest run …` gav
+  ordagrant ”This command requires approval”. Inget fall har visats rött eller
+  grönt av den här sessionen; kedjans körning är belägget, och ett rött fall
+  kommer tillbaka. Designskillen `impeccable` gick inte att ladda (”Execute
+  skill: impeccable”); vyerna följer husets klasser och undantagsvyns
+  definitionslista, utan ny CSS. I drift: migrationen lägger två nullbara
+  kolumner och en trigger. Parterna och ankaret för NVR-001 skrivs först när
+  Hermes lämnar manifestet (Story 2.5) och David godkänner förslaget.
+
 - **2026-11-21 — Story 2.3, omtag efter code-review (fem fynd, lagade som klasser):**
   (1) Ankaret och rytmen är BASELINE och tas inte emot på ett avslutat uppdrag:
   `satt_bedomningsankare` läser projektets status i den låsta frågan och svarar

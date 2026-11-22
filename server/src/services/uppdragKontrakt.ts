@@ -26,12 +26,18 @@
 //     sitt eget `change_reason` — skälet 0068:s trigger kräver. Utan orsaken
 //     vore tilläggslistan en lista över att något ändrades, aldrig varför.
 //
+// Story 2.4 lägger till parterna och luckorna: mottagarparten, godkännandeformen
+// och källan ur `lasKontraktsparter`, och de kontraktsburna fält som saknas ur
+// den rena `kontraktsluckor` över registrets rader. Inga egna texter här.
+//
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
 import type { PoolClient } from 'pg';
 import { listContracts, type Delforbrukning, type Kontrakttillstand, type Takversion } from './contracts.js';
 import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
+import { kontraktsluckor, mottagarpartlage, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
 
 export interface LasKontraktsytaInput {
   contract_id: string;
@@ -93,6 +99,20 @@ export interface Scopelinjerad {
   ordning: number;
 }
 
+/**
+ * Avtalets lagrade parter (Story 2.4, FR-13 och FR-27). `lage` avgörs här och
+ * bara här: varje läsväg som visar lagrade parter går genom `lasKontraktsparter`,
+ * så att ”saknas i kontraktet” aldrig sägs om ett kontrakt ingen läst in.
+ */
+export interface LagradeParter {
+  godkannare: string | null;
+  godkannare_eskalering: string | null;
+  godkannandeform: string | null;
+  /** Källan för de tre partsfälten: manifestets namn, leveranskontraktet eller NULL. */
+  kalla: string | null;
+  lage: Mottagarpartlage;
+}
+
 export interface Kontraktsyta {
   contract: {
     id: string;
@@ -118,6 +138,40 @@ export interface Kontraktsyta {
   scopelinje: Scopelinjerad[];
   /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn (Story 2.6). */
   scopelinje_lage: Scopelinjelage;
+  /** Mottagarparten, godkännandeformen och källan — ur `lasKontraktsparter` (Story 2.4). */
+  parter: LagradeParter;
+  /** De kontraktsburna fält som saknas, ur `kontraktsluckor`. Tom för ett avtal utan register. */
+  luckor: Lucka[];
+}
+
+/**
+ * De lagrade parterna och om kontraktet är inläst — det vill säga om avtalet har
+ * ett leverabelregister, som bara godkännandet av baselinen skriver. Ett okänt
+ * avtal, eller ett grannbolags, ger 404.
+ */
+export async function lasKontraktsparter(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<LagradeParter> {
+  const res = await client.query<{
+    godkannare: string | null; godkannare_eskalering: string | null; godkannandeform: string | null;
+    godkannare_kalla: string | null; inlast: boolean;
+  }>(
+    `SELECT c.godkannare, c.godkannare_eskalering, c.godkannandeform, c.godkannare_kalla,
+            EXISTS (SELECT 1 FROM uppdrag_leverabel l
+                     WHERE l.company_id = c.company_id AND l.contract_id = c.id) AS inlast
+       FROM contracts c
+      WHERE c.id = $1 AND c.company_id = $2`,
+    [contractId, companyId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('contract');
+  const parter = {
+    godkannare: rad.godkannare,
+    godkannare_eskalering: rad.godkannare_eskalering,
+    godkannandeform: rad.godkannandeform,
+    kalla: rad.godkannare_kalla,
+  };
+  return { ...parter, lage: mottagarpartlage(parter, rad.inlast).lage };
 }
 
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
@@ -207,6 +261,12 @@ export async function lasKontraktsyta(
     [companyId, input.contract_id],
   );
 
+  // Story 2.4 (FR-27): parterna ur sin enda läsväg, och luckorna ur registrets
+  // rader. Ett avtal utan register är inte inläst och har inga luckor att visa.
+  const parter = await lasKontraktsparter(client, companyId, input.contract_id);
+  const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
+  const luckor = register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare });
+
   return {
     contract: {
       id: avtal.id,
@@ -223,5 +283,7 @@ export async function lasKontraktsyta(
     tillagg,
     scopelinje: linjer.rows,
     scopelinje_lage: scopelinjelage(avtal.kontrakt_tillstand, linjer.rows),
+    parter,
+    luckor,
   };
 }

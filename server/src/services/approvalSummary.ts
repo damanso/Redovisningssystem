@@ -11,10 +11,14 @@
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
+import {
+  KontraktsmanifestSchema, kontraktsluckor, kontraktsparter, lagradMottagarparttext, manifestankare, mottagarpartlage,
+} from '../lib/kontraktsluckor.js';
 import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
 import { lasBaselineandring } from './uppdragImport.js';
+import { lasKontraktsparter } from './uppdragKontrakt.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 export const CARD_TEXT = {
@@ -101,6 +105,14 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   belopp_ore: 'Belopp',
   older_than_months: 'Äldre än (månader)',
   beslutsunderlag: 'Beslutsunderlag',
+  // Story 2.4: projektets manifest i `satt_baseline`. Etiketten nämner inte
+  // nyckelns namn ensamt: kortet visar aldrig ett tekniskt fältnamn.
+  manifest: 'Manifestet',
+  godkannare: 'Godkännare',
+  godkannare_eskalering: 'Eskalering',
+  godkannandeform: 'Godkännandeform',
+  bedomning_ankare: 'Ankardatum',
+  bedomning_ankare_kalla: 'Ankarets källa',
   organization_id: 'Organisation',
   billable: 'Debiterbar',
   parent_part_id: 'Överordnad avtalsdel',
@@ -462,6 +474,9 @@ const kr = (ore: number): string => formatOre(ore, { currency: true });
 /** En organisations roll i ord (0087: kund, leverantor, partner, myndighet, intern). */
 const ROLL_ORD = { kund: 'Kund', leverantor: 'Leverantör', partner: 'Partner', myndighet: 'Myndighet', intern: 'Intern' } as const;
 
+/** Partsfälten i ord, för skillnaden mellan kontraktstexten och manifestet (Story 2.4). */
+const PARTSFALT_ORD = { godkannare: 'godkännaren', godkannare_eskalering: 'eskaleringen' } as const;
+
 export async function explainApproval(
   client: PoolClient, companyId: string, action: string, input: Record<string, unknown>, base: string,
 ): Promise<ApprovalExplanation> {
@@ -470,8 +485,13 @@ export async function explainApproval(
   if (action === 'satt_baseline') {
     const contractId = asUuid(input.contract_id);
     if (!contractId || typeof input.kontraktstext !== 'string') return none;
-    const avtal = await one<{ name: string; project_id: string }>(client,
-      'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
+    const avtal = await one<{
+      name: string; project_id: string; bedomning_intervall_dagar: number | null; bedomning_veckodag: number | null;
+      bedomning_ankare: string | null; bedomning_ankare_kalla: string | null;
+    }>(client,
+      `SELECT name, project_id, bedomning_intervall_dagar, bedomning_veckodag,
+              bedomning_ankare::text AS bedomning_ankare, bedomning_ankare_kalla
+         FROM contracts WHERE id = $1 AND company_id = $2`, [contractId, companyId]);
     if (!avtal) return none;
     const kontrakt = parseLeveranskontrakt(input.kontraktstext);
     let andring: Awaited<ReturnType<typeof lasBaselineandring>>;
@@ -494,15 +514,46 @@ export async function explainApproval(
       ? `${SEP}Oförändrade versioner: ${andring.andraVersioner.map((d) => `${beskriv([d])} från ${d.valid_from}`).join(SEP)}` : '';
     const egnaDatum = [...new Set([...andring.efter, ...andring.andraVersioner].filter((d) => /^L[1-9]\d?$/.test(d.code)
       && (d.start_date !== null || d.end_date !== null)).map((d) => d.code))];
+
+    // Story 2.4 (FR-27, FR-13, FR-14): parterna, ankaret, skillnaderna mot
+    // texten och luckorna — samma rena regler som importen och godkännandet.
+    // Ett ogiltigt eller saknat manifest är inget manifest; förklaringen fäller
+    // aldrig. De lagrade parterna läses genom sin enda läsväg, så att ett avtal
+    // utan register får ”inte inläst” och aldrig ”saknas i kontraktet”.
+    const tolkat = KontraktsmanifestSchema.safeParse(input.manifest);
+    const manifest = tolkat.success ? tolkat.data : null;
+    const lagrade = await lasKontraktsparter(client, companyId, contractId);
+    const parter = kontraktsparter(kontrakt, manifest);
+    const parterEfter = parter.godkannare !== null ? parter : lagrade;
+    const rytm = kontrakt.rytm
+      ? { intervall_dagar: kontrakt.rytm.bedomning_intervall_dagar, veckodag: kontrakt.rytm.bedomning_veckodag }
+      : { intervall_dagar: avtal.bedomning_intervall_dagar, veckodag: avtal.bedomning_veckodag };
+    const ankare = manifestankare(manifest, rytm, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla });
+    const ankarSkrivs = ankare.lage === 'lagras' || ankare.lage === 'andras';
+    const luckor = kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? lagrade.godkannare });
+    const tillagg = [
+      ...parter.skillnader.map((s) => `Kontraktstexten anger ${PARTSFALT_ORD[s.falt]} ${s.kontraktstext}; manifestet (${parter.kalla}) `
+        + `anger ${s.manifest ?? 'inget'}, och manifestets värde gäller.`),
+      ...(ankare.lage === 'ej_angivet' ? [] : [ankare.orsak]),
+      ...(luckor.length === 0 ? [] : [`Luckor i kontraktet: ${luckor.map((l) => `${l.vad} — ${l.var}. ${l.ja_innebar}`).join(' ')}`]),
+    ];
+
     return {
       change: {
-        from: andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet',
-        to: beskriv(andring.efter) + andraVersioner,
+        from: (andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet')
+          + `${SEP}${lagradMottagarparttext(lagrade)}`
+          + (ankarSkrivs
+            ? `${SEP}${avtal.bedomning_ankare === null ? 'Ankardatum: datum saknas' : `Ankardatum ${avtal.bedomning_ankare} (${avtal.bedomning_ankare_kalla})`}`
+            : ''),
+        to: beskriv(andring.efter) + andraVersioner
+          + `${SEP}${mottagarpartlage(parterEfter, true).text}`
+          + (ankarSkrivs ? `${SEP}Ankardatum ${ankare.ankare} (${ankare.kalla})` : ''),
       },
       why: `${andring.finnsBaseline ? `Återimporten uppdaterar avtalsdelarnas version från ${andring.valid_from}.` : 'Avtalets datum blir baseline v1.'} `
         + (egnaDatum.length > 0
           ? `Tidigare beslutade egna datum bevaras för ${egnaDatum.join(', ')}. Leverabler utan eget datum ärver sitt stegs intervall.`
-          : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.'),
+          : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.')
+        + tillagg.map((t) => ` ${t}`).join(''),
       source: { label: avtal.name, href: `${base}/projects/${avtal.project_id}/kontraktet` },
     };
   }

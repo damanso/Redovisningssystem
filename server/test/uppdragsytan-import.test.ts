@@ -755,11 +755,15 @@ describe('baselineförslaget och godkännandet', () => {
     });
   }
 
-  it('okänt tillstånd och ogiltig ram förhandsvisas med NULL och saknade_falt', async () => {
+  // Story 2.4 (kriterium 8, beslut B7): en text utan känt tillstånd är ett
+  // tekniskt importfel. Ett 200-svar med NULL hade sett ut som en lyckad import.
+  it('okänt tillstånd ger 400 kontrakt_olasbart med det olästa fältet, och ingenting skrivs', async () => {
     const contractId = (await ok('create_contract', { project_id: await nyttUppdrag('Otolkad ram'), name: 'Otolkat kontrakt' })).id as string;
     const fore = await importtillstand();
-    const svar = await ok('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: 'kontrakt_tillstand: FRYST\n**Period:** oklart\n**Ram:** oklart · **Timmar:** oklart' });
-    expect(svar).toMatchObject({ kontrakt_tillstand: null, forslag: { uppdrag: { start_date: null, end_date: null, date_precision: null, cap_hours: null, cap_amount_ore: null }, saknade_falt: expect.arrayContaining(['ram.start_date', 'ram.end_date', 'ram.date_precision', 'ram.cap_hours', 'ram.cap_amount_ore']) } });
+    const svar = await act('importera_leveranskontrakt', { contract_id: contractId, kontraktstext: 'kontrakt_tillstand: FRYST\n**Period:** oklart\n**Ram:** oklart · **Timmar:** oklart' });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(400);
+    expect(svar.body.error).toBe('kontrakt_olasbart');
+    expect((svar.body as unknown as { details?: { olast?: unknown } }).details?.olast).toEqual(['kontrakt_tillstand']);
     expect(await importtillstand()).toEqual(fore);
   });
 
