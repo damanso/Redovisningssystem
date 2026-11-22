@@ -860,7 +860,10 @@ export interface Person {
 const PERSON_COLUMNS = 'id, name, email, phone, role_title, organization_id, external_ref, notes, sfar';
 
 export interface UpsertPersonInput {
-  name: string;
+  /** Krävs utan `person_id`, eftersom namnet då är nyckeln; med det betyder utelämnat oförändrat. */
+  name?: string;
+  /** Raden slås upp på id i bolaget och aldrig på namn eller e-post (story 4.3). */
+  person_id?: string;
   email?: string;
   phone?: string;
   role_title?: string;
@@ -883,21 +886,37 @@ export interface UpsertPersonInput {
  * Saknar händelsen e-post matchas namnet inom organisationen ÄVEN mot rader som
  * redan har en e-post. Ett kalenderevent bär sällan adressen, och utan det här
  * hade varje möte lagt en ny namnlös dubblett bredvid den riktiga personen.
+ *
+ * Med `person_id` hoppas båda stegen över: raden slås upp på id i bolaget
+ * (annars 404) och aldrig på namn eller e-post. En rättelse av namnet hade
+ * annars inte hittat raden och lagt en ny person bredvid den (story 4.3).
  */
 export async function upsertPerson(
   client: PoolClient, companyId: string, userId: string, input: UpsertPersonInput, origin: WriteOrigin,
 ): Promise<Person & { created: boolean; kept_human_fields: string[] }> {
-  const name = input.name.trim();
-  if (!name) throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
+  // Id:t är en nyckel, inget fält: det får varken ursprung eller skydd.
+  const { person_id: personId, ...fields } = input;
+  const name = fields.name?.trim();
+  if (name === '' || (name === undefined && personId === undefined)) {
+    throw new BadRequestError('invalid_name', 'namnet får inte vara tomt');
+  }
+  // Bara skickade fält skrivs och får ursprung; ett utelämnat namn är oförändrat.
+  const skickat = { ...fields, ...(name === undefined ? {} : { name }) };
   if (input.organization_id) await assertOrganization(client, companyId, input.organization_id);
 
   type PersonHit = { id: string; name: string; organization_id: string | null; sfar: Sfar };
-  const byEmail = input.email
+  const byId = personId === undefined
+    ? null
+    : await client.query<PersonHit>(
+        'SELECT id, name, organization_id, sfar FROM crm.people WHERE company_id = $1 AND id = $2',
+        [companyId, personId]);
+  if (byId && !byId.rows[0]) throw new NotFoundError('person');
+  const byEmail = !byId && input.email
     ? await client.query<PersonHit>(
         'SELECT id, name, organization_id, sfar FROM crm.people WHERE company_id = $1 AND lower(email) = lower($2)',
         [companyId, input.email])
     : null;
-  const byName = byEmail?.rows[0]
+  const byName = byId || byEmail?.rows[0]
     ? null
     : await client.query<PersonHit>(
         `SELECT id, name, organization_id, sfar FROM crm.people
@@ -909,7 +928,7 @@ export async function upsertPerson(
            AND ($4::boolean OR email IS NULL)
          ORDER BY created_at LIMIT 1`,
         [companyId, input.organization_id ?? null, name, !input.email]);
-  const hit = byEmail?.rows[0] ?? byName?.rows[0];
+  const hit = byId?.rows[0] ?? byEmail?.rows[0] ?? byName?.rows[0];
 
   if (!hit) {
     // Steg 3 (0089, P1): en privat person ligger aldrig på en kundkopplad
@@ -928,7 +947,7 @@ export async function upsertPerson(
         input.sfar ?? 'foretag'],
     );
     await recordProvenance(client, companyId, userId, { person_id: r.rows[0]!.id },
-      provenanceFor(PERSON_PROVENANCE_FIELDS, { ...input, name }, origin));
+      provenanceFor(PERSON_PROVENANCE_FIELDS, skickat, origin));
     await writeCrmAudit(client, {
       companyId, userId, action: 'crm.person_created', entityType: 'person', entityId: r.rows[0]!.id,
       details: { source: origin.source, sfar: r.rows[0]!.sfar },
@@ -939,7 +958,7 @@ export async function upsertPerson(
   // Samma regel som för organisationen: en rättad titel eller ett rättat
   // telefonnummer överlever nästa synkkörning.
   const { input: patch, blocked } = await guardHumanFields(
-    client, companyId, { person_id: hit.id }, origin.source, { ...input, name } as Record<string, unknown>,
+    client, companyId, { person_id: hit.id }, origin.source, skickat as Record<string, unknown>,
   );
 
   // Steg 3 (0089): en privat person ligger aldrig hos kunden (P1), och en person
@@ -1008,7 +1027,7 @@ export async function upsertPerson(
   await writeCrmAudit(client, {
     companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: hit.id,
     details: {
-      matched_on: byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
+      matched_on: byId ? 'id' : byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
       // Samma skäl som för organisationen: ursprunget kan raderas, loggen inte.
       sfar: r.rows[0]!.sfar,
       ...(blocked.length ? { kept_human_fields: blocked } : {}),
@@ -1537,7 +1556,11 @@ export async function listCommitments(
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
             c.snoozed_until::text, c.organization_id, c.sfar,
-            p.name AS person_name, o.name AS organization_name,
+            p.name AS person_name,
+            -- Vägen in till personen (story 4.3) går till hennes relation, som
+            -- kan skilja sig från löftets.
+            c.person_id, p.organization_id AS person_organization_id,
+            o.name AS organization_name,
             -- Steg 3 (krav 9): Min sida länkar ett privat ärende hos en leverantör
             -- till hushållets budget. Rollen läses, den kopieras inte.
             o.roll AS organization_roll

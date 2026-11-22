@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 4.3 (crm), personperspektivet i relationens tråd (FR-40):**
+  Rena funktioner i `server/src/lib/crmRules.ts`: `parsePersonParam` (tolkar
+  `?person=` som tillåtelselista som aldrig kastar; uuid med gemener eller
+  null), den fasta texten `PERSON_PARAM_ERROR`, `correctedPersonFields`
+  (namn, roll och telefon som ändrats mot det visade; tomt är oförändrat;
+  e-post tas aldrig med), `daysSince` och grenvalet `person` i `EDIT_TARGETS`.
+  `relationThread` i `server/src/services/crmThread.ts` och `get_crm_thread` tar
+  ett valfritt `person_id`: bara kontaktpunkter och löften där personen är part,
+  samma ordning och läsväg som 4.1, inga pengar, och 404 för en person utanför
+  organisationen. `upsertPerson` och `upsert_crm_person` tar ett valfritt
+  `person_id` som slår upp raden på id och aldrig på namn eller e-post (`name`
+  krävs bara utan det; auditraden säger `matched_on: 'id'`).
+  `list_crm_commitments` och löftena i `crm_today` bär `person_id` och
+  `person_organization_id`. I `server/src/http/view/routes.ts`: personvalet i
+  kortet Personer (`aria-current="true"` och flikarnas valform), personhuvudet
+  först i trådkolumnen (roll, e-post och telefon med ursprung och Stämmer,
+  senaste kontakt, «Rätta personen», «← Hela relationen»), personlägets tre
+  tomlägen, `?person=` i flikar, läsväg och formulär (`lageHref`), 400-sida för
+  en ogiltig adress, och vägarna in (`personLank`) från åtagandevyns Vem,
+  sökträffen och Idag; en person utan organisation står som text. Två
+  assertioner skrevs om eftersom de krävde det avskaffade beteendet:
+  crm-review-fixes (sökträffen fick inte bära `?person=`, nu krävs adressen med
+  personens id) och crm-design-parity (kontaktpersonen på Idag är nu en länk).
+  Avsnittet «Personperspektivet i tråden (crm 4.3)» sist i
+  `docs/MCP_ACTIONS.md`. Prov: PC1–PC4 i `server/test/crm-rules.test.ts`;
+  PP1–PP4, PA1–PA2, PV1–PV7, PR1–PR4, PL1–PL3 och PD1 i
+  `server/test/crm-thread-paging.test.ts`. Ingen migration, rutt, åtgärd,
+  tabell, CSS-klass, importsats i källträdet eller beroende. **Inte kört i den
+  här sessionen:** `npm run typecheck` och `npm test` — sandlådan svarade
+  ”This command requires approval”; kedjans körning är belägget. **Rött utanför
+  repot:** som i raden nedan; inget av de icke-gröna Hermes-proven gäller den
+  här berättelsen.
+  **Omtag 1:** kedjans svit fällde PL1. Provets radmönster `<tr>` träffade
+  aldrig åtagandevyns rader, eftersom `layout()` via `staplabaraTabeller`
+  (html.ts) skriver varje tbody-rad som `<tr role="row">`; källan var rätt.
+  `delMed` i provfilen tar nu taggen och en valfri klass, tål vilka attribut
+  som helst och fäller provet när elementet saknas, så att ingen negativ
+  assertion prövas mot en tom sträng; PL1–PL3 går genom den. Ingen källfil
+  ändrad. Inte kört i sandlådan (inga kommandon); kedjans körning avgör.
 - **2026-11-22 — Story 4.1 (crm), omtag efter kodgranskningen (tre fynd):**
   (1) `get_crm_thread`:s `before.at` prövas nu med `isThreadTime` i
   `server/src/services/crmThread.ts` (exakt `toISOString`-form, år 0001–9999,

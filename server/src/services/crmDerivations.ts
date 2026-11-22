@@ -405,7 +405,10 @@ export async function todayView(
   const commitments = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
             c.source_system, c.source_ref, c.organization_id, c.sfar,
-            p.name AS person_name, o.name AS organization_name,
+            p.name AS person_name,
+            -- Personens egen relation, för vägen in till personläget (story 4.3).
+            c.person_id, p.organization_id AS person_organization_id,
+            o.name AS organization_name,
             (c.due_date < $2::date) AS overdue
      FROM crm.commitments c
      LEFT JOIN crm.people p ON p.id = c.person_id AND p.company_id = c.company_id

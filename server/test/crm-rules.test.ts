@@ -1,6 +1,6 @@
 // Story 1.2: formulärets rena tolkning får bara skicka ändrade fält, aldrig gissa om ogiltiga värden.
 import { describe, expect, it } from 'vitest';
-import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_KINDS } from '../src/lib/crmRules.js';
+import { correctedEventFields, dateToTimestamp, correctedOrganizationFields, parseOpenForm, statusAfterLink, linkStatusOutcome, mergeStatusOutcome, isProjectCode, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, nameVariantOrganization, companyFormSuffix, syncedCommitmentStatus, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_KINDS, parsePersonParam, correctedPersonFields, daysSince } from '../src/lib/crmRules.js';
 import { isThreadTime, THREAD_FILTERS } from '../src/services/crmThread.js';
 
 const now = new Date('2026-10-22T08:00:00Z');
@@ -514,6 +514,68 @@ describe('trådens markör (story 4.1)', () => {
       expect(Number.isNaN(at.getTime()), tid).toBe(false);
       expect(() => formatThreadCursor({ at, kind: 'interaction', ref_id: UUID }), tid).not.toThrow();
       expect(formatThreadCursor({ at, kind: 'interaction', ref_id: UUID }), tid).toBeNull();
+    }
+  });
+});
+
+describe('personens adress och formulär (story 4.3)', () => {
+  const UUID = '3f2b6c1e-8a4d-4e2f-9b1a-0c5d7e9f1a2b';
+  const ANDRA = '7a1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
+  const VISAT = {
+    name: 'Anna Andersson', fore_name: 'Anna Andersson',
+    role_title: 'Beställare', fore_role_title: 'Beställare',
+    phone: '', fore_phone: '',
+  };
+
+  it('PC1 en uuid ger sig själv med gemener; nio andra värden ger null utan att kasta', () => {
+    expect(parsePersonParam(UUID)).toBe(UUID);
+    expect(parsePersonParam(UUID.toUpperCase())).toBe(UUID);
+    const ogiltiga: unknown[] = [undefined, '', 'inte-ett-id', [UUID, ANDRA], 42, { id: UUID }, `${UUID} `, 'constructor', '__proto__'];
+    expect(ogiltiga).toHaveLength(9);
+    for (const value of ogiltiga) {
+      expect(() => parsePersonParam(value), JSON.stringify(value)).not.toThrow();
+      expect(parsePersonParam(value), JSON.stringify(value)).toBeNull();
+    }
+  });
+
+  it('PC2 bara namn, roll och telefon som ändrats mot det visade skickas; tomt är oförändrat', () => {
+    // (a) Rollen ändrad, resten som visat.
+    expect(correctedPersonFields({ ...VISAT, role_title: 'Inköpschef' })).toEqual({ role_title: 'Inköpschef' });
+    // (b) En tom roll mot en ifylld är oförändrad.
+    expect(correctedPersonFields({ ...VISAT, role_title: '' })).toEqual({});
+    // (c) Ett nytt namn trimmas.
+    expect(correctedPersonFields({ ...VISAT, name: '  Anna Berg  ' })).toEqual({ name: 'Anna Berg' });
+    // (d) Bara blanktecken runt det visade namnet är ingen ändring.
+    expect(correctedPersonFields({ ...VISAT, name: '  Anna Andersson ' })).toEqual({});
+    // (e) Telefonen utan visat värde.
+    expect(correctedPersonFields({ phone: ' 0701112233 ' })).toEqual({ phone: '0701112233' });
+    // (f) En annan typ lämnas åt åtgärdens synliga validering.
+    expect(correctedPersonFields({ ...VISAT, role_title: ['Inköpschef', 'Vd'] })).toEqual({ role_title: ['Inköpschef', 'Vd'] });
+    // (g) E-post, organisation och personens id tas aldrig med.
+    expect(correctedPersonFields({ ...VISAT, email: 'anna@exempel.se', organization_id: UUID, person_id: ANDRA })).toEqual({});
+    expect(correctedPersonFields({ email: 'anna@exempel.se', fore_email: '', organization_id: UUID, person_id: ANDRA, role_title: 'Vd' }))
+      .toEqual({ role_title: 'Vd' });
+    // (h) Ett underlag som inte är ett vanligt objekt.
+    for (const underlag of [null, ['role_title', 'Vd'], 'role_title=Vd']) {
+      expect(correctedPersonFields(underlag), JSON.stringify(underlag)).toEqual({});
+    }
+  });
+
+  it('PC3 grenvalet person är slutet som kundkort, och andra stavningar och typer ger null', () => {
+    expect(parseEditTarget('person')).toBe('person');
+    expect(parseEditTarget('kundkort')).toBe('kundkort');
+    for (const value of ['PERSON', 'person ', ' person', 'constructor', ['person']]) {
+      expect(parseEditTarget(value), JSON.stringify(value)).toBeNull();
+    }
+  });
+
+  it('PC4 hela dygn mellan två kalenderdatum, och null för ett datum som inte finns', () => {
+    expect(daysSince('2026-02-20', '2026-03-01')).toBe(9);
+    expect(daysSince('2026-02-28', '2026-03-01')).toBe(1);
+    expect(daysSince('2024-02-28', '2024-03-01')).toBe(2);
+    expect(daysSince('2026-03-01', '2026-03-01')).toBe(0);
+    for (const [dag, idag] of [['inte-ett-datum', '2026-03-01'], ['2026-02-30', '2026-03-01'], ['2026-03-01', '2026-13-01']] as const) {
+      expect(daysSince(dag, idag), `${dag} → ${idag}`).toBeNull();
     }
   });
 });

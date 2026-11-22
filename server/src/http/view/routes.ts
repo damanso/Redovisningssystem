@@ -62,8 +62,8 @@ import {
 } from '../../lib/uppdragsplan.js';
 import { ContractDraftSchema, type ContractDraftFields, type Kundtraff } from '../../services/contractExtraction.js';
 import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js';
-import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations } from '../../services/crmRelations.js';
-import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR } from '../../lib/crmRules.js';
+import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations, listPeople } from '../../services/crmRelations.js';
+import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
 import { contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
@@ -6804,15 +6804,15 @@ function threadChip(e: ThreadEvent): Raw {
  *  här är början. Början och spärren läses ur `harAldre`, aldrig ur att
  *  markören saknas: en äldre rad vars tidpunkt markören inte bär (år före 1
  *  eller efter 9999) ger ingen länk, och då säger sidan det i stället för att
- *  tiga eller påstå att det är början. Varje href byggs som en hel sträng och
- *  interpoleras som ett värde, så att mallen skriver `&` som `&amp;`. */
+ *  tiga eller påstå att det är början. Varje href byggs av `lageHref`, så att
+ *  en vald person följer med åt båda hållen (story 4.3). */
 function tradensSidor(
-  back: string, filter: ThreadFilter,
+  back: string, filter: ThreadFilter, personId: string | null,
   lage: { harFore: boolean; harAldre: boolean; nastaMarkor: string | null }, rader: readonly ThreadEvent[],
 ): Raw {
   const { harFore, harAldre, nastaMarkor } = lage;
-  const nyasteHref = `${back}?visa=${filter}`;
-  const aldreHref = nastaMarkor === null ? null : `${back}?visa=${filter}&fore=${encodeURIComponent(nastaMarkor)}`;
+  const nyasteHref = lageHref(back, filter, personId);
+  const aldreHref = nastaMarkor === null ? null : lageHref(back, filter, personId, nastaMarkor);
   const nyast = rader[0];
   const aldst = rader.at(-1);
   // .actions saknar egen marginal; utan avståndet ligger knapparna mot trådens ram.
@@ -6835,6 +6835,72 @@ function tradensSidor(
       ? html`<p class="muted">Det här är relationens första registrerade händelse.</p>`
       : ''
   }</div>`;
+}
+
+/**
+ * Relationssidans adress i ett läge (A-7, «Tillstånd som adresser», story 4.3):
+ * alltid `?visa=` först, sedan `&person=` när en person är vald och sist
+ * `&fore=`. Utan person och markör är strängen exakt den flikarna och läsvägen
+ * skrev före personläget. Den byggs som en hel sträng och interpoleras som ett
+ * värde, så att mallen skriver `&` som `&amp;`.
+ */
+function lageHref(back: string, filter: ThreadFilter, personId: string | null, fore?: string): string {
+  return `${back}?visa=${filter}${personId === null ? '' : `&person=${encodeURIComponent(personId)}`}${
+    fore === undefined ? '' : `&fore=${encodeURIComponent(fore)}`}`;
+}
+
+/** Personhuvudets tre uppgifter, i UX K4:s ordning. */
+const PERSONHUVUDFALT = [
+  ['Roll', 'role_title'],
+  ['E-post', 'email'],
+  ['Telefon', 'phone'],
+] as const;
+
+/**
+ * Personhuvudet (FR-40, UX K4, story 4.3): en region vars rubrik är personens
+ * namn, så att skärmläsaren och ögat vet vems tråd som följer. Roll, e-post och
+ * telefon bär 1.3:s ursprungsregel; senaste kontakt härleds ur personens egna
+ * kontaktpunkter och säger i ord när det inte finns någon. Huvudet står först i
+ * trådkolumnen och har inga inre sektioner.
+ */
+function personhuvud(
+  companyId: string, orgId: string, back: string, filter: ThreadFilter,
+  person: {
+    id: string; name: string; role_title: string | null; email: string | null; phone: string | null;
+    provenance: Record<string, ProvenanceView>;
+  },
+  senasteKontakt: unknown,
+): Raw {
+  const har = lageHref(back, filter, person.id);
+  const dag = senasteKontakt ? dayOf(senasteKontakt) : null;
+  const dagar = dag === null ? null : daysSince(dag, new Date().toISOString().slice(0, 10));
+  return html`<section class="factcard" aria-labelledby="personhuvud-rubrik">
+    <h2 class="factcard__head" id="personhuvud-rubrik" style="margin:0">${person.name}</h2>
+    ${PERSONHUVUDFALT.map(([etikett, field]) => html`<div class="uppgift"><span class="k">${etikett}</span>${ursprungsfalt({
+      klass: 'v', varde: html`${person[field] ?? '—'}`, harVarde: Boolean(person[field]), p: person.provenance?.[field],
+      action: `/app/c/${companyId}/relations/${orgId}/confirm`, dolt: { namn: 'person_id', id: person.id }, field, back: har,
+    })}</div>`)}
+    <div class="uppgift"><span class="k">Senaste kontakt</span><span class="v">${
+      dag === null
+        ? `Ingen registrerad kontakt med ${person.name} ännu.`
+        : dagar === null ? dag : `${dag} · ${String(dagar)} d sedan`
+    }</span></div>
+    ${/* Rättelsen bär personens id, så att uppslaget aldrig görs på ett namn
+         som just ändras. E-posten är personens nyckel och rättas inte här. */ ''}
+    <details class="rattaform"><summary>Rätta personen</summary><form method="post" action="/app/c/${companyId}/relations/${orgId}/edit?handgrepp=person">
+      <input type="hidden" name="back" value="${har}">
+      <input type="hidden" name="person_id" value="${person.id}">
+      <label>Namn<input type="text" name="name" maxlength="150" value="${person.name}"></label>
+      <input type="hidden" name="fore_name" value="${person.name}">
+      <label>Roll<input type="text" name="role_title" maxlength="150" value="${person.role_title ?? ''}"></label>
+      <input type="hidden" name="fore_role_title" value="${person.role_title ?? ''}">
+      <label>Telefon<input type="text" name="phone" maxlength="40" value="${person.phone ?? ''}"></label>
+      <input type="hidden" name="fore_phone" value="${person.phone ?? ''}">
+      <button class="btn btn--primary btn--sm" type="submit">Spara</button>
+      <p class="hint">Det du sparar här räknas som ditt beslut. Fält du inte ändrar fortsätter följa källan. Ett tomt fält lämnas oförändrat.</p>
+    </form></details>
+    <p style="margin:10px 0 0"><a href="${lageHref(back, filter, null)}">← Hela relationen</a></p>
+  </section>`;
 }
 
 /** Källsystemet med versal, som ett namn och inte som en nyckel. */
@@ -6918,6 +6984,25 @@ function kallrad(companyId: string, kalla: Kalla, rattad: boolean): Raw {
     ? kalla.source_ref : null;
   const lank = kallLank(companyId, kalla);
   return html`${namn}${nyckel ? html` · <span class="thread__ref">${nyckel}</span>` : ''}${lank ? html` · <a href="${lank.href}" target="_blank" rel="noopener" aria-label="${lank.etikett}">Öppna ↗</a>` : ''}${rattad ? ' · rättad av dig' : ''}`;
+}
+
+/**
+ * Personens namn som väg in till personläget (FR-31, FR-40, UX K9, story 4.3),
+ * samma form på åtagandevyn, sökningen och Idag. Samma regel som `entityLink`,
+ * som inte kan bära en fråga: en länk bara när både personen och hennes
+ * organisation finns, annars text — aldrig en länk till ingenstans. Raderna är
+ * otypade, så fälten smalnas här och inte på ytorna.
+ */
+function personLank(
+  companyId: string, personId: unknown, organizationId: unknown, namn: unknown, opts: { class?: string } = {},
+): Raw {
+  const text = String(namn ?? '').trim() || '—';
+  if (typeof personId !== 'string' || !personId || typeof organizationId !== 'string' || !organizationId) {
+    return opts.class ? html`<span class="${opts.class}">${text}</span>` : html`${text}`;
+  }
+  const href = `/app/c/${encodeURIComponent(companyId)}/relations/${encodeURIComponent(organizationId)}?person=${encodeURIComponent(personId)}`;
+  // href före class, som entityLink: sökvägen är det som granskas.
+  return html`<a href="${href}" class="${opts.class ? `${opts.class} entity` : 'entity'}">${text}</a>`;
 }
 
 /** Tystnad i dagar som läsbar chip: ju längre tyst, desto varmare färg. */
@@ -7144,7 +7229,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                 ${s.revenue_12m_ore > 0 ? html`<span class="today__amt">${kronor(s.revenue_12m_ore)}</span>` : ''}
               </div>
               <p class="today__why">${s.reasons.join(' · ')}${
-                s.person ? html` <span class="muted">— kontakt: ${s.person.name}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
+                s.person ? html` <span class="muted">— kontakt: ${personLank(companyId, s.person.id, s.organization_id, s.person.name)}${s.person.email ? html` · ${s.person.email}` : ''}</span>` : ''
               }</p>
               <div class="quick">
                 ${rowAction(`/app/c/${companyId}/relations/${s.organization_id}/log`, 'Hörde av mig', { primary: true, back })}
@@ -7166,13 +7251,14 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
               <div class="today__head">
                 ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
                 ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
-                ${/* Har löftet en organisation går namnet dit. Saknas den finns
-                      ingen sida att gå till — personer nås via sin relation, och
-                      den här personen har ingen. Då står namnet som text hellre
-                      än som en länk till ingenstans. */ ''}
+                ${/* Har löftet en organisation går namnet dit. Saknas den går
+                      personens namn till hennes personläge i hennes relation
+                      (story 4.3). Har inte heller hon någon relation finns ingen
+                      sida att gå till, och namnet står som text hellre än som en
+                      länk till ingenstans. */ ''}
                 ${c.organization_id
                   ? entityLink(companyId, 'relation', c.organization_id as string, c.organization_name, { class: 'today__who' })
-                  : entityLink(companyId, 'relation', null, (c.person_name as string) ?? '—', { class: 'today__who' })}
+                  : personLank(companyId, c.person_id, c.person_organization_id, c.person_name ?? '—', { class: 'today__who' })}
               </div>
               <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, rattade.has(c.id as string))}</span></p>
               <div class="quick">
@@ -7203,17 +7289,15 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
 viewRouter.get('/c/:companyId/sok', pageFor('sok', 'Sök', async (client, companyId, req) => {
   const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : '';
   const hits = q.trim().length >= 2 ? await searchCrm(client, companyId, q) : [];
-  // En person öppnas i sin RELATION — det är där hennes historik finns. Saknar
-  // hon organisation går länken till listan; ett sökresultat som inte går att
-  // öppna är en återvändsgränd.
+  // En person öppnas i sitt personläge i sin RELATION (story 4.3) — det är där
+  // hennes historik finns. Saknar hon organisation finns ingen sida att gå
+  // till, och namnet står som text: en länk till en ofiltrerad lista hade sett
+  // ut som en väg till personen utan att vara det (UX K4).
   const traff = (h: { kind: string; href_id: string; organization_id: string | null; title: string }): Raw =>
     h.kind === 'organization' ? entityLink(companyId, 'relation', h.href_id, h.title, { class: 'sok__t' })
       : h.kind === 'customer' ? entityLink(companyId, 'customer', h.href_id, h.title, { class: 'sok__t' })
       : h.kind === 'supplier' ? entityLink(companyId, 'supplier', h.href_id, h.title, { class: 'sok__t' })
-      : h.organization_id ? entityLink(companyId, 'relation', h.organization_id, h.title, { class: 'sok__t' })
-      // Person utan organisation: ingen egen sida finns, men en träff som inte
-      // går att öppna är en återvändsgränd — registret är bättre än ingenting.
-      : html`<a class="sok__t" href="/app/c/${companyId}/relations">${h.title}</a>`;
+      : personLank(companyId, h.href_id, h.organization_id, h.title, { class: 'sok__t' });
   const märke = (kind: string): Raw =>
     kind === 'organization' ? chip('Relation', 'info') : kind === 'person' ? chip('Person', 'muted')
       : kind === 'customer' ? chip('Kund', 'ok') : chip('Leverantör', 'muted');
@@ -7582,6 +7666,14 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     res.status(400).type('html').send(errorPage(400, THREAD_CURSOR_ERROR).value);
     return;
   }
+  // Personen prövas likadant (story 4.3): en tom, upprepad eller handskriven
+  // ?person= får husets 400-sida med en fast text, och ingen fråga körs med den.
+  const harPerson = req.query.person !== undefined;
+  const personId = harPerson ? parsePersonParam(req.query.person) : null;
+  if (harPerson && personId === null) {
+    res.status(400).type('html').send(errorPage(400, PERSON_PARAM_ERROR).value);
+    return;
+  }
   const oppetFormular = parseOpenForm(req.query.oppna);
   const { name, objekt: objektnamn, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
@@ -7617,9 +7709,18 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
     const krock = andra.find((a) => a.id === krockId);
     const forval = oppetFormular === 'slaihop'
       ? mergeCandidate(req.query.med, andra.map((a) => a.id)) : null;
+    // Bara relationens egna personer kan väljas; en annan relations person eller
+    // en okänd uuid ger 404 före tråden (A-7). Senaste kontakt är personens
+    // egen, ur hennes kontaktpunkter.
+    const vald = personId === null ? undefined : o.people.find((p) => p.id === personId);
+    if (personId !== null && !vald) throw new NotFoundError('person');
+    const valdId = vald?.id ?? null;
+    const senasteKontakt = vald
+      ? (await listPeople(client, companyId, { organization_id: o.id })).find((p) => p.id === vald.id)?.last_contact_at ?? null
+      : null;
     // En rad extra avgör om det finns något äldre; bara de 60 första visas.
     const rader = await relationThread(client, companyId, orgId, {
-      filter, limit: THREAD_PAGE_SIZE + 1, before: fore ?? undefined,
+      filter, limit: THREAD_PAGE_SIZE + 1, before: fore ?? undefined, person_id: vald?.id,
     });
     const harAldre = rader.length > THREAD_PAGE_SIZE;
     const thread = rader.slice(0, THREAD_PAGE_SIZE);
@@ -7766,7 +7867,12 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                 ? html`<p class="muted" style="font-size:13px;margin:0">Inga personer ännu. De läggs upp av synken när ett mail kommer in.</p>`
                 : o.people.map((p) => html`<div class="person">
                     ${PERSONFALT.map(([field, klass]) => p[field] ? ursprungsfalt({
-                      klass, varde: html`${p[field]}`, harVarde: true, p: p.provenance?.[field],
+                      // Namnet väljer personen (UX K4); den valda bär flikarnas valform.
+                      klass, varde: field !== 'name' ? html`${p[field]}`
+                        : p.id === valdId
+                          ? html`<a href="${lageHref(back, filter, p.id)}" class="threadtab is-active" aria-current="true">${p.name}</a>`
+                          : html`<a href="${lageHref(back, filter, p.id)}">${p.name}</a>`,
+                      harVarde: true, p: p.provenance?.[field],
                       action: `/app/c/${companyId}/relations/${o.id}/confirm`, dolt: { namn: 'person_id', id: p.id }, field, back,
                     }) : '')}</div>`)
             }
@@ -7841,6 +7947,7 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
         </aside>
 
         <div class="relation__thread">
+          ${vald ? personhuvud(companyId, o.id, back, filter, vald, senasteKontakt) : ''}
           ${/* Snabbregistrering överst i tråden: post-it-testet. Ett fält, en
                kanal, ett klick — och tystnadsklockan nollställs. Ingen AI. */ ''}
           <form method="post" action="/app/c/${companyId}/relations/${o.id}/log" class="quickcapture">
@@ -7880,17 +7987,23 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
           <div class="threadtabs">
             ${(['allt', 'kontakt', 'pengar', 'loften'] as const).map((f) => html`<a
               class="threadtab ${f === filter ? 'is-active' : ''}"
-              href="${back}?visa=${f}"${f === filter ? html` aria-current="page"` : ''}>${
+              href="${lageHref(back, f, valdId)}"${f === filter ? html` aria-current="page"` : ''}>${
                 f === 'allt' ? 'Allt' : f === 'kontakt' ? 'Kontakt' : f === 'pengar' ? 'Pengar' : 'Löften'
               }</a>`)}
           </div>
 
           ${
-            thread.length === 0 && harFore
+            thread.length === 0 && vald && filter === 'pengar'
+              // Personläget har inga pengar (A-7): sagt i ord, inte som en tom
+              // lista som ser ut som en relation utan fakturor.
+              ? html`<div class="empty"><div class="big">Pengar hör till relationen och inte till en person.</div>Fakturor och betalningar visas i hela relationens tråd.</div>`
+              : thread.length === 0 && harFore
               // En gammal eller handskriven läsposition: relationen har
               // händelser, bara inga äldre — inte samma läge som en tom tråd.
               ? html`<div class="empty"><div class="big">Inga äldre händelser före den här positionen.</div></div>${
-                  tradensSidor(back, filter, { harFore, harAldre, nastaMarkor }, thread)}`
+                  tradensSidor(back, filter, valdId, { harFore, harAldre, nastaMarkor }, thread)}`
+              : thread.length === 0 && vald
+              ? html`<div class="empty"><div class="big">Inget registrerat med ${vald.name} under den här fliken ännu.</div></div>`
               : thread.length === 0
               ? html`<div class="empty"><div class="big">Inget har hänt ännu</div>
                   Logga en kontakt ovan, eller vänta på att synken hittar ett mail. Fakturor och betalningar dyker upp här av sig själva.</div>`
@@ -7923,11 +8036,11 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     ${falt && (e.kind === 'interaction' || e.kind === 'commitment')
                       ? handelsensGissningar(e.kind, falt, {
                         action: `${back}/confirm`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id! },
-                      }, `${back}?visa=${filter}`) : ''}
+                      }, lageHref(back, filter, valdId)) : ''}
                     ${rattaHandelse(e.kind, falt, {
                       action: `${back}/edit`, dolt: { namn: e.kind === 'interaction' ? 'interaction_id' : 'commitment_id', id: e.ref_id ?? '' },
-                    }, `${back}?visa=${filter}`, new Date().toISOString().slice(0, 10))}
-                  </div></li>`; })}</ol>${tradensSidor(back, filter, { harFore, harAldre, nastaMarkor }, thread)}`
+                    }, lageHref(back, filter, valdId), new Date().toISOString().slice(0, 10))}
+                  </div></li>`; })}</ol>${tradensSidor(back, filter, valdId, { harFore, harAldre, nastaMarkor }, thread)}`
           }
         </div>
       </div>`;
@@ -7981,10 +8094,11 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
               <td>${sfarMarke(c.sfar)}</td>
               <td>${c.body as string}${handelsensGissningar('commitment', falt, mal, back)}</td>
               ${/* "Vem" var tidigare en död sträng — personens namn om det fanns,
-                    annars bolagets. Personen har ingen egen sida (hon nås via
-                    sin relation), så namnet står kvar som text, men BOLAGET blir
-                    en väg vidare i stället för att raden slutar här. */ ''}
-              <td>${c.person_name ? html`${c.person_name as string}` : ''}${
+                    annars bolagets. Personen har ingen egen sida; hon nås i
+                    sitt personläge i sin relation (story 4.3), och saknar hon
+                    relation står namnet som text. BOLAGET blir en väg vidare i
+                    stället för att raden slutar här. */ ''}
+              <td>${c.person_name ? personLank(companyId, c.person_id, c.person_organization_id, c.person_name) : ''}${
                 c.organization_id
                   ? html`${c.person_name ? html` <span class="muted">·</span> ` : ''}${
                       entityLink(companyId, 'relation', c.organization_id as string, c.organization_name)}`
@@ -8341,6 +8455,10 @@ viewRouter.post('/c/:companyId/relations/:id/edit', page(async (req, res) => {
     await rattaKundkortet(req, res, companyId, id, body, back);
     return;
   }
+  if (handgrepp === 'person') {
+    await rattaPersonen(req, res, companyId, id, body, back);
+    return;
+  }
   if (targets.length > 1) {
     res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent(FORM_FEL)}`);
     return;
@@ -8389,6 +8507,28 @@ async function rattaKundkortet(
     return;
   }
   await runViewAction(req, res, companyId, 'update_customer', { ...result.fields, customer_id: customerId }, back);
+}
+
+/**
+ * Personhuvudets rättelse (story 4.3). Personen slås upp på id, och bara i den
+ * relation adressen pekar på: åtgärdens personmål bär inte relationen, så vyn
+ * prövar tillhörigheten först, som bekräftelserutten. Ett saknat eller ogiltigt
+ * id ger 404, och tomt eller oförändrat skriver ingenting.
+ */
+async function rattaPersonen(
+  req: Request, res: import('express').Response, companyId: string, id: string,
+  body: Record<string, unknown>, back: string,
+): Promise<void> {
+  const personId = UuidSchema.safeParse(Object.hasOwn(body, 'person_id') ? body.person_id : undefined);
+  if (!personId.success) throw new NotFoundError('person');
+  await withTenantTransaction(getUserId(req), companyId, (client) =>
+    assertPersonInOrganization(client, companyId, id, personId.data));
+  const falt = correctedPersonFields(body);
+  if (Object.keys(falt).length === 0) {
+    res.redirect(`${back}${back.includes('?') ? '&' : '?'}fel=${encodeURIComponent('Inget att rätta: inget fält ändrades.')}`);
+    return;
+  }
+  await runViewAction(req, res, companyId, 'upsert_crm_person', { ...falt, person_id: personId.data }, back);
 }
 
 // Steg 3 (B): byt sfär på organisationen, en av dess personer eller ett av dess

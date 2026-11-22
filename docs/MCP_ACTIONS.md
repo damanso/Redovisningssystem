@@ -2976,3 +2976,33 @@ en navigering under listan, och adressen bär läspositionen som
 klartext, aldrig 500. Har den äldsta visade händelsen en tidpunkt utanför åren
 1–9999 går ingen läsposition att bygga; sidan säger då att det finns äldre
 händelser som läsvägen inte når, i stället för att påstå att tråden börjar där.
+
+## Personperspektivet i tråden (crm 4.3)
+
+`get_crm_thread` tar ett valfritt `person_id`. Då visas bara kontaktpunkter och
+löften (med sin stängning) där personen är part, i samma ordning och med samma
+`before` och `limit` som relationens tråd. Pengar ingår inte i personläget,
+eftersom en faktura gäller relationen och inte en person: filtret `pengar` ger
+en tom lista. Personen måste höra till `organization_id`, annars 404; ett
+`person_id` som inte är en uuid ger 400 `validation_error`. Svaret är
+fortfarande en lista.
+
+`upsert_crm_person` tar ett valfritt `person_id`. Då slås personen upp på id i
+bolaget (404 annars) och aldrig på namn eller e-post, så att en rättelse av
+namnet ändrar samma rad i stället för att lägga en ny person bredvid. `name`
+behövs då inte, och bara de fält som skickas ändras och får ursprung efter
+anroparen. Utan `person_id` krävs `name` som förut, och ett anrop utan båda ger
+400 `validation_error`. Auditraden säger att personen matchades på id.
+
+Varje löfte i `list_crm_commitments` och i `crm_today` bär `person_id` och
+`person_organization_id`: personens id och hennes organisation, eller `null`
+när löftet saknar person eller personen saknar organisation. Övriga fält är
+oförändrade.
+
+I vyn tar relationssidan `?person=<id>`. Namnen i kortet Personer väljer
+personen, och den valda personens huvud står först i tråden med roll, e-post,
+telefon, senaste kontakt och «Rätta personen». Flikarna och läsvägen behåller
+`?person=`, och «← Hela relationen» lämnar personläget. Ett ogiltigt värde ger
+en 400-sida i klartext och en person utanför relationen 404, aldrig 500.
+Åtagandevyns Vem, sökträffen på en person och Idags personnamn leder till
+personläget i personens relation; en person utan organisation står som text.
