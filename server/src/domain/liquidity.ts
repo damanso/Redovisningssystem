@@ -103,3 +103,114 @@ export function rollLiquidity(input: LiquidityRollInput): LiquidityRoll {
     complete, unknown: [...input.unknown], counted, beyond_horizon: beyond,
   };
 }
+
+/**
+ * Det obelagda: poster utan belagd betalningstidpunkt. Listan är sluten och förs
+ * aldrig in i `rollLiquidity`, så inget av beloppen kan nå en månad; de redovisas
+ * för sig med belopp och skäl.
+ */
+export const NOT_COUNTED_LIQUIDITY_SOURCES: ReadonlyArray<{ id: string; side: LiquiditySide }> = [
+  { id: 'abonnemang', side: 'in' },
+  { id: 'ofakturerad_tid', side: 'in' },
+  { id: 'rot_rut_1513', side: 'in' },
+  { id: 'moms_26xx', side: 'out' },
+  { id: 'agi_rest_2710_2730', side: 'out' },
+  { id: 'bolagsskatt', side: 'out' },
+  { id: 'semesterloner_2920', side: 'out' },
+  { id: 'ovriga_kortfristiga_2890', side: 'out' },
+];
+
+/** Momsnettots reservation. Prognosens not och det obelagda skriver ut samma text. */
+export const VAT_UNSETTLED_NOTE = ' Momsnettot är ett kontosaldo utan periodmärkning: innehåller det ännu ej redovisade äldre perioder ligger en del av beloppet i praktiken redan förfallet — bokföringen visar inte vilken del, så hela nettot ställs mot nästa förfallodag.';
+
+/** Restsaldots reservation: kontot bär ingen period, så dagen är bara den närmaste. */
+export const AGI_REST_NOTE = 'Restsaldot på 2710/2730 är ett kontosaldo utan periodmärkning (SIE-import eller manuella verifikat): bokföringen visar inte vilken period det avser, så det ställs bara mot nästa AGI-förfallodag och räknas inte som belagt på den dagen.';
+
+export interface NotCountedInput {
+  recurring_month_ore: Ore;
+  unbilled_time_ore: Ore;
+  housework_receivable_ore: Ore;
+  vat_net_ore: Ore;
+  agi_account_rest_ore: Ore;
+  corporate_tax_ore: Ore;
+  holiday_pay_ore: Ore;
+  other_short_term_ore: Ore;
+  next_vat_due: string | null;
+  next_agi_due: string | null;
+}
+export interface LiquidityNotCounted {
+  id: string;
+  side: LiquiditySide;
+  amount_ore: Ore;
+  next_due_date: string | null;
+  reason: string;
+  reservation: string | null;
+}
+
+// Per id: beloppets fält, hur många månader det gäller, skälet och, för de
+// periodlösa skatteskulderna, nästa förfallodag med underlagets reservation.
+// Raderna byggs ur listan ovan; ett id utan post här kastar i stället för att
+// tyst falla bort.
+const NOT_COUNTED_DETAIL: Readonly<Record<string, {
+  amount: Exclude<keyof NotCountedInput, 'next_vat_due' | 'next_agi_due'>;
+  months: number;
+  due: 'next_vat_due' | 'next_agi_due' | null;
+  reservation: string | null;
+  reason: string;
+}>> = {
+  abonnemang: {
+    amount: 'recurring_month_ore', months: 3, due: null, reservation: null,
+    reason: 'Aktiva abonnemang, tre månader av radsumman exklusive moms. Ett abonnemang har ingen betalningstidpunkt förrän fakturan är ställd med förfallodatum; en bokförd faktura räknas under kundfakturor.',
+  },
+  ofakturerad_tid: {
+    amount: 'unbilled_time_ore', months: 1, due: null, reservation: null,
+    reason: 'Godkänd tid som ännu inte fakturerats, samma tal som rapporten Ofakturerad tid. Utfört arbete är ingen inbetalning förrän fakturan är ställd.',
+  },
+  rot_rut_1513: {
+    amount: 'housework_receivable_ore', months: 1, due: null, reservation: null,
+    reason: 'Fordran på Skatteverket för ROT/RUT-avdraget (konto 1513). Skatteverket bestämmer när den betalas; den har inget förfallodatum.',
+  },
+  moms_26xx: {
+    amount: 'vat_net_ore', months: 1, due: 'next_vat_due', reservation: VAT_UNSETTLED_NOTE.trim(),
+    reason: 'Momsnettot (utgående minus ingående moms, konto 26xx). Ett negativt belopp är en fordran på Skatteverket.',
+  },
+  agi_rest_2710_2730: {
+    amount: 'agi_account_rest_ore', months: 1, due: 'next_agi_due', reservation: AGI_REST_NOTE,
+    reason: 'Saldot på 2710/2730 som inte hör till ett obetalt lönebesked. De obetalda lönebeskeden räknas i månaderna på sin periods förfallodag.',
+  },
+  bolagsskatt: {
+    amount: 'corporate_tax_ore', months: 1, due: null, reservation: null,
+    reason: 'Uppskattad bolagsskatt på årets resultat. Den fastställs vid deklarationen och har ingen fast förfallodag inom horisonten.',
+  },
+  semesterloner_2920: {
+    amount: 'holiday_pay_ore', months: 1, due: null, reservation: null,
+    reason: 'Upplupna semesterlöner (konto 2920). De betalas när semestern tas ut eller vid slutlön; skulden har ingen förfallodag.',
+  },
+  ovriga_kortfristiga_2890: {
+    amount: 'other_short_term_ore', months: 1, due: null, reservation: null,
+    reason: 'Övriga kortfristiga skulder (konto 2890–2899): kända belopp utan förfallodag.',
+  },
+};
+
+/**
+ * En rad per obelagd post i listans ordning, också med beloppet 0. Beloppen
+ * behåller sitt tecken: ett negativt momsnetto är en fordran och står negativt.
+ */
+export function notCountedRows(input: NotCountedInput): LiquidityNotCounted[] {
+  for (const due of [input.next_vat_due, input.next_agi_due]) {
+    if (due !== null && !IsoDateSchema.safeParse(due).success) throw new Error('Ogiltig förfallodag för en obelagd post.');
+  }
+  return NOT_COUNTED_LIQUIDITY_SOURCES.map((source) => {
+    const detail = Object.hasOwn(NOT_COUNTED_DETAIL, source.id) ? NOT_COUNTED_DETAIL[source.id] : undefined;
+    if (!detail) throw new Error(`Obelagd post utan skäl: ${source.id}.`);
+    return {
+      id: source.id,
+      side: source.side,
+      // Abonnemanget: tre hela månader, så ett spill i produkten kastar också.
+      amount_ore: assertSafeOre(assertSafeOre(input[detail.amount]) * detail.months),
+      next_due_date: detail.due === null ? null : input[detail.due],
+      reason: detail.reason,
+      reservation: detail.reservation,
+    };
+  });
+}

@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (212
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (217
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 6.5 (crm), det obelagda redovisas för sig och
+  likviditeten blir en läsåtgärd (FR-44):** `liquidityByMonth` i
+  `server/src/services/reports.ts` returnerar nu `LiquidityByMonth`, alltså
+  6.2:s rullning och fältet `not_counted`. Fältet har en rad per post ur den
+  slutna listan `NOT_COUNTED_LIQUIDITY_SOURCES` (åtta id, i fast ordning, också
+  med beloppet 0) och byggs efter rullningen av den rena `notCountedRows` i
+  `server/src/domain/liquidity.ts`. Listan förs aldrig in i månaderna.
+  `moms_26xx` och `agi_rest_2710_2730` bär nästa förfallodag och underlagets
+  reservation. Momsreservationen `VAT_UNSETTLED_NOTE` är flyttad till
+  domänmodulen, så prognosens not och det obelagda delar text. Restsaldot
+  räknas ur kontona 2710/2730 minus bruttometodens obetalda perioder
+  (`agiRestFromAccounts`), så samma pengar inte står både som belagd AGI och
+  som obelagd rest. Abonnemangsfrågan är flyttad ordagrant ur `steeringOverview`
+  till `recurringMonthOre` i reports-tjänsten, och styrvyn anropar den. Svaret
+  är oförändrat. Ny läsåtgärd `liquidity_by_month` (`read`,
+  `{ as_of? }.strict()`), vars handler bara anropar funktionen. Nytt avsnitt
+  sist i `docs/MCP_ACTIONS.md`. Talet i rubrikstycket är rättat till 217
+  actions (Grep `^  def\(\{`). Nya fall sist i
+  `server/test/steering-liquidity.test.ts` (17): R1 abonnemangens definition;
+  E1–E4 den rena funktionen; N1–N8 tjänsten med Obelagt AB och Tomt AB,
+  däribland restsaldot utan dubbelräkning, en negativ kontroll med tre
+  planterade former och en öppen affär som inte ändrar något; T1–T3 åtgärden
+  (samma svar som funktionen, grannen 404, 400 vid ogiltigt indata); D1
+  avsnittet. Styrvyns rendering är inte rörd, den kommer i Story 6.3. **Inte
+  kört:** sandlådan kräver godkännande för `npm run typecheck`, och inget
+  kommando kördes. Röda och gröna skäl är lästa mot koden. Kedjans typkontroll
+  och svit avgör.
 - **2026-11-22 — Story 5.4 (crm), *Lova något* med löftestid (FR-32):**
   Formuläret *Lova något* på relationssidan har nu det valfria fältet
   *Lovades* (`<input type="date" name="occurred_at" max="{UTC-dagen}">`) sist i

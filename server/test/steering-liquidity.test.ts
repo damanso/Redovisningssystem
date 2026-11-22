@@ -1,13 +1,18 @@
 // FR-44: fel månad, okänt som tal och ändrad prognos prövas i domän och tjänst.
+// 6.5: obelagt som räknas som likviditet, och en åtgärd som svarar annat än
+// funktionen styrvyn läser, prövas i den rena funktionen, tjänsten och åtgärden.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { rollLiquidity } from '../src/domain/liquidity.js';
-import type { LiquidityRollInput } from '../src/domain/liquidity.js';
+import { readFile } from 'node:fs/promises';
+import type { PoolClient } from 'pg';
+import { rollLiquidity, notCountedRows, NOT_COUNTED_LIQUIDITY_SOURCES, VAT_UNSETTLED_NOTE, AGI_REST_NOTE } from '../src/domain/liquidity.js';
+import type { LiquidityRollInput, NotCountedInput } from '../src/domain/liquidity.js';
 
 import { api, registerUser, createCompany, createFiscalYear, type TestUser } from './helpers.js';
-import { liquidityByMonth, COUNTED_LIQUIDITY_SOURCES } from '../src/services/reports.js';
+import { liquidityByMonth, COUNTED_LIQUIDITY_SOURCES, recurringMonthOre } from '../src/services/reports.js';
+import { steeringOverview } from '../src/services/steering.js';
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
-import type { Liquidity } from '../src/services/reports.js';
+import type { Liquidity, LiquidityByMonth } from '../src/services/reports.js';
 
 const SOURCES = [{ id: 'kundfakturor', side: 'in' }, { id: 'leverantorsfakturor', side: 'out' }] as const;
 const base = (): LiquidityRollInput => ({
@@ -353,5 +358,358 @@ describe('liquidityByMonth — okänt med källa (6.2 O)', () => {
     expect(result.unknown[0]!.reason.length).toBeGreaterThan(0);
     expect(result.months.map((m) => [m.opening_ore, m.closing_ore])).toStrictEqual([[500000, 500000], [500000, 500000], [500000, 500000]]);
     expect(result.months.every((m) => m.inflow_ore === 0 && m.outflow_ore === 0)).toBe(true);
+  });
+});
+
+// ---- Story 6.5 ---------------------------------------------------------------
+
+/** En tjänst i bolagets tenant-kontext, som `byMonth` men med valfri funktion. */
+async function iTenant<T>(user: TestUser, companyId: string, fn: (klient: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await setTenantContext(client, user.userId, companyId);
+    return await fn(client);
+  } finally {
+    try { await client.query('ROLLBACK'); } finally { client.release(); }
+  }
+}
+/** Ett bolagsspecifikt skuldkonto (2920 finns inte i standardkontoplanen). */
+async function createAccount(user: TestUser, companyId: string, account_number: number, name: string) {
+  const res = await api.post(`${co(companyId)}/accounting/accounts`).set(auth(user)).send({
+    account_number, name, account_type: 'liability',
+  });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+}
+async function newCustomer(user: TestUser, companyId: string, name: string): Promise<string> {
+  const res = await api.post(`${co(companyId)}/customers`).set(auth(user)).send({ name });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return res.body.customer.id;
+}
+/** Ett aktivt månadsabonnemang på 3 000 kr exklusive moms. */
+async function supportSubscription(user: TestUser, companyId: string, customerId: string) {
+  return action(user, companyId, 'create_recurring_invoice', {
+    customer_id: customerId, title: 'Support', interval: 'monthly', next_run_date: '2026-12-01',
+    lines: [{ description: 'Support', quantity: 1, unit_price_ore: 300000, vat_rate: 25 }],
+  });
+}
+
+describe('recurringMonthOre — abonnemangens enda definition (6.5 R)', () => {
+  let user: TestUser;
+  let companyId: string;
+  beforeAll(async () => {
+    user = await registerUser('abonnemang65');
+    companyId = await createCompany(user.token, 'Abonnemang AB');
+    await createFiscalYear(companyId, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    const customerId = await newCustomer(user, companyId, 'Abonnent AB');
+    await supportSubscription(user, companyId, customerId);
+    const paused = await action(user, companyId, 'create_recurring_invoice', {
+      customer_id: customerId, title: 'Kvartalsavtal', interval: 'quarterly', next_run_date: '2026-12-01',
+      lines: [{ description: 'Kvartalsavtal', quantity: 1, unit_price_ore: 900000, vat_rate: 25 }],
+    });
+    await action(user, companyId, 'set_recurring_active', { recurring_id: paused.id, active: false });
+  });
+  it('R1: funktionen och styrvyn ger samma månadsvärde, och den pausade mallen räknas inte', async () => {
+    const { direct, steering } = await iTenant(user, companyId, async (klient) => ({
+      direct: await recurringMonthOre(klient, companyId, '2026-11-20'),
+      steering: await steeringOverview(klient, companyId, { as_of: '2026-11-20' }),
+    }));
+    expect(direct).toBe(300000);
+    expect(steering.coverage.recurring_month_ore).toBe(300000);
+    expect(steering.coverage.known_next_3_months_ore).toBe(900000);
+  });
+});
+
+// Provfilens egna literaler: listorna får inte läsas ur koden de prövar.
+const RAKNADE = ['kundfakturor', 'leverantorsfakturor', 'agi_lonebesked'];
+const OBELAGDA = [
+  { id: 'abonnemang', side: 'in' },
+  { id: 'ofakturerad_tid', side: 'in' },
+  { id: 'rot_rut_1513', side: 'in' },
+  { id: 'moms_26xx', side: 'out' },
+  { id: 'agi_rest_2710_2730', side: 'out' },
+  { id: 'bolagsskatt', side: 'out' },
+  { id: 'semesterloner_2920', side: 'out' },
+  { id: 'ovriga_kortfristiga_2890', side: 'out' },
+];
+const RADNYCKLAR = ['amount_ore', 'id', 'next_due_date', 'reason', 'reservation', 'side'];
+const NOLL: NotCountedInput = {
+  recurring_month_ore: 0, unbilled_time_ore: 0, housework_receivable_ore: 0, vat_net_ore: 0,
+  agi_account_rest_ore: 0, corporate_tax_ore: 0, holiday_pay_ore: 0, other_short_term_ore: 0,
+  next_vat_due: null, next_agi_due: null,
+};
+
+describe('notCountedRows — det obelagda, rent (6.5 E)', () => {
+  it('E1: åtta rader i listans ordning, belopp 0, sex nycklar, egna skäl och inget räknat id', () => {
+    expect(NOT_COUNTED_LIQUIDITY_SOURCES).toStrictEqual(OBELAGDA);
+    const rows = notCountedRows(NOLL);
+    expect(rows.map(({ id, side }) => ({ id, side }))).toStrictEqual(OBELAGDA);
+    expect(rows.map((r) => r.amount_ore)).toStrictEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+    for (const row of rows) {
+      expect(Object.keys(row).sort(), row.id).toStrictEqual(RADNYCKLAR);
+      expect(row.reason.trim().length, row.id).toBeGreaterThan(0);
+    }
+    expect(new Set(rows.map((r) => r.reason)).size).toBe(OBELAGDA.length);
+    const counted = new Set(COUNTED_LIQUIDITY_SOURCES.map((s) => s.id));
+    expect(rows.filter((r) => counted.has(r.id))).toStrictEqual([]);
+    // Regel 4 gäller per id, oavsett belopp: reservationen står också på noll.
+    expect(rows.map((r) => r.reservation)).toStrictEqual([
+      null, null, null, VAT_UNSETTLED_NOTE.trim(), AGI_REST_NOTE, null, null, null,
+    ]);
+  });
+  it('E2: varje belopp på sin rad, abonnemanget tre månader, datum och reservation bara för moms och rest', () => {
+    const skal = notCountedRows(NOLL).map((r) => r.reason);
+    const rows = notCountedRows({
+      recurring_month_ore: 1000, unbilled_time_ore: 2000, housework_receivable_ore: 3000, vat_net_ore: 4000,
+      agi_account_rest_ore: 5000, corporate_tax_ore: 6000, holiday_pay_ore: 7000, other_short_term_ore: 8000,
+      next_vat_due: '2027-02-12', next_agi_due: '2026-12-14',
+    });
+    const tom = { next_due_date: null, reservation: null };
+    expect(rows).toStrictEqual([
+      { id: 'abonnemang', side: 'in', amount_ore: 3000, ...tom, reason: skal[0] },
+      { id: 'ofakturerad_tid', side: 'in', amount_ore: 2000, ...tom, reason: skal[1] },
+      { id: 'rot_rut_1513', side: 'in', amount_ore: 3000, ...tom, reason: skal[2] },
+      { id: 'moms_26xx', side: 'out', amount_ore: 4000, next_due_date: '2027-02-12', reason: skal[3], reservation: VAT_UNSETTLED_NOTE.trim() },
+      { id: 'agi_rest_2710_2730', side: 'out', amount_ore: 5000, next_due_date: '2026-12-14', reason: skal[4], reservation: AGI_REST_NOTE },
+      { id: 'bolagsskatt', side: 'out', amount_ore: 6000, ...tom, reason: skal[5] },
+      { id: 'semesterloner_2920', side: 'out', amount_ore: 7000, ...tom, reason: skal[6] },
+      { id: 'ovriga_kortfristiga_2890', side: 'out', amount_ore: 8000, ...tom, reason: skal[7] },
+    ]);
+  });
+  it('E3: ett negativt momsnetto står kvar negativt på utsidan, och skälet säger fordran', () => {
+    const moms = notCountedRows({ ...NOLL, vat_net_ore: -5000 }).find((r) => r.id === 'moms_26xx')!;
+    expect(moms.amount_ore).toBe(-5000);
+    expect(moms.side).toBe('out');
+    expect(moms.reason).toMatch(/fordran/);
+  });
+  it('E4: icke-heltal, osäkert belopp, spill i abonnemanget och ogiltigt datum kastar var för sig', () => {
+    expect(() => notCountedRows(NOLL)).not.toThrow();
+    for (const fel of [
+      { ...NOLL, unbilled_time_ore: 10.5 },
+      { ...NOLL, corporate_tax_ore: Number.MAX_SAFE_INTEGER + 2 },
+      { ...NOLL, recurring_month_ore: Math.floor(Number.MAX_SAFE_INTEGER / 2) },
+      { ...NOLL, next_vat_due: '2026-02-30' },
+    ]) expect(() => notCountedRows(fel), JSON.stringify(fel)).toThrow();
+  });
+});
+
+/**
+ * Bristerna i ett svar mot invarianterna: räknade och obelagda id i ordning,
+ * inget id i båda, och månaderna bär exakt de räknade källornas belopp. En tom
+ * lista betyder att svaret håller.
+ */
+function obelagtBrister(svar: LiquidityByMonth): string[] {
+  const brister: string[] = [];
+  const counted = svar.counted.map((s) => s.id);
+  const notCounted = svar.not_counted.map((s) => s.id);
+  if (JSON.stringify(counted) !== JSON.stringify(RAKNADE)) brister.push(`counted: ${counted.join(', ')}`);
+  if (JSON.stringify(notCounted) !== JSON.stringify(OBELAGDA.map((s) => s.id))) brister.push(`not_counted: ${notCounted.join(', ')}`);
+  for (const id of counted.filter((c) => notCounted.includes(c))) brister.push(`${id} är både räknad och obelagd`);
+  for (const [side, key] of [['in', 'inflow_ore'], ['out', 'outflow_ore']] as const) {
+    const months = svar.months.reduce((s, m) => s + m[key], 0);
+    const sources = svar.counted.filter((s) => s.side === side).reduce((s, c) => s + c.amount_ore, 0);
+    if (months !== sources) brister.push(`${key}: månaderna ${months}, räknade källor ${sources}`);
+  }
+  return brister;
+}
+
+describe('liquidityByMonth — det obelagda för sig (6.5 N)', () => {
+  let user: TestUser;
+  let obelagt: string;
+  let tomt: string;
+  let agi: number;
+  beforeAll(async () => {
+    user = await registerUser('obelagt65');
+    obelagt = await createCompany(user.token, 'Obelagt AB');
+    const fy = await createFiscalYear(obelagt, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await createAccount(user, obelagt, 2920, 'Upplupna semesterlöner');
+    await cashSeed(user, obelagt, fy.id, '2026-09-01', 5000000);
+    // Motkontot 1510 rör varken kassan eller resultatet; 3001 och 7010 ger ett
+    // positivt resultat och därmed en bolagsskatt.
+    await approveAction(user, obelagt, 'post_voucher', {
+      fiscal_year_id: fy.id, voucher_date: '2026-10-15', description: 'Obelagda poster',
+      lines: [
+        { account_number: 1510, debit_ore: 12500000 },
+        { account_number: 3001, credit_ore: 10000000 },
+        { account_number: 2611, credit_ore: 2500000 },
+        { account_number: 7010, debit_ore: 30000 },
+        { account_number: 2710, credit_ore: 30000 },
+        { account_number: 1513, debit_ore: 40000 },
+        { account_number: 1510, credit_ore: 40000 },
+        { account_number: 7010, debit_ore: 20000 },
+        { account_number: 2920, credit_ore: 20000 },
+        { account_number: 1510, debit_ore: 15000 },
+        { account_number: 2890, credit_ore: 15000 },
+      ],
+    });
+    // Perioden ligger efter bruttometodens brytpunkt: lönebeskedet krediterar
+    // 2710 och 2731 med samma belopp som den obetalda perioden.
+    const employee = await action(user, obelagt, 'create_employee', { name: 'Lönetagare', monthly_salary_ore: 1000000, tax_rate: 23 });
+    const payslip = await action(user, obelagt, 'create_payslip', { employee_id: employee.id, period: '2026-10', payment_date: '2026-10-23' });
+    agi = payslip.tax_ore + payslip.employer_contribution_ore;
+    await approveAction(user, obelagt, 'book_payslip', { payslip_id: payslip.id });
+    const customerId = await newCustomer(user, obelagt, 'Abonnent AB');
+    await supportSubscription(user, obelagt, customerId);
+    const project = await action(user, obelagt, 'create_project', { name: 'Uppdraget', customer_id: customerId, hourly_rate_ore: 100000 });
+    await action(user, obelagt, 'log_time', { project_id: project.id, work_date: '2026-11-18', minutes: 120, description: 'Arbete' });
+
+    tomt = await createCompany(user.token, 'Tomt AB');
+    const fyTomt = await createFiscalYear(tomt, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await cashSeed(user, tomt, fyTomt.id, '2026-09-01', 1000000);
+  });
+  const rad = (svar: LiquidityByMonth, id: string) => {
+    const row = svar.not_counted.find((r) => r.id === id);
+    expect(row, `${id} saknas: ${JSON.stringify(svar.not_counted)}`).toBeDefined();
+    return row!;
+  };
+
+  it('N1: åtta obelagda id i ordning med sina sidor, sex nycklar, inget affärs-id och inget räknat id', async () => {
+    const svar = await byMonth(user, obelagt);
+    expect(svar.not_counted.map(({ id, side }) => ({ id, side }))).toStrictEqual(OBELAGDA);
+    for (const row of svar.not_counted) expect(Object.keys(row).sort(), row.id).toStrictEqual(RADNYCKLAR);
+    const ids = [...svar.not_counted.map((r) => r.id), ...NOT_COUNTED_LIQUIDITY_SOURCES.map((s) => s.id), ...COUNTED_LIQUIDITY_SOURCES.map((s) => s.id)];
+    expect(ids.filter((id) => /deal|affar|affär|pipeline/i.test(id))).toStrictEqual([]);
+    const counted = new Set(svar.counted.map((s) => s.id));
+    expect(svar.not_counted.filter((r) => counted.has(r.id))).toStrictEqual([]);
+  });
+  it('N2: beloppen per id ur sina källor, med samma tal som rapporterna', async () => {
+    const svar = await byMonth(user, obelagt);
+    const unbilled = await action(user, obelagt, 'unbilled_time_report', { to: '2026-11-20' });
+    const tax = await action(user, obelagt, 'tax_overview', { as_of: '2026-11-20' });
+    expect(unbilled.totals.amount_ore).toBeGreaterThan(0);
+    expect(tax.liability.estimated_corporate_tax_ore).toBeGreaterThan(0);
+    expect(Object.fromEntries(svar.not_counted.map((r) => [r.id, r.amount_ore]))).toStrictEqual({
+      abonnemang: 900000,
+      ofakturerad_tid: unbilled.totals.amount_ore,
+      rot_rut_1513: 40000,
+      moms_26xx: 2500000,
+      agi_rest_2710_2730: 30000,
+      bolagsskatt: tax.liability.estimated_corporate_tax_ore,
+      semesterloner_2920: 20000,
+      ovriga_kortfristiga_2890: 15000,
+    });
+    for (const row of svar.not_counted) expect(row.reason.trim().length, row.id).toBeGreaterThan(0);
+  });
+  it('N3: restsaldot är kontona utan bruttometodens obetalda period, som räknas i månaden', async () => {
+    const svar = await byMonth(user, obelagt);
+    expect(agi).toBeGreaterThan(0);
+    expect(rad(svar, 'agi_rest_2710_2730').amount_ore).toBe(30000);
+    expect(svar.counted.find((s) => s.id === 'agi_lonebesked')).toStrictEqual({ id: 'agi_lonebesked', side: 'out', amount_ore: agi, overdue_ore: agi });
+  });
+  it('N4: moms och rest bär nästa förfallodag och underlagets reservation; de sex övriga inget', async () => {
+    const svar = await byMonth(user, obelagt);
+    const tax = await action(user, obelagt, 'tax_overview', { as_of: '2026-11-20' });
+    const next = (type: string) => tax.deadlines.find((d: { type: string; due_date: string }) => d.type === type && d.due_date >= '2026-11-20').due_date;
+    const moms = rad(svar, 'moms_26xx');
+    const rest = rad(svar, 'agi_rest_2710_2730');
+    expect(moms.next_due_date).toBe(next('vat'));
+    expect(rest.next_due_date).toBe(next('agi'));
+    expect(moms.reservation).toBe(VAT_UNSETTLED_NOTE.trim());
+    expect(rest.reservation).toBe(AGI_REST_NOTE);
+    const forecast = await action(user, obelagt, 'liquidity_forecast', { as_of: '2026-11-20' }) as Liquidity;
+    expect(forecast.sources.find((s) => s.id === 'moms')!.note).toContain(moms.reservation!);
+    const ovriga = svar.not_counted.filter((r) => r.id !== 'moms_26xx' && r.id !== 'agi_rest_2710_2730');
+    expect(ovriga.map((r) => [r.id, r.next_due_date, r.reservation])).toStrictEqual(
+      OBELAGDA.filter((s) => s.id !== 'moms_26xx' && s.id !== 'agi_rest_2710_2730').map((s) => [s.id, null, null]),
+    );
+  });
+  it('N5: månaderna bär bara de räknade källorna, fast abonnemang, tid och ROT/RUT finns', async () => {
+    const svar = await byMonth(user, obelagt);
+    expect(obelagtBrister(svar)).toStrictEqual([]);
+    expect(svar.months.map((m) => m.inflow_ore)).toStrictEqual([0, 0, 0]);
+    expect(svar.months.map((m) => m.outflow_ore)).toStrictEqual([agi, 0, 0]);
+  });
+  it('N6: negativ kontroll — abonnemanget som räknat, som dold inbetalning och som borttagen rad fälls var för sig', async () => {
+    const svar = await byMonth(user, obelagt);
+    const belopp = rad(svar, 'abonnemang').amount_ore;
+    expect(belopp).toBe(900000);
+    const raknat = structuredClone(svar);
+    raknat.counted.push({ id: 'abonnemang', side: 'in', amount_ore: belopp, overdue_ore: 0 });
+    raknat.months[0]!.inflow_ore += belopp;
+    const dolt = structuredClone(svar);
+    dolt.months[0]!.inflow_ore += belopp;
+    const borttaget = structuredClone(svar);
+    borttaget.not_counted = borttaget.not_counted.filter((r) => r.id !== 'abonnemang');
+    for (const [namn, fel] of [['P1', raknat], ['P2', dolt], ['P3', borttaget]] as const) {
+      expect(obelagtBrister(fel).length, namn).toBeGreaterThan(0);
+    }
+    expect(obelagtBrister(svar)).toStrictEqual([]);
+  });
+  it('N7: en öppen affär ändrar ingenting i svaret', async () => {
+    const fore = await byMonth(user, obelagt);
+    const synk = await action(user, obelagt, 'sync_crm_deals', {
+      observed_at: '2026-11-19T08:00:00Z',
+      deals: [{
+        source_ref: 'linear:LOC-6501', title: 'Stor affär', organization: { name: 'Köparen AB' },
+        value_ore: 50000000, last_activity_at: '2026-11-19T08:00:00Z',
+      }],
+    });
+    expect(synk.cached).toBe(1);
+    const efter = await byMonth(user, obelagt);
+    expect(efter).toStrictEqual(fore);
+    expect(fore.not_counted).toHaveLength(OBELAGDA.length);
+    expect(efter.not_counted).toHaveLength(OBELAGDA.length);
+  });
+  it('N8: allt 0 ger ändå alla åtta rader i ordning med skäl', async () => {
+    const svar = await byMonth(user, tomt);
+    expect(svar.not_counted.map(({ id, side }) => ({ id, side }))).toStrictEqual(OBELAGDA);
+    expect(svar.not_counted.map((r) => r.amount_ore)).toStrictEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+    for (const row of svar.not_counted) expect(row.reason.trim().length, row.id).toBeGreaterThan(0);
+  });
+});
+
+describe('liquidity_by_month — läsåtgärden (6.5 T)', () => {
+  let user: TestUser;
+  let grannen: TestUser;
+  let atgard: string;
+  let grannbolag: string;
+  beforeAll(async () => {
+    user = await registerUser('atgard65');
+    atgard = await createCompany(user.token, 'Åtgärd AB');
+    const fy = await createFiscalYear(atgard, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await cashSeed(user, atgard, fy.id, '2026-09-01', 1000000);
+    await customerInvoice(user, atgard, fy.id, '2026-11-10', '2026-12-10', 800000);
+    await supplierInvoice(user, atgard, fy.id, '2026-11-10', '2027-01-15', 160000);
+    grannen = await registerUser('granne65');
+    grannbolag = await createCompany(grannen.token, 'Grannbolaget AB');
+  });
+  const anropa = (u: TestUser, companyId: string, body: Record<string, unknown>) =>
+    api.post(`${co(companyId)}/actions/liquidity_by_month`).set(auth(u)).send(body);
+
+  it('T1: åtgärden svarar exakt som funktionen styrvyn läser, not_counted inräknat', async () => {
+    const res = await anropa(user, atgard, { as_of: '2026-11-20' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result).toStrictEqual(await byMonth(user, atgard));
+    expect(res.body.result.not_counted).toHaveLength(OBELAGDA.length);
+  });
+  it('T2: ägaren får svaret; grannbolagets användare får 404 och inget resultat', async () => {
+    const agare = await anropa(user, atgard, { as_of: '2026-11-20' });
+    expect(agare.status, JSON.stringify(agare.body)).toBe(200);
+    expect(agare.body.result.as_of).toBe('2026-11-20');
+    const granne = await anropa(grannen, atgard, { as_of: '2026-11-20' });
+    expect(granne.status, JSON.stringify(granne.body)).toBe(404);
+    expect(Object.hasOwn(granne.body, 'result')).toBe(false);
+  });
+  it('T3: ett ogiltigt datum och en okänd nyckel ger 400 var för sig', async () => {
+    for (const body of [{ as_of: '2026-02-30' }, { as_of: '2026-11-20', company_id: grannbolag }]) {
+      const res = await anropa(user, atgard, body);
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error, JSON.stringify(body)).toBe('validation_error');
+    }
+  });
+  it('D1: docs/MCP_ACTIONS.md beskriver åtgärden i ett eget avsnitt efter crm 7.4', async () => {
+    const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    const rubrik = '## Likviditet per kalendermånad (crm 6.5)';
+    expect(doc.split(rubrik)).toHaveLength(2);
+    const foregaende = doc.indexOf('## Affärsskälet i kontaktförslagen (crm 7.4)');
+    expect(foregaende).toBeGreaterThan(-1);
+    expect(doc.indexOf(rubrik)).toBeGreaterThan(foregaende);
+    const avsnitt = doc.split(rubrik)[1]!.split('\n## ')[0]!;
+    for (const term of ['liquidity_by_month', 'as_of', 'not_counted', 'counted', 'unknown', 'liquidity_forecast', ...OBELAGDA.map((s) => s.id)]) {
+      expect(avsnitt, term).toContain('`' + term + '`');
+    }
+    for (const ord of ['räknas aldrig in', 'Öppna affärer']) expect(avsnitt, ord).toContain(ord);
+    expect(avsnitt).not.toMatch(/^### /m);
+    expect(avsnitt).not.toMatch(/\bLinear\b/);
   });
 });
