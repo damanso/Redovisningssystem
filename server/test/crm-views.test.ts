@@ -2324,7 +2324,7 @@ describe('4.2 källan på varje rad (story 4.2)', () => {
     // Husets tabellrendering lägger till roll och etikett i cellens öppningstagg.
     const omgivning = yta === 'traden' ? /<div class="thread__src">([\s\S]*?)<\/div>/g
       : yta === 'atagandevyn' ? /<td class="muted"[^>]*>([\s\S]*?)<\/td>/g
-        : / · sades 2026-09-02 via ([\s\S]*?)<\/span><\/p>/g;
+        : / · Lovat 2026-09-02 via ([\s\S]*?)<\/span><\/p>/g;
     return [...sida.matchAll(omgivning)].map((m) => m[1]!);
   }
   const kl42Antal = (sida: string, yta: Kl42Yta, facit: string) =>

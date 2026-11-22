@@ -3070,3 +3070,28 @@ skälet att källan är raderad enligt GDPR, och ingen relation skapas. Gravsten
 är paret källsystem och nyckel, så ett löfte eller en kontaktpunkt ur samma
 ärende som raderats med kunden spärrar också affären. En ny `source_ref`
 släpps igenom, som för händelserna.
+
+## Löftets tre tider (crm 5.2)
+
+Varje rad i `list_crm_commitments` bär tre tider. `occurred_at` är löftestiden,
+när löftet gavs; för ett löfte ur ärendeplattformen är det ärendets
+skapad-datum. `created_at` är registreringstiden, när raden skrevs, satt av
+databasen. `due_date` är förfallodatumet, ett datum eller `null`. `created_at`
+är nytt. Övriga fält och åtgärdens indata är oförändrade, och svaret är
+fortfarande en lista.
+
+I vyn heter tiderna Lovat, Senast och registrerat överallt där de visas:
+åtagandevyns kolumner Lovat och Senast, med «registrerat {datum}» under
+löftesdagen när registreringsdagen är en annan, trådens rad Lovat,
+gissningsraden och Idags löfteskort. Datumen är UTC-dagar.
+
+Ett löfte ur ärendeplattformen har märket «ärendet skapat» efter Lovat i
+åtagandevyn och tråden, eftersom datumet är ärendets skapad-datum och inte
+nödvändigtvis dagen då löftet gavs.
+
+Ett löfte som synken stängt för att ärendet stängdes visas under Klara eller
+Avskrivna med «Ärendet {id} stängdes» i kolumnen Källa. Texten kräver att
+statusens ursprung är synken ur ärendeplattformen och att källnyckeln har
+ärendets form `linear:<ärende>`. Ett löfte en människa stängt får inte den
+texten, och inte heller ett löfte som stängdes innan statusens ursprung började
+sparas.

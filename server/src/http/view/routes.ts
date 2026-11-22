@@ -6992,6 +6992,56 @@ function kallrad(companyId: string, kalla: Kalla, rattad: boolean): Raw {
 }
 
 /**
+ * Löftets tre tider har tre namn (FR-31, UX «Siffror, datum och tid»): Lovat är
+ * löftestiden, Senast förfallodatumet och registrerat registreringstiden. Tre
+ * tider som heter «datum» blandas ihop, och då går löftet inte att styrka.
+ * Åtagandevyn, trådens löftesrad, gissningsraden och Idags löfteskort skriver
+ * namnen härifrån. Formulären Rätta och Lova något, kundkortets panel och Min
+ * sida läser inte konstanten.
+ */
+const LOFTETS_TIDER = Object.freeze({ lovat: 'Lovat', senast: 'Senast', registrerat: 'registrerat' } as const);
+
+/**
+ * Löftesdagen, och efter den märket «ärendet skapat» för ett löfte ur
+ * ärendeplattformen — FR-2:s mellanläge: ärendet bär bara sitt skapad-datum,
+ * så dagen får inte läsas som dagen då löftet gavs. Bara källsystemet `linear`
+ * får märket. Åtagandevyns cell och trådens rad delar funktionen; Idag visar
+ * inte märket, det för berättelse 5.3 dit.
+ */
+function lovatVarde(occurredAt: unknown, sourceSystem: unknown): Raw {
+  return html`${dayOf(occurredAt)}${sourceSystem === 'linear' ? html` <span class="muted">ärendet skapat</span>` : ''}`;
+}
+
+/**
+ * Registreringsdagen som andra rad under löftesdagen, bara när den är en annan
+ * UTC-dag än löftesdagen: ett löfte som registrerades samma dag som det gavs
+ * behöver ingen andra tid. Tom när registreringstiden saknas.
+ */
+function registreratRad(occurredAt: unknown, createdAt: unknown): Raw {
+  if (createdAt === null || createdAt === undefined) return html``;
+  const registrerad = dayOf(createdAt);
+  if (!registrerad || registrerad === dayOf(occurredAt)) return html``;
+  return html`<br><span class="muted">${LOFTETS_TIDER.registrerat} ${registrerad}</span>`;
+}
+
+/**
+ * «Ärendet {id} stängdes» när det var källan och inte David som stängde löftet
+ * (FR-36): sedan 3.3 skriver intaget statusen med ursprunget sync, och utan
+ * texten ser ett sådant löfte under Klara ut som Davids eget handgrepp. Texten
+ * ges bara när alla fyra villkoren håller — löftet är klart eller avskrivet,
+ * statusens ursprungsrad är synkens, dess källsystem är `linear` och dess
+ * nyckel har ärendets form enligt `KALLNYCKEL.linear`, som id:t tas ur. Allt
+ * annat ger ingen text: en människas stängning, en stängd status utan
+ * ursprungsrad (från före A-2) och en annan källa.
+ */
+function stangdAvKallan(status: unknown, p: ProvenanceView | undefined): string | null {
+  if (status !== 'done' && status !== 'dropped') return null;
+  if (!p || p.source !== 'sync' || p.source_system !== 'linear' || typeof p.source_ref !== 'string') return null;
+  const id = KALLNYCKEL.linear?.exec(p.source_ref)?.[1];
+  return id ? `Ärendet ${id} stängdes` : null;
+}
+
+/**
  * Personens namn som väg in till personläget (FR-31, FR-40, UX K9, story 4.3),
  * samma form på åtagandevyn, sökningen och Idag. Samma regel som `entityLink`,
  * som inte kan bära en fråga: en länk bara när både personen och hennes
@@ -7124,9 +7174,10 @@ function handelsensGissningar(
     : [
       ['body', 'Vad', html`${falt.body ?? '—'}`],
       ['direction', 'Vem lovar', html`${falt.direction === 'we_owe' ? 'Vi lovade' : 'De lovade'}`],
-      ['due_date', 'Senast', html`${falt.due_date ?? '—'}`],
+      // Löftets tider heter som överallt annars (FR-31); formuläret Rätta behåller Lovades.
+      ['due_date', LOFTETS_TIDER.senast, html`${falt.due_date ?? '—'}`],
       ['status', 'Status', statusChip(falt.status ?? '')],
-      ['occurred_at', 'Lovades', html`${dayOf(falt.occurred_at)}`],
+      ['occurred_at', LOFTETS_TIDER.lovat, html`${dayOf(falt.occurred_at)}`],
     ];
   return html`${lista.map(([field, etikett, varde]) => handelsenBehoverBekraftas(falt.provenance[field])
     ? html`<div class="uppgift"><span class="k">${etikett}</span>${ursprungsfalt({
@@ -7255,7 +7306,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
             <div class="today">${t.commitments.map((c) => html`<article class="today__card">
               <div class="today__head">
                 ${c.direction === 'we_owe' ? chip('Vi lovade', 'warn') : chip('De lovade', 'info')}
-                ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`Senast ${c.due_date as string}`, 'muted')}
+                ${c.overdue ? chip('Förfallet', 'neg', '!') : chip(`${LOFTETS_TIDER.senast} ${c.due_date as string}`, 'muted')}
                 ${/* Har löftet en organisation går namnet dit. Saknas den går
                       personens namn till hennes personläge i hennes relation
                       (story 4.3). Har inte heller hon någon relation finns ingen
@@ -7265,7 +7316,7 @@ viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, comp
                   ? entityLink(companyId, 'relation', c.organization_id as string, c.organization_name, { class: 'today__who' })
                   : personLank(companyId, c.person_id, c.person_organization_id, c.person_name ?? '—', { class: 'today__who' })}
               </div>
-              <p class="today__why">${c.body as string}<span class="muted"> · sades ${dayOf(c.occurred_at)} via ${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, rattade.has(c.id as string))}</span></p>
+              <p class="today__why">${c.body as string}<span class="muted"> · ${LOFTETS_TIDER.lovat} ${dayOf(c.occurred_at)} via ${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, rattade.has(c.id as string))}</span></p>
               <div class="quick">
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/done`, 'Klar', { primary: true, back })}
                 ${rowAction(`/app/c/${companyId}/commitments/${c.id as string}/snooze`, 'Skjut upp', { fields: { days: '7' }, back })}
@@ -8024,6 +8075,13 @@ viewRouter.get('/c/:companyId/relations/:orgId', page(async (req, res) => {
                     <div class="thread__title">${threadChip(e)}${e.title}${
                       e.amount_ore !== null ? html` <span class="thread__amt">${amount(e.amount_ore)}</span>` : ''
                     }</div>
+                    ${/* Löftestiden med sitt namn (FR-31): radens <time> är
+                         händelsens tid, för ett löfte samma dag, men bara
+                         namnet säger vilken av löftets tre tider det är.
+                         Stängningsraden får ingen. */ ''}
+                    ${e.kind === 'commitment'
+                      ? html`<p class="muted" style="margin:2px 0 0;font-size:12px">${LOFTETS_TIDER.lovat} ${lovatVarde(e.at, e.source_system)}</p>`
+                      : ''}
                     ${/* Källan, utskriven och öppningsbar (FR-17, UX K5): det
                          ska gå att styrka var något sades med ett klick. Länken
                          byggs ur nyckelns id med en mall på ett ställe, och bara
@@ -8090,10 +8148,13 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
           : html`<div class="empty"><div class="big">${filter === 'done' ? 'Inga klara löften.' : 'Inga avskrivna löften.'}</div>
               Gå tillbaka till <a href="${lank('open', sfar)}">de öppna</a>.</div>`
         : html`<div class="table-wrap"><table>
-            <thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Vem</th><th>Senast</th><th>Källa</th><th></th></tr></thead>
+            <thead><tr><th>Riktning</th><th>Sfär</th><th>Vad</th><th>Vem</th><th>${LOFTETS_TIDER.lovat}</th><th>${LOFTETS_TIDER.senast}</th><th>Källa</th><th></th></tr></thead>
             <tbody>${rows.map((c) => {
               const id = c.id as string;
               const falt = eventFields.commitments[id];
+              // Texten läggs efter källraden, aldrig i kallrad: källraden är
+              // densamma i tråden och på Idag (KL12).
+              const stangd = stangdAvKallan(c.status, falt?.provenance.status);
               const mal: Handelsemal = falt?.relation_id
                 ? { action: `/app/c/${companyId}/relations/${falt.relation_id}/confirm`, dolt: { namn: 'commitment_id', id } }
                 : { action: `/app/c/${companyId}/commitments/${id}/confirm` };
@@ -8112,12 +8173,19 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
                       entityLink(companyId, 'relation', c.organization_id as string, c.organization_name)}`
                   : c.person_name ? '' : '—'
               }</td>
+              ${/* Lovat: löftesdagen, märket och registreringsdagen (FR-31, FR-2).
+                    Klassen är code, aldrig muted: 4.2:s prov hittar cellen
+                    Källa som radens enda muted-cell. div:en håller ihop dagen
+                    och raderna under som ett barn när cellen staplas. */ ''}
+              <td class="code"><div>${lovatVarde(c.occurred_at, c.source_system)}${registreratRad(c.occurred_at, c.created_at)}</div></td>
               <td class="code">${(c.due_date as string) ?? '—'}${
                 c.status === 'open' && c.due_date && (c.due_date as string) < today ? html` ${chip('Förfallet', 'neg', '!')}` : ''
               }${
                 c.snoozed_until ? html` ${chip(`Uppskjutet t.o.m. ${c.snoozed_until as string}`, 'muted')}` : ''
               }</td>
-              <td class="muted">${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, falt !== undefined && rattadAvDig(falt.source_system, falt.provenance))}</td>
+              <td class="muted">${kallrad(companyId, { sort: 'handelse', source_system: c.source_system, source_ref: c.source_ref }, falt !== undefined && rattadAvDig(falt.source_system, falt.provenance))}${
+                stangd ? html` · ${stangd}` : ''
+              }</td>
               <td><div class="quick">${
                 c.status === 'open'
                   ? html`${rowAction(`/app/c/${companyId}/commitments/${id}/done`, 'Klar', { primary: true, back })}

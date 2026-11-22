@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 5.2 (crm), löftets tre tider och löften som stängts
+  av källan (FR-31, FR-2, FR-36):** `listCommitments` väljer `c.created_at`, så
+  varje rad i `list_crm_commitments` bär `occurred_at` (Lovat), `created_at`
+  (registrerat) och `due_date` (Senast); inget fält borttaget. Åtagandevyn har
+  kolumnen *Lovat* mellan *Vem* och *Senast*, med *registrerat {datum}* som
+  andra rad när registreringsdagen är en annan UTC-dag, och märket *ärendet
+  skapat* efter löftesdagen för löften ur ärendeplattformen (`lovatVarde`,
+  bara `linear`). De tre namnen står i konstanten `LOFTETS_TIDER` i
+  `server/src/http/view/routes.ts` och skrivs därifrån i åtagandevyn, i
+  trådens nya rad *Lovat* för ett löfte, i gissningsraden (i dag *Lovades*,
+  nu *Lovat*) och på Idags löfteskort (i dag «· sades», nu «· Lovat»).
+  Formulären Rätta och Lova något behåller *Lovades*. Under Klara och
+  Avskrivna säger kolumnen Källa «Ärendet {id} stängdes» när synken stängde
+  löftet (`stangdAvKallan`: status klar eller avskriven, statusens ursprung
+  `sync`, källsystemet `linear` och nyckeln i `KALLNYCKEL.linear`s form);
+  `kallrad` är orörd. Nytt avsnitt sist i `docs/MCP_ACTIONS.md`. Ny provfil
+  `server/test/crm-commitment-times.test.ts` (26 fall): A1–A3 och D1 listan
+  och dokumentet, V1–V7 och N1 kolumnen, staplingen på telefonbredd och en
+  negativ kontroll, T1–T4 och I1 namnen i tråden och på Idag, S1–S9 texten
+  «stängdes» med ett fall per villkor. Ankarraden för Idag i `kl42Kallrader`
+  i `server/test/crm-views.test.ts` söker nu «· Lovat 2026-09-02 via»
+  (facit oförändrat). **Inte kört:** sandlådan nekade `npm test` och
+  `npm run typecheck` (kräver godkännande), så inget prov är kört här;
+  kedjans typkontroll och svit är belägget. Utanför bygget: 5.3 lägger märket
+  på Idag och antecknar beslutet i `docs/crm/API_KONTRAKT.md`.
 - **2026-11-22 — Story 7.1 (crm), andra omtaget efter code-review (två fynd,
   lagade som felklasser):** (1) Källnyckelns form: förra omtaget hade bytt
   exemplets `linear:LOC-412` mot `LOC-412`. Exemplet är återställt, och båda

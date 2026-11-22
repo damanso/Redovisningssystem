@@ -1554,7 +1554,11 @@ export async function listCommitments(
   opts: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter } = {},
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
-    `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at, c.source_system, c.source_ref,
+    `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
+            -- FR-31: registreringstiden går att avläsa per rad, skild från
+            -- löftestiden. Ett löfte som registreras i dag kan ha getts i förrgår.
+            c.created_at,
+            c.source_system, c.source_ref,
             c.snoozed_until::text, c.organization_id, c.sfar,
             p.name AS person_name,
             -- Vägen in till personen (story 4.3) går till hennes relation, som
