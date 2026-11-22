@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-22 — Story 5.4 (crm), *Lova något* med löftestid (FR-32):**
+  Formuläret *Lova något* på relationssidan har nu det valfria fältet
+  *Lovades* (`<input type="date" name="occurred_at" max="{UTC-dagen}">`) sist i
+  raden efter *Senast*, utan ny CSS. Den rena funktionen `promisedAtFromForm`
+  (och typen `PromisedAt`) i `server/src/lib/crmRules.ts` ger löftestiden.
+  Tomt eller utelämnat ger anropstillfället. Ett datum bakåt blir kl. 12.00 UTC
+  genom `dateToTimestamp`, samma regel som Rätta, och dagens datum ger nuet.
+  En tid efter nuet ger felet «Ett löfte kan inte ha getts i framtiden.».
+  Jämförelsen gäller varje sträng som går att tolka som en tid, också en
+  handskriven tidpunkt med zon. Vy-POST:en `/c/:companyId/relations/:id/commit`
+  läser fältet bara genom funktionen (exakt ett anrop och en läsning av
+  `b.occurred_at`). Vid fel omdirigerar den till `back` med notisen innan
+  `runViewAction`, så att ingen åtgärd körs. Annars skickar den funktionens
+  `occurred_at` till `record_crm_commitment`. Åtgärden, tjänsten, *Min sida* och
+  `docs/MCP_ACTIONS.md` är orörda, och spärren mot framtiden gäller bara det här
+  formuläret. Nya provfiler: `server/test/crm-commitment-form.test.ts`
+  (L1–L6 regeln med fasta klockor, F1–F2 formuläret, S1–S7 genom hela stacken:
+  löftestiden, *Lovat* i tråden och åtagandevyn, tomt fält, framtida datum med
+  notisen före formuläret, tom text, ursprunget `human` och tenantgränsen med
+  404) och `server/test/crm-commitment-form-mock.test.ts` (N0–N3, negativ
+  kontroll: en server som ignorerar *Lovades* fäller S1:s och S4:s facit, och
+  anropsloggen visar en enda väg in). **Inte kört:** sandlådan nekade
+  `npm test` och `npm run typecheck` (kräver godkännande). Kedjans typkontroll
+  och svit avgör.
 - **2026-11-22 — Story 7.4 (crm), en affär som stått stilla blir ett skäl i
   kontaktförslagen (FR-22):** Regeln `stalledDealReason` i
   `server/src/lib/crmRules.ts` (ren, med den slutna etikettabellen

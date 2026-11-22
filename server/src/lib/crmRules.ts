@@ -14,6 +14,33 @@ export function dateToTimestamp(date: string, now: Date): string {
   return date === now.toISOString().slice(0, 10) ? now.toISOString() : `${date}T12:00:00Z`;
 }
 
+/** Löftestiden att skicka som `occurred_at`, eller felet som stoppar postningen innan något skrivs. */
+export type PromisedAt =
+  | { ok: true; occurred_at: unknown }
+  | { ok: false; code: 'occurred_at_in_future'; message: string };
+
+/**
+ * Fältet Lovades i Lova något (FR-32): löftestiden är den David anger, så att ett
+ * löfte som skrivs in dagen efter samtalet får dagen det gavs. Tomt eller
+ * utelämnat betyder anropstillfället. Datumet går genom `dateToTimestamp`, samma
+ * regel som formuläret Rätta. En tid efter `now` avvisas med samma text som
+ * `updateCommitment` ger där, eftersom ett löfte från framtiden vore en
+ * förfalskning av när det gavs. Jämförelsen gäller varje sträng som går att
+ * tolka som en tid, så en handskriven tidpunkt med zon kringgår den inte.
+ * Ogiltiga värden lämnas åt åtgärdens synliga validering.
+ */
+export function promisedAtFromForm(value: unknown, now: Date): PromisedAt {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+    return { ok: true, occurred_at: now.toISOString() };
+  }
+  if (typeof value !== 'string') return { ok: true, occurred_at: value };
+  const occurredAt = dateToTimestamp(value.trim(), now);
+  if (Date.parse(occurredAt) > now.getTime()) {
+    return { ok: false, code: 'occurred_at_in_future', message: 'Ett löfte kan inte ha getts i framtiden.' };
+  }
+  return { ok: true, occurred_at: occurredAt };
+}
+
 /** Tomt och oförändrat utelämnas; ogiltiga typer lämnas åt åtgärdens synliga validering. */
 export function correctedEventFields(kind: CorrectableKind, body: unknown, now: Date): Record<string, unknown> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return {};
