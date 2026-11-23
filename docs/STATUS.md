@@ -153,6 +153,40 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 5.9 (crm): kalendern blir en fångstväg i ytan (FR-3,
+  FR-17, FR-31):** `CAPTURE_PATHS_IN_OPERATION` i `crmDerivations.ts` har
+  kalendern bland kontaktvägarna (`['mail', 'calendar', 'issues']`;
+  löftesvägarna orörda), så Idag säger «Kommer något in via mail, möten eller
+  ärenden dyker det upp av sig självt.» och Relationer «härlett ur mail, möten,
+  ärenden och bokförda fakturor». Källraden har en tredje länkform:
+  `kalenderAdress(eid)` bredvid `gmailAdress` i `routes.ts` är det enda stället
+  med mallen, raden `calendar` i `KALLNYCKEL` prövar hela nyckeln (`calendar:`,
+  ett `eid` av 1–291 tecken base64url och Gmail-radens valfria `#`-suffix, som
+  aldrig går in i adressen), och `kallLank` ger etiketten «Öppna mötet i Google
+  Kalender (ny flik)». Tråden, åtagandevyn och Idag får länken genom `kallrad`.
+  Mottagaren och härledningen är orörda: ett möte räknades redan som kontakt
+  (K-3). Dokument: stycket i «Källan på varje rad (crm 4.2)» i
+  `docs/MCP_ACTIONS.md`. Prov: `server/test/crm-calendar-capture.test.ts` (F1–F4
+  konstanten och texterna, L1–L7 länken med tre giltiga och nio planterade
+  nycklar i slutna facitlistor per yta, mallen en gång i koden och dokumentet,
+  K1–K6 mötet genom intaget: tråden, «0 d sedan», «0 dagar», avbetad Idag,
+  kontaktförslagen och idempotensen) och
+  `server/test/crm-calendar-capture-mock.test.ts` (N0–N2: konstanten utan
+  kalendern ger Idag och Relationer de gamla meningarna). Uppdaterade facit:
+  `crm-capture-paths.test.ts` (`I_DRIFT`, P1, P3, D1, R1, R2),
+  `crm-ai-commitments.test.ts` (C1, C2) och `crm-views.test.ts` (4.2:s C4 och
+  KL4:s titel), och kommentaren över `I_DRIFT` i
+  `crm-capture-paths-mock.test.ts`. Ingen migration, rutt, åtgärd, CSS-klass,
+  import eller beroende. **Inte kört i sandlådan:** typecheck och vitest kräver
+  godkännande som luckan inte har; kedjan kör typecheck, build och hela sviten.
+  **Inte provat:** kalenderlänkens form mot en verklig händelse. Det är Davids
+  steg efter driftsättningen (raden *Driftsättning* för 5.9 i epics.md): öppna
+  «Öppna ↗» på en mötesrad i en relations tråd (en kontaktpunkt ur nattintaget
+  med nyckeln `calendar:<eid>`), för ett avslutat kundmöte och för en instans av
+  ett återkommande möte, och anteckna utfallet här. Leder adressen fel ändras
+  bara `kalenderAdress`, och nyckeln går att söka på under tiden. Rött utanför
+  repot, senast kända läge (provvaktens körning 2026-11-23 kl. 06.30) och av
+  skäl utanför berättelsen: Hermes-proven adresskontraktet och bmadglidning.
 - **2026-11-23 — Story 1.9 (crm): personens kortlänk och anteckning skyddas när David satt dem (FR-8):**
   `external_ref` (länken till personkortet) och `notes` står nu i
   `PERSON_PROVENANCE_FIELDS` i `crmRelations.ts`, så `upsertPerson` skriver

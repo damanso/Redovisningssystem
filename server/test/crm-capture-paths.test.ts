@@ -4,17 +4,19 @@
 // rena textbyggaren (`captureTexts` ur konstanten `CAPTURE_PATHS_IN_OPERATION`)
 // och de fem ytorna i webbvyn genom hela stacken. Facit är literaler ur
 // epics.md och berättelsens Dev Notes, aldrig räknade ur koden som prövas.
+// Story 5.9 lade kalendern bland kontaktvägarna, så facit beskriver konstanten
+// i drift efter den.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { captureTexts, type CapturePaths } from '../src/lib/crmRules.js';
 import { CAPTURE_PATHS_IN_OPERATION } from '../src/services/crmDerivations.js';
 import { api, app, createCompany, registerUser, type TestUser } from './helpers.js';
 
-/** De sex texterna för konstanten i drift, ordagrant (kriterium 2 och 3). */
+/** De sex texterna för konstanten i drift (5.9), ordagrant (kriterium 2 och 3). */
 const I_DRIFT = {
-  todayQuiet: 'Kommer något in via mail eller ärenden dyker det upp av sig självt.',
-  relationsLede: 'Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, ärenden och bokförda fakturor. Ingen inmatning krävs.',
-  relationsEmpty: 'De flesta dyker upp av sig själva när mail och ärenden kommer in.',
+  todayQuiet: 'Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.',
+  relationsLede: 'Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten, ärenden och bokförda fakturor. Ingen inmatning krävs.',
+  relationsEmpty: 'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.',
   commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern, och du kan lägga till ett under Lova något på en relation.',
   promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.',
   customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.',
@@ -24,9 +26,9 @@ const P5_CUSTOMER = 'Inga öppna löften. Löften kommer från ärenden märkta 
 const BARA_SAMTALET = 'Det här är för det som sades i ett samtal eller möte.';
 
 describe('fångsttexterna, rena', () => {
-  it('P1 konstanten är exakt dagens två vägar per lista och är fryst', () => {
+  it('P1 konstanten är exakt vägarna i drift — kalendern sedan 5.9 — och är fryst', () => {
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual({
-      contacts: ['mail', 'issues'],
+      contacts: ['mail', 'calendar', 'issues'],
       commitments: ['issues_waiting_external', 'promise_form'],
     });
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION)).toBe(true);
@@ -38,12 +40,15 @@ describe('fångsttexterna, rena', () => {
     expect(captureTexts(CAPTURE_PATHS_IN_OPERATION)).toEqual(I_DRIFT);
   });
 
-  it('P3 ingen text nämner kalendern, och löftestexterna varken mail eller avbetat', () => {
+  it('P3 ingen text nämner kalendern, och löftestexterna varken möten, mail eller avbetat', () => {
     const t = captureTexts(CAPTURE_PATHS_IN_OPERATION);
     for (const [falt, text] of Object.entries(t)) {
       expect(text, falt).not.toContain('kalender');
-      expect(text, falt).not.toContain('möten');
     }
+    // Kontakttexterna säger «möten» sedan 5.9, som är sant; löftestexterna aldrig.
+    expect(t.commitmentsOpenEmpty).not.toContain('möten');
+    expect(t.promiseFormHint).not.toContain('möten');
+    expect(t.customerCardEmpty).not.toContain('möten');
     expect(t.commitmentsOpenEmpty).not.toContain('mail');
     expect(t.promiseFormHint).not.toContain('mail');
     expect(t.customerCardEmpty).not.toContain('mail');
@@ -213,26 +218,27 @@ describe('fångsttexterna i ytorna', () => {
     expect(sida).not.toContain('Löften fångas ur mail');
   });
 
-  it('D1 Idag avbetad nämner mail och ärenden, och Avbetat för i dag står kvar', async () => {
+  it('D1 Idag avbetad nämner mail, möten och ärenden, och Avbetat för i dag står kvar', async () => {
     const sida = synlig(await las(`/app/c/${tomt}/idag`));
     expect(sida).toContain('Avbetat för i dag');
-    expect(sida).toContain('Loggade kontakter och stängda löften försvinner härifrån. Kommer något in via mail eller ärenden dyker det upp av sig självt.');
+    expect(sida).toContain('Loggade kontakter och stängda löften försvinner härifrån. Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.');
     expect(sida).not.toContain('via mail eller kalender');
     expect(sida).not.toContain('dyker det upp automatiskt');
+    expect(sida).not.toContain('via mail eller ärenden dyker');
   });
 
   it('R1 Relationer utan relationer: ingressen och tomläget nämner bara vägar i drift', async () => {
     const sida = synlig(await las(`/app/c/${tomt}/relations`));
-    expect(sida).toContain('Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, ärenden och bokförda fakturor. Ingen inmatning krävs.');
+    expect(sida).toContain('Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten, ärenden och bokförda fakturor. Ingen inmatning krävs.');
     expect(sida).toContain('Inga relationer ännu');
-    expect(sida).toContain('De flesta dyker upp av sig själva när mail och ärenden kommer in.');
-    expect(sida).not.toContain('härlett ur mail, möten');
-    expect(sida).not.toContain('när mail, möten och ärenden');
+    expect(sida).toContain('De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.');
+    expect(sida).not.toContain('härlett ur mail, ärenden och');
+    expect(sida).not.toContain('när mail och ärenden kommer in');
   });
 
   it('R2 Relationer med en relation: ingressen står kvar och tomläget syns inte', async () => {
     const sida = synlig(await las(`/app/c/${fullt}/relations`));
-    expect(sida).toContain('Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, ärenden och bokförda fakturor. Ingen inmatning krävs.');
+    expect(sida).toContain('Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten, ärenden och bokförda fakturor. Ingen inmatning krävs.');
     expect(sida).not.toContain('Inga relationer ännu');
   });
 });

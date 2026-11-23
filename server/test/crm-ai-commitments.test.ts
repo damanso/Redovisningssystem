@@ -461,9 +461,9 @@ describe('fångstvägarna och dokumentet', () => {
     kundkortet = kund.body.customer.id as string;
   });
 
-  it('C1 konstanten för fångstvägar är exakt som förut', () => {
+  it('C1 konstanten för fångstvägar har kalendern (5.9) och inget AI-samtal', () => {
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual({
-      contacts: ['mail', 'issues'],
+      contacts: ['mail', 'calendar', 'issues'],
       commitments: ['issues_waiting_external', 'promise_form'],
     });
   });
@@ -476,11 +476,11 @@ describe('fångstvägarna och dokumentet', () => {
       ]],
       [`/app/c/${tomt}/idag`, [
         'Avbetat för i dag',
-        'Kommer något in via mail eller ärenden dyker det upp av sig självt.',
+        'Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.',
       ]],
       [`/app/c/${tomt}/relations`, [
-        'härlett ur mail, ärenden och bokförda fakturor',
-        'De flesta dyker upp av sig själva när mail och ärenden kommer in.',
+        'härlett ur mail, möten, ärenden och bokförda fakturor',
+        'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.',
       ]],
       [`/app/c/${tomt}/customers/${kundkortet}`, [
         'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.',
