@@ -153,6 +153,88 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 2.4, omtag 2 efter röd typkontroll (bygge #9354).**
+  Nu körde kedjan testkonfigurationen (`tsc -p tsconfig.test.json`), och den
+  föll på `server/test/uppdragsytan-kontraktsluckor.test.ts` rad 171, 172, 851
+  och 928 (TS2345): `Record<string, string>` passar inte
+  `{ Authorization: string }`. Felklassen: riggens `act`, `ok` och `importera`
+  fick sin huvudtyp härledd ur standardvärdet `human()`, medan `Bolag.auth`
+  och husets hjälpare (`importeraOchGodkann`, `createFiscalYear`) har
+  `Record<string, string>`. Samma begrepp hade alltså två typer, och varje
+  anrop med ett eget bolags huvud föll. Nu har riggen en enda deklarerad typ
+  `Auth` (= husets `Record<string, string>`) för `human`, `agent`, `act`, `ok`,
+  `importera`, `Bolag.auth` och `nyttBolag`. Varje standardparameter i
+  provfilen har en uttrycklig typ (också `id: string` i `bas`, `act`, `ok` och
+  `importtillstand`), så ingen parametertyp härleds ur ett standardvärde
+  (sökt med Grep i provfilen och i `kontraktsluckor.ts`: inga kvar). Alla
+  kombinationer finns som anrop i filen och prövas av typkontrollen: filens
+  människa, agenten (I2) och ett eget bolag (S1, L3, `nyttAvtal`,
+  `register`, `importeraSedanGodkann`). Inget assertionsvärde och ingen
+  produktionskod har ändrats. **Inte kört:** sandlådan nekar
+  `npm run typecheck` (”This command requires approval”). Kedjan kör
+  typkontrollen och sviten.
+- **2026-11-23 — Story 2.4, omtag efter röd typkontroll (bygge #9354).**
+  Kedjans `npm run typecheck` föll på `server/src/lib/kontraktsluckor.ts`
+  rad 169 (TS2345): `const varden = kod === null ? {} : { kod }` vidgades
+  till `{ kod?: undefined } | { kod: string }`, som inte passar
+  `Record<string, string>`. Felklassen är att anroparen bygger ett villkorligt
+  värdeobjekt till mallen. Mekanismen är bytt: `fyllMall` tar
+  `Record<string, string | null>` och läser NULL som ”inget värde”
+  (platshållaren står kvar), så luckorna skickar `{ kod }` och
+  `manifestankare` skickar `ankare` och `kalla` rakt, utan villkorliga
+  spridningar. Provfilens orakel `ifylld` följer samma form, och ett nytt
+  fall under R7 prövar mallen över sju fall (värde, NULL, saknat namn, ärvt
+  namn som `constructor`, flera förekomster) och regelns egna anrop med NULL.
+  Testkonfigurationens typkontroll hann inte köras i kedjan (`&&` efter den
+  röda); provfilerna är genomlästa mot typerna. **Inte kört:** sandlådan
+  nekar `npm run typecheck` (”This command requires approval”); kedjan kör
+  typecheck och sviten.
+- **2026-11-23 — Story 2.4 (uppdragsytan, bygge #9354): saknade
+  kontraktsfält, mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13,
+  FR-14).** Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets
+  strikta schema (`KontraktsmanifestSchema`; blank text, okänd nyckel och
+  eskalering eller form utan godkännare ger 400), luckorna över den slutna
+  `LUCKFALT` (namn, klausul, acceptanskriterium, uppföljningsmått,
+  mottagarpart — inget transmittalfält), en textkälla (`LUCKTEXT`,
+  `LUCKRUBRIK`, `skillnadstext`, `ANKARORSAK`, `godkannandeformtext`,
+  `mottagarpartlage` med lägena `angiven`/`saknas`/`ej_inlast`), parterna med
+  en källa per avtal (`kontraktsparter`, skillnaden mot texten redovisas),
+  manifestankarets åtta lägen (`manifestankare`) och de två tekniska felen
+  (`OLASTA`). Parsern läser `Mottagarpart` som reserv för `Godkännare`.
+  Migration **0097_kontraktsparter**: `contracts.godkannandeform` och
+  `godkannare_kalla` (nullbara, ingen efterfyllnad), `BASELINE:` på de fyra
+  partskolumnerna och avslutstriggern `contracts_parter_vagrar_avslutat`.
+  `importera_leveranskontrakt` och `satt_baseline` tar det valfria `manifest`,
+  källan är trippeln (avtal, text, manifest), en oläsbar text ger 400
+  `kontrakt_olasbart` med `details.olast` före varje skrivning, och förslaget
+  bär `luckor`, `parter` och `ankare`. Godkännandet skriver parterna (steg g)
+  och manifestets ankare i lägena `lagras`/`andras` (nytt steg j, radlås),
+  svarar med `parter`, `parter_skillnader`, `ankare` och `luckor`, och
+  auditraden får `parter_andrade` och ankarets läge, inga namn. Transmittalen
+  skrivs aldrig. Registret får `namn` (avtalsdelens första version, NULL när
+  namnet är koden), kontraktsytan `parter` (nya `lasKontraktsparter`, också
+  med `text`) och `luckor`. Leveranserna: kolumnen Namn, textkällans ord för
+  saknade fält och mottagarpartens rad per avtal före brädan eller tabellen
+  (sidhuvudet orört). Kontraktet: panelen ”Parterna och luckorna”. Sex nya
+  etiketter i `FIELD_LABELS`. Dokument: `docs/MCP_ACTIONS.md` och
+  `docs/ARKITEKTUR.md` (trippeln, partskolumnerna, ankarets två skrivvägar,
+  migrationsintervallet 0001–0097). Prov:
+  `server/test/uppdragsytan-kontraktsluckor.test.ts` (R0–R7, M1–M3, I1–I8,
+  G1–G7, L1–L3, S1, V1–V4, D1); `uppdragsytan-import.test.ts` (okänt tillstånd
+  ger nu 400) och `uppdragsytan-register.test.ts` (nyckellistan med `namn`).
+  **Inte kört:** sandlådan nekade `npm run typecheck` och `tsc` med ”This
+  command requires approval”, så varken typecheck, vitest eller build kördes i
+  sessionen; kedjan kör typecheck och hela sviten före granskningen.
+  **RESTER:** kopian bar vid starten ett tidigare byggförsöks ändringar i
+  samtliga berättelsens filer (rader `RESTER | …` i berättelsens Debug Log).
+  Restens innehåll användes inte som underlag; varje fil skrevs om från mains
+  version. Kedjan rapporterade inga typfel i baslinjen till den här sessionen,
+  så inga sådana filer rördes. Designskillen `impeccable` gick inte att ladda
+  (”Execute skill: impeccable”); vyerna följer husets panelform och
+  undantagsvyns definitionslista utan ny CSS. Förslagets underlag i
+  undantagsvyn och på Att göra är Story 2.8. Rött utanför repot, oförändrat av
+  berättelsen: Hermes-proven continuityvakt, bmadglidning,
+  overlamningsregister_fr6, provvakt_fr24 och kopplingsid (K-8).
 - **2026-11-23 — Story 5.9 (crm): kalendern blir en fångstväg i ytan (FR-3,
   FR-17, FR-31):** `CAPTURE_PATHS_IN_OPERATION` i `crmDerivations.ts` har
   kalendern bland kontaktvägarna (`['mail', 'calendar', 'issues']`;

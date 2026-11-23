@@ -18,6 +18,14 @@
 //     bärs därför inte av kolumnen utan av FR-19-provet, som läser just den här
 //     funktionens svar. Tjänsten döljer alltså aldrig en lucka och fyller den
 //     aldrig med en gissning — den redovisar den som NULL.
+//   * **`namn` är kontraktets namn, läst ur avtalsdelens FÖRSTA version med
+//     samma kod** (Story 2.4, beslut B6), och NULL när namnet där är koden.
+//     Importen skriver den versionen och sätter koden som namn bara när texten
+//     saknade ett (`contract_parts.name` är NOT NULL). Ett senare baselinebeslut
+//     skriver en ny version med Davids namn — ett beslut, inte kontraktets ord —
+//     så registret säger fortsatt att namnet saknas i kontraktet. Namnet har
+//     ingen egen kolumn här: en efterfyllnad hade fällts av avslutstriggern, och
+//     en tom kolumn hade fått varje befintligt namn att se saknat ut.
 //   * **`dagar_i_laget` HÄRLEDS, den lagras aldrig** (FR-37). Åldern räknas i
 //     SELECT:en ur den append-only historiken (`uppdrag_leverabel_handelse`,
 //     0068:132 — "status utan historik är en gissning"). En `status_sedan`-kolumn
@@ -34,6 +42,8 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
+  /** Kontraktets namn på leverabeln. NULL = namnet saknas i kontraktet. */
+  namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
   uppfoljningsmatt: string | null;
@@ -79,7 +89,11 @@ export async function lasLeverabelregister(
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
   const res = await client.query<Leverabelrad>(
-    `SELECT l.contract_id, l.kod, l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
+    `SELECT l.contract_id, l.kod,
+            NULLIF((SELECT p.name FROM contract_parts p
+                     WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+                     ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h

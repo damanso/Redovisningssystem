@@ -20,7 +20,8 @@
 //     är samma nyckel. Första förekomsten vinner.
 //   * **Ramen och rapporteringen** läses ur dokumentets fältpar UTANFÖR
 //     leverabelrubrikerna: `Takvolym` (h), `Takbelopp` (kr), `Godkännare`,
-//     `Eskalering`.
+//     `Eskalering`. Saknas `Godkännare` läses `Mottagarpart` i dess ställe:
+//     mottagarparten och godkännaren är samma uppgift (FR-27, Story 2.4).
 //   * **Bilaga 1** — en tabell med kolumnerna `Kod`, `Ström` (namnet), `Start`,
 //     `Slut`. Utan `Kod` kan strömmen inte bli en avtalsdel, och då läses den
 //     inte alls: en kod uppfinns aldrig här.
@@ -835,7 +836,8 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     scopelinjer,
     matt: mattIAvsnitten(avsnitten),
     rytm: rytmIAvsnitten(avsnitten),
-    godkannare: text(dokumentfalt.get('godkannare')),
+    // Fältet Godkännare vinner; Mottagarpart är reserven för samma uppgift.
+    godkannare: text(dokumentfalt.get('godkannare') ?? dokumentfalt.get('mottagarpart')),
     godkannare_eskalering: text(
       dokumentfalt.get('eskalering')
       ?? dokumentfalt.get('eskaleringsinstans')

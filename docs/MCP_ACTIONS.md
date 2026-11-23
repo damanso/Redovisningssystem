@@ -1232,23 +1232,29 @@ ett nej lämnar inga avtalsdelar. Svaret har `contract_id`,
 
 **`importera_leveranskontrakt` (write, engångs)** — "Importera det frysta
 leveranskontraktet som baseline". Indata `contract_id` + `kontraktstext`
-(markdown). **Åtgärden läser aldrig Drive eller en fil själv** (ADR-4/NFR-1):
-den som har texten skickar in den. Tolkningen sker i den rena parsern
+(markdown), och sedan Story 2.4 det valfria `manifest` med projektets parter och
+ankare (se ”Manifestet, luckorna och det tekniska felet” nedan). **Åtgärden
+läser aldrig Drive eller en fil själv** (ADR-4/NFR-1): den som har texten och
+manifestet skickar in dem. Tolkningen sker i den rena parsern
 `server/src/lib/leveranskontrakt.ts` (ingen databas, ingen I/O), och skrivningen
 går efter mänskligt godkännande genom `skrivBaselineversion` — ingen
 parallell väg in till avtalsdelarna.
 
 Importen köar `satt_baseline`, **en gång per källa** (Story 2.1, B-8). Källan
-är paret (`contract_id`, `kontraktstext`). Finns redan en `satt_baseline`-köpost
-för paret, i valfri status (`pending`, `approved`, `rejected`, `executed`,
-`failed`), köas ingen ny och ingen auditrad skrivs. Svaret bär då den
-befintligas `approval_id`, `redan_koad: true` och `kostatus` (dess status). En
-ny köpost ger `redan_koad: false`. Avtalets rad låses (`FOR UPDATE`) före
-uppslaget, så två samtidiga importer av samma par ger en köpost, och
-`contract_id` jämförs oberoende av skiftläge. En ny fryst text, eller samma text
-mot ett annat avtal, är en ny källa. Har David sagt nej till en text köas den
-inte igen; en direkt begärd `satt_baseline` köar alltid. Ur texten skrivs efter
-godkännandet, allt i samma transaktion:
+är trippeln (`contract_id`, `kontraktstext`, `manifest`). Finns redan en
+`satt_baseline`-köpost för trippeln, i valfri status (`pending`, `approved`,
+`rejected`, `executed`, `failed`), köas ingen ny och ingen auditrad skrivs.
+Svaret bär då den befintligas `approval_id`, `redan_koad: true` och `kostatus`
+(dess status). En ny köpost ger `redan_koad: false`. Avtalets rad låses
+(`FOR UPDATE`) före uppslaget, så två samtidiga importer av samma källa ger en
+köpost, och `contract_id` jämförs oberoende av skiftläge. Manifestet jämförs som
+jsonb, på innehåll och inte på nyckelordning, och utan manifest är uppslaget
+detsamma som före Story 2.4. En ny fryst text, samma text mot ett annat avtal
+och samma text med ett annat manifest är var för sig en ny källa — ett manifest
+som kommer efter en import utan manifest ger alltså ett nytt förslag, så att
+Davids ja också gäller manifestet (beslut B4). Har David sagt nej till en källa
+köas den inte igen; en direkt begärd `satt_baseline` köar alltid. Ur texten och
+manifestet skrivs efter godkännandet, allt i samma transaktion:
 
 - rotdelen `UPPDRAG` som ny rad med ramens `cap_hours`/`cap_amount_ore` och
   `valid_from = signed_date`,
@@ -1262,14 +1268,35 @@ godkännandet, allt i samma transaktion:
 - `uppdrag_scopelinje` (innanför, utanför, signalfraser med klausul och
   åtgärden när en signal tänds; sorten är en av
   `'innanfor' | 'utanfor' | 'fras' | 'atgard'`, migration 0094, Story 2.6),
-- `contracts.godkannare` / `godkannare_eskalering`,
+- avtalets parter, med en källa per avtal (Story 2.4, beslut B1–B3):
+  `contracts.godkannare` (mottagarparten och godkännaren är samma uppgift),
+  `godkannare_eskalering`, `godkannandeform` och `godkannare_kalla` (migration
+  0097). Anger manifestet en godkännare kommer godkännaren, eskaleringen och
+  godkännandeformen alla därifrån, med manifestets `kalla` som källa, och ett
+  fält som manifestet inte anger blir NULL i stället för att blandas med
+  texten. Annars gäller textens fältpar `Godkännare` (med `Mottagarpart` som
+  reserv) och `Eskalering`, godkännandeformen är NULL och källan
+  `leveranskontraktet`. Anger ingen av dem en godkännare står avtalets lagrade
+  parter kvar. De fyra kolumnerna skrivs tillsammans, bara när någon skiljer
+  sig, och aldrig på ett avslutat uppdrag (avslutstriggern
+  `contracts_parter_vagrar_avslutat`),
 - uppföljningsmåtten ur del 3, en rad per mått i textens ordning i
   `uppdrag_matt.namn`, `uppdrag_matt.hur_ofta`, `uppdrag_matt.kallreferenser`,
   `uppdrag_matt.lasvag`, `uppdrag_matt.larmregel`, `uppdrag_matt.larmregel_lage`
   och `uppdrag_matt.utfall_lage` (kategori BASELINE, migration 0095, Story 2.3),
 - rytmen ur del 4 på avtalet: `contracts.rytm_text`,
   `contracts.bedomning_intervall_dagar`, `contracts.bedomning_veckodag` och
-  `contracts.rapport_mottagarkrets`. Ankaret skrivs aldrig av importen.
+  `contracts.rapport_mottagarkrets`. Kontraktstexten bär aldrig ett ankare,
+- ankaret ur manifestet (Story 2.4, beslut B5): `contracts.bedomning_ankare`
+  och `bedomning_ankare_kalla` skrivs efter Davids ja, bara i lägena `lagras`
+  och `andras` och med manifestets egen källa. Baselineförslaget är ankarets
+  ändringsväg, så Davids ja på förslaget gäller också ankaret och ingen andra
+  inmatning eller kvittens behövs. `satt_bedomningsankare` står kvar
+  oförändrad och fortsatt engångs (409 `ankare_redan_satt`).
+
+Transmittalen skrivs aldrig av importen eller godkännandet: mottagare,
+överlämningsdatum och revision fylls först av överlämningen, och en tom
+transmittal före första överlämningen är giltig (FR-9).
 
 - **Utkastläget (Story 2.1, B-14).** En text med `kontrakt_tillstand: utkast`
   förhandsvisas, också utan `signed_date`: ingen baseline, inget register och
@@ -1348,6 +1375,46 @@ godkännandet, allt i samma transaktion:
   bärs av `UNIQUE (contract_id, namn)`, och rytmen skrivs bara när den skiljer
   sig från avtalsraden, så en ny import av samma text lämnar avtalsraden helt
   orörd och svarar `oforandrad: true`.
+- **Manifestet, luckorna och det tekniska felet (Story 2.4, FR-27, FR-13,
+  FR-14).** Ett fält som saknas i kontraktet visas som saknat och gissas
+  aldrig, och godkännaren kommer ur projektets manifest när det anger den.
+  - **Manifestet** är ett strikt objekt:
+    `{ kalla, godkannare?, godkannare_eskalering?, godkannandeform?, bedomning_ankare?, bedomning_ankare_kalla? }`.
+    `kalla` är manifestets egen källa (för NVR-001 «projekt.yaml») och
+    obligatorisk, och `bedomning_ankare` är ett ISO-datum. En okänd nyckel,
+    ett ogiltigt datum, en text som bara är blanktecken och eskaleringen eller
+    godkännandeformen utan godkännaren ger 400 `validation_error`.
+    `satt_baseline` tar samma fält, eftersom köpostens indata är importens.
+    Utan manifest bär köpostens indata ingen nyckel `manifest` alls.
+  - **Förslaget** får tre fält utöver `saknade_falt`, som är oförändrat:
+    - `luckor`: de kontraktsburna fält som saknas, en rad
+      `{ falt, kod, vad, var, ja_innebar }` per lucka över den slutna listan
+      `'namn' | 'klausul' | 'acceptanskriterium' | 'uppfoljningsmatt' | 'mottagarpart'`.
+      Leverablerna står i textens ordning och mottagarparten sist med
+      `kod: null`. Inget transmittalfält finns i listan. En lucka är en
+      beräknad rad, aldrig en egen post, köpost eller ett eget ärende.
+    - `parter`: `{ godkannare, godkannare_eskalering, godkannandeform, kalla, skillnader }`
+      så som Davids ja lämnar dem. `skillnader` har en rad
+      `{ falt, kontraktstext, manifest }` för varje fält där kontraktstexten
+      anger något annat än manifestet: manifestets värde gäller, och det skrivs
+      aldrig över i tysthet.
+    - `ankare`: `{ lage, ankare, kalla, orsak }`, där läget är ett av
+      `'ej_angivet' | 'utan_kalla' | 'kalla_utan_ankare' | 'rytm_saknas' | 'fel_veckodag' | 'lagras' | 'oforandrat' | 'andras'`
+      och `orsak` är en mening om vad ett ja gör med ankaret. Ett ankare utan
+      källa, utan rytm eller på fel veckodag lagras inte, och resten av
+      importen påverkas inte.
+  - **Godkännandet** svarar dessutom med `parter` (avtalets värden efter
+    steget), `parter_skillnader` (samma lista som förslaget), `ankare` och
+    `luckor`. Auditraden `uppdrag.leveranskontrakt_importerat` får
+    `parter_andrade` och `ankare` (läget) — inga namn, ingen form och ingen
+    källa.
+  - **Det tekniska felet:** en text som inte går att läsa ger
+    **400 `kontrakt_olasbart`** med `details.olast`, en lista över
+    `'kontrakt_tillstand' | 'leverabler'`: tillståndet anger varken fryst
+    eller utkast, eller en fryst text har inte en enda leverabel. Felet kastas
+    före varje skrivning, så ingenting skrivs och ingen köpost skapas, och
+    ingen fråga går till David. Före Story 2.4 gav ett okänt tillstånd 200
+    med `kontrakt_tillstand: null`.
 - Uppsättning och import är `write`, men importen skriver planen först genom
   den känsliga köposten `satt_baseline`. Ingen lagrad version går att skriva
   över, bekräftad eller obekräftad: 0079 är sista försvarslinjen.
@@ -1486,9 +1553,14 @@ sida utan formulär. Formuläret postar till
 ### Leverabelregistret läses (S3.1, våg 3)
 
 - `las_leverabelregister` (read) — `contract_id`. Avtalets rader ur
-  `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `klausul`,
-  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status` (FR-9) och
-  `dagar_i_laget` (FR-37).
+  `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `namn`,
+  `klausul`, `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status`
+  (FR-9) och `dagar_i_laget` (FR-37). `namn` (Story 2.4) är kontraktets namn på
+  leverabeln, läst ur avtalsdelens första version med samma kod, och NULL när
+  kontraktet saknade det (importen skriver då koden som avtalsdelens namn). Ett
+  senare baselinebeslut som namnger leverabeln är Davids beslut och inte
+  kontraktets ord, så `namn` är fortsatt NULL efter det. Vyerna visar NULL med
+  textkällans ord, ”Namn saknas i kontraktet”.
   Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
   **Radidentiteten är `(contract_id, kod)`** — aldrig `contract_part_id`:
   avtalsdelen versioneras vid ett tilläggsavtal, leverabeln L6 är samma
@@ -2087,6 +2159,20 @@ känslig åtgärd och godkänns i **Att göra**.
   `'innanfor' | 'utanfor' | 'fras' | 'atgard'` som saknar rad, i den ordningen.
   Ett utkast får aldrig scopelinjer genom importen, eftersom baselinen bara skrivs
   för ett fryst avtal efter Davids ja.
+- **Parterna och luckorna (Story 2.4, FR-13 och FR-27).** Svaret bär
+  `parter: { godkannare, godkannare_eskalering, godkannandeform, kalla, lage, text }`:
+  avtalets lagrade partskolumner (`kalla` är `godkannare_kalla`), lästa av
+  `lasKontraktsparter` i `server/src/services/uppdragKontrakt.ts`. Den är det
+  enda stället där det avgörs om kontraktet är inläst (avtalet har
+  registerrader). `lage` är `'angiven' | 'saknas' | 'ej_inlast'` och `text`
+  meningen för läget, så ett oläst kontrakt sägs aldrig sakna något. Svaret bär
+  också `luckor`, de kontraktsburna fält som saknas, i samma form
+  `{ falt, kod, vad, var, ja_innebar }` och ur samma regel som importens
+  förslag, räknade över registrets rader och avtalets mottagarpart. Ett avtal
+  utan register får en tom lista. Ingen del av `parter` eller `luckor` är en rad
+  ur kontraktstexten. Kontraktet ritar dem i panelen ”Parterna och luckorna”,
+  och Leveranserna har kolumnen Namn och mottagarpartens rad per avtal, direkt
+  före brädan eller tabellen.
 - **Ytan är vägen till dokumentet och registret över dess läge — aldrig en
   kopia** (NFR-12). Svaret bär `source_file_id` och Drive-referensernas
   `extern_id` och ingenting mer om handlingen; `includeContent` anropas aldrig

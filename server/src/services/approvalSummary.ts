@@ -166,6 +166,14 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   valid_from: 'Gäller från',
   voucher_date: 'Verifikationsdatum',
   voucher_id: 'Verifikat',
+  // Story 2.4: manifestets nycklar i `satt_baseline` (Att göra visar köpostens
+  // indata). Manifestets egen `kalla` har etiketten ovan.
+  manifest: 'Manifestet',
+  godkannare: 'Godkännare',
+  godkannare_eskalering: 'Eskalering',
+  godkannandeform: 'Godkännandeform',
+  bedomning_ankare: 'Ankardatum',
+  bedomning_ankare_kalla: 'Ankardatumets källa',
 };
 export const VALUE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   entity_type: { invoice: 'Kundfaktura', supplier_invoice: 'Leverantörsfaktura', receipt: 'Kvitto', payslip: 'Lönebesked' },
