@@ -153,6 +153,44 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 3.13 (crm), omtag 2: spärrens uppslag bärs av primärnyckeln (FR-43):**
+  Kedjans svit fällde GP1 och GP2: planen för spärrens första fråga hade
+  bara `company_id` och `source_system` i indexvillkoret. Orsaken är
+  Postgres 16: `source_ref = ANY(...)` på primärnyckelns tredje kolumn ger
+  planeraren också en väg där listan är ett filter, och på en liten tabell
+  väljs den, så bolagets och källsystemets alla gravstenar lästes. Mekanismen
+  är bytt: `assertNotErased` slår upp varje nyckel (källnyckeln, syskonet och
+  grunden, högst tre) med en egen likhet i en `UNION ALL`-fråga. En likhet på
+  alla tre kolumner hamnar alltid i indexvillkoret. Frågetexten byggs bara ur
+  antalet nycklar, och alla värden är parametrar. GP1 och GP2 fäller nu hela
+  klassen: varje uppslag på `erased_sources_pkey` ska bära `source_ref`, ingen
+  nod får ha `source_ref` som filter, och fallen täcker en, två och tre
+  nycklar, med och utan spärr. Syskonfrågan, som bara körs när den bara
+  grunden är gravsten, är oförändrad och fortfarande en känd gräns. Ingen
+  migration, rutt, åtgärd, tabell eller miljövariabel. **Inte kört:**
+  sandlådan nekade provkörningen (kräver godkännande). Kedjans svit avgör.
+- **2026-11-23 — Story 3.13 (crm), omtag efter kodgranskningen (FR-4, FR-43):**
+  Fyra fynd åtgärdade. (1) `recordInteraction`: uppslaget på hela nyckeln
+  gäller hela bolaget. Träffar det en rad i en annan organisation görs
+  uppslaget på grundnyckeln inom den egna organisationen ändå, och dess rad
+  vinner. Annars flyttade uppdateringen den andra organisationens rad hit,
+  och organisationen fick två rader med samma grund (sekvensen {A} → {A,B} →
+  {B}). Saknar organisationen grunden flyttas raden som förut. Prov: G10
+  (gmail och calendar), G11 (nyckel med suffix i en annan organisation) och
+  G12 (flytten när grunden saknas, positiv kontroll). (3) `assertNotErased`
+  slår nu upp de exakta nycklarna och grunden på primärnyckeln (`= ANY`).
+  Syskonen läses i en fråga till bara när den bara grunden själv är en
+  gravsten, eftersom ett prefixintervall inte är säkert i en språklig
+  sortering. Prov: GP1 och GP2 (spelar in spärrens frågor och kräver
+  `source_ref` i indexvillkoret på `erased_sources_pkey`). (2) och (4) Regel 2
+  och 4 i `docs/crm/API_KONTRAKT.md` anger nu mekanismens villkor: att flytten bara
+  sker när grunden saknas, att formen `<grund>` beror på personens domän, att
+  den bara nyckeln är en exakt gravsten för andra organisationer, och att ett
+  syskon från en annan kunds radering stänger av regeln för bara gravstenar.
+  Prov: K6 (gränserna i de rena funktionerna) och D2 (kontraktets villkor).
+  Ingen migration, rutt, åtgärd, tabell eller miljövariabel. **Inte kört:**
+  sandlådan nekade `npm run typecheck` (kräver godkännande). Kedjans
+  typkontroll och svit avgör.
 - **2026-11-23 — Story 3.13 (crm), mottagaren känner igen kontaktpunkten och gravstenen oavsett domänsuffixet (FR-4, FR-43):**
   Den nya rena modulen `server/src/lib/crmSourceRef.ts` (inga importer) bär
   tillåtelselistan `GRUNDNYCKEL_SYSTEM` (`gmail`, `calendar`), `sourceRefBase`

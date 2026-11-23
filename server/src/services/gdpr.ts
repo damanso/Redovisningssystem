@@ -79,7 +79,9 @@ async function purgeCrmRelationData(
   // Kontaktpunkterna i gmail och calendar får också domänsyskonet
   // `<grund>#<domän>` (story 3.13, FR-43): avsändaren kan skicka samma mail i
   // den andra formen, och utan syskonet hade det återskapat kunden. Domänen är
-  // nyckelns suffix eller domänen i personens e-post, aldrig lokaldelen.
+  // nyckelns suffix eller domänen i personens e-post, aldrig lokaldelen. En
+  // kontaktpunkt utan suffix och utan e-post får inget syskon, och dess bara
+  // gravsten spärrar då alla domäner (kontraktets regel 4 anger gränserna).
   const kontaktpunkter = await client.query<{ source_system: string; source_ref: string; email: string | null }>(
     `SELECT i.source_system, i.source_ref, p.email
      FROM crm.interactions i

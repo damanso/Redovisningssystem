@@ -18,6 +18,13 @@ const GUSTAV: Person = { name: 'Gustav Grund', email: 'gustav@grundorg.example' 
 const ANNA: Person = { name: 'Anna Annan', email: 'anna@annan.example' };
 const SARA: Person = { name: 'Sara Sjua', email: 'sara@sjuan-a.example' };
 const BO: Person = { name: 'Bo Sjua', email: 'bo@sjuan-b.example' };
+const TINA: Person = { name: 'Tina Tia', email: 'tina@tian-a.example' };
+const TOR: Person = { name: 'Tor Tia', email: 'tor@tian-b.example' };
+const ELSA: Person = { name: 'Elsa Elva', email: 'elsa@elvan-a.example' };
+const EMIL: Person = { name: 'Emil Elva', email: 'emil@elvan-b.example' };
+const ELIN: Person = { name: 'Elin Elva', email: 'elin@elvan-c.example' };
+const TEA: Person = { name: 'Tea Tolv', email: 'tea@tolvan-a.example' };
+const TIM: Person = { name: 'Tim Tolv', email: 'tim@tolvan-b.example' };
 const KANAL: Record<string, string> = { gmail: 'email', calendar: 'meeting', linear: 'issue', manual: 'note' };
 
 let user: TestUser;
@@ -238,6 +245,45 @@ describe('grundnyckeln i mottagaren (story 3.13)', () => {
     expect(err).toBeNull();
     expect(svarB).toMatchObject({ created: false });
     expect(await rader('Grundorg AB', 'gmail', 'gmail:gn-9')).toEqual(['gmail:gn-9']);
+  });
+
+  // G10–G12 (granskningen): uppslaget på hela nyckeln gäller hela bolaget och
+  // kan träffa samma nyckel i en annan organisation. Organisationens egen rad
+  // med grunden ska då vinna, annars flyttar uppdateringen den andra
+  // organisationens rad hit och ger två rader med samma grund.
+  it('G10: {A} → {A,B} → {B} ger en rad per organisation, fast natt 3 sänder A:s nyckel för B', async () => {
+    for (const [system, grund] of [['gmail', 'gmail:gn-10'], ['calendar', 'calendar:gn-10e']] as const) {
+      expect(await skicka(kp(grund, 'Tian A AB', TINA)), `${grund} natt 1`)
+        .toMatchObject({ interactions_created: 1, skipped: [] });
+      expect(await skicka(kp(`${grund}#tian-a.example`, 'Tian A AB', TINA), kp(`${grund}#tian-b.example`, 'Tian B AB', TOR)),
+        `${grund} natt 2`).toMatchObject({ interactions_created: 1, interactions_unchanged: 1, skipped: [] });
+      expect(await skicka(kp(grund, 'Tian B AB', TOR)), `${grund} natt 3`)
+        .toMatchObject({ interactions_created: 0, interactions_unchanged: 1, skipped: [] });
+      const a = await rader('Tian A AB', system, grund);
+      const b = await rader('Tian B AB', system, grund);
+      expect(a, `${grund} A`).toEqual([grund]);
+      expect(b, `${grund} B`).toEqual([`${grund}#tian-b.example`]);
+      expect(enRadPerGrund(a) && enRadPerGrund(b), grund).toBe(true);
+    }
+  });
+
+  it('G11: en nyckel med suffix som finns i en annan organisation tar inte den raden när den egna har grunden', async () => {
+    // Natt 2 har domänkartan gett B domänen elvan-a.example, och mailet rör B och C.
+    expect(await skicka(kp('gmail:gn-11#elvan-a.example', 'Elvan A AB', ELSA), kp('gmail:gn-11#elvan-b.example', 'Elvan B AB', EMIL)))
+      .toMatchObject({ interactions_created: 2, skipped: [] });
+    expect(await skicka(kp('gmail:gn-11#elvan-a.example', 'Elvan B AB', EMIL), kp('gmail:gn-11#elvan-c.example', 'Elvan C AB', ELIN)))
+      .toMatchObject({ interactions_created: 1, interactions_unchanged: 1, skipped: [] });
+    expect(await rader('Elvan A AB', 'gmail', 'gmail:gn-11')).toEqual(['gmail:gn-11#elvan-a.example']);
+    expect(await rader('Elvan B AB', 'gmail', 'gmail:gn-11')).toEqual(['gmail:gn-11#elvan-b.example']);
+    expect(await rader('Elvan C AB', 'gmail', 'gmail:gn-11')).toEqual(['gmail:gn-11#elvan-c.example']);
+  });
+
+  it('G12: saknar organisationen grunden flyttas raden med exakt samma nyckel dit, som i basen', async () => {
+    expect(await skicka(kp('gmail:gn-12', 'Tolvan A AB', TEA))).toMatchObject({ interactions_created: 1, skipped: [] });
+    expect(await skicka(kp('gmail:gn-12', 'Tolvan B AB', TIM)))
+      .toMatchObject({ interactions_created: 0, interactions_unchanged: 1, skipped: [] });
+    expect(await rader('Tolvan A AB', 'gmail', 'gmail:gn-12')).toEqual([]);
+    expect(await rader('Tolvan B AB', 'gmail', 'gmail:gn-12')).toEqual(['gmail:gn-12']);
   });
 
   it('GN: utan det andra uppslaget ger fall 1 en andra rad, och predikatet fäller den', async () => {

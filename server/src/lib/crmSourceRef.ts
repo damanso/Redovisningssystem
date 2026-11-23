@@ -97,10 +97,13 @@ export function erasureCheckKeys(k: Kallnyckel): string[] {
 
 /**
  * Avgör om gravstenarna spärrar händelsen. `tombstones` är gravstenarna i samma
- * bolag och källsystem som spärren läst. Sant när en av `checkKeys` är en
- * gravsten, eller när grunden själv är en gravsten utan något domänsyskon
- * `<base>#<domän>`: en gravsten från före domänsyskonen vet inte vilken kund
- * den gällde, och då spärras mailet för alla domäner, den säkra sidan.
+ * bolag och källsystem som spärren läst: de av `checkKeys` och grunden som är
+ * gravstenar och, när grunden är det, grundens syskon. Sant när en av
+ * `checkKeys` är en gravsten, eller när grunden själv är en gravsten utan något
+ * domänsyskon `<base>#<domän>`: en gravsten från före domänsyskonen vet inte
+ * vilken kund den gällde, och då spärras mailet för alla domäner, den säkra
+ * sidan. Ett enda syskon stänger av den regeln, oavsett vilken kunds radering
+ * som skrev det; gravstenen bär ingen kund (känd gräns, kontraktets regel 4).
  */
 export function erasureBlocks(p: { checkKeys: readonly string[]; base: string | null; tombstones: readonly string[] }): boolean {
   const gravstenar = new Set(p.tombstones);

@@ -1147,9 +1147,11 @@ export interface RecordInteractionInput {
  *
  * För kontaktpunkter i gmail och calendar gäller gravstenen per domän (story
  * 3.13): `kontaktpunkt` bär personens e-post, och spärren prövar nyckeln och
- * domänsyskonet `<grund>#<domän>`, så att samma mail avvisas i båda formerna
- * medan en annan organisations domän släpps igenom. Utan parametern prövas
- * exakt nyckel, som för löften och affärer.
+ * domänsyskonet `<grund>#<domän>`. Formen `<grund>` avvisas alltså när den
+ * själv är gravsten eller när personens domän är den raderade, och ett mail
+ * med en annan domän släpps igenom, utom när den bara grunden är gravsten
+ * utan något domänsyskon. Villkoren och gränserna står i kontraktets regel 4.
+ * Utan parametern prövas exakt nyckel, som för löften och affärer.
  */
 export async function assertNotErased(
   client: PoolClient, companyId: string, sourceSystem: string, sourceRef?: string,
@@ -1160,13 +1162,30 @@ export async function assertNotErased(
   let raderad: boolean;
   if (kontaktpunkt && base) {
     const checkKeys = erasureCheckKeys({ source_system: sourceSystem, source_ref: sourceRef, email: kontaktpunkt.email });
-    const g = await client.query<{ source_ref: string }>(
-      `SELECT source_ref FROM crm.erased_sources
-       WHERE company_id = $1 AND source_system = $2
-         AND (source_ref = ANY($3::text[]) OR split_part(source_ref, '#', 1) = $4)`,
-      [companyId, sourceSystem, checkKeys, base],
-    );
-    raderad = erasureBlocks({ checkKeys, base, tombstones: g.rows.map((rad) => rad.source_ref) });
+    // Spärren körs för varje kontaktpunkt, och gravstenarna bara växer. De
+    // exakta nycklarna och grunden slås därför upp på primärnyckeln, med en
+    // likhet per nyckel. `source_ref = ANY(...)` på nyckelns tredje kolumn ger
+    // Postgres 16 också en plan där listan bara är ett filter, och på en liten
+    // tabell väljs den. Då läses bolagets och källsystemets alla gravstenar.
+    // En likhet på alla tre kolumner hamnar alltid i indexvillkoret.
+    const nycklar = [...new Set([...checkKeys, base])];
+    const exakta = (await client.query<{ source_ref: string }>(
+      nycklar.map((_, i) => `SELECT source_ref FROM crm.erased_sources
+       WHERE company_id = $1 AND source_system = $2 AND source_ref = $${i + 3}`).join('\n       UNION ALL\n       '),
+      [companyId, sourceSystem, ...nycklar],
+    )).rows.map((rad) => rad.source_ref);
+    // Syskonen behövs bara när den bara grunden själv är en gravsten. Ett
+    // intervall på prefixet hade berott på databasens sortering, och i en
+    // språklig sortering ligger `<grund>#…` inte säkert samlat. Därför läses
+    // syskonen bara i det fallet.
+    const syskon = exakta.includes(base)
+      ? (await client.query<{ source_ref: string }>(
+          `SELECT source_ref FROM crm.erased_sources
+           WHERE company_id = $1 AND source_system = $2 AND split_part(source_ref, '#', 1) = $3 AND source_ref <> $3`,
+          [companyId, sourceSystem, base],
+        )).rows.map((rad) => rad.source_ref)
+      : [];
+    raderad = erasureBlocks({ checkKeys, base, tombstones: [...exakta, ...syskon] });
   } else {
     const r = await client.query(
       'SELECT 1 FROM crm.erased_sources WHERE company_id = $1 AND source_system = $2 AND source_ref = $3',
@@ -1265,14 +1284,20 @@ export async function recordInteraction(
         [companyId, input.source_system, input.source_ref])
     : null;
   // Den andra formen av samma grundnyckel i samma organisation är samma
-  // kontaktpunkt (FR-4). En annan organisation får sin egen rad. Äldsta först,
-  // så att träffen inte byter rad mellan körningar.
-  if (!existing?.rows[0] && base && input.organization_id) {
-    existing = await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
+  // kontaktpunkt (FR-4). Uppslaget på hela nyckeln gäller hela bolaget och kan
+  // träffa samma nyckel i en annan organisation. Då vinner organisationens egen
+  // rad med grunden; annars hade uppdateringen flyttat den andra
+  // organisationens rad hit, och organisationen hade fått två rader med samma
+  // grund. Saknar organisationen grunden används träffen som i dag. Äldsta
+  // först, så att träffen inte byter rad mellan körningar.
+  const traff = existing?.rows[0];
+  if (base && input.organization_id && traff?.organization_id !== input.organization_id.toLowerCase()) {
+    const egen = await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
       `SELECT id, person_id, organization_id FROM crm.interactions
        WHERE company_id = $1 AND source_system = $2 AND organization_id = $3 AND split_part(source_ref, '#', 1) = $4
        ORDER BY created_at, id LIMIT 1`,
       [companyId, input.source_system, input.organization_id, base]);
+    if (egen.rows[0] || !traff) existing = egen;
   }
 
   // Steg 3 (0089, P2): en privat person står aldrig på en post hos en kund.

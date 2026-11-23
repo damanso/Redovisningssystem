@@ -94,4 +94,20 @@ describe('källnyckelns grund och gravstenens nycklar (story 3.13)', () => {
       base: null, tombstones: ['linear:LOC-1'],
     })).toBe(false);
   });
+
+  it('K6: gränserna som kontraktets regel 4 anger', () => {
+    const sparrar = (ref: string, email: string | null, base: string, tombstones: string[]) =>
+      erasureBlocks({ checkKeys: erasureCheckKeys({ source_system: 'gmail', source_ref: ref, email }), base, tombstones });
+    // (a) bara `<grund>#<domän>` sparades: formen `<grund>` spärras bara när personens domän är den raderade
+    expect(sparrar('gmail:7', 'eva@kund.se', 'gmail:7', ['gmail:7#kund.se'])).toBe(true);
+    expect(sparrar('gmail:7', null, 'gmail:7', ['gmail:7#kund.se'])).toBe(false);
+    expect(sparrar('gmail:7', 'bo@annan.se', 'gmail:7', ['gmail:7#kund.se'])).toBe(false);
+    // (b) den raderade kontaktpunktens nyckel var `<grund>`, en exakt gravsten: en annan
+    // organisations mail spärras i formen `<grund>` och släpps i formen `<grund>#<sin domän>`
+    expect(sparrar('gmail:8', 'bo@b.se', 'gmail:8', ['gmail:8', 'gmail:8#a.se'])).toBe(true);
+    expect(sparrar('gmail:8#b.se', 'bo@b.se', 'gmail:8', ['gmail:8', 'gmail:8#a.se'])).toBe(false);
+    // (c) en bar gravsten utan person spärrar varje domän, tills en annan kunds radering sparar ett syskon
+    expect(sparrar('gmail:9#d.se', 'dan@d.se', 'gmail:9', ['gmail:9'])).toBe(true);
+    expect(sparrar('gmail:9#d.se', 'dan@d.se', 'gmail:9', ['gmail:9', 'gmail:9#n.se'])).toBe(false);
+  });
 });

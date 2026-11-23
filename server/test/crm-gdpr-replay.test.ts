@@ -3,8 +3,11 @@
 // godkännandekön och läser tabellerna både som app med RLS och som ägare.
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { QueryResultRow } from 'pg';
+import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from '../src/db/pool.js';
+import { setTenantContext } from '../src/db/tx.js';
+import { erasureCheckKeys, sourceRefBase } from '../src/lib/crmSourceRef.js';
+import { assertNotErased } from '../src/services/crmRelations.js';
 import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SKAL = 'källan är raderad enligt GDPR och får inte återskapas';
@@ -532,6 +535,142 @@ describe('kontraktets regel 2 och 4 (story 3.13)', () => {
     for (const term of ['`<grund>#<domän>`', 'per domän', 'för alla domäner']) expect(regel4, term).toContain(term);
     for (const rad of ['**2. `source_ref` är inte valfri i praktiken.**', '**4. En raderad källa kan inte återuppspelas.**']) {
       expect(regler.split(rad).length - 1, rad).toBe(1);
+    }
+  });
+
+  it('D2: regel 2 och 4 anger villkoren som mekanismen har, inte mer', async () => {
+    const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+    const regler = kontrakt.split('## De fyra reglerna\n')[1]!.split('\n## ')[0]!;
+    // Radbrytningar slås ihop, så att ett villkor kan stå över två rader.
+    const regel = (fran: string, till: string) => regler.slice(regler.indexOf(fran), regler.indexOf(till)).replace(/\s+/g, ' ');
+    const regel2 = regel('**2.', '**3.');
+    const regel4 = regel('**4.', '**5.');
+    // Regel 2: en rad med exakt samma nyckel i en annan organisation flyttas bara när den egna saknar grunden.
+    for (const term of ['organisationens egen kontaktpunkt vinner', 'saknar grunden', 'flyttas']) expect(regel2, term).toContain(term);
+    // Regel 4: formen `<grund>` beror på personens domän; den bara nyckeln är en exakt gravsten; ett syskon
+    // från en annan kunds radering stänger av regeln för bara gravstenar.
+    for (const term of [
+      'personens e-post har den raderade domänen', 'eller med en person på en annan domän', 'exakt gravsten', 'en annan kunds radering',
+    ]) {
+      expect(regel4, term).toContain(term);
+    }
+  });
+});
+
+// Granskningen: spärren körs för varje kontaktpunkt i gmail och calendar, upp
+// till 500 gånger per batch, och gravstenarna bara växer. Primärnyckeln
+// (company_id, source_system, source_ref) ska därför bära frågan, så att den inte
+// läser alla gravstenar i bolaget och källsystemet. Syskonen läses bara när den
+// bara grunden själv är en gravsten.
+describe('spärrens frågor och primärnyckeln (story 3.13)', () => {
+  type Fraga = { sql: string; params: unknown[] };
+
+  /** Kör spärren som app i en transaktion som rullas tillbaka och spelar in dess frågor mot gravstenarna. */
+  async function sparr(sourceSystem: 'gmail' | 'calendar', sourceRef: string, email: string | null) {
+    const client = await pool.connect();
+    const fragor: Fraga[] = [];
+    const inspelare = {
+      query: (sql: string, params: unknown[] = []) => {
+        if (sql.includes('crm.erased_sources')) fragor.push({ sql, params });
+        return client.query(sql, params);
+      },
+    } as unknown as PoolClient;
+    try {
+      await client.query('BEGIN');
+      await setTenantContext(client, user.userId, companyId);
+      const utfall = await assertNotErased(inspelare, companyId, sourceSystem, sourceRef, { email })
+        .then(() => 'släpps', (err: { code?: string }) => err.code ?? String(err));
+      return { utfall, fragor };
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  }
+
+  /**
+   * Planen som frågan får när sekventiell läsning är avstängd: indexvillkoren på
+   * gravstenarnas primärnyckel och filtren på gravstenarna. Planen tas med
+   * frågans egna värden, som när appen kör den.
+   */
+  async function plan(f: Fraga): Promise<{ villkor: string[]; filter: string[] }> {
+    return withAdmin(async (admin) => {
+      await admin.query('BEGIN');
+      try {
+        await admin.query('SET LOCAL enable_seqscan = off');
+        const r = await admin.query<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>(
+          `EXPLAIN (FORMAT JSON) ${f.sql}`, f.params);
+        const villkor: string[] = [];
+        const filter: string[] = [];
+        const besok = (nod: Record<string, unknown>) => {
+          const cond = nod['Index Cond'];
+          if (nod['Index Name'] === 'erased_sources_pkey' && typeof cond === 'string') villkor.push(cond);
+          const filt = nod['Filter'];
+          if (nod['Relation Name'] === 'erased_sources' && typeof filt === 'string') filter.push(filt);
+          for (const barn of (nod['Plans'] as Array<Record<string, unknown>> | undefined) ?? []) besok(barn);
+        };
+        besok(r.rows[0]!['QUERY PLAN'][0]!.Plan);
+        return { villkor, filter };
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    });
+  }
+
+  /**
+   * Felklassen: ett uppslag som läser bolagets och källsystemets alla gravstenar
+   * och sållar på källnyckeln efteråt. Varje uppslag på primärnyckeln ska därför
+   * bära källnyckeln i indexvillkoret, minst ett ska finnas, och ingen nod får ha
+   * källnyckeln som filter. Postgres 16 gör `= ANY(...)` på nyckelns tredje
+   * kolumn till ett filter på en liten tabell, och det fäller här.
+   */
+  async function bärsAvPrimärnyckeln(f: Fraga, ref: string) {
+    const { villkor, filter } = await plan(f);
+    const vy = `${ref}: ${JSON.stringify({ villkor, filter })}`;
+    expect(villkor.length, vy).toBeGreaterThan(0);
+    expect(villkor.every((v) => v.includes('source_ref')), vy).toBe(true);
+    expect(filter.some((v) => v.includes('source_ref')), vy).toBe(false);
+  }
+
+  // [källsystem, källnyckel, personens e-post, utfall, antal nycklar som slås upp]
+  type Fall = ['gmail' | 'calendar', string, string | null, string, number];
+
+  /** Nycklarna spärren slår upp först: de prövade nycklarna och grunden, utan dubbletter. */
+  const uppslagna = (system: string, ref: string, email: string | null) =>
+    new Set([...erasureCheckKeys({ source_system: system, source_ref: ref, email }), sourceRefBase(system, ref)]).size;
+
+  it('GP1: utan bar gravsten på grunden ställer spärren en fråga, och primärnyckeln bär källnyckeln', async () => {
+    const fall: Fall[] = [
+      ['gmail', 'gmail:gp-ny', null, 'släpps', 1],
+      ['gmail', 'gmail:gp-ny', 'ny@kund.example', 'släpps', 2],
+      ['gmail', 'gmail:gp-ny#kund.example', null, 'släpps', 2],
+      ['gmail', 'gmail:gp-ny#Kund.Example', 'ny@annan.example', 'släpps', 3],
+      ['calendar', 'calendar:gp-ny', 'ny@kund.example', 'släpps', 2],
+      ['gmail', 'gmail:dg-2', DORA.email, 'erased_source', 2],
+      ['gmail', 'gmail:dg-2#DomanGraven.Example', ANTON.email, 'erased_source', 3],
+      ['gmail', 'gmail:dg-2#annan.example', ANTON.email, 'släpps', 2],
+    ];
+    for (const [system, ref, email, facit, antal] of fall) {
+      expect(uppslagna(system, ref, email), ref).toBe(antal);
+      const { utfall, fragor } = await sparr(system, ref, email);
+      expect(utfall, ref).toBe(facit);
+      expect(fragor, ref).toHaveLength(1);
+      await bärsAvPrimärnyckeln(fragor[0]!, ref);
+    }
+  });
+
+  it('GP2: med en bar gravsten på grunden läses syskonen i en fråga till, och den första bärs av källnyckeln', async () => {
+    const fall: Fall[] = [
+      ['gmail', 'gmail:dg-4', null, 'erased_source', 1],
+      ['gmail', 'gmail:dg-4#annan.example', ANTON.email, 'erased_source', 2],
+      ['gmail', 'gmail:dg-4#Annan.Example', ANTON.email, 'erased_source', 3],
+      ['calendar', 'calendar:dg-3#annan.example', ANTON.email, 'släpps', 2],
+    ];
+    for (const [system, ref, email, facit, antal] of fall) {
+      expect(uppslagna(system, ref, email), ref).toBe(antal);
+      const { utfall, fragor } = await sparr(system, ref, email);
+      expect(utfall, ref).toBe(facit);
+      expect(fragor, ref).toHaveLength(2);
+      await bärsAvPrimärnyckeln(fragor[0]!, ref);
     }
   });
 });
