@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 6.5 (crm): det obelagda redovisas för sig (FR-44):**
+  `liquidityByMonth` returnerar nu `LiquidityByMonth`: rullningen och fältet
+  `not_counted`, elva obelagda rader i en sluten lista med belopp och skäl
+  (abonnemang, ofakturerad tid, ROT/RUT-fordran, restraden för fordringar
+  1500–1699, momsnettot, restsaldot på 2710/2730, bolagsskatten, 25xx, 2920,
+  289x och restraden för skulder 2400–2999). Den rena `notCountedRows` i
+  `domain/liquidity.ts` räknar kontobeloppen ur huvudboken genom en sluten
+  kontoindelning och drar av reskontrans öppna fakturor; listan förs aldrig in
+  i rullningen. Momsen och restsaldot får nästa förfallodag och reservation
+  bara när de är en skuld. Restsaldot räknas ur 6.2:s AGI-delar utan
+  bruttometodens dubbelräkning. Abonnemangsfrågan är flyttad ordagrant till
+  `recurringMonthOre` i `services/reports.ts`, som styrvyn nu anropar (samma
+  svar), och momsens reservation bor i domänen och delas med prognosen. Prov:
+  `steering-liquidity` R1, E1–E7 och N1–N10 (N6 negativ kontroll, N7 öppen
+  affär). Ingen migration, rutt, åtgärd, tabell eller miljövariabel. Visningen
+  i styrvyn kommer i Story 6.3 och läsåtgärden `liquidity_by_month` i Story
+  6.6. **Inte kört:** byggaren har inte kört något kommando — sandlådan
+  kräver godkännande för typkontroll och svit. Kedjans typkontroll och svit
+  avgör.
 - **2026-11-23 — Story 3.13 (crm), omtag 2: spärrens uppslag bärs av primärnyckeln (FR-43):**
   Kedjans svit fällde GP1 och GP2: planen för spärrens första fråga hade
   bara `company_id` och `source_system` i indexvillkoret. Orsaken är
