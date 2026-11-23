@@ -11,6 +11,7 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { isProjectCode, linkStatusOutcome, syncedCommitmentStatus } from '../lib/crmRules.js';
+import { erasureBlocks, erasureCheckKeys, sourceRefBase } from '../lib/crmSourceRef.js';
 import {
   confirmValue, guardHumanFields, readProvenance, recordProvenance, sourceForActor,
   type ProvenanceEntry, type ProvenanceSource, type ProvenanceTarget, type ProvenanceWrite,
@@ -1143,16 +1144,37 @@ export interface RecordInteractionInput {
  *
  * NYA händelser släpps fortfarande igenom. Det är ny behandling med ny grund;
  * det som stoppas är återuppspelning av just det som raderats.
+ *
+ * För kontaktpunkter i gmail och calendar gäller gravstenen per domän (story
+ * 3.13): `kontaktpunkt` bär personens e-post, och spärren prövar nyckeln och
+ * domänsyskonet `<grund>#<domän>`, så att samma mail avvisas i båda formerna
+ * medan en annan organisations domän släpps igenom. Utan parametern prövas
+ * exakt nyckel, som för löften och affärer.
  */
 export async function assertNotErased(
   client: PoolClient, companyId: string, sourceSystem: string, sourceRef?: string,
+  kontaktpunkt?: { email: string | null },
 ): Promise<void> {
   if (!sourceRef) return;
-  const r = await client.query(
-    'SELECT 1 FROM crm.erased_sources WHERE company_id = $1 AND source_system = $2 AND source_ref = $3',
-    [companyId, sourceSystem, sourceRef],
-  );
-  if (r.rows[0]) {
+  const base = kontaktpunkt ? sourceRefBase(sourceSystem, sourceRef) : null;
+  let raderad: boolean;
+  if (kontaktpunkt && base) {
+    const checkKeys = erasureCheckKeys({ source_system: sourceSystem, source_ref: sourceRef, email: kontaktpunkt.email });
+    const g = await client.query<{ source_ref: string }>(
+      `SELECT source_ref FROM crm.erased_sources
+       WHERE company_id = $1 AND source_system = $2
+         AND (source_ref = ANY($3::text[]) OR split_part(source_ref, '#', 1) = $4)`,
+      [companyId, sourceSystem, checkKeys, base],
+    );
+    raderad = erasureBlocks({ checkKeys, base, tombstones: g.rows.map((rad) => rad.source_ref) });
+  } else {
+    const r = await client.query(
+      'SELECT 1 FROM crm.erased_sources WHERE company_id = $1 AND source_system = $2 AND source_ref = $3',
+      [companyId, sourceSystem, sourceRef],
+    );
+    raderad = Boolean(r.rows[0]);
+  }
+  if (raderad) {
     throw new BadRequestError(
       'erased_source',
       'källan är raderad enligt GDPR och får inte återskapas',
@@ -1201,6 +1223,12 @@ async function assertTarget(
  * Kontaktpunkten som "senaste kontakt" härleds ur. Samma källa två gånger ger
  * EN rad (unik på source_system + source_ref) — synken kan köras om.
  *
+ * För `gmail` och `calendar` är samma grundnyckel i samma organisation samma
+ * kontaktpunkt (story 3.13, FR-4): avsändaren skickar `<grund>` eller
+ * `<grund>#<domän>` beroende på hur många organisationer mailet har just den
+ * natten, och utan det andra uppslaget hade formskiftet gett en dubblett. Raden
+ * behåller sin första källnyckel, eftersom uppdateringen aldrig skriver den.
+ *
  * Tidrapportering är medvetet inte en giltig källa: två av tre aktiva projekt
  * har noll loggade minuter men betalda fakturor, så en vy byggd på tidrapporter
  * hade visat den största kunden som kontaktlös. Databasens CHECK-villkor är
@@ -1209,15 +1237,43 @@ async function assertTarget(
 export async function recordInteraction(
   client: PoolClient, companyId: string, userId: string, input: RecordInteractionInput, origin: WriteOrigin,
 ): Promise<Record<string, unknown> & { created: boolean; kept_human_fields: string[] }> {
-  await assertNotErased(client, companyId, input.source_system, input.source_ref);
+  // Grundnyckeln bildas bara i modulen; null utan källnyckel och för linear och manual.
+  const base = sourceRefBase(input.source_system, input.source_ref);
+  // Gravstenens domän kan komma ur personens e-post. Den läses ur raden, så att
+  // spärren gäller också vägarna som bara har person_id. I intaget är personen
+  // redan skriven, och spärren rullar tillbaka den med händelsens savepoint.
+  const email = base && input.person_id
+    ? (await client.query<{ email: string | null }>(
+        'SELECT email FROM crm.people WHERE company_id = $1 AND id = $2',
+        [companyId, input.person_id])).rows[0]?.email ?? null
+    : null;
+  await assertNotErased(client, companyId, input.source_system, input.source_ref, base ? { email } : undefined);
   await assertTarget(client, companyId, input);
 
-  const existing = input.source_ref
+  // Det unika indexet gäller bara hela nyckeln. Utan låset kan två transaktioner
+  // med var sin form av samma grund båda missa varandras ännu inte committade
+  // rad. Låset släpps när transaktionen slutar (samma form som payroll.ts).
+  if (base && input.organization_id) {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+      [`crm_grundnyckel:${companyId}:${input.source_system}:${input.organization_id.toLowerCase()}:${base}`]);
+  }
+
+  let existing = input.source_ref
     ? await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
         `SELECT id, person_id, organization_id FROM crm.interactions
          WHERE company_id = $1 AND source_system = $2 AND source_ref = $3`,
         [companyId, input.source_system, input.source_ref])
     : null;
+  // Den andra formen av samma grundnyckel i samma organisation är samma
+  // kontaktpunkt (FR-4). En annan organisation får sin egen rad. Äldsta först,
+  // så att träffen inte byter rad mellan körningar.
+  if (!existing?.rows[0] && base && input.organization_id) {
+    existing = await client.query<{ id: string; person_id: string | null; organization_id: string | null }>(
+      `SELECT id, person_id, organization_id FROM crm.interactions
+       WHERE company_id = $1 AND source_system = $2 AND organization_id = $3 AND split_part(source_ref, '#', 1) = $4
+       ORDER BY created_at, id LIMIT 1`,
+      [companyId, input.source_system, input.organization_id, base]);
+  }
 
   // Steg 3 (0089, P2): en privat person står aldrig på en post hos en kund.
   // Indatats mål, annars radens; UPDATE använder den låsta radens värden.

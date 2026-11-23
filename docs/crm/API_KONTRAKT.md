@@ -76,6 +76,14 @@ nattjobb som körs om lägger då en dubblett varje gång. Databasen har ett uni
 index på `(company_id, source_system, source_ref)`. Skicka källans eget id —
 mail-id, kalenderhändelse, ärendenyckel.
 
+För kontaktpunkter från `gmail` och `calendar` är grundnyckeln delen före
+första `#` i `source_ref`. Samma händelse med nyckeln `<grund>#<domän>` i
+stället för `<grund>`, eller tvärtom, i samma organisation är samma
+kontaktpunkt: den räknas som `interactions_unchanged` och behåller sin första
+källnyckel. Två olika domänsuffix i samma organisation är också samma
+kontaktpunkt. Samma grundnyckel i en annan organisation blir en egen
+kontaktpunkt. Löften och övriga källsystem jämförs på hela nyckeln.
+
 **3. En trasig händelse stoppar inte batchen.** Varje händelse körs i en egen
 savepoint. Det som inte gick igenom returneras i `skipped` med index och skäl.
 Ett jobb som faller på rad 400 och rullar tillbaka de 399 första är värre än ett
@@ -86,6 +94,15 @@ GDPR sparas källnycklarna som gravstenar. Skickas samma historiska händelser o
 avvisas de (`skipped` med skälet att källan är raderad enligt GDPR) i stället för
 att återskapa personen och mailsammanfattningarna. Nya händelser — nya
 `source_ref` — släpps igenom som vanligt: det är ny behandling med ny grund.
+
+För kontaktpunkter från `gmail` och `calendar` gäller gravstenen per domän.
+Raderingen sparar källnyckeln och `<grund>#<domän>`, där domänen är nyckelns
+suffix eller annars domänen i personens e-post. Samma mail avvisas därför i
+båda formerna, `<grund>` och `<grund>#<domän>`. Samma mail för en annan
+organisation med en annan domän släpps igenom. En gravsten på en grundnyckel
+utan något sparat domänsuffix, till exempel en från före regeln eller en
+kontaktpunkt utan person och utan suffix, avvisar mailet för alla domäner.
+Löften prövas mot exakt nyckel.
 
 **5. Tidrapportering är inte en giltig källa.** `source_system` accepterar
 `gmail`, `calendar`, `linear` och `manual`. Databasen avvisar allt annat.

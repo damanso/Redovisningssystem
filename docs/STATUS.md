@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 3.13 (crm), mottagaren känner igen kontaktpunkten och gravstenen oavsett domänsuffixet (FR-4, FR-43):**
+  Den nya rena modulen `server/src/lib/crmSourceRef.ts` (inga importer) bär
+  tillåtelselistan `GRUNDNYCKEL_SYSTEM` (`gmail`, `calendar`), `sourceRefBase`
+  (delen före första `#`), `emailDomain`, `suffixDomain`, `erasureKeys`,
+  `erasureCheckKeys` (samma interna regel, så att skrivningen och prövningen
+  inte glider isär) och `erasureBlocks`. `recordInteraction` tar ett
+  transaktionsbundet lås per bolag, källsystem, organisation och grundnyckel
+  (`pg_advisory_xact_lock`, samma form som payroll.ts) och gör ett andra
+  uppslag på grundnyckeln inom organisationen när hela nyckeln inte träffar:
+  `<grund>` och `<grund>#<domän>` i samma organisation är samma kontaktpunkt
+  (`interactions_unchanged`, raden behåller sin första nyckel), en annan
+  organisation får egen rad, löften och `linear`/`manual` jämförs på hela
+  nyckeln. GDPR-raderingen (`purgeCrmRelationData`) skriver för kontaktpunkter
+  också domänsyskonet `<grund>#<domän>` (suffixet, annars personens
+  e-postdomän), före alla DELETE; löftenas och affärernas gravstenar är
+  oförändrade. `assertNotErased` har en valfri femte parameter som bara
+  `recordInteraction` skickar: spärren prövar nyckeln och syskonet, och en bar
+  gravsten utan domänsyskon spärrar alla domäner. `recordCommitment` och
+  affärscachen prövar exakt nyckel som förut. Regel 2 och 4 i
+  `docs/crm/API_KONTRAKT.md` beskriver grundnyckeln och gravstenen per domän.
+  Prov: `server/test/crm-source-ref.test.ts` (K1–K5),
+  `server/test/crm-ingest-grundnyckel.test.ts` (G1–G9 med samtidighetsfallet
+  G9, negativa kontrollen GN och GV) och `server/test/crm-gdpr-replay.test.ts`
+  (G2, G3 och K uppdaterade till domänsyskonen; GD1–GD6, GDN, GDV och D1 nya).
+  Ingen migration, rutt, åtgärd, tabell eller miljövariabel tillkom. 3.10 i
+  Hermes (avsändarens nycklar) kan nu byggas. **Inte kört:** sandlådan nekade
+  `npm run typecheck` och `npm test` (kräver godkännande). Kedjans typkontroll
+  och svit avgör.
 - **2026-11-22 — Story 5.4 (crm), *Lova något* med löftestid (FR-32):**
   Formuläret *Lova något* på relationssidan har nu det valfria fältet
   *Lovades* (`<input type="date" name="occurred_at" max="{UTC-dagen}">`) sist i
