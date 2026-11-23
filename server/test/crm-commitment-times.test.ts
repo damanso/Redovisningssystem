@@ -234,13 +234,13 @@ describe('löftets tre tider i listan', () => {
     expect(raden(rader, 'Kalenderlöftet K1.').due_date).toBeNull();
   });
 
-  it('A2 svaret är bakåtkompatibelt: de sexton fälten som förut plus created_at', async () => {
+  it('A2 svaret är bakåtkompatibelt: de sexton fälten som förut plus created_at och unconfirmed_ai', async () => {
     const NYCKLAR = [
       'body', 'created_at', 'direction', 'due_date', 'id', 'occurred_at', 'organization_id', 'organization_name',
       'organization_roll', 'person_id', 'person_name', 'person_organization_id', 'sfar', 'snoozed_until',
-      'source_ref', 'source_system', 'status',
+      'source_ref', 'source_system', 'status', 'unconfirmed_ai',
     ];
-    expect(NYCKLAR).toHaveLength(17);
+    expect(NYCKLAR).toHaveLength(18);
     const oppna = (await atgard(bolag, user.token, 'list_crm_commitments', { status: 'open' })).result as Rad[];
     expect(Object.keys(raden(oppna, 'Ärendelöftet L1.')).sort()).toEqual(NYCKLAR);
     const klara = (await atgard(bolag, user.token, 'list_crm_commitments', { status: 'done' })).result as Rad[];

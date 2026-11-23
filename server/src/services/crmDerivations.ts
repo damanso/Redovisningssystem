@@ -14,6 +14,7 @@
 import type { PoolClient } from 'pg';
 import { sfarParameter, type OrganizationRoll, type Sfar, type SfarFilter } from './crmSfar.js';
 import { openDeals, type OpenDeal } from './crmDeals.js';
+import { UNCONFIRMED_AI_COMMITMENT_SQL } from './crmRelations.js';
 import { stalledDealReason, type CapturePaths } from '../lib/crmRules.js';
 
 export interface RelationRow {
@@ -185,6 +186,15 @@ export const CAPTURE_PATHS_IN_OPERATION: CapturePaths = Object.freeze({
   contacts: Object.freeze(['mail', 'issues'] as const),
   commitments: Object.freeze(['issues_waiting_external', 'promise_form'] as const),
 });
+
+/**
+ * En enda brytare för om obekräftade AI-löften når Idag och kön (FR-39, PRD
+ * fråga 13 b). Värdet är Davids besked 2026-10-16: *direkt*. `false` är
+ * mellanläget *först efter bekräftelse*. Konstanten läses av anroparna i
+ * registret och vyn, aldrig inne i den här modulen, så att valet syns vid varje
+ * anrop och provet kan vända den för båda läsarna.
+ */
+export const INCLUDE_UNCONFIRMED_AI_COMMITMENTS: boolean = true;
 
 export interface SilenceReport {
   as_of: string;
@@ -419,11 +429,18 @@ export interface TodayView {
  * "vi lovade: …" under ett kort märkt Företag, och briefen kunde inte skilja dem.
  * Ett privat löfte på en företagsorganisation syns i stället i löfteshögen, med
  * sin egen sfär.
+ *
+ * Valet `include_unconfirmed_ai` är obligatoriskt (FR-39, K-6): anroparen skickar
+ * brytaren INCLUDE_UNCONFIRMED_AI_COMMITMENTS, som funktionen aldrig läser själv,
+ * så att Idag och kön styrs av samma värde.
  */
 export async function todayView(
   client: PoolClient, companyId: string,
   // `now` förs vidare till förslagen, så dagen och affärsläget räknas ur samma tidpunkt.
-  opts: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter; now?: Date } = {},
+  opts: {
+    as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter; now?: Date;
+    include_unconfirmed_ai: boolean;
+  },
 ): Promise<TodayView> {
   const now = opts.now ?? new Date();
   const asOf = opts.as_of ?? now.toISOString().slice(0, 10);
@@ -460,9 +477,11 @@ export async function todayView(
        AND c.due_date <= $2::date + make_interval(days => $3::int)
        AND (c.snoozed_until IS NULL OR c.snoozed_until < $2::date)
        AND ($5::text IS NULL OR c.sfar = $5)
+       -- FR-39: utesluts före kapet, så att kapet räknas på det som visas.
+       AND ($6::boolean OR NOT ${UNCONFIRMED_AI_COMMITMENT_SQL})
      ORDER BY c.due_date, c.occurred_at
      LIMIT $4`,
-    [companyId, asOf, horizon, limit, sfar],
+    [companyId, asOf, horizon, limit, sfar, opts.include_unconfirmed_ai],
   );
 
   const relations = suggestions.slice(0, limit);

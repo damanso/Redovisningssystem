@@ -25,6 +25,7 @@ import { TIMEOUT_MS, KarnanNasInte, anropaKarnan, karnfel, type Karnsvar } from 
 interface ManifestEntry {
   name: string;
   title: string;
+  description?: string;
   sensitivity: 'read' | 'write' | 'sensitive';
   requires_approval: boolean;
   input_schema: Record<string, unknown>;
@@ -144,7 +145,10 @@ function toolFor(a: ManifestEntry): { name: string; description: string; inputSc
   const tag = a.requires_approval
     ? ' ⚠ Känslig: utförs inte direkt — skapar ett förslag som en människa måste godkänna i webbvyn.'
     : '';
-  return { name: a.name, description: `${a.title}.${tag}`, inputSchema: a.input_schema };
+  // K-6: beskrivningen säger agenten när verktyget ska anropas; utan den är
+  // verktygets text titeln som förut.
+  const nar = a.description ? ` ${a.description}` : '';
+  return { name: a.name, description: `${a.title}.${nar}${tag}`, inputSchema: a.input_schema };
 }
 
 function textResult(text: string, isError = false): { content: { type: 'text'; text: string }[]; isError?: boolean } {

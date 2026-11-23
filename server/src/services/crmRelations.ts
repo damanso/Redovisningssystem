@@ -1630,15 +1630,32 @@ export async function setCommitmentStatus(
   return { ...r.rows[0], kept_human_fields: [] };
 }
 
+/**
+ * Den enda definitionen av «obekräftat AI-löfte» (FR-39, K-6): löftets text har
+ * ursprunget `ai`. Ett bekräftat eller rättat fält har `human` (ett unikt index
+ * per löfte och fält, så den senaste skrivningen är ursprunget), och synkens
+ * löften har `sync`. Uttrycket gäller alias `c` för crm.commitments och läses av
+ * `listCommitments` och `todayView`. Det är en konstant utan indata, så frågorna
+ * parametriserar sina värden som förut.
+ */
+export const UNCONFIRMED_AI_COMMITMENT_SQL = `EXISTS (SELECT 1 FROM crm.field_provenance fp
+  WHERE fp.company_id = c.company_id AND fp.commitment_id = c.id AND fp.field = 'body' AND fp.source = 'ai')`;
+
+/**
+ * FR-39, K-6: valet `include_unconfirmed_ai` är obligatoriskt, så att varje
+ * anropare väljer. Åtagandevyn visar alla; Idag och kön följer konstanten i
+ * crmDerivations. Raden bär `unconfirmed_ai`, så att kön kan märka gissningen.
+ */
 export async function listCommitments(
   client: PoolClient, companyId: string,
-  opts: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter } = {},
+  opts: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter; include_unconfirmed_ai: boolean },
 ): Promise<Record<string, unknown>[]> {
   const r = await client.query(
     `SELECT c.id, c.direction, c.body, c.due_date::text, c.status, c.occurred_at,
             -- FR-31: registreringstiden går att avläsa per rad, skild från
             -- löftestiden. Ett löfte som registreras i dag kan ha getts i förrgår.
             c.created_at,
+            (${UNCONFIRMED_AI_COMMITMENT_SQL}) AS unconfirmed_ai,
             c.source_system, c.source_ref,
             c.snoozed_until::text, c.organization_id, c.sfar,
             p.name AS person_name,
@@ -1656,8 +1673,9 @@ export async function listCommitments(
        AND ($2::text IS NULL OR c.status = $2)
        AND ($3::date IS NULL OR c.due_date <= $3)
        AND ($4::text IS NULL OR c.sfar = $4)
+       AND ($5::boolean OR NOT ${UNCONFIRMED_AI_COMMITMENT_SQL})
      ORDER BY c.status, c.due_date NULLS LAST, c.occurred_at DESC`,
-    [companyId, opts.status ?? null, opts.due_before ?? null, sfarParameter(opts.sfar)],
+    [companyId, opts.status ?? null, opts.due_before ?? null, sfarParameter(opts.sfar), opts.include_unconfirmed_ai],
   );
   return r.rows;
 }

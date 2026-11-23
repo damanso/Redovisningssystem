@@ -3121,3 +3121,33 @@ skäl och samma prioritet. Ögonblicksbilden beskriver nuläget, så ett `as_of`
 annan dag än i dag ger aldrig affärsskäl. Tystade och uppskjutna relationer
 föreslås fortfarande inte. Indata och svarsform är oförändrade: skälet står i
 `reasons` som de andra skälen.
+
+## Löften som AI:n fångar i samtalet (crm 5.5)
+
+Manifestet (`GET /api/companies/:id/actions`) har fått ett valfritt fält
+`description` som säger agenten när en åtgärd ska anropas. Det står bara på
+poster vars åtgärd har en beskrivning; alla andra poster är oförändrade.
+Verktygets beskrivning i MCP byggs som titeln, en punkt och, när fältet finns,
+ett blanksteg och beskrivningen, och sist märkningen för känsliga åtgärder som
+förut. I dag har bara `record_crm_commitment` en beskrivning, ordagrant:
+«Anropa när David i samtalet nämner ett löfte han gett eller fått. Löftestiden
+(occurred_at) är den tid han anger, annars samtalets tidpunkt. Källan
+(source_system) är manual.» Titeln, schemat och handlern är oförändrade, och
+agentens löfte får ursprunget `ai` per fält som förut.
+
+Varje rad i `list_crm_commitments` bär `unconfirmed_ai`, sant när löftets text
+har ursprunget `ai` (ett obekräftat AI-löfte). När David bekräftat texten med
+Stämmer eller rättat den är ursprunget `human` och fältet falskt; synkens
+löften har ursprunget `sync`. Åtgärden tar ett valfritt `include_unconfirmed_ai`
+(boolean). Utelämnat gäller brytaren `INCLUDE_UNCONFIRMED_AI_COMMITMENTS` i
+`crmDerivations.ts`, och samma brytare styr `crm_today` och Idag, som inte tar
+något eget val. Åtagandevyn och Min sida visar alltid alla öppna löften, med ✦
+på ett obekräftat AI-löfte i åtagandevyn. Brytarens värde är
+Davids besked 2026-10-16 (PRD fråga 13 b): *direkt*, så obekräftade AI-löften
+ingår som standard. `false` är mellanläget *först efter bekräftelse*, då de
+utesluts ur Idag, `crm_today` och listan utan val. Ingen annan åtgärd ändras.
+
+Beskrivningen är en instruktion till agenten och visas inte på någon yta. Att
+löften fångas i samtalet är i drift först när chattagenten anropar åtgärden
+(berättelse 5.10), och samtalet blir en fångstväg i ytans texter i berättelse
+5.11. ✦ och Stämmer på Idags löfteskort återstår (berättelse 5.6).
