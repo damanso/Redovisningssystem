@@ -175,6 +175,18 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   dem igen. Rött utanför repot, senast kända läge och av skäl utanför
   berättelsen: Hermes-proven overlamningsregister_fr6 och provvakt_fr24
   (RÖTT) och continuityvakt (KUNDE_INTE).
+  **Omtag efter kodgranskningen (två fynd):** personens rad läses nu hel
+  under låset (samma kolumner som uppslaget), och efter låset läses personen
+  bara ur den låsta raden; uppslaget före väntan används bara för att se om
+  personen flyttats. Därmed skriver en väntande synk, agent eller människa
+  inte längre tillbaka det gamla namnet över Davids samtidiga namnbyte (namnet
+  är det enda fältet utan COALESCE i UPDATE-satsen). Nya fall i samma fil:
+  PL6–PL8 (namnbytet mot intaget, människan utan namn och agenten), PL9–PL10
+  (personen raderad eller sammanslagen bort medan skrivningen väntar på
+  organisationen respektive personens rad: 404, i intaget `skipped`, inget
+  skrivet) och PL11 (personen får en organisation medan skrivningen väntar på
+  personens rad: 409). **Inte kört i sandlådan:** typecheck och vitest kräver
+  godkännande som luckan inte har; kedjan kör hela sviten.
 - **2026-11-23 — Story 5.7 (crm): en nyckel som bara kan läsa (FR-24, NFR-6,
   beslut #156, S-1):** `authenticate` läser claimen `scope` genom
   tillåtelselistan `readOnlyFromScope` (människa och agent utan scope, agent med

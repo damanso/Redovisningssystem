@@ -974,10 +974,14 @@ export async function upsertPerson(
   // ska synas när vakten läser ursprunget (A-1 (3)). Har personen bytt
   // organisation medan vi väntade avvisas skrivningen i stället för att den nya
   // organisationen låses efter personen (A-1 (5)); intaget lägger händelsen i
-  // skipped, och nästa synk gör om den.
-  const locked = (await client.query<{ organization_id: string | null; sfar: Sfar }>(
-    'SELECT organization_id, sfar FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE',
+  // skipped, och nästa synk gör om den. Raden läses hel, med uppslagets kolumner:
+  // härifrån läses personen bara ur den låsta raden, eftersom uppslaget före
+  // väntan kan bära ett namn eller en sfär som en samtidig människa redan rättat.
+  // Uppslaget används bara för att se om personen flyttats.
+  const locked = (await client.query<PersonHit>(
+    'SELECT id, name, organization_id, sfar FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE',
     [companyId, hit.id])).rows[0];
+  // Sammanslagen eller raderad medan vi väntade: ingen rad att skriva på.
   if (!locked) throw new NotFoundError('person');
   if (locked.organization_id !== hit.organization_id) {
     throw new ConflictError('person_flyttad_samtidigt',
@@ -987,7 +991,7 @@ export async function upsertPerson(
   // Samma regel som för organisationen: en rättad titel eller ett rättat
   // telefonnummer överlever nästa synkkörning.
   const { input: patch, blocked } = await guardHumanFields(
-    client, companyId, { person_id: hit.id }, origin.source, skickat as Record<string, unknown>,
+    client, companyId, { person_id: locked.id }, origin.source, skickat as Record<string, unknown>,
   );
 
   // Steg 3 (0089): en privat person ligger aldrig hos kunden (P1), och en person
@@ -1019,7 +1023,7 @@ export async function upsertPerson(
        WHERE o.company_id = $1 AND o.id = $2 AND o.customer_id IS NOT NULL
          AND EXISTS (SELECT 1 FROM crm.commitments c
                       WHERE c.company_id = $1 AND c.person_id = $3 AND c.sfar = 'privat')`,
-      [companyId, patch.organization_id, hit.id]);
+      [companyId, patch.organization_id, locked.id]);
     if (kund.rows[0]) {
       throw privatGransFel('privata_ataganden_kundkoppling',
         'personen har privata åtaganden och kan därför inte flyttas till en organisation som är kopplad till kundregistret');
@@ -1041,15 +1045,17 @@ export async function upsertPerson(
     // fält ska varken skrivas eller redovisas fel. En bindning mot `input` hade
     // rapporterat fältet som skyddat i kept_human_fields och skrivit över det
     // ändå — tyst filtrering OCH tyst överskrivning i samma sats, precis det
-    // modulen finns för att omöjliggöra.
-    [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
+    // modulen finns för att omöjliggöra. Namnet saknar COALESCE och faller
+    // tillbaka på den låsta raden, aldrig på uppslaget: ett blockerat eller
+    // utelämnat namn hade annars skrivit tillbaka det som stod före väntan.
+    [locked.id, companyId, (patch.name as string | undefined) ?? locked.name,
       patch.email ?? null, patch.phone ?? null, patch.role_title ?? null,
       patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null, patch.sfar ?? null],
   );
-  await recordProvenance(client, companyId, userId, { person_id: hit.id },
+  await recordProvenance(client, companyId, userId, { person_id: locked.id },
     provenanceFor(PERSON_PROVENANCE_FIELDS, patch, origin));
   await writeCrmAudit(client, {
-    companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: hit.id,
+    companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: locked.id,
     details: {
       matched_on: byId ? 'id' : byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
       // Samma skäl som för organisationen: ursprunget kan raderas, loggen inte.

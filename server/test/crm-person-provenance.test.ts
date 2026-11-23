@@ -232,6 +232,51 @@ describe('Låsordningen (story 1.9)', () => {
   const flytta = (db: pg.Client, id: string, organizationId: string) => utfall(db.query(
     'UPDATE crm.people SET organization_id = $3 WHERE company_id = $1 AND id = $2', [companyA, id, organizationId]));
 
+  /**
+   * En kapplöpning i fallens form: hållaren tar sina lås (`hall`), skrivningen
+   * startas och får vänta, hållaren gör sitt medan den väntar (`medanDenVantar`,
+   * satsens utfall som värde) och committar bara om det gick igenom.
+   */
+  async function kapplopning(
+    hall: (db: pg.Client) => Promise<unknown>,
+    skrivning: () => ReturnType<typeof action>,
+    medanDenVantar: (db: pg.Client) => Promise<string> = async () => 'gick igenom',
+  ) {
+    const h = await lasHallare();
+    let pagaende: Promise<unknown> | undefined;
+    try {
+      await h.db.query('BEGIN');
+      await hall(h.db);
+      // .then startar supertest-anropet nu, så att det faktiskt når låset.
+      const svar = skrivning().then((r) => r);
+      pagaende = svar;
+      const vantade = await vantarPaLas(h.pid);
+      const hallaren = await medanDenVantar(h.db);
+      await h.db.query(hallaren === 'gick igenom' ? 'COMMIT' : 'ROLLBACK');
+      return { vantade, hallaren, svar: await svar };
+    } finally {
+      await h.db.query('ROLLBACK');
+      await pagaende?.catch(() => undefined);
+      await h.db.end();
+    }
+  }
+  /** David byter namn och håller raden, som upsert_crm_person: namnets ursprung blir human. */
+  const namnbyte = (id: string, nyttNamn: string) => async (db: pg.Client) => {
+    await db.query('SELECT id FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyA, id]);
+    await db.query('UPDATE crm.people SET name = $3 WHERE company_id = $1 AND id = $2', [companyA, id, nyttNamn]);
+    const gjordOm = await db.query(
+      `UPDATE crm.field_provenance SET source = 'human', source_system = NULL, source_ref = NULL, reason = NULL
+       WHERE company_id = $1 AND person_id = $2 AND field = 'name'`, [companyA, id]);
+    expect(gjordOm.rowCount, 'namnets ursprungsrad').toBe(1);
+  };
+  const radera = (id: string) => (db: pg.Client) =>
+    utfall(db.query('DELETE FROM crm.people WHERE company_id = $1 AND id = $2', [companyA, id]));
+  async function personFinns(id: string): Promise<boolean> {
+    return withAdmin(async (db) => (await db.query(
+      'SELECT 1 FROM crm.people WHERE company_id = $1 AND id = $2', [companyA, id])).rowCount === 1);
+  }
+  const namnetsUrsprung = async (id: string) => (await personUrsprung(id)).find((p) => p.field === 'name')?.source;
+
   it('PL1 en samtidig människoskrivning håller personens rad: intaget väntar, och människans kortlänk och ursprung står kvar', async () => {
     const person = { name: 'PL1 Person', email: 'pl1@person.example' };
     await ingest(personHandelse('gmail:pl1a', 'PL1 Bolaget AB', { ...person, external_ref: 'kontakter/pl1-synk' }));
@@ -373,6 +418,107 @@ describe('Låsordningen (story 1.9)', () => {
     expect(r.body).toMatchObject({ error: 'byt_med_set_crm_sfar', details: { atgard: 'set_crm_sfar' } });
     expect(await personRad(skapad.id)).toEqual(fore);
     expect(fore.sfar).toBe('foretag');
+  });
+
+  // Namnet är det enda fält UPDATE-satsen inte faller tillbaka på i databasen.
+  // Det som skrivs när skrivningen inte bär något namn (blockerat av vakten eller
+  // utelämnat) ska vara det som står på raden när den är låst, inte det som
+  // lästes före väntan: tre vägar dit, intaget, agenten och människan.
+  it('PL6 intaget väntar på Davids namnbyte: namnet och ursprunget är Davids, och svaret redovisar namnet', async () => {
+    const person = { name: 'PL6 Person', email: 'pl6@person.example' };
+    await ingest(personHandelse('gmail:pl6a', 'PL6 Bolaget AB', person));
+    const id = await personPaEpost('pl6@person.example');
+    const { vantade, svar } = await kapplopning(namnbyte(id, 'PL6 Davids namn'),
+      () => action('ingest_crm_events', { events: [personHandelse('gmail:pl6b', 'PL6 Bolaget AB', person)] }));
+    expect(vantade, 'intaget måste ha väntat på Davids radlås').toBe(true);
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    expect(svar.body.result.skipped).toEqual([]);
+    expect(svar.body.result.kept_human_fields).toEqual(['PL6 Davids namn: name']);
+    expect((await personRad(id)).name).toBe('PL6 Davids namn');
+    expect(await namnetsUrsprung(id)).toBe('human');
+  });
+
+  it('PL7 en människoskrivning utan namn väntar på Davids namnbyte och skriver inte tillbaka det gamla namnet', async () => {
+    const id = (await act('upsert_crm_person', { name: 'PL7 Person' })).id;
+    const { vantade, svar } = await kapplopning(namnbyte(id, 'PL7 Davids namn'),
+      () => action('upsert_crm_person', { person_id: id, role_title: 'PL7 Ny roll' }));
+    expect(vantade, 'skrivningen måste ha väntat på Davids radlås').toBe(true);
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    expect(svar.body.result.kept_human_fields).toEqual([]);
+    expect(await personRad(id)).toMatchObject({ name: 'PL7 Davids namn', role_title: 'PL7 Ny roll' });
+    expect(await namnetsUrsprung(id)).toBe('human');
+  });
+
+  it('PL8 agentens namn väntar på Davids namnbyte: blockeras, och Davids namn står kvar', async () => {
+    const id = (await act('upsert_crm_person', { name: 'PL8 Person' })).id;
+    const { vantade, svar } = await kapplopning(namnbyte(id, 'PL8 Davids namn'),
+      () => action('upsert_crm_person', { person_id: id, name: 'PL8 Agentens namn' }, agentToken));
+    expect(vantade, 'agentens skrivning måste ha väntat på Davids radlås').toBe(true);
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    expect(svar.body.result).toMatchObject({ name: 'PL8 Davids namn', kept_human_fields: ['name'] });
+    expect((await personRad(id)).name).toBe('PL8 Davids namn');
+    expect(await namnetsUrsprung(id)).toBe('human');
+  });
+
+  // Raden kan ändras under skrivningen vid båda väntepunkterna: medan den väntar
+  // på organisationen (en radering håller den) och medan den väntar på personens
+  // rad (sammanslagningen låser personerna, raderar den inslagna och fyller den
+  // kvarvarandes tomma organisation). En borttagen person ger 404 och en flyttad
+  // 409 (vid organisationen PL3 och PL4), och ingenting skrivs.
+  it('PL9 personen raderas medan upserten väntar på organisationen: 404 och ingenting skrivet', async () => {
+    const hemma = (await act('upsert_crm_organization', { name: 'PL9 Hemma AB' })).id;
+    const id = (await act('upsert_crm_person', { name: 'PL9 Person', organization_id: hemma })).id;
+    expect(await personAudit(id, 'crm.person_updated')).toBe(0);
+    const { vantade, hallaren, svar } = await kapplopning(
+      (db) => db.query('SELECT id FROM crm.organizations WHERE id = $1 FOR UPDATE', [hemma]),
+      () => action('upsert_crm_person', { person_id: id, external_ref: 'kontakter/pl9' }),
+      radera(id));
+    expect({ vantade, hallaren }).toEqual({ vantade: true, hallaren: 'gick igenom' });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(404);
+    expect(svar.body).toEqual({ error: 'not_found' });
+    expect(await personFinns(id)).toBe(false);
+    expect(await personAudit(id, 'crm.person_updated')).toBe(0);
+    expect(await personUrsprung(id)).toEqual([]);
+  });
+
+  it('PL10 personen slås ihop bort medan intaget väntar på personens rad: händelsen hamnar i skipped och ingenting skrivs', async () => {
+    const person = { name: 'PL10 Person', email: 'pl10@person.example' };
+    await ingest(personHandelse('gmail:pl10a', 'PL10 Hemma AB', person));
+    const id = await personPaEpost('pl10@person.example');
+    expect(await personAudit(id, 'crm.person_updated')).toBe(0);
+    const { vantade, hallaren, svar } = await kapplopning(
+      // Som sammanslagningen: personens rad låses, och den inslagna raderas.
+      (db) => db.query('SELECT id FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyA, id]),
+      () => action('ingest_crm_events', { events: [
+        personHandelse('gmail:pl10b', null, { ...person, external_ref: 'kontakter/pl10' }),
+      ] }),
+      radera(id));
+    expect({ vantade, hallaren }).toEqual({ vantade: true, hallaren: 'gick igenom' });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    expect(svar.body.result.skipped).toEqual([{ index: 0, reason: 'person not found' }]);
+    expect(svar.body.result).toMatchObject({ interactions_created: 0, people_created: 0 });
+    expect(await personFinns(id)).toBe(false);
+    expect(await personAudit(id, 'crm.person_updated')).toBe(0);
+    expect(await personUrsprung(id)).toEqual([]);
+    const sammaEpost = await withAdmin(async (db) => (await db.query(
+      'SELECT 1 FROM crm.people WHERE company_id = $1 AND lower(email) = $2', [companyA, 'pl10@person.example'])).rowCount);
+    expect(sammaEpost, 'intaget får inte ha lagt en ny person i den borttagnas ställe').toBe(0);
+  });
+
+  it('PL11 personen får en organisation medan upserten väntar på personens rad: 409 och ingenting skrivet', async () => {
+    const ny = (await act('upsert_crm_organization', { name: 'PL11 Ny AB' })).id;
+    const id = (await act('upsert_crm_person', { name: 'PL11 Person' })).id;
+    const fore = { audit: await personAudit(id, 'crm.person_updated'), ursprung: await personUrsprung(id) };
+    const { vantade, hallaren, svar } = await kapplopning(
+      // Som sammanslagningen: personens rad låses, och en tom organisation fylls.
+      (db) => db.query('SELECT id FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyA, id]),
+      () => action('upsert_crm_person', { person_id: id, role_title: 'PL11 Ny roll' }),
+      (db) => flytta(db, id, ny));
+    expect({ vantade, hallaren }).toEqual({ vantade: true, hallaren: 'gick igenom' });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(409);
+    expect(svar.body).toEqual({ error: 'person_flyttad_samtidigt' });
+    expect(await personRad(id)).toMatchObject({ organization_id: ny, role_title: null });
+    expect({ audit: await personAudit(id, 'crm.person_updated'), ursprung: await personUrsprung(id) }).toEqual(fore);
   });
 });
 
