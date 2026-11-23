@@ -103,3 +103,124 @@ export function rollLiquidity(input: LiquidityRollInput): LiquidityRoll {
     complete, unknown: [...input.unknown], counted, beyond_horizon: beyond,
   };
 }
+
+// FR-44, sista ledet: det som saknar belagd betalningstidpunkt redovisas för sig
+// och räknas aldrig in. Listan är sluten och skickas aldrig till rollLiquidity,
+// så inget av beloppen kan nå en månad. Öppna affärer ingår aldrig: en affär är
+// en förhoppning, ingen betalning.
+export const NOT_COUNTED_LIQUIDITY_SOURCES: ReadonlyArray<{ id: string; side: LiquiditySide }> = [
+  { id: 'abonnemang', side: 'in' },
+  { id: 'ofakturerad_tid', side: 'in' },
+  { id: 'rot_rut_1513', side: 'in' },
+  { id: 'moms_26xx', side: 'out' },
+  { id: 'agi_rest_2710_2730', side: 'out' },
+  { id: 'bolagsskatt', side: 'out' },
+  { id: 'semesterloner_2920', side: 'out' },
+  { id: 'ovriga_kortfristiga_2890', side: 'out' },
+];
+
+// Momsens reservation, delad med liquidityForecast så att prognosen och det
+// obelagda skriver ut samma text. Det inledande blanksteget behövs där texten
+// fogas till prognosens not.
+export const VAT_UNSETTLED_NOTE = ' Momsnettot är ett kontosaldo utan periodmärkning: innehåller det ännu ej redovisade äldre perioder ligger en del av beloppet i praktiken redan förfallet — bokföringen visar inte vilken del, så hela nettot ställs mot nästa förfallodag.';
+export const AGI_REST_NOTE = 'Restsaldot på 2710/2730 är ett kontosaldo utan periodmärkning (SIE-import eller manuella verifikat): bokföringen visar inte vilken period det avser, så det ställs bara mot nästa AGI-förfallodag och räknas inte som belagt på den dagen.';
+
+export interface NotCountedInput {
+  recurring_month_ore: Ore;
+  unbilled_time_ore: Ore;
+  housework_receivable_ore: Ore;
+  vat_net_ore: Ore;
+  agi_account_rest_ore: Ore;
+  corporate_tax_ore: Ore;
+  holiday_pay_ore: Ore;
+  other_short_term_ore: Ore;
+  next_vat_due: string | null;
+  next_agi_due: string | null;
+}
+export interface LiquidityNotCounted {
+  id: string;
+  side: LiquiditySide;
+  amount_ore: Ore;
+  next_due_date: string | null;
+  reason: string;
+  reservation: string | null;
+}
+
+// Belopp och skäl per id i listan ovan. Raderna byggs genom att gå igenom
+// listan; ett id här som saknas i listan blir ingen rad. `debt` har bara de två
+// periodlösa skatteskulderna: nästa förfallodag och underlagets reservation.
+const NOT_COUNTED_RULES: Readonly<Record<string, {
+  amount: (input: NotCountedInput) => Ore;
+  reason: string;
+  debt?: { due: (input: NotCountedInput) => string | null; reservation: string };
+}>> = {
+  abonnemang: {
+    amount: (i) => assertSafeOre(i.recurring_month_ore * 3),
+    reason: 'Aktiva abonnemang, tre månader av radsumman exklusive moms. Ett abonnemang har ingen betalningstidpunkt förrän fakturan är ställd med förfallodatum; en bokförd faktura räknas under kundfakturor.',
+  },
+  ofakturerad_tid: {
+    amount: (i) => i.unbilled_time_ore,
+    reason: 'Godkänd tid som ännu inte fakturerats, samma tal som rapporten Ofakturerad tid. Utfört arbete är ingen inbetalning förrän fakturan är ställd.',
+  },
+  rot_rut_1513: {
+    amount: (i) => i.housework_receivable_ore,
+    reason: 'Fordran på Skatteverket för ROT/RUT-avdraget (konto 1513). Skatteverket bestämmer när den betalas; den har inget förfallodatum.',
+  },
+  moms_26xx: {
+    amount: (i) => i.vat_net_ore,
+    reason: 'Momsnettot (utgående minus ingående moms, konto 26xx). Ett negativt belopp är en fordran på Skatteverket.',
+    debt: { due: (i) => i.next_vat_due, reservation: VAT_UNSETTLED_NOTE.trim() },
+  },
+  agi_rest_2710_2730: {
+    amount: (i) => i.agi_account_rest_ore,
+    reason: 'Saldot på 2710/2730 som inte hör till ett obetalt lönebesked. De obetalda lönebeskeden räknas i månaderna på sin periods förfallodag. Ett negativt belopp är ett debetsaldo och ingen skuld.',
+    debt: { due: (i) => i.next_agi_due, reservation: AGI_REST_NOTE },
+  },
+  bolagsskatt: {
+    amount: (i) => i.corporate_tax_ore,
+    reason: 'Uppskattad bolagsskatt på årets resultat. Den fastställs vid deklarationen och har ingen fast förfallodag inom horisonten.',
+  },
+  semesterloner_2920: {
+    amount: (i) => i.holiday_pay_ore,
+    reason: 'Upplupna semesterlöner (konto 2920). De betalas när semestern tas ut eller vid slutlön; skulden har ingen förfallodag.',
+  },
+  ovriga_kortfristiga_2890: {
+    amount: (i) => i.other_short_term_ore,
+    reason: 'Övriga kortfristiga skulder (konto 2890–2899): kända belopp utan förfallodag.',
+  },
+};
+
+/**
+ * Det obelagda för sig: en rad per post i `NOT_COUNTED_LIQUIDITY_SOURCES`, i
+ * listans ordning och också med beloppet 0, med belopp, skäl och — för en
+ * periodlös skatteskuld — nästa förfallodag och underlagets reservation.
+ * Beloppen behåller sitt tecken. Ett netto som är 0 eller negativt är ingen
+ * skuld och får varken förfallodag eller reservation, samma regel som
+ * `liquidityForecast` följer: ett negativt netto är en fordran vars tidpunkt
+ * Skatteverket bestämmer.
+ */
+export function notCountedRows(input: NotCountedInput): LiquidityNotCounted[] {
+  for (const amount of [
+    input.recurring_month_ore, input.unbilled_time_ore, input.housework_receivable_ore, input.vat_net_ore,
+    input.agi_account_rest_ore, input.corporate_tax_ore, input.holiday_pay_ore, input.other_short_term_ore,
+  ]) assertSafeOre(amount);
+  if (input.next_vat_due !== null && !IsoDateSchema.safeParse(input.next_vat_due).success) {
+    throw new Error('Ogiltig förfallodag för momsen i det obelagda.');
+  }
+  if (input.next_agi_due !== null && !IsoDateSchema.safeParse(input.next_agi_due).success) {
+    throw new Error('Ogiltig förfallodag för arbetsgivardeklarationen i det obelagda.');
+  }
+  return NOT_COUNTED_LIQUIDITY_SOURCES.map(({ id, side }) => {
+    const rule = Object.hasOwn(NOT_COUNTED_RULES, id) ? NOT_COUNTED_RULES[id] : undefined;
+    if (!rule) throw new Error(`Obelagd post utan belopp och skäl: ${id}.`);
+    const amount_ore = rule.amount(input);
+    // Beloppet prövas före datumet: bara en skuld har en förfallodag.
+    const debt = rule.debt && amount_ore > 0 ? rule.debt : null;
+    return {
+      id, side, amount_ore,
+      next_due_date: debt ? debt.due(input) : null,
+      reason: rule.reason,
+      reservation: debt ? debt.reservation : null,
+    };
+  });
+}

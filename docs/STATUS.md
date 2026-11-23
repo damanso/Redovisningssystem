@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (212
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (217
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-23 — Story 6.5 (crm): det obelagda redovisas för sig, och
+  likviditeten blir en läsåtgärd (FR-44, A-8):** `liquidityByMonth` i
+  `server/src/services/reports.ts` svarar nu också med `not_counted`: åtta
+  poster utan belagd betalningstidpunkt (abonnemang, ofakturerad tid, ROT/RUT
+  på 1513, momsnettot, restsaldot på 2710/2730, bolagsskatten, 2920 och
+  2890–2899) med belopp och skäl, byggda av den rena `notCountedRows` i
+  `server/src/domain/liquidity.ts` efter rullningen och aldrig inräknade i
+  månaderna. Momsen och restsaldot bär nästa förfallodag och reservation bara
+  när beloppet är en skuld. Restsaldot räknas ur 6.2:s AGI-delar utan
+  bruttometodens obetalda perioder, så samma pengar aldrig står både som
+  belagd AGI och som obelagd rest. Abonnemangsfrågan är utbruten ur
+  `steeringOverview` till `recurringMonthOre` (en definition, samma svar i
+  styrvyn), och momsreservationen bor i domänmodulen (samma text i
+  `liquidity_forecast`). Ny läsåtgärd `liquidity_by_month` (registret har nu
+  217 `def({`, talet i rubrikstycket rättat från 212), avsnitt sist i
+  `docs/MCP_ACTIONS.md`. Fall i `server/test/steering-liquidity.test.ts`: R1,
+  E1–E5, N1–N8 (N6 negativ kontroll, N7 med en öppen affär i cachen), T1–T3
+  och D1. **Inget kommando kördes:** byggaren hade inget skal (npm och git
+  nekades), så typkontroll och vitest är inte körda här — kedjan kör dem.
+  Visningen i styrvyn kommer i Story 6.3. Ingen migration, ingen vy, inget nytt
+  beroende.
 
 - **2026-11-23 — Story 3.13 (crm), omtag 2: spärrens uppslag bärs av primärnyckeln (FR-43):**
   Kedjans svit fällde GP1 och GP2: planen för spärrens första fråga hade

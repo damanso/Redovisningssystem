@@ -3121,3 +3121,45 @@ skäl och samma prioritet. Ögonblicksbilden beskriver nuläget, så ett `as_of`
 annan dag än i dag ger aldrig affärsskäl. Tystade och uppskjutna relationer
 föreslås fortfarande inte. Indata och svarsform är oförändrade: skälet står i
 `reasons` som de andra skälen.
+
+## Likviditet per kalendermånad (crm 6.5)
+
+`liquidity_by_month` (`read`) visar hur kassan räcker de kommande tre
+kalendermånaderna. Indata är `{ as_of? }`, ett datum som annars är dagens.
+Styrvyn läser samma funktion som åtgärden, så vyn och AI:n får samma svar.
+
+Svaret räknar från `as_of` till `horizon_end`: tre kalendermånader, där den
+första börjar på `as_of`. Varje rad i `months` har ingående saldo, belagda in-
+och utbetalningar, utgående saldo och varav förfallet (`overdue_inflow_ore`,
+`overdue_outflow_ore`); en betalning vars förfallodag passerat ligger i första
+månaden. `outcome` är `deficit`, `no_deficit` eller `unknown`, `first_deficit`
+är första månaden med negativt utgående saldo och `need_ore` är det största
+underskottet inom horisonten. `counted` är de räknade källorna med belopp och
+varav förfallet: kundfakturor, leverantörsfakturor och obetalda lönebesked på
+sin periods förfallodag. `unknown` anger källa och skäl när kassan eller
+leverantörsreskontran saknar underlag; då är saldona, `first_deficit` och
+`need_ore` `null`, aldrig noll. `beyond_horizon` är belagda betalningar med
+förfallodag efter horisonten.
+
+`not_counted` är det som saknar belagd betalningstidpunkt. Posterna
+räknas aldrig in i månaderna. De står med belopp och skäl, en rad per post i
+den här ordningen och också när beloppet är 0:
+
+- `abonnemang`: aktiva abonnemang, tre månader exklusive moms, tills fakturan är ställd.
+- `ofakturerad_tid`: godkänd tid som ännu inte fakturerats.
+- `rot_rut_1513`: fordran på Skatteverket för ROT/RUT-avdraget, utan förfallodatum.
+- `moms_26xx`: momsnettot på 26xx; ett negativt belopp är en fordran.
+- `agi_rest_2710_2730`: saldot på 2710/2730 som inte hör till ett obetalt lönebesked.
+- `bolagsskatt`: den uppskattade bolagsskatten på årets resultat.
+- `semesterloner_2920`: upplupna semesterlöner, som saknar förfallodag.
+- `ovriga_kortfristiga_2890`: övriga kortfristiga skulder på 2890–2899, utan förfallodag.
+
+`moms_26xx` och `agi_rest_2710_2730` bär `next_due_date`, nästa förfallodag,
+och `reservation`, underlagets egen reservation: kontosaldot är inte
+periodmärkt, så beloppet ställs bara mot nästa förfallodag och räknas inte som
+belagt där. Båda fälten sätts bara när beloppet är en skuld, större än 0;
+annars är de `null`, som på de sex övriga posterna.
+
+Öppna affärer ingår aldrig, varken i månaderna eller i `not_counted`.
+`liquidity_forecast` är oförändrad: prognosen i hinkar (förfallet, inom 30, 60
+och 90 dagar och senare) med källredovisning per källa.

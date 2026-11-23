@@ -37,7 +37,7 @@ import {
 import { getVoucher, listVouchers, postVoucher, reverseVoucher } from '../services/accounting/vouchers.js';
 import { listFiscalYears, setFiscalYearLock } from '../services/accounting/fiscalYears.js';
 import { vatReport } from '../services/accounting/vatReport.js';
-import { accountsPayableAging, accountsReceivableAging, cashFlow, dashboard, latestFiscalPeriod, liquidityForecast, monthlyRevenue } from '../services/reports.js';
+import { accountsPayableAging, accountsReceivableAging, cashFlow, dashboard, latestFiscalPeriod, liquidityByMonth, liquidityForecast, monthlyRevenue } from '../services/reports.js';
 import { bookSupplierInvoice, createSupplierInvoice, listSupplierInvoices, recordSupplierPayment } from '../services/supplierInvoices.js';
 import { createRecurringInvoice, listRecurringInvoices, runDueRecurringInvoices, setRecurringActive } from '../services/recurringInvoices.js';
 import {
@@ -1103,6 +1103,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     sensitivity: 'read',
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => liquidityForecast(ctx.client, ctx.companyId, i.as_of),
+  }),
+  // FR-44, A-8: styrvyn och AI:n läser samma funktion och därmed samma svar.
+  def({
+    name: 'liquidity_by_month',
+    title: 'Likviditet per kalendermånad (tre månader)',
+    sensitivity: 'read',
+    inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
+    handler: (ctx, i: { as_of?: string }) => liquidityByMonth(ctx.client, ctx.companyId, i.as_of),
   }),
   def({
     name: 'accounts_payable_aging',
