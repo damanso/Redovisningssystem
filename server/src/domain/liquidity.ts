@@ -154,13 +154,15 @@ const NOT_COUNTED_RULES: Readonly<Record<string, {
   reason: string;
   debt?: { due: (input: NotCountedInput) => string | null; reservation: string };
 }>> = {
+  // Schablonen ser inte till nästa körning eller slutdatum inom horisonten, så
+  // skälet får inte lova att en redan ställd faktura är borträknad.
   abonnemang: {
     amount: (i) => assertSafeOre(i.recurring_month_ore * 3),
-    reason: 'Aktiva abonnemang, tre månader av radsumman exklusive moms. Ett abonnemang har ingen betalningstidpunkt förrän fakturan är ställd med förfallodatum; en bokförd faktura räknas under kundfakturor.',
+    reason: 'Schablon, samma tal som kostnadstäckningen: aktiva abonnemangs radsumma exklusive moms omräknad till en månad, gånger tre. Schablonen ser inte till nästa körning eller till ett slutdatum inom horisonten, så den kan omfatta en faktura som redan är ställd och då också står under kundfakturor. Ett abonnemang har ingen betalningstidpunkt förrän fakturan är bokförd med förfallodatum.',
   },
   ofakturerad_tid: {
     amount: (i) => i.unbilled_time_ore,
-    reason: 'Godkänd tid som ännu inte fakturerats, samma tal som rapporten Ofakturerad tid. Utfört arbete är ingen inbetalning förrän fakturan är ställd.',
+    reason: 'Godkänd tid som ännu inte lagts på en faktura, samma tal som rapporten Ofakturerad tid. Utfört arbete är ingen inbetalning förrän fakturan är bokförd med förfallodatum.',
   },
   rot_rut_1513: {
     amount: (i) => i.housework_receivable_ore,
@@ -173,12 +175,12 @@ const NOT_COUNTED_RULES: Readonly<Record<string, {
   },
   agi_rest_2710_2730: {
     amount: (i) => i.agi_account_rest_ore,
-    reason: 'Saldot på 2710/2730 som inte hör till ett obetalt lönebesked. De obetalda lönebeskeden räknas i månaderna på sin periods förfallodag. Ett negativt belopp är ett debetsaldo och ingen skuld.',
+    reason: 'Saldot på 2710/2730 som inte hör till ett obetalt lönebesked. De obetalda lönebeskeden räknas som belagda utbetalningar på sin periods förfallodag. Ett negativt belopp är ingen skuld: kontona står lägre än de obetalda lönebeskeden under bruttometoden, till exempel vid ett debetsaldo.',
     debt: { due: (i) => i.next_agi_due, reservation: AGI_REST_NOTE },
   },
   bolagsskatt: {
     amount: (i) => i.corporate_tax_ore,
-    reason: 'Uppskattad bolagsskatt på årets resultat. Den fastställs vid deklarationen och har ingen fast förfallodag inom horisonten.',
+    reason: 'Uppskattad bolagsskatt på det senaste räkenskapsårets resultat, samma tal som skatteöversikten. Den fastställs vid deklarationen och har ingen fast förfallodag inom horisonten.',
   },
   semesterloner_2920: {
     amount: (i) => i.holiday_pay_ore,

@@ -1015,8 +1015,12 @@ export interface LiquidityByMonth extends LiquidityRoll { not_counted: Liquidity
  * skatt och avgift redan på kontona, så de perioderna dras av här; annars stod
  * samma pengar både som belagd AGI i en månad och som obelagd rest. Perioder
  * före brytpunkten ligger inte på kontona och dras inte av.
+ *
+ * Exporterad enbart för att brytpunkten ska kunna prövas direkt i test, från
+ * båda sidor: ett fel på gränsen flyttar en hel lönemånads skatt mellan det
+ * belagda och det obelagda utan att någon summa i övrigt avslöjar det.
  */
-function agiRestFromParts(agi: AgiPart[]): Ore {
+export function agiRestFromParts(agi: AgiPart[]): Ore {
   const rest = agi.filter((p) => p.kind === 'rest').reduce((s, p) => s + p.amount, 0);
   const grossPeriods = agi.filter((p) => p.kind === 'period' && p.period_label >= GROSS_METHOD_FROM_PERIOD)
     .reduce((s, p) => s + p.amount, 0);
@@ -1027,8 +1031,9 @@ function agiRestFromParts(agi: AgiPart[]): Ore {
  * Likviditet i tre kalendermånader ur kassa och betalningar med belagd
  * förfallodag, och bredvid den det obelagda (`not_counted`): kända belopp utan
  * belagd betalningstidpunkt, med belopp och skäl. Det obelagda byggs efter
- * rullningen och skickas aldrig in i den. Öppna affärer ingår aldrig. Styrvyn
- * och åtgärden `liquidity_by_month` läser samma funktion.
+ * rullningen och skickas aldrig in i den. Öppna affärer ingår aldrig. Åtgärden
+ * `liquidity_by_month` anropar den, och styrvyn ska läsa samma funktion när
+ * visningen byggs i Story 6.3.
  */
 export async function liquidityByMonth(client: PoolClient, companyId: string, asOf?: string): Promise<LiquidityByMonth> {
   // Databasens dag löses en gång, så att alla underlag gäller samma as_of.

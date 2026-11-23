@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 6.5 (crm), omtag efter granskningen (fyra Review
+  Follow-ups):** Två felklasser, lagade som klasser. (1) Text som lovade mer
+  än koden gör: abonnemangets skäl och dokumentet sa «tills fakturan är
+  ställd», fast beloppet är en schablon (månadsvärdet × 3) som kan omfatta en
+  redan ställd och bokförd faktura; avsnittet i `docs/MCP_ACTIONS.md` sa att
+  saldona är `null` också när bara leverantörsreskontran saknar underlag och
+  nämnde inte `complete`; dokumentet, JSDoc och registrets kommentar sa i
+  presens att styrvyn läser `liquidityByMonth`. Schablonen står kvar
+  (berättelsens enda definition, samma tal som kostnadstäckningen); skälen,
+  avsnittet (nu med varje fält och ett stycke **Kända gränser.**) och
+  kommentarerna är prövade påstående för påstående mot koden, och styrvyn
+  utlovas med Story 6.3. (2) Brytpunkter utan fall på båda sidor:
+  `agiRestFromParts` är exporterad för prov (som `unclaimedCreditBalance`).
+  Nya fall i `server/test/steering-liquidity.test.ts`: S1–S2 (schablonen med
+  en redan bokförd faktura; slutdatum på dagen och dagen före, kvartal och
+  helår), D2 (varje fält och uppräknat värde i svaret står i avsnittet), D3
+  (inget löfte om styrvyn utan Story 6.3 så länge vyn inte anropar
+  funktionen), B1–B5 (restsaldot före, på och efter `GROSS_METHOD_FROM_PERIOD`
+  som tabell och mot Postgres, regel 4 vid 1/0/−1 öre och utan förfallodag,
+  nästa förfallodag på och dagen efter `as_of`, 1513 med kredit). **Inget
+  kommando kördes:** sandlådan nekade `npm run typecheck`; kedjan kör
+  typkontroll och vitest. Ingen migration, inget nytt beroende.
+
 - **2026-11-23 — Story 6.5 (crm): det obelagda redovisas för sig, och
   likviditeten blir en läsåtgärd (FR-44, A-8):** `liquidityByMonth` i
   `server/src/services/reports.ts` svarar nu också med `not_counted`: åtta

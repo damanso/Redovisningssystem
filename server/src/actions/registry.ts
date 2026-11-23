@@ -1104,7 +1104,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     inputSchema: z.object({ as_of: IsoDateSchema.optional() }).strict(),
     handler: (ctx, i: { as_of?: string }) => liquidityForecast(ctx.client, ctx.companyId, i.as_of),
   }),
-  // FR-44, A-8: styrvyn och AI:n läser samma funktion och därmed samma svar.
+  // FR-44, A-8: AI:n läser här den funktion som styrvyn ska läsa i Story 6.3, och därmed samma svar.
   def({
     name: 'liquidity_by_month',
     title: 'Likviditet per kalendermånad (tre månader)',
