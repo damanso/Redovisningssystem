@@ -13,7 +13,7 @@ import {
 } from '../services/crmRelations.js';
 import { sourceForActor } from '../services/crmProvenance.js';
 import { acceptNameVariant, rejectNameVariant, mergeOrganizations, mergePeople, removeOrganizationNameAlias, searchCrm } from '../services/crmMerge.js';
-import { contactSuggestions, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
+import { contactSuggestions, INCLUDE_UNCONFIRMED_AI_COMMITMENTS, relationState, silenceReport, todayView } from '../services/crmDerivations.js';
 import { ingestCrmEvents } from '../services/crmIngest.js';
 import { openDeals, syncDealSnapshot, DEAL_STAGES, type DealSnapshotInput } from '../services/crmDeals.js';
 import { isThreadFilter, isThreadTime, relationThread, type ThreadKind } from '../services/crmThread.js';
@@ -147,6 +147,9 @@ export type Sensitivity = 'read' | 'write' | 'sensitive';
 export interface ActionDef<I = unknown> {
   name: string;
   title: string;
+  // K-6: säger agenten NÄR åtgärden ska anropas. Titeln förblir kort, eftersom
+  // vyerna visar den; beskrivningen går bara till manifestet och MCP-verktyget.
+  description?: string;
   sensitivity: Sensitivity;
   inputSchema: z.ZodType<I>;
   handler: (ctx: ActionContext, input: I) => Promise<unknown>;
@@ -2887,6 +2890,9 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'record_crm_commitment',
     title: 'Registrera åtagande (vem lovade vad, var det sades)',
+    description: 'Anropa när David i samtalet nämner ett löfte han gett eller fått. '
+      + 'Löftestiden (occurred_at) är den tid han anger, annars samtalets tidpunkt. '
+      + 'Källan (source_system) är manual.',
     sensitivity: 'write',
     inputSchema: z
       .object({
@@ -3066,9 +3072,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       status: z.enum(['open', 'done', 'dropped']).optional(),
       due_before: IsoDateSchema.optional(),
       sfar: SfarFilterSchema.optional(),
+      // FR-39: utelämnat följer brytaren, samma som Idag och crm_today läser.
+      include_unconfirmed_ai: z.boolean().optional(),
     }).strict(),
-    handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter }) =>
-      listCommitments(ctx.client, ctx.companyId, { status: i.status, due_before: i.due_before, sfar: i.sfar }),
+    handler: (ctx, i: { status?: 'open' | 'done' | 'dropped'; due_before?: string; sfar?: SfarFilter; include_unconfirmed_ai?: boolean }) =>
+      listCommitments(ctx.client, ctx.companyId, {
+        status: i.status, due_before: i.due_before, sfar: i.sfar,
+        include_unconfirmed_ai: i.include_unconfirmed_ai ?? INCLUDE_UNCONFIRMED_AI_COMMITMENTS,
+      }),
   }),
   // Steg 3 (B, leads beslut 18/11): byt sfär på en organisation, en person eller
   // ett åtagande. Gränsen mot bokföringen gäller också bytet, klara och avskrivna
@@ -3271,8 +3282,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       horizon_days: z.number().int().min(0).max(365).optional(),
       sfar: SfarFilterSchema.optional(),
     }).strict(),
+    // FR-39: brytaren följer med från registret; schemat tar inget val, så
+    // anroparen ser samma dag som vyn.
     handler: (ctx, i: { as_of?: string; silence_days?: number; limit?: number; horizon_days?: number; sfar?: SfarFilter }) =>
-      todayView(ctx.client, ctx.companyId, i),
+      todayView(ctx.client, ctx.companyId, { ...i, include_unconfirmed_ai: INCLUDE_UNCONFIRMED_AI_COMMITMENTS }),
   }),
   def({
     name: 'crm_silence_report',
@@ -3458,6 +3471,7 @@ export function getAction(name: string): ActionDef<never> | undefined {
 export interface ActionManifestEntry {
   name: string;
   title: string;
+  description?: string;
   sensitivity: Sensitivity;
   requires_approval: boolean;
   input_schema: Record<string, unknown>;
@@ -3467,11 +3481,14 @@ export interface ActionManifestEntry {
  * Manifest (MCP tools/list): namn, titel, känslighet och ett JSON-schema för
  * indata. JSON-schemat gör att en MCP-server kan exponera varje action som ett
  * native, typat verktyg mot Cowork/claude.ai utan att känna till zod.
+ * Beskrivningen (K-6) står bara på poster vars definition har en, så att alla
+ * andra poster är oförändrade.
  */
 export function actionManifest(): ActionManifestEntry[] {
   return ACTIONS.map((a) => ({
     name: a.name,
     title: a.title,
+    ...(a.description !== undefined ? { description: a.description } : {}),
     sensitivity: a.sensitivity,
     requires_approval: a.sensitivity === 'sensitive',
     input_schema: zodToJsonSchema(a.inputSchema, { $refStrategy: 'none', target: 'jsonSchema7' }) as Record<string, unknown>,

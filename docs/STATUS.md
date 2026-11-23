@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 5.5 (crm): löften som AI:n fångar märks tills David
+  bekräftat dem (FR-39, FR-24):** åtgärdsdefinitionen har fått ett valfritt
+  fält `description` som manifestet för vidare bara när det finns, och MCP:s
+  `toolFor` bygger verktygets text som titeln, en punkt och beskrivningen.
+  `record_crm_commitment` säger nu när den ska anropas (titel, schema och
+  handler orörda). `list_crm_commitments` bär `unconfirmed_ai` per rad (textens
+  ursprung är `ai`, en enda definition `UNCONFIRMED_AI_COMMITMENT_SQL` i
+  crmRelations) och tar `include_unconfirmed_ai`, med brytaren
+  `INCLUDE_UNCONFIRMED_AI_COMMITMENTS` i crmDerivations som standard. Värdet är
+  Davids besked 2026-10-16 (*direkt*, `true`); `false` är mellanläget *först
+  efter bekräftelse*. `listCommitments` och `todayView` kräver valet, och
+  konstanten läses av anroparna: Idag och `crm_today` genom konstanten,
+  åtagandevyn och Min sida med `true`. Ingen migration, rutt, CSS eller ny
+  åtgärd. Prov: `server/test/crm-ai-commitments.test.ts` (M1–M3 manifestet,
+  A1–A4 agentens löfte med ursprung, 400 och 404, V1–V6 ✦/Stämmer/Rätta och
+  vakten för agentens rättelse, omsändning och intaget, B1–B6 fältet och valet,
+  I1 Idag och `crm_today`, C1–C2 fångstvägarna orörda, D1 dokumentet),
+  `server/test/crm-ai-commitments-mock.test.ts` (N0–N6, konstanten vänd till
+  mellanläget utesluter löftet ur både Idag, `crm_today` och listan), M4 i
+  `server/test/mcp.test.ts` och 5.2:s nyckellista (A2, 18 nycklar).
+  `docs/MCP_ACTIONS.md` har avsnittet «Löften som AI:n fångar i samtalet (crm
+  5.5)». INTE kört i sandlådan: `npm run typecheck` och `npm test` (vitest)
+  krävde godkännande som inte kunde ges; kedjan kör båda. Återstår: ✦ och
+  Stämmer på Idags löfteskort (5.6), chattagentens anrop (5.10) och fångstvägen
+  i ytan (5.11).
 - **2026-11-23 — Story 6.5 (crm): det obelagda redovisas för sig (FR-44):**
   `liquidityByMonth` returnerar nu `LiquidityByMonth`: rullningen och fältet
   `not_counted`, elva obelagda rader i en sluten lista med belopp och skäl

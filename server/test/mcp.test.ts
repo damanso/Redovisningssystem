@@ -108,6 +108,19 @@ describe('MCP-server (stdio) driver kärnan', () => {
       expect(tool!.description).toMatch(/godkänn/i);
     }
   });
+  it('M4 verktygets beskrivning är titeln och, när den finns, beskrivningen av när det ska anropas', async () => {
+    const res = await mcp.request('tools/list', {});
+    const tools = (res.result as { tools: { name: string; description: string }[] }).tools;
+    const lofte = tools.find((t) => t.name === 'record_crm_commitment');
+    expect(lofte, 'record_crm_commitment').toBeDefined();
+    expect(lofte!.description).toBe('Registrera åtagande (vem lovade vad, var det sades). '
+      + 'Anropa när David i samtalet nämner ett löfte han gett eller fått. '
+      + 'Löftestiden (occurred_at) är den tid han anger, annars samtalets tidpunkt. '
+      + 'Källan (source_system) är manual.');
+    const kunder = tools.find((t) => t.name === 'list_customers');
+    expect(kunder, 'list_customers').toBeDefined();
+    expect(kunder!.description).toBe('Lista kunder.');
+  });
   it('tools/list exponerar kärnans actions som native verktyg, känsliga märkta', async () => {
     const res = await mcp.request('tools/list', {});
     const tools = (res.result as { tools: { name: string; description: string; inputSchema: unknown }[] }).tools;

@@ -65,7 +65,7 @@ import { TIDSHJALP, hhmm as tidHhMm, parseDuration } from '../../lib/duration.js
 import { assertEventInOrganization, assertPersonInOrganization, getEventFields, type EventFields, customerRelationSummary, getOrganization, getRetention, listCommitments, listOrganizations, listPeople } from '../../services/crmRelations.js';
 import { correctedEventFields, correctedOrganizationFields, parseOpenForm, correctedCustomerFields, parseEditTarget, nameTakenOrganization, mergeCandidate, parseThreadCursor, formatThreadCursor, THREAD_CURSOR_ERROR, parsePersonParam, PERSON_PARAM_ERROR, daysSince, correctedPersonFields, captureTexts, promisedAtFromForm } from '../../lib/crmRules.js';
 import type { ProvenanceSource } from '../../services/crmProvenance.js';
-import { CAPTURE_PATHS_IN_OPERATION, contactSuggestions, DEFAULT_SILENCE_DAYS, relationState, todayView } from '../../services/crmDerivations.js';
+import { CAPTURE_PATHS_IN_OPERATION, contactSuggestions, DEFAULT_SILENCE_DAYS, INCLUDE_UNCONFIRMED_AI_COMMITMENTS, relationState, todayView } from '../../services/crmDerivations.js';
 import { searchCrm } from '../../services/crmMerge.js';
 import { ORG_ROLLER, SFARFILTER, type SfarFilter } from '../../services/crmSfar.js';
 import {
@@ -7253,7 +7253,7 @@ const PERSONFALT = [
 // öppningsrepliken.
 // ---------------------------------------------------------------------------
 viewRouter.get('/c/:companyId/idag', pageFor('idag', 'Idag', async (client, companyId, req) => {
-  const t = await todayView(client, companyId);
+  const t = await todayView(client, companyId, { include_unconfirmed_ai: INCLUDE_UNCONFIRMED_AI_COMMITMENTS });
   // Kortets källrad bär samma tillägg som tråden och åtagandevyn, ur samma fält
   // lästa i en samlad fråga över dagens löften.
   const lofteFalt = await getEventFields(client, companyId, {
@@ -8125,7 +8125,8 @@ viewRouter.get('/c/:companyId/commitments', pageFor('commitments', 'Åtaganden',
     ? req.query.status as 'open' | 'done' | 'dropped'
     : 'open';
   const sfar = sfarFilterFran(req.query.sfar);
-  const rows = await listCommitments(client, companyId, { status: filter, sfar });
+  // K-6: ett obekräftat AI-löfte syns här med ✦ oavsett beskedet för Idag och kön.
+  const rows = await listCommitments(client, companyId, { status: filter, sfar, include_unconfirmed_ai: true });
   const eventFields = await getEventFields(client, companyId, { interaction_ids: [], commitment_ids: rows.map((c) => c.id as string) });
   const today = new Date().toISOString().slice(0, 10);
   // Varje länk bär båda filtren, så att ett byte av det ena inte nollställer det andra.
@@ -11546,7 +11547,9 @@ viewRouter.get('/c/:companyId/min-sida', pageFor('min-sida', 'Min sida', async (
   // Krav 7 i beställningen 9/11: privat och företag i EN lista, filtret gäller
   // samma lista. Standard är alla.
   const sfar = sfarFilterFran(req.query.sfar);
-  const oppna = await listCommitments(client, companyId, { status: 'open' });
+  // En arbetslista över alla öppna löften, som åtagandevyn: brytaren för
+  // obekräftade AI-löften (FR-39, fråga 13 b) gäller Idag och kön.
+  const oppna = await listCommitments(client, companyId, { status: 'open', include_unconfirmed_ai: true });
   const alla = sfar === 'alla' ? oppna : oppna.filter((c) => c.sfar === sfar);
   const orgerI = (lista: Record<string, unknown>[]) => [...new Map(lista
     .filter((c) => c.organization_id && c.direction === 'we_owe')
