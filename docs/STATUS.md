@@ -153,6 +153,57 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 2.4, omtag efter kedjans typecheck:** `tsc -p
+  tsconfig.test.json` fällde fyra anrop i `server/test/uppdragsytan-kontraktsluckor.test.ts`
+  (rad 839, 848, 849 och 854): `nyttBolag` gav `auth` typen
+  `Record<string, string>`, medan riggens `act` och `ok` härledde typen
+  `{ Authorization: string }` ur standardvärdet `human()`. Felklassen var att
+  anroparens typ fanns i två former. Mekanismen nu är en typ, `Anropare`, och
+  en konstruktör, `bearer(token)`: `human`, `agent` och `nyttBolag` ger den,
+  och varje `auth`-parameter i riggen (`act`, `ok`, `godkann`, `nyttAvtal`,
+  `importera`) bär den uttryckligen. Inget i `server/src` ändrades. **Inte
+  kört i sandlådan:** `npm run typecheck` gav ordagrant «This command requires
+  approval». Kedjans typecheck och svit är belägget.
+- **2026-11-23 — Story 2.4 (uppdragsytan): saknade kontraktsfält, mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13, FR-14):**
+  Ny ren regel `server/src/lib/kontraktsluckor.ts`: manifestets strikta
+  schema (`KontraktsmanifestSchema`), luckorna över den slutna `LUCKFALT`
+  med en text per fält (`LUCKTEXT`), parterna med en källa per avtal
+  (`kontraktsparter`), mottagarpartens tre lägen (`mottagarpartlage`:
+  angiven, saknas, ej inläst), manifestets ankare i åtta lägen
+  (`manifestankare`) och de två tekniska felen (`OLASTA`). Migration
+  `0097_kontraktsparter.sql`: `contracts.godkannandeform` och
+  `contracts.godkannare_kalla` (BASELINE, nullbara, ingen efterfyllnad) och
+  avslutstriggern `contracts_parter_vagrar_avslutat` (egen funktion; 0095 rörs
+  inte). Parsern läser fältparet `Mottagarpart` som reserv för `Godkännare`.
+  `importera_leveranskontrakt` och `satt_baseline` tar det valfria `manifest`.
+  Importen ger 400 `kontrakt_olasbart` före varje skrivning för en text utan
+  känt tillstånd eller en fryst text utan leverabler. Källan för köposten är
+  trippeln (avtal, text, manifest). Förslaget bär `luckor`, `parter` och
+  `ankare`. Godkännandets steg (g) skriver parterna enligt beslut B3. Det nya
+  steget (j) skriver manifestets ankare efter Davids ja, bara i lägena
+  `lagras` och `andras`. Auditraden får `parter_andrade` och `ankare`, och
+  ingenting skrivs till transmittalen. Registret bär `namn` ur avtalsdelens
+  första version (NULL när kontraktet saknade namnet). Kontraktsytan bär
+  `parter` (via `lasKontraktsparter`) och `luckor`. Leveranserna har fått
+  kolumnen Namn, `LUCKTEXT` i stället för egna texter och en mottagarpartrad
+  per avtal före brädan eller tabellen. Sidhuvudet är orört. Kontraktet har
+  fått panelen «Parterna och luckorna», och undantagsvyns baselineförslag bär
+  parterna, godkännandeformen, ankaret, skillnaderna och luckorna. Sex nya
+  etiketter i `FIELD_LABELS`. Dokument: `docs/MCP_ACTIONS.md` (importen,
+  registret och kontraktsytan) och `docs/ARKITEKTUR.md` (trippeln, kolumnerna,
+  ankarets väg och luckorna). Prov: `server/test/uppdragsytan-kontraktsluckor.test.ts`
+  (R0–R7, M1–M3, I1–I8, G1–G7, L1–L3, S1, V1–V4, U1–U5, D1). Ändrade prov:
+  fallet för okänt tillstånd i `uppdragsytan-import.test.ts` (nu 400) och
+  nyckellistan i `uppdragsytan-register.test.ts`. Ingen ny rutt, åtgärd eller
+  flagga och inget nytt beroende. **Inte kört i sandlådan:** `npm run typecheck`
+  och `npx vitest run` gav ordagrant «This command requires approval».
+  Körning 1–8 är därför inte körda av utvecklaren. Kedjan kör typecheck, build
+  och hela sviten och migrerar 0097 vid driftsättningen. Ett rött fall kommer
+  tillbaka. I drift skrivs NVR-001:s parter och ankare först när Hermes
+  lämnar manifestet (Story 2.5) och David säger ja till förslaget. Rött
+  utanför repot, senast kända läge och av skäl utanför berättelsen:
+  Hermes-proven bmadglidning, overlamningsregister_fr6 och provvakt_fr24
+  (RÖTT) och continuityvakt (KUNDE_INTE).
 - **2026-11-23 — Story 1.9 (crm): personens kortlänk och anteckning skyddas när David satt dem (FR-8):**
   `external_ref` (länken till personkortet) och `notes` står nu i
   `PERSON_PROVENANCE_FIELDS` i `crmRelations.ts`, så `upsertPerson` skriver
