@@ -3181,3 +3181,23 @@ av 403 `read_only_token`.
 Nyckeln är till för Hermes kö, som ska läsa löftena med den (berättelse 5.8).
 POST-rutter som bara läser, som en fakturas PDF och AI-OCR:n, är stängda för
 läsnyckeln. Den kan inte återkallas före utgången, precis som ett AI-token.
+
+## Personens kortlänk och anteckning (crm 1.9)
+
+`upsert_crm_person` skriver ursprung också för `external_ref` (länken till
+personkortet) och `notes`: `human` för en människa och `ai` för en agent.
+`ingest_crm_events` skriver `sync` med källsystem och källnyckel. En agents
+eller synkens skrivning ändrar inte fält som en människa satt eller bekräftat.
+Svaret från `upsert_crm_person` redovisar de blockerade fältnamnen i
+`kept_human_fields`, till exempel `["external_ref", "notes"]`, och intagets
+svar redovisar dem som `"<personens namn>: external_ref"`. Människans egen
+skrivning går igenom.
+
+En skrivning på en befintlig person låser först organisationerna (den i indata
+och personens nuvarande), sedan personens rad, och prövar ursprunget först
+därefter. Har personen bytt organisation medan skrivningen väntade svarar
+åtgärden 409 `person_flyttad_samtidigt` utan `details`, och ingenting skrivs;
+skicka ändringen igen. I `ingest_crm_events` hamnar händelsen i `skipped` med
+skälet, och nästa synk gör om den. En agents sfärbyte på en befintlig person
+avvisas som förut med 409 `byt_med_set_crm_sfar`. `confirm_crm_value` tar inte
+`external_ref` eller `notes`.
