@@ -76,6 +76,18 @@ nattjobb som körs om lägger då en dubblett varje gång. Databasen har ett uni
 index på `(company_id, source_system, source_ref)`. Skicka källans eget id —
 mail-id, kalenderhändelse, ärendenyckel.
 
+För kontaktpunkter från `gmail` och `calendar` är grundnyckeln delen före
+första `#` i `source_ref`, och en organisation har högst en kontaktpunkt per
+grundnyckel. Samma händelse med nyckeln `<grund>#<domän>` i stället för
+`<grund>`, eller tvärtom, eller med ett annat domänsuffix, i samma organisation
+är samma kontaktpunkt: den räknas som `interactions_unchanged` och behåller sin
+första källnyckel. Det gäller också när samma nyckel redan finns i en annan
+organisation: organisationens egen kontaktpunkt vinner. Samma grundnyckel i en
+annan organisation blir en egen kontaktpunkt, med ett undantag: kommer exakt
+samma `source_ref` för en organisation som saknar grunden, flyttas den
+befintliga kontaktpunkten dit, eftersom mailet då har klassats om. Löften och
+övriga källsystem jämförs på hela nyckeln.
+
 **3. En trasig händelse stoppar inte batchen.** Varje händelse körs i en egen
 savepoint. Det som inte gick igenom returneras i `skipped` med index och skäl.
 Ett jobb som faller på rad 400 och rullar tillbaka de 399 första är värre än ett
@@ -86,6 +98,24 @@ GDPR sparas källnycklarna som gravstenar. Skickas samma historiska händelser o
 avvisas de (`skipped` med skälet att källan är raderad enligt GDPR) i stället för
 att återskapa personen och mailsammanfattningarna. Nya händelser — nya
 `source_ref` — släpps igenom som vanligt: det är ny behandling med ny grund.
+
+För kontaktpunkter från `gmail` och `calendar` gäller gravstenen per domän.
+Raderingen sparar källnyckeln och `<grund>#<domän>`, där domänen är nyckelns
+suffix eller annars domänen i personens e-post. Samma mail avvisas därför i
+båda formerna, `<grund>` och `<grund>#<domän>`, med ett villkor för formen
+`<grund>`: den avvisas när `<grund>` själv är gravsten eller när personens
+e-post har den raderade domänen. Utan person, eller med en person på en annan
+domän, släpps den igenom om raderingen bara sparade `<grund>#<domän>`. Samma
+mail för en annan organisation släpps igenom i formen `<grund>#<domän>` med
+organisationens egen domän. I formen `<grund>` avvisas det däremot när den
+raderade kontaktpunkten hade nyckeln `<grund>`, eftersom den nyckeln då är en
+exakt gravsten (kontaktpunkten behåller sin första källnyckel, regel 2). En
+gravsten på en grundnyckel utan något sparat domänsuffix, till exempel en från
+före regeln eller en kontaktpunkt utan person och utan suffix, avvisar mailet
+för alla domäner. Ett enda sparat domänsuffix stänger av den regeln, också när
+det sparades av en annan kunds radering, och då släpps mailet igenom för varje
+domän som inte är sparad. Gravstenen bär ingen kund, bara källnyckeln. Löften
+prövas mot exakt nyckel.
 
 **5. Tidrapportering är inte en giltig källa.** `source_system` accepterar
 `gmail`, `calendar`, `linear` och `manual`. Databasen avvisar allt annat.

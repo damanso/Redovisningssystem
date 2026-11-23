@@ -24,6 +24,7 @@
 // parten inte förekommer i manuella verifikat innan namn/org.nr raderas.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import { erasureKeys } from '../lib/crmSourceRef.js';
 import { writeAudit } from './auditService.js';
 import { removeStoredFile } from './fileStorage.js';
 
@@ -74,13 +75,41 @@ async function purgeCrmRelationData(
   // nästa steg kommit tillbaka. Cachen bär inget källsystem; mottagningen
   // (sync_crm_deals) prövar gravstenen med källsystemet 'linear', samma kod som
   // står här.
+  //
+  // Kontaktpunkterna i gmail och calendar får också domänsyskonet
+  // `<grund>#<domän>` (story 3.13, FR-43): avsändaren kan skicka samma mail i
+  // den andra formen, och utan syskonet hade det återskapat kunden. Domänen är
+  // nyckelns suffix eller domänen i personens e-post, aldrig lokaldelen. En
+  // kontaktpunkt utan suffix och utan e-post får inget syskon, och dess bara
+  // gravsten spärrar då alla domäner (kontraktets regel 4 anger gränserna).
+  const kontaktpunkter = await client.query<{ source_system: string; source_ref: string; email: string | null }>(
+    `SELECT i.source_system, i.source_ref, p.email
+     FROM crm.interactions i
+     LEFT JOIN crm.people p ON p.id = i.person_id AND p.company_id = i.company_id
+     WHERE i.company_id = $1 AND i.source_ref IS NOT NULL
+       AND (i.organization_id = ANY($2::uuid[])
+         OR i.person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))`,
+    [companyId, orgIds],
+  );
+  const gravSystem: string[] = [];
+  const gravNycklar: string[] = [];
+  for (const rad of kontaktpunkter.rows) {
+    for (const nyckel of erasureKeys(rad)) {
+      gravSystem.push(rad.source_system);
+      gravNycklar.push(nyckel);
+    }
+  }
+  if (gravNycklar.length > 0) {
+    await client.query(
+      `INSERT INTO crm.erased_sources (company_id, source_system, source_ref)
+       SELECT $1, s, r FROM unnest($2::text[], $3::text[]) AS t(s, r)
+       ON CONFLICT DO NOTHING`,
+      [companyId, gravSystem, gravNycklar],
+    );
+  }
+  // Löftena och affärerna prövas på exakt nyckel och får ingen domän.
   await client.query(
     `INSERT INTO crm.erased_sources (company_id, source_system, source_ref)
-     SELECT $1, source_system, source_ref FROM crm.interactions
-      WHERE company_id = $1 AND source_ref IS NOT NULL
-        AND (organization_id = ANY($2::uuid[])
-          OR person_id IN (SELECT id FROM crm.people WHERE company_id = $1 AND organization_id = ANY($2::uuid[])))
-     UNION
      SELECT $1, source_system, source_ref FROM crm.commitments
       WHERE company_id = $1 AND source_ref IS NOT NULL
         AND (organization_id = ANY($2::uuid[])

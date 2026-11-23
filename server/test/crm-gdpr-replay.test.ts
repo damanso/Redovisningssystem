@@ -1,9 +1,13 @@
 // FR-43, API-kontraktets regel 4: nästa synk får inte göra en rättsligt
 // utförd GDPR-radering ogjord. Provet går genom HTTP, åtgärder och
 // godkännandekön och läser tabellerna både som app med RLS och som ägare.
+import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { QueryResultRow } from 'pg';
+import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from '../src/db/pool.js';
+import { setTenantContext } from '../src/db/tx.js';
+import { erasureCheckKeys, sourceRefBase } from '../src/lib/crmSourceRef.js';
+import { assertNotErased } from '../src/services/crmRelations.js';
 import { api, createCompany, registerUser, withAdmin, type TestUser } from './helpers.js';
 
 const SKAL = 'källan är raderad enligt GDPR och får inte återskapas';
@@ -180,13 +184,14 @@ describe('gravstenarna', () => {
     expect(kolumner.sort()).toEqual(['company_id', 'erased_at', 'source_ref', 'source_system']);
   });
 
-  it('G2: exakt de två raderade källparen finns som gravstenar i bolaget', async () => {
+  it('G2: exakt de tre raderade källparen, med kontaktpunktens domänsyskon, finns som gravstenar i bolaget', async () => {
     const gravstenar = await withAdmin(async (client) => (await client.query(
       `SELECT source_system, source_ref FROM crm.erased_sources
        WHERE company_id = $1 ORDER BY source_ref`, [companyId],
     )).rows);
     expect(gravstenar).toEqual([
       { source_system: 'gmail', source_ref: 'gdpr-r1' },
+      { source_system: 'gmail', source_ref: 'gdpr-r1#gravstenen.example' },
       { source_system: 'gmail', source_ref: 'gdpr-r2' },
     ]);
   });
@@ -205,6 +210,7 @@ describe('gravstenarna', () => {
     )).rows);
     expect(kvar).toEqual([
       { source_system: 'gmail', source_ref: 'gdpr-r1' },
+      { source_system: 'gmail', source_ref: 'gdpr-r1#gravstenen.example' },
       { source_system: 'gmail', source_ref: 'gdpr-r2' },
     ]);
   });
@@ -276,12 +282,14 @@ describe('negativ kontroll: utan gravsten återuppstår personen', () => {
 
   it('K: utan gravsten skapar samma batch personen och båda händelserna igen', async () => {
     // Enda skrivningen som ägare: plantera den saknade spärren för just K.
+    // Domänsyskonet tas också bort, annars spärrar det gdpr-k1 med Karls e-post.
     const borttagna = await withAdmin((client) => client.query(
       `DELETE FROM crm.erased_sources
-       WHERE company_id = $1 AND source_system = 'gmail' AND source_ref IN ('gdpr-k1', 'gdpr-k2')`,
+       WHERE company_id = $1 AND source_system = 'gmail'
+         AND source_ref IN ('gdpr-k1', 'gdpr-k1#kontrollkunden.example', 'gdpr-k2')`,
       [companyId],
     ));
-    expect(borttagna.rowCount, 'den negativa kontrollen måste ta bort exakt K:s två gravstenar').toBe(2);
+    expect(borttagna.rowCount, 'den negativa kontrollen måste ta bort exakt K:s tre gravstenar').toBe(3);
     const res = await act('ingest_crm_events', BATCH_K);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.result.skipped).toEqual([]);
@@ -337,5 +345,332 @@ describe('tenant-isolering', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(404);
     const efter = await ownerLas((las) => radantal(las, companyId));
     expect(efter).toEqual(fore);
+  });
+});
+
+// Story 3.13: avsändaren skickar samma mail som `<grund>` eller `<grund>#<domän>`
+// beroende på hur många organisationer det har. Gravstenen gäller per domän,
+// så att en raderad kunds mail avvisas i båda formerna medan en annan
+// organisations mail släpps igenom. Avsnitten står sist, så att ägarens
+// skrivningar i GDN inte når något äldre fall.
+const DORA = { name: 'Dora Domän', email: 'dora@domangraven.example' };
+const ANTON = { name: 'Anton Annan', email: 'anton@annan.example' };
+const D_ORG = { name: 'Domängraven AB' };
+const A_ORG = { name: 'Annan Mottagare AB' };
+const dkp = (source_system: string, source_ref: string, organization: object, person?: object) => ({
+  kind: 'interaction', organization, ...(person ? { person } : {}),
+  channel: source_system === 'calendar' ? 'meeting' : 'email', direction: 'inbound', summary: 'Mail om avtalet.',
+  occurred_at: '2026-08-05T09:00:00Z', source_system, source_ref,
+});
+const dlofte = (source_ref: string, organization: object, person?: object) => ({
+  kind: 'commitment', organization, ...(person ? { person } : {}),
+  commitment_direction: 'we_owe', body: 'Skicka avtalet.',
+  occurred_at: '2026-08-05T09:05:00Z', source_system: 'gmail', source_ref,
+});
+const BATCH_D = {
+  events: [
+    dkp('gmail', 'gmail:dg-1', D_ORG, DORA),
+    dkp('gmail', 'gmail:dg-2#domangraven.example', D_ORG, DORA),
+    dkp('calendar', 'calendar:dg-3', D_ORG, DORA),
+    dkp('gmail', 'gmail:dg-4', D_ORG),
+    dlofte('gmail:dg-1#commit-1', D_ORG, DORA),
+  ],
+};
+
+describe('gravstenen per domän (story 3.13)', () => {
+  let domanKordes = false;
+
+  beforeAll(async () => {
+    const kund = await api.post(`/api/companies/${companyId}/customers`)
+      .set('Authorization', `Bearer ${user.token}`).send({ name: 'Domängraven AB' });
+    expect(kund.status, JSON.stringify(kund.body)).toBe(201);
+    const res = await act('ingest_crm_events', BATCH_D);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.result).toMatchObject({
+      interactions_created: 4, commitments_created: 1, people_created: 1,
+      organizations_linked: 1, skipped: [],
+    });
+    const raderad = await anonymisera(kund.body.customer.id);
+    expect(raderad.godkannande.body.result).toMatchObject({
+      crm_people_removed: 1, crm_interactions_removed: 4, crm_commitments_removed: 1,
+    });
+  });
+
+  /** Sänder en batch och ger svaret med ägarens radantal före och efter. */
+  async function sandMedRadantal(kropp: object) {
+    const fore = await ownerLas((las) => radantal(las, companyId));
+    const res = await act('ingest_crm_events', kropp);
+    const efter = await ownerLas((las) => radantal(las, companyId));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return { result: res.body.result, fore, efter };
+  }
+
+  it('GD6: raderingen skriver källnyckeln och domänsyskonet, och gravstenarna bär bara källnycklar', async () => {
+    const gravstenar = await withAdmin(async (client) => (await client.query<{ source_system: string; source_ref: string }>(
+      `SELECT source_system, source_ref FROM crm.erased_sources
+       WHERE company_id = $1 AND split_part(source_ref, '#', 1) = ANY($2::text[])
+       ORDER BY source_system, source_ref COLLATE "C"`,
+      [companyId, ['gmail:dg-1', 'gmail:dg-2', 'calendar:dg-3', 'gmail:dg-4']],
+    )).rows);
+    expect(gravstenar).toEqual([
+      { source_system: 'calendar', source_ref: 'calendar:dg-3' },
+      { source_system: 'calendar', source_ref: 'calendar:dg-3#domangraven.example' },
+      { source_system: 'gmail', source_ref: 'gmail:dg-1' },
+      { source_system: 'gmail', source_ref: 'gmail:dg-1#commit-1' },
+      { source_system: 'gmail', source_ref: 'gmail:dg-1#domangraven.example' },
+      { source_system: 'gmail', source_ref: 'gmail:dg-2#domangraven.example' },
+      { source_system: 'gmail', source_ref: 'gmail:dg-4' },
+    ]);
+    for (const g of gravstenar) expect(g.source_ref.toLowerCase(), g.source_ref).not.toContain('dora');
+  });
+
+  it('GD1: utan suffix vid raderingen och med suffix efteråt avvisas mailet och mötet', async () => {
+    const { result, fore, efter } = await sandMedRadantal({
+      events: [
+        dkp('gmail', 'gmail:dg-1#domangraven.example', D_ORG, DORA),
+        dkp('calendar', 'calendar:dg-3#domangraven.example', D_ORG, DORA),
+      ],
+    });
+    expect(result.skipped).toEqual([{ index: 0, reason: SKAL }, { index: 1, reason: SKAL }]);
+    expect(result).toMatchObject({
+      interactions_created: 0, commitments_created: 0, people_created: 0, organizations_created: 0,
+    });
+    expect(efter).toEqual(fore);
+  });
+
+  it('GD2: med suffix vid raderingen och utan suffix efteråt avvisas mailet', async () => {
+    const { result, fore, efter } = await sandMedRadantal({ events: [dkp('gmail', 'gmail:dg-2', D_ORG, DORA)] });
+    expect(result.skipped).toEqual([{ index: 0, reason: SKAL }]);
+    expect(result).toMatchObject({ interactions_created: 0, people_created: 0, organizations_created: 0 });
+    expect(efter).toEqual(fore);
+  });
+
+  it('GD3: samma mail för en annan organisation med en annan domän släpps igenom', async () => {
+    const { result } = await sandMedRadantal({ events: [dkp('gmail', 'gmail:dg-1#annan.example', A_ORG, ANTON)] });
+    expect(result).toMatchObject({ interactions_created: 1, skipped: [] });
+    const rader = await withAdmin(async (client) => (await client.query(
+      `SELECT i.source_ref FROM crm.interactions i
+       JOIN crm.organizations o ON o.id = i.organization_id AND o.company_id = i.company_id
+       WHERE i.company_id = $1 AND o.name = 'Annan Mottagare AB' AND i.source_system = 'gmail'`, [companyId],
+    )).rows);
+    expect(rader).toEqual([{ source_ref: 'gmail:dg-1#annan.example' }]);
+  });
+
+  it('GD4: en bar gravsten utan domänsyskon spärrar mailet för varje domän', async () => {
+    // Ägaren planterar en gravsten från före domänsyskonen.
+    await withAdmin((client) => client.query(
+      `INSERT INTO crm.erased_sources (company_id, source_system, source_ref) VALUES ($1, 'gmail', 'gmail:dg-gammal')`,
+      [companyId],
+    ));
+    const { result, fore, efter } = await sandMedRadantal({
+      events: [
+        dkp('gmail', 'gmail:dg-gammal#vilken.example', A_ORG, ANTON),
+        dkp('gmail', 'gmail:dg-4#annan.example', A_ORG, ANTON),
+      ],
+    });
+    expect(result.skipped).toEqual([{ index: 0, reason: SKAL }, { index: 1, reason: SKAL }]);
+    expect(result).toMatchObject({ interactions_created: 0, interactions_unchanged: 0 });
+    expect(efter).toEqual(fore);
+  });
+
+  it('GD5: ett löfte prövas på exakt nyckel, också mot en bar gravsten', async () => {
+    const { result } = await sandMedRadantal({
+      events: [dlofte('gmail:dg-1#commit-1', D_ORG, DORA), dlofte('gmail:dg-4#commit-2', A_ORG, ANTON)],
+    });
+    expect(result.skipped).toEqual([{ index: 0, reason: SKAL }]);
+    expect(result).toMatchObject({ commitments_created: 1 });
+    const loften = await withAdmin(async (client) => (await client.query(
+      `SELECT source_ref FROM crm.commitments
+       WHERE company_id = $1 AND source_system = 'gmail' AND source_ref IN ('gmail:dg-1#commit-1', 'gmail:dg-4#commit-2')`,
+      [companyId],
+    )).rows);
+    expect(loften).toEqual([{ source_ref: 'gmail:dg-4#commit-2' }]);
+  });
+
+  it('GDN: med ett syskon på en annan domän i stället för domänsyskonet återskapas personen', async () => {
+    // Negativ kontroll: utan domänsyskonet för fall 1, och med ett annat syskon
+    // så att regeln för bara gravstenar inte gäller, spärrar ingenting mailet.
+    const borttagen = await withAdmin((client) => client.query(
+      `DELETE FROM crm.erased_sources
+       WHERE company_id = $1 AND source_system = 'gmail' AND source_ref = 'gmail:dg-1#domangraven.example'`,
+      [companyId],
+    ));
+    expect(borttagen.rowCount, 'den negativa kontrollen måste ta bort exakt domänsyskonet för fall 1').toBe(1);
+    await withAdmin((client) => client.query(
+      `INSERT INTO crm.erased_sources (company_id, source_system, source_ref)
+       VALUES ($1, 'gmail', 'gmail:dg-1#raderad-granne.example')`,
+      [companyId],
+    ));
+    const { result } = await sandMedRadantal({ events: [dkp('gmail', 'gmail:dg-1#domangraven.example', D_ORG, DORA)] });
+    expect(result.skipped).toEqual([]);
+    expect(result).toMatchObject({ people_created: 1, interactions_created: 1 });
+    const personer = await withAdmin(async (client) => (await client.query(
+      `SELECT id FROM crm.people
+       WHERE company_id = $1 AND lower(email) = 'dora@domangraven.example'`, [companyId],
+    )).rows);
+    expect(personer).toHaveLength(1);
+    domanKordes = true;
+  });
+
+  it('GDV: den negativa kontrollen för domänsyskonet kördes till slut', () => {
+    expect(domanKordes).toBe(true);
+  });
+});
+
+describe('kontraktets regel 2 och 4 (story 3.13)', () => {
+  it('D1: regel 2 beskriver grundnyckeln och regel 4 gravstenen per domän', async () => {
+    const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+    // Bara avsnittet: under «## Tidsförslag» står en andra numrerad lista.
+    const regler = kontrakt.split('## De fyra reglerna\n')[1]!.split('\n## ')[0]!;
+    const mellan = (fran: string, till: string) => {
+      const start = regler.indexOf(fran);
+      const slut = regler.indexOf(till);
+      expect(start, fran).toBeGreaterThanOrEqual(0);
+      expect(slut, till).toBeGreaterThan(start);
+      return regler.slice(start, slut);
+    };
+    const regel2 = mellan('**2.', '**3.');
+    for (const term of ['grundnyckeln', '`<grund>#<domän>`', '`interactions_unchanged`']) expect(regel2, term).toContain(term);
+    const regel4 = mellan('**4.', '**5.');
+    for (const term of ['`<grund>#<domän>`', 'per domän', 'för alla domäner']) expect(regel4, term).toContain(term);
+    for (const rad of ['**2. `source_ref` är inte valfri i praktiken.**', '**4. En raderad källa kan inte återuppspelas.**']) {
+      expect(regler.split(rad).length - 1, rad).toBe(1);
+    }
+  });
+
+  it('D2: regel 2 och 4 anger villkoren som mekanismen har, inte mer', async () => {
+    const kontrakt = await readFile(new URL('../../docs/crm/API_KONTRAKT.md', import.meta.url), 'utf8');
+    const regler = kontrakt.split('## De fyra reglerna\n')[1]!.split('\n## ')[0]!;
+    // Radbrytningar slås ihop, så att ett villkor kan stå över två rader.
+    const regel = (fran: string, till: string) => regler.slice(regler.indexOf(fran), regler.indexOf(till)).replace(/\s+/g, ' ');
+    const regel2 = regel('**2.', '**3.');
+    const regel4 = regel('**4.', '**5.');
+    // Regel 2: en rad med exakt samma nyckel i en annan organisation flyttas bara när den egna saknar grunden.
+    for (const term of ['organisationens egen kontaktpunkt vinner', 'saknar grunden', 'flyttas']) expect(regel2, term).toContain(term);
+    // Regel 4: formen `<grund>` beror på personens domän; den bara nyckeln är en exakt gravsten; ett syskon
+    // från en annan kunds radering stänger av regeln för bara gravstenar.
+    for (const term of [
+      'personens e-post har den raderade domänen', 'eller med en person på en annan domän', 'exakt gravsten', 'en annan kunds radering',
+    ]) {
+      expect(regel4, term).toContain(term);
+    }
+  });
+});
+
+// Granskningen: spärren körs för varje kontaktpunkt i gmail och calendar, upp
+// till 500 gånger per batch, och gravstenarna bara växer. Primärnyckeln
+// (company_id, source_system, source_ref) ska därför bära frågan, så att den inte
+// läser alla gravstenar i bolaget och källsystemet. Syskonen läses bara när den
+// bara grunden själv är en gravsten.
+describe('spärrens frågor och primärnyckeln (story 3.13)', () => {
+  type Fraga = { sql: string; params: unknown[] };
+
+  /** Kör spärren som app i en transaktion som rullas tillbaka och spelar in dess frågor mot gravstenarna. */
+  async function sparr(sourceSystem: 'gmail' | 'calendar', sourceRef: string, email: string | null) {
+    const client = await pool.connect();
+    const fragor: Fraga[] = [];
+    const inspelare = {
+      query: (sql: string, params: unknown[] = []) => {
+        if (sql.includes('crm.erased_sources')) fragor.push({ sql, params });
+        return client.query(sql, params);
+      },
+    } as unknown as PoolClient;
+    try {
+      await client.query('BEGIN');
+      await setTenantContext(client, user.userId, companyId);
+      const utfall = await assertNotErased(inspelare, companyId, sourceSystem, sourceRef, { email })
+        .then(() => 'släpps', (err: { code?: string }) => err.code ?? String(err));
+      return { utfall, fragor };
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  }
+
+  /**
+   * Planen som frågan får när sekventiell läsning är avstängd: indexvillkoren på
+   * gravstenarnas primärnyckel och filtren på gravstenarna. Planen tas med
+   * frågans egna värden, som när appen kör den.
+   */
+  async function plan(f: Fraga): Promise<{ villkor: string[]; filter: string[] }> {
+    return withAdmin(async (admin) => {
+      await admin.query('BEGIN');
+      try {
+        await admin.query('SET LOCAL enable_seqscan = off');
+        const r = await admin.query<{ 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> }>(
+          `EXPLAIN (FORMAT JSON) ${f.sql}`, f.params);
+        const villkor: string[] = [];
+        const filter: string[] = [];
+        const besok = (nod: Record<string, unknown>) => {
+          const cond = nod['Index Cond'];
+          if (nod['Index Name'] === 'erased_sources_pkey' && typeof cond === 'string') villkor.push(cond);
+          const filt = nod['Filter'];
+          if (nod['Relation Name'] === 'erased_sources' && typeof filt === 'string') filter.push(filt);
+          for (const barn of (nod['Plans'] as Array<Record<string, unknown>> | undefined) ?? []) besok(barn);
+        };
+        besok(r.rows[0]!['QUERY PLAN'][0]!.Plan);
+        return { villkor, filter };
+      } finally {
+        await admin.query('ROLLBACK');
+      }
+    });
+  }
+
+  /**
+   * Felklassen: ett uppslag som läser bolagets och källsystemets alla gravstenar
+   * och sållar på källnyckeln efteråt. Varje uppslag på primärnyckeln ska därför
+   * bära källnyckeln i indexvillkoret, minst ett ska finnas, och ingen nod får ha
+   * källnyckeln som filter. Postgres 16 gör `= ANY(...)` på nyckelns tredje
+   * kolumn till ett filter på en liten tabell, och det fäller här.
+   */
+  async function bärsAvPrimärnyckeln(f: Fraga, ref: string) {
+    const { villkor, filter } = await plan(f);
+    const vy = `${ref}: ${JSON.stringify({ villkor, filter })}`;
+    expect(villkor.length, vy).toBeGreaterThan(0);
+    expect(villkor.every((v) => v.includes('source_ref')), vy).toBe(true);
+    expect(filter.some((v) => v.includes('source_ref')), vy).toBe(false);
+  }
+
+  // [källsystem, källnyckel, personens e-post, utfall, antal nycklar som slås upp]
+  type Fall = ['gmail' | 'calendar', string, string | null, string, number];
+
+  /** Nycklarna spärren slår upp först: de prövade nycklarna och grunden, utan dubbletter. */
+  const uppslagna = (system: string, ref: string, email: string | null) =>
+    new Set([...erasureCheckKeys({ source_system: system, source_ref: ref, email }), sourceRefBase(system, ref)]).size;
+
+  it('GP1: utan bar gravsten på grunden ställer spärren en fråga, och primärnyckeln bär källnyckeln', async () => {
+    const fall: Fall[] = [
+      ['gmail', 'gmail:gp-ny', null, 'släpps', 1],
+      ['gmail', 'gmail:gp-ny', 'ny@kund.example', 'släpps', 2],
+      ['gmail', 'gmail:gp-ny#kund.example', null, 'släpps', 2],
+      ['gmail', 'gmail:gp-ny#Kund.Example', 'ny@annan.example', 'släpps', 3],
+      ['calendar', 'calendar:gp-ny', 'ny@kund.example', 'släpps', 2],
+      ['gmail', 'gmail:dg-2', DORA.email, 'erased_source', 2],
+      ['gmail', 'gmail:dg-2#DomanGraven.Example', ANTON.email, 'erased_source', 3],
+      ['gmail', 'gmail:dg-2#annan.example', ANTON.email, 'släpps', 2],
+    ];
+    for (const [system, ref, email, facit, antal] of fall) {
+      expect(uppslagna(system, ref, email), ref).toBe(antal);
+      const { utfall, fragor } = await sparr(system, ref, email);
+      expect(utfall, ref).toBe(facit);
+      expect(fragor, ref).toHaveLength(1);
+      await bärsAvPrimärnyckeln(fragor[0]!, ref);
+    }
+  });
+
+  it('GP2: med en bar gravsten på grunden läses syskonen i en fråga till, och den första bärs av källnyckeln', async () => {
+    const fall: Fall[] = [
+      ['gmail', 'gmail:dg-4', null, 'erased_source', 1],
+      ['gmail', 'gmail:dg-4#annan.example', ANTON.email, 'erased_source', 2],
+      ['gmail', 'gmail:dg-4#Annan.Example', ANTON.email, 'erased_source', 3],
+      ['calendar', 'calendar:dg-3#annan.example', ANTON.email, 'släpps', 2],
+    ];
+    for (const [system, ref, email, facit, antal] of fall) {
+      expect(uppslagna(system, ref, email), ref).toBe(antal);
+      const { utfall, fragor } = await sparr(system, ref, email);
+      expect(utfall, ref).toBe(facit);
+      expect(fragor, ref).toHaveLength(2);
+      await bärsAvPrimärnyckeln(fragor[0]!, ref);
+    }
   });
 });
