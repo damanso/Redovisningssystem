@@ -3121,3 +3121,55 @@ skäl och samma prioritet. Ögonblicksbilden beskriver nuläget, så ett `as_of`
 annan dag än i dag ger aldrig affärsskäl. Tystade och uppskjutna relationer
 föreslås fortfarande inte. Indata och svarsform är oförändrade: skälet står i
 `reasons` som de andra skälen.
+
+## Likviditet per kalendermånad (crm 6.5)
+
+`liquidity_by_month` (`read`) tar `{ as_of? }`, ett datum som annars är i dag,
+och svarar med likviditeten för tre kalendermånader från `as_of`. Styrvyn läser
+samma funktion, så åtgärden och vyn visar samma tal.
+
+Svaret har horisontens slut (`horizon_end`) och `months`: en rad per
+kalendermånad med ingående saldo, belagda in- och utbetalningar, utgående saldo
+och varav förfallet. Den första månaden börjar på `as_of`, och det som förföll
+före den dagen ligger där. `outcome` är `deficit`, `no_deficit` eller `unknown`,
+`first_deficit` är den första månaden med negativt saldo och `need_ore` det
+största underskottet. `counted` är källorna som räknas, med belopp och varav
+förfallet: kundfakturor, leverantörsfakturor och obetalda lönebesked. Ett
+obetalt lönebesked räknas på sin periods förfallodag. `unknown` listar varje
+källa som inte går att läsa, med källa och skäl. Då är `outcome` `unknown`,
+`first_deficit` och `need_ore` är `null`, och saknas kassan är också månadernas
+saldon `null`. `beyond_horizon` är de belagda betalningarna efter horisonten.
+
+`not_counted` är det som saknar belagd betalningstidpunkt. Posterna
+räknas aldrig in i månaderna. De står i en fast ordning, en rad per id med
+`side`, `amount_ore`, `reason`, `next_due_date` och `reservation`, också när
+beloppet är 0:
+
+- `abonnemang`: tre månader av de aktiva abonnemangens radsumma exklusive moms,
+  samma tal som kostnadstäckningen.
+- `ofakturerad_tid`: godkänd tid som inte fakturerats, samma tal som
+  `unbilled_time_report`.
+- `rot_rut_1513`: fordran på Skatteverket för ROT/RUT-avdraget.
+- `ovriga_fordringar_15_16`: resten av 1500–1699 som inte är en öppen kundfaktura.
+- `moms_26xx`: momsnettot på 26xx; ett negativt netto är en fordran.
+- `agi_rest_2710_2730`: saldot på 2710/2730 som inte hör till ett obetalt
+  lönebesked.
+- `bolagsskatt`: den uppskattade bolagsskatten på årets resultat.
+- `skatteskulder_25xx`: saldot på 2500–2599, skattekontot inräknat.
+- `semesterloner_2920`: upplupna semesterlöner.
+- `ovriga_kortfristiga_2890`: övriga kortfristiga skulder på 2890–2899.
+- `ovriga_skulder_24_29`: resten av 2400–2999 som inte är en öppen
+  leverantörsfaktura, till exempel ett kvitto bokfört mot 2440.
+
+Bara `moms_26xx` och `agi_rest_2710_2730` bär `next_due_date` och
+`reservation`, och bara när beloppet är en skuld (större än 0). Raden får då
+nästa förfallodag och underlagets egen reservation, eftersom saldot saknar
+periodmärkning. Varje saldo på kortfristiga fordringar (1500–1699) och
+kortfristiga skulder (2400–2999) som inte är en öppen faktura står i exakt en
+rad. Restraderna `ovriga_fordringar_15_16` och `ovriga_skulder_24_29` står sist
+på sin sida och tar det som inte har en egen rad. Ett negativt belopp i en
+restrad betyder att reskontran räknar mer än bokföringen visar per dagen.
+
+Öppna affärer ingår aldrig, varken i månaderna eller i `not_counted`.
+`liquidity_forecast` är den oförändrade prognosen i 30-dagarshinkar med
+källredovisning.

@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (212
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (217
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,35 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-23 — Story 6.5 (crm): det obelagda redovisas för sig, och
+  likviditeten blir en läsåtgärd (FR-44):** `liquidityByMonth` svarar nu
+  också med `not_counted`, en sluten lista med elva obelagda poster:
+  abonnemang, ofakturerad tid, ROT/RUT-fordran, moms, restsaldot på 2710/2730,
+  bolagsskatt och kontoraderna. Listan byggs efter rullningen av den rena
+  `notCountedRows` i `domain/liquidity.ts` och förs aldrig in i månaderna.
+  - Fordringar och skulder utan datum bärs av en sluten kontoindelning över
+    1500–1699 och 2400–2999, med en restrad per sida. Reskontrans öppna
+    fakturor dras av, och moms och AGI läses bara ur skatteöversikten och
+    AGI-delarna.
+  - Restsaldot räknas ur 6.2:s AGI-delar, utan bruttometodens obetalda
+    perioder.
+  - Abonnemangsfrågan är flyttad ordagrant ur `steeringOverview` till
+    `recurringMonthOre` i `reports.ts`. Styrvyns svar är oförändrat.
+  - Momsreservationen `VAT_UNSETTLED_NOTE` är flyttad tecken för tecken till
+    domänmodulen.
+  - Ny läsåtgärd `liquidity_by_month` med eget avsnitt i
+    `docs/MCP_ACTIONS.md`. Antalet åtgärder i rubrikstycket är rättat till
+    217 (träffarna på `^  def\(\{` i registret), så att continuityvakt stämmer.
+
+  Prov: `server/test/steering-liquidity.test.ts` R1, E1–E7, N1–N10, T1–T3 och
+  D1, med N6 som negativ kontroll. 6.2:s fall och hjälpare är orörda. Ingen
+  migration, vy, rutt, tabell, miljövariabel eller nytt beroende.
+
+  **Inte kört:** sandlådan nekade `npm test` och `npm run typecheck` («requires
+  approval»). Varje rött och grönt skäl är läst mot koden och står i
+  berättelsens Debug Log; kedjans typkontroll och svit avgör. Visningen i
+  styrvyn kommer i Story 6.3.
 
 - **2026-11-23 — Story 3.13 (crm), omtag 2: spärrens uppslag bärs av primärnyckeln (FR-43):**
   Kedjans svit fällde GP1 och GP2: planen för spärrens första fråga hade

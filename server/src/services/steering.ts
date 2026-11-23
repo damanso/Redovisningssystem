@@ -11,7 +11,7 @@
 // från en kund. Det är den enskilt största risken i bolaget och den ska stå
 // högst upp, inte gömmas i en rapportbilaga.
 import type { PoolClient } from 'pg';
-import { monthlyRevenue } from './reports.js';
+import { monthlyRevenue, recurringMonthOre } from './reports.js';
 import { unbilledTimeReport } from './timeReports.js';
 
 export interface SteeringOverview {
@@ -83,30 +83,13 @@ export async function steeringOverview(
   // egen taxa värderades till uppdragets. Två formler för samma fråga ger två
   // tal, och då är minst ett fel utan att någon vet vilket.
   const unbilledReport = await unbilledTimeReport(client, companyId, { to: asOf });
-  // Abonnemangens värde per månad: radsumman delad på intervallets längd.
-  //
-  // Raden kan prissättas på TVÅ sätt: ett uttryckligt pris, eller en artikel
-  // vars pris hämtas när fakturan genereras. Lästes bara det uttryckliga blev
-  // artikelrader tysta nollor, och täckningen underskattades på precis den sida
-  // som ska svara på hur vi ligger till.
-  const recurring = await client.query<{ ore: string }>(
-    `SELECT COALESCE(sum(
-              (SELECT COALESCE(sum((l->>'quantity')::numeric
-                                   * COALESCE((l->>'unit_price_ore')::numeric, a.unit_price_ore)), 0)
-                 FROM jsonb_array_elements(r.lines) l
-                 LEFT JOIN articles a
-                        ON a.id = nullif(l->>'article_id', '')::uuid AND a.company_id = r.company_id)
-              / CASE r.interval WHEN 'monthly' THEN 1 WHEN 'quarterly' THEN 3 ELSE 12 END
-            ), 0)::bigint AS ore
-     FROM recurring_invoices r
-     WHERE r.company_id = $1 AND r.active AND (r.end_date IS NULL OR r.end_date >= $2::date)`,
-    [companyId, asOf],
-  );
+  // Abonnemangens värde per månad, ur den enda definitionen (reports.ts) — samma
+  // tal som likviditeten redovisar som obelagt.
+  const recurringMonth = await recurringMonthOre(client, companyId, asOf);
 
   const receivablesOre = Number(receivables.rows[0]!.ore);
   const unbilledOre = unbilledReport.totals.amount_ore;
-  const recurringMonthOre = Number(recurring.rows[0]!.ore);
-  const known3 = receivablesOre + unbilledOre + recurringMonthOre * 3;
+  const known3 = receivablesOre + unbilledOre + recurringMonth * 3;
   const avgCost = cost12 > 0 ? round(cost12 / 12) : 0;
 
   return {
@@ -122,7 +105,7 @@ export async function steeringOverview(
     coverage: {
       receivables_ore: receivablesOre,
       unbilled_time_ore: unbilledOre,
-      recurring_month_ore: recurringMonthOre,
+      recurring_month_ore: recurringMonth,
       known_next_3_months_ore: known3,
       // Hur många månaders kostnader den kända täckningen räcker till. Utan
       // kostnader i bokföringen finns inget att dela med — då är svaret okänt,

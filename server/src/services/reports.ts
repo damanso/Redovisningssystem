@@ -1,15 +1,20 @@
 import type { PoolClient } from 'pg';
 import type { Ore } from '../domain/money.js';
 import { formatOre } from '../domain/money.js';
-import { rollLiquidity } from '../domain/liquidity.js';
-import type { LiquidityRoll, LiquiditySide, DatedFlow } from '../domain/liquidity.js';
+import { rollLiquidity, notCountedRows, VAT_UNSETTLED_NOTE } from '../domain/liquidity.js';
+import type { LiquidityRoll, LiquiditySide, DatedFlow, LiquidityNotCounted } from '../domain/liquidity.js';
 // taxes.ts importerar accountSums härifrån. Cykeln är ofarlig i ESM: båda
 // modulerna använder varandra först vid ANROP (hoistade funktionsdeklarationer),
 // aldrig under modulutvärderingen. Likviditetens statutära källor är samma tal
 // som skatteöversikten visar — de får inte räknas fram en andra gång här.
+// Tidsrapporterna importerar accountsReceivableAging härifrån, och det obelagda
+// läser den ofakturerade tiden därifrån: samma slags cykel, lika ofarlig, eftersom
+// unbilledTimeReport och GROSS_METHOD_FROM_PERIOD bara används inne i funktioner.
 import {
   CORPORATE_TAX_PERMILLE, agiDueDateForPeriod, taxOverview, unpaidPayrollPeriods, type TaxDeadline, type TaxOverview,
 } from './taxes.js';
+import { unbilledTimeReport } from './timeReports.js';
+import { GROSS_METHOD_FROM_PERIOD } from './payroll.js';
 
 // Read-only rapporter över huvudboken. Allt i heltal ören. Kontotyp resolvas via
 // shadow-subquery (företagskonto skuggar standardkonto), samma mönster som
@@ -815,7 +820,6 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
         label: vatDeadline?.label ?? 'Momsdeklaration',
       }]
     : [];
-  const VAT_UNSETTLED_NOTE = ' Momsnettot är ett kontosaldo utan periodmärkning: innehåller det ännu ej redovisade äldre perioder ligger en del av beloppet i praktiken redan förfallet — bokföringen visar inte vilken del, så hela nettot ställs mot nästa förfallodag.';
 
   const statutory: Array<{ id: string; total: Ore; parts: StatutoryPart[]; what: string; extra: string }> = [
     {
@@ -966,20 +970,68 @@ export async function liquidityForecast(client: PoolClient, companyId: string, a
   return { as_of: asOfDate, cash_ore: cash, buckets, sources };
 }
 
+/**
+ * Abonnemangens värde per månad: radsumman exklusive moms delad på intervallets
+ * längd, för aktiva mallar som inte slutat före `asOf`. Den enda definitionen —
+ * styrvyns kostnadstäckning och likviditetens obelagda abonnemang läser samma tal.
+ */
+export async function recurringMonthOre(client: PoolClient, companyId: string, asOf: string): Promise<Ore> {
+  // Raden kan prissättas på TVÅ sätt: ett uttryckligt pris, eller en artikel
+  // vars pris hämtas när fakturan genereras. Lästes bara det uttryckliga blev
+  // artikelrader tysta nollor, och täckningen underskattades på precis den sida
+  // som ska svara på hur vi ligger till.
+  const recurring = await client.query<{ ore: string }>(
+    `SELECT COALESCE(sum(
+              (SELECT COALESCE(sum((l->>'quantity')::numeric
+                                   * COALESCE((l->>'unit_price_ore')::numeric, a.unit_price_ore)), 0)
+                 FROM jsonb_array_elements(r.lines) l
+                 LEFT JOIN articles a
+                        ON a.id = nullif(l->>'article_id', '')::uuid AND a.company_id = r.company_id)
+              / CASE r.interval WHEN 'monthly' THEN 1 WHEN 'quarterly' THEN 3 ELSE 12 END
+            ), 0)::bigint AS ore
+     FROM recurring_invoices r
+     WHERE r.company_id = $1 AND r.active AND (r.end_date IS NULL OR r.end_date >= $2::date)`,
+    [companyId, asOf],
+  );
+  return Number(recurring.rows[0]!.ore);
+}
+
 export const COUNTED_LIQUIDITY_SOURCES: ReadonlyArray<{ id: string; side: LiquiditySide }> = [
   { id: 'kundfakturor', side: 'in' },
   { id: 'leverantorsfakturor', side: 'out' },
   { id: 'agi_lonebesked', side: 'out' },
 ];
 
-/** Likviditet i tre kalendermånader ur kassa och betalningar med belagd förfallodag. */
-export async function liquidityByMonth(client: PoolClient, companyId: string, asOf?: string): Promise<LiquidityRoll> {
+/** Rullningen och, bredvid den, det som saknar belagd betalningstidpunkt. */
+export interface LiquidityByMonth extends LiquidityRoll { not_counted: LiquidityNotCounted[] }
+
+// Restsaldot på 2710/2730 ur samma AGI-delar som de räknade lönebeskeden:
+// resten är kontosaldot, och under bruttometoden ligger en obetald periods skatt
+// och avgift redan där. De perioderna dras av, så att samma pengar aldrig står
+// både som belagd AGI i en månad och som obelagd rest. Ingen egen kontoläsning.
+function agiRestFromParts(agi: AgiPart[]): Ore {
+  const rest = agi.filter((p) => p.kind === 'rest').reduce((s, p) => s + p.amount, 0);
+  const grossPeriods = agi.filter((p) => p.kind === 'period' && p.period_label >= GROSS_METHOD_FROM_PERIOD)
+    .reduce((s, p) => s + p.amount, 0);
+  return rest - grossPeriods;
+}
+
+/**
+ * Likviditet i tre kalendermånader ur kassa och betalningar med belagd
+ * förfallodag, och det obelagda för sig i `not_counted`. Styrvyn och åtgärden
+ * `liquidity_by_month` läser samma funktion.
+ */
+export async function liquidityByMonth(client: PoolClient, companyId: string, asOf?: string): Promise<LiquidityByMonth> {
   // Databasens dag löses en gång, så att alla underlag gäller samma as_of.
   const cash = await liquidCash(client, companyId, asOf ?? null);
   const tax = await taxOverview(client, companyId, cash.as_of);
   const receivables = await openReceivables(client, companyId);
   const payables = await openPayables(client, companyId);
   const agi = await agiPartsFor(client, companyId, cash.as_of, tax);
+  // Det obelagdas egna läsningar, en gång var. tax och agi återanvänds.
+  const ledger = await accountSums(client, companyId, { to: cash.as_of });
+  const recurringMonth = await recurringMonthOre(client, companyId, cash.as_of);
+  const unbilled = await unbilledTimeReport(client, companyId, { to: cash.as_of });
   const flows: DatedFlow[] = [
     ...receivables.map((r) => ({ source: 'kundfakturor', ...r })),
     ...payables.rows.map((r) => ({ source: 'leverantorsfakturor', ...r })),
@@ -999,8 +1051,29 @@ export async function liquidityByMonth(client: PoolClient, companyId: string, as
       reason: 'Bolaget har aldrig bokfört en leverantörsfaktura. Utbetalningarna till leverantörer är inte modellerade; noll betyder att underlag saknas.',
     });
   }
-  return rollLiquidity({
+  const roll = rollLiquidity({
     as_of: cash.as_of, opening_ore: cash.rows === 0 ? null : cash.cash_ore,
     sources: COUNTED_LIQUIDITY_SOURCES, flows, unknown,
   });
+  // Det obelagda byggs efter rullningen och förs aldrig in i den: inget av
+  // beloppen kan nå en månad. Öppna affärer ingår aldrig. Huvudbokens rader går
+  // orörda in; kontoindelningen i domänen avgör vilken rad ett konto hör till.
+  const nextDue = (type: string): string | null =>
+    tax.deadlines.find((d) => d.type === type && d.due_date >= cash.as_of)?.due_date ?? null;
+  return {
+    ...roll,
+    not_counted: notCountedRows({
+      recurring_month_ore: recurringMonth,
+      unbilled_time_ore: unbilled.totals.amount_ore,
+      vat_net_ore: tax.liability.vat_payable_ore,
+      agi_account_rest_ore: agiRestFromParts(agi),
+      corporate_tax_ore: tax.liability.estimated_corporate_tax_ore,
+      // Hela reskontran, också bortom horisonten; notCountedRows prövar summorna med assertSafeOre.
+      open_receivables_ore: receivables.reduce((s, r) => s + r.amount_ore, 0),
+      open_payables_ore: payables.rows.reduce((s, r) => s + r.amount_ore, 0),
+      ledger,
+      next_vat_due: nextDue('vat'),
+      next_agi_due: nextDue('agi'),
+    }),
+  };
 }
