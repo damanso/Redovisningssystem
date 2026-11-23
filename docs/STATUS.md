@@ -153,6 +153,57 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 2.4, omtag (kedjans tester röda, ett fall: R1).** R1 i
+  `server/test/uppdragsytan-kontraktsluckor.test.ts` sökte efter kvarlämnade
+  platshållare med `JSON.stringify(lucka)` mot `/[{}]/`. Serialiseringen
+  skriver egna klamrar runt varje objekt, så kontrollen fällde alltid och
+  prövade ingenting. Felet låg i provet, inte i koden. Rättat för hela
+  klassen: provfilen har en enda väg för att söka i strukturerade värden
+  (`texterI`, som tar bara texterna, rekursivt) och en enda mätare för
+  platshållare (`platshallare`). Mätaren läser regelns och svarens egen utdata
+  i R1, R4 (alla åtta ankarlägen), R7, I7, G4 (läget `andras`, som fylls med
+  lagrade värden), och kontraktspanelens synliga text i V2. Den har negativa
+  kontroller i fyra former. G1:s auditrad och L2:s ej inlästa yta söker nu
+  också i texter och inte i JSON, och L2 har fått en negativ kontroll. Ingen
+  produktionskod ändrad. Inte kört: sandlådan svarade `This command requires
+  approval` på `npm run typecheck`. Kedjans typecheck och `npm test` är
+  belägget.
+- **2026-11-23 — Story 2.4 (uppdragsytan, kedjan cto): saknade kontraktsfält,
+  mottagarpart och godkännare visas ärligt (FR-27, FR-9, FR-13, FR-14).** Ny ren
+  regel `server/src/lib/kontraktsluckor.ts`: manifestets schema
+  (`KontraktsmanifestSchema`, strikt, blank text ger 400), `kontraktsluckor`
+  över den slutna `LUCKFALT` med en textkälla (`LUCKTEXT`), `kontraktsparter`
+  (en källa per avtal, skillnaderna redovisas), `mottagarpartlage` (angiven,
+  saknas, ej inläst), `godkannandeformtext`, `manifestankare` (åtta lägen, bara
+  `lagras` och `andras` skriver) och `OLASTA`. Parsern läser fältparet
+  Mottagarpart som reserv för Godkännare. Migration
+  `0097_kontraktsparter.sql`: `contracts.godkannandeform` och
+  `godkannare_kalla`, BASELINE-kommentarer på de fyra partskolumnerna och
+  avslutstriggern `contracts_parter_vagrar_avslutat`. Importen tar `manifest`,
+  fäller oläsbar text med 400 `kontrakt_olasbart` före varje skrivning, och
+  förslaget bär `luckor`, `parter` och `ankare`; källan är trippeln (avtal,
+  text, manifest). `sattBaseline` skriver parterna i steg (g) och manifestets
+  ankare i ett nytt steg (j), och auditraden får `parter_andrade` och `ankare`
+  utan fritext. Registret bär `namn` (ur avtalsdelens första version),
+  kontraktsytan `parter` och `luckor` (`lasKontraktsparter`). Leveranserna har
+  kolumnen Namn, luckornas ord ur `LUCKTEXT` och en mottagarpartrad per avtal
+  (sidhuvudet orört); Kontraktet har panelen ”Parterna och luckorna”.
+  `FIELD_LABELS` har sex nya etiketter. Prov: `uppdragsytan-kontraktsluckor`
+  (R0–R7, M1–M3, I1–I8, G1–G7, L1–L3, S1, V1–V4, D1); import-provets fall för
+  okänt tillstånd ger nu 400, och register-provets nyckellista har `namn`.
+  Dokumenterat i MCP_ACTIONS och ARKITEKTUR (migrationsintervallet 0001–0097).
+  **Inte kört:** sandlådan svarade ”This command requires approval” på
+  `npx vitest run`, `npm run typecheck` och tsc via node — kedjans typecheck och
+  `npm test` är belägget. Förutsagt: nya provfilen grön, och befintliga prov
+  gröna som förut. `RESTER` vid ingången: `server/src/lib/kontraktsluckor.ts`,
+  `server/test/uppdragsytan-kontraktsluckor.test.ts` och
+  `server/migrations/0097_kontraktsparter.sql` fanns redan som ospårade filer;
+  deras innehåll användes inte, och filerna är omskrivna. Står de i kedjans
+  anteckning före bygget committas de inte (arkitekturen, ”Rester i kedjans
+  kopia”). Inga baslinjefel i typkontrollen rättade: kedjan har inte rapporterat
+  några. Hermes prov som inte var GRÖNA i baslinjen (continuityvakt,
+  bmadglidning, overlamningsregister_fr6, provvakt_fr24, K-8) rörs inte.
+
 - **2026-11-23 — Story 5.9 (crm): kalendern blir en fångstväg i ytan (FR-3,
   FR-17, FR-31):** `CAPTURE_PATHS_IN_OPERATION` i `crmDerivations.ts` har
   kalendern bland kontaktvägarna (`['mail', 'calendar', 'issues']`;
