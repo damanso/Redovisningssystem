@@ -4,7 +4,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { config } from '../config.js';
 import { pool } from '../db/pool.js';
-import { authenticate } from './middleware/authenticate.js';
+import { authenticate, rejectReadOnlyWrites } from './middleware/authenticate.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.js';
 import { isAttachDocumentRequest } from './routes/actions.js';
@@ -139,7 +139,9 @@ export function createApp(): express.Express {
     }
     res.json({ user_id: u.id, namn: u.name, epost: u.email });
   });
-  app.use('/api/companies', authenticate, companiesRouter);
+  // S-1: läsnyckelns andra försvarslinje står direkt efter authenticate och före
+  // varje router; spärren i executeAction är den första.
+  app.use('/api/companies', authenticate, rejectReadOnlyWrites, companiesRouter);
 
   // Kvittobilagornas bytes. Medvetet UTANFÖR authenticate: behörigheten är
   // HMAC-signaturen i den kortlivade länken (se routes/receiptFiles.ts), och

@@ -11,7 +11,7 @@ import { aiOcrReceipt } from '../../services/aiOcr.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { listApprovals } from '../../services/approvals.js';
 import { ATTACH_DOCUMENT_BODY_LIMIT_BYTES } from '../../services/documents.js';
-import { getActor, getUserId } from '../middleware/authenticate.js';
+import { getActor, getUserId, isReadOnly } from '../middleware/authenticate.js';
 
 const ID = z.string().uuid();
 
@@ -66,6 +66,7 @@ actionsRouter.post('/actions/:action', attachDocumentBody, async (req, res) => {
     actor: getActor(req),
     actionName: req.params.action ?? '',
     input: req.body ?? {},
+    readOnly: isReadOnly(req),
   });
   res.status(outcome.status === 'pending_approval' ? 202 : 200).json(outcome);
 });

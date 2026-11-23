@@ -2,7 +2,7 @@ import { baselineburnaFalt } from '../lib/baselinekolumner.js';
 import type { PoolClient } from 'pg';
 import { fetchMembership, withTenantTransaction, type CompanyRole } from '../db/tx.js';
 import { AppError, BadRequestError, ConflictError, ForbiddenError, KraverGodkannandeError, NotFoundError } from '../lib/errors.js';
-import type { Actor } from '../http/middleware/authenticate.js';
+import { assertNotReadOnly, type Actor } from '../http/middleware/authenticate.js';
 import { writeAudit } from '../services/auditService.js';
 import {
   createApproval,
@@ -49,9 +49,19 @@ export async function executeAction(params: {
   actor: Actor;
   actionName: string;
   input: unknown;
+  // Läsnyckeln (S-1, beslut #156). Bara åtgärdsrutten i REST skickar den:
+  // vyn kör alltid som inloggad människa, och accounting-rutterna kräver en
+  // människa. Utelämnat betyder inget läs-scope.
+  readOnly?: boolean;
 }): Promise<ActionResult> {
   const action = getAction(params.actionName);
   if (!action) throw new NotFoundError('action');
+
+  // S-1: läsnyckeln kan bara läsa. Svaret på en skrivning med den beror inte på
+  // indata, så spärren står före schemat, före `kravManniska` och före varje
+  // transaktion: ingen godkännandepost, auditrad eller domänskrivning kan uppstå.
+  if (action.sensitivity !== 'read') assertNotReadOnly(params.readOnly);
+
   const input = action.inputSchema.parse(params.input);
 
   // Åtgärder märkta `kravManniska` avvisas för agenter FÖRE varje skrivning —
@@ -93,7 +103,7 @@ export async function executeAction(params: {
         action: 'action.executed',
         entityType: 'action',
         entityId: action.name,
-        details: { sensitivity: action.sensitivity, actor: params.actor },
+        details: { sensitivity: action.sensitivity, actor: params.actor, ...(params.readOnly ? { scope: 'read' } : {}) },
       });
       return value;
     });

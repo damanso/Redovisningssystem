@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 5.7 (crm): en nyckel som bara kan läsa (FR-24, NFR-6,
+  beslut #156, S-1):** `authenticate` läser claimen `scope` genom
+  tillåtelselistan `readOnlyFromScope` (människa och agent utan scope, agent med
+  `scope: 'read'`; allt annat 401) och sätter alltid `AuthContext.readOnly`.
+  `executeAction` avvisar varje åtgärd som inte är `read` med 403
+  `read_only_token` direkt efter uppslaget, före schemat, `kravManniska` och
+  varje transaktion; felkoden konstrueras bara i `assertNotReadOnly`, och bara
+  åtgärdsrutten skickar flaggan. Den andra försvarslinjen `rejectReadOnlyWrites`
+  står direkt efter `authenticate` på `/api/companies` och släpper med
+  läsnyckeln bara GET, HEAD och `POST …/actions/:name` (`isActionCall`). *Anslut
+  AI* har valet *Läsnyckel — kan bara läsa* (vyns enda mintning, samma
+  livslängd, ingen ny miljövariabel; okänt val 400 `invalid_input`); REST-vägen
+  för agent-token tar inget scope. Auditraderna `action.executed` och
+  `agent_token.minted` bär `scope: 'read'` för läsnyckeln. Ingen migration, rutt,
+  åtgärd, CSS-klass eller beroende. Prov: `server/test/crm-read-scope.test.ts`
+  (A1–A3 tillåtelselistan och `authenticate`, S1–S5 spärren med svep över
+  manifestets alla skrivande åtgärder, R1–R4 den andra linjen, B1–B2
+  bolagsgränsen, T1–T6 mintningen, D1–D3 dokumenten) och
+  `server/test/crm-read-scope-mock.test.ts` (N0–N2, spärren borttagen:
+  `log_contact` lyckas, den andra linjen står kvar). Dokument:
+  `docs/ARKITEKTUR.md` (punkten om läsnyckeln, migrationsintervallet 0001–0096)
+  och `docs/MCP_ACTIONS.md` (avsnittet för crm 5.7). **Inte kört i sandlådan:**
+  typecheck och vitest nekades (kräver godkännande); kedjan kör typecheck, build
+  och hela sviten. Återstår (5.8): David mintar läsnyckeln under *Anslut AI*
+  efter driftsättningen, och Hermes `loften()` läser med den.
 - **2026-11-23 — Story 5.5 (crm): löften som AI:n fångar märks tills David
   bekräftat dem (FR-39, FR-24):** åtgärdsdefinitionen har fått ett valfritt
   fält `description` som manifestet för vidare bara när det finns, och MCP:s
