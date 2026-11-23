@@ -30,10 +30,18 @@ import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
+import {
+  kontraktsluckor, kontraktsparter, manifestankare, OLASTA, olastaFormer, parterEfterGodkannandet, registerEfterGodkannandet,
+  rytmEfterGodkannandet, type Ankarutfall, type Kontraktsmanifest, type Kontraktsparter, type Lucka,
+} from '../lib/kontraktsluckor.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
 import { koaRegisterkopia } from './uppdragReferens.js';
+// Registrets enda läsväg (Story 2.4): luckorna räknas över samma rader som
+// kontraktsytan visar. `uppdragRegister.ts` importerar bara lib och når ingen
+// sändväg, så kanten ändrar varken cykler eller sändvägsmängden.
+import { lasLeverabelregister } from './uppdragRegister.js';
 // Importcykeln uppdragImport → uppdragSvep → uppdragUndantag → approvalSummary →
 // uppdragImport är ofarlig i ESM så länge inget importerat namn läses på modulnivå.
 import { UTKASTFRAGENYCKEL, upsertSvepvarden } from './uppdragSvep.js';
@@ -57,18 +65,28 @@ interface Avtalsrad {
   kontrakt_tillstand: string;
   godkannare: string | null;
   godkannare_eskalering: string | null;
+  /** Hur ett godkännande ges, och varifrån parterna kom (Story 2.4, 0097). */
+  godkannandeform: string | null;
+  godkannare_kalla: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
-  /** Rytmen ur del 4 som den står lagrad (Story 2.3). Ankaret läses inte här: importen skriver det aldrig. */
+  /** Rytmen ur del 4 som den står lagrad (Story 2.3). */
   rytm_text: string | null;
   bedomning_intervall_dagar: number | null;
   bedomning_veckodag: number | null;
   rapport_mottagarkrets: string | null;
+  /**
+   * Ankaret och dess källa (Story 2.3). Importens förslag prövar manifestets
+   * ankare mot dem; bara godkännandet skriver dem (Story 2.4, beslut B5).
+   * Datumet läses som text, aldrig som JS-Date.
+   */
+  bedomning_ankare: string | null;
+  bedomning_ankare_kalla: string | null;
 }
 
 /**
  * Kolumnerna importen får skriva för rytmen (Story 2.3). Aldrig ett kolumnnamn
- * ur indata, och aldrig ankaret: det sätts av David med sin källa.
+ * ur indata, och aldrig ankaret: det har sin egen lista och sitt eget steg.
  */
 const RYTM_UPDATE: Readonly<Record<string, string>> = {
   rytm_text: 'rytm_text',
@@ -77,12 +95,31 @@ const RYTM_UPDATE: Readonly<Record<string, string>> = {
   rapport_mottagarkrets: 'rapport_mottagarkrets',
 };
 
+/** Parternas kolumner (Story 2.4, beslut B3). NULL skrivs: ett fält som källan inte anger är saknat. */
+const PARTER_UPDATE: Readonly<Record<string, string>> = {
+  godkannare: 'godkannare',
+  godkannare_eskalering: 'godkannare_eskalering',
+  godkannandeform: 'godkannandeform',
+  godkannare_kalla: 'godkannare_kalla',
+};
+
+/**
+ * Ankarets kolumner när manifestets ankare skrivs efter Davids ja (Story 2.4,
+ * beslut B5). Samma lista som `ANKARE_UPDATE` i `uppdragBedomning.ts`.
+ */
+const ANKARE_UPDATE: Readonly<Record<string, string>> = {
+  bedomning_ankare: 'bedomning_ankare',
+  bedomning_ankare_kalla: 'bedomning_ankare_kalla',
+};
+
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
-    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
-            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
+    `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering,
+            godkannandeform, godkannare_kalla, source_file_id,
+            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets,
+            bedomning_ankare::text AS bedomning_ankare, bedomning_ankare_kalla
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -133,6 +170,61 @@ export async function skapaUppdrag(
 export interface ImporteraLeveranskontraktInput {
   contract_id: string;
   kontraktstext: string;
+  /** Manifestets värden för projektet (Story 2.4). Utelämnat = inget manifest. */
+  manifest?: Kontraktsmanifest;
+}
+
+/** Förslagets parter, ankare och luckor (Story 2.4, FR-27). */
+export interface Kontraktsforslag {
+  parter: Kontraktsparter;
+  ankare: Ankarutfall;
+  luckor: Lucka[];
+}
+
+/**
+ * Luckorna som godkännandet lämnar efter sig (FR-27): registret som det står
+ * efter steg (e), där en befintlig rad går före textens (`registerEfterGodkannandet`),
+ * och mottagarparten som den står efter steg (g). Importens förslag,
+ * förklaringen och godkännandets svar räknar alla här, och kontraktsytan och
+ * Leveranserna läser samma register. En text som fyller ett fält som registret
+ * saknar syns alltså inte som ifylld någonstans, för steg (e) skriver den inte.
+ */
+async function luckorEfterGodkannandet(
+  client: PoolClient, companyId: string, contractId: string, kontrakt: Leveranskontrakt, mottagarpart: string | null,
+): Promise<Lucka[]> {
+  const befintliga = await lasLeverabelregister(client, companyId, { contract_id: contractId });
+  return kontraktsluckor({ leverabler: registerEfterGodkannandet(befintliga, kontrakt.leverabler), mottagarpart });
+}
+
+/**
+ * Parterna, ankaret och luckorna som godkännandet lämnar efter sig, räknade
+ * med lib-filens regler och inga egna. Rytmen är textens när texten har en,
+ * annars avtalets lagrade — samma ordning som godkännandets steg (i) och (j).
+ * Luckan för mottagarparten räknas på den mottagarpart som står efter ett ja.
+ */
+async function kontraktsforslag(
+  client: PoolClient, companyId: string, kontrakt: Leveranskontrakt, manifest: Kontraktsmanifest | null, avtal: Avtalsrad,
+): Promise<Kontraktsforslag> {
+  const parter = kontraktsparter(kontrakt, manifest);
+  const rytm = rytmEfterGodkannandet(kontrakt.rytm, {
+    intervall_dagar: avtal.bedomning_intervall_dagar, veckodag: avtal.bedomning_veckodag,
+  });
+  return {
+    parter,
+    ankare: manifestankare(manifest, rytm, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla }),
+    luckor: await luckorEfterGodkannandet(client, companyId, avtal.id, kontrakt, parter.godkannare ?? avtal.godkannare),
+  };
+}
+
+/**
+ * Förslagets parter, ankare och luckor för förklaringen (`explainApproval`):
+ * samma funktion som importens förslag, så att förslaget i undantagsvyn och på
+ * Att göra aldrig säger något annat än importens svar.
+ */
+export async function lasKontraktsforslag(
+  client: PoolClient, companyId: string, contractId: string, kontrakt: Leveranskontrakt, manifest: Kontraktsmanifest | null,
+): Promise<Kontraktsforslag> {
+  return kontraktsforslag(client, companyId, kontrakt, manifest, await hamtaAvtal(client, companyId, contractId));
 }
 
 /** En avtalsdel som importen VILL se — jämförs mot raden som redan finns. */
@@ -350,12 +442,24 @@ export async function importeraLeveranskontrakt(
 ): Promise<Record<string, unknown>> {
   const kontrakt = parseLeveranskontrakt(input.kontraktstext);
   const avtal = await hamtaAvtal(client, companyId, input.contract_id);
+  // Story 2.4 (AC 8): ett tekniskt importfel fälls före varje skrivning. 400
+  // rullar tillbaka hela tenanttransaktionen, ingen köpost skapas och ingen
+  // fråga går till David; `details.olast` säger vad som inte kunde läsas, och
+  // Hermes importsteg loggar det som rött. Ett 200 med tillståndet NULL hade
+  // sett ut som en lyckad import för anroparen (beslut B7).
+  const olast = olastaFormer(kontrakt);
+  if (olast.length > 0) {
+    throw new BadRequestError('kontrakt_olasbart',
+      `Kontraktstexten gick inte att läsa: ${olast.map((form) => OLASTA[form]).join('; ')}. Ingenting skrevs.`,
+      { olast });
+  }
   const forslag = {
     uppdrag: { code: ROTKOD, ...kontrakt.ram },
     strommar: kontrakt.strommar,
     leverabler: kontrakt.leverabler,
     styrning: kontrakt.styrning,
     saknade_falt: saknadeFalt(kontrakt),
+    ...await kontraktsforslag(client, companyId, kontrakt, input.manifest ?? null, avtal),
   };
   const svar = { contract_id: input.contract_id, kontrakt_tillstand: kontrakt.kontrakt_tillstand, forslag };
   if (kontrakt.kontrakt_tillstand === 'utkast') {
@@ -378,17 +482,22 @@ export async function importeraLeveranskontrakt(
   if (!avtal.signed_date) {
     throw new BadRequestError('valid_from_required', 'avtalet saknar undertecknandedatum — baselinen kan inte tidsättas');
   }
-  // En köpost per källa (B-8): källan är paret (avtal, text), och finns en
-  // `satt_baseline` för paret i någon status köas ingen ny — inte heller efter
-  // Davids nej. Radlåset på avtalet serialiserar två samtidiga importer, och
-  // uppslaget sker före INSERT i stället för att en krock fångas (lärdom 2).
+  // En köpost per källa (B-8): källan är trippeln (avtal, text, manifest), och
+  // finns en `satt_baseline` för den i någon status köas ingen ny — inte heller
+  // efter Davids nej. Ett annat manifest är en ny källa (Story 2.4, beslut B4):
+  // annars kunde ett manifest som kommer efter en import utan manifest aldrig nå
+  // baselinen. jsonb jämför innehåll, inte nyckelordning, och utan manifest är
+  // uppslaget som förut. Radlåset på avtalet serialiserar två samtidiga
+  // importer, och uppslaget sker före INSERT i stället för att en krock fångas
+  // (lärdom 2).
   await client.query('SELECT id FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE', [input.contract_id, companyId]);
   const befintlig = (await client.query<{ id: string; status: string }>(
     `SELECT id, status FROM action_approvals
       WHERE company_id = $1 AND action = 'satt_baseline'
         AND lower(input->>'contract_id') = lower($2) AND input->>'kontraktstext' = $3
+        AND (input->'manifest') IS NOT DISTINCT FROM $4::jsonb
       ORDER BY created_at, id LIMIT 1`,
-    [companyId, input.contract_id, input.kontraktstext],
+    [companyId, input.contract_id, input.kontraktstext, input.manifest === undefined ? null : JSON.stringify(input.manifest)],
   )).rows[0];
   if (befintlig) return { ...svar, approval_id: befintlig.id, redan_koad: true, kostatus: befintlig.status };
 
@@ -495,20 +604,38 @@ export async function sattBaseline(
     nyaScopelinjer += 1;
   }
 
-  // (g) Godkännarna. COALESCE: hittade texten dem inte står det som redan finns
-  // kvar — en import som inte hittade ett fält har inte sagt att fältet är tomt.
-  const godkannareAndrad =
-    (kontrakt.godkannare !== null && kontrakt.godkannare !== avtal.godkannare)
-    || (kontrakt.godkannare_eskalering !== null
-      && kontrakt.godkannare_eskalering !== avtal.godkannare_eskalering);
-  if (godkannareAndrad) {
-    await client.query(
-      `UPDATE contracts
-          SET godkannare = COALESCE($3, godkannare),
-              godkannare_eskalering = COALESCE($4, godkannare_eskalering)
-        WHERE id = $1 AND company_id = $2`,
-      [input.contract_id, companyId, kontrakt.godkannare, kontrakt.godkannare_eskalering],
-    );
+  // (g) Parterna (Story 2.4, beslut B3): mottagarparten och godkännaren,
+  // eskaleringen, godkännandeformen och källan, med en källa per avtal. Bär
+  // manifestet en godkännare gäller dess värden, och ett fält det inte anger
+  // blir NULL i stället för att blandas med textens; skillnaden mot texten står
+  // i svaret. Annars gäller textens parter med källan `leveranskontraktet`.
+  // Anger ingen av dem en godkännare står de lagrade kvar — en import som inte
+  // hittade ett fält har inte sagt att fältet är tomt. En oförändrad rad får
+  // ingen UPDATE, och på ett avslutat uppdrag fäller 0097:s trigger skrivningen.
+  // Transmittalen fylls aldrig här: bara överlämningen skriver den.
+  const parter = kontraktsparter(kontrakt, input.manifest ?? null);
+  const parterEfter = parterEfterGodkannandet(parter, {
+    godkannare: avtal.godkannare, godkannare_eskalering: avtal.godkannare_eskalering,
+    godkannandeform: avtal.godkannandeform, kalla: avtal.godkannare_kalla,
+  });
+  const parterAndrade = parterEfter.godkannare !== avtal.godkannare
+    || parterEfter.godkannare_eskalering !== avtal.godkannare_eskalering
+    || parterEfter.godkannandeform !== avtal.godkannandeform
+    || parterEfter.kalla !== avtal.godkannare_kalla;
+  if (parterAndrade) {
+    const update = buildAllowlistedUpdate(PARTER_UPDATE, {
+      godkannare: parterEfter.godkannare,
+      godkannare_eskalering: parterEfter.godkannare_eskalering,
+      godkannandeform: parterEfter.godkannandeform,
+      godkannare_kalla: parterEfter.kalla,
+    });
+    if (update) {
+      await client.query(
+        `UPDATE contracts SET ${update.setSql}
+          WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
+        [...update.values, input.contract_id, companyId],
+      );
+    }
   }
 
   // (h) Uppföljningsmåtten ur del 3 (Story 2.3, FR-19), i textens ordning.
@@ -530,7 +657,7 @@ export async function sattBaseline(
   // (i) Rytmen ur del 4 (Story 2.3, FR-14). Bara när texten gav en rytm och den
   // skiljer sig från raden: hittade texten ingen rytm har den inte sagt att
   // rytmen är tom, och en oförändrad rad får ingen UPDATE (då står `updated_at`
-  // kvar). Ankaret står inte i tillåtelselistan och rörs aldrig av importen.
+  // kvar). Ankaret står inte i tillåtelselistan; det har sitt eget steg (j).
   const rytm = kontrakt.rytm;
   const rytmAndrad = rytm !== null && (rytm.rytm_text !== avtal.rytm_text
     || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
@@ -547,8 +674,47 @@ export async function sattBaseline(
     }
   }
 
+  // (j) Ankaret ur manifestet (Story 2.4, FR-14, beslut B5). Davids ja på
+  // baselinen gäller också ankaret, så ingen andra inmatning behövs; texten
+  // själv ger aldrig ett ankare. Avtalet läses med radlås efter rytmen, och
+  // `manifestankare` avgör läget. Bara `lagras` och `andras` skriver, och
+  // villkoret mot det lästa värdet skriver aldrig över ett ankare som ändrats
+  // under tiden. Ett ankare utan källa eller på fel veckodag lagras inte; läget
+  // står i svaret.
+  const ankarrad = (await client.query<{
+    bedomning_intervall_dagar: number | null; bedomning_veckodag: number | null;
+    bedomning_ankare: string | null; bedomning_ankare_kalla: string | null;
+  }>(
+    `SELECT bedomning_intervall_dagar, bedomning_veckodag,
+            bedomning_ankare::text AS bedomning_ankare, bedomning_ankare_kalla
+       FROM contracts WHERE id = $1 AND company_id = $2
+        FOR UPDATE`,
+    [input.contract_id, companyId],
+  )).rows[0];
+  if (!ankarrad) throw new NotFoundError('contract');
+  const ankare = manifestankare(
+    input.manifest ?? null,
+    { intervall_dagar: ankarrad.bedomning_intervall_dagar, veckodag: ankarrad.bedomning_veckodag },
+    { ankare: ankarrad.bedomning_ankare, kalla: ankarrad.bedomning_ankare_kalla },
+  );
+  let ankareSkrivet = false;
+  if (ankare.lage === 'lagras' || ankare.lage === 'andras') {
+    const update = buildAllowlistedUpdate(ANKARE_UPDATE, {
+      bedomning_ankare: ankare.ankare, bedomning_ankare_kalla: ankare.kalla,
+    });
+    if (update) {
+      const n = update.values.length;
+      const satt = await client.query(
+        `UPDATE contracts SET ${update.setSql}
+          WHERE id = $${n + 1} AND company_id = $${n + 2} AND bedomning_ankare IS NOT DISTINCT FROM $${n + 3}::date`,
+        [...update.values, input.contract_id, companyId, ankarrad.bedomning_ankare],
+      );
+      ankareSkrivet = (satt.rowCount ?? 0) > 0;
+    }
+  }
+
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
-    && nyaScopelinjer === 0 && !godkannareAndrad && mattSkapade === 0 && !rytmAndrad;
+    && nyaScopelinjer === 0 && !parterAndrade && mattSkapade === 0 && !rytmAndrad && !ankareSkrivet;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
   // ändring — samma hållning som `action.approval_requested`. Att en andra
@@ -564,6 +730,9 @@ export async function sattBaseline(
       matt_skapade: mattSkapade,
       rytm_andrad: rytmAndrad,
       saknade_falt: saknadeFalt(kontrakt),
+      // Story 2.4: en boolean och ett läge, aldrig namn eller källa (lärdom 10).
+      parter_andrade: parterAndrade,
+      ankare: ankare.lage,
     },
   });
 
@@ -585,6 +754,18 @@ export async function sattBaseline(
     rytm_andrad: rytmAndrad,
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
+    // Story 2.4: avtalets parter efter steget, skillnaderna mot texten, ankarets
+    // läge och luckorna — samma beräkning som i importens förslag, nu över
+    // registret som steg (e) lämnade och mottagarparten som steg (g) lämnade.
+    parter: {
+      godkannare: efterAvtal.godkannare,
+      godkannare_eskalering: efterAvtal.godkannare_eskalering,
+      godkannandeform: efterAvtal.godkannandeform,
+      kalla: efterAvtal.godkannare_kalla,
+    },
+    parter_skillnader: parter.skillnader,
+    ankare,
+    luckor: await luckorEfterGodkannandet(client, companyId, input.contract_id, kontrakt, efterAvtal.godkannare),
     saknade_falt: saknadeFalt(kontrakt),
     avtal: await getContractUsage(client, companyId, input.contract_id),
   };

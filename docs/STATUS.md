@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 2.4, omtag efter code-review (tre fynd):**
+  (1) Kontraktets panel ”Parterna och luckorna” skrev egna texter för en saknad
+  eskalering och källa och en egen slutmening som sa emot `LUCKTEXT`. Felklassen
+  var att vyn skrev egna texter om ett tillstånd som lib redan namnger.
+  Mekanismen nu: panelen skriver ingen egen text. Mottagarparten med eskalering
+  och källa är `mottagarpartlage`-meningen, samma som Leveransernas rad.
+  Godkännandeformen kommer ur `godkannandeformtext` och luckorna ur `luckmening`
+  under `LUCKRUBRIK`. `INGA_LUCKOR`, märket `luckmarke` och ”källa saknas” ligger
+  i `lib/kontraktsluckor.ts`. Provet V5 fäller varje text i panelen som inte
+  kommer ur lib, i alla tre lägena och för en godkännare utan källa, och kräver
+  att panelens mening är Leveransernas. (2) Förslaget, förklaringen och
+  godkännandets svar räknade luckorna ur texten, medan ytorna läste registret,
+  som steg (e) aldrig skriver om. Mekanismen nu: en funktion,
+  `luckorEfterGodkannandet` i `uppdragImport.ts`, räknar över
+  `registerEfterGodkannandet`, där en befintlig rad går före textens. Importen,
+  `explainApproval` (genom `lasKontraktsforslag`) och svaret anropar den. Provet
+  L4 går fyra varv (förstaimport, återställd klausul, ny kod L10 och en tunnare
+  text) och kräver samma luckor i alla fem ytorna. Ny importkant:
+  `uppdragImport.ts` → `uppdragRegister.ts` (bladmodul, ingen sändväg). (3) Ett
+  tredje deterministiskt textfel (`unknown_parent_code`, en leverabel som pekar
+  på en ström som inte finns) upptäcks först efter Davids ja. Berättelsen låser
+  `OLASTA` till två former (AC 8), så det fyndet är inte ändrat och kräver ett
+  correct-course. **Inte kört i sandlådan:** `npm run typecheck --prefix
+  /opt/redovisning/server` och `npx … tsc --noEmit -p … tsconfig.test.json`
+  gav ordagrant «This command requires approval». Kedjans körning är belägget.
 - **2026-11-23 — Story 2.4, omtag efter kedjans typecheck:** `tsc -p
   tsconfig.test.json` fällde fyra anrop i `server/test/uppdragsytan-kontraktsluckor.test.ts`
   (rad 839, 848, 849 och 854): `nyttBolag` gav `auth` typen

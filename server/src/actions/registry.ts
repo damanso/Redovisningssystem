@@ -51,6 +51,7 @@ import {
   ContractDraftSchema, createContractFromDraft, extractContractDraftFromFile,
 } from '../services/contractExtraction.js';
 import { importeraLeveranskontrakt, sattBaseline, skapaUppdrag } from '../services/uppdragImport.js';
+import { KontraktsmanifestSchema } from '../lib/kontraktsluckor.js';
 import { begarNyBedomning, sattBedomning, sattBedomningsankare, BEDOMNINGSLAGEN } from '../services/uppdragBedomning.js';
 import { lasLeverabelregister } from '../services/uppdragRegister.js';
 import { lasKontraktsyta } from '../services/uppdragKontrakt.js';
@@ -1747,6 +1748,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // fil själv (ADR-4/NFR-1) — den som har texten skickar in den, och
         // tolkningen sker i den rena parsern `lib/leveranskontrakt.ts`.
         kontraktstext: safeText(200_000),
+        // Story 2.4 (FR-13, FR-14, FR-27): manifestets värden för projektet —
+        // godkännaren, eskaleringen, godkännandeformen och ankaret, var och en
+        // med källa. De kommer som indata (ADR-4) och gäller först efter Davids
+        // ja på baselineförslaget; manifestet är en del av förslagets källa.
+        manifest: KontraktsmanifestSchema.optional(),
       })
       .strict(),
     handler: (ctx, i) => importeraLeveranskontrakt(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
@@ -1755,7 +1761,11 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     name: 'satt_baseline',
     title: 'Sätt baseline ur det frysta leveranskontraktet',
     sensitivity: 'sensitive',
-    inputSchema: z.object({ contract_id: UuidSchema, kontraktstext: safeText(200_000) }).strict(),
+    inputSchema: z.object({
+      contract_id: UuidSchema,
+      kontraktstext: safeText(200_000),
+      manifest: KontraktsmanifestSchema.optional(),
+    }).strict(),
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'satt_baseline', i,
       () => sattBaseline(ctx.client, ctx.companyId, ctx.userId, i as never)),
