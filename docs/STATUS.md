@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 2.4, andra omtaget (granskningen: 13 HIGH om diffen,
+  1 LOW om partspanelen).** De tretton HIGH-fynden har en och samma orsak:
+  `server/src/lib/kontraktsluckor.ts`, `server/migrations/0097_kontraktsparter.sql`
+  och `server/test/uppdragsytan-kontraktsluckor.test.ts` stod redan ospårade
+  (`??`) när bygget började (raderna `RESTER` i berättelsen). Kedjan committar
+  bara statusrader som är nya sedan sin anteckning, så commit `0ddb2eb` fick de
+  tolv spårade filerna men inte de tre nya. Fynden besvaras med arkitekturens
+  beslut ”Rester i kedjans kopia”, punkt 2: inget HALT, och `havera` plus ett
+  nytt bygge i en ren kopia tar in filerna. Utvecklaren kör aldrig git, så
+  filerna står fortfarande ospårade efter det här omtaget. LOW-fyndet är lagat
+  för hela klassen: partspanelen skrev egna ord (`'Källa saknas'`,
+  `'Ingen eskalering angiven'`) och prövade bara NULL, medan
+  `mottagarpartlage` prövar blankt, och ordet ”källa saknas” stod två gånger i
+  lib. Nu har lib en enda väg från de lagrade partskolumnerna till ord:
+  `partsuppgifter` (fyra rader över den slutna `PARTSFALT`), `PARTSAKNAS` och
+  konstanterna `KALLA_SAKNAS`, `ESKALERING_EJ_ANGIVEN` och `INGA_LUCKOR`.
+  Panelen ritar bara de raderna, och `mottagarpartlage` och `manifestankare`
+  bär samma ord för en saknad källa. Prov: nytt R8 (alla 81 kombinationer av
+  angiven, NULL och blank, samma ord som mottagarpartraden, negativa kontroller
+  i sex former), R7 med de nya texterna, och V2 som kräver att panelens
+  definitionslista är exakt lib:s rader i tre lägen och att Leveranserna-raden
+  säger samma sak. Ingen ny CSS och inget nytt mönster. **Inte kört:**
+  sandlådan svarade `This command requires approval` på `npm run typecheck` och
+  på `npm test -- uppdragsytan-kontraktsluckor`. Kedjans typecheck och
+  `npm test` är belägget.
 - **2026-11-23 — Story 2.4, omtag (kedjans tester röda, ett fall: R1).** R1 i
   `server/test/uppdragsytan-kontraktsluckor.test.ts` sökte efter kvarlämnade
   platshållare med `JSON.stringify(lucka)` mot `/[{}]/`. Serialiseringen

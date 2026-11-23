@@ -46,7 +46,7 @@ import {
   lasKontraktsparter, lasKontraktsyta, type Kontraktsyta, type Lagradeparter, type Scopelinjerad,
 } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
-import { godkannandeformtext, LUCKTEXT, mottagarpartlage } from '../../lib/kontraktsluckor.js';
+import { INGA_LUCKOR, LUCKTEXT, mottagarpartlage, partsuppgifter } from '../../lib/kontraktsluckor.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
 import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
@@ -3954,9 +3954,12 @@ const partsetikett = (text: string): Raw => html`<dt class="eyebrow" style="marg
  *
  * Panelen ritar bara avtalets lagrade kolumner och läsvägens luckor, aldrig en
  * rad ur handlingen: ytan är vägen dit, inte en kopia (NFR-12). Varje ord för
- * en lucka, mottagarparten och formen kommer ur `lib/kontraktsluckor.ts`. Ett
- * avtal vars kontrakt inte är inläst säger bara det; det sägs aldrig sakna
- * något. Chipet bär glyf och ord, aldrig bara färg (WCAG 1.4.1).
+ * en part eller en lucka kommer ur `lib/kontraktsluckor.ts`: definitionslistan
+ * ritar `partsuppgifter`:s rader och skriver ingen egen text, inte heller för
+ * ett fält som saknas, så att panelen och mottagarpartraden på Leveranserna
+ * säger samma sak. Ett saknat värde bärs av ordet och inte bara av den dämpade
+ * färgen. Ett avtal vars kontrakt inte är inläst säger bara det; det sägs aldrig
+ * sakna något. Chipet bär glyf och ord, aldrig bara färg (WCAG 1.4.1).
  */
 function parterpanel(y: Kontraktsyta): Raw {
   const p = y.parter;
@@ -3971,18 +3974,12 @@ function parterpanel(y: Kontraktsyta): Raw {
       ${p.lage === 'ej_inlast'
         ? html`<p class="muted" style="margin:8px 16px 12px">${mottagarpartlage(p, false).text}</p>`
         : html`<dl style="display:grid;grid-template-columns:minmax(118px,max-content) minmax(0,1fr);gap:9px 18px;margin:12px 16px 6px">
-              ${partsetikett('Mottagarpart')}
-              <dd style="margin:0;font-weight:550">${p.godkannare ?? saknatFalt(LUCKTEXT.mottagarpart.vad)}</dd>
-              ${partsetikett('Eskalering')}
-              <dd style="margin:0">${p.godkannare_eskalering ?? saknatFalt('Ingen eskalering angiven')}</dd>
-              ${partsetikett('Godkännandet')}
-              <dd style="margin:0">${p.godkannandeform === null
-                ? saknatFalt(godkannandeformtext(null)) : godkannandeformtext(p.godkannandeform)}</dd>
-              ${partsetikett('Källa')}
-              <dd style="margin:0">${p.kalla ?? saknatFalt('Källa saknas')}</dd>
+              ${partsuppgifter(p).map((r) => html`${partsetikett(r.etikett)}
+                <dd style="${r.falt === 'godkannare' ? 'margin:0;font-weight:550' : 'margin:0'}">${
+                  r.saknas ? saknatFalt(r.text) : r.text}</dd>`)}
             </dl>
             ${antal === 0
-              ? html`<p class="muted" style="margin:6px 16px 12px">Inga luckor i de kontraktsburna fälten.</p>`
+              ? html`<p class="muted" style="margin:6px 16px 12px">${INGA_LUCKOR}</p>`
               : html`<h3 style="margin:14px 16px 4px;font-size:14px">Luckor i de kontraktsburna fälten</h3>
                 <ul style="margin:4px 16px 8px;padding-left:20px">
                   ${y.luckor.map((l) => html`<li style="margin-bottom:8px"><strong style="font-weight:600">${l.vad}</strong>
