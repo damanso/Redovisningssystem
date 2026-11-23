@@ -14,6 +14,10 @@ export interface AuthContext {
   // Agent-token är scopat till exakt ett bolag; requireCompanyAccess tvingar
   // att URL:ens bolag matchar. Odefinierat för människo-token (alla medlemskap).
   scopedCompanyId?: string;
+  // S-1, beslut #156: sant bara för en läsnyckel (ett agent-token med
+  // `scope: 'read'`). `authenticate` sätter det alltid; vyns egna ställen som
+  // sätter req.auth rör det inte, därför är fältet valfritt.
+  readOnly?: boolean;
 }
 
 /**
@@ -29,6 +33,65 @@ export function getUserId(req: Request): string {
 export function getActor(req: Request): Actor {
   if (!req.auth) throw new UnauthenticatedError();
   return req.auth.actor;
+}
+
+/** Bär anropet läsnyckelns scope? Anroparen har redan gått genom `authenticate`. */
+export function isReadOnly(req: Request): boolean {
+  return req.auth?.readOnly === true;
+}
+
+/**
+ * Läs-scopets tillåtelselista (beslut #156: en läsidentitet och inget mer).
+ * Exakt tre par godtas: (`human`, utelämnat) och (`agent`, utelämnat) ger
+ * `false`, och (`agent`, `'read'`) ger `true`. Allt annat ger `null`, som
+ * betyder att tokenet avvisas. Jämförelsen är strikt och tolkar ingenting, så en
+ * ny form av scope kan inte släppas igenom av misstag. Ett människotoken bär
+ * aldrig scope.
+ */
+export function readOnlyFromScope(actor: Actor, scope: unknown): boolean | null {
+  if (scope === undefined) return false;
+  if (actor === 'agent' && scope === 'read') return true;
+  return null;
+}
+
+/**
+ * Felkoden `read_only_token` (403) konstrueras bara här (S-1, beslut #156).
+ * `executeAction` anropar den före varje åtgärd som inte är en läsning, och
+ * `rejectReadOnlyWrites` före varje skrivande REST-rutt, så att båda
+ * försvarslinjerna ger samma svar.
+ */
+export function assertNotReadOnly(readOnly: boolean | undefined): void {
+  if (readOnly === true) {
+    throw new ForbiddenError('read_only_token', 'läsnyckeln kan bara läsa — skrivningar avvisas');
+  }
+}
+
+const ACTION_CALL_PATH = /^\/[^/]+\/actions\/[^/]+\/?$/;
+
+/**
+ * Den enda skrivande formen som den andra försvarslinjen släpper förbi:
+ * POST till bolagets åtgärdsrutt, sökvägen relativt monteringen
+ * `/api/companies`, med eller utan avslutande snedstreck. Där avgör
+ * `executeAction` med spärren för läsnyckeln. Jämförelsen är
+ * skiftlägeskänslig: en sökväg som Express ändå skulle routa (versaler) fälls
+ * hellre än släpps.
+ */
+export function isActionCall(method: string, path: string): boolean {
+  return method === 'POST' && ACTION_CALL_PATH.test(path);
+}
+
+/**
+ * S-1:s andra försvarslinje mot de direkta REST-rutterna under
+ * `/api/companies` (den första är spärren i `executeAction`). Med läsnyckeln
+ * släpps bara GET, HEAD och åtgärdsrutten (`isActionCall`); allt annat, också
+ * rutter som inte finns, får 403 `read_only_token`. Anrop utan läs-scope
+ * passerar orörda.
+ */
+export function rejectReadOnlyWrites(req: Request, _res: Response, next: NextFunction): void {
+  if (isReadOnly(req) && req.method !== 'GET' && req.method !== 'HEAD' && !isActionCall(req.method, req.path)) {
+    assertNotReadOnly(true);
+  }
+  next();
 }
 
 /**
@@ -81,7 +144,11 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
     const scopedCompanyId = typeof payload.company_id === 'string' ? payload.company_id : undefined;
     // Ett agent-token MÅSTE vara bolagsscopat.
     if (actor === 'agent' && !scopedCompanyId) throw new UnauthenticatedError();
-    req.auth = { userId: payload.sub, actor, scopedCompanyId };
+    // S-1: ett okänt scopevärde är ett token som inte godtas (401), aldrig ett
+    // token som tolkas som något annat.
+    const readOnly = readOnlyFromScope(actor, payload.scope);
+    if (readOnly === null) throw new UnauthenticatedError();
+    req.auth = { userId: payload.sub, actor, scopedCompanyId, readOnly };
     next();
   } catch {
     throw new UnauthenticatedError();

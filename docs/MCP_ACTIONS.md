@@ -3151,3 +3151,33 @@ Beskrivningen är en instruktion till agenten och visas inte på någon yta. Att
 löften fångas i samtalet är i drift först när chattagenten anropar åtgärden
 (berättelse 5.10), och samtalet blir en fångstväg i ytans texter i berättelse
 5.11. ✦ och Stämmer på Idags löfteskort återstår (berättelse 5.6).
+
+## Läsnyckeln (crm 5.7)
+
+*Anslut AI* i webbvyn har valet *Läsnyckel — kan bara läsa* bredvid det vanliga
+AI-tokenet. Bara en inloggad ägare kan göra valet. Nyckeln signeras med
+`{ actor: 'agent', company_id, scope: 'read' }` och samma livslängd som ett
+AI-token (`AI_AGENT_TOKEN_TTL_SECONDS`), och auditraden `agent_token.minted` bär
+då `scope: 'read'`. `POST /api/companies/:companyId/agent-tokens` tar inget
+scope: fältet avvisas av det strikta schemat med 400 `validation_error`. Ett
+token med något annat scopevärde än `read`, eller ett människotoken med scope,
+avvisas med 401 `unauthenticated`.
+
+Varje åtgärd med `sensitivity` `write` eller `sensitive` avvisas med **403
+`read_only_token`** i `executeAction` innan något skrivs, också före schemat:
+ingen kontaktpunkt, ingen godkännandepost, ingen auditrad och ingen
+domänskrivning. Svaret beror alltså inte på indata, och samma spärr gäller för
+MCP-verktygen, som går genom REST. Läsåtgärderna, till exempel
+`list_crm_commitments` och `get_crm_retention`, fungerar som med ett AI-token,
+och auditraden `action.executed` bär då `scope: 'read'` i `details`.
+
+De direkta REST-rutterna under `/api/companies` tar bara GET och HEAD med
+läsnyckeln, utom `POST /api/companies/:companyId/actions/:action`, där
+`executeAction` avgör. Allt annat, också en rutt som inte finns, ger 403
+`read_only_token`. Nyckeln är bolagsscopad som ett AI-token: ett annat bolag ger
+404 `not_found` för en läsning, och en skrivning mot ett annat bolag fälls redan
+av 403 `read_only_token`.
+
+Nyckeln är till för Hermes kö, som ska läsa löftena med den (berättelse 5.8).
+POST-rutter som bara läser, som en fakturas PDF och AI-OCR:n, är stängda för
+läsnyckeln. Den kan inte återkallas före utgången, precis som ett AI-token.

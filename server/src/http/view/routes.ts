@@ -467,7 +467,9 @@ viewRouter.post(
 // Anslut AI (Claude Desktop / MCP): ägaren mintar ett agent-token och får en
 // färdig konfig. Agent-token kan BEGÄRA åtgärder men aldrig godkänna dem — känsliga
 // operationer hamnar i "Att göra" och måste godkännas av en människa.
-function connectPageBody(companyId: string, companyName: string, token: string | null): Raw {
+// S-1, beslut #156: läsnyckeln (`lasnyckel`) är ett agent-token som bara kan
+// läsa; den är till för Hermes kö och får ingen Claude Desktop-konfig.
+function connectPageBody(companyId: string, companyName: string, token: string | null, lasnyckel: boolean): Raw {
   const configJson = token
     ? `{
   "mcpServers": {
@@ -489,17 +491,24 @@ function connectPageBody(companyId: string, companyName: string, token: string |
       <div class="panel__head"><h2>Skapa AI-token</h2></div>
       <div class="panel__body" style="padding:16px">
         ${
-          token
+          token && lasnyckel
+            ? html`<div class="empty" style="text-align:left;padding:12px 14px">${chip('Läsnyckel skapad', 'ok', '✓')} <span class="muted">Kopiera nu — den visas bara denna enda gång.</span></div>
+                <pre style="background:var(--surface-2);padding:14px;border-radius:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-all;margin-top:12px">${token}</pre>
+                <h3 style="margin:20px 0 6px">Lägg nyckeln hos Hermes</h3>
+                <p class="lede">Spara nyckeln i filen <code>~/.hermes/redovisning-lasnyckel</code> med läget 0600. Den kan bara läsa: varje försök att skriva avvisas. Den gäller lika länge som ett AI-token.</p>`
+            : token
             ? html`<div class="empty" style="text-align:left;padding:12px 14px">${chip('Token skapad', 'ok', '✓')} <span class="muted">Kopiera nu — det visas bara denna enda gång.</span></div>
                 <pre style="background:var(--surface-2);padding:14px;border-radius:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-all;margin-top:12px">${token}</pre>
                 <h3 style="margin:20px 0 6px">Klistra in i Claude Desktop</h3>
                 <p class="lede">Öppna <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> och klistra in nedan. Byt <code>&lt;SÖKVÄG-TILL-REPOT&gt;</code> mot din projektmapp (t.ex. <code>/Users/dittnamn/redovisningssystem</code>). Kör <code>npm run build</code> en gång och starta om Claude Desktop.</p>
                 <pre style="background:var(--surface-2);padding:14px;border-radius:8px;font-size:12.5px;white-space:pre-wrap;word-break:break-all">${configJson}</pre>`
             : html`<p class="lede">Skapa ett token som Claude Desktop använder för att nå ${companyName}. Det är låst till detta bolag och giltigt i 30 dagar.</p>
-                <form method="post" action="/app/c/${companyId}/connect/token" style="display:flex;gap:12px;align-items:flex-end;margin-top:8px">
+                <form method="post" action="/app/c/${companyId}/connect/token" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:8px">
                   <label class="field" style="margin:0;flex:1;max-width:320px"><span>Namn (valfritt)</span><input type="text" name="name" placeholder="Claude Desktop"></label>
+                  <label class="field" style="margin:0"><span>Nyckel</span><select name="scope"><option value="" selected>AI-token — kan föreslå och begära åtgärder</option><option value="read">Läsnyckel — kan bara läsa</option></select></label>
                   <button class="btn btn--primary" type="submit">Skapa AI-token</button>
-                </form>`
+                </form>
+                <p class="muted">Läsnyckeln är för Hermes kö: den kan bara läsa, och varje försök att skriva avvisas.</p>`
         }
       </div>
     </div>`;
@@ -514,7 +523,7 @@ viewRouter.get('/c/:companyId/connect', page(async (req, res) => {
   });
   // Icke-ägare får en förklaring i stället för ett formulär som skulle sluta i 403.
   const body = role === 'owner'
-    ? connectPageBody(companyId, name, null)
+    ? connectPageBody(companyId, name, null, false)
     : html`<div class="page-head"><div>${eyebrow('Anslut AI')}<h1>Anslut Claude Desktop</h1></div></div>
         <div class="empty"><div class="big">Endast ägaren</div>AI-token skapas av bolagets ägare — be dem gå hit och skapa ett.</div>`;
   res.type('html').send(layout({ title: 'Anslut AI', companyId, companyName: name, active: 'connect', body }).value);
@@ -524,6 +533,13 @@ viewRouter.post('/c/:companyId/connect/token', page(async (req, res) => {
   assertSameOrigin(req);
   const userId = getUserId(req);
   const companyId = parseCompanyId(req.params.companyId);
+  // S-1, beslut #156: valet av nyckel är en sluten lista. Utelämnat eller tomt
+  // ger ett vanligt AI-token som i dag och `read` läsnyckeln; varje annat värde
+  // (bara möjligt med ett förfalskat formulär) avvisas innan något signeras
+  // eller auditloggas.
+  const scope = (req.body as { scope?: unknown }).scope;
+  const lasnyckel = scope === 'read';
+  if (scope !== undefined && scope !== '' && !lasnyckel) throw new BadRequestError('invalid_input', 'Okänt val av nyckel.');
   // safeParse: ett för långt/ogiltigt namn ska inte ge en 500-sida — namnet är
   // bara en audit-etikett, så ogiltigt värde ignoreras hellre än stoppar.
   const nameParsed = safeText(100).optional().safeParse((req.body as { name?: unknown }).name || undefined);
@@ -533,12 +549,12 @@ viewRouter.post('/c/:companyId/connect/token', page(async (req, res) => {
     const company = await loadCompany(client, companyId);
     await writeAudit(client, {
       companyId, userId, action: 'agent_token.minted', entityType: 'company', entityId: companyId,
-      details: { name: name ?? null, via: 'web' },
+      details: { name: name ?? null, via: 'web', ...(lasnyckel ? { scope: 'read' } : {}) },
     });
-    const token = signAgentToken(userId, { actor: 'agent', company_id: companyId }, config.AI_AGENT_TOKEN_TTL_SECONDS);
+    const token = signAgentToken(userId, { actor: 'agent', company_id: companyId, ...(lasnyckel ? { scope: 'read' } : {}) }, config.AI_AGENT_TOKEN_TTL_SECONDS);
     return { token, companyName: company.name };
   });
-  res.type('html').send(layout({ title: 'Anslut AI', companyId, companyName: result.companyName, active: 'connect', body: connectPageBody(companyId, result.companyName, result.token) }).value);
+  res.type('html').send(layout({ title: 'Anslut AI', companyId, companyName: result.companyName, active: 'connect', body: connectPageBody(companyId, result.companyName, result.token, lasnyckel) }).value);
 }));
 
 // Konsoliderad koncernöversikt: nyckeltal summerade över alla bolag användaren
