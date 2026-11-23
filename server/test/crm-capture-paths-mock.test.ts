@@ -26,7 +26,7 @@ vi.mock('../src/services/crmDerivations.js', async (importActual) => {
   return { ...actual, CAPTURE_PATHS_IN_OPERATION: UTOKAD };
 });
 
-/** Dagens texter (P2), som inte får stå kvar när konstanten är utökad. */
+/** Texterna för konstanten utan kalendern och AI-samtalet (5.1:s P2), som inte får stå kvar när konstanten är utökad. */
 const I_DRIFT = {
   todayQuiet: 'Kommer något in via mail eller ärenden dyker det upp av sig självt.',
   relationsLede: 'härlett ur mail, ärenden och bokförda fakturor',

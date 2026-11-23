@@ -115,9 +115,11 @@ import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
 
-// En väg in för varje fångstmening i tomlägen och hintar (FR-31): ytorna skriver
+// En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
+// (Idag, Relationer, åtagandevyn, Lova något och kundkortets Åtaganden) skriver
 // ingen egen, så att de bara nämner vägar i drift och följer konstanten när en
-// ny väg tas i drift.
+// ny väg tas i drift. Undantagen är personregistrets ingress och kundkortets rad
+// under Kontaktpersoner, som skriver sin egen text och inte läser konstanten.
 const CAPTURE_TEXTS = captureTexts(CAPTURE_PATHS_IN_OPERATION);
 
 export const viewRouter = Router();
@@ -6950,16 +6952,32 @@ function gmailAdress(id: string): string {
 }
 
 /**
+ * Kalenderadressen till ett möte, på ett enda ställe (FR-17, UX K5). Nyckeln
+ * bär `eid` ordagrant ur händelsens egen adress hos Hermes (3.9), och adressen
+ * är den utan de andra parametrarna. Leder mallen fel står nyckeln kvar i
+ * maskinstil och går att söka på, och då ändras bara den här funktionen. Mallen
+ * provas mot en verklig händelse efter driftsättningen. Servern läser aldrig
+ * kalendern: adressen är bara en sträng i en länk som läsarens webbläsare öppnar.
+ */
+function kalenderAdress(eid: string): string {
+  return `https://www.google.com/calendar/event?eid=${encodeURIComponent(eid)}`;
+}
+
+/**
  * Tillåtelselistan för källans länk: en fullständig grammatik per länkbart
  * källsystem, prövad mot hela nyckeln (`<system>:<id>`, med ett valfritt suffix
  * efter `#`). Bara det fångade id:t går in i en adress, aldrig prefixet eller
- * suffixet, och en nyckel utan formen visas som text. Kalendern får sin länk i
- * story 5.9, och handvägen har ingen extern källa. Inga flaggor: `g` och `y`
- * gör en prövning beroende av den förra.
+ * suffixet, och en nyckel utan formen visas som text. Kalendern har sin länk
+ * sedan story 5.9: `eid` är base64url utan utfyllnad, 1–291 tecken, samma
+ * tillåtelselista som Hermes avsändare, så att varje nyckel den kan skicka får
+ * en länk och inget annat; 291 är vad `source_ref` rymmer efter prefixet.
+ * Handvägen har ingen extern källa. Inga flaggor: `g` och `y` gör en prövning
+ * beroende av den förra.
  */
 const KALLNYCKEL: Readonly<Record<string, RegExp>> = {
   gmail: /^gmail:([0-9a-fA-F]{1,64})(?:#[A-Za-z0-9._-]{1,100})?$/,
   linear: /^linear:([A-Z][A-Z0-9]{1,9}-[0-9]{1,7})(?:#[A-Za-z0-9._-]{1,100})?$/,
+  calendar: /^calendar:([A-Za-z0-9_-]{1,291})(?:#[A-Za-z0-9._-]{1,100})?$/,
 };
 
 /** Källan bakom en rad: en händelse med källsystem och nyckel, eller trådens
@@ -6969,7 +6987,7 @@ type Kalla =
   | { sort: 'handelse'; source_system: unknown; source_ref: unknown }
   | { sort: 'invoice' | 'payment'; invoice_id: unknown };
 
-/** Länken till källan, eller null. Fyra slutna sorter med var sin etikett. */
+/** Länken till källan, eller null. Fem slutna sorter med var sin etikett. */
 function kallLank(companyId: string, kalla: Kalla): { href: string; etikett: string } | null {
   if (kalla.sort !== 'handelse') {
     if (typeof kalla.invoice_id !== 'string' || !kalla.invoice_id) return null;
@@ -6986,6 +7004,7 @@ function kallLank(companyId: string, kalla: Kalla): { href: string; etikett: str
   switch (system) {
     case 'gmail': return { href: gmailAdress(id), etikett: 'Öppna mailet i Gmail (ny flik)' };
     case 'linear': return { href: `/vy/arende/${encodeURIComponent(id)}`, etikett: 'Öppna ärendet i ärendeplattformen (ny flik)' };
+    case 'calendar': return { href: kalenderAdress(id), etikett: 'Öppna mötet i Google Kalender (ny flik)' };
     default: return null;
   }
 }

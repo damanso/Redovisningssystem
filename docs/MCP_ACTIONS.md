@@ -2946,9 +2946,11 @@ och Faktura eller Betalning i tråden), nyckeln i maskinstil och länken
 meddelandet i Gmail, en nyckel `linear:<ärende>` till ärendet under
 `/vy/arende/`, och fakturans och betalningens rad till fakturans sida. Länken
 byggs bara ur nyckelns id och bara när hela nyckeln har källsystemets form; en
-nyckel som inte har den väntade formen visas som text utan länk. Kalendern och
-handvägen får ingen länk. Servern läser aldrig Gmail: adressen är en sträng i
-länken, och mallen provas mot ett verkligt meddelande efter driftsättningen.
+nyckel som inte har den väntade formen visas som text utan länk. Sedan crm 5.9
+leder en nyckel `calendar:<eid>` till mötet i Google Kalender, med en adress
+som byggs bara ur `eid` och aldrig ur suffixet efter `#`. Handvägen får ingen
+länk. Servern läser aldrig Gmail: adressen är en sträng i länken, och mallen
+provas mot ett verkligt meddelande efter driftsättningen.
 
 ## Trådens läsväg bakåt (crm 4.1)
 

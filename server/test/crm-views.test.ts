@@ -2339,7 +2339,7 @@ describe('4.2 källan på varje rad (story 4.2)', () => {
     C1: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b7</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b7" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
     C2: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b8#commit-1</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b8" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
     C3: 'Ärende · <span class="thread__ref">linear:LOC-4201</span> · <a href="/vy/arende/LOC-4201" target="_blank" rel="noopener" aria-label="Öppna ärendet i ärendeplattformen (ny flik)">Öppna ↗</a> · rättad av dig',
-    C4: 'Kalender · <span class="thread__ref">calendar:Y2FsZW5kZXJLTDQ</span>',
+    C4: 'Kalender · <span class="thread__ref">calendar:Y2FsZW5kZXJLTDQ</span> · <a href="https://www.google.com/calendar/event?eid=Y2FsZW5kZXJLTDQ" target="_blank" rel="noopener" aria-label="Öppna mötet i Google Kalender (ny flik)">Öppna ↗</a>',
     C5: 'För hand',
     I1: 'Gmail · <span class="thread__ref">gmail:f0a1b2c3d4e5a6b9</span> · <a href="https://mail.google.com/mail/u/0/#all/f0a1b2c3d4e5a6b9" target="_blank" rel="noopener" aria-label="Öppna mailet i Gmail (ny flik)">Öppna ↗</a>',
     B1: 'Gmail · <span class="thread__ref">gmail:f0a1&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</span>',
@@ -2450,7 +2450,7 @@ describe('4.2 källan på varje rad (story 4.2)', () => {
       const sida = await kl42Sida(kl42Relation());
       expect(kl42Antal(sida, 'traden', KL42.C3), KL42.C3).toBe(1);
     });
-    it('KL4 kalendern och handvägen får namn men ingen länk', async () => {
+    it('KL4 kalendern länkar till mötet (5.9), och handvägen får namn men ingen länk', async () => {
       const sida = await kl42Sida(kl42Relation());
       for (const facit of [KL42.C4, KL42.C5]) expect(kl42Antal(sida, 'traden', facit), facit).toBe(1);
     });
