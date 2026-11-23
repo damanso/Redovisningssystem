@@ -247,6 +247,15 @@ Blockerade händelsefält redovisas i `kept_human_fields` med formen
 Exempel: `"Löftesbolaget AB: linear:LOC-1 body"`.
 En händelse utan organisation får personens namn som prefix.
 
+Personens `external_ref` och `notes` skyddas som personens andra fält. Synken
+och en agent skriver inte över dem när en människa satt eller bekräftat dem, och
+det blockerade fältet redovisas i `kept_human_fields` som
+`"<personens namn>: external_ref"` i intagets svar och som fältnamnet i svaret
+från `upsert_crm_person`. En skrivning som har väntat på personens rad och då
+finner att personen bytt organisation under tiden avvisas med 409
+`person_flyttad_samtidigt`; i intaget hamnar händelsen i `skipped` med skälet,
+och nästa synk gör om den.
+
 | Åtgärd | Gör |
 | :---- | :---- |
 | `get_crm_organization` | Returnerar `provenance` — ursprunget per fält, för organisationen och för varje person |

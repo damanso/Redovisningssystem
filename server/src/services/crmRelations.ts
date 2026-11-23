@@ -96,9 +96,13 @@ export interface WriteOrigin {
  * Sfären och rollen är med: att Svealand är privat och leverantör är ett beslut
  * David fattar, och en agent som gissar annorlunda nästa gång ska inte kunna
  * flytta tillbaka raden i tysthet.
+ *
+ * Personens kortlänk (adressen till personkortet i valvet) och anteckning är
+ * också Davids beslut när han satt dem (FR-8): intaget skickar kortlänken vid
+ * varje körning, och en rättad länk ska inte skrivas tillbaka av nästa nattsynk.
  */
 const ORG_PROVENANCE_FIELDS = ['name', 'org_number', 'website', 'customer_id', 'status', 'notes', 'sfar', 'roll'] as const;
-const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id', 'sfar'] as const;
+const PERSON_PROVENANCE_FIELDS = ['name', 'email', 'phone', 'role_title', 'organization_id', 'sfar', 'external_ref', 'notes'] as const;
 
 // Händelsens innehåll påstår något om världen. Mål och sfär är metadata;
 // löftets status är ett eget påstående som statusvägen och intaget skriver (A-2).
@@ -956,28 +960,51 @@ export async function upsertPerson(
     return { ...r.rows[0]!, created: true, kept_human_fields: [] };
   }
 
+  // Låsordningen är 0089:s: organisationerna, sedan personen, sist posten. Ingen
+  // organisation låses efter personen: sammanslagningen håller organisationerna
+  // och flyttar sedan deras personer, så den omvända ordningen hade gett ett
+  // dödläge (40P01). Mängden räknas ur indata och den lästa raden, inte ur
+  // vaktens utdata, eftersom vakten körs först efter personlåset (A-1 (3) och
+  // (5)). En organisation för mycket låst för delning är ofarlig; en för lite
+  // bryter ordningen. Vid ett byte till privat hör posternas organisationer dit
+  // (P2); bytet avgörs på indata, eftersom raden ännu inte är låst.
+  const posternas = input.sfar === 'privat' ? await personensPostOrganisationer(client, companyId, hit.id) : [];
+  await lasOrganisationer(client, companyId, [input.organization_id, hit.organization_id, ...posternas]);
+  // Sedan personens rad, och vakten först därefter: en samtidig människoskrivning
+  // ska synas när vakten läser ursprunget (A-1 (3)). Har personen bytt
+  // organisation medan vi väntade avvisas skrivningen i stället för att den nya
+  // organisationen låses efter personen (A-1 (5)); intaget lägger händelsen i
+  // skipped, och nästa synk gör om den. Raden läses hel, med uppslagets kolumner:
+  // härifrån läses personen bara ur den låsta raden, eftersom uppslaget före
+  // väntan kan bära ett namn eller en sfär som en samtidig människa redan rättat.
+  // Uppslaget används bara för att se om personen flyttats.
+  const locked = (await client.query<PersonHit>(
+    'SELECT id, name, organization_id, sfar FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE',
+    [companyId, hit.id])).rows[0];
+  // Sammanslagen eller raderad medan vi väntade: ingen rad att skriva på.
+  if (!locked) throw new NotFoundError('person');
+  if (locked.organization_id !== hit.organization_id) {
+    throw new ConflictError('person_flyttad_samtidigt',
+      'personen bytte organisation medan skrivningen väntade på sitt lås — skicka ändringen igen');
+  }
+
   // Samma regel som för organisationen: en rättad titel eller ett rättat
   // telefonnummer överlever nästa synkkörning.
   const { input: patch, blocked } = await guardHumanFields(
-    client, companyId, { person_id: hit.id }, origin.source, skickat as Record<string, unknown>,
+    client, companyId, { person_id: locked.id }, origin.source, skickat as Record<string, unknown>,
   );
 
   // Steg 3 (0089): en privat person ligger aldrig hos kunden (P1), och en person
-  // som står på poster hos en kund blir inte privat (P2). Organisationerna låses
-  // före personen, samma ordning som sammanslagningen.
-  const orgEfter = (patch.organization_id as string | undefined) ?? hit.organization_id;
-  const sfarEfter = (patch.sfar as Sfar | undefined) ?? hit.sfar;
-  const blirPrivat = sfarEfter === 'privat' && hit.sfar !== 'privat';
-  const posternas = blirPrivat ? await personensPostOrganisationer(client, companyId, hit.id) : [];
-  await lasOrganisationer(client, companyId, [orgEfter, ...posternas]);
+  // som står på poster hos en kund blir inte privat (P2). Organisationerna är
+  // redan låsta, före personen, samma ordning som sammanslagningen.
+  const orgEfter = (patch.organization_id as string | undefined) ?? locked.organization_id;
+  const sfarEfter = (patch.sfar as Sfar | undefined) ?? locked.sfar;
+  const blirPrivat = sfarEfter === 'privat' && locked.sfar !== 'privat';
   // Rättningsvarv 3b (krav 8): en agent byter inte sfär på en befintlig person här;
-  // set_crm_sfar lägger bytet i Att göra. Prövat mot raden låst efter
-  // organisationerna (samma ordning som ovan), så ett samtidigt byte inte slinker
-  // igenom mellan läsningen och skrivningen.
-  if (origin.source !== 'human' && patch.sfar !== undefined) {
-    const nu = (await client.query<{ sfar: Sfar }>(
-      'SELECT sfar FROM crm.people WHERE company_id = $1 AND id = $2 FOR UPDATE', [companyId, hit.id])).rows[0];
-    if (nu && nu.sfar !== patch.sfar) throw bytMedSetCrmSfar('person');
+  // set_crm_sfar lägger bytet i Att göra. Prövat mot personens rad som låstes
+  // ovan, så ett samtidigt byte inte slinker igenom mellan läsningen och skrivningen.
+  if (origin.source !== 'human' && patch.sfar !== undefined && patch.sfar !== locked.sfar) {
+    throw bytMedSetCrmSfar('person');
   }
   if (sfarEfter === 'privat' && await arKundkopplad(client, companyId, orgEfter)) {
     throw privatGransFel('privat_person_kundkopplad_organisation', PRIVAT_PERSON_SKAL.organisation);
@@ -996,7 +1023,7 @@ export async function upsertPerson(
        WHERE o.company_id = $1 AND o.id = $2 AND o.customer_id IS NOT NULL
          AND EXISTS (SELECT 1 FROM crm.commitments c
                       WHERE c.company_id = $1 AND c.person_id = $3 AND c.sfar = 'privat')`,
-      [companyId, patch.organization_id, hit.id]);
+      [companyId, patch.organization_id, locked.id]);
     if (kund.rows[0]) {
       throw privatGransFel('privata_ataganden_kundkoppling',
         'personen har privata åtaganden och kan därför inte flyttas till en organisation som är kopplad till kundregistret');
@@ -1014,19 +1041,21 @@ export async function upsertPerson(
        notes           = COALESCE($9, notes),
        sfar            = COALESCE($10, sfar)
      WHERE id = $1 AND company_id = $2 RETURNING ${PERSON_COLUMNS}`,
-    // ALLA värden ur `patch`, inte ur `input`: external_ref och notes saknar
-    // ursprung i dag och filtreras därför inte, men den dagen de får det skulle
-    // en bindning mot `input` rapportera fältet som skyddat i kept_human_fields
-    // och skriva över det ändå — tyst filtrering OCH tyst överskrivning i
-    // samma sats, precis det modulen finns för att omöjliggöra.
-    [hit.id, companyId, (patch.name as string | undefined) ?? hit.name,
+    // ALLA värden ur `patch`, vaktens utdata, aldrig ur `input`: ett blockerat
+    // fält ska varken skrivas eller redovisas fel. En bindning mot `input` hade
+    // rapporterat fältet som skyddat i kept_human_fields och skrivit över det
+    // ändå — tyst filtrering OCH tyst överskrivning i samma sats, precis det
+    // modulen finns för att omöjliggöra. Namnet saknar COALESCE och faller
+    // tillbaka på den låsta raden, aldrig på uppslaget: ett blockerat eller
+    // utelämnat namn hade annars skrivit tillbaka det som stod före väntan.
+    [locked.id, companyId, (patch.name as string | undefined) ?? locked.name,
       patch.email ?? null, patch.phone ?? null, patch.role_title ?? null,
       patch.organization_id ?? null, patch.external_ref ?? null, patch.notes ?? null, patch.sfar ?? null],
   );
-  await recordProvenance(client, companyId, userId, { person_id: hit.id },
+  await recordProvenance(client, companyId, userId, { person_id: locked.id },
     provenanceFor(PERSON_PROVENANCE_FIELDS, patch, origin));
   await writeCrmAudit(client, {
-    companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: hit.id,
+    companyId, userId, action: 'crm.person_updated', entityType: 'person', entityId: locked.id,
     details: {
       matched_on: byId ? 'id' : byEmail?.rows[0] ? 'email' : 'name', source: origin.source,
       // Samma skäl som för organisationen: ursprunget kan raderas, loggen inte.

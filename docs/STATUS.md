@@ -153,6 +153,40 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-23 — Story 1.9 (crm): personens kortlänk och anteckning skyddas när David satt dem (FR-8):**
+  `external_ref` (länken till personkortet) och `notes` står nu i
+  `PERSON_PROVENANCE_FIELDS` i `crmRelations.ts`, så `upsertPerson` skriver
+  ursprung för dem (`human`, `ai` eller `sync` med källa) och vakten skyddar
+  dem som personens andra fält; intaget redovisar
+  `"<personens namn>: external_ref"` i `kept_human_fields`. Uppdateringsgrenen i `upsertPerson` har
+  fått låsordningen ur A-1 (3) och (5): organisationerna (indatats och
+  personens nuvarande, vid byte till privat även posternas) för delning,
+  sedan personens rad, och vakten först därefter. Har personen bytt
+  organisation medan skrivningen väntade svarar den 409
+  `person_flyttad_samtidigt` (i intaget: `skipped` med skälet). Dokument:
+  stycket i «Människan vinner» i `docs/crm/API_KONTRAKT.md` och avsnittet
+  «Personens kortlänk och anteckning (crm 1.9)» sist i `docs/MCP_ACTIONS.md`.
+  Prov: `server/test/crm-person-provenance.test.ts` (PP1–PP6 ursprunget och
+  skyddet, PL1–PL5 låsordningen med fyra kapplöpningar, PD1–PD2 dokumenten).
+  Ingen rutt, migration, åtgärd, tabell eller beroende. **Inte kört i
+  sandlådan:** typecheck och vitest (utvecklarluckan har inga kommandon);
+  kedjan kör typecheck, build och hela sviten. Ingen bakåtfyllnad: kortlänkar
+  och anteckningar skrivna före bygget skyddas först när en människa skriver
+  dem igen. Rött utanför repot, senast kända läge och av skäl utanför
+  berättelsen: Hermes-proven overlamningsregister_fr6 och provvakt_fr24
+  (RÖTT) och continuityvakt (KUNDE_INTE).
+  **Omtag efter kodgranskningen (två fynd):** personens rad läses nu hel
+  under låset (samma kolumner som uppslaget), och efter låset läses personen
+  bara ur den låsta raden; uppslaget före väntan används bara för att se om
+  personen flyttats. Därmed skriver en väntande synk, agent eller människa
+  inte längre tillbaka det gamla namnet över Davids samtidiga namnbyte (namnet
+  är det enda fältet utan COALESCE i UPDATE-satsen). Nya fall i samma fil:
+  PL6–PL8 (namnbytet mot intaget, människan utan namn och agenten), PL9–PL10
+  (personen raderad eller sammanslagen bort medan skrivningen väntar på
+  organisationen respektive personens rad: 404, i intaget `skipped`, inget
+  skrivet) och PL11 (personen får en organisation medan skrivningen väntar på
+  personens rad: 409). **Inte kört i sandlådan:** typecheck och vitest kräver
+  godkännande som luckan inte har; kedjan kör hela sviten.
 - **2026-11-23 — Story 5.7 (crm): en nyckel som bara kan läsa (FR-24, NFR-6,
   beslut #156, S-1):** `authenticate` läser claimen `scope` genom
   tillåtelselistan `readOnlyFromScope` (människa och agent utan scope, agent med
