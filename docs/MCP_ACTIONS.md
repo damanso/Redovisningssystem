@@ -3203,3 +3203,42 @@ skicka ändringen igen. I `ingest_crm_events` hamnar händelsen i `skipped` med
 skälet, och nästa synk gör om den. En agents sfärbyte på en befintlig person
 avvisas som förut med 409 `byt_med_set_crm_sfar`. `confirm_crm_value` tar inte
 `external_ref` eller `notes`.
+
+## Likviditeten per kalendermånad som läsåtgärd (crm 6.6)
+
+`liquidity_by_month` (`read`) returnerar likviditeten per kalendermånad för de
+kommande tre månaderna. Åtgärden anropar `liquidityByMonth` i reports-tjänsten,
+samma funktion som styrvyn ska läsa när likviditeten visas där (berättelse 6.3),
+och räknar inget eget: svaret är funktionens, orört. Indata är `{ as_of? }` med
+datumet som `YYYY-MM-DD`; utelämnat gäller databasens dag. Schemat är strikt:
+ett ogiltigt datum eller en okänd nyckel ger 400 `validation_error`. Bolaget
+kommer ur anropets bolag och användarens medlemskap, aldrig ur indata, och ett
+bolag användaren inte är medlem i ger 404 `not_found`.
+
+Svaret har `as_of` och `horizon_end`, och `months` med tre rader: den första
+från `as_of` till månadens slut och de två följande hela. Varje rad har `ym`,
+`from`, `to`, `opening_ore`, `inflow_ore`, `outflow_ore`, `closing_ore`,
+`overdue_inflow_ore` och `overdue_outflow_ore`, och varje månads ingående medel
+är föregående månads utgående saldo. `outcome` är `deficit`, `no_deficit` eller
+`unknown`, och `first_deficit` och `need_ore` är första underskottet och
+behovet under horisonten. `unknown` har en rad per källa som saknas, med
+`source` och `reason`, till exempel kassan på 19xx eller
+leverantörsfakturorna. Då är `complete` falskt och `first_deficit` och
+`need_ore` `null`, aldrig noll. `counted` är de tre räknade källorna
+`kundfakturor`, `leverantorsfakturor` och `agi_lonebesked` med belopp och
+förfallet, och `beyond_horizon` är det som förfaller efter horisonten. Belopp
+är heltal i ören.
+
+`not_counted` är det som saknar belagd betalningstidpunkt. Fältet har alltid
+elva rader i den här ordningen, också när beloppet är 0: `abonnemang`,
+`ofakturerad_tid`, `rot_rut_1513`, `ovriga_fordringar_15_16`, `moms_26xx`,
+`agi_rest_2710_2730`, `bolagsskatt`, `skatteskulder_25xx`,
+`semesterloner_2920`, `ovriga_kortfristiga_2890` och `ovriga_skulder_24_29`.
+Varje rad har `id`, `side` (`in` eller `out`), `amount_ore`, `next_due_date`,
+`reason` och `reservation`. Bara `moms_26xx` och `agi_rest_2710_2730` kan få
+nästa förfallodag och underlagets reservation, och bara när beloppet är en
+skuld. Det obelagda räknas aldrig in i månaderna, och öppna affärer räknas
+aldrig in: de står varken i `counted` eller i `not_counted`.
+
+`liquidity_forecast` är oförändrad och svarar fortfarande i
+trettiodagarshinkar, inte per kalendermånad.

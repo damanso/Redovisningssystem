@@ -1,6 +1,7 @@
 // FR-44: fel månad, okänt som tal och ändrad prognos prövas i domän och tjänst.
 // 6.5: obelagt som likviditet — det som saknar belagd tidpunkt står för sig med
 // belopp och skäl och når aldrig en månad.
+// 6.6: läsåtgärden ger samma svar som funktionen, bara för det egna bolaget, och dokumentet och rubrikstycket följer registret.
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   rollLiquidity, notCountedRows, NOT_COUNTED_LIQUIDITY_SOURCES, NOT_COUNTED_ACCOUNT_PARTITION, VAT_UNSETTLED_NOTE, AGI_REST_NOTE,
@@ -14,6 +15,8 @@ import { steeringOverview } from '../src/services/steering.js';
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
 import type { Liquidity, LiquidityByMonth } from '../src/services/reports.js';
+import { readFile } from 'node:fs/promises';
+import { ACTIONS } from '../src/actions/registry.js';
 
 const SOURCES = [{ id: 'kundfakturor', side: 'in' }, { id: 'leverantorsfakturor', side: 'out' }] as const;
 const base = (): LiquidityRollInput => ({
@@ -794,5 +797,149 @@ describe('liquidityByMonth — det obelagda för sig (6.5 N)', () => {
     expect(intervallsaldo(bok, 1510, 1510, 'in')).toBe(1000000);
     expect(rad(svar, 'ovriga_fordringar_15_16').amount_ore).toBe(0);
     expect(rad(svar, 'ovriga_skulder_24_29').amount_ore).toBe(0);
+  });
+});
+
+describe('liquidity_by_month — läsåtgärden (6.6 T)', () => {
+  let user: TestUser;
+  let granne: TestUser;
+  let atgard: string;
+  let grannbolag: string;
+  let aiToken: string;
+  beforeAll(async () => {
+    user = await registerUser('atgard66');
+    atgard = await createCompany(user.token, 'Åtgärd AB');
+    const fy = await createFiscalYear(atgard, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await kapitalSeed(user, atgard, fy.id, '2026-09-01', 2000000);
+    await customerInvoice(user, atgard, fy.id, '2026-11-10', '2026-12-10', 800000);
+    await supplierInvoice(user, atgard, fy.id, '2026-11-10', '2027-01-15', 160000);
+    const customer = await api.post(`${co(atgard)}/customers`).set(auth(user)).send({ name: 'Abonnent AB' });
+    expect(customer.status, JSON.stringify(customer.body)).toBe(201);
+    await action(user, atgard, 'create_recurring_invoice', {
+      customer_id: customer.body.customer.id, title: 'Support', interval: 'monthly', next_run_date: '2026-12-01',
+      lines: [{ description: 'Support', quantity: 1, unit_price_ore: 300000, vat_rate: 25 }],
+    });
+    // AI:ns väg in: ett AI-token mintat av ägaren, låst till bolaget.
+    const mint = await api.post(`${co(atgard)}/agent-tokens`).set(auth(user)).send({ name: 'AI 6.6' });
+    expect(mint.status, JSON.stringify(mint.body)).toBe(201);
+    aiToken = mint.body.token as string;
+
+    granne = await registerUser('granne66');
+    grannbolag = await createCompany(granne.token, 'Granne AB');
+    const fyGranne = await createFiscalYear(grannbolag, auth(granne), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await kapitalSeed(granne, grannbolag, fyGranne.id, '2026-09-01', 500000);
+  });
+  it('T1: ägaren och AI:n får samma svar som funktionen, efter JSON-transporten', async () => {
+    const svar = await iTenant(user, atgard, (k) => liquidityByMonth(k, atgard, '2026-11-20'));
+    const facit = JSON.parse(JSON.stringify(svar)) as LiquidityByMonth;
+    // Positiv kontroll: facit bär det obelagda och de räknade fakturorna.
+    expect(facit.not_counted).toHaveLength(11);
+    expect(rad(facit, 'abonnemang').amount_ore).toBe(900000);
+    const raknat = Object.fromEntries(facit.counted.map((s) => [s.id, s.amount_ore]));
+    expect(raknat.kundfakturor).toBe(1000000);
+    expect(raknat.leverantorsfakturor).toBe(200000);
+
+    const agarens = await action(user, atgard, 'liquidity_by_month', { as_of: '2026-11-20' });
+    expect(agarens).toStrictEqual(facit);
+    const ai = await api.post(`${co(atgard)}/actions/liquidity_by_month`)
+      .set('Authorization', `Bearer ${aiToken}`).send({ as_of: '2026-11-20' });
+    expect(ai.status, JSON.stringify(ai.body)).toBe(200);
+    expect(ai.body.result).toStrictEqual(facit);
+
+    // Negativ kontroll: utan det obelagda är svaret inte funktionens.
+    const utanObelagt: Partial<LiquidityByMonth> = structuredClone(agarens);
+    delete utanObelagt.not_counted;
+    expect(utanObelagt).not.toStrictEqual(facit);
+
+    // Utan as_of löser databasen dagen; bara formen prövas (Kända gränser).
+    const idag = await action(user, atgard, 'liquidity_by_month', {});
+    expect(idag.as_of).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(idag.not_counted).toHaveLength(11);
+  });
+  it('T2: grannbolagets användare får 404, ägaren 200, och grannen sitt eget svar', async () => {
+    const grannens = await api.post(`${co(atgard)}/actions/liquidity_by_month`).set(auth(granne)).send({ as_of: '2026-11-20' });
+    expect(grannens.status, JSON.stringify(grannens.body)).toBe(404);
+    expect(grannens.body).toStrictEqual({ error: 'not_found' });
+    const agarens = await api.post(`${co(atgard)}/actions/liquidity_by_month`).set(auth(user)).send({ as_of: '2026-11-20' });
+    expect(agarens.status, JSON.stringify(agarens.body)).toBe(200);
+
+    const eget = await action(granne, grannbolag, 'liquidity_by_month', { as_of: '2026-11-20' }) as LiquidityByMonth;
+    expect(rad(eget, 'abonnemang').amount_ore).toBe(0);
+    expect(eget.counted.find((s) => s.id === 'kundfakturor')!.amount_ore).toBe(0);
+    expect(eget).not.toStrictEqual(agarens.body.result);
+  });
+  it('T3: ogiltigt datum, fel form, fel typ och ett bolag i indata ger 400', async () => {
+    for (const indata of [
+      { as_of: '2026-02-30' },
+      { as_of: '20261120' },
+      { as_of: 20261120 },
+      { as_of: '2026-11-20', company_id: grannbolag },
+    ]) {
+      const res = await api.post(`${co(atgard)}/actions/liquidity_by_month`).set(auth(user)).send(indata);
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error, JSON.stringify(indata)).toBe('validation_error');
+    }
+  });
+});
+
+const AVSNITTSRUBRIK = '## Likviditeten per kalendermånad som läsåtgärd (crm 6.6)';
+const AVSNITTSTERMER = ['liquidity_by_month', 'liquidityByMonth', 'as_of', 'months', 'counted', 'unknown', 'not_counted'];
+/**
+ * Avsnittets brister, rent: rubriken exakt en gång, inga underrubriker, termerna
+ * och de obelagda id:na inom backticks, och att det obelagda och öppna affärer
+ * aldrig räknas in. Dokumentet bryter raderna vid cirka 80 tecken, så orden
+ * jämförs med blanktecknen sammanslagna.
+ */
+function avsnittsbrister(doc: string): string[] {
+  const delar = doc.split(AVSNITTSRUBRIK);
+  const brister: string[] = [];
+  if (delar.length !== 2) brister.push(`rubriken står ${delar.length - 1} gånger`);
+  if (delar.length < 2) return brister;
+  const avsnitt = delar[1]!.split('\n## ')[0]!;
+  if (/^###/m.test(avsnitt)) brister.push('avsnittet har en ###-rad');
+  for (const term of [...AVSNITTSTERMER, ...OBELAGDA_ID]) {
+    if (!avsnitt.includes('`' + term + '`')) brister.push(`${term} står inte inom backticks`);
+  }
+  const platt = avsnitt.replace(/\s+/g, ' ');
+  for (const ord of ['öppna affärer', 'räknas aldrig in']) {
+    if (!platt.includes(ord)) brister.push(`«${ord}» saknas`);
+  }
+  return brister;
+}
+/**
+ * Rubrikstyckets brister, rent och som continuityvakt: texten före första
+ * sessionslogg, historik eller logg, där varje «N actions» ska vara registrets antal.
+ */
+function rubrikbrister(status: string, antal: number): string[] {
+  const klipp = status.search(/^##\s*(Sessionslogg|Historik|Logg)/im);
+  const stycke = klipp < 0 ? status : status.slice(0, klipp);
+  const tal = [...stycke.matchAll(/(\d+)\s*actions\b/g)].map((m) => Number(m[1]));
+  if (tal.length === 0) return ['rubrikstycket nämner inget antal actions'];
+  return tal.filter((n) => n !== antal)
+    .map((n) => `rubrikstycket påstår ${n} actions, registret har ${antal} — rätta talet i docs/STATUS.md`);
+}
+
+describe('dokumentet och rubrikstycket (6.6 D)', () => {
+  it('D1: åtgärdsdokumentet beskriver svarets fält och att det obelagda och öppna affärer aldrig räknas in', async () => {
+    const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+    expect(avsnittsbrister(doc)).toEqual([]);
+    // Negativ kontroll: tre planterade kopior, var och en med minst en brist.
+    const utanFalt = doc.replaceAll('`not_counted`', 'not_counted');
+    const utanAffarer = doc.replace(/öppna\s+affärer/g, 'affärer');
+    const dubbelRubrik = `${doc}\n${AVSNITTSRUBRIK}\n`;
+    for (const [namn, kopia] of [['P1', utanFalt], ['P2', utanAffarer], ['P3', dubbelRubrik]] as const) {
+      expect(avsnittsbrister(kopia).length, namn).toBeGreaterThan(0);
+    }
+  });
+  it('D2: rubrikstyckets tal är registrets antal, också i källtexten', async () => {
+    const status = await readFile(new URL('../../docs/STATUS.md', import.meta.url), 'utf8');
+    expect(rubrikbrister(status, ACTIONS.length)).toEqual([]);
+    const kalla = await readFile(new URL('../src/actions/registry.ts', import.meta.url), 'utf8');
+    expect(kalla.split('\n').filter((r) => r.startsWith('  def({'))).toHaveLength(ACTIONS.length);
+    // Negativ kontroll: tre planterade texter, loggen efter klippet läses aldrig.
+    const n = ACTIONS.length;
+    expect(rubrikbrister(`ett action-lager (${n - 1}\nactions)\n\n## Sessionslogg\n`, n)).toHaveLength(1);
+    expect(rubrikbrister('ett action-lager\n\n## Sessionslogg\n', n)).toHaveLength(1);
+    expect(rubrikbrister(`ett action-lager (${n} actions)\n\n## Sessionslogg\n\n- ${n - 1} actions\n`, n)).toEqual([]);
   });
 });
