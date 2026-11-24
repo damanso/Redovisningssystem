@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (212
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (217
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-24 — Story 6.6 (crm): likviditeten per kalendermånad blir en läsåtgärd (FR-44):**
+  den nya läsåtgärden `liquidity_by_month` (`read`, `{ as_of? }`, strikt
+  schema) står i registret direkt efter `liquidity_forecast`, och handlern
+  anropar bara `liquidityByMonth` i reports-tjänsten och returnerar svaret
+  orört, så åtgärden och styrvyn läser samma funktion. Åtgärden blir REST och
+  MCP genom manifestet. Dokument: avsnittet «Likviditeten per kalendermånad som
+  läsåtgärd (crm 6.6)» sist i `docs/MCP_ACTIONS.md`, och talet i rubrikstycket
+  här är rättat till registrets antal poster (det stod fyra för lågt). Prov:
+  `server/test/steering-liquidity.test.ts` (T1 ägaren och ett AI-token får
+  funktionens svar efter JSON-transporten, med negativ kontroll utan
+  `not_counted`; T2 grannbolagets användare får 404 och ägaren 200; T3 fyra
+  ogiltiga indata ger 400; D1 avsnittet med tre planterade kopior; D2
+  rubrikstyckets tal mot registret och källtexten, med tre planterade texter).
+  D2 fäller från och med nu varje bygge som ändrar registrets antal utan att
+  rätta talet här. Ingen migration, rutt, tabell, vy eller miljövariabel;
+  visningen i styrvyn kommer i Story 6.3. **Inte kört:** byggaren har inte
+  kört något kommando — sandlådan kräver godkännande för typkontroll och svit.
+  Kedjans typkontroll och svit avgör.
 - **2026-11-23 — Story 5.9 (crm): kalendern blir en fångstväg i ytan (FR-3,
   FR-17, FR-31):** `CAPTURE_PATHS_IN_OPERATION` i `crmDerivations.ts` har
   kalendern bland kontaktvägarna (`['mail', 'calendar', 'issues']`;
