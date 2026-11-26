@@ -33,6 +33,9 @@ import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
 
+import { kontraktsluckor, mottagarpartlage, type Kontraktsparter, type Lucka } from '../lib/kontraktsluckor.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
+
 export interface LasKontraktsytaInput {
   contract_id: string;
 }
@@ -93,7 +96,29 @@ export interface Scopelinjerad {
   ordning: number;
 }
 
+export interface LastaKontraktsparter extends Kontraktsparter {
+  lage: ReturnType<typeof mottagarpartlage>['lage'];
+}
+
+/** Enda platsen som avgör om kontraktets mottagarpart är inläst. */
+export async function lasKontraktsparter(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<LastaKontraktsparter> {
+  const rad = (await client.query<Kontraktsparter & { inlast: boolean }>(
+    `SELECT c.godkannare, c.godkannare_eskalering, c.godkannandeform, c.godkannare_kalla AS kalla,
+            EXISTS (SELECT 1 FROM uppdrag_leverabel l
+              WHERE l.company_id = c.company_id AND l.contract_id = c.id) AS inlast
+       FROM contracts c WHERE c.id = $1 AND c.company_id = $2`,
+    [contractId, companyId],
+  )).rows[0];
+  if (!rad) throw new NotFoundError('contract');
+  const { inlast, ...parter } = rad;
+  return { ...parter, lage: mottagarpartlage(parter, inlast).lage };
+}
+
 export interface Kontraktsyta {
+  parter: LastaKontraktsparter;
+  luckor: Lucka[];
   contract: {
     id: string;
     name: string;
@@ -207,7 +232,11 @@ export async function lasKontraktsyta(
     [companyId, input.contract_id],
   );
 
+  const parter = await lasKontraktsparter(client, companyId, input.contract_id);
+  const register = await lasLeverabelregister(client, companyId, { contract_id: input.contract_id });
   return {
+    parter,
+    luckor: register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare }),
     contract: {
       id: avtal.id,
       name: avtal.name,

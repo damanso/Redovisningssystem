@@ -153,6 +153,8 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-26 — Story 2.4, slutregression pågår:** gemensamma regler för kontraktsluckor, manifestets parter och ankare via baselineja, migration 0097, registrets ursprungliga namn, kontraktsytans parter/luckor och vyerna Leveranserna/Kontraktet är implementerade. `npm run typecheck` och `npm run build` exit 0. Första hela `npm test`: 207 gröna filer, 2 röda dokumentationsprov (4 024 gröna av 4 026). Båda rättade i MCP_ACTIONS: fältet skrivs `manifest.bedomning_ankare` och partslägena i ett gemensamt union-spann, så data inte tolkas som åtgärder. Riktad omkörning: 3 filer och 120 prov gröna, inklusive berättelsens 35 egna prov. Alla filer har grönt senaste utfall; arbetsflödets slutregression pågår före review. Normal sandlåda nekade databasen med `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`; testerna körs med utökad körbehörighet mot den godkända testdatabasen. Inga RESTER-träffar och inga baslinjetypfel rättade.
+
 - **2026-11-24 — Story 6.6 (crm): likviditeten per kalendermånad blir en läsåtgärd (FR-44):**
   den nya läsåtgärden `liquidity_by_month` (`read`, `{ as_of? }`, strikt
   schema) står i registret direkt efter `liquidity_forecast`, och handlern
