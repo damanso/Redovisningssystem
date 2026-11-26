@@ -32,6 +32,29 @@ import { listContracts, type Delforbrukning, type Kontrakttillstand, type Takver
 import { NotFoundError } from '../lib/errors.js';
 import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
+import { kontraktsluckor, mottagarpartlage, type Kontraktsparter, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
+
+export interface LastaKontraktsparter extends Kontraktsparter {
+  lage: Mottagarpartlage['lage'];
+}
+
+/** Enda läsningen som avgör om kontraktets parter är inlästa (FR-27). */
+export async function lasKontraktsparter(
+  client: PoolClient, companyId: string, contractId: string,
+): Promise<LastaKontraktsparter> {
+  const res = await client.query<Kontraktsparter & { inlast: boolean }>(
+    `SELECT c.godkannare, c.godkannare_eskalering, c.godkannandeform, c.godkannare_kalla AS kalla,
+            EXISTS (SELECT 1 FROM uppdrag_leverabel l
+              WHERE l.contract_id = c.id AND l.company_id = c.company_id) AS inlast
+       FROM contracts c WHERE c.id = $1 AND c.company_id = $2`,
+    [contractId, companyId],
+  );
+  const rad = res.rows[0];
+  if (!rad) throw new NotFoundError('contract');
+  const { inlast, ...parter } = rad;
+  return { ...parter, lage: mottagarpartlage(parter, inlast).lage };
+}
 
 export interface LasKontraktsytaInput {
   contract_id: string;
@@ -94,6 +117,8 @@ export interface Scopelinjerad {
 }
 
 export interface Kontraktsyta {
+  parter: LastaKontraktsparter;
+  luckor: Lucka[];
   contract: {
     id: string;
     name: string;
@@ -207,7 +232,11 @@ export async function lasKontraktsyta(
     [companyId, input.contract_id],
   );
 
+  const parter = await lasKontraktsparter(client, companyId, input.contract_id);
+  const register = await lasLeverabelregister(client, companyId, input);
   return {
+    parter,
+    luckor: register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare }),
     contract: {
       id: avtal.id,
       name: avtal.name,

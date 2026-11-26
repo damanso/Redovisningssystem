@@ -835,7 +835,7 @@ export function parseLeveranskontrakt(kontraktstext: string): Leveranskontrakt {
     scopelinjer,
     matt: mattIAvsnitten(avsnitten),
     rytm: rytmIAvsnitten(avsnitten),
-    godkannare: text(dokumentfalt.get('godkannare')),
+    godkannare: text(dokumentfalt.get('godkannare')) ?? text(dokumentfalt.get('mottagarpart')),
     godkannare_eskalering: text(
       dokumentfalt.get('eskalering')
       ?? dokumentfalt.get('eskaleringsinstans')

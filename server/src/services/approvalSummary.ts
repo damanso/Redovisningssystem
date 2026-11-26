@@ -64,6 +64,12 @@ export type FieldValue = { kind: 'text'; text: string } | { kind: 'amount'; ore:
 export interface FieldRow { label: string; value: FieldValue }
 
 export const FIELD_LABELS: Readonly<Record<string, string>> = {
+  manifest: 'Manifestet',
+  godkannare: 'Godkännare',
+  godkannare_eskalering: 'Eskalering',
+  godkannandeform: 'Godkännandeform',
+  bedomning_ankare: 'Ankardatum',
+  bedomning_ankare_kalla: 'Ankardatumets källa',
   account_number: 'Konto',
   kalla: 'Källa',
   accounts: 'Kontolista',

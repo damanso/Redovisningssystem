@@ -6,6 +6,7 @@
 // MCP, API:t eller vyn kunde nå. Den här filen är läsvägen — en SELECT, inget
 // annat.
 //
+// Namnet läses ur avtalsdelens första version: senare beslut ändrar inte vad kontraktet angav.
 // Två meningar bär filen:
 //
 //   * **Radidentiteten är `(contract_id, kod)`** — samma nyckel som
@@ -34,6 +35,7 @@ export interface LasLeverabelregisterInput {
 export interface Leverabelrad {
   contract_id: string;
   kod: string;
+  namn: string | null;
   klausul: string | null;
   acceptanskriterium: string | null;
   uppfoljningsmatt: string | null;
@@ -79,7 +81,11 @@ export async function lasLeverabelregister(
 ): Promise<Leverabelrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
   const res = await client.query<Leverabelrad>(
-    `SELECT l.contract_id, l.kod, l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
+    `SELECT l.contract_id, l.kod,
+            NULLIF((SELECT p.name FROM contract_parts p
+              WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
+              ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
+            l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
             l.matt_lasvag, l.status,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h
