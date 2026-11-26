@@ -686,7 +686,7 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
       }
       // Bara prövade, relevanta fält går till de återanvända beskrivarna.
       const forklaring = q.action === 'satt_baseline' ? await explainApproval(client, companyId, q.action,
-        { contract_id: r.contract_id, kontraktstext: eget(q.input, 'kontraktstext') }, bas) : undefined;
+        { contract_id: r.contract_id, kontraktstext: eget(q.input, 'kontraktstext'), manifest: eget(q.input, 'manifest') }, bas) : undefined;
       const signalId = uuid(eget(q.input, 'signal_id'));
       const signal = signalId ? (await client.query<{ underlag_ref_id: string | null }>(
         'SELECT underlag_ref_id FROM uppdrag_scopesignal WHERE company_id=$1 AND id=$2', [companyId, signalId],

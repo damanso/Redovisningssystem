@@ -153,6 +153,20 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-26 — 2-8-forslagets-underlag-visar-luckorna-parterna-och-ankaret.**
+  Gemensam ren beräkning av parter, ankare och luckor i importens svar och
+  baselineförslagets förklaring. Undantagsvyn för vidare manifestet; samma
+  från/till och skäl visas på Att göra, med skillnader och konsekvensen av
+  ett ja trots luckor. Husets befintliga kort, tokens, typografi, fokusordning
+  och tom-/fellägen används. Tolv nya fall (F1–F4, U1–U7, D1) i
+  `server/test/uppdragsytan-luckunderlag.test.ts`. Typkontroll efter uppgift
+  1–4 och slutgrinden exit 0; förväntat röda typfel för saknad modul/läsning
+  belagda före kod.
+  Rött/grönt-försöken, körning 1–4 och fullsviten: inte kört på fallnivå,
+  `connect EPERM 127.0.0.1:5433` i globalSetup (exit 1). Kedjan kör grindarna
+  enligt uppdragets nätverksundantag. Inga RESTER och inga baslinjefel rättade.
+  CRM:s intagskontrakt oförändrat. Ingen migration eller nytt beroende.
+
 - **2026-11-26 — Omtag Story 2.4: vyassertioner och dokumentationens kodspann.**
   I `server/test/uppdragsytan-kontraktsluckor.test.ts` läses nu rubrikernas
   innehåll och koder med husets tillgänglighetsattribut. V1 kräver åtta
