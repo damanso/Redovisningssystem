@@ -30,6 +30,7 @@ import {
   lasUtkastfragor, parseLeveranskontrakt, ROTKOD, STYRNINGSKOD,
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
+import { kontraktsluckor, kontraktsparter, manifestankare, olastaFormer, OLASTA, type Kontraktsmanifest } from '../lib/kontraktsluckor.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
@@ -57,9 +58,13 @@ interface Avtalsrad {
   kontrakt_tillstand: string;
   godkannare: string | null;
   godkannare_eskalering: string | null;
+  godkannandeform: string | null;
+  godkannare_kalla: string | null;
+  bedomning_ankare: string | null;
+  bedomning_ankare_kalla: string | null;
   /** Avtalshandlingen — samma pekare som kontraktsytan visar under `dokument`. */
   source_file_id: string | null;
-  /** Rytmen ur del 4 som den står lagrad (Story 2.3). Ankaret läses inte här: importen skriver det aldrig. */
+  /** Rytmen ur del 4 som den står lagrad (Story 2.3). Ankaret läses som text; manifestets förslag gäller först efter Davids ja. */
   rytm_text: string | null;
   bedomning_intervall_dagar: number | null;
   bedomning_veckodag: number | null;
@@ -77,12 +82,22 @@ const RYTM_UPDATE: Readonly<Record<string, string>> = {
   rapport_mottagarkrets: 'rapport_mottagarkrets',
 };
 
+// Manifestets parter och ankare skrivs bara i godkännandet, med fasta kolumner.
+const PARTER_UPDATE: Readonly<Record<string, string>> = {
+  godkannare: 'godkannare', godkannare_eskalering: 'godkannare_eskalering',
+  godkannandeform: 'godkannandeform', godkannare_kalla: 'godkannare_kalla',
+};
+const ANKARE_UPDATE: Readonly<Record<string, string>> = {
+  bedomning_ankare: 'bedomning_ankare', bedomning_ankare_kalla: 'bedomning_ankare_kalla',
+};
+
 async function hamtaAvtal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Avtalsrad> {
   const res = await client.query<Avtalsrad>(
     `SELECT id, name, signed_date::text, kontrakt_tillstand, godkannare, godkannare_eskalering, source_file_id,
-            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets
+            rytm_text, bedomning_intervall_dagar, bedomning_veckodag, rapport_mottagarkrets,
+            godkannandeform, godkannare_kalla, bedomning_ankare::text AS bedomning_ankare, bedomning_ankare_kalla
        FROM contracts WHERE id = $1 AND company_id = $2`,
     [contractId, companyId],
   );
@@ -133,6 +148,7 @@ export async function skapaUppdrag(
 export interface ImporteraLeveranskontraktInput {
   contract_id: string;
   kontraktstext: string;
+  manifest?: Kontraktsmanifest;
 }
 
 /** En avtalsdel som importen VILL se — jämförs mot raden som redan finns. */
@@ -350,7 +366,18 @@ export async function importeraLeveranskontrakt(
 ): Promise<Record<string, unknown>> {
   const kontrakt = parseLeveranskontrakt(input.kontraktstext);
   const avtal = await hamtaAvtal(client, companyId, input.contract_id);
+  const olast = olastaFormer(kontrakt);
+  if (olast.length > 0) {
+    throw new BadRequestError('kontrakt_olasbart', `${olast.map((f) => OLASTA[f]).join('; ')}. Ingenting skrevs.`, { olast });
+  }
+  const parter = kontraktsparter(kontrakt, input.manifest ?? null);
+  const ankare = manifestankare(input.manifest ?? null, {
+    intervall_dagar: kontrakt.rytm ? kontrakt.rytm.bedomning_intervall_dagar : avtal.bedomning_intervall_dagar,
+    veckodag: kontrakt.rytm ? kontrakt.rytm.bedomning_veckodag : avtal.bedomning_veckodag,
+  }, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla });
   const forslag = {
+    parter, ankare,
+    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? avtal.godkannare }),
     uppdrag: { code: ROTKOD, ...kontrakt.ram },
     strommar: kontrakt.strommar,
     leverabler: kontrakt.leverabler,
@@ -378,8 +405,8 @@ export async function importeraLeveranskontrakt(
   if (!avtal.signed_date) {
     throw new BadRequestError('valid_from_required', 'avtalet saknar undertecknandedatum — baselinen kan inte tidsättas');
   }
-  // En köpost per källa (B-8): källan är paret (avtal, text), och finns en
-  // `satt_baseline` för paret i någon status köas ingen ny — inte heller efter
+  // En köpost per källa (B-8): källan är trippeln (avtal, text, manifest), och finns en
+  // `satt_baseline` för trippeln i någon status köas ingen ny — inte heller efter
   // Davids nej. Radlåset på avtalet serialiserar två samtidiga importer, och
   // uppslaget sker före INSERT i stället för att en krock fångas (lärdom 2).
   await client.query('SELECT id FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE', [input.contract_id, companyId]);
@@ -387,8 +414,9 @@ export async function importeraLeveranskontrakt(
     `SELECT id, status FROM action_approvals
       WHERE company_id = $1 AND action = 'satt_baseline'
         AND lower(input->>'contract_id') = lower($2) AND input->>'kontraktstext' = $3
+        AND (input->'manifest') IS NOT DISTINCT FROM $4::jsonb
       ORDER BY created_at, id LIMIT 1`,
-    [companyId, input.contract_id, input.kontraktstext],
+    [companyId, input.contract_id, input.kontraktstext, input.manifest === undefined ? null : JSON.stringify(input.manifest)],
   )).rows[0];
   if (befintlig) return { ...svar, approval_id: befintlig.id, redan_koad: true, kostatus: befintlig.status };
 
@@ -495,19 +523,21 @@ export async function sattBaseline(
     nyaScopelinjer += 1;
   }
 
-  // (g) Godkännarna. COALESCE: hittade texten dem inte står det som redan finns
-  // kvar — en import som inte hittade ett fält har inte sagt att fältet är tomt.
-  const godkannareAndrad =
-    (kontrakt.godkannare !== null && kontrakt.godkannare !== avtal.godkannare)
-    || (kontrakt.godkannare_eskalering !== null
-      && kontrakt.godkannare_eskalering !== avtal.godkannare_eskalering);
-  if (godkannareAndrad) {
+  // (g) En källa för samtliga parter (B3). Utelämnad eskalering/form i
+  // manifestet betyder NULL, aldrig en blandning med kontraktets värden.
+  const parter = kontraktsparter(kontrakt, input.manifest ?? null);
+  const partsfalt = {
+    godkannare: parter.godkannare, godkannare_eskalering: parter.godkannare_eskalering,
+    godkannandeform: parter.godkannandeform, godkannare_kalla: parter.kalla,
+  };
+  const parterAndrade = parter.godkannare !== null
+    && Object.entries(partsfalt).some(([falt, varde]) => avtal[falt as keyof typeof partsfalt] !== varde);
+  if (parterAndrade) {
+    const update = buildAllowlistedUpdate(PARTER_UPDATE, partsfalt)!;
     await client.query(
-      `UPDATE contracts
-          SET godkannare = COALESCE($3, godkannare),
-              godkannare_eskalering = COALESCE($4, godkannare_eskalering)
-        WHERE id = $1 AND company_id = $2`,
-      [input.contract_id, companyId, kontrakt.godkannare, kontrakt.godkannare_eskalering],
+      `UPDATE contracts SET ${update.setSql}
+        WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}`,
+      [...update.values, input.contract_id, companyId],
     );
   }
 
@@ -530,7 +560,7 @@ export async function sattBaseline(
   // (i) Rytmen ur del 4 (Story 2.3, FR-14). Bara när texten gav en rytm och den
   // skiljer sig från raden: hittade texten ingen rytm har den inte sagt att
   // rytmen är tom, och en oförändrad rad får ingen UPDATE (då står `updated_at`
-  // kvar). Ankaret står inte i tillåtelselistan och rörs aldrig av importen.
+  // kvar). Ankaret skrivs separat i steg (j), genom samma mänskliga ja.
   const rytm = kontrakt.rytm;
   const rytmAndrad = rytm !== null && (rytm.rytm_text !== avtal.rytm_text
     || rytm.bedomning_intervall_dagar !== avtal.bedomning_intervall_dagar
@@ -547,8 +577,31 @@ export async function sattBaseline(
     }
   }
 
+  // (j) Ankaret avgörs mot rytmen EFTER steg (i). Radlåset serialiserar
+  // ett samtidigt ankarbeslut; även UPDATE jämför det nyss lästa datumet.
+  const ankarunderlag = (await client.query<Pick<Avtalsrad,
+    'bedomning_intervall_dagar' | 'bedomning_veckodag' | 'bedomning_ankare' | 'bedomning_ankare_kalla'>>(
+    `SELECT bedomning_intervall_dagar, bedomning_veckodag, bedomning_ankare::text AS bedomning_ankare,
+            bedomning_ankare_kalla FROM contracts WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [input.contract_id, companyId],
+  )).rows[0];
+  if (!ankarunderlag) throw new NotFoundError('contract');
+  const ankare = manifestankare(input.manifest ?? null, {
+    intervall_dagar: ankarunderlag.bedomning_intervall_dagar, veckodag: ankarunderlag.bedomning_veckodag,
+  }, { ankare: ankarunderlag.bedomning_ankare, kalla: ankarunderlag.bedomning_ankare_kalla });
+  const ankareAndrat = ankare.lage === 'lagras' || ankare.lage === 'andras';
+  if (ankareAndrat) {
+    const update = buildAllowlistedUpdate(ANKARE_UPDATE, { bedomning_ankare: ankare.ankare, bedomning_ankare_kalla: ankare.kalla })!;
+    await client.query(
+      `UPDATE contracts SET ${update.setSql}
+        WHERE id = $${update.values.length + 1} AND company_id = $${update.values.length + 2}
+          AND bedomning_ankare IS NOT DISTINCT FROM $${update.values.length + 3}::date`,
+      [...update.values, input.contract_id, companyId, ankarunderlag.bedomning_ankare],
+    );
+  }
+
   const oforandrad = skrivnaDelar === 0 && nyaLeverabelrader === 0
-    && nyaScopelinjer === 0 && !godkannareAndrad && mattSkapade === 0 && !rytmAndrad;
+    && nyaScopelinjer === 0 && !parterAndrade && mattSkapade === 0 && !rytmAndrad && !ankareAndrat;
 
   // Auditraden skrivs ALLTID: den är spåret av att importen kördes, inte av en
   // ändring — samma hållning som `action.approval_requested`. Att en andra
@@ -563,6 +616,8 @@ export async function sattBaseline(
       scopelinjer_skapade: nyaScopelinjer,
       matt_skapade: mattSkapade,
       rytm_andrad: rytmAndrad,
+      parter_andrade: parterAndrade,
+      ankare: ankare.lage,
       saknade_falt: saknadeFalt(kontrakt),
     },
   });
@@ -583,6 +638,13 @@ export async function sattBaseline(
     scopelinjer_skapade: nyaScopelinjer,
     matt_skapade: mattSkapade,
     rytm_andrad: rytmAndrad,
+    parter: {
+      godkannare: efterAvtal.godkannare, godkannare_eskalering: efterAvtal.godkannare_eskalering,
+      godkannandeform: efterAvtal.godkannandeform, kalla: efterAvtal.godkannare_kalla,
+    },
+    parter_skillnader: parter.skillnader,
+    ankare,
+    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: efterAvtal.godkannare }),
     godkannare: efterAvtal.godkannare,
     godkannare_eskalering: efterAvtal.godkannare_eskalering,
     saknade_falt: saknadeFalt(kontrakt),

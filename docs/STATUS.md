@@ -153,6 +153,60 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-26 — Omtag Story 2.4: vyassertioner och dokumentationens kodspann.**
+  I `server/test/uppdragsytan-kontraktsluckor.test.ts` läses nu rubrikernas
+  innehåll och koder med husets tillgänglighetsattribut. V1 kräver åtta
+  kolumner i ordning och har ett rent läsarprov över flera markupformer
+  med negativa kontroller. D1 prövar hela dokumentationstilläggen mot
+  ensamma snake_case-spann; flera fält, lägen och ett framtida ord planteras
+  som negativa kontroller. `docs/MCP_ACTIONS.md` använder kvalificerade fält,
+  samlade lägesvärden och åtgärdssignaturer. Samma felklass sökt i hela diffen:
+  inga nytillkomna ensamma snake_case-spann, och matt-rytm-/scopelinje-/
+  utskicksprovens kodspannssökning ger [] för alla tre. Båda felklasserna
+  visades röda före rättelserna, sedan **11 rena fall gröna** (25 överhoppade).
+  **Typecheck och build exit 0.** Full `npm test` försökt före och efter:
+  `connect EPERM 127.0.0.1:5433` i globalSetup, inga databasfall körda.
+  Kedjan verifierar fullsviten enligt uppdragets nätverksundantag.
+  Ingen produktionskod ändrad i omtaget; husets stil och tillgänglighet
+  bevaras. CRM:s intagskontrakt oförändrat. Inget nytt beroende eller tjänst,
+  ingen driftsättning. Hermes-provens tidigare lägen har inte omprövats.
+
+- **2026-11-26 — Story 2.4 (uppdragsytan): kontraktsluckor, parter och manifestankare.**
+  Migration `0097_kontraktsparter.sql` lägger till nullbara `godkannandeform`
+  och `godkannare_kalla`, BASELINE-kommentarer och egen avslutsspärr för de
+  fyra partskolumnerna. `lib/kontraktsluckor.ts` är enda regel- och textkälla
+  för luckor, parter och manifestets ankare. Importen tar ett valfritt strikt
+  manifest, köar per trippel (avtal, text, manifest) och avvisar oläsbar form
+  med 400 `kontrakt_olasbart` före skrivning. Godkännandet skriver parter ur
+  en källa och ankaret under radlås efter rytmen, bara i `lagras`/`andras`.
+  Båda svaren redovisar luckor, parter, skillnader och ankare; audit bär inga
+  nya namn eller källtexter. Registret läser kontraktsnamnet ur första
+  avtalsdelsversionen. Leveranserna visar namn och gemensamma lucktexter samt
+  mottagarparten per avtal; Kontraktet får panelen Parterna och luckorna.
+  Husets paneler, tokens och typografi används; sidhuvud och lägesväxel är
+  tecken för tecken oförändrade, liksom befintliga handgrepps fokusordning.
+  Oinläst, saknat och ifyllt har skilda texter. Manifesttext HTML-escapas.
+  Dokument: MCP_ACTIONS och ARKITEKTUR, utan ändrade arkitekturprinciper.
+  **Prov:** 35 nya namngivna fall i `uppdragsytan-kontraktsluckor.test.ts`
+  (R0–R7, M1–M3, I1–I8, G1–G7, L1–L3, S1, V1–V4, D1); de två befintliga
+  import-/registerassertionerna uppdaterade. Rena regler, etiketter och
+  dokumentspegling (10 fall), samt CRM:s sändvägsgraf (10 fall):
+  `Test Files 2 passed (2)`, `Tests 20 passed | 27 skipped (47)` i isolerad
+  vitest med temporär konfiguration utan databas-setup. **Typecheck och build
+  exit 0.** Ordinarie `npm test` försökt före/efter varje uppgift och i grinden:
+  `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)` i
+  globalSetup. Databas-, vy- och fulla regressionsfallen är därför **inte
+  körda**; kedjans körning återstår enligt uppdragets nätverksundantag.
+  Ett bredare urval i den isolerade körningen valde också S1 och nekades
+  `listen EPERM: operation not permitted 0.0.0.0`; slutligt urval omfattade
+  bara rena fall. Ingången: 0096 finns, inga RESTER. Inga baslinjetypfel
+  behövde rättas. Ingen ny tjänst, rutt, åtgärd eller beroende. Ingen tjänst
+  startad, inget driftprov eller driftsättning utförd. Egna tillfälliga
+  verifieringsfiler som först hamnade i /tmp flyttades in i repot och
+  kopiorna därifrån städades bort. Förslagets underlag
+  kvarstår i Story 2.8; Hermes-provens fyra tidigare icke-GRÖNA lägen i
+  berättelsens baslinje är inte omprövade här.
+
 - **2026-11-24 — Story 6.6 (crm): likviditeten per kalendermånad blir en läsåtgärd (FR-44):**
   den nya läsåtgärden `liquidity_by_month` (`read`, `{ as_of? }`, strikt
   schema) står i registret direkt efter `liquidity_forecast`, och handlern
