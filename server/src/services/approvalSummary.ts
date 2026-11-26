@@ -11,10 +11,13 @@
 import type { PoolClient } from 'pg';
 import { formatOre } from '../domain/money.js';
 import { parseLeveranskontrakt } from '../lib/leveranskontrakt.js';
+import { KontraktsmanifestSchema } from '../lib/kontraktsluckor.js';
+import { underlagstillagg } from '../lib/forslagsunderlag.js';
 import { companyFormSuffix, mergeStatusOutcome } from '../lib/crmRules.js';
 import { visaIntervall } from '../lib/uppdragsplan.js';
 import { AccountNumberSchema } from '../lib/validation.js';
-import { lasBaselineandring } from './uppdragImport.js';
+import { lasBaselineandring, lasForslagsunderlag } from './uppdragImport.js';
+import { lasKontraktsparter } from './uppdragKontrakt.js';
 import { MAPPABLE_VAT_BOX_CODES, listVatBoxAccounts, vatBoxSources, type VatBoxAccount } from './vatDeclaration.js';
 
 export const CARD_TEXT = {
@@ -480,9 +483,17 @@ export async function explainApproval(
       'SELECT name, project_id FROM contracts WHERE id = $1 AND company_id = $2', [contractId, companyId]);
     if (!avtal) return none;
     const kontrakt = parseLeveranskontrakt(input.kontraktstext);
+    const provatManifest = KontraktsmanifestSchema.safeParse(input.manifest);
+    const manifest = provatManifest.success ? provatManifest.data : null;
     let andring: Awaited<ReturnType<typeof lasBaselineandring>>;
+    let tillagg: ReturnType<typeof underlagstillagg>;
     try {
       andring = await lasBaselineandring(client, companyId, contractId, kontrakt);
+      const underlag = await lasForslagsunderlag(client, companyId, contractId, kontrakt, manifest);
+      const lagradeParter = await lasKontraktsparter(client, companyId, contractId);
+      tillagg = underlagstillagg(underlag, {
+        ...lagradeParter, ankare: underlag.befintligt.ankare, ankare_kalla: underlag.befintligt.kalla,
+      }, manifest !== null);
     } catch {
       return none;
     }
@@ -502,13 +513,15 @@ export async function explainApproval(
       && (d.start_date !== null || d.end_date !== null)).map((d) => d.code))];
     return {
       change: {
-        from: andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet',
-        to: beskriv(andring.efter) + andraVersioner,
+        from: (andring.finnsBaseline ? beskriv(andring.fore) + andraVersioner : 'ingen baseline ur kontraktet')
+          + tillagg.fran.map((del) => SEP + del).join(''),
+        to: beskriv(andring.efter) + andraVersioner + tillagg.till.map((del) => SEP + del).join(''),
       },
       why: `${andring.finnsBaseline ? `Återimporten uppdaterar avtalsdelarnas version från ${andring.valid_from}.` : 'Avtalets datum blir baseline v1.'} `
         + (egnaDatum.length > 0
           ? `Tidigare beslutade egna datum bevaras för ${egnaDatum.join(', ')}. Leverabler utan eget datum ärver sitt stegs intervall.`
-          : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.'),
+          : 'Leverablerna ärver sitt stegs intervall utan eget datum; ett eget leverabeldatum kräver ett godkänt baselinebeslut.')
+        + tillagg.skal.map((mening) => ` ${mening}`).join(''),
       source: { label: avtal.name, href: `${base}/projects/${avtal.project_id}/kontraktet` },
     };
   }

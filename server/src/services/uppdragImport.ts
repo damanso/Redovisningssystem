@@ -31,6 +31,7 @@ import {
   type Datumprecision, type Leveranskontrakt,
 } from '../lib/leveranskontrakt.js';
 import { kontraktsluckor, kontraktsparter, manifestankare, olastaFormer, OLASTA, type Kontraktsmanifest } from '../lib/kontraktsluckor.js';
+import { forslagsunderlag } from '../lib/forslagsunderlag.js';
 import { writeAudit } from './auditService.js';
 import { createApproval } from './approvals.js';
 import { createContract, getContractUsage, skrivBaselineversion } from './contracts.js';
@@ -361,6 +362,17 @@ function saknadeFalt(k: Leveranskontrakt): string[] {
   return saknas;
 }
 
+/** Läser förslagets underlag mot avtalets aktuella värden, utan att skriva. */
+export async function lasForslagsunderlag(
+  client: PoolClient, companyId: string, contractId: string, kontrakt: Leveranskontrakt, manifest: Kontraktsmanifest | null,
+) {
+  const avtal = await hamtaAvtal(client, companyId, contractId);
+  return {
+    ...forslagsunderlag(kontrakt, manifest, avtal),
+    befintligt: { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla },
+  };
+}
+
 export async function importeraLeveranskontrakt(
   client: PoolClient, companyId: string, userId: string, actor: Actor, input: ImporteraLeveranskontraktInput,
 ): Promise<Record<string, unknown>> {
@@ -370,14 +382,9 @@ export async function importeraLeveranskontrakt(
   if (olast.length > 0) {
     throw new BadRequestError('kontrakt_olasbart', `${olast.map((f) => OLASTA[f]).join('; ')}. Ingenting skrevs.`, { olast });
   }
-  const parter = kontraktsparter(kontrakt, input.manifest ?? null);
-  const ankare = manifestankare(input.manifest ?? null, {
-    intervall_dagar: kontrakt.rytm ? kontrakt.rytm.bedomning_intervall_dagar : avtal.bedomning_intervall_dagar,
-    veckodag: kontrakt.rytm ? kontrakt.rytm.bedomning_veckodag : avtal.bedomning_veckodag,
-  }, { ankare: avtal.bedomning_ankare, kalla: avtal.bedomning_ankare_kalla });
+  const underlag = forslagsunderlag(kontrakt, input.manifest ?? null, avtal);
   const forslag = {
-    parter, ankare,
-    luckor: kontraktsluckor({ leverabler: kontrakt.leverabler, mottagarpart: parter.godkannare ?? avtal.godkannare }),
+    parter: underlag.parter, ankare: underlag.ankare, luckor: underlag.luckor,
     uppdrag: { code: ROTKOD, ...kontrakt.ram },
     strommar: kontrakt.strommar,
     leverabler: kontrakt.leverabler,

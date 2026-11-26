@@ -2536,6 +2536,17 @@ paketlistan och e-postköns importörer i hela `server/src`.
   ett ja registrerar: importens `avtal`, köpostens `change_reason` (signalens
   eller Davids ord, Övrigt-radens text och datum). Samma text fryses i
   beslutsradens `underlag.ja_registrerar`, också vid ett nej.
+- **Förslagets underlag (Story 2.8).** Baselineförslagets förklaring räknar
+  parter, ankare och luckor med samma funktion, `forslagsunderlag`, som
+  importens svar. `skal.varde` får en mening per skillnad mellan textens och
+  manifestets parter, med båda värdena och att manifestets värde gäller,
+  samt ankarets orsak när manifestet anger ett ankare. Efter ”Luckor i
+  kontraktet:” följer en rad per lucka med vad som saknas, var och vad ett ja
+  innebär; luckorna blir inga egna ärenden. Med manifest visar
+  `forslag.varde.fran` och `forslag.varde.till` den mottagarpart,
+  godkännandeform och det ankardatum som ändras. Ett avtal utan register
+  visas aldrig som saknat på från-sidan. Utan manifest och luckor är posten
+  oförändrad. Att göra visar samma text, med samma befintliga godkännande.
 - `tackning[]` är alla öppna avtal gånger de fyra mandatkällorna. Varje rad
   namnger avtal, projekt och källa, med `tackning`, `farsk` och `orsak`.
   Saknad cacherad ger `saknas`; oläsbar källa ger `olast`; regelbrott ger
