@@ -67,6 +67,16 @@ export type FieldValue = { kind: 'text'; text: string } | { kind: 'amount'; ore:
 export interface FieldRow { label: string; value: FieldValue }
 
 export const FIELD_LABELS: Readonly<Record<string, string>> = {
+  forslagsunderlag: 'Förslagsunderlag',
+  kvitto_datum: 'Kvittots datum',
+  leverantor_id: 'Leverantör',
+  mal: 'Mål',
+  part_id: 'Avtalsdel',
+  niva: 'Nivå',
+  oplanerad: 'Oplanerad',
+  leverabel_kod: 'Leverabelns kod',
+  text: 'Text',
+  forslag_hash: 'Förslagets kontrollsumma',
   manifest: 'Manifestet',
   godkannare: 'Godkännare',
   godkannare_eskalering: 'Eskalering',
@@ -177,11 +187,13 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   voucher_id: 'Verifikat',
 };
 export const VALUE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  niva: { uppdrag: 'Uppdrag', strom: 'Ström', leverabel: 'Leverabel' },
+  kod: { handlingens_titel: 'Handlingens titel', tidigare_bindning: 'Tidigare bindning', verifikattext_kod: 'Verifikatets text nämner koden', verifikattext_uppdrag: 'Verifikatets text nämner uppdraget', datum_i_intervall: 'Datumet i intervallet', flera_leverabler: 'Flera leverabler', ingen_leverabel: 'Ingen leverabel' },
   entity_type: { invoice: 'Kundfaktura', supplier_invoice: 'Leverantörsfaktura', receipt: 'Kvitto', payslip: 'Lönebesked' },
   type: { avsattning: 'Avsättning', aterforing: 'Återföring' },
   party_type: { customer: 'Kund', supplier: 'Leverantör' },
   date_precision: { ar: 'År', halvar: 'Halvår', kvartal: 'Kvartal', manad: 'Månad', dag: 'Dag' },
-  typ: { scopesignal: 'Scopesignal', anteckning: 'Anteckning', referens: 'Referens' },
+  typ: { scopesignal: 'Scopesignal', anteckning: 'Anteckning', referens: 'Referens', kvitto: 'Kvitto', verifikat: 'Verifikat', tidigare_kvitto: 'Tidigare kvitto' },
   alternativ: { tillagg: 'Tillägg', ryms: 'Ryms i avtalet' },
   box: { '06': '06', '07': '07', '08': '08', '20': '20', '21': '21', '22': '22', '23': '23', '24': '24', '37': '37', '38': '38', '40': '40' },
   sfar: { foretag: 'Företag', privat: 'Privat' },
@@ -198,6 +210,8 @@ function lookup(sql: string, link?: LinkKind): IdLookup {
   };
 }
 export const ID_LOOKUPS: Readonly<Record<string, IdLookup>> = {
+  leverantor_id: (c, co, id, action, input) => ID_LOOKUPS.supplier_id!(c, co, id, action, input),
+  part_id: (c, co, id, action, input) => ID_LOOKUPS.contract_part_id!(c, co, id, action, input),
   entity_id: (c, co, id, action, input) => {
     const types = { invoice: 'invoice_id', supplier_invoice: 'supplier_invoice_id', receipt: 'receipt_id', payslip: 'payslip_id' } as const;
     const type = input.entity_type;
@@ -238,6 +252,8 @@ export const ID_LOOKUPS: Readonly<Record<string, IdLookup>> = {
   signal_id: lookup('SELECT fras AS text FROM uppdrag_scopesignal WHERE id = $1 AND company_id = $2'),
   anteckning_id: lookup("SELECT 'Anteckning ' || created_at::date::text AS text FROM uppdrag_anteckning WHERE id = $1 AND company_id = $2"),
   id: (c, co, id, action, input) => {
+    if (input.typ === 'kvitto' || input.typ === 'tidigare_kvitto') return ID_LOOKUPS.receipt_id!(c, co, id, action, input);
+    if (input.typ === 'verifikat') return ID_LOOKUPS.voucher_id!(c, co, id, action, input);
     if (input.typ === 'scopesignal') return ID_LOOKUPS.signal_id!(c, co, id, action, input);
     if (input.typ === 'anteckning') return ID_LOOKUPS.anteckning_id!(c, co, id, action, input);
     if (input.typ === 'referens') return (async () => {

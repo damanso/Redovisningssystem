@@ -2084,7 +2084,7 @@ hur färdigt det än var.
 
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
-- `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`. Binder ett
+- `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`, valfritt `forslagsunderlag` (bara svepet köar det; annars 409 `koas_av_svepet`). Binder ett
   kvitto till en avtalsdel och gör ingenting annat (mönstret
   `assign_contract_part`, `services/uppdragKostnad.ts`). **`contract_part_id` är
   obligatoriskt:** `receipts` har inget `project_id`, så delen är kvittots enda
@@ -2100,17 +2100,18 @@ hur färdigt det än var.
   `approveAction`:s transaktion och auditloggar `receipt.contract_part_assigned`
   med `fran_contract_part_id` → `till_contract_part_id`. **En flytt är tillåten**
   — det är precis vad kön är till för: en kostnad som är bunden till ström eller uppdrag ska gå att flytta
-  till rätt leverabel. `oplanerad` rörs aldrig av åtgärden; märkningen säger
-  något om baselinen och blir inte osann för att någon flyttar kostnaden.
+  till rätt leverabel. En leverabelbindning sätter `oplanerad: true`, eftersom
+  avtalets baseline saknar kostnadsplan. Ingen bindning tar bort märkningen.
+  Svaret och `receipt.contract_part_assigned` bär den faktiska märkningen.
 
 **Svepets bindningssteg** (i `kor_uppdragssvep`, samma transaktion som svepet):
 
-- **En väg för varje kostnadsförslag (B-6, Story 1.8).** Svepet köar `binda_kostnad` genom `createApproval` med actor `agent`, oavsett vem som kör svepet, och skriver auditraden `action.approval_requested` (`details`: `action`, `actor`, `receipt_id`, `leverabel_kod`). Målet väljs av `valjBindningsmal` (`lib/bindningsmal.ts`): lövet när förslagets `leverabel_kod` har en aktiv avtalsdel, annars strömmen vars intervall täcker kvittots datum, annars rotdelen `UPPDRAG`. Svepet skriver aldrig i `receipts`. Bara verkställigheten av ett mottaget ja sätter `contract_part_id` (`bindaKostnad`).
-- **Idempotent per kvitto i alla statusar.** Finns en `binda_kostnad` för samma `receipt_id` i någon status föds ingen ny post, och kvittot listas i `redan_koade`. Ett nej återkommer alltså inte som ny fråga. Ett nytt förslag när underlaget ändrats kommer med Story 5.1 (`forslag_hash`).
-- **Skälet följer förslaget.** Gäller förslaget ström eller uppdrag säger posten i `las_undantag` varför: leverabeln saknar aktiv avtalsdel, och den grövre nivån följer kvittots datum. Samma underlag fryses i `uppdrag_beslut`.
+- **En väg för varje kostnadsförslag (B-6, Story 5.1).** Svepet förifyller ur handlingens titel, tidigare bindningar för leverantören och verifikattexten (också kvittots beskrivning), med datum mot delarnas intervall. Datum ensamt ger ingen kandidat. `forifyllBindning` väljer en leverabel bara när signalerna pekar på en enda aktiv leverabel, annars strömmen eller uppdraget. Underlaget bär skäl, källor, lästid och `forslag_hash`, aldrig belopp eller leverantörsnamn. Det prövas mot samma `BindaKostnadSchema` som registret och läsvägen, och målet ska finnas bland avtalets delar. Ogiltiga underlag redovisas i `bindningar.avvisade` med `underlag_ogiltigt`, utan skrivning för kvittot. Varje giltigt förslag köas med `createApproval`, actor `agent`, och `action.approval_requested` med `action`, `actor`, `receipt_id`, `leverabel_kod` och `forslag_hash`. `koade[]` bär också `forslag_hash`. Svepet skriver aldrig i `receipts`; bara verkställigheten av ett mottaget ja binder kostnaden. Cachen bär varken belopp eller leverantörsnamn.
+- **Idempotent per kvitto i alla statusar.** `nyttBindningsforslag` läser alla kvittots köposter före köningen. `pending`, `approved`, `failed` och mottagna men inte verkställda beslut spärrar oavsett hash. En äldre post utan hash spärrar också. Avgjorda poster (`executed`, `rejected`) tillåter ett nytt förslag bara när samtliga har en annan `forslag_hash`. Oförändrat avslag återkommer aldrig som ny fråga; spärrade kvitton står i `redan_koade`.
+- **Skälet följer förslaget.** `las_undantag` visar underlagets skäl i ordning, med dess källor och lästid. Ja-texten beskriver också märkningen när den gäller. Äldre förslag utan underlag behåller cacheradens text. Samma underlag fryses i `uppdrag_beslut`, där beloppet läses levande ur redovisningen före frysningen.
 - **Kvitton utan kostnadsförslag rörs aldrig.** Ett bokfört kvitto vars
-  leverantör inte står i någon leverabelhandlings titel är en allmän
-  bolagskostnad, inte uppdragets — automatiken avgränsas till körningens
+  leverantör saknar titelträff och tidigare bindning i avtalet, och vars text
+  inte nämner uppdraget, är en allmän bolagskostnad — svepet avgränsas till körningens
   `kostnadsforslag:`-värden.
 
 **Vyn:** kvittolistan (`/app/c/:id/receipts`) visar `oplanerad` som en `chip` i

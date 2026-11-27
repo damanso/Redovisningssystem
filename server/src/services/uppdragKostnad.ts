@@ -14,9 +14,11 @@
 // Kvitton UTAN kostnadsförslag (bolagets allmänna kostnader) rörs inte alls.
 
 import type { PoolClient } from 'pg';
-import { valjBindningsmal } from '../lib/bindningsmal.js';
+import { bindningsniva, oplaneradVidBindning } from '../lib/bindningsmal.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
-import { createApproval } from './approvals.js';
+import { BindaKostnadSchema } from '../lib/avtalsdelsfalt.js';
+import { nyttBindningsforslag, type Bindningsunderlag } from '../lib/beslutsunderlag.js';
+import { createApproval, MOTTAGET_EJ_VERKSTALLT } from './approvals.js';
 import { writeAudit } from './auditService.js';
 
 /** En avtalsdelsversion som bindningen kan peka på (svepets `bindningsmal`). */
@@ -43,48 +45,46 @@ export interface Bindningsdelar {
 export interface Kostnadsforslag {
   receipt_id: string;
   datum: string;
-  /** Leverabeln handlingen hörde till. Utan den finns inget löv att föreslå. */
-  leverabel_kod?: string | undefined;
+  forslagsunderlag: Bindningsunderlag;
 }
 
 export interface Bindningsutfall {
   /** Köade för mänskligt godkännande: varje förslag, till löv, ström eller rotdel. */
-  koade: Array<{ receipt_id: string; contract_part_id: string; approval_id: string }>;
+  koade: Array<{ receipt_id: string; contract_part_id: string; approval_id: string; forslag_hash: string }>;
   /**
    * Alltid tom sedan Story 1.8: ingen väg binder utan kön (B-6). Fältet står
    * kvar eftersom svepets svar får nya fält men aldrig tappar gamla
    * (architecture.md, Svepkontraktet).
    */
   automatiska: [];
-  /** Kvitton som redan har en `binda_kostnad`-köpost, i vilken status som helst. */
+  /** Kvitton vars köposter spärrar ett nytt förslag enligt hashregeln. */
   redan_koade: string[];
+  avvisade: Array<{ receipt_id: string; orsak: 'underlag_ogiltigt' }>;
 }
 
 /** Ett svep som inte hade något att binda svarar med det här, aldrig med null. */
 export function tomtBindningsutfall(): Bindningsutfall {
-  return { koade: [], automatiska: [], redan_koade: [] };
+  return { koade: [], automatiska: [], redan_koade: [], avvisade: [] };
 }
 
-/**
- * Kvittona som redan har en `binda_kostnad`, i vilken status som helst.
- *
- * Idempotensen per kvitto gäller alla statusar (B-6, Story 1.8). Ett nej är
- * Davids svar och återkommer inte som ny fråga, och en köpost som väntar, är
- * mottagen, verkställd eller fallerad föder ingen andra. Ett nytt förslag när
- * underlaget ändrats är Story 5.1:s regel (`forslag_hash`). `lower`: en
- * människas köpost kan bära id:t i versaler (`UuidSchema` tar emot dem), och
- * jsonb jämför text. Mängden bär id:n i gemener.
- */
+/** En listfråga för alla statusar och hashar; id i JSON jämförs i gemener. */
+interface Bindningskopost { status: string; mottagen_ej_verkstalld: boolean; forslag_hash: string | null }
 async function kvittonMedBindningskopost(
   client: PoolClient, companyId: string, receiptIds: string[],
-): Promise<Set<string>> {
-  const res = await client.query<{ receipt_id: string }>(
-    `SELECT DISTINCT lower(input->>'receipt_id') AS receipt_id FROM action_approvals
+): Promise<Map<string, Bindningskopost[]>> {
+  const res = await client.query<Bindningskopost & { receipt_id: string }>(
+    `SELECT lower(input->>'receipt_id') AS receipt_id, status,
+            (${MOTTAGET_EJ_VERKSTALLT}) AS mottagen_ej_verkstalld,
+            input->'forslagsunderlag'->>'forslag_hash' AS forslag_hash
+       FROM action_approvals
       WHERE company_id = $1 AND action = 'binda_kostnad'
-        AND lower(input->>'receipt_id') = ANY($2::text[])`,
+        AND lower(input->>'receipt_id') = ANY($2::text[])
+      ORDER BY created_at, id`,
     [companyId, receiptIds.map((id) => id.toLowerCase())],
   );
-  return new Set(res.rows.map((r) => r.receipt_id));
+  const per = new Map<string, Bindningskopost[]>();
+  for (const r of res.rows) per.set(r.receipt_id, [...per.get(r.receipt_id) ?? [], r]);
+  return per;
 }
 
 /**
@@ -106,17 +106,25 @@ export async function bindSvepetsForslag(
   // svep ser de här köposterna, eftersom allt sker i svepets transaktion.
   const harKopost = await kvittonMedBindningskopost(client, companyId, forslag.map((f) => f.receipt_id));
   for (const f of forslag) {
-    if (harKopost.has(f.receipt_id.toLowerCase())) {
+    if (nyttBindningsforslag(harKopost.get(f.receipt_id.toLowerCase()) ?? [], f.forslagsunderlag?.forslag_hash ?? '') === 'redan_koad') {
       utfall.redan_koade.push(f.receipt_id);
       continue;
     }
-    const mal = valjBindningsmal(delar, f);
+    const underlag = f.forslagsunderlag;
+    const provat = BindaKostnadSchema.safeParse({ receipt_id: f.receipt_id, contract_part_id: underlag?.mal?.part_id, forslagsunderlag: underlag });
+    const tillatna = [delar.rot, ...delar.strommar, ...delar.alla];
+    if (!provat.success || !provat.data.forslagsunderlag || !tillatna.some((d) => d.part_id.toLowerCase() === provat.data.contract_part_id.toLowerCase())) {
+      utfall.avvisade.push({ receipt_id: f.receipt_id, orsak: 'underlag_ogiltigt' });
+      continue;
+    }
+    const u = provat.data.forslagsunderlag;
+    const mal = u.mal;
     // Svepets förslag är maskinens, oavsett vem som körde svepet: aktören är
     // alltid 'agent' (architecture.md, Kommunikationsmönster; PRD FR-33). Samma
     // funktion och samma auditrad som `executeAction`:s sensitive-gren.
     const koad = await createApproval(
       client, companyId, userId, 'agent', 'binda_kostnad',
-      { receipt_id: f.receipt_id, contract_part_id: mal.part_id },
+      provat.data,
     );
     await writeAudit(client, {
       companyId,
@@ -124,9 +132,10 @@ export async function bindSvepetsForslag(
       action: 'action.approval_requested',
       entityType: 'approval',
       entityId: koad.id,
-      details: { action: 'binda_kostnad', actor: 'agent', receipt_id: f.receipt_id, leverabel_kod: f.leverabel_kod ?? null },
+      details: { action: 'binda_kostnad', actor: 'agent', receipt_id: f.receipt_id, leverabel_kod: u.leverabel_kod, forslag_hash: u.forslag_hash },
     });
-    utfall.koade.push({ receipt_id: f.receipt_id, contract_part_id: mal.part_id, approval_id: koad.id });
+    utfall.koade.push({ receipt_id: f.receipt_id, contract_part_id: mal.part_id, approval_id: koad.id, forslag_hash: u.forslag_hash });
+    harKopost.set(f.receipt_id.toLowerCase(), [{ status: 'pending', mottagen_ej_verkstalld: false, forslag_hash: u.forslag_hash }]);
   }
   return utfall;
 }
@@ -144,8 +153,8 @@ export interface BindaKostnadInput {
  * godkänt köposten. Därför är en FLYTT tillåten: en kostnad som är bunden till
  * ström eller uppdrag ska gå att flytta till rätt leverabel, och det är just
  * det godkännandet betyder
- * (KRAV-2, "flyttbar via kön"). `oplanerad` rörs aldrig — den säger att kostnaden
- * inte fanns i baselinen, och det blir inte osant för att någon flyttar den.
+ * (KRAV-2, "flyttbar via kön"). En leverabelbindning sätter `oplanerad`,
+ * eftersom baselinen saknar kostnadsplan. Ingen bindning tar bort märkningen.
  *
  * Spärren mot ett avslutat uppdrag ligger kvar i 0068:s `receipts_vagrar_avslutat`
  * — en kopia av den här hade hunnit divergera från triggern.
@@ -163,16 +172,20 @@ export async function bindaKostnad(
 
   // Grannbolagets del döljs redan av RLS; uppslaget gör svaret till "finns inte"
   // i stället för ett främmande-nyckel-fel ur databasen.
-  const del = await client.query<{ id: string; code: string }>(
-    'SELECT id, code FROM contract_parts WHERE id = $1 AND company_id = $2',
+  const del = await client.query<{ id: string; code: string; parent_part_id: string | null; foralder_parent_id: string | null }>(
+    `SELECT d.id, d.code, d.parent_part_id, p.parent_part_id AS foralder_parent_id
+       FROM contract_parts d LEFT JOIN contract_parts p
+         ON p.id = d.parent_part_id AND p.company_id = d.company_id AND p.contract_id = d.contract_id
+      WHERE d.id = $1 AND d.company_id = $2`,
     [input.contract_part_id, companyId],
   );
   const delrad = del.rows[0];
   if (!delrad) throw new NotFoundError('contract_part');
 
-  const uppdaterad = await client.query(
-    'UPDATE receipts SET contract_part_id = $3 WHERE id = $1 AND company_id = $2 RETURNING id',
-    [input.receipt_id, companyId, input.contract_part_id],
+  const markning = oplaneradVidBindning(bindningsniva(delrad, delrad.parent_part_id === null ? null : { parent_part_id: delrad.foralder_parent_id }));
+  const uppdaterad = await client.query<{ oplanerad: boolean }>(
+    'UPDATE receipts SET contract_part_id = $3, oplanerad = oplanerad OR $4 WHERE id = $1 AND company_id = $2 RETURNING id, oplanerad',
+    [input.receipt_id, companyId, input.contract_part_id, markning],
   );
   if (uppdaterad.rowCount !== 1) {
     throw new ConflictError('receipt_changed', 'kvittot ändrades av en annan skrivning — försök igen');
@@ -189,6 +202,7 @@ export async function bindaKostnad(
       till_contract_part_id: input.contract_part_id,
       code: delrad.code,
       status: kvitto.status,
+      oplanerad: uppdaterad.rows[0]!.oplanerad,
     },
   });
 
@@ -197,5 +211,6 @@ export async function bindaKostnad(
     contract_part_id: input.contract_part_id,
     contract_part_code: delrad.code,
     status: kvitto.status,
+    oplanerad: uppdaterad.rows[0]!.oplanerad,
   };
 }

@@ -30,6 +30,46 @@ export function forslagHash(underlag: unknown): string {
   return createHash('sha256').update(sorteradJson(utanLastNar(underlag)), 'utf8').digest('hex');
 }
 
+export const KOSTNADSSKAL = ['handlingens_titel', 'tidigare_bindning', 'verifikattext_kod', 'verifikattext_uppdrag', 'datum_i_intervall', 'flera_leverabler', 'ingen_leverabel'] as const;
+export const KOSTNADSKALLOR = ['kvitto', 'verifikat', 'tidigare_kvitto', 'referens'] as const;
+const KostnadstextSchema = z.string().refine((v) => v.trim().length > 0, { message: 'ange text' });
+/** Serverbyggt underlag utan namn eller belopp och utan snävare tak än källan. */
+export const KostnadsunderlagSchema = z.object({
+  receipt_id: UuidSchema, kvitto_datum: IsoDateSchema, leverantor_id: UuidSchema.nullable(),
+  mal: z.object({ part_id: UuidSchema, kod: KostnadstextSchema, niva: z.enum(['uppdrag', 'strom', 'leverabel']) }).strict(),
+  oplanerad: z.boolean(), leverabel_kod: KostnadstextSchema.nullable(),
+  skal: z.array(z.object({ kod: z.enum(KOSTNADSSKAL), text: KostnadstextSchema, leverabel_kod: KostnadstextSchema.nullable() }).strict()).min(1),
+  kallor: z.array(z.object({ typ: z.enum(KOSTNADSKALLOR), id: UuidSchema }).strict()).min(1),
+  forslag_hash: z.string().regex(/^[a-f0-9]{64}$/), last_nar: IsoDateTimeSchema,
+}).strict().superRefine((u, ctx) => {
+  const forsta = u.kallor[0];
+  if (forsta?.typ !== 'kvitto' || forsta.id.toLowerCase() !== u.receipt_id.toLowerCase()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['kallor'], message: 'första källan är kvittot' });
+  if (new Set(u.kallor.map((k) => k.id.toLowerCase())).size !== u.kallor.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['kallor'], message: 'en källa står bara en gång' });
+  const { forslag_hash, ...bas } = u;
+  if (forslag_hash !== forslagHash(bas)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['forslag_hash'], message: 'underlagets kontrollsumma stämmer inte' });
+});
+export type Bindningsunderlag = z.infer<typeof KostnadsunderlagSchema>;
+
+/** Strukturella indata håller lib/ fri från tjänsteimporter. Kastar aldrig. */
+export function byggKostnadsunderlag(f: {
+  mal: { part_id: string; code: string }; niva: Bindningsunderlag['mal']['niva']; oplanerad: boolean;
+  leverabel_kod: string | null; skal: Bindningsunderlag['skal']; kallor: Bindningsunderlag['kallor'];
+}, kvitto: { receipt_id: string; datum: string; leverantor_id: string | null }, lastNar: string): { ok: true; underlag: Bindningsunderlag } | { ok: false } {
+  try {
+    const kallor = [...f.kallor].sort((a, b) => KOSTNADSKALLOR.indexOf(a.typ) - KOSTNADSKALLOR.indexOf(b.typ) || a.id.localeCompare(b.id));
+    const bas = { receipt_id: kvitto.receipt_id, kvitto_datum: kvitto.datum, leverantor_id: kvitto.leverantor_id,
+      mal: { part_id: f.mal.part_id, kod: f.mal.code, niva: f.niva }, oplanerad: f.oplanerad, leverabel_kod: f.leverabel_kod,
+      skal: f.skal, kallor, last_nar: lastNar };
+    const r = KostnadsunderlagSchema.safeParse({ ...bas, forslag_hash: forslagHash(bas) });
+    return r.success ? { ok: true, underlag: r.data } : { ok: false };
+  } catch { return { ok: false }; }
+}
+
+/** Öppna mandat och äldre förslag spärrar alltid; avgjorda spärrar samma hash. */
+export function nyttBindningsforslag(befintliga: ReadonlyArray<{ status: string; mottagen_ej_verkstalld: boolean; forslag_hash: string | null }>, hash: string): 'koa' | 'redan_koad' {
+  return befintliga.some((b) => ['pending', 'approved', 'failed'].includes(b.status) || b.mottagen_ej_verkstalld || b.forslag_hash === null || b.forslag_hash === hash) ? 'redan_koad' : 'koa';
+}
+
 // Story 1.14 (B-4, FR-41 punkt 2): Övrigt-förslagets rena regler. En regel har
 // en plats: beräkningen, datumet, orsaken och förslagstexten står bara här, och
 // svepets tjänst skriver aldrig om dem. Ingen databas, ingen klocka.

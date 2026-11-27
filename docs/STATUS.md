@@ -153,6 +153,54 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
+  Granskningsfyndet om sex saknade provfiler prövat mot git, inte bara
+  arbetskopian. Alla sex finns redan i `main...HEAD`, commit `0747ec0`:
+  `server/test/kostnadsforslagHelper.ts` (+110),
+  `server/test/uppdragsytan-kostnadsforslag.test.ts` (+363),
+  `server/test/uppdragsytan-kostnadssparr.test.ts` (+24/-20),
+  `server/test/uppdragsytan-svep-bindning.test.ts` (+9/-7),
+  `server/test/uppdragsytan-svep.test.ts` (+3/-2) och
+  `server/test/uppdragsytan-bindning.test.ts` (+3/-5).
+  Hela File List kontrollerad: 19/19 kod-, prov- och dokumentpatchar finns;
+  19 negativa kontroller upptäcker varje utelämnad patch. Diffen har
+  122 428 tecken och första provpatchen börjar vid index 63 959. En
+  simulerad kapning vid 60 000 tecken döljer exakt fyndets sex provfiler;
+  faktisk kapning i kedjan är inte bevisad. Belägget är fullständig
+  `git diff main...HEAD --numstat -- server/test` och filvisa patchar.
+  Ingen produktionskod eller provassertion ändrad, ingen migration,
+  rutt eller nytt beroende; CRM-kontraktet oförändrat. Stilvalet står kvar:
+  husets Public Sans, skala, tabeller och Oplanerad-chip gör kostnadsraderna
+  igenkännbara. Typkontroll exit 0. Riktad och full `npm test` gav exit 1
+  före fallen: `connect EPERM 127.0.0.1:5433`. Databasfallen är inte körda
+  i omtaget; tidigare grönt utfall nedan är historiskt. Kedjan kör sviten
+  före granskningen enligt databasundantaget. Bygge och Hermes driftprov
+  inte körda här, inget nytt driftutfall påstås.
+
+- **2026-11-27 — 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
+  Svepet förifyller bindningsförslag ur titel, tidigare leverantörsbindning
+  och uppdragets namn i bokföringstext, med skäl, källor och stabil hash.
+  Delat strikt schema prövas före kön och av läsvägen. Öppna mandat och
+  äldre förslag spärrar alltid; ändrat underlag kan köas efter avgörande.
+  Verkställigheten märker leverabelbindningar Oplanerad och tar aldrig bort
+  märkningen. Cachen och förslaget bär inga belopp eller leverantörsnamn.
+  Pengadelen visar bokförd total inklusive obundet, och rapporten läser
+  periodens oplanerade kostnader levande. Ej bokfört visas utan belopp.
+  Husets Public Sans, skala, tabeller, chip och fokusram används; inga nya
+  kontroller ändrar fokusordningen. Tomt och oläst underlag har egna besked,
+  och serverrenderingen använder befintlig laddning och felsida.
+  Ingen migration, rutt eller nytt beroende tillkom; CRM-kontraktet berörs
+  inte. Inga RESTER. 40 nya fall F0–F5 samt föreskrivna uppdateringar av
+  kostnadsspärrs- och svepproven. Typkontroll exit 0. Sandlådans testförsök
+  före/efter varje uppgift gav EPERM på 127.0.0.1:5433 före fallen; med
+  utökad verktygsbehörighet nåddes samma stående testdatabas. Första riktade
+  körningen gav 39 gröna och ett riggfel (blanksteg i testmejladressen), som
+  rättades. Slutgrind: `npm run typecheck` exit 0, hela `npm test` exit 0:
+  `Test Files 217 passed (217)`, `Tests 4233 passed (4233)`, inklusive
+  alla 40 nya. `git diff --check` exit 0. DoD prövad punkt för punkt och
+  berättelsen/sprintposten står review. Bygge och Hermes driftprov är inte
+  körda här enligt uppdraget; inget nytt driftutfall påstås.
+
 - **2026-11-27 — Story 5.11 (crm).**
   AI-samtalet tillagt bland löftesvägarna i `CAPTURE_PATHS_IN_OPERATION`;
   hintens form skiljer källor från tillfällen enligt UX K8. De befintliga tre

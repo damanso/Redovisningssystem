@@ -20,7 +20,8 @@ import { beraknaTackning, MANDATKALLOR, TACKNINGSNYCKEL, type Mandatkalla } from
 import { z } from 'zod';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { NotFoundError } from '../lib/errors.js';
-import { valjBindningsmal } from '../lib/bindningsmal.js';
+import { byggKostnadsunderlag } from '../lib/beslutsunderlag.js';
+import { valjBindningsmal, forifyllBindning, bindningsniva, type Bindningsniva } from '../lib/bindningsmal.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import { harledTroskellarm, type Plandel, type Trosklar } from '../lib/troskel.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
@@ -233,6 +234,8 @@ interface Uppdragsrad {
   contract_id: string;
   project_id: string;
   projektstatus: string;
+  projekt_namn: string;
+  avtal_namn: string;
   /** Taxekällorna prognosen får använda (`gallandeTaxa` utan post-/delled). */
   avtal_taxa: number | null;
   projekt_taxa: number | null;
@@ -384,11 +387,15 @@ interface Kvittorad {
   receipt_id: string;
   receipt_date: string;
   total_ore: string;
-  leverantor: string;
+  leverantor: string | null;
+  supplier_id: string | null;
+  voucher_id: string | null;
+  description: string;
+  voucher_description: string | null;
 }
 
 /** Formen delas med bindningssteget (S6.1) — två kopior hinner divergera. */
-type Delrad = Bindningsdel;
+type Delrad = Bindningsdel & { niva: Bindningsniva };
 
 /** Gemensam normalisering för leverantörsjämförelsen. Aldrig för id:n. */
 function normalisera(v: string): string {
@@ -415,10 +422,10 @@ function normalisera(v: string): string {
 async function bindningsmal(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<{ rot: Delrad | null; strommar: Delrad[]; alla: Delrad[] }> {
-  const res = await client.query<Delrad & { sort_order: number; active: boolean; parent_code: string | null }>(
+  const res = await client.query<Delrad & { sort_order: number; active: boolean; parent_code: string | null; foralder_parent_id: string | null }>(
     `SELECT DISTINCT ON (cp.code)
             cp.id AS part_id, cp.code, cp.parent_part_id, cp.start_date::text,
-            cp.end_date::text, cp.sort_order, cp.active, parent.code AS parent_code
+            cp.end_date::text, cp.sort_order, cp.active, parent.code AS parent_code, parent.parent_part_id AS foralder_parent_id
        FROM contract_parts cp
        LEFT JOIN contract_parts parent
          ON parent.id = cp.parent_part_id AND parent.company_id = cp.company_id
@@ -427,7 +434,7 @@ async function bindningsmal(
       ORDER BY cp.code, cp.valid_from DESC, cp.created_at DESC, cp.id DESC`,
     [companyId, contractId],
   );
-  const aktiva = res.rows.filter((r) => r.active);
+  const aktiva = res.rows.filter((r) => r.active).map((r) => ({ ...r, niva: bindningsniva(r, r.parent_part_id === null ? null : { parent_part_id: r.foralder_parent_id }) }));
   const rot = aktiva.find((r) => r.code === ROTKOD && r.parent_part_id === null) ?? null;
   const strommar = rot === null ? [] : aktiva
     .filter((r) => r.parent_code === rot.code)
@@ -440,14 +447,27 @@ async function bindningsmal(
 /** Bokförda kvitton UTAN avtalsdel. Ett bundet kvitto flyttas aldrig av ett svep. */
 async function obundnaKvitton(client: PoolClient, companyId: string): Promise<Kvittorad[]> {
   const res = await client.query<Kvittorad>(
-    `SELECT r.id AS receipt_id, r.receipt_date::text, r.total_ore::text, s.name AS leverantor
+    `SELECT r.id AS receipt_id, r.receipt_date::text, r.total_ore::text, s.name AS leverantor, r.supplier_id, r.voucher_id, r.description, v.description AS voucher_description
        FROM receipts r
-       JOIN suppliers s ON s.id = r.supplier_id AND s.company_id = r.company_id
+       LEFT JOIN suppliers s ON s.id = r.supplier_id AND s.company_id = r.company_id
+       LEFT JOIN vouchers v ON v.id = r.voucher_id AND v.company_id = r.company_id
       WHERE r.company_id = $1 AND r.status = 'booked' AND r.contract_part_id IS NULL
-      ORDER BY r.receipt_number`,
+      ORDER BY r.receipt_number, r.id`,
     [companyId],
   );
   return res.rows;
+}
+
+/** Senaste bundna kvittot per leverantör i avtalet, över alla delversioner. */
+async function tidigareBindningar(client: PoolClient, companyId: string, contractId: string) {
+  const res = await client.query<{ supplier_id: string; receipt_id: string; kod: string }>(
+    `SELECT DISTINCT ON (r.supplier_id) r.supplier_id, r.id AS receipt_id, cp.code AS kod
+       FROM receipts r JOIN contract_parts cp ON cp.id = r.contract_part_id AND cp.company_id = r.company_id
+      WHERE r.company_id = $1 AND cp.contract_id = $2 AND r.supplier_id IS NOT NULL
+      ORDER BY r.supplier_id, r.receipt_date DESC, r.receipt_number DESC, r.id DESC`,
+    [companyId, contractId],
+  );
+  return new Map(res.rows.map((r) => [r.supplier_id, { receipt_id: r.receipt_id, kod: r.kod }]));
 }
 
 // ---------------------------------------------------------------------------
@@ -795,50 +815,37 @@ async function svepEttUppdrag(
     });
   }
 
-  // (5) Kostnadsbindningsförslaget. Matchningen går på leverantörens namn mot
-  // leverabelhandlingens titel — det enda som binder ett kvitto i redovisningen
-  // till ett dokument i Drive. Namn under tre tecken jämförs inte: "AB" står i
-  // varannan titel, och ett förslag som alltid träffar är brus.
+  // (5) Varje kandidat förifylls ur bokföringsdata; datum ensamt räcker aldrig.
   const medTitel = leverabelhandlingar(verifierade, koder);
-  // Körningens egna förslag, i härledningsordning — bindningssteget nedan verkar
-  // ENBART på dem. Ett kvitto utan kostnadsförslag är en allmän bolagskostnad
-  // och hör inte till uppdraget; det rörs aldrig.
   const kostnadsforslag: Kostnadsforslag[] = [];
-  let bindningsdelar: { rot: Delrad; strommar: Delrad[]; alla: Delrad[] } | null = null;
-  if (medTitel.length > 0) {
-    const { rot, strommar, alla } = await bindningsmal(client, companyId, rad.contract_id);
-    if (rot !== null) {
-      bindningsdelar = { rot, strommar, alla };
-      for (const kvitto of await obundnaKvitton(client, companyId)) {
-        const namn = normalisera(kvitto.leverantor);
-        if (namn.length < 3) continue;
-        const traff = medTitel.find((v) => normalisera(v.utfall.referens.titel_vid_lankning!).includes(namn));
-        if (traff === undefined) continue;
-        // Cachens förslag är den grövre nivån: strömmen vars intervall täcker
-        // datumet, annars rotdelen. Samma regel som bindningssteget använder när
-        // ingen leverabel kan föreslås (`valjBindningsmal` utan leverabel).
-        // Kvittot rörs inte.
-        const mal = valjBindningsmal({ rot, strommar, alla }, { datum: kvitto.receipt_date });
-        varden.push({
-          nyckel: `kostnadsforslag:${kvitto.receipt_id}`,
-          kalla: 'redovisning',
-          varde: {
-            receipt_id: kvitto.receipt_id,
-            datum: kvitto.receipt_date,
-            belopp_ore: Number(kvitto.total_ore),
-            leverantor: kvitto.leverantor,
-            leverabel_kod: traff.obs.leverabel_kod,
-            referens_id: traff.utfall.referens.id,
-            forslag_part_id: mal.part_id,
-            forslag_kod: mal.code,
-          },
-        });
-        kostnadsforslag.push({
-          receipt_id: kvitto.receipt_id,
-          datum: kvitto.receipt_date,
-          leverabel_kod: traff.obs.leverabel_kod,
-        });
-      }
+  const avvisade: Bindningsutfall['avvisade'] = [];
+  const { rot: bindningsrot, strommar, alla } = await bindningsmal(client, companyId, rad.contract_id);
+  const bindningsdelar = bindningsrot === null ? null : { rot: bindningsrot, strommar, alla };
+  if (bindningsdelar !== null) {
+    const tidigare = await tidigareBindningar(client, companyId, rad.contract_id);
+    const lastNar = new Date().toISOString();
+    for (const radKvitto of await obundnaKvitton(client, companyId)) {
+      const namn = normalisera(radKvitto.leverantor ?? '');
+      const traffar = namn.length < 3 ? [] : medTitel.filter((v) => normalisera(v.utfall.referens.titel_vid_lankning!).includes(namn));
+      const kvitto = { receipt_id: radKvitto.receipt_id, datum: radKvitto.receipt_date,
+        leverantor_id: radKvitto.supplier_id, voucher_id: radKvitto.voucher_id,
+        texter: [radKvitto.description, radKvitto.voucher_description ?? ''] };
+      const f = forifyllBindning({ kvitto, delar: bindningsdelar,
+        titeltraffar: traffar.map((v) => ({ kod: v.obs.leverabel_kod!, referens_id: v.utfall.referens.id })),
+        tidigare: radKvitto.supplier_id === null ? null : tidigare.get(radKvitto.supplier_id) ?? null,
+        uppdragsnamn: [rad.projekt_namn, rad.avtal_namn] });
+      if (f === null) continue;
+      const byggt = byggKostnadsunderlag(f, kvitto, lastNar);
+      if (!byggt.ok) { avvisade.push({ receipt_id: kvitto.receipt_id, orsak: 'underlag_ogiltigt' }); continue; }
+      // Äldre köposter läser titelträffens kod här. Belopp och namn stannar i källan.
+      const mal = valjBindningsmal(bindningsdelar, { datum: kvitto.datum });
+      const traff = traffar[0];
+      varden.push({ nyckel: `kostnadsforslag:${kvitto.receipt_id}`, kalla: 'redovisning', varde: {
+        receipt_id: kvitto.receipt_id, datum: kvitto.datum,
+        ...(traff ? { leverabel_kod: traff.obs.leverabel_kod, referens_id: traff.utfall.referens.id } : {}),
+        forslag_part_id: mal.part_id, forslag_kod: mal.code,
+      } });
+      kostnadsforslag.push({ receipt_id: kvitto.receipt_id, datum: kvitto.datum, forslagsunderlag: byggt.underlag });
     }
   }
 
@@ -851,6 +858,8 @@ async function svepEttUppdrag(
   const bindningar = bindningsdelar === null || kostnadsforslag.length === 0
     ? tomtBindningsutfall()
     : await bindSvepetsForslag(client, companyId, userId, kostnadsforslag, bindningsdelar);
+
+  bindningar.avvisade = [...avvisade, ...bindningar.avvisade];
 
   return {
     contract_id: rad.contract_id,
@@ -914,7 +923,7 @@ export async function korUppdragssvep(
   const mottagna = verkstallMottagna ? await verkstallMottagna(client) : { verkstallda: [], kvar: [] };
 
   const alla = await client.query<Uppdragsrad>(
-    `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus,
+    `SELECT c.id AS contract_id, c.project_id, p.status AS projektstatus, p.name AS projekt_namn, c.name AS avtal_namn,
             c.hourly_rate_ore AS avtal_taxa, p.hourly_rate_ore AS projekt_taxa,
             c.troskel_procent::text, c.troskel_golv_ore,
             c.troskel_golv_timmar::text, c.troskel_dagar

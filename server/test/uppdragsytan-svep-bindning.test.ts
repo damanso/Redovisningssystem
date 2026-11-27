@@ -261,20 +261,22 @@ describe('utan löv köar svepet till strömmen, annars rotdelen', () => {
     expect(utfall.bindningar.automatiska).toEqual([]);
     expect(utfall.bindningar.redan_koade).toEqual([]);
     for (const [receipt, del] of [[teliaSen, stromS2B], [teliaTidig, rotB]]) {
-      expect(utfall.bindningar.koade).toContainEqual({ receipt_id: receipt, contract_part_id: del, approval_id: expect.any(String) });
+      expect(utfall.bindningar.koade).toContainEqual({ receipt_id: receipt, contract_part_id: del, approval_id: expect.any(String), forslag_hash: expect.any(String) });
       expect((await kvitton()).get(receipt!)).toMatchObject({ contract_part_id: null, oplanerad: false });
       const post = (await bindningskon()).find((p) => p.input.receipt_id === receipt)!;
-      expect(post.input).toEqual({ receipt_id: receipt, contract_part_id: del });
+      expect(post.input).toEqual({ receipt_id: receipt, contract_part_id: del, forslagsunderlag: expect.objectContaining({ mal: expect.objectContaining({ part_id: del }) }) });
       expect(post).toMatchObject({ requested_actor: 'agent' });
     }
     expect(await bindningskon()).toHaveLength(koFore.length + 2);
   });
   it('bara köningen auditloggas, med agentens aktör', async () => {
     expect(await audit('receipt.contract_part_assigned')).toEqual([]);
-    const rader = (await audit('action.approval_requested')).filter((r) => r.details.action === 'binda_kostnad' && r.details.leverabel_kod === 'L4');
+    const poster = (await bindningskon()).filter((p) => [teliaSen, teliaTidig].includes(p.input.receipt_id as string));
+    const rader = (await audit('action.approval_requested')).filter((r) => poster.some((p) => p.id === r.entity_id));
     expect(rader).toHaveLength(2);
-    for (const r of rader) expect(r.details).toMatchObject({ actor: 'agent', leverabel_kod: 'L4' });
-    expect(rader.map((r) => r.entity_id).sort()).toEqual((await bindningskon()).filter((p) => [teliaSen, teliaTidig].includes(p.input.receipt_id as string)).map((p) => p.id).sort());
+    for (const r of rader) expect(r.details).toMatchObject({ actor: 'agent', leverabel_kod: null,
+      forslag_hash: (poster.find((p) => p.id === r.entity_id)!.input.forslagsunderlag as { forslag_hash: string }).forslag_hash });
+    expect(rader.map((r) => r.entity_id).sort()).toEqual(poster.map((p) => p.id).sort());
   });
   it('köposternas mål är rotdelen eller en ström', async () => {
     const delar = await bindningsdelar(avtalB);
@@ -347,7 +349,7 @@ describe('bindningsmål efter nya baselineversioner', () => {
     const utfall = await svep(indata(avtal, ref, leverabel));
     const mal = kod === 'UPPDRAG' ? null : kod === 'S2' ? ursprungliga.rot : strom;
     expect(utfall.bindningar.koade).toEqual(mal === null ? [] : [{
-      receipt_id: kvitto, contract_part_id: mal.part_id, approval_id: expect.any(String),
+      receipt_id: kvitto, contract_part_id: mal.part_id, approval_id: expect.any(String), forslag_hash: expect.any(String),
     }]);
     expect(utfall.bindningar.automatiska).toEqual([]);
     expect((await kvitton()).get(kvitto)).toMatchObject({ contract_part_id: null, oplanerad: false });
@@ -371,7 +373,7 @@ describe('bindningsmål efter nya baselineversioner', () => {
     const aktivtUtfall = await svep(indata(avtal, ref, leverabel));
     const malId = kod.startsWith('L') || kod === 'S2' ? nyId : strom.part_id;
     expect(aktivtUtfall.bindningar.koade).toEqual((kod === 'UPPDRAG' ? [kvitto, kvitto2] : [kvitto2]).map((receipt_id) => ({
-      receipt_id, contract_part_id: malId, approval_id: expect.any(String),
+      receipt_id, contract_part_id: malId, approval_id: expect.any(String), forslag_hash: expect.any(String),
     })));
     expect(aktivtUtfall.bindningar.redan_koade).toEqual(kod === 'UPPDRAG' ? [] : [kvitto]);
     expect(aktivtUtfall.bindningar.automatiska).toEqual([]);
