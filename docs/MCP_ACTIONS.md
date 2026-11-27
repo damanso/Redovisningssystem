@@ -2271,6 +2271,22 @@ inloggning visar scopelinjen (NFR-9).
   tak aldrig visas som en ram. `rytm` är rytmkolumnerna, ankaret och dess källa
   plus `{ lage, period, nasta }` ur rytmregeln för läsvägens UTC-dag. Färskheten
   får `farskhet.matt` och `farskhet.rytm`, båda direktlästa ur redovisningen.
+- **Nästa leverans (Story 4.3, FR-45):** varje avtal bär
+  `avtal[].nasta_leverans`, ett `Lasvarde` med källan redovisningen och
+  läsvägens lästid. Värdet är antingen ”ingen” (tomt register, eller varje
+  leverabel överlämnad eller godkänd) eller ”nasta” med kod, läge, namn,
+  acceptanskriterium, datum, mottagare och revision. Varje värde bär sin
+  källa: registret, baselinen, kontraktet eller överlämningen. Regeln står i
+  `nastaLeverans` i `server/src/lib/nastaLeverans.ts`: bara ej påbörjad,
+  pågår och avvisad kan stå i tur. Ordningen är tidigaste slut av eget eller
+  ärvt intervall ur `byggPlan`, därefter L-numret räknat som tal; odaterade
+  står sist med ”datum saknas”. Före första överlämningen är mottagaren
+  avtalets mottagarpart, märkt ”ur kontraktet, ingen överlämning ännu”, och
+  beskedet säger ”nästa överlämning blir revision 1”. Efter en överlämning
+  visas transmittalens mottagare och revision, och nästa revision är den
+  registrerade plus ett. Ingenting lagras, inget statusfält eller kolumn
+  tillkommer, och ordningen är ingen prioritering. Beskedet visas i Lägets
+  kort Leverabler per läge med dess befintliga färskhetsrad.
 - **Beslutens referenser (Story 3.1):** `beslut.registrerade[].referenser[]`
   bär `status`, `senast_verifierad` och `handelse_datum` ur referensraden.
   Det frysta underlaget och `forslag_hash` ändras inte; källorna fryses som id.
@@ -2282,7 +2298,8 @@ inloggning visar scopelinjen (NFR-9).
   `uppdrag_svepvarde` — att utvärdera FR-3:s dubbelvillkor en andra gång hade
   gett två svar på "larmar det?".
 - **Färskhet per källa, aldrig en sidstämpel (FR-35).** De direktlästa
-  delarna, sedan Story 2.6 också `farskhet.scopelinje`, bär
+  delarna, sedan Story 2.6 också `farskhet.scopelinje` och sedan Story 4.3
+  `farskhet.nasta_leverans`, bär
   `kalla: 'redovisning'` och läsningens tidpunkt; tröskeln bär den
   `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
