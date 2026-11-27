@@ -153,6 +153,40 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 4-3-uppdragsvyn-visar-nasta-leverans.**
+  Rättat D1:s Markdown-avgränsning i
+  `server/test/uppdragsytan-nasta-leverans.test.ts`: ett borttaget `#` gjorde
+  öppningsrubriken till en falsk slutrubrik. Båda utdragen använder nu samma
+  radbaserade hjälpare. D1 täcker 14 kombinationer av rubriknivåer, LF/CRLF,
+  underrubriker, grannavsnitt och filslut, med rubrikomnämnanden och lika
+  prefix före öppningsraden. Innehållskraven och negativa kontrollerna behålls.
+  Kedjans bifogade D1-FAIL är det körda röda belägget. Lokal typkontroll
+  före/efter rättelsen och bygge efter rättelsen exit 0; git diff --check exit 0.
+  Riktad körning före rättelsen och hela `npm test` efter rättelsen inte körda
+  på fallnivå: globalSetup ger `connect EPERM 127.0.0.1:5433`, exit 1.
+  Kedjans testgrind återstår enligt databasundantaget; inga lokala PASS eller
+  nya driftutfall påstås. Husets textskala, Public Sans, statuschip och
+  fokusram ger fortsatt samma läsrytm och tangentbordsstöd som Lägets kort.
+  Ingen migration, rutt, åtgärd eller nytt beroende tillkom; CRM-kontraktet berörs inte.
+
+- **2026-11-27 — 4-3-uppdragsvyn-visar-nasta-leverans.**
+  Regeln i `server/src/lib/nastaLeverans.ts` väljer nästa leverans ur registret
+  och `byggPlan`: kandidatlägen, tidigaste eget eller ärvt slut, numeriskt
+  L-nummer och odaterade sist. `server/src/services/uppdragLage.ts` bär beskedet
+  med källa och lästid per avtal. Lägets befintliga leverabelkort visar datum,
+  acceptanskriterium, kontraktsmottagare före överlämning och transmittal efter,
+  samt registrerad och nästa revision. Husets textskala, typografi, statuschip,
+  färskhetsrad, tomgrammatik och tangentbordets fokusram används. Inga RESTER
+  hittades. Ingen migration, rutt, åtgärd eller nytt beroende tillkom;
+  CRM-kontraktet berörs inte. 22 nya fall i
+  `server/test/uppdragsytan-nasta-leverans.test.ts`, skrivna före respektive kod.
+  Typkontrollen var röd före regelmodulen (TS2307) och läsvägsfältet (TS2339),
+  sedan grön efter uppgift 1–3. Riktade tester och hela `npm test` inte körda
+  på fallnivå: globalSetup ger `connect EPERM 127.0.0.1:5433`, exit 1.
+  Slutgrind: `npm run typecheck` och `npm run build` exit 0; hela `npm test`
+  exit 1 före fallen med samma EPERM. Kedjans typkontroll och hela testsvit
+  återstår som exekverande belägg; inga nya driftutfall påstås.
+
 - **2026-11-27 — Omtag: 4-4-faktureringsflodet-laser-godkanda-leverabler-som-underlag.**
   Rättat läsordningen i `server/src/services/invoiceFromTime.ts`: samtliga
   avtals register läses före den gemensamma godkännandehistoriken. Med

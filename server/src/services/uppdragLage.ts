@@ -7,7 +7,7 @@
 // ställa på en gång. Den här filen är den EN läsväg som sätter ihop dem, och
 // ytans enda: vyn och MCP läser samma svar, så de kan aldrig svara olika.
 //
-// Fyra meningar bär filen:
+// Fem meningar bär filen:
 //
 //   * **Ingenting räknas om (FR-25).** Förbrukningen mot ram kommer ur
 //     `getContractUsage`, alltså ur husets ENDA takberäkning — samma tal som
@@ -15,6 +15,10 @@
 //     `listTimeEntries` med husets egna predikat, aldrig ur en egen SUM().
 //     Registret, bedömningen och signalerna kommer ur sina egna tjänster.
 //     Ett andra svar på "hur mycket är förbrukat?" vore ett fel, inte en nyans.
+//   * **Nästa leverans härleds vid läsning (Story 4.3, FR-45).** Registret,
+//     baselinens intervall genom `byggPlan` (samma regel som Planen och
+//     tröskeln) och avtalets mottagarpart ger beskedet genom regeln i
+//     `server/src/lib/nastaLeverans.ts`. Ingenting lagras.
 //   * **Tröskeln HÄMTAS, den härleds inte här.** S6.2 la larmet i svepets cache
 //     (`troskellarm`). Att räkna om det här hade varit en andra utvärderare av
 //     FR-3:s dubbelvillkor — och två svar på "larmar det?" är ett fel. Larmet är
@@ -35,6 +39,9 @@ import { NotFoundError } from '../lib/errors.js';
 import { listContracts, getContractUsage, type Delforbrukning, type Kontrakttillstand } from './contracts.js';
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
+import { lasKontraktsparter } from './uppdragKontrakt.js';
+import { nastaLeverans, type Nastaleverans } from '../lib/nastaLeverans.js';
+import { byggPlan, type Plandel } from '../lib/uppdragsplan.js';
 import {
   lasBedomningsrytm, lasScopelinjer, listaBedomningar, listaObesvaradeBegaranden,
   type Avtalsrytm, type Bedomningsrad, type Begaransrad, type Scopelinje,
@@ -139,6 +146,12 @@ export interface Avtalslage {
   /** Alltid alla fem lägen, i skalans ordning — även de som står på noll. */
   leverabler: Leverabelrakning[];
   leverabler_totalt: number;
+  /**
+   * Nästa leverans ur registret, baselinens intervall och avtalets mottagarpart
+   * (Story 4.3, FR-45). Härledd vid läsning, aldrig lagrad; avtalets ordning,
+   * ingen prioritering.
+   */
+  nasta_leverans: Lasvarde<Nastaleverans>;
   bedomning: Senastebedomning | null;
   /** Avtalets obesvarade begäran om ny bedömning (Story 1.10), eller null. */
   oppen_begaran: Begaransrad | null;
@@ -170,6 +183,7 @@ export interface Lagesfarskhet {
   forbrukning: Farskhet;
   troskel: Farskhet | null;
   leverabler: Farskhet;
+  nasta_leverans: Farskhet;
   bedomning: Farskhet;
   signaler: Farskhet;
   koposter: Farskhet;
@@ -331,6 +345,20 @@ function rotdel(delar: Delforbrukning[]): Delforbrukning | null {
   return delar.find((d) => d.code === ROTKOD && d.parent_code === null) ?? null;
 }
 
+/** Alla versioners perioder: byggPlan väljer samma intervall som Planen och tröskeln. */
+async function avtalsdelar(client: PoolClient, companyId: string, contractId: string): Promise<Plandel[]> {
+  const res = await client.query<Plandel>(
+    `SELECT id, contract_id, parent_part_id, code, name,
+            valid_from::text, start_date::text, end_date::text,
+            date_precision, sort_order, active
+       FROM contract_parts
+      WHERE company_id = $1 AND contract_id = $2
+      ORDER BY sort_order, code, valid_from`,
+    [companyId, contractId],
+  );
+  return res.rows;
+}
+
 /** Avtalets uppföljningsmått ur del 3, i textens ordning (Story 2.3). */
 export async function lasUppfoljningsmatt(
   client: PoolClient, companyId: string, contractId: string,
@@ -426,6 +454,8 @@ export async function lasUppdragslage(
     }
 
     const register = await lasLeverabelregister(client, companyId, { contract_id: contractId });
+    const parter = await lasKontraktsparter(client, companyId, contractId);
+    const delar = await avtalsdelar(client, companyId, contractId);
     const rakning = new Map<string, number>();
     for (const l of register) rakning.set(l.status, (rakning.get(l.status) ?? 0) + 1);
 
@@ -465,6 +495,8 @@ export async function lasUppdragslage(
       troskellarm: larm,
       leverabler: LEVERABELLAGEN.map((lage) => ({ lage, antal: rakning.get(lage) ?? 0 })),
       leverabler_totalt: register.length,
+      nasta_leverans: last(nastaLeverans({ register, plan: byggPlan(delar, lastNar.slice(0, 10)).rader, parter }),
+        KALLA_REDOVISNING, lastNar),
       bedomning: senaste === null ? null : { ...senaste, forsta_meningen: forstaMeningen(senaste.kommentar) },
       oppen_begaran: oppnaBegaranden.find((b) => b.contract_id === contractId) ?? null,
       oppna_signaler: signaler.filter((s) => s.avgjord === null),
@@ -504,6 +536,7 @@ export async function lasUppdragslage(
       forbrukning: direkt,
       troskel: troskelfarskhet,
       leverabler: direkt,
+      nasta_leverans: direkt,
       bedomning: direkt,
       signaler: direkt,
       koposter: direkt,

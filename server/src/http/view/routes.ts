@@ -44,6 +44,7 @@ import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { listaReferenser, tillReferensvisning } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
+import { NASTA_TEXT, type Nastaleverans } from '../../lib/nastaLeverans.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
@@ -4134,6 +4135,24 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
     ]));
 }
 
+/** Story 4.3, FR-45: läsning i avtalets ordning, ingen prioritering eller formulär. */
+function nastaLeveransblock(bas: string, contractId: string, n: Nastaleverans): Raw {
+  if (n.lage === 'ingen') {
+    if (n.orsak === 'tomt_register') return html``;
+    return html`<div data-nasta-leverans="${contractId}" style="margin:8px 16px 4px;font-size:13px">${
+      tomtIKort(n.text, html`<a href="${bas}/leveranserna">Öppna Leveranserna</a>.`)}</div>`;
+  }
+  return html`<div data-nasta-leverans="${contractId}" style="margin:8px 16px 4px;font-size:13px">
+    <p style="margin:0;font-weight:550">${NASTA_TEXT.rubrik}</p>
+    <p style="margin:4px 0 0"><span class="code">${n.kod}</span> ${n.namn.text} ${statusChip(n.status)} <span class="muted">${NASTA_TEXT.kallor.registret}</span></p>
+    <p style="margin:4px 0 0">Avtalat slut: ${n.datum.text} <span class="muted">${NASTA_TEXT.kallor.baselinen}</span></p>
+    <p style="margin:4px 0 0">Acceptanskriterium: ${n.acceptanskriterium.text} <span class="muted">${NASTA_TEXT.kallor.registret}</span></p>
+    <p style="margin:4px 0 0">Mottagare: ${n.mottagare.text} <span class="muted">${n.mottagare.markning}</span></p>
+    <p style="margin:4px 0 0">Revision: ${n.revision.text} <span class="muted">${NASTA_TEXT.kallor.registret}</span></p>
+    <p class="muted" style="margin:6px 0 0;font-size:12.5px">${n.ordning} <a href="${bas}/leveranserna">Öppna Leveranserna</a>.</p>
+  </div>`;
+}
+
 function kortLeverabler(companyId: string, l: Uppdragslage, idag: string): Raw {
   const flera = l.avtal.length > 1;
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
@@ -4150,10 +4169,11 @@ function kortLeverabler(companyId: string, l: Uppdragslage, idag: string): Raw {
                 döljer vilka som står stilla. */ ''}
           ${a.leverabler.map((r) => html`<span style="display:inline-flex;align-items:baseline;gap:6px">${
             statusChip(r.lage)}<strong>${String(r.antal)}</strong></span>`)}
-        </div>`}`)}`;
+        </div>${a.nasta_leverans.varde === null ? '' : nastaLeveransblock(bas, a.contract_id, a.nasta_leverans.varde)}`}`)}`;
   return faktakort('kort-leverabler', 'Leverabler per läge',
     totalt === 0 ? chip('Inget register', 'warn', '!') : chip(`${String(totalt)} leverabler`, 'muted'),
-    kropp, farskhetsrad([direktFarskhet(l.farskhet.leverabler, idag)]));
+    kropp, farskhetsrad([direktFarskhet(l.farskhet.leverabler, idag),
+      `nästa leverans ${direktFarskhet(l.farskhet.nasta_leverans, idag)}`]));
 }
 
 /**
