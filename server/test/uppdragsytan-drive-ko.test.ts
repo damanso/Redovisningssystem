@@ -9,7 +9,7 @@
 //       att en registerändring misslyckas för att ett annat system är nere.
 //   (b) **Fel är ett lagrat, SYNLIGT tillstånd.** En kopia som inte gick att
 //       skriva får läget `fel` med källsystemets egna ord i `ko_fel` — läsbart i
-//       hämtningen och på uppdragssidan. Ett fel som bara syns som en post som
+//       hämtningen. Ett fel som bara syns som en post som
 //       "väntar" är ett tyst fel, och tysta fel är precis vad NFR-3 förbjuder.
 //
 // Tillståndsmaskinen (NULL → koad → skriven/fel → koad …) prövas åt båda hållen:
@@ -437,92 +437,61 @@ describe('KRAV-4: rapportvägen', () => {
 // KRAV-2: omkö vid ny registerändring
 // ---------------------------------------------------------------------------
 
+// Story 3.3: en egen köpost per fryst version; tidigare rader står kvar.
 describe('KRAV-2: omkö', () => {
-  it('en ny registerändring köar om en SKRIVEN kopia, utan att tappa Drive-id:t', async () => {
+  async function versioner(contractId: string) {
+    return withAdmin(async (c) => (await c.query<{ id: string; registerversion: number }>(
+      `SELECT r.id, k.registerversion FROM uppdrag_referens r
+       JOIN uppdrag_registerkopia k ON k.id = r.registerkopia_id AND k.company_id = r.company_id
+       WHERE r.company_id = $1 AND r.contract_id = $2 ORDER BY k.registerversion`,
+      [companyId, contractId],
+    )).rows);
+  }
+
+  it('en ny registerändring köar en ny version med den skrivna kopians Drive-id', async () => {
     const { contractId } = await importerat('Omkö efter skriven');
     const ref = await kopian(contractId);
     await ok('rapportera_drive_kopia', {
       referens_id: ref.id, utfall: { lage: 'skriven', drive_id: `${DRIVE_ID}-g` },
     });
-
-    // Story 2.1: importen köar en gång per källa, så den andra verkställda
-    // sattBaseline begärs direkt — koaRegisterkopia anropas ovillkorligt.
+    const fore = await kopian(contractId);
     await sattBaselineDirekt(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
-
-    const efter = await kopian(contractId);
-    expect(efter.id, 'omkön ska träffa samma rad').toBe(ref.id);
-    expect(efter.ko_status).toBe('koad');
-    // Pekaren till filen står kvar: kopian ska skrivas OM, inte skapas på nytt.
-    expect(efter.extern_id).toBe(`${DRIVE_ID}-g`);
+    const poster = (await referenser(contractId)).filter((r) => r.extern_nyckel === 'registerkopia');
+    expect(poster).toHaveLength(2);
+    expect(poster.find((r) => r.id === ref.id)).toEqual(fore);
+    const ny = poster.find((r) => r.id !== ref.id)!;
+    expect(ny).toMatchObject({ ko_status: 'koad', ko_fel: null, extern_id: `${DRIVE_ID}-g` });
+    const v = await versioner(contractId);
+    expect(v.map((r) => r.id)).toEqual([ref.id, ny.id]);
+    expect(v[1]!.registerversion).toBeGreaterThan(v[0]!.registerversion);
     expect(await ko(contractId)).toHaveLength(1);
   });
 
-  it('en omkö nollställer ett gammalt fel', async () => {
+  it('en ny köpost föds utan fel medan den gamla felposten står kvar', async () => {
     const { contractId } = await importerat('Omkö efter fel');
     const ref = await kopian(contractId);
     await ok('rapportera_drive_kopia', {
       referens_id: ref.id, utfall: { lage: 'fel', fel: 'Drive svarade 500' },
     });
-    expect((await kopian(contractId)).ko_fel).toBe('Drive svarade 500');
-
-    // Story 2.1: importen köar en gång per källa, så den andra verkställda
-    // sattBaseline begärs direkt — koaRegisterkopia anropas ovillkorligt.
+    const fore = await kopian(contractId);
+    expect(fore.ko_fel).toBe('Drive svarade 500');
     await sattBaselineDirekt(companyId, auth(), {
       contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001,
     });
-
-    const efter = await kopian(contractId);
-    expect(efter.ko_status).toBe('koad');
-    // Ett gammalt fel bredvid en ny kö hade sett ut som att den NYA kön redan
-    // misslyckats.
-    expect(efter.ko_fel).toBeNull();
-    // Och fortfarande EN kopiereferens, inte tre.
-    expect((await referenser(contractId)).filter((r) => r.extern_nyckel === 'registerkopia')).toHaveLength(1);
+    const poster = (await referenser(contractId)).filter((r) => r.extern_nyckel === 'registerkopia');
+    expect(poster).toHaveLength(2);
+    expect(poster.find((r) => r.id === ref.id)).toEqual(fore);
+    const ny = poster.find((r) => r.id !== ref.id)!;
+    expect(ny).toMatchObject({ ko_status: 'koad', ko_fel: null });
+    const v = await versioner(contractId);
+    expect(v.map((r) => r.id)).toEqual([ref.id, ny.id]);
+    expect(v[1]!.registerversion).toBeGreaterThan(v[0]!.registerversion);
   });
 });
 
-// ---------------------------------------------------------------------------
-// KRAV-7: uppdragssidan
-// ---------------------------------------------------------------------------
-
-describe('KRAV-7: köposten syns på uppdragssidan', () => {
-  async function sida(path: string): Promise<string> {
-    const res = await ua.get(path);
-    expect(res.status, `${path} gav ${res.status}`).toBe(200);
-    return res.text;
-  }
-
-  it('koad visas som väntande, skriven visas inte alls', async () => {
-    const { projektId, contractId } = await importerat('Vyn köad');
-    const html = await sida(`/app/c/${companyId}/projects/${projektId}`);
-    expect(html).toContain('Kopia köad');
-    expect(html).toContain('frysta kopian');
-
-    await ok('rapportera_drive_kopia', {
-      referens_id: (await kopian(contractId)).id,
-      utfall: { lage: 'skriven', drive_id: `${DRIVE_ID}-h` },
-    });
-    const efter = await sida(`/app/c/${companyId}/projects/${projektId}`);
-    // Kvittot är att raden FÖRSVINNER. En evig "allt är skrivet"-rad hade varit
-    // brus, och brus lär läsaren att inte titta den dag det står något annat.
-    expect(efter).not.toContain('Kopia köad');
-    expect(efter).not.toContain('Kopian kunde inte skrivas');
-  });
-
-  it('fel visas med källsystemets egen text — aldrig svalt', async () => {
-    const { projektId, contractId } = await importerat('Vyn fel');
-    await ok('rapportera_drive_kopia', {
-      referens_id: (await kopian(contractId)).id,
-      utfall: { lage: 'fel', fel: 'Drive svarade 403: saknar behörighet till spärrmappen' },
-    });
-    const html = await sida(`/app/c/${companyId}/projects/${projektId}`);
-    expect(html).toContain('Kopian kunde inte skrivas');
-    expect(html).toContain('saknar behörighet till spärrmappen');
-    expect(html).not.toContain('Kopia köad');
-  });
-});
+// Story 3.3: V1 i registerkopia-provet prövar att köuppgifter saknas i vyerna.
 
 // ---------------------------------------------------------------------------
 // Tenantgränsen
