@@ -389,12 +389,14 @@ describe('(d) sidan skriver bara det den får skriva', () => {
   it('brädan bär en knapp per leverabel som KAN flyttas härifrån — och inte en till', async () => {
     const main = huvud(await brada());
     const antal = (m: RegExp) => [...main.matchAll(m)].length;
-    // L1, L5 och L6 står i ej_paborjad; L3 i levererad. L2 (pagar) och L4
-    // (avvisad) har inget steg härifrån, och godkand-kolumnen är tom.
+    // L1, L5 och L6 står i ej_paborjad; L3 i levererad. L2 (pågår) bär
+    // Registrera överlämning och Retur, båda till uppdragets statusbytesadress.
+    // L4 (avvisad) har inget handgrepp och godkand-kolumnen är tom.
     expect(antal(/\/leverabel\/paborja"/g)).toBe(3);
     expect(antal(/\/leverabel\/godkann"/g)).toBe(1);
-    expect(antal(/<button/g)).toBe(4);
-    expect(antal(/<form/g)).toBe(4);
+    expect(antal(/\/statusforslag"/g)).toBe(2);
+    expect(antal(/<button/g)).toBe(6);
+    expect(antal(/<form/g)).toBe(6);
   });
 });
 
@@ -489,13 +491,19 @@ describe('(f) handgreppen på kortet', () => {
     expect(k).not.toContain('Påbörja');
   });
 
-  it('(c) pågår, avvisad och godkänd får ingen knapp alls', async () => {
+  it('(c) avvisad och godkänd får ingen knapp, och pågår får överlämning och retur', async () => {
     const main = huvud(await brada());
-    for (const kod of ['L2', 'L4']) {
+    for (const kod of ['L4']) {
       const k = kort(main, kod);
       expect(k, `${kod} ska inte bära ett handgrepp`).not.toContain('<form');
       expect(k).not.toContain('<button');
     }
+    const pagaende = kort(main, 'L2');
+    expect(pagaende.split(`action="/app/c/${companyId}/projects/${projektId}/statusforslag"`)).toHaveLength(3);
+    expect(pagaende).toContain('name="utfall" value="bekraftad"');
+    expect(pagaende).toContain('name="utfall" value="retur"');
+    expect(pagaende).not.toContain(post('paborja'));
+    expect(pagaende).not.toContain(post('godkann'));
     // `godkand` är tom i fixturen — läget riggas som ägaren (samma grepp som
     // `riggaStatus` ovan) enbart för att kunna läsa kortet.
     await riggaStatus(avtalId, 'L1', 'godkand');
@@ -512,8 +520,11 @@ describe('(f) handgreppen på kortet', () => {
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe(`/app/c/${companyId}/projects/${projektId}`);
     expect((await register()).find((r) => r.kod === 'L5')!.status).toBe('pagar');
-    // …och kortet bär inte längre någon knapp: steget är taget.
-    expect(kort(huvud(await brada()), 'L5')).not.toContain('<button');
+    // Steget är taget; nästa handgrepp står på kortet.
+    const nasta = kort(huvud(await brada()), 'L5');
+    expect(nasta).not.toContain(post('paborja'));
+    expect(nasta).toContain('/statusforslag"');
+    expect(nasta).toContain('name="utfall" value="bekraftad"');
   });
 
   it('(e) Godkänn utan kanal fälls av åtgärdens schema och kommer tillbaka som ?fel=', async () => {

@@ -153,6 +153,68 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag 2: 4-2-overlamningen-registreras-ur-den-faktiska-handlingen.**
+  Omtagets U4/O4 och kontrollvakter körda före någon kodändring tillsammans
+  med överlämningsfilen: 45/45 gröna i två filer, exit 0. Typkontroll exit 0.
+  Första sandlådeförsöket nekades med EPERM på testdatabasen; därefter kunde
+  det godkända testkommandot ansluta till den stående databasen. Full regression
+  körd ensam: 4131/4131 tester i 212 filer gröna, exit 0, 1083.55 s.
+  De rapporterade U4/O4-felen och anslutningsexceptionen kunde inte återskapas;
+  avbrottsorsaken i den tidigare körningen är inte fastställd. Ingen belagd
+  kodorsak funnen vid genomgång av hela berättelsens ändring. Inga kod- eller
+  provändringar; migration `0099_overlamningshandling.sql` och husets formspråk
+  bevarade. Vid slutverifieringen åter grönt: typkontroll exit 0 och riktat
+  45/45 i två filer, exit 0 (25.75 s, start 07:00:09). Även detta försök
+  behövde godkänd databasåtkomst efter sandlådans EPERM. Steg 9:s slutliga
+  fullregression körd ensam: 4131/4131 tester i 212 filer gröna, exit 0,
+  start 07:00:42, 1049.33 s. Utskicksfilens 20 och CRM-proveniensfilens 81
+  gröna i samma körning, inga ohanterade fel. Diffkontroll exit 0. Slutlig
+  DoD prövad punktvis före review; inget databasförbehåll behövs för slututfallet.
+  Inga nya visuella webbläsarprov eller driftutfall; CRM-kontraktet oförändrat.
+
+- **2026-11-27 — Omtag: 4-2-overlamningen-registreras-ur-den-faktiska-handlingen.**
+  Kedjans S7-fel kom av testets antagande att `/approvals` är tom efter en
+  kontraktsimport; läsvägen visar också verkställd historik. Testet i
+  `server/test/uppdragsytan-overlamning.test.ts` jämför nu hela kön före och
+  efter vart och ett av de tre spärrade agentanropen. Två varianter täcker
+  importhistorik respektive importhistorik med ett väntande förslag; en legitim
+  köskrivning visar att jämförelsen upptäcker ändringar. Händelser, statusar,
+  referenser och audit jämförs också efter varje anrop. Samma felklass sökt i
+  alla tre berörda provfiler: övriga kökontroller kräver ingen rättelse.
+  Produktionskoden och migration `0099_overlamningshandling.sql` ändras inte
+  i omtaget; gränssnittets befintliga tokens, fält och fokusordning bevaras.
+  `npm run typecheck` exit 0 före och efter rättelsen. Rött/grönt-försök och
+  full regression med `npm test` stoppade i globalSetup med
+  `connect EPERM 127.0.0.1:5433`, exit 1; inte körda på fallnivå, inga gröna
+  databasutfall påstås. `git diff --check` exit 0. Dev Agent Record uppdaterad
+  och DoD:s 26 punkter prövade före återgång till review enligt det uttryckliga
+  databasundantaget; även steg 9:s fulla regression stoppades före fallen.
+  CRM-kontraktet och driftutfallet berörs inte.
+
+- **2026-11-27 — 4-2-overlamningen-registreras-ur-den-faktiska-handlingen.**
+  Överlämningen registreras med mejlet eller dokumentet som referens, mottagaren
+  förifylld ur kontraktet och ändringsbar. Migration `0099_overlamningshandling.sql`
+  binder händelsens referens till samma bolag och avtal. Datumet läses enbart ur
+  handlingen, revisionen räknas per överlämning och godkännandet bevarar transmittalen.
+  Statusförslag visas inte längre som uppgifter på förstasidan eller Läget;
+  Registrera överlämning och Retur står på Pågår-kortet i Leveranserna, med
+  befintlig POST-adress och samtliga tre människospärrar bevarade. Godkänn visar
+  parterna och godkännandeformen. Husets fält, knappar, textskala och fokusmarkering
+  används; synligt obligatoriskt fält, etiketter och unika knappnamn ger tangentbordets
+  ordning. Befintliga tomlägen och felnotiser används, saknad mottagarpart visas.
+  De 24 specificerade fall-id:na U1–U4, S1–S7, R1–R4, G1, V1–V6 och D1–D2
+  ligger i ny provfil, före respektive kodändring; fyra utpekade gamla vyfall
+  borttagna och bara berättelsens påståendegrupper uppdaterade. Berättelsens
+  löptext säger 25, men dess ändliga lista räknar 24; inget nytt fallkrav antas.
+  Typkontroller för uppgift 1–5 och slutlig kodstädning exit 0 efter två rättade typfel (literaltyper i
+  nya testkonstanter och saknad LUCKTEXT-import). Databastester inte körda på
+  fallnivå: alla rött/grönt-försök och fulla regressioner stoppades i globalSetup
+  med `connect EPERM 127.0.0.1:5433`, exit 1; kedjan kör den exekverande grinden.
+  Inga gröna databasutfall eller visuella webbläsarprov påstås. Inga RESTER;
+  CRM-kontraktet berörs inte. Inget nytt driftutfall verifierat. DoD:s 26 punkter
+  prövade och berättelse/sprintstatus review med det uttryckliga databasundantaget;
+  även steg 9:s slutliga fulla regression stoppades av EPERM före fallen.
+
 - **2026-11-27 — 4-1-bradan-och-tabellen-visar-samma-falt.**
   Registret läser revision och mottagare ur senaste överlämningen med bolagsfilter.
   Brädan och tabellen renderar samma elva fält ur en ren lista och cellrenderare,

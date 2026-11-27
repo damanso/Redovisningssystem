@@ -75,7 +75,7 @@ import {
   DokumentforteckningSchema, lasDokumentforteckning, skrivDokumentforteckning,
 } from '../services/uppdragDokument.js';
 import {
-  GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, godkannLeverabel, paborjaLeverabel,
+  GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, OVERLAMNINGSHANDLINGAR, godkannLeverabel, paborjaLeverabel,
 } from '../services/uppdragStatus.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
@@ -2079,13 +2079,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     vidAvslag: (ctx, i, skal) => registreraNej(ctx.client, ctx.companyId, ctx, 'binda_kostnad', i, skal),
   }),
   // -------------------------------------------------------------------------
-  // Uppdragsytan S3.2, våg 4: statusbytet med transmittal. Svepet FÖRESLÅR
-  // (cache), en människa BEKRÄFTAR — och den här åtgärden är den enda kodvägen
-  // till `uppdrag_leverabel.status` (FR-12/FR-13, NFR-4).
+  // Story 4.2: människan registrerar överlämningen ur handlingen, eller returen.
+  // Handling är valfri i schemat men krävs i tjänsten för överlämningen:
+  // schemat körs före människospärren, som även måste fälla äldre agentanrop.
+  // Mottagaren förifylls ur avtalet och kan anges där överlämningen utförs.
   // -------------------------------------------------------------------------
   def({
     name: 'bekrafta_statusbyte',
-    title: 'Bekräfta svepets statusförslag för en leverabel, eller registrera en retur',
+    title: 'Registrera en överlämning ur handlingen, eller en retur',
     // `write` + `kravManniska`, inte `sensitive` — samma skäl som
     // `satt_bedomning` och `tand_scopesignal`: kön finns för beslut som ska
     // LÄSAS av en människa innan de gäller, och här ÄR människan den som
@@ -2101,8 +2102,18 @@ export const ACTIONS: readonly ActionDef<never>[] = [
         // förslagsnyckel.
         leverabel_kod: safeText(50),
         utfall: z.enum(STATUSUTFALL),
+        handling: z.object({
+          sort: z.enum(OVERLAMNINGSHANDLINGAR),
+          extern_id: safeText(200),
+          extern_kalla: safeText(200),
+        }).strict().optional(),
+        mottagare: safeText(200).refine((v) => v.trim().length > 0, 'texten får inte vara blank').optional(),
       })
-      .strict(),
+      .strict().superRefine((v, ctx) => {
+        if (v.utfall === 'retur' && v.mottagare !== undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mottagare'], message: 'en retur har ingen mottagare' });
+        }
+      }),
     // Målstatusen härleds ur `utfall` inne i tjänsten. Ett fritt statusfält i
     // indatat hade varit en ANDRA skrivväg — då kunde vilken status som helst
     // sättas på vilken leverabel som helst, och handgreppet hade bara varit ett

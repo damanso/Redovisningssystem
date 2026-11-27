@@ -1568,8 +1568,8 @@ sida utan formulär. Formuläret postar till
   bär ingen revision och räknas inte som överlämningar. Alla tre transmittalfält
   är NULL före första överlämningen. Mottagaren är transmittalens, aldrig avtalets
   godkännare; avtalets mottagarpart läses genom kontraktsytans läsåtgärd.
-  `overlamnad` hämtas ur överlämningshandlingen och är NULL tills Story 4.2
-  registrerar handlingen. Bekräftelsens tid är aldrig överlämningsdatum.
+  `overlamnad` läses ur överlämningshandlingens händelsedatum och är NULL
+  när handlingen saknar datum eller överlämningen saknar handling (Story 4.2). Bekräftelsens tid är aldrig överlämningsdatum.
   Registerkopian fryser samma sju fält som förut. Vyns bräda och tabell visar
   samma fält ur samma svar.
 
@@ -1979,43 +1979,49 @@ Ett avstått svep skriver ingen täckning. Indatat är oförändrat.
 ### Statusbytet med transmittal (S3.2, våg 4)
 
 - `bekrafta_statusbyte` (write, **`kravManniska: true`**) — `contract_id`,
-  `leverabel_kod`, `utfall` (`bekraftad` | `retur`). **Den enda kodvägen till
-  `uppdrag_leverabel.status`** (FR-12/FR-13, NFR-4): svepet föreslår i cachen,
-  en människa svarar. Ett agentanrop ger **403 `human_required`** i
+  `leverabel_kod`, `utfall` (`bekraftad` | `retur`), valfria `handling` och
+  `mottagare`. Människan registrerar överlämningen ur handlingen eller returen
+  (FR-12/FR-13, NFR-4). Ett agentanrop ger **403 `human_required`** i
   `executeAction`, före varje skrivning. Målstatusen härleds ur `utfall`
-  (`levererad` / `avvisad`) — indata bär **aldrig** ett fritt statusfält, det
-  vore en andra skrivväg. Förslaget måste finnas (`statusforslag:<kod>` i
-  `uppdrag_svepvarde`), annars **404 `not_found`**; leverabeln måste stå i
-  `pagar`, annars **409 `leverabel_ej_pagaende`**. Ingen migration, ingen ny
-  felkodsfamilj.
-- **Transmittalfälten fylls av systemet, aldrig av handen.** Mottagaren läses ur
-  `contracts.godkannare` — är den NULL eller tom skrivs **ingenting alls** (409
-  `saknad_mottagare`, texten "saknad mottagare …"): en gissad mottagare i en
-  append-only historik är en uppgift som ser ut som ett faktum (FR-13).
-  Överlämningsdatumet är `now()`, och `bekraftat_av` är den inloggade användaren
-  ur åtgärdskontexten — samma regel som `satt_av_manniska` och `tand_av`.
+  (`levererad` / `avvisad`); leverabeln måste stå i `pagar`, annars **409
+  `leverabel_ej_pagaende`**. Inget svepförslag krävs (FR-13, ”Struket”).
+- **Handlingen krävs för överlämningen**, annars 400 handling_saknas.
+  Objektet är strikt: `sort` är mejl eller drive, extern_id är Message-ID eller
+  Drive-id och extern_kalla anger vilket konto den lästes ur. Ingen url eller
+  sökväg godtas. Handlingen blir en rad i referenslagret eller återanvänds för
+  samma kanoniska pekare i avtalet. En referens utanför spärrmappen ger
+  409 utanfor_sparr; registerkopians egna poster återanvänds aldrig som handling.
+  Returen får bära en handling men kräver den inte.
+- **Transmittalen har sin källa.** Överlämningsdatumet läses ur handlingens
+  händelsedatum, aldrig ur bekräftelsens tid eller `now()`. Saknar handlingen
+  datum står ”Datum saknas”. Mottagaren förifylls ur `contracts.godkannare`
+  och kan anges i `mottagare` (trimmat, i övrigt ordagrant). Saknas både angiven
+  mottagare och avtalets godkännare skrivs ingenting (409 `saknad_mottagare`).
+  Ett blankt angivet värde, eller en mottagare på en retur, ger 400.
+  `bekraftat_av` är den inloggade användaren ur åtgärdskontexten.
 - **Revisionen är systemets egen uppräkning:** `1 + högsta revision` bland
   leverabelns rader i `uppdrag_leverabel_handelse` (första överlämningen = 1).
-  **Drive-revisionen i förslaget deltar aldrig i räkningen** — den räknar filens
-  versioner, inte våra överlämningar. Returer bär `revision`/`mottagare` NULL och
-  räknas därför inte som överlämningar.
+  Returen och godkännandet bär `revision` NULL och räknas inte. Godkännandet
+  ändrar aldrig överlämningens datum, mottagare eller revision.
 - **Retur är en post, inte en tyst flytt bakåt.** Samma spår (`bekraftat_av`,
-  `bekraftat_nar`), status → `avvisad`, och mottagarspärren gäller den inte.
+  `bekraftat_nar`), status → `avvisad`, revision och mottagare NULL.
 - **Registerkopian köas i samma transaktion** som statusbytet
-  (`koaRegisterkopia`, FR-11): statusen står i kopians innehåll
-  (`lasLeverabelregister`), så ett byte gör kundens frysta kopia inaktuell.
-  Historiken är append-only i rättigheterna, inte i koden — `app` har SELECT +
-  INSERT på `uppdrag_leverabel_handelse` och ingenting annat (0068).
+  (`koaRegisterkopia`, FR-11). Överlämningen orsakar inget utskick och inget
+  beslutsutkast. Historiken är append-only: `app` har SELECT + INSERT på
+  `uppdrag_leverabel_handelse` och ingenting annat (0068).
+- **Migration 0099** är additiv och idempotent: händelsens kolumn referens_id
+  pekar på handlingen. Nyckeln (id, company_id, contract_id) på referensen och
+  händelsens sammansatta främmande nyckel binder handlingen till samma bolag och
+  avtal. Registret läser referensens handelse_datum; äldre överlämningar behåller
+  NULL utan backfill. Rättigheterna är orörda.
 
-**Vyn:** kortet ligger på uppdragets förstasida
-(`/app/c/:id/projects/:projectId`) under **Väntar på ditt svar** — registervyn
-finns inte ännu (utesluten i S3.1), och en obesvarad leverans som läses sist blir
-i praktiken ett ja. Öppna `statusforslag:*` för leverabler i `pagar` visas i
-husets `.ai-card` med `aiMarkning()` (AI-förordningen art. 50) och sitt underlag
-i klartext: leverabelkod, Drive-revision och handlingens id. **Bekräfta** och
-**Retur** är två likvärdiga knappar utan förval — svaret kommer utifrån, inte ur
-kortet — och oåterkalleligheten står före knappen. Ingen ny CSS, inget JS. Finns
-inget öppet förslag står ingenting alls.
+**Vyn:** handgreppen står på leverabelns kort i Leveranserna. Pågår bär
+**Registrera överlämning** och **Retur**. Handlingen anges och mottagaren är
+förifylld ur kontraktet, med eskalering och en synlig saknastext när den saknas.
+Båda formulären postar till uppdragets befintliga vyadress för statusbytet;
+adressens namn står kvar eftersom navigationskontraktet är genererat. Ingen yta
+visar längre svepets statusförslag som en väntande uppgift. Husets fält och
+knappar, inget nytt JS eller CSS.
 
 ### Skalans två andra övergångar (S2.1, våg 1)
 
@@ -2039,8 +2045,8 @@ hur färdigt det än var.
   är kanalen obligatorisk och noteringen inte.
 - **Ingen maskin flyttar en status.** Båda är `write` + `kravManniska` av samma
   skäl som `bekrafta_statusbyte`: ett agentanrop fälls i `executeAction` med **403
-  `human_required`** före varje skrivning. Inget svepförslag krävs (till skillnad
-  från `bekrafta_statusbyte`) — stegen har ingen maskinell iakttagelse bakom sig
+  `human_required`** före varje skrivning. Inget svepförslag krävs, lika lite som
+  för `bekrafta_statusbyte` — stegen har ingen maskinell iakttagelse bakom sig
   alls, det är en människa som gjorde eller fick något.
 - **En rad i `uppdrag_leverabel_handelse` per steg**, i samma transaktion som
   statusuppdateringen: `fran`/`till`, `bekraftat_av` ur åtgärdskontexten (aldrig
@@ -2061,8 +2067,8 @@ hur färdigt det än var.
   `kanal` (text, nullbar, CHECK som speglar zod-enumen) och `notering` (text,
   nullbar). Inget befintligt ändras; append-only står orört (`app` har SELECT +
   INSERT och ingenting annat).
-- **Ingen vy:** stegen har ingen knapp och ingen egen yta — de körs via MCP/REST.
-  Leveranserna (S10.3) är fortsatt en ren läsvy.
+- **Vyn:** stegen görs på leverabelns kort i Leveranserna (S10.9). Godkänn
+  visar avtalets godkännare och godkännandeform före kanalvalet.
 
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
