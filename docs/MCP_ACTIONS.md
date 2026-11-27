@@ -3370,3 +3370,36 @@ aldrig in: de står varken i `counted` eller i `not_counted`.
 
 `liquidity_forecast` är oförändrad och svarar fortfarande i
 trettiodagarshinkar, inte per kalendermånad.
+
+## Översiktens tal och Likvida medel per i dag (`dashboard`, 27/11)
+
+`dashboard` (`read`, indata `{}` strikt) ger samma tal som Översikten på
+`/app/c/:id`. Den anropar `dashboard()` i reports-tjänsten, och konsoliderade
+vyn läser samma funktion. Svaret har `as_of`, `period`, `scope` och talen.
+`as_of` är dagens datum i Sverige (Europe/Stockholm), inte UTC.
+
+`bank_ore` är bokföringens saldo på 1910, 1920, 1930 och 1940, räknat på
+verifikat daterade till och med `bank_as_of`. Talet är bokföringens, inte
+bankens. Före 27/11 räknades alla verifikationsdatum, också verifikat daterade
+efter i dag. Fälten kring talet:
+
+| Fält | Innehåll |
+|---|---|
+| `bank_as_of` | dagens datum i Sverige; gränsen för `bank_ore` |
+| `bank_last_voucher_date` | senaste verifikatdatum till och med `bank_as_of` med en rad på 1910–1940, annars `null` |
+| `bank_future_ore` | summan på 1910–1940 för verifikat daterade efter `bank_as_of`, 0 om inga. Ingår inte i `bank_ore` |
+| `bank_import_date` | senaste `booking_date` i `bank_transactions`, `null` utan bankimport |
+| `bank_statement_date` | dagen `bank_statement_ore` gäller, `null` utan importerad rad med saldo |
+| `bank_statement_ore` | bankens saldo enligt kontoutdraget, `null` utan importerad rad med saldo |
+| `bank_diff_ore` | bokfört på 1910–1940 per `bank_statement_date` minus `bank_statement_ore`, `null` när banken saknar saldo |
+
+Bankens saldo tas från den senaste dagen som har en rad med saldo, och från
+dagens sista rad. Raderna saknar ordningstal, så dagens sista rad är den som
+ingen annan rad samma dag fortsätter från (en rads saldo minus belopp är den
+föregående radens saldo). Datumet för saldot kan alltså vara äldre än
+`bank_import_date`, när de senaste raderna saknar saldo. `bank_transactions`
+har ingen kontokolumn, så skillnaden jämför bankens saldo med summan av alla
+fyra kontona.
+
+`receivables_ore` och `payables_ore` räknar fortfarande alla
+verifikationsdatum, och `result_ore` räkenskapsårets period.

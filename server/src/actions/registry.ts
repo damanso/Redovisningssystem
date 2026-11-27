@@ -680,12 +680,15 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       const period = await latestFiscalPeriod(ctx.client, ctx.companyId);
       const d = await dashboard(ctx.client, ctx.companyId, period);
       return {
-        as_of: new Date().toISOString().slice(0, 10),
+        as_of: d.bank_as_of,
         period,
         scope: {
           receivables_ore: 'bokfört saldo på konto 1510 (kundfordringar), alla verifikationsdatum',
           payables_ore: 'bokfört kreditsaldo på konto 2440 (leverantörsskulder), alla verifikationsdatum, visat positivt',
-          bank_ore: 'bokfört saldo på bankkonton 1910, 1920, 1930 och 1940, alla verifikationsdatum',
+          bank_ore: 'bokfört saldo på bankkonton 1910, 1920, 1930 och 1940, verifikat daterade till och med bank_as_of (dagens datum i Sverige) — bokföringens tal, inte bankens',
+          bank_future_ore: 'bokfört på 1910–1940 med verifikationsdatum efter bank_as_of; ingår inte i bank_ore',
+          bank_statement_ore: 'bankens saldo enligt den senast importerade kontoutdragsraden med saldo (bank_statement_date); null utan bankimport med saldo',
+          bank_diff_ore: 'bokfört på 1910–1940 per bank_statement_date minus bank_statement_ore; null när banken inte är inläst',
           result_ore: 'bokförda intäkter minus bokförda kostnader — verifikat inom räkenskapsårets period (period ovan)',
           pending_approvals: 'bolagets AI-förslag i kön action_approvals med status pending — kön har ingen utpekad mottagare; den som har tillgång till bolaget avgör',
         },

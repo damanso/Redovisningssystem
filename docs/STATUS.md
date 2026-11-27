@@ -153,6 +153,7 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Likvida medel (Davids fynd 27/11):** `bank_ore` räknas t.o.m. i dag (Europe/Stockholm); `dashboard` ger datum-, framtids- och bankavstämningsfält; kortet säger «Bokfört … per <datum>» och om banken är inläst. Prov: `server/test/likvida-medel.test.ts`.
 - **2026-11-27 — Story 5.11 (crm).**
   AI-samtalet tillagt bland löftesvägarna i `CAPTURE_PATHS_IN_OPERATION`;
   hintens form skiljer källor från tillfällen enligt UX K8. De befintliga tre

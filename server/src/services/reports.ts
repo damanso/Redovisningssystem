@@ -229,10 +229,24 @@ export async function generalLedger(
   return heads.rows.map((h) => ({ ...h, lines: byVoucher.get(h.id) ?? [] }));
 }
 
+/** Dagens datum (ISO) i Sverige. Inte UTC: strax efter midnatt är det redan i morgon här. */
+export const stockholmToday = (): string => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Stockholm' });
+
+const BANK_ACCOUNTS = [1910, 1920, 1930, 1940];
+
 export interface Dashboard {
   receivables_ore: Ore; // kundfordringar (1510)
   payables_ore: Ore; // leverantörsskulder (2440)
-  bank_ore: Ore; // 1910 + 1920 + 1930 + 1940
+  // Bokföringens saldo på 1910 + 1920 + 1930 + 1940, verifikat daterade t.o.m.
+  // bank_as_of. Det är INTE bankens saldo — det står i bank_statement_ore.
+  bank_ore: Ore;
+  bank_as_of: string; // dagens datum, Europe/Stockholm
+  bank_last_voucher_date: string | null; // senaste verifikatdatum ≤ bank_as_of med rad på 1910–1940
+  bank_future_ore: Ore; // verifikat på 1910–1940 daterade efter bank_as_of — ingår inte i bank_ore
+  bank_import_date: string | null; // senaste booking_date i bank_transactions
+  bank_statement_date: string | null; // dagen bank_statement_ore gäller
+  bank_statement_ore: Ore | null; // bankens saldo enligt den senaste importerade raden med saldo
+  bank_diff_ore: Ore | null; // bokfört på 1910–1940 per bank_statement_date − bank_statement_ore
   result_ore: Ore; // årets resultat
   invoice_count: number;
   receipt_count: number;
@@ -261,8 +275,44 @@ export async function dashboard(
 ): Promise<Dashboard> {
   const rows = await accountSums(client, companyId, {});
   const bal = (n: number) => rows.find((r) => r.account_number === n)?.balance_ore ?? 0;
-  const bankAccounts = [1910, 1920, 1930, 1940];
-  const bank = rows.filter((r) => bankAccounts.includes(r.account_number)).reduce((s, r) => s + r.balance_ore, 0);
+
+  // Bankens sida: senaste inlästa dag, och saldot på den dagens SISTA rad med
+  // saldo. Raderna saknar ordningstal och en import får samma created_at, så
+  // dagens sista rad är den som ingen annan rad samma dag fortsätter från
+  // (dess saldo − belopp = den radens saldo). Annars vore valet slumpmässigt.
+  const today = stockholmToday();
+  const imported = await client.query<{ import_date: string | null }>(
+    'SELECT max(booking_date)::text AS import_date FROM bank_transactions WHERE company_id = $1',
+    [companyId],
+  );
+  const statement = await client.query<{ booking_date: string; balance_ore: string }>(
+    `SELECT b.booking_date::text, b.balance_ore
+     FROM bank_transactions b
+     WHERE b.company_id = $1 AND b.balance_ore IS NOT NULL
+     ORDER BY b.booking_date DESC,
+              NOT EXISTS (
+                SELECT 1 FROM bank_transactions n
+                WHERE n.company_id = b.company_id AND n.booking_date = b.booking_date AND n.id <> b.id
+                  AND n.balance_ore IS NOT NULL AND n.balance_ore - n.amount_ore = b.balance_ore
+              ) DESC,
+              b.created_at DESC, b.id
+     LIMIT 1`,
+    [companyId],
+  );
+  const stmt = statement.rows[0];
+
+  // Bokföringens sida: t.o.m. i dag, efter i dag, och per bankens saldodag.
+  const booked = await client.query<{ bank: string; future: string; last_date: string | null; at_statement: string }>(
+    `SELECT COALESCE(sum(vl.debit_ore - vl.credit_ore) FILTER (WHERE v.voucher_date <= $2::date), 0) AS bank,
+            COALESCE(sum(vl.debit_ore - vl.credit_ore) FILTER (WHERE v.voucher_date > $2::date), 0) AS future,
+            (max(v.voucher_date) FILTER (WHERE v.voucher_date <= $2::date))::text AS last_date,
+            COALESCE(sum(vl.debit_ore - vl.credit_ore) FILTER (WHERE v.voucher_date <= $3::date), 0) AS at_statement
+     FROM voucher_lines vl
+     JOIN vouchers v ON v.id = vl.voucher_id
+     WHERE vl.company_id = $1 AND vl.account_number = ANY($4::int[])`,
+    [companyId, today, stmt?.booking_date ?? null, BANK_ACCOUNTS],
+  );
+  const b = booked.rows[0]!;
 
   const period_rows = await accountSums(client, companyId, period);
   const result =
@@ -281,7 +331,14 @@ export async function dashboard(
   return {
     receivables_ore: bal(1510),
     payables_ore: -bal(2440), // skuld = kreditsaldo → visa positivt
-    bank_ore: bank,
+    bank_ore: Number(b.bank),
+    bank_as_of: today,
+    bank_last_voucher_date: b.last_date,
+    bank_future_ore: Number(b.future),
+    bank_import_date: imported.rows[0]?.import_date ?? null,
+    bank_statement_date: stmt?.booking_date ?? null,
+    bank_statement_ore: stmt ? Number(stmt.balance_ore) : null,
+    bank_diff_ore: stmt ? Number(b.at_statement) - Number(stmt.balance_ore) : null,
     result_ore: result,
     invoice_count: Number(c.invoices),
     receipt_count: Number(c.receipts),
