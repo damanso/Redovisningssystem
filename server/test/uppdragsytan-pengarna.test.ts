@@ -1,22 +1,23 @@
-// Uppdragsytan S10.4, våg 6: PENGARNA — kurvan, de två ramdatumen och kostnaderna.
+// Uppdragsytan S10.4, våg 6: PENGARNA — ramarna, prognosens plats och kostnaderna.
 //
 // Storyns acceptans har två halvor, och den andra är den som brukar gå sönder
 // tyst: sidan ska VISA hur vi ligger mot ram — OCH den ska vägra visa något när
 // underlaget saknas. En kurva som ändå ritas, med ett datum sidan räknat ut
 // själv, ser exakt likadan ut som ett riktigt svar. Det är hela FR-5.
 //
-// Provet mäter därför tre saker som inte går att mäta genom att räkna fält:
+// Sedan Story 5.4 visar sidan inget ramdatum och ingen kurva innan
+// prognosregeln är införd. Provet mäter därför tre saker som inte går att mäta
+// genom att räkna fält:
 //
-//   * **Datumen är cachens, inte sidans.** Svepet riggas så att timramen och
-//     kronramen nås OLIKA dagar (taken står inte i samma förhållande till
-//     taxan). En sida som räknade själv hade gett samma datum två gånger, eller
-//     rätt datum av en slump — här måste den skriva ut två skilda datum, båda
-//     ordagrant ur `uppdrag_svepvarde`.
-//   * **Alla tre villkoren tystar bilden.** 'inget bekräftat tak', 'ingen taxa'
-//     och 'ingen bokad framtid' prövas var för sig: ingen kurva, inget datum,
-//     villkoret i klartext. Plus det fjärde fallet som inte är ett villkor alls
-//     — svepet har aldrig kört, och då vet systemet inte, vilket är något annat
-//     än att veta att det inte går att svara.
+//   * **Cachens datum når aldrig svaret eller sidan.** Svepet riggas så att
+//     timramen och kronramen nås OLIKA dagar i cachen (taken står inte i samma
+//     förhållande till taxan). Datumen står kvar i `uppdrag_svepvarde`, men
+//     varken tjänstesvaret eller panelen «Mot ramen» bär något av dem.
+//   * **Platsens fyra lägen syns i klartext.** Bokad framtid med en regel som
+//     är beslutad men inte införd, ett oläst underlag och ett svep som aldrig
+//     kört prövas var för sig: ingen kurva, inget datum, beskedet i klartext.
+//     Att svepet aldrig kört är något annat än att veta att det inte går att
+//     svara.
 //   * **Serien ÄR husets takberäkning.** Sista punktens två tal jämförs med
 //     rotdelens `billable_minutes`/`amount_ore` ur `get_contract_usage`. Vore de
 //     olika hade sidan haft ett andra svar på "hur mycket är förbrukat?", och då
@@ -29,6 +30,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { formatOre } from '../src/domain/money.js';
+import { SLUTDATUM_REGEL_EJ_INFORD, UNDERLAGET_KUNDE_INTE_LASAS } from '../src/lib/prognosplats.js';
 import { FORBRUKANDE_STATUSAR, lasUppdragspengar, type Uppdragspengar } from '../src/services/uppdragPengar.js';
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
@@ -337,12 +339,14 @@ describe('(a) tjänstelagret: serien summerar till rotdelens förbrukning', () =
 
   it('svepvärdena bär varje rads EGEN källa och lästidpunkt (FR-35)', async () => {
     const a = (await pengar(projektA)).avtal[0]!;
-    expect(a.prognos!.farskhet.kalla).toBe('kalender');
+    expect(a.prognos.lage).toBe('last');
+    expect(a.prognos.varde).toMatchObject({ besked: 'regel_ej_inford' });
+    expect(a.prognos.kalla).toBe('kalender');
     expect(a.troskellarm!.farskhet.kalla).toBe('redovisning');
-    expect(Date.parse(a.prognos!.farskhet.last_nar)).not.toBeNaN();
-    // Osvept uppdrag: null, aldrig ett tomt värde. "Vi vet inte" är ett svar.
+    expect(Date.parse(a.prognos.last_nar!)).not.toBeNaN();
+    // Osvept uppdrag: läget saknas, aldrig ett tomt värde. "Vi vet inte" är ett svar.
     const d = (await pengar(projektD)).avtal[0]!;
-    expect(d.prognos).toBeNull();
+    expect(d.prognos).toEqual({ varde: null, kalla: 'kalender', last_nar: null, lage: 'saknas' });
     expect(d.troskellarm).toBeNull();
   });
 });
@@ -373,30 +377,37 @@ describe('(b) sidan och undermenyn', () => {
 // ---------------------------------------------------------------------------
 
 describe('(c) bekräftat tak, taxa och bokad framtid', () => {
-  it('två kurvor ritas — en per ram — med heldragen mätning och streckad prognos', async () => {
+  it('ingen kurva ritas, fast cachen bär bokad framtid (Story 5.4)', async () => {
     const html = await pengasidan(projektA);
-    expect(kurvor(html)).toBe(2);
+    expect(kurvor(html)).toBe(0);
     const main = huvud(html);
-    // Streckningen ÄR skillnaden mellan det som hänt och det som prognosticeras.
-    expect((main.match(/stroke-dasharray="6 5"/g) ?? [])).toHaveLength(2);
-    // Bilden är aldrig ensam bärare: role + aria-label på varje kurva.
-    expect((main.match(/role="img"/g) ?? [])).toHaveLength(2);
-    expect(main).toContain('aria-label="Kumulativ registrerad tid mot timramen');
-    expect(main).toContain('aria-label="Kumulativt belopp mot kronramen');
+    // Den streckade prognosen ritas först när prognosregeln är införd (Story 5.6).
+    expect(main).not.toContain('stroke-dasharray="6 5"');
+    expect(main).not.toContain('role="img"');
   });
 
-  it('de två ramdatumen står i klartext, ordagrant ur cachen — och de är OLIKA', async () => {
-    const svar = await pengar(projektA);
-    const prognos = svar.avtal[0]!.prognos!.varde;
+  it('cachens ramdatum förs aldrig vidare till tjänstesvaret eller sidan', async () => {
     // Cachen först: timramen nås senare än kronramen, för taken står inte i
-    // taxans förhållande. Två identiska datum hade gjort provet blint.
-    expect(prognos.ram_timmar).toEqual({ datum: dag(21) });
-    expect(prognos.ram_kronor).toEqual({ datum: dag(7) });
+    // taxans förhållande. Datumen finns kvar där — det är läsvägen som aldrig
+    // för dem vidare.
+    const rad = await withAdmin(async (c) => (await c.query<{ varde: Record<string, unknown> }>(
+      `SELECT varde FROM uppdrag_svepvarde WHERE company_id=$1 AND contract_id=$2 AND nyckel='prognos'`,
+      [companyId, avtalA],
+    )).rows[0]!.varde);
+    expect(rad.ram_timmar).toEqual({ datum: dag(21) });
+    expect(rad.ram_kronor).toEqual({ datum: dag(7) });
 
+    const svar = JSON.stringify((await pengar(projektA)).avtal[0]!.prognos);
+    expect(svar).not.toContain(dag(21));
+    expect(svar).not.toContain(dag(7));
+
+    // Panelen och inte hela sidan: tröskelpanelen kan visa fixturens egna slutdatum.
     const main = huvud(await pengasidan(projektA));
-    expect((main.match(/Ramen nås/g) ?? [])).toHaveLength(2);
-    expect(main).toContain(`<span class="code">${dag(21)}</span>`);
-    expect(main).toContain(`<span class="code">${dag(7)}</span>`);
+    const a = main.indexOf(`aria-labelledby="ram-${avtalA}"`);
+    expect(a).toBeGreaterThan(-1);
+    const panel = main.slice(a, main.indexOf('</section>', a));
+    for (const ord of ['Ramen nås', dag(21), dag(7)]) expect(panel).not.toContain(ord);
+    expect(main.split(SLUTDATUM_REGEL_EJ_INFORD)).toHaveLength(2);
   });
 
   it('förbrukningen står som två tal mot taket, aldrig som en andel', async () => {
@@ -431,28 +442,30 @@ describe('(c) bekräftat tak, taxa och bokad framtid', () => {
 // ---------------------------------------------------------------------------
 
 describe('(d) när prognosen vägrar gissa ritas ingen kurva', () => {
-  it('inget bekräftat tak: villkoret i klartext, ingen kurva, inget datum', async () => {
+  it('inget bekräftat tak: ingen kurva, inget datum, och platsen säger regelns läge', async () => {
+    // B bokade 300 minuter om sju dagar: bokad framtid, men regeln är inte införd.
     const html = await pengasidan(projektB);
     const main = huvud(html);
-    expect((await pengar(projektB)).avtal[0]!.prognos!.varde).toEqual({
-      ram_timmar: { villkor: 'inget bekräftat tak' }, ram_kronor: { villkor: 'inget bekräftat tak' },
+    expect((await pengar(projektB)).avtal[0]!.prognos).toMatchObject({
+      lage: 'last', varde: { besked: 'regel_ej_inford' },
     });
     expect(kurvor(html)).toBe(0);
     expect(main).not.toContain('Ramen nås');
-    expect((main.match(/inget bekräftat tak/g) ?? [])).toHaveLength(2);
+    expect(main).toContain(SLUTDATUM_REGEL_EJ_INFORD);
     expect(main).toContain('Vet ej');
   });
 
-  it('ingen taxa och ingen bokad framtid: båda villkoren, var och en på sin ram', async () => {
+  it('kalendern är inte läst: villkoret säger det, aldrig ”ingen bokad framtid”', async () => {
+    // Uppdrag C sveps utan `kalenderhandelser`. Story 5.4: en utelämnad lista
+    // är en oläst kalender, inte en tom, och platsen säger att underlaget inte
+    // kunde läsas.
     const html = await pengasidan(projektC);
     const main = huvud(html);
-    expect((await pengar(projektC)).avtal[0]!.prognos!.varde).toEqual({
-      ram_timmar: { villkor: 'ingen bokad framtid' }, ram_kronor: { villkor: 'ingen taxa' },
-    });
+    expect((await pengar(projektC)).avtal[0]!.prognos).toMatchObject({ varde: null, kalla: 'kalender', lage: 'olast' });
     expect(kurvor(html)).toBe(0);
     expect(main).not.toContain('Ramen nås');
-    expect(main).toContain('ingen bokad framtid');
-    expect(main).toContain('ingen taxa');
+    expect(main).toContain(UNDERLAGET_KUNDE_INTE_LASAS);
+    expect(main).not.toContain('ingen bokad framtid');
     // Utan registrerad tid finns ingen kurva att dra — och det SÄGS.
     expect(main).toContain('Ingen förbrukande tid är registrerad');
   });

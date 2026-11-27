@@ -153,6 +153,45 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Bygge: 5-4-inget-prognosdatum-visas-utan-beslutad-regel.**
+  Svepet förlänger inte längre ramdatumet bortom den sista bokningen:
+  bokningar som inte når ramen ger villkoret «ingen bokad framtid» (Davids
+  svar 2026-10-23). Cachevärdet `prognos` bär nu `kalender` (`last`/`olast`)
+  och `framtida_handelser`, skrivet av den rena `prognosvarde` i
+  `uppdragSvep.ts`; en utelämnad lista `kalenderhandelser` är en oläst kalender
+  («underlaget kunde inte läsas»), aldrig en tom. Ny ren regel `prognosplats`
+  i `lib/prognosplats.ts` med `PROGNOSREGEL` (beslutad men inte införd; Story
+  5.5 och 5.6 inför den) och ny ren vyfil `uppdragPrognos.ts` med husets
+  härledningsrad. Pengarna och Läget bär `prognos` som `Lasvarde` ur samma
+  anrop och samma cacherad, och `las_uppdragslage` lämnar fältet. Pengarna
+  ritar ingen kurva och inget ramdatum; Lägets kort Förbrukning mot ram visar
+  platsen per avtal. Kurvfunktionen i html-modulen står kvar utan anropare
+  till Story 5.6. Ingen migration, ingen rutt, ingen åtgärd, inget
+  indatafält och inget beroende. `docs/MCP_ACTIONS.md` beskriver värdenas nya
+  form och `docs/ARKITEKTUR.md` har stycket «Prognosplatsen». Prov:
+  `uppdragsytan-prognosplats` (PF0–PF6, 37 prov, hjälpfil
+  `prognosplatsHelper.ts`) och omskrivna fall i prognos-, svep- och
+  pengaprovet. Körningar mot testdatabasen: delkörningarna 1–4 gröna (9, 333,
+  22 och 377 prov), `uppdragsytan-prognosplats` 37/37, `npm run typecheck`
+  utan fel enligt den tidigare byggloggen. Fortsättning med Codex 2026-11-27:
+  `npm run typecheck` exit 0; riktat `npm test -w server --
+  uppdragsytan-prognosplats` och hela `npm test` stoppas före testfallen,
+  exit 1: `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+  Testfallen är inte körda i fortsättningen; kedjan verifierar dem enligt
+  databasundantaget. Även steg 9:s upprepade fullsvit stoppas före fallen
+  med samma EPERM; förnyad typkontroll exit 0 och git diff --check exit 0.
+  DoD prövad punkt för punkt i berättelsens Dev Agent Record; överlämning
+  till review med databasgrinden kvar hos kedjan. Inga RESTER enligt tidigare bygglogg. Designskillsen
+  gick inte att läsa (utanför arbetskatalogen); vyn granskades för hand mot
+  husets tokens. Efter driftsättningen får cachens prognosvärden den nya
+  formen vid nästa svep; till dess visar platsen «underlaget kunde inte
+  läsas» med radens lästid. Därefter visar ett uppdrag med bokad framtid
+  «slutdatum härleds inte: prognosregeln är beslutad men ännu inte införd»
+  och ett utan bokad framtid «ingen bokad framtid»; ingen köpost, fråga eller
+  post i undantagsvyn uppstår. CRM-kontraktet berörs inte. Inga tjänster,
+  webbläsarprov eller driftprov startade. bmadglidning står RÖD enligt
+  berättelsens tidigare baslinje; Hermes-proven körs av kedjan.
+
 - **2026-11-27 — Bygge: 5-3-trosklarna-indikerar-avvikelse-men-filtrerar-aldrig-ett-mandat.**
   Tröskelregeln i `lib/troskel.ts` prövar nu nivåns egen ram genom
   `egenRam` (ett tak summerat ur barnen, `cap_derived`, är ingen ram), skriver

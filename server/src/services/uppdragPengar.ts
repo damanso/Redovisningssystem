@@ -15,12 +15,15 @@
 //     seriens sista punkt är gruppens minutsumma hela dess minutsumma — alltså
 //     exakt samma avrundning, alltså exakt rotdelens tal. En serie som summerar
 //     till något annat än ramkortet hade varit ett andra svar på samma fråga.
-//   * **Svepvärdena HÄMTAS, de härleds aldrig om.** Prognosens två ramdatum
-//     (S7.4) och tröskellarmet (S6.2) läses ur `uppdrag_svepvarde` med varje
-//     rads EGEN källa och lästidpunkt (FR-35). Bär raden inte den form läsaren
-//     väntar sig är svaret `null` — "inget värde läst", aldrig ett tomt värde,
-//     för de två betyder olika saker för den som läser (mönstret
-//     `troskelutfall` i `uppdragLage.ts`).
+//   * **Svepvärdena HÄMTAS, de härleds aldrig om.** Prognosens rad (S7.4) och
+//     tröskellarmet (S6.2) läses ur `uppdrag_svepvarde` med varje rads EGEN
+//     källa och lästidpunkt (FR-35). Prognosens ramdatum läses inte: platsens
+//     regel i lib läser bara om kalendern är läst och hur många bokningar som
+//     ligger efter i dag, och visar inget datum innan prognosregeln är införd
+//     (Story 5.4). Bär tröskelns rad inte den form läsaren väntar sig är
+//     svaret `null` — "inget värde läst", aldrig ett tomt värde, för de två
+//     betyder olika saker för den som läser (mönstret `troskelutfall` i
+//     `uppdragLage.ts`).
 //   * **Kostnaderna är bundna eller föreslagna, aldrig hittade här.** Bindningen
 //     kvitto → avtalsdel görs bara genom kön (S6.1, Story 1.8). Här läses den,
 //     med `oplanerad` som den står, och ett föreslaget men obundet kvitto som obundet.
@@ -37,11 +40,11 @@ import { NotFoundError } from '../lib/errors.js';
 import { last, olast, type Lasvarde } from '../lib/lasvarde.js';
 import { forbrukningsnivaer, type Forbrukningsnivaer, type Ofordelad } from '../lib/forbrukningsnivaer.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
+import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognosplats.js';
 import type { Troskelutfall, UtanEgenRam } from '../lib/troskel.js';
 import { gallandeTaxa, listContracts, type Delforbrukning } from './contracts.js';
 import { arFakturerad, arGodkannande, timeEntryAmountOre, TIME_ENTRY_STATUSES } from './projects.js';
 import type { Farskhet } from './uppdragLage.js';
-import type { Prognosramar, Ramutfall } from './uppdragSvep.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
 
 export interface LasUppdragspengarInput {
@@ -138,9 +141,12 @@ export interface Avtalspengar {
   /** Kumulativt per `work_date`, i datumordning. Tom = ingen förbrukande tid. */
   serie: Forbrukningspunkt[];
   ram: Pengaram;
-  /** S7.4:s två ramdatum ur cachen. null = svepet har inte kört (eller okänd form). */
-  prognos: Svepvarde<Prognosramar> | null;
-  /** S6.2:s redan härledda larm ur cachen. null = samma sak. */
+  /**
+   * Prognosens plats (Story 5.4), ur cacheraden med svepets källa och lästid.
+   * Alltid satt: läget saknas säger att svepet inte har kört för avtalet.
+   */
+  prognos: Prognosplats;
+  /** S6.2:s redan härledda larm ur cachen. null = svepet har inte kört (eller okänd form). */
   troskellarm: Svepvarde<Troskelvarde> | null;
   forbrukning: Lasvarde<Forbrukningsnivaer>;
   kostnader: Lasvarde<Kostnadsrad[]>;
@@ -411,29 +417,6 @@ async function svepvarden(
   return res.rows;
 }
 
-/**
- * Ett ramutfall, om raden bär den form S7.4 skriver: ETT datum ELLER ETT
- * villkor, aldrig båda och aldrig något annat. `varde` är fri JSON och lovar
- * ingen form — en cache som bär något annat läses som "inget värde", inte som
- * ett tomt värde.
- */
-function ramutfall(varde: unknown): Ramutfall | null {
-  if (typeof varde !== 'object' || varde === null) return null;
-  const v = varde as { datum?: unknown; villkor?: unknown };
-  if (typeof v.datum === 'string') return { datum: v.datum };
-  if (typeof v.villkor === 'string') return { villkor: v.villkor };
-  return null;
-}
-
-/** Prognosens två ramar. Saknar en av dem sin form är hela värdet oläst. */
-function prognosramar(varde: unknown): Prognosramar | null {
-  if (typeof varde !== 'object' || varde === null) return null;
-  const v = varde as { ram_timmar?: unknown; ram_kronor?: unknown };
-  const timmar = ramutfall(v.ram_timmar);
-  const kronor = ramutfall(v.ram_kronor);
-  return timmar === null || kronor === null ? null : { ram_timmar: timmar, ram_kronor: kronor };
-}
-
 /** Tröskellarmet, om raden ser ut som ett larmutfall (mönstret `troskelutfall`). */
 function troskelutfall(varde: unknown): Troskelvarde | null {
   if (typeof varde !== 'object' || varde === null) return null;
@@ -575,6 +558,7 @@ export async function lasUppdragspengar(
       : last(forbrukningsnivaer({ delar, leverabelkoder: koder.varde, ofordelad: ofordelad.varde, ofordelad_ingar: avtalsrader.length === 1 }), KALLA_REDOVISNING, lastNar);
     if (forbrukning.varde?.uppdrag) assertSafeOre(forbrukning.varde.uppdrag.oren);
     const cache = await svepvarden(client, companyId, contractId);
+    const prognosrad = cache.find((v) => v.nyckel === 'prognos');
     const kostnader = await kostnaderForAvtal(client, companyId, contractId);
     const obundna = await obundnaForAvtal(client, companyId, contractId);
 
@@ -587,7 +571,9 @@ export async function lasUppdragspengar(
         tak_ore: rot?.cap_amount_ore ?? null,
         tak_status: rot?.cap_status ?? 'vet_ej',
       },
-      prognos: svept(cache.find((v) => v.nyckel === 'prognos'), prognosramar),
+      // Samma anrop med samma rad som Läget, så att de två aldrig svarar olika (FR-23).
+      prognos: prognosplats(prognosrad === undefined ? null
+        : { varde: prognosrad.varde, kalla: prognosrad.kalla, last_nar: prognosrad.last_nar.toISOString() }, PROGNOSREGEL),
       troskellarm: svept(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall),
       forbrukning,
       kostnader: last(kostnader, KALLA_REDOVISNING, lastNar),

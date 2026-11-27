@@ -23,6 +23,7 @@ import { NotFoundError } from '../lib/errors.js';
 import { byggKostnadsunderlag } from '../lib/beslutsunderlag.js';
 import { valjBindningsmal, forifyllBindning, bindningsniva, type Bindningsniva } from '../lib/bindningsmal.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
+import { INGEN_BOKAD_FRAMTID, UNDERLAGET_KUNDE_INTE_LASAS } from '../lib/prognosplats.js';
 import { harledTroskellarm, type Plandel, type Trosklar } from '../lib/troskel.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
 import { forbrukningForAvtal, gallandeTaxa, type Delforbrukning } from './contracts.js';
@@ -486,11 +487,19 @@ async function tidigareBindningar(client: PoolClient, companyId: string, contrac
 // husets enda takberäkning (`forbrukningForAvtal`) och taxan ur husets enda
 // taxeordning (`gallandeTaxa`). Ingen databas, ingen klocka, inga anrop — samma
 // indata ger alltid samma utdata, vilket är hela ADR-2:s omräkningsbarhet.
+//
+// Story 5.4 (FR-5): ramdatumet förlängs aldrig bortom den sista bokningen.
+// Bokningar som inte når ramen ger villkoret `ingen bokad framtid`, enligt
+// Davids svar 2026-10-23, och ett svep utan kalenderlista är en oläst
+// kalender. Ramdatumen står kvar i cachen som regelns mekanik, men ingen
+// läsväg för dem vidare: platsen på Pengarna och Läget läser bara cachens
+// `kalender` och `framtida_handelser` genom platsens regel i lib.
 
 /** Villkorsnamnen. Konstanter, så att provet och koden inte kan stava olika. */
 export const INGET_BEKRAFTAT_TAK = 'inget bekräftat tak';
 export const INGEN_TAXA = 'ingen taxa';
-export const INGEN_BOKAD_FRAMTID = 'ingen bokad framtid';
+/** Platsens regel äger texten; svepet exporterar samma bindning vidare. */
+export { INGEN_BOKAD_FRAMTID };
 
 /**
  * En ram: datumet då den nås, eller varför det inte går att säga. ETT av dem,
@@ -519,19 +528,6 @@ export interface Prognosramar {
   ram_kronor: Ramutfall;
 }
 
-const DYGN_MS = 86_400_000;
-
-/** `YYYY-MM-DD` → dygn sedan epok. Samma grepp som `lib/uppdragsplan.ts`. */
-function dagnummer(datum: string): number {
-  return Date.UTC(
-    Number(datum.slice(0, 4)), Number(datum.slice(5, 7)) - 1, Number(datum.slice(8, 10)),
-  ) / DYGN_MS;
-}
-
-function datumEfter(datum: string, dagar: number): string {
-  return new Date((dagnummer(datum) + dagar) * DYGN_MS).toISOString().slice(0, 10);
-}
-
 /**
  * Datumet då `kvar` är förbrukat, givet de framtida posternas värden i
  * datumordning.
@@ -541,10 +537,10 @@ function datumEfter(datum: string, dagar: number): string {
  *   1. `kvar <= 0` — ramen är redan nådd. Datumet är `idag`, och det är FAKTA:
  *      att svara med ett villkor här hade dolt det enda som är säkert känt.
  *   2. Ackumuleringen når ramen inom bokningarna → den händelsedagen.
- *   3. Bokningarna räcker inte → den bokade TAKTEN förlängs: resterande mängd
- *      i förhållande till vad som bokats över spannet `idag`→sista bokningen.
- *      Heltalsaritmetik hela vägen (ceil via heltalsdivision), aldrig ett
- *      flyttal som mellanled för ören.
+ *   3. Bokningarna räcker inte → villkoret `ingen bokad framtid`. Story 5.4
+ *      tog bort förlängningen med den bokade takten: ett datum efter sista
+ *      bokningen bärs av ingen regel (FR-5), och Davids svar 2026-10-23 säger
+ *      att bokad framtid som aldrig förbrukar ramen visar villkoret.
  */
 function ramdatum(
   kvar: number, idag: string, poster: Array<{ datum: string; varde: number }>,
@@ -552,29 +548,20 @@ function ramdatum(
   if (kvar <= 0) return { datum: idag };
   // Poster utan värde flyttar ingenting: ett 0-minuters möte är ingen bokad
   // framtid, och för kronramen gäller detsamma om taxan gör posten värdelös.
-  const bidragande = poster.filter((p) => p.varde > 0);
-  if (bidragande.length === 0) return { villkor: INGEN_BOKAD_FRAMTID };
-
+  // Med `kvar > 0` kan summan bara nå ramen på en post som bidrar.
   let summa = 0;
-  for (const post of bidragande) {
+  for (const post of poster) {
     summa += post.varde;
     if (summa >= kvar) return { datum: post.datum };
   }
-
-  const sista = bidragande[bidragande.length - 1]!.datum;
-  // Spannet räknas från `idag` och inte från första bokningen: takten ska
-  // beskriva hur uppdraget faktiskt fylls, inte hur tätt de bokade dagarna
-  // ligger inbördes. Bokningarna ligger efter `idag`, så spannet är minst 1.
-  const spanndagar = Math.max(1, dagnummer(sista) - dagnummer(idag));
-  const resterande = kvar - summa;
-  const extra = Math.floor((resterande * spanndagar + summa - 1) / summa);
-  return { datum: datumEfter(sista, extra) };
+  return { villkor: INGEN_BOKAD_FRAMTID };
 }
 
 /**
  * FR-5:s två ramdatum. Villkoren prövas i kravets ordning — tak, taxa, bokad
  * framtid — men efter det som är fakta: en ram som redan är nådd svarar `idag`,
- * inte "ingen bokad framtid".
+ * inte "ingen bokad framtid". Bokningar som inte når ramen ger villkoret och
+ * aldrig ett förlängt datum (Story 5.4).
  */
 export function harledPrognosramar(indata: Prognosindata): Prognosramar {
   // KRAV-3: registrerad tid bär det förflutna t.o.m. i dag, kalendern bär
@@ -612,6 +599,51 @@ export function harledPrognosramar(indata: Prognosindata): Prognosramar {
   }
 
   return { ram_timmar, ram_kronor };
+}
+
+/** Cachevärdet `prognos` (Story 5.4). Exakt åtta nycklar i varje läge. */
+export interface Prognosvarde {
+  /** 'olast' när svepet inte fick någon lista: en oläst kalender är aldrig en tom. */
+  kalender: 'last' | 'olast';
+  handelser: number;
+  bokade_minuter: number;
+  /** Händelser efter i dag och med minuter — det enda platsen läser utöver `kalender`. */
+  framtida_handelser: number;
+  forsta: string | null;
+  sista: string | null;
+  ram_timmar: Ramutfall;
+  ram_kronor: Ramutfall;
+}
+
+/**
+ * Prognosens cachevärde ur svepets kalenderlista och ramunderlaget. Ren.
+ *
+ * En utelämnad lista är en oläst kalender: Hermes skickar alltid listan när
+ * kalendern lästs, också tom, och inget ramutfall härleds ur ett underlag som
+ * inte är läst. En tom lista är en läst kalender utan bokningar.
+ */
+export function prognosvarde(
+  kalender: Prognosindata['handelser'] | undefined, ram: Omit<Prognosindata, 'handelser'>,
+): Prognosvarde {
+  if (kalender === undefined) {
+    return {
+      kalender: 'olast', handelser: 0, bokade_minuter: 0, framtida_handelser: 0, forsta: null, sista: null,
+      ram_timmar: { villkor: UNDERLAGET_KUNDE_INTE_LASAS }, ram_kronor: { villkor: UNDERLAGET_KUNDE_INTE_LASAS },
+    };
+  }
+  const datum = kalender.map((h) => h.datum).sort();
+  const ramar = harledPrognosramar({ ...ram, handelser: kalender });
+  return {
+    kalender: 'last',
+    handelser: kalender.length,
+    bokade_minuter: kalender.reduce((s, h) => s + h.minuter, 0),
+    // Samma predikat som ramdatumen och tröskelsteget: efter i dag och med minuter.
+    framtida_handelser: kalender.filter((h) => h.datum > ram.idag && h.minuter > 0).length,
+    forsta: datum[0] ?? null,
+    sista: datum.at(-1) ?? null,
+    ram_timmar: ramar.ram_timmar,
+    ram_kronor: ramar.ram_kronor,
+  };
 }
 
 /** Dagens datum. Samma form som takberäkningens egen i `contracts.ts`. */
@@ -703,36 +735,31 @@ async function svepEttUppdrag(
   // registrerade tiden (barnens tid är rullad upp i roten) och det tak som
   // varningen och spärren använder. Saknas roten helt finns inget bekräftat tak
   // — samma svar som ett oläst tak, och "ett oläst tak varnar aldrig".
+  //
+  // Story 5.4: en utelämnad lista är en oläst kalender och en tom lista en läst
+  // kalender utan bokningar. `prognosvarde` skiljer dem i fältet `kalender`, så
+  // att ett svep utan kalender aldrig skrivs som «ingen bokad framtid».
+  // Tröskelsteget läser listan som förut: utelämnad ger ingen bokad minut.
   const kalender = obs.kalenderhandelser ?? [];
-  const datum = kalender.map((h) => h.datum).sort();
   const idag = idagsdatum();
   const delar = await forbrukningForAvtal(client, companyId, { contractId: rad.contract_id });
   const rot = delar.find((d) => d.code === ROTKOD && d.parent_code === null) ?? null;
   const taxa = gallandeTaxa(null, null, rad.avtal_taxa, rad.projekt_taxa);
-  const ramar = harledPrognosramar({
-    idag,
-    registrerade_minuter: rot?.billable_minutes ?? 0,
-    registrerade_oren: rot?.amount_ore ?? 0,
-    cap_hours: rot?.cap_hours ?? null,
-    cap_amount_ore: rot?.cap_amount_ore ?? null,
-    cap_status: rot?.cap_status ?? 'vet_ej',
-    // Taxeordningen är husets (`gallandeTaxa`): avtalets, annars uppdragets. Ett
-    // post- eller delled finns inte att fylla — en bokning i kalendern bär
-    // ingen avtalsdel, och att välja en åt den hade varit en gissning.
-    taxa_ore: taxa,
-    handelser: kalender,
-  });
   varden.push({
     nyckel: 'prognos',
     kalla: 'kalender',
-    varde: {
-      handelser: kalender.length,
-      bokade_minuter: kalender.reduce((s, h) => s + h.minuter, 0),
-      forsta: datum[0] ?? null,
-      sista: datum.at(-1) ?? null,
-      ram_timmar: ramar.ram_timmar,
-      ram_kronor: ramar.ram_kronor,
-    },
+    varde: prognosvarde(obs.kalenderhandelser, {
+      idag,
+      registrerade_minuter: rot?.billable_minutes ?? 0,
+      registrerade_oren: rot?.amount_ore ?? 0,
+      cap_hours: rot?.cap_hours ?? null,
+      cap_amount_ore: rot?.cap_amount_ore ?? null,
+      cap_status: rot?.cap_status ?? 'vet_ej',
+      // Taxeordningen är husets (`gallandeTaxa`): avtalets, annars uppdragets. Ett
+      // post- eller delled finns inte att fylla — en bokning i kalendern bär
+      // ingen avtalsdel, och att välja en åt den hade varit en gissning.
+      taxa_ore: taxa,
+    }),
   });
 
   // (3b) Tröskellarmen (S6.2, FR-3). Samma `delar` som prognosen läste — husets
