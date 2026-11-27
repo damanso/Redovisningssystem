@@ -25,6 +25,9 @@
 //     hade varit ett andra ställe där samma sanning står, och den dag en skrivväg
 //     glömmer den driftar kolumnen ifrån historiken utan att någon ser det.
 //     Härledningen kan per definition inte drifta.
+//   * Transmittalfälten läses ur senaste överlämningen (händelsen med revision),
+//     förs aldrig in i den frysta kopian, och datumet hämtas ur handlingen,
+//     aldrig ur bekräftelsens tid.
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { NotFoundError } from '../lib/errors.js';
@@ -77,6 +80,12 @@ export interface Leverabelrad {
   uppfoljningsmatt: string | null;
   matt_lasvag: string | null;
   status: string;
+  /** Revisionen i senaste överlämningen; första är 1, NULL före överlämning. */
+  revision: number | null;
+  /** Samma överlämnings mottagare, ordagrant; NULL om saknad, aldrig avtalets godkännare. */
+  mottagare: string | null;
+  /** ISO-datum ur handlingen, aldrig bekräftelsens tid (FR-13). Källa i Story 4.2; tills dess NULL. */
+  overlamnad: string | null;
   /**
    * Hela dagar (avrundat nedåt) sedan leverabelns SENASTE händelse — alltså hur
    * länge den stått still i sitt nuvarande läge (FR-37). Aldrig NULL: en
@@ -122,12 +131,18 @@ export async function lasLeverabelregister(
               WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
               ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
             l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
-            l.matt_lasvag, l.status,
+            l.matt_lasvag, l.status, o.revision, o.mottagare, NULL::text AS overlamnad,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h
                 WHERE h.leverabel_id = l.id AND h.company_id = l.company_id),
               l.created_at))) / 86400)::int) AS dagar_i_laget
        FROM uppdrag_leverabel l
+       LEFT JOIN LATERAL (
+         SELECT h.revision, h.mottagare FROM uppdrag_leverabel_handelse h
+          WHERE h.leverabel_id = l.id AND h.company_id = l.company_id
+            AND h.revision IS NOT NULL
+          ORDER BY h.revision DESC, h.created_at DESC, h.id DESC LIMIT 1
+       ) o ON true
       WHERE l.company_id = $1 AND l.contract_id = $2
       ORDER BY l.kod`,
     [companyId, input.contract_id],
