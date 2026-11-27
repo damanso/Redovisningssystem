@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
+  Granskningsfyndet om sex saknade provfiler prövat mot git, inte bara
+  arbetskopian. Alla sex finns redan i `main...HEAD`, commit `0747ec0`:
+  `server/test/kostnadsforslagHelper.ts` (+110),
+  `server/test/uppdragsytan-kostnadsforslag.test.ts` (+363),
+  `server/test/uppdragsytan-kostnadssparr.test.ts` (+24/-20),
+  `server/test/uppdragsytan-svep-bindning.test.ts` (+9/-7),
+  `server/test/uppdragsytan-svep.test.ts` (+3/-2) och
+  `server/test/uppdragsytan-bindning.test.ts` (+3/-5).
+  Hela File List kontrollerad: 19/19 kod-, prov- och dokumentpatchar finns;
+  19 negativa kontroller upptäcker varje utelämnad patch. Diffen har
+  122 428 tecken och första provpatchen börjar vid index 63 959. En
+  simulerad kapning vid 60 000 tecken döljer exakt fyndets sex provfiler;
+  faktisk kapning i kedjan är inte bevisad. Belägget är fullständig
+  `git diff main...HEAD --numstat -- server/test` och filvisa patchar.
+  Ingen produktionskod eller provassertion ändrad, ingen migration,
+  rutt eller nytt beroende; CRM-kontraktet oförändrat. Stilvalet står kvar:
+  husets Public Sans, skala, tabeller och Oplanerad-chip gör kostnadsraderna
+  igenkännbara. Typkontroll exit 0. Riktad och full `npm test` gav exit 1
+  före fallen: `connect EPERM 127.0.0.1:5433`. Databasfallen är inte körda
+  i omtaget; tidigare grönt utfall nedan är historiskt. Kedjan kör sviten
+  före granskningen enligt databasundantaget. Bygge och Hermes driftprov
+  inte körda här, inget nytt driftutfall påstås.
+
 - **2026-11-27 — 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
   Svepet förifyller bindningsförslag ur titel, tidigare leverantörsbindning
   och uppdragets namn i bokföringstext, med skäl, källor och stabil hash.
