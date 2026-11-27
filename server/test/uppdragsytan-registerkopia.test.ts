@@ -12,7 +12,7 @@ import {
   REGISTERKOPIA_TEXT, renderaRegisterkopia, registerkopiansHash,
   lasLeverabelregister, type Registerkopierad,
 } from '../src/services/uppdragRegister.js';
-import { koaRegisterkopia, listaReferenser, rapporteraDriveKopia, skapaReferens } from '../src/services/uppdragReferens.js';
+import { KOSTATUSAR, koaRegisterkopia, listaReferenser, rapporteraDriveKopia, skapaReferens, verifieraReferens } from '../src/services/uppdragReferens.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
@@ -461,6 +461,216 @@ async function samtidigKrock(namn: string, kvittensForst: boolean) {
   expect(rader).toHaveLength(1);
   if (kvittensForst) expect(rader[0]!.id).toBe(post.id);
   else expect((await kopieposter(contractId))[0]).toEqual(post);
+}
+
+describe('AI-Review 1–2: bara en skriven kopieversion får verifieras som färdig', () => {
+  for (const kostatus of [...KOSTATUSAR.filter((s) => s !== 'skriven'), null]) {
+    for (const arvtId of [false, true]) {
+      it(`F1 ${kostatus}, ${arvtId ? 'ärvt fil-id' : 'platshållare'}: observationer färdigställer aldrig kopian`, async () => {
+        const { contractId } = kostatus === null ? await nyttUppdrag(`F1-aldre-${arvtId}`)
+          : await importerat(`F1-${kostatus}-${arvtId}`);
+        if (kostatus === null) await withAdmin((c) => c.query(
+          `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla)
+           VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp')`,
+          [companyId, contractId, `registerkopia:${contractId}`],
+        ));
+        const post = (await kopieposter(contractId))[0]!;
+        await withAdmin((c) => c.query(
+          'UPDATE uppdrag_referens SET ko_status=$3, extern_id=$4 WHERE company_id=$1 AND id=$2',
+          [companyId, post.id, kostatus, arvtId ? `${DRIVE_ID}-F1` : post.extern_id],
+        ));
+        for (const lage of [{ finns: true } as const, { finns: true, hash: 'annat-innehall' } as const, { finns: false } as const]) {
+          const svar = await tx((c) => verifieraReferens(c, companyId, post.id, lage));
+          expect(svar.referens.status).toBe('overifierad');
+          expect((await kopieposter(contractId))[0]).toMatchObject({ status: 'overifierad', ko_status: kostatus });
+        }
+      });
+    }
+  }
+  it('F2 HTTP: version 2 med version 1:s fil-id är overifierad tills den skrivits och verifierats', async () => {
+    const { contractId } = await importerat('F2');
+    await rapport((await kopieposter(contractId))[0]!.id, `${DRIVE_ID}-F2`);
+    await paborja(contractId);
+    const post = (await kopieposter(contractId)).find((r) => r.ko_status === 'koad')!;
+    expect(post.extern_id).toBe(`${DRIVE_ID}-F2`);
+    const svep = () => ok('kor_uppdragssvep', { uppdrag: [{ contract_id: contractId,
+      referenser: [{ referens_id: post.id, lage: { finns: true } }],
+    }] }, agent());
+    await svep();
+    expect((await kopieposter(contractId)).find((r) => r.id === post.id)).toMatchObject({ ko_status: 'koad', status: 'overifierad' });
+    expect((await tx((c) => listaReferenser(c, companyId, contractId))).find((r) => r.id === post.id)?.status).toBe('overifierad');
+    await rapport(post.id, post.extern_id);
+    await svep();
+    expect((await kopieposter(contractId)).find((r) => r.id === post.id)).toMatchObject({ ko_status: 'skriven', status: 'levande' });
+  });
+});
+
+describe('AI-Review 3: spärrdom och återhämtning följer filidentiteten', () => {
+  for (const sparrForst of [true, false]) {
+    it(`F3 spärr ${sparrForst ? 'före' : 'efter'} nästa version: länken döljs tills verifierad återflytt`, async () => {
+      const { contractId, projektId } = await importerat(`F3-${sparrForst}`);
+      const fil = `${DRIVE_ID}-F3-${sparrForst}`;
+      const gammal = (await kopieposter(contractId))[0]!;
+      await rapport(gammal.id, fil);
+      // Samma fil-id i ett annat avtal får aldrig ärva den här spärrdomen.
+      const granne = await importerat(`F3-annat-${sparrForst}`);
+      await rapport((await kopieposter(granne.contractId))[0]!.id, fil);
+      const oberord = await kopieposter(granne.contractId);
+      const observera = (id: string, kedja?: string[], finns = true) => ok('kor_uppdragssvep', {
+        uppdrag: [{ contract_id: contractId, sparrmapp_id: 'F3-sparrmapp', referenser: [{
+          referens_id: id, lage: { finns }, ...(kedja === undefined ? {} : { foralderkedja: kedja }),
+        }] }],
+      }, agent());
+      if (sparrForst) await observera(gammal.id, ['F3-annan-mapp']);
+      await tx((c) => koaRegisterkopia(c, companyId, contractId));
+      if (!sparrForst) await observera(gammal.id, ['F3-annan-mapp']);
+      await tx((c) => koaRegisterkopia(c, companyId, contractId));
+      const alla = await kopieposter(contractId);
+      const senaste = alla[alla.length - 1]!;
+      expect(alla).toHaveLength(3);
+      expect(alla.every((r) => r.status === 'utanfor_sparr' && r.extern_id === fil)).toBe(true);
+      const sy = await ok('las_kontraktsyta', { contract_id: contractId });
+      expect(sy.dokument.referenser.some((r: { extern_id: string }) => r.extern_id === fil)).toBe(false);
+      expect(sy.dokument.utanfor_sparr).toContain(senaste.id);
+      const html = await ua.get(`/app/c/${companyId}/projects/${projektId}/kontraktet`);
+      expect(html.status, html.text).toBe(200);
+      expect(html.text).not.toContain(`https://drive.google.com/open?id=${fil}`);
+      const lista = await ok('kor_uppdragssvep', {}, agent());
+      expect(lista.arbetslista.referenser.filter((r: { contract_id: string }) => r.contract_id === contractId)
+        .map((r: { referens_id: string }) => r.referens_id)).toContain(senaste.id);
+      // Varken en observation utan föräldrar eller en saknad fil häver spärren.
+      await observera(senaste.id);
+      await observera(senaste.id, undefined, false);
+      expect((await kopieposter(contractId)).every((r) => r.status === 'utanfor_sparr')).toBe(true);
+      const fore = await kopieposter(contractId);
+      const avvisad = await act('rapportera_drive_kopia', { referens_id: senaste.id,
+        utfall: { lage: 'skriven', drive_id: fil } }, agent());
+      expect(avvisad.status, JSON.stringify(avvisad.body)).toBe(409);
+      expect(avvisad.body.error).toBe('utanfor_sparr');
+      expect(await kopieposter(contractId)).toEqual(fore);
+      await observera(senaste.id, ['F3-sparrmapp']);
+      expect((await kopieposter(contractId)).every((r) => r.status !== 'utanfor_sparr')).toBe(true);
+      expect((await kopieposter(contractId)).find((r) => r.id === senaste.id)?.status).toBe('overifierad');
+      await rapport(senaste.id, fil);
+      await observera(senaste.id, ['F3-sparrmapp']);
+      expect((await kopieposter(contractId)).find((r) => r.id === senaste.id)?.status).toBe('levande');
+      expect(await kopieposter(granne.contractId)).toEqual(oberord);
+    });
+  }
+});
+
+/** A håller avtalet medan B når sin låsväntan. Alla löften avslutas även vid fel. */
+async function konkurrera(
+  contractId: string, fore: (c: pg.PoolClient) => Promise<unknown>,
+  efter: (c: pg.PoolClient) => Promise<unknown>, bSkriv: (c: pg.PoolClient) => Promise<unknown>,
+) {
+  let redo!: () => void;
+  let slapp!: () => void;
+  const startad = new Promise<void>((r) => { redo = r; });
+  const fortsatt = new Promise<void>((r) => { slapp = r; });
+  const a = fel(tx(async (c) => {
+    try {
+      await c.query('SELECT 1 FROM contracts WHERE id=$1 AND company_id=$2 FOR NO KEY UPDATE', [contractId, companyId]);
+      await fore(c);
+    } finally { redo(); }
+    await fortsatt;
+    await efter(c);
+  }));
+  await startad;
+  let pid!: number;
+  let avgjord = false;
+  let bRedo!: () => void;
+  const bStartad = new Promise<void>((r) => { bRedo = r; });
+  const b = fel(tx(async (c) => {
+    try { pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid; }
+    finally { bRedo(); }
+    await bSkriv(c);
+  })).then((e) => { avgjord = true; return e; });
+  let last = false;
+  try {
+    await bStartad;
+    await withAdmin(async (c) => {
+      const slut = Date.now() + 5000;
+      while (!avgjord && Date.now() < slut) {
+        last = (await c.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid=$1 AND wait_event_type='Lock'", [pid])).rows.length > 0;
+        if (last) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    });
+  } finally { slapp(); }
+  const [aFel, bFel] = await Promise.all([a, b]);
+  expect(aFel).toBeNull();
+  expect(last, 'B ska ta samma avtalslås före tillståndskontrollen').toBe(true);
+  return bFel;
+}
+
+describe('AI-Review 4: tillstånd prövas efter avtalslåset för varje kvittens', () => {
+  for (const lage of ['skriven', 'fel'] as const) {
+    for (const fran of ['koad', 'fel'] as const) {
+      it(`F4 köningen ersätter ${fran} medan ${lage}-kvittensen väntar: hela raden förblir ersatt`, async () => {
+        const { contractId } = await nyttUppdrag(`F4-${fran}-${lage}`);
+        const gammal = await withAdmin(async (c) => (await c.query(
+          `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,ko_fel)
+           VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp',$4,'bevarat fel') RETURNING *`,
+          [companyId, contractId, `registerkopia:${contractId}`, fran],
+        )).rows[0]!);
+        let svar: Awaited<ReturnType<typeof rapporteraDriveKopia>> | undefined;
+        const bFel = await konkurrera(contractId, async () => {},
+          (c) => koaRegisterkopia(c, companyId, contractId), async (c) => {
+            svar = await rapporteraDriveKopia(c, companyId, { referens_id: gammal.id,
+              utfall: lage === 'skriven' ? { lage, drive_id: `${DRIVE_ID}-F4` } : { lage, fel: 'ska aldrig skrivas' } });
+          });
+        expect(bFel).toBeNull();
+        expect(svar).toMatchObject({ referens_id: gammal.id, ko_status: 'ersatt', ko_fel: gammal.ko_fel, extern_id: gammal.extern_id });
+        expect((await kopieposter(contractId)).find((r) => r.id === gammal.id)).toEqual({ ...gammal, ko_status: 'ersatt' });
+      });
+    }
+    it(`F5 skriven först, samtidig ${lage}-kvittens får inte öppna eller skriva över posten`, async () => {
+      const { contractId } = await importerat(`F5-${lage}`);
+      const post = (await kopieposter(contractId))[0]!;
+      const bFel = await konkurrera(contractId,
+        (c) => rapporteraDriveKopia(c, companyId, { referens_id: post.id, utfall: { lage: 'skriven', drive_id: `${DRIVE_ID}-F5` } }),
+        async () => {},
+        (c) => rapporteraDriveKopia(c, companyId, { referens_id: post.id,
+          utfall: lage === 'skriven' ? { lage, drive_id: `${DRIVE_ID}-annat` } : { lage, fel: 'ska aldrig skrivas' } }));
+      expect(bFel).toMatchObject({ code: 'ingen_oppen_kopost' });
+      expect((await kopieposter(contractId))[0]).toMatchObject({ ko_status: 'skriven', extern_id: `${DRIVE_ID}-F5`, ko_fel: null });
+    });
+  }
+});
+
+it('F6 spärren omfattar målposten själv och följer inte med när filidentiteten byts', async () => {
+  const { contractId } = await nyttUppdrag('F6-aldre-kopost');
+  const post = await withAdmin(async (c) => (await c.query(
+    `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,status)
+     VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp','fel','utanfor_sparr') RETURNING *`,
+    [companyId, contractId, `${DRIVE_ID}-F6-sparr`],
+  )).rows[0]!);
+  const res = await act('rapportera_drive_kopia', { referens_id: post.id,
+    utfall: { lage: 'skriven', drive_id: post.extern_id } }, agent());
+  expect(res.status, JSON.stringify(res.body)).toBe(409);
+  expect(res.body.error).toBe('utanfor_sparr');
+  expect((await kopieposter(contractId))[0]).toEqual(post);
+  const annat = `${DRIVE_ID}-F6-ny-fil`;
+  await rapport(post.id, annat);
+  expect((await kopieposter(contractId))[0]).toMatchObject({ ko_status: 'skriven', extern_id: annat, status: 'overifierad' });
+  await tx((c) => koaRegisterkopia(c, companyId, contractId));
+  expect((await kopieposter(contractId)).at(-1)).toMatchObject({ extern_id: annat, status: 'overifierad' });
+});
+
+for (const verifieringForst of [true, false]) {
+  it(`F7 ${verifieringForst ? 'verifiering' : 'köning'} först: samtidig spärrdom och versionsbyte följer samma avtalslås`, async () => {
+    const { contractId } = await importerat(`F7-${verifieringForst}`);
+    const post = (await kopieposter(contractId))[0]!;
+    await rapport(post.id, `${DRIVE_ID}-F7`);
+    const verifiera = (c: pg.PoolClient) => verifieraReferens(c, companyId, post.id, { finns: true }, { sparr: 'utanfor' });
+    const koa = (c: pg.PoolClient) => koaRegisterkopia(c, companyId, contractId);
+    const bFel = await konkurrera(contractId, verifieringForst ? verifiera : koa, async () => {}, verifieringForst ? koa : verifiera);
+    expect(bFel).toBeNull();
+    const poster = await kopieposter(contractId);
+    expect(poster).toHaveLength(2);
+    expect(poster.every((r) => r.status === 'utanfor_sparr')).toBe(true);
+  });
 }
 
 function koord(text: string) { return text.match(/\b(?:hamtaDriveKo|ko_status|ko_fel)\b/g) ?? []; }

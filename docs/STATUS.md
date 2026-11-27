@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 3-3-registerkopian-ar-versionsbunden-har-fryst-underlag-och-syns-aldrig-som-kostatus-for-david.**
+  Fyra AI-granskningspunkter rättade som tre felklasser: verifieringens
+  skrivväg håller oskrivna kopior overifierade, spärrdomen följer fil-id:t
+  över versionerna med verifierad återhämtning, och båda kvittensutfallen
+  läser tillstånd först under avtalslåset. Även verifieringen delar låset,
+  så spärrdom och ny köpost ser varandra. 20 nya fall F1–F7 i
+  `server/test/uppdragsytan-registerkopia.test.ts` täcker oskrivna lägen,
+  äldre poster utan köläge, ärvda id:n, HTTP-förlopp, fortsatt spärr och
+  återflytt, byte av filidentitet och åtta samtidighetsfall.
+  Befintliga huskomponenter och statusetiketter används; tokens, typografi,
+  fokus och tangentbordsordning följer befintliga ytor. Ingen ny kontroll
+  eller vy införs. Migration 0098 står oförändrad; arbetslistans frysta
+  innehåll och versionsbundna kvittens byggs i Story 3.6.
+  Typkontroll före/efter varje rättning och i slutkontrollen exit 0.
+  Vitest (rött/grönt-försök och full regression) inte kört på fallnivå:
+  `connect EPERM 127.0.0.1:5433` i globalSetup, exit 1. Kedjan kör grinden
+  enligt uppdragets nätverksundantag. Inget nytt beroende eller CRM-kontrakt,
+  ingen tjänststart eller driftsättning. Minnet är inte installerat.
+
 - **2026-11-27 — 3-3-registerkopian-ar-versionsbunden-har-fryst-underlag-och-syns-aldrig-som-kostatus-for-david.**
   Migration 0098 fryser registerkopians text, rader, version och sha256 som
   FRYST HISTORIK med RLS, append-only-rättigheter och sammansatt hashkoppling.

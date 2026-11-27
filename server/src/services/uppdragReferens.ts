@@ -281,6 +281,9 @@ export function referensutfall(
  * `titel_vid_lankning`/`hash_vid_lankning` skrivs ALDRIG om här. De är vad som
  * stod DÅ; skrevs de om vid varje verifiering skulle drift bara kunna upptäckas
  * en gång, och andra gången skulle den andra änden ha ändrats i tysthet.
+ * En kopieposts ärvda fil-id bevisar inte att dess version har skrivits.
+ * Köstatus prövas därför vid skrivningen, även för inskickade observationer
+ * som aldrig kom ur arbetslistan. Spärrdomen gäller fortfarande själva filen.
  */
 export async function verifieraReferens(
   client: PoolClient, companyId: string, referensId: string, lage: Referenslage,
@@ -290,6 +293,14 @@ export async function verifieraReferens(
   const mer = VerifieringstillaggSchema.parse(tillagg);
   const id = UuidSchema.parse(referensId);
 
+  const avtal = await client.query<{ contract_id: string }>(
+    'SELECT contract_id FROM uppdrag_referens WHERE id = $1 AND company_id = $2',
+    [id, companyId],
+  );
+  if (!avtal.rows[0]) throw new NotFoundError('uppdrag_referens');
+  // Samma låsordning som köning och kvittens: avtal före referens. En
+  // spärrdom och nästa versions arv av fil-id måste se varandras skrivning.
+  await kravAvtal(client, companyId, avtal.rows[0].contract_id);
   const fore = await client.query<Referensrad>(
     `SELECT ${KOLUMNER} FROM uppdrag_referens WHERE id = $1 AND company_id = $2`,
     [id, companyId],
@@ -300,14 +311,30 @@ export async function verifieraReferens(
   const utfall = referensutfall(rad, sett, mer);
   if (!utfall.bedomd) return { referens: rad, bedomd: false, orsak: utfall.orsak, avvikelser: [] };
 
+  if (rad.sort === 'drive' && sett.finns && mer.sparr !== undefined) {
+    // Spärren gäller filen, också på dolda äldre versioner. Vid en verifierad
+    // återflytt hävs deras spärrdom, men innehållet förklaras inte verifierat.
+    await client.query(
+      `UPDATE uppdrag_referens SET status = $4
+        WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive' AND extern_id = $3
+          AND ($4 = 'utanfor_sparr' OR status = 'utanfor_sparr')`,
+      [companyId, rad.contract_id, rad.extern_id, mer.sparr === 'utanfor' ? 'utanfor_sparr' : 'overifierad'],
+    );
+  }
   const efter = await client.query<Referensrad>(
     `UPDATE uppdrag_referens
-        SET status = $3, senast_verifierad = now(), handelse_datum = COALESCE($4::date, handelse_datum)
+        SET status = CASE WHEN extern_nyckel = 'registerkopia' AND status = 'utanfor_sparr' AND NOT $5
+                              THEN 'utanfor_sparr'
+                          WHEN extern_nyckel = 'registerkopia' AND ko_status IS DISTINCT FROM 'skriven'
+                              AND $3 <> 'utanfor_sparr' THEN 'overifierad' ELSE $3 END,
+            senast_verifierad = now(), handelse_datum = COALESCE($4::date, handelse_datum)
       WHERE id = $1 AND company_id = $2
       RETURNING ${KOLUMNER}`,
-    [id, companyId, utfall.status, mer.handelse_datum ?? null],
+    [id, companyId, utfall.status, mer.handelse_datum ?? null, sett.finns && mer.sparr === 'innanfor'],
   );
-  return { referens: efter.rows[0]!, bedomd: true, avvikelser: utfall.avvikelser };
+  const referens = efter.rows[0]!;
+  return { referens, bedomd: true, avvikelser: referens.status === 'overifierad' ? []
+    : referens.status === 'utanfor_sparr' ? [...new Set(['utanfor_sparr', ...utfall.avvikelser])] : utfall.avvikelser };
 }
 
 // ---------------------------------------------------------------------------
@@ -428,8 +455,12 @@ export async function koaRegisterkopia(
     [companyId, contractId, registerversion, innehall, JSON.stringify(rader), registerhash],
   );
   const platshallare = registerkopiaPlatshallare(contractId);
-  const tidigare = await client.query<{ extern_id: string }>(
-    `SELECT r.extern_id FROM uppdrag_referens r
+  const tidigare = await client.query<{ extern_id: string; utanfor_sparr: boolean }>(
+    `SELECT r.extern_id, EXISTS (
+       SELECT 1 FROM uppdrag_referens s
+        WHERE s.company_id = r.company_id AND s.contract_id = r.contract_id
+          AND s.sort = 'drive' AND s.extern_id = r.extern_id AND s.status = 'utanfor_sparr'
+     ) AS utanfor_sparr FROM uppdrag_referens r
        LEFT JOIN uppdrag_registerkopia k ON k.id = r.registerkopia_id AND k.company_id = r.company_id
       WHERE r.company_id = $1 AND r.contract_id = $2 AND r.extern_nyckel = $3
         AND r.extern_id <> $4
@@ -438,10 +469,11 @@ export async function koaRegisterkopia(
   );
   const res = await client.query<Koreferens>(
     `INSERT INTO uppdrag_referens
-       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, registerkopia_id, registerhash, ko_status)
-     VALUES ($1, $2, 'drive', $3, $4, $5, $6, $7, 'koad') RETURNING ${KO_KOLUMNER}`,
+       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, registerkopia_id, registerhash, ko_status, status)
+     VALUES ($1, $2, 'drive', $3, $4, $5, $6, $7, 'koad', $8) RETURNING ${KO_KOLUMNER}`,
     [companyId, contractId, tidigare.rows[0]?.extern_id ?? platshallare,
-      REGISTERKOPIA_NYCKEL, REGISTERKOPIA_KALLA, version.rows[0]!.id, registerhash],
+      REGISTERKOPIA_NYCKEL, REGISTERKOPIA_KALLA, version.rows[0]!.id, registerhash,
+      tidigare.rows[0]?.utanfor_sparr ? 'utanfor_sparr' : 'overifierad'],
   );
   await client.query(
     `UPDATE uppdrag_referens SET ko_status = 'ersatt'
@@ -502,8 +534,9 @@ export type DriveRapportInput = z.input<typeof DriveRapportSchema>;
 
 /**
  * Tar emot utfallet av en köad kopia och stänger — eller behåller — köposten.
- * Skriven tar avtalslåset före dubblettuppslaget: ett id som en vanlig
- * Drive-referens redan bär avvisas även när skrivningarna är samtidiga.
+ * Båda utfallen tar avtalslåset före tillståndskontrollen och behåller det
+ * genom skrivningen. Köningens ersatt kan därför inte skrivas över av en
+ * väntande kvittens. Samma lås skyddar skriven-utfallets dubblettuppslag.
  *
  * `skriven`: `ko_status = 'skriven'`, `extern_id` blir Drive-id:t (platshållaren
  * försvinner i samma sekund som pekaren finns) och `ko_fel` nollställs.
@@ -520,6 +553,14 @@ export async function rapporteraDriveKopia(
   client: PoolClient, companyId: string, input: DriveRapportInput,
 ): Promise<Koreferens> {
   const data = DriveRapportSchema.parse(input);
+  const avtal = await client.query<{ contract_id: string }>(
+    'SELECT contract_id FROM uppdrag_referens WHERE id = $1 AND company_id = $2',
+    [data.referens_id, companyId],
+  );
+  if (!avtal.rows[0]) throw new NotFoundError('uppdrag_referens');
+  await kravAvtal(client, companyId, avtal.rows[0].contract_id);
+  // Första läsningen hittar bara det oföränderliga avtals-id:t. Tillståndet
+  // måste läsas med en ny ögonblicksbild efter eventuell låsväntan.
   const fore = await client.query<Koreferens>(
     `SELECT ${KO_KOLUMNER} FROM uppdrag_referens WHERE id = $1 AND company_id = $2`,
     [data.referens_id, companyId],
@@ -535,15 +576,11 @@ export async function rapporteraDriveKopia(
   }
 
   if (data.utfall.lage === 'skriven') {
-    await client.query(
-      'SELECT 1 FROM contracts WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
-      [rad.contract_id, companyId],
-    );
     const utanfor = await client.query(
       `SELECT 1 FROM uppdrag_referens
         WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive' AND extern_id = $3
-          AND id <> $4 AND status = 'utanfor_sparr'`,
-      [companyId, rad.contract_id, data.utfall.drive_id, data.referens_id],
+          AND status = 'utanfor_sparr'`,
+      [companyId, rad.contract_id, data.utfall.drive_id],
     );
     if (utanfor.rows.length > 0) {
       throw new ConflictError('utanfor_sparr', 'filen ligger enligt svepet utanför uppdragets spärrmapp och kan inte länkas');
@@ -563,7 +600,8 @@ export async function rapporteraDriveKopia(
     const res = await client.query<Koreferens>(
       data.utfall.lage === 'skriven'
         ? `UPDATE uppdrag_referens
-              SET ko_status = 'skriven', ko_fel = NULL, extern_id = $3
+              SET ko_status = 'skriven', ko_fel = NULL, extern_id = $3,
+                  status = CASE WHEN extern_id IS DISTINCT FROM $3 THEN 'overifierad' ELSE status END
             WHERE id = $1 AND company_id = $2
             RETURNING ${KO_KOLUMNER}`
         : `UPDATE uppdrag_referens

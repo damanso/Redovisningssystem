@@ -989,15 +989,17 @@ export async function korUppdragssvep(
     for (const kalla of MANDATKALLOR) tackning.push({ contract_id: contractId, kalla, ...varde[kalla] });
   }
 
-  // Nästa arbetslista. Köade kopior utelämnas: deras `extern_id` är ännu bara
-  // platshållaren (S7.2), och en verifiering av den hade svarat "borta" om en
-  // fil som aldrig skrivits. De ligger i Drive-kön i stället.
+  // Nästa arbetslista. Oskrivna kopiors innehåll verifieras inte. Ett ärvt
+  // fil-id med spärrdom måste däremot läsas igen så att en återflytt kan häva
+  // spärren. Skrivvägen håller versionen overifierad tills den är skriven.
   const attVerifiera = await client.query<Arbetsreferens>(
     `SELECT id AS referens_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
             hash_vid_lankning, status, senast_verifierad::text, revision
        FROM uppdrag_referens r
       WHERE r.company_id = $1 AND r.contract_id = ANY($2::uuid[])
-        AND (ko_status IS NULL OR ko_status = 'skriven') AND ${SENASTE_KOPIEPOST}
+        AND (ko_status IS NULL OR ko_status = 'skriven'
+          OR (extern_nyckel = 'registerkopia' AND status = 'utanfor_sparr'
+            AND extern_id <> 'registerkopia:' || contract_id::text)) AND ${SENASTE_KOPIEPOST}
       ORDER BY contract_id, created_at, id`,
     [companyId, oppna],
   );

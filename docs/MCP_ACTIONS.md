@@ -1703,9 +1703,9 @@ anropar `koaRegisterkopia` i samma transaktion som registerändringen. Varje
 ändring fryser en ny registerversion med text, rader och registerhash och
 skapar en egen köpost med `sort = 'drive'`, `extern_nyckel = 'registerkopia'`
 och `extern_kalla = 'drive:sparrmapp'`. Nästa löpnummer sätts under avtalslås.
-Köposten föds overifierad och ärver avtalets befintliga Drive-id; saknas filen
-används platshållaren `registerkopia:<contract_id>`. Tidigare versioner och
-deras feltext står kvar. En öppen köpost utan fryst version får i stället
+Köposten ärver avtalets befintliga Drive-id och dess eventuella spärrdom;
+annars föds den overifierad. Saknas filen används platshållaren
+`registerkopia:<contract_id>`. Tidigare versioner och deras feltext står kvar. En öppen köpost utan fryst version får i stället
 `ko_status = 'ersatt'`. Rullas ändringen tillbaka finns varken versionen eller
 köposten kvar.
 
@@ -1737,7 +1737,7 @@ eller Drive-fel. Ett tekniskt fel blir en driftpost på Hermes driftyta enligt
 B-10. Uppdragsytan visar registrets gällande databaspost och referensens
 verifieringsläge; en oskriven kopia framställs aldrig som färdig.
 
-- **Versionsbunden kopia (Story 3.3).** Migration 0098 skapar tabellen uppdrag_registerkopia som FRYST HISTORIK, append-only med RLS och avslutsspärr. Varje registerversion har fryst text, rader och registerhash; köpostens registerkopia_id och hash binds med en sammansatt främmande nyckel. En gammal öppen köpost utan version blir ersatt, och en kvittens mot en ersatt post ger 200 utan ändring. Referenslistorna visar bara den senaste kopieposten per avtal. Varje skrivning av ett Drive-id tar avtalslåset; en kvittens med ett id som en vanlig Drive-referens i avtalet redan har ger `409 referens_finns_redan`. Köstatus visas på Hermes driftyta och aldrig på projektsidan. Arbetslistan och den versionsbundna kvittensen kommer i Story 3.6; tills dess härleder hämtningen innehållet som förut och räknar inga försök.
+- **Versionsbunden kopia (Story 3.3).** Migration 0098 skapar tabellen uppdrag_registerkopia som FRYST HISTORIK, append-only med RLS och avslutsspärr. Varje registerversion har fryst text, rader och registerhash; köpostens registerkopia_id och hash binds med en sammansatt främmande nyckel. En gammal öppen köpost utan version blir ersatt, och en kvittens mot en ersatt post ger 200 utan ändring. Referenslistorna visar bara den senaste kopieposten per avtal. Verifieringens skrivväg håller oskrivna kopior overifierade även vid inskickade observationer för ett ärvt fil-id. En spärrdom gäller filidentiteten över versionerna; senaste spärrade kopian med verkligt fil-id finns i verifieringslistan så att en uttryckligt verifierad återflytt kan häva även äldre raders spärr. Återflytten färdigställer ingen oskriven version. Båda kvittensutfallen tar avtalslåset före tillståndsläsningen, så en väntande kvittens aldrig skriver över ersatt. Varje skrivning av ett Drive-id tar avtalslåset; en kvittens med ett id som en vanlig Drive-referens i avtalet redan har ger `409 referens_finns_redan`. Köstatus visas på Hermes driftyta och aldrig på projektsidan. Arbetslistan och den versionsbundna kvittensen kommer i Story 3.6; tills dess härleder hämtningen innehållet som förut och räknar inga försök.
 
 ### Svepet (S7.3, våg 3)
 
