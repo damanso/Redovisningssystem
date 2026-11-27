@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — 3-3-registerkopian-ar-versionsbunden-har-fryst-underlag-och-syns-aldrig-som-kostatus-for-david.**
+  Migration 0098 fryser registerkopians text, rader, version och sha256 som
+  FRYST HISTORIK med RLS, append-only-rättigheter och sammansatt hashkoppling.
+  Varje registerändring ger en ny köpost under avtalslås, med ärvt Drive-id;
+  öppna poster utan version ersätts och gamla kvittenser lämnar dem orörda.
+  Referenslistorna visar senaste kopieposten. Drive-id skyddas mot vanliga
+  referenser under samma avtalslås i båda riktningarna. Köraden är borttagen
+  ur projektsidan; befintliga tokens, typografi, kontrast och fokusordning
+  bevaras. Inga nya kontroller eller tillstånd införs. Arbetslistan och den
+  versionsbundna kvittensen byggs i Story 3.6. 23 nya fall R1–D1 i
+  `server/test/uppdragsytan-registerkopia.test.ts`; KRAV-2 vänt och KRAV-7
+  ersatt enligt berättelsen. Typkontroll efter uppgift 1–5 exit 0; det
+  förväntat röda exportfelet före uppgift 1 belagt med TS2305 (exit 2).
+  Rött/grönt-försök, körning 1–5 och fullsviten: inte kört på fallnivå,
+  `connect EPERM 127.0.0.1:5433` i globalSetup (exit 1). Kedjan verifierar
+  enligt nätverksundantaget. Slutgrinden: typkontroll exit 0, hela npm test
+  exit 1 i globalSetup av samma nätverksskäl; inga testfall körda.
+  Inga RESTER. CRM:s intagskontrakt är oförändrat. Inget nytt beroende,
+  ingen tjänststart eller driftsättning. Hermes driftprov har inte omprövats.
+
 - **2026-11-26 — 2-8-forslagets-underlag-visar-luckorna-parterna-och-ankaret.**
   Gemensam ren beräkning av parter, ankare och luckor i importens svar och
   baselineförslagets förklaring. Undantagsvyn för vidare manifestet; samma

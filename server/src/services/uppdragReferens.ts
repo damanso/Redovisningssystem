@@ -26,7 +26,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
-import { lasLeverabelregister, type Leverabelrad } from './uppdragRegister.js';
+import { lasLeverabelregister, renderaRegisterkopia, registerkopiansHash, type Leverabelrad } from './uppdragRegister.js';
 import { REFERENSSORTER, kanonisktReferensId, referensFormFel, urlEllerSokvag, type Referenssort, type Referensvisning } from '../lib/referens.js';
 export { REFERENSSORTER, urlEllerSokvag, type Referenssort } from '../lib/referens.js';
 
@@ -58,19 +58,13 @@ const StabiltIdSchema = safeText(200)
 // Skapa referens (KRAV-2)
 // ---------------------------------------------------------------------------
 
-/**
- * Nyckelrymden för uppdragets kopiereferens. Den är också RADENS IDENTITET:
- * uppdraget har EN kopia, och den känns igen på (sort, extern_nyckel) — inte på
- * `extern_id`, som byter värde den dag Drive-id:t kommer.
- */
+/** Nyckelrymden känner igen avtalets kopieposter, en per fryst version. */
 export const REGISTERKOPIA_NYCKEL = 'registerkopia';
 
 /**
- * Första gången kopian köas finns ingen fil, och därför inget Drive-id. Raden
- * föds med ett DETERMINISTISKT platshållar-id: det är stabilt över omköer (så
- * `uppdrag_referens_uk` håller uppdragets enda kopiereferens på plats) och byts
- * mot det riktiga id:t när Hermes rapporterar `skriven`. Ett Drive-id innehåller
- * aldrig kolon, så en platshållare kan aldrig läsas som en pekare som fungerar.
+ * Före första skrivningen finns inget Drive-id. Platshållaren är stabil för
+ * avtalet och kan aldrig misstas för ett fungerande Drive-id, som saknar kolon.
+ * När filen finns ärver nästa version dess id från en tidigare kopiepost.
  */
 export function registerkopiaPlatshallare(contractId: string): string {
   return `registerkopia:${contractId}`;
@@ -136,10 +130,12 @@ export function tillReferensvisning(r: Referensrad): Referensvisning {
  * (contract_id, company_id) i 0068 fäller ett främmande avtal ändå, men som ett
  * databasfel — och ett grannbolags avtal ska svara "finns inte", inte "något
  * gick fel". Samma uppslag som `uppdragBedomning.avtalsnamn`.
+ * Avtalslåset gör uppslaget före ett Drive-id och skrivningen odelbara också
+ * mot kvittensen, eftersom flera versionsposter får dela samma fil-id.
  */
 async function kravAvtal(client: PoolClient, companyId: string, contractId: string): Promise<void> {
   const res = await client.query(
-    'SELECT 1 FROM contracts WHERE id = $1 AND company_id = $2',
+    'SELECT 1 FROM contracts WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
     [contractId, companyId],
   );
   if (res.rows.length === 0) throw new NotFoundError('contract');
@@ -172,14 +168,30 @@ export async function skapaReferens(
   return res.rows[0]!;
 }
 
+/**
+ * Bara senaste kopieposten per avtal följer med till läsning och verifiering.
+ * Aliaset r är läsningens rad; poster utan version räknas som version 0.
+ */
+export const SENASTE_KOPIEPOST = `(r.extern_nyckel IS DISTINCT FROM 'registerkopia' OR NOT EXISTS (
+  SELECT 1 FROM uppdrag_referens ny
+    LEFT JOIN uppdrag_registerkopia nk ON nk.id = ny.registerkopia_id
+      AND nk.company_id = ny.company_id AND nk.contract_id = ny.contract_id
+   WHERE ny.company_id = r.company_id AND ny.contract_id = r.contract_id
+     AND ny.extern_nyckel = 'registerkopia'
+     AND COALESCE(nk.registerversion, 0) > COALESCE((
+       SELECT rk.registerversion FROM uppdrag_registerkopia rk
+        WHERE rk.id = r.registerkopia_id AND rk.company_id = r.company_id AND rk.contract_id = r.contract_id
+     ), 0)
+))`;
+
 /** Uppdragets referenser, äldst först. Läsvägen för S7.2/S7.3. */
 export async function listaReferenser(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Referensrad[]> {
   const res = await client.query<Referensrad>(
-    `SELECT ${KOLUMNER} FROM uppdrag_referens
-      WHERE company_id = $1 AND contract_id = $2
-      ORDER BY uppdrag_referens.created_at, sort, extern_id`,
+    `SELECT ${KOLUMNER} FROM uppdrag_referens r
+      WHERE r.company_id = $1 AND r.contract_id = $2 AND ${SENASTE_KOPIEPOST}
+      ORDER BY r.created_at, r.sort, r.extern_id`,
     [companyId, contractId],
   );
   return res.rows;
@@ -340,7 +352,7 @@ export function tillhorSparrmapp(foralderkedja: string[], sparrmappId: string): 
 //     ÄR en oskriven referens: samma rad som sedan bär Drive-id:t när filen
 //     finns. En separat kötabell hade betytt två rader om samma sak och därmed
 //     en fråga om vilken som gäller.
-//   * **En registerändring går ALLTID igenom lokalt.** Köningen är en UPDATE i
+//   * **En registerändring går ALLTID igenom lokalt.** Text, hash och en ny köpost fryses i
 //     samma transaktion som ändringen; misslyckas något med Drive händer det hos
 //     Hermes, långt efteråt, och kan aldrig hindra att registret skrivs.
 //   * **Fel är ett lagrat, synligt tillstånd** — aldrig en svald undantagsrad
@@ -349,8 +361,8 @@ export function tillhorSparrmapp(foralderkedja: string[], sparrmappId: string): 
 //     svarar igen: en post som fastnat i fel hade krävt ett handgrepp för att
 //     ens komma tillbaka i kön.
 
-/** Exakt CHECK-villkorets tre icke-NULL-värden efter 0071. */
-export const KOSTATUSAR = ['koad', 'skriven', 'fel'] as const;
+/** Exakt CHECK-villkorets fyra icke-NULL-värden efter 0098. */
+export const KOSTATUSAR = ['koad', 'skriven', 'fel', 'ersatt'] as const;
 export type Kostatus = (typeof KOSTATUSAR)[number];
 
 /**
@@ -383,38 +395,59 @@ export interface Kopost extends Koreferens {
 const KO_KOLUMNER = 'id AS referens_id, contract_id, extern_id, ko_status, ko_fel';
 
 /**
- * Köar uppdragets registerkopia — anropas i SAMMA transaktion som
- * registerändringen.
- *
- * Upsert på uppdragets ENA kopiereferens: finns raden återanvänds den, annars
- * föds den genom `skapaReferens` (samma spärrar, samma enda skrivväg in i
- * tabellen). Statusen sätts till `koad` och `ko_fel` nollställs — också från
- * `skriven` och från `fel`: en ny registerändring gör en tidigare skriven kopia
- * inaktuell, och ett gammalt fel bredvid en ny kö hade sett ut som att den nya
- * kön redan misslyckats.
+ * Fryser en ny version och köpost i registerändringens transaktion (FR-11).
+ * Avtalslåset delar ut löpnumret utan att krocka med händelsens FK-lås.
+ * Tidigare versioner och deras köposter står kvar; bara öppna köposter utan
+ * fryst underlag ersätts. Drive-id ärvs så alla versioner pekar på samma fil.
  */
 export async function koaRegisterkopia(
   client: PoolClient, companyId: string, contractId: string,
 ): Promise<Koreferens> {
-  await kravAvtal(client, companyId, contractId);
-  const fanns = await client.query<{ id: string }>(
-    `SELECT id FROM uppdrag_referens
-      WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive' AND extern_nyckel = $3`,
-    [companyId, contractId, REGISTERKOPIA_NYCKEL],
+  const avtal = await client.query<{ projektnamn: string }>(
+    `SELECT p.name AS projektnamn FROM contracts c
+       JOIN projects p ON p.id = c.project_id AND p.company_id = c.company_id
+      WHERE c.id = $1 AND c.company_id = $2 FOR NO KEY UPDATE OF c`,
+    [contractId, companyId],
   );
-  const id = fanns.rows[0]?.id ?? (await skapaReferens(client, companyId, {
-    contract_id: contractId,
-    sort: 'drive',
-    extern_id: registerkopiaPlatshallare(contractId),
-    extern_nyckel: REGISTERKOPIA_NYCKEL,
-    extern_kalla: REGISTERKOPIA_KALLA,
-  })).id;
-
+  if (!avtal.rows[0]) throw new NotFoundError('contract');
+  const nasta = await client.query<{ registerversion: number; fryst: string }>(
+    `SELECT COALESCE(max(registerversion), 0) + 1 AS registerversion,
+            to_char(now() AT TIME ZONE 'Europe/Stockholm', 'YYYY-MM-DD HH24:MI') AS fryst
+       FROM uppdrag_registerkopia WHERE company_id = $1 AND contract_id = $2`,
+    [companyId, contractId],
+  );
+  const { registerversion, fryst } = nasta.rows[0]!;
+  const rader = (await lasLeverabelregister(client, companyId, { contract_id: contractId }))
+    .map(({ kod, namn, status, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag }) =>
+      ({ kod, namn, status, klausul, acceptanskriterium, uppfoljningsmatt, matt_lasvag }));
+  const innehall = renderaRegisterkopia({ projektnamn: avtal.rows[0].projektnamn, registerversion, fryst, rader });
+  const registerhash = registerkopiansHash(innehall);
+  const version = await client.query<{ id: string }>(
+    `INSERT INTO uppdrag_registerkopia (company_id, contract_id, registerversion, innehall, rader, registerhash)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6) RETURNING id, registerversion, registerhash`,
+    [companyId, contractId, registerversion, innehall, JSON.stringify(rader), registerhash],
+  );
+  const platshallare = registerkopiaPlatshallare(contractId);
+  const tidigare = await client.query<{ extern_id: string }>(
+    `SELECT r.extern_id FROM uppdrag_referens r
+       LEFT JOIN uppdrag_registerkopia k ON k.id = r.registerkopia_id AND k.company_id = r.company_id
+      WHERE r.company_id = $1 AND r.contract_id = $2 AND r.extern_nyckel = $3
+        AND r.extern_id <> $4
+      ORDER BY COALESCE(k.registerversion, 0) DESC, r.created_at DESC, r.id DESC LIMIT 1`,
+    [companyId, contractId, REGISTERKOPIA_NYCKEL, platshallare],
+  );
   const res = await client.query<Koreferens>(
-    `UPDATE uppdrag_referens SET ko_status = 'koad', ko_fel = NULL
-      WHERE id = $1 AND company_id = $2
-      RETURNING ${KO_KOLUMNER}`,
-    [id, companyId],
+    `INSERT INTO uppdrag_referens
+       (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, registerkopia_id, registerhash, ko_status)
+     VALUES ($1, $2, 'drive', $3, $4, $5, $6, $7, 'koad') RETURNING ${KO_KOLUMNER}`,
+    [companyId, contractId, tidigare.rows[0]?.extern_id ?? platshallare,
+      REGISTERKOPIA_NYCKEL, REGISTERKOPIA_KALLA, version.rows[0]!.id, registerhash],
+  );
+  await client.query(
+    `UPDATE uppdrag_referens SET ko_status = 'ersatt'
+      WHERE company_id = $1 AND contract_id = $2 AND extern_nyckel = $3
+        AND registerkopia_id IS NULL AND ko_status IN ('koad', 'fel')`,
+    [companyId, contractId, REGISTERKOPIA_NYCKEL],
   );
   return res.rows[0]!;
 }
@@ -469,13 +502,17 @@ export type DriveRapportInput = z.input<typeof DriveRapportSchema>;
 
 /**
  * Tar emot utfallet av en köad kopia och stänger — eller behåller — köposten.
+ * Skriven tar avtalslåset före dubblettuppslaget: ett id som en vanlig
+ * Drive-referens redan bär avvisas även när skrivningarna är samtidiga.
  *
  * `skriven`: `ko_status = 'skriven'`, `extern_id` blir Drive-id:t (platshållaren
  * försvinner i samma sekund som pekaren finns) och `ko_fel` nollställs.
  * `fel`: `ko_status = 'fel'` med texten i `ko_fel`. Posten står kvar i
  * hämtningen och provas om vid nästa svep.
  *
- * En rapport mot en rad UTAN öppen köpost fälls (409). Det finns inget tyst
+ * En ersatt köpost ger 200 utan ändring för båda utfallen, så ett gammalt
+ * sveps arbetslista inte kan fastna på en köpost utan fryst underlag.
+ * En rapport mot en annan rad UTAN öppen köpost fälls (409). Det finns inget tyst
  * övergångsläge: en rapport om något ingen bett om är antingen ett svep som kör
  * på gammal data eller ett fel i anroparen, och båda ska synas som ett nej.
  */
@@ -489,6 +526,7 @@ export async function rapporteraDriveKopia(
   );
   const rad = fore.rows[0];
   if (!rad) throw new NotFoundError('uppdrag_referens');
+  if (rad.ko_status === 'ersatt') return rad;
   if (rad.ko_status !== 'koad' && rad.ko_status !== 'fel') {
     throw new ConflictError(
       'ingen_oppen_kopost',
@@ -497,6 +535,10 @@ export async function rapporteraDriveKopia(
   }
 
   if (data.utfall.lage === 'skriven') {
+    await client.query(
+      'SELECT 1 FROM contracts WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
+      [rad.contract_id, companyId],
+    );
     const utanfor = await client.query(
       `SELECT 1 FROM uppdrag_referens
         WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive' AND extern_id = $3
@@ -505,6 +547,15 @@ export async function rapporteraDriveKopia(
     );
     if (utanfor.rows.length > 0) {
       throw new ConflictError('utanfor_sparr', 'filen ligger enligt svepet utanför uppdragets spärrmapp och kan inte länkas');
+    }
+    const dubblett = await client.query(
+      `SELECT 1 FROM uppdrag_referens
+        WHERE company_id = $1 AND contract_id = $2 AND sort = 'drive' AND extern_id = $3
+          AND id <> $4 AND extern_nyckel IS DISTINCT FROM 'registerkopia'`,
+      [companyId, rad.contract_id, data.utfall.drive_id, data.referens_id],
+    );
+    if (dubblett.rows.length > 0) {
+      throw new ConflictError('referens_finns_redan', 'id:t är redan länkat till uppdraget');
     }
   }
 

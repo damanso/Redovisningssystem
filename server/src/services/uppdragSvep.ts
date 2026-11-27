@@ -37,7 +37,7 @@ import {
 } from './uppdragOvrigt.js';
 import {
   DriveRapportSchema, REFERENSSORTER, ReferenslageSchema, hamtaDriveKo, rapporteraDriveKopia,
-  tillhorSparrmapp, verifieraReferens,
+  tillhorSparrmapp, verifieraReferens, SENASTE_KOPIEPOST,
   type Kopost, type Referenssort, type Verifieringsutfall,
 } from './uppdragReferens.js';
 
@@ -995,9 +995,9 @@ export async function korUppdragssvep(
   const attVerifiera = await client.query<Arbetsreferens>(
     `SELECT id AS referens_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla,
             hash_vid_lankning, status, senast_verifierad::text, revision
-       FROM uppdrag_referens
-      WHERE company_id = $1 AND contract_id = ANY($2::uuid[])
-        AND (ko_status IS NULL OR ko_status = 'skriven')
+       FROM uppdrag_referens r
+      WHERE r.company_id = $1 AND r.contract_id = ANY($2::uuid[])
+        AND (ko_status IS NULL OR ko_status = 'skriven') AND ${SENASTE_KOPIEPOST}
       ORDER BY contract_id, created_at, id`,
     [companyId, oppna],
   );
