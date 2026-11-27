@@ -37,7 +37,7 @@ import {
 } from './uppdragOvrigt.js';
 import {
   DriveRapportSchema, REFERENSSORTER, ReferenslageSchema, hamtaDriveKo, rapporteraDriveKopia,
-  tillhorSparrmapp, verifieraReferens, SENASTE_KOPIEPOST,
+  tillhorSparrmapp, verifieraReferens, SENASTE_KOPIEPOST, frysOversattaKoposter,
   type Kopost, type Referenssort, type Verifieringsutfall,
 } from './uppdragReferens.js';
 
@@ -889,6 +889,7 @@ function leverabelhandlingar(verifierade: Verifierad[], koder: Set<string>): Ver
  * Övrigt-förslagen prövas och köas före kandidaterna, och kandidaterna läses
  * efter uppdragen och före täckningen, över alla öppna avtal och oberoende av
  * indatat (Story 1.14). Ett avstått svep prövar inga förslag.
+ * Öppna avtals köposter utan version fryses efter kandidaterna och före täckningen.
  * Sist skrivs täckningen för alla öppna avtal. Den behöver inga observationer
  * från Hermes och ser kostnadsförslagen och bindningarna från samma körning.
  * `actor` är anroparens aktör. Den styr inte svepets förslag: kostnadsbindningarna
@@ -977,6 +978,7 @@ export async function korUppdragssvep(
     ? tomtOvrigtutfall()
     : await koaOvrigtForslag(client, companyId, userId, data.ovrigt_forslag!);
   const ovrigtKandidater = await listaOvrigtKandidater(client, companyId, oppna);
+  await frysOversattaKoposter(client, companyId, oppna);
 
   // B-3: alla öppna avtal, inte bara indatats. Reglerna läser enbart egna
   // tabeller, efter att körningens förslag och bindningar har skrivits.

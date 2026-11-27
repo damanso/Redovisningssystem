@@ -24,9 +24,9 @@
 // resultatet hit. Samma mönster som `uppdragSvep.ts`.
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
-import { ConflictError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { IsoDateSchema, UuidSchema, safeText } from '../lib/validation.js';
-import { lasLeverabelregister, renderaRegisterkopia, registerkopiansHash, type Leverabelrad } from './uppdragRegister.js';
+import { lasLeverabelregister, renderaRegisterkopia, registerkopiansHash, type Registerkopierad } from './uppdragRegister.js';
 import { REFERENSSORTER, kanonisktReferensId, referensFormFel, urlEllerSokvag, type Referenssort, type Referensvisning } from '../lib/referens.js';
 export { REFERENSSORTER, urlEllerSokvag, type Referenssort } from '../lib/referens.js';
 
@@ -406,20 +406,38 @@ export interface Koreferens {
   extern_id: string;
   ko_status: Kostatus | null;
   ko_fel: string | null;
+  registerkopia_id: string | null;
+  registerversion: number | null;
+  registerhash: string | null;
+  forsok: number;
 }
 
 /** En öppen köpost med det innehåll som ska skrivas. */
 export interface Kopost extends Koreferens {
   ko_status: 'koad' | 'fel';
-  /**
-   * Kopians innehåll, HÄRLETT vid hämtningen ur leverabelregistret. Det lagras
-   * aldrig i kön: kopian är ett derivat, och en lagrad kopia hade kunnat vara
-   * gammal redan när den hämtades.
-   */
-  innehall: Leverabelrad[];
+  registerkopia_id: string;
+  registerversion: number;
+  registerhash: string;
+  registertext: string;
+  /** Versionens frysta rader; den exakta texten står i registertext. */
+  innehall: Registerkopierad[];
 }
 
-const KO_KOLUMNER = 'id AS referens_id, contract_id, extern_id, ko_status, ko_fel';
+const KO_KOLUMNER = `r.id AS referens_id, r.contract_id, r.extern_id, r.ko_status, r.ko_fel,
+                     r.registerkopia_id, k.registerversion, r.registerhash, r.forsok`;
+
+/** Samma köpostform vid köning, tillståndsläsning och kvittens. */
+async function lasKoreferens(
+  client: PoolClient, companyId: string, referensId: string,
+): Promise<Koreferens | undefined> {
+  const res = await client.query<Koreferens>(
+    `SELECT ${KO_KOLUMNER} FROM uppdrag_referens r
+       LEFT JOIN uppdrag_registerkopia k ON k.id = r.registerkopia_id AND k.company_id = r.company_id
+      WHERE r.id = $1 AND r.company_id = $2`,
+    [referensId, companyId],
+  );
+  return res.rows[0];
+}
 
 /**
  * Fryser en ny version och köpost i registerändringens transaktion (FR-11).
@@ -467,10 +485,10 @@ export async function koaRegisterkopia(
       ORDER BY COALESCE(k.registerversion, 0) DESC, r.created_at DESC, r.id DESC LIMIT 1`,
     [companyId, contractId, REGISTERKOPIA_NYCKEL, platshallare],
   );
-  const res = await client.query<Koreferens>(
+  const res = await client.query<{ id: string }>(
     `INSERT INTO uppdrag_referens
        (company_id, contract_id, sort, extern_id, extern_nyckel, extern_kalla, registerkopia_id, registerhash, ko_status, status)
-     VALUES ($1, $2, 'drive', $3, $4, $5, $6, $7, 'koad', $8) RETURNING ${KO_KOLUMNER}`,
+     VALUES ($1, $2, 'drive', $3, $4, $5, $6, $7, 'koad', $8) RETURNING id`,
     [companyId, contractId, tidigare.rows[0]?.extern_id ?? platshallare,
       REGISTERKOPIA_NYCKEL, REGISTERKOPIA_KALLA, version.rows[0]!.id, registerhash,
       tidigare.rows[0]?.utanfor_sparr ? 'utanfor_sparr' : 'overifierad'],
@@ -481,37 +499,62 @@ export async function koaRegisterkopia(
         AND registerkopia_id IS NULL AND ko_status IN ('koad', 'fel')`,
     [companyId, contractId, REGISTERKOPIA_NYCKEL],
   );
-  return res.rows[0]!;
+  return (await lasKoreferens(client, companyId, res.rows[0]!.id))!;
 }
 
 /**
- * Bolagets öppna kö: allt som är `koad` eller `fel`, äldst först.
+ * Bolagets öppna kö läses ur den frysta versionen, avtal för avtal och i stigande version.
  *
  * `fel` ingår med flit — det är det som gör att kön kan tömmas automatiskt när
  * Drive svarar igen. Repot provar aldrig om av sig självt (ingen scheduler,
  * inga utgående anrop); det är Hermes nästa svep som hämtar posten på nytt.
  */
 export async function hamtaDriveKo(client: PoolClient, companyId: string): Promise<Kopost[]> {
-  const res = await client.query<Koreferens>(
-    `SELECT ${KO_KOLUMNER} FROM uppdrag_referens
-      WHERE company_id = $1 AND ko_status IN ('koad', 'fel')
-      ORDER BY created_at, id`,
+  const res = await client.query<Kopost>(
+    `SELECT ${KO_KOLUMNER}, k.innehall AS registertext, k.rader AS innehall
+       FROM uppdrag_referens r
+       JOIN uppdrag_registerkopia k ON k.id = r.registerkopia_id AND k.company_id = r.company_id
+      WHERE r.company_id = $1 AND r.ko_status IN ('koad', 'fel')
+      ORDER BY r.contract_id, k.registerversion, r.id`,
     [companyId],
   );
-  const poster: Kopost[] = [];
-  for (const rad of res.rows) {
-    poster.push({
-      ...rad,
-      ko_status: rad.ko_status === 'fel' ? 'fel' : 'koad',
-      innehall: await lasLeverabelregister(client, companyId, { contract_id: rad.contract_id }),
-    });
+  return res.rows;
+}
+
+/** Fryser öppna avtals äldre köposter utan version, med omprövning under låset. */
+export async function frysOversattaKoposter(
+  client: PoolClient, companyId: string, contractIds: string[],
+): Promise<string[]> {
+  if (contractIds.length === 0) return [];
+  const kandidater = await client.query<{ contract_id: string }>(
+    `SELECT DISTINCT contract_id FROM uppdrag_referens
+      WHERE company_id = $1 AND contract_id = ANY($2::uuid[])
+        AND extern_nyckel = 'registerkopia' AND registerkopia_id IS NULL
+        AND ko_status IN ('koad', 'fel') ORDER BY contract_id`,
+    [companyId, contractIds],
+  );
+  const frysta: string[] = [];
+  for (const { contract_id: contractId } of kandidater.rows) {
+    await kravAvtal(client, companyId, contractId);
+    const kvar = await client.query(
+      `SELECT 1 FROM uppdrag_referens
+        WHERE company_id = $1 AND contract_id = $2
+          AND extern_nyckel = 'registerkopia' AND registerkopia_id IS NULL
+          AND ko_status IN ('koad', 'fel')`,
+      [companyId, contractId],
+    );
+    if (kvar.rows.length > 0) {
+      await koaRegisterkopia(client, companyId, contractId);
+      frysta.push(contractId);
+    }
   }
-  return poster;
+  return frysta;
 }
 
 /**
- * Vad Hermes SÅG när kopian skulle skrivas. Tjänsten skriver aldrig själv
- * (ADR-4) — den tar emot utfallet.
+ * Vad Hermes SÅG när kopian skulle skrivas. Version och hash är ett valfritt
+ * par tills Story 3.4 skickar dem; när de skickas måste de matcha köposten.
+ * Tjänsten skriver aldrig själv (ADR-4) — den tar emot utfallet.
  *
  * `skriven` bär Drive-id:t (S7.5:s story), som prövas med samma spärr som varje
  * annan referens: aldrig en url, aldrig en sökväg. En delningslänk i den här
@@ -520,6 +563,8 @@ export async function hamtaDriveKo(client: PoolClient, companyId: string): Promi
  */
 export const DriveRapportSchema = z.object({
   referens_id: UuidSchema,
+  registerversion: z.number().int().min(1).safe().optional(),
+  registerhash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   utfall: z.discriminatedUnion('lage', [
     z.object({ lage: z.literal('skriven'), drive_id: StabiltIdSchema.superRefine((v, ctx) => {
       const fel = referensFormFel('drive', v);
@@ -533,7 +578,7 @@ export const DriveRapportSchema = z.object({
 export type DriveRapportInput = z.input<typeof DriveRapportSchema>;
 
 /**
- * Tar emot utfallet av en köad kopia och stänger — eller behåller — köposten.
+ * Tar emot utfallet för just köpostens version och räknar mottagna försök.
  * Båda utfallen tar avtalslåset före tillståndskontrollen och behåller det
  * genom skrivningen. Köningens ersatt kan därför inte skrivas över av en
  * väntande kvittens. Samma lås skyddar skriven-utfallets dubblettuppslag.
@@ -545,9 +590,9 @@ export type DriveRapportInput = z.input<typeof DriveRapportSchema>;
  *
  * En ersatt köpost ger 200 utan ändring för båda utfallen, så ett gammalt
  * sveps arbetslista inte kan fastna på en köpost utan fryst underlag.
- * En rapport mot en annan rad UTAN öppen köpost fälls (409). Det finns inget tyst
- * övergångsläge: en rapport om något ingen bett om är antingen ett svep som kör
- * på gammal data eller ett fel i anroparen, och båda ska synas som ett nej.
+ * En upprepad skriven med samma fil-id ändrar inget. En lyckad kvittens
+ * ersätter äldre oskrivna köposter, men lämnar deras frysta historik kvar.
+ * Annat utfall mot skriven eller en rad utan köpost fälls (409).
  */
 export async function rapporteraDriveKopia(
   client: PoolClient, companyId: string, input: DriveRapportInput,
@@ -558,21 +603,28 @@ export async function rapporteraDriveKopia(
     [data.referens_id, companyId],
   );
   if (!avtal.rows[0]) throw new NotFoundError('uppdrag_referens');
+  if ((data.registerversion === undefined) !== (data.registerhash === undefined)) {
+    throw new BadRequestError('kvittens_ofullstandig', 'kvittensen måste bära både registerversion och registerhash');
+  }
   await kravAvtal(client, companyId, avtal.rows[0].contract_id);
   // Första läsningen hittar bara det oföränderliga avtals-id:t. Tillståndet
   // måste läsas med en ny ögonblicksbild efter eventuell låsväntan.
-  const fore = await client.query<Koreferens>(
-    `SELECT ${KO_KOLUMNER} FROM uppdrag_referens WHERE id = $1 AND company_id = $2`,
-    [data.referens_id, companyId],
-  );
-  const rad = fore.rows[0];
+  const rad = await lasKoreferens(client, companyId, data.referens_id);
   if (!rad) throw new NotFoundError('uppdrag_referens');
   if (rad.ko_status === 'ersatt') return rad;
-  if (rad.ko_status !== 'koad' && rad.ko_status !== 'fel') {
+  if (rad.ko_status === null) {
     throw new ConflictError(
       'ingen_oppen_kopost',
       'referensen har ingen öppen köpost — det finns inget utfall att rapportera',
     );
+  }
+  if (data.registerversion !== undefined
+    && (data.registerversion !== rad.registerversion || data.registerhash !== rad.registerhash)) {
+    throw new ConflictError('kvittens_annan_version', 'kvittensen gäller en annan version än köpostens');
+  }
+  if (rad.ko_status === 'skriven') {
+    if (data.utfall.lage === 'skriven' && data.utfall.drive_id === rad.extern_id) return rad;
+    throw new ConflictError('ingen_oppen_kopost', 'referensen har ingen öppen köpost — det finns inget utfall att rapportera');
   }
 
   if (data.utfall.lage === 'skriven') {
@@ -597,21 +649,31 @@ export async function rapporteraDriveKopia(
   }
 
   try {
-    const res = await client.query<Koreferens>(
+    await client.query(
       data.utfall.lage === 'skriven'
         ? `UPDATE uppdrag_referens
-              SET ko_status = 'skriven', ko_fel = NULL, extern_id = $3,
+              SET ko_status = 'skriven', ko_fel = NULL, extern_id = $3, forsok = forsok + 1,
                   status = CASE WHEN extern_id IS DISTINCT FROM $3 THEN 'overifierad' ELSE status END
-            WHERE id = $1 AND company_id = $2
-            RETURNING ${KO_KOLUMNER}`
+            WHERE id = $1 AND company_id = $2`
         : `UPDATE uppdrag_referens
-              SET ko_status = 'fel', ko_fel = $3
-            WHERE id = $1 AND company_id = $2
-            RETURNING ${KO_KOLUMNER}`,
+              SET ko_status = 'fel', ko_fel = $3, forsok = forsok + 1
+            WHERE id = $1 AND company_id = $2`,
       [data.referens_id, companyId,
         data.utfall.lage === 'skriven' ? data.utfall.drive_id : data.utfall.fel],
     );
-    return res.rows[0]!;
+    if (data.utfall.lage === 'skriven') {
+      await client.query(
+        `UPDATE uppdrag_referens r SET ko_status = 'ersatt'
+          WHERE r.company_id = $1 AND r.contract_id = $2 AND r.extern_nyckel = 'registerkopia'
+            AND r.ko_status IN ('koad', 'fel') AND r.id <> $3
+            AND (r.registerkopia_id IS NULL OR (
+              SELECT k.registerversion FROM uppdrag_registerkopia k
+               WHERE k.id = r.registerkopia_id AND k.company_id = r.company_id
+            ) < $4)`,
+        [companyId, rad.contract_id, data.referens_id, rad.registerversion ?? 0],
+      );
+    }
+    return (await lasKoreferens(client, companyId, data.referens_id))!;
   } catch (err) {
     // Samma Drive-id på två referenser under samma uppdrag är en dubblett, inte
     // ett databasfel att felsöka — samma svar som `skapaReferens` ger.

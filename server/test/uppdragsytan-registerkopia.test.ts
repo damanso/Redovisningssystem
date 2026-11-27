@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { loadMigrations } from '../src/db/migrate.js';
 import { BASELINEKOLUMNER } from '../src/lib/baselinekolumner.js';
+import { ACTIONS } from '../src/actions/registry.js';
 import {
   REGISTERKOPIA_TEXT, renderaRegisterkopia, registerkopiansHash,
   lasLeverabelregister, type Registerkopierad,
@@ -741,4 +742,339 @@ it('D1 dokumentationen beskriver versionsbunden kopia och håller handgreppens n
   expect(ensammaNamn(sektion!)).toEqual([]);
   for (const namn of NYA_NAMN) expect(ensammaNamn(`${DOKUMENTPUNKT} planterat \`${namn}\``)).toEqual([namn]);
   expect(ensammaNamn('`409 referens_finns_redan`')).toEqual([]);
+});
+
+// Story 3.6: arbetslistan bär den frysta versionen, även i nya transaktioner.
+const kon = async (avtal: string) => {
+  const res = await act('hamta_drive_ko', {}, agent());
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return (res.body.result as Record<string, any>[]).filter((r) => r.contract_id === avtal);
+};
+const kvittera = (id: string, utfall: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  act('rapportera_drive_kopia', { referens_id: id, utfall, ...extra }, agent());
+
+describe('Story 3.6: arbetslistan läser versionen', () => {
+  it('H1 svarets exakta form och värden kommer ur versionen', async () => {
+    const { contractId } = await importerat('H1');
+    const v = (await versioner(contractId))[0]!;
+    const poster = await kon(contractId);
+    expect(poster).toHaveLength(1);
+    const post = poster[0]!;
+    expect(Object.keys(post).sort()).toEqual(['contract_id', 'extern_id', 'forsok', 'innehall', 'ko_fel',
+      'ko_status', 'referens_id', 'registerhash', 'registerkopia_id', 'registertext', 'registerversion']);
+    expect(post).toMatchObject({ registertext: v.innehall, registerhash: v.registerhash,
+      registerversion: v.registerversion, registerkopia_id: v.id, innehall: v.rader,
+      forsok: 0, extern_id: `registerkopia:${contractId}` });
+    expect(v.registerversion).toBe(1);
+    expect(post.innehall).toHaveLength(6);
+  });
+  it('H2 ändrat register utan köning skriver aldrig om arbetslistans innehåll', async () => {
+    const { contractId } = await importerat('H2');
+    const fore = (await kon(contractId))[0]!;
+    await withAdmin((c) => c.query(
+      "UPDATE uppdrag_leverabel SET status='pagar' WHERE company_id=$1 AND contract_id=$2 AND kod='L1'",
+      [companyId, contractId],
+    ));
+    const nu = await tx((c) => lasLeverabelregister(c, companyId, { contract_id: contractId }));
+    expect(nu.find((r) => r.kod === 'L1')?.status).toBe('pagar');
+    const efter = (await kon(contractId))[0]!;
+    expect(efter.registertext).toBe(fore.registertext);
+    expect(efter.innehall).toEqual(fore.innehall);
+    expect(efter.innehall.find((r: Registerkopierad) => r.kod === 'L1')?.status).toBe('ej_paborjad');
+  });
+  it('H3 bara köade och felade poster med version delas ut', async () => {
+    const avtal = await Promise.all(['koad', 'fel', 'skriven', 'ersatt'].map((s) => importerat(`H3-${s}`)));
+    const poster = await Promise.all(avtal.map(async (a) => (await kopieposter(a.contractId))[0]!));
+    const felad = await kvittera(poster[1]!.id, { lage: 'fel', fel: 'H3 fel' });
+    expect(felad.status, JSON.stringify(felad.body)).toBe(200);
+    await rapport(poster[2]!.id, `${DRIVE_ID}-H3`);
+    await withAdmin((c) => c.query("UPDATE uppdrag_referens SET ko_status='ersatt' WHERE company_id=$1 AND id=$2", [companyId, poster[3]!.id]));
+    const gammalt = await nyttUppdrag('H3-utan-version');
+    const gammal = await withAdmin(async (c) => (await c.query(
+      `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,ko_fel)
+       VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp','fel','gammalt fel') RETURNING *`,
+      [companyId, gammalt.contractId, `registerkopia:${gammalt.contractId}`],
+    )).rows[0]!);
+    expect(gammal).toMatchObject({ ko_status: 'fel', registerkopia_id: null });
+    const res = await act('hamta_drive_ko', {}, agent());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const ids = (res.body.result as { referens_id: string }[]).map((r) => r.referens_id);
+    expect(ids).toContain(poster[0]!.id);
+    expect(ids).toContain(poster[1]!.id);
+    for (const post of [poster[2]!, poster[3]!, gammal]) expect(ids).not.toContain(post.id);
+  });
+  it('H4 nästa svep behåller A:s felade version före B:s nya version', async () => {
+    const { contractId } = await importerat('H4');
+    const felad = await kvittera((await kopieposter(contractId))[0]!.id, { lage: 'fel', fel: 'H4 fel' });
+    expect(felad.status, JSON.stringify(felad.body)).toBe(200);
+    await paborja(contractId);
+    const vs = await versioner(contractId);
+    const svep = await ok('kor_uppdragssvep', {}, agent());
+    const poster = (svep.arbetslista.drive_ko as Record<string, any>[]).filter((r) => r.contract_id === contractId);
+    expect(poster).toHaveLength(2);
+    for (const [i, post] of poster.entries()) {
+      expect(post).toMatchObject({ registerversion: vs[i]!.registerversion,
+        registerhash: vs[i]!.registerhash, registertext: vs[i]!.innehall, innehall: vs[i]!.rader });
+    }
+    expect(poster.map((p) => p.registerversion)).toEqual([1, 2]);
+    expect(poster[0]!.registerhash).not.toBe(poster[1]!.registerhash);
+    expect(poster[0]!.registertext).not.toBe(poster[1]!.registertext);
+    expect(poster[0]!.innehall.find((r: Registerkopierad) => r.kod === 'L1')?.status).toBe('ej_paborjad');
+    expect(poster[1]!.innehall.find((r: Registerkopierad) => r.kod === 'L1')?.status).toBe('pagar');
+  });
+  it('H9 regression: befintlig strikt läsåtgärd och ingen driftrutt', async () => {
+    const driveNamn = (namn: string[]) => namn.filter((n) => n.includes('drive')).sort();
+    const befintliga = ['hamta_drive_ko', 'rapportera_drive_kopia'];
+    expect(driveNamn(ACTIONS.map((a) => a.name))).toEqual(befintliga);
+    expect(driveNamn([...befintliga, 'las_drive_ko'])).not.toEqual(befintliga);
+    const hamta = ACTIONS.find((a) => a.name === 'hamta_drive_ko')!;
+    expect(hamta.sensitivity).toBe('read');
+    expect(hamta.inputSchema.safeParse({}).success).toBe(true);
+    expect(hamta.inputSchema.safeParse({ x: 1 }).success).toBe(false);
+    const drift = /\.get\(\s*['"`][^'"`]*\/drift['"`]/g;
+    const texter = await vyfiler();
+    expect(texter.length).toBeGreaterThan(0);
+    expect(texter.flatMap((text) => text.match(drift) ?? [])).toEqual([]);
+    expect("router.get('/app/c/:companyId/drift', handler)".match(drift)).toHaveLength(1);
+  });
+});
+
+describe('Story 3.6: svepet fryser äldre köposter', () => {
+  it('H7 bara öppna avtals köposter utan version fryses, en gång', async () => {
+    const oppet = await nyttUppdrag('H7-oppet');
+    const stangt = await nyttUppdrag('H7-stangt');
+    for (const u of [oppet, stangt]) {
+      await withAdmin(async (c) => {
+        await c.query("INSERT INTO uppdrag_leverabel (company_id,contract_id,kod) VALUES ($1,$2,'L1')", [companyId, u.contractId]);
+        await c.query(
+          `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,ko_fel)
+           VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp','fel','gammalt fel')`,
+          [companyId, u.contractId, `registerkopia:${u.contractId}`],
+        );
+      });
+      expect(await versioner(u.contractId)).toEqual([]);
+    }
+    await ok('set_project_status', { project_id: stangt.projektId, status: 'closed' });
+    const gammal = (await kopieposter(oppet.contractId))[0]!;
+    const stangdFore = await kopieposter(stangt.contractId);
+    const svep = await ok('kor_uppdragssvep', {}, agent());
+    expect((await kopieposter(oppet.contractId)).find((r) => r.id === gammal.id))
+      .toEqual({ ...gammal, ko_status: 'ersatt' });
+    const vs = await versioner(oppet.contractId);
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.rader).toHaveLength(1);
+    expect(vs[0]!.rader[0].kod).toBe('L1');
+    expect(vs[0]!.innehall).toContain('| L1 |');
+    const poster = (svep.arbetslista.drive_ko as Record<string, any>[]).filter((r) => r.contract_id === oppet.contractId);
+    expect(poster).toHaveLength(1);
+    expect(poster[0]!.registerkopia_id).toBe(vs[0]!.id);
+    expect(poster.map((r) => r.referens_id)).not.toContain(gammal.id);
+    expect(await kopieposter(stangt.contractId)).toEqual(stangdFore);
+    expect(await versioner(stangt.contractId)).toEqual([]);
+    await ok('kor_uppdragssvep', {}, agent());
+    expect(await versioner(oppet.contractId)).toEqual(vs);
+  });
+});
+
+/** Samma A-fel och B-kö för kvittensens återspelningsfall. */
+async function foljd(namn: string) {
+  const u = await importerat(namn);
+  const a = (await kopieposter(u.contractId))[0]!;
+  const v = (await versioner(u.contractId))[0]!;
+  const svar = await kvittera(a.id, { lage: 'fel', fel: `${namn} A-fel` },
+    { registerversion: v.registerversion, registerhash: v.registerhash });
+  expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+  await paborja(u.contractId);
+  const poster = await kopieposter(u.contractId);
+  const b = poster.find((r) => r.id !== a.id)!;
+  const vs = await versioner(u.contractId);
+  return { ...u, a: poster.find((r) => r.id === a.id)!, b, vs };
+}
+
+describe('Story 3.6: kvittensen gäller bara sin version', () => {
+  it('Q1 skriven bär version och hash, räknar försöket och nollställer felet', async () => {
+    const { contractId } = await importerat('Q1');
+    const post = (await kopieposter(contractId))[0]!;
+    const v = (await versioner(contractId))[0]!;
+    const svar = await kvittera(post.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q1` },
+      { registerversion: v.registerversion, registerhash: v.registerhash });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    expect(svar.body.result).toMatchObject({ registerversion: 1, registerhash: v.registerhash });
+    expect((await kopieposter(contractId))[0]).toMatchObject({ ko_status: 'skriven',
+      extern_id: `${DRIVE_ID}-Q1`, ko_fel: null, forsok: 1 });
+  });
+  it('Q2 annan version eller hash fälls utan ändring, också för en köpost utan version', async () => {
+    const { contractId } = await importerat('Q2');
+    const post = (await kopieposter(contractId))[0]!;
+    const v = (await versioner(contractId))[0]!;
+    const annanHash = v.registerhash === '0'.repeat(64) ? '1'.repeat(64) : '0'.repeat(64);
+    for (const extra of [{ registerversion: 2, registerhash: v.registerhash },
+      { registerversion: v.registerversion, registerhash: annanHash }]) {
+      const svar = await kvittera(post.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q2` }, extra);
+      expect(svar.status, JSON.stringify(svar.body)).toBe(409);
+      expect(svar.body.error).toBe('kvittens_annan_version');
+      expect((await kopieposter(contractId))[0]).toEqual(post);
+    }
+    const gammalt = await nyttUppdrag('Q2-utan-version');
+    const gammal = await withAdmin(async (c) => (await c.query(
+      `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,ko_fel)
+       VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp','koad','gammalt fel') RETURNING *`,
+      [companyId, gammalt.contractId, `registerkopia:${gammalt.contractId}`],
+    )).rows[0]!);
+    expect(gammal).toMatchObject({ registerkopia_id: null, ko_status: 'koad' });
+    const avvisad = await kvittera(gammal.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q2-gammal` },
+      { registerversion: 1, registerhash: v.registerhash });
+    expect(avvisad.status, JSON.stringify(avvisad.body)).toBe(409);
+    expect(avvisad.body.error).toBe('kvittens_annan_version');
+    expect((await kopieposter(gammalt.contractId))[0]).toEqual(gammal);
+    const godkand = await kvittera(gammal.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q2-gammal` });
+    expect(godkand.status, JSON.stringify(godkand.body)).toBe(200);
+  });
+  it('Q3 A kvitteras utan att röra B, och skriven A ersätts aldrig av B', async () => {
+    const { contractId } = await importerat('Q3');
+    await paborja(contractId);
+    const poster = await kopieposter(contractId);
+    const vs = await versioner(contractId);
+    const a = poster.find((r) => r.registerkopia_id === vs[0]!.id)!;
+    const b = poster.find((r) => r.registerkopia_id === vs[1]!.id)!;
+    const svarA = await kvittera(a.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q3` },
+      { registerversion: vs[0]!.registerversion, registerhash: vs[0]!.registerhash });
+    expect(svarA.status, JSON.stringify(svarA.body)).toBe(200);
+    const skrivenA = (await kopieposter(contractId)).find((r) => r.id === a.id)!;
+    expect(skrivenA.ko_status).toBe('skriven');
+    expect((await kopieposter(contractId)).find((r) => r.id === b.id)).toEqual(b);
+    expect(b.ko_status).toBe('koad');
+    expect((await kon(contractId)).map((r) => r.referens_id)).toContain(b.id);
+    const svarB = await kvittera(b.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q3` },
+      { registerversion: vs[1]!.registerversion, registerhash: vs[1]!.registerhash });
+    expect(svarB.status, JSON.stringify(svarB.body)).toBe(200);
+    expect((await kopieposter(contractId)).find((r) => r.id === b.id)?.ko_status).toBe('skriven');
+    expect((await kopieposter(contractId)).find((r) => r.id === a.id)).toEqual(skrivenA);
+  });
+  it('Q4 B ersätter oskrivna A och C utan version, bevarar deras fel och all historik', async () => {
+    const { contractId, a, b, vs } = await foljd('Q4');
+    const c = await withAdmin(async (client) => (await client.query(
+      `INSERT INTO uppdrag_referens (company_id,contract_id,sort,extern_id,extern_nyckel,extern_kalla,ko_status,ko_fel)
+       VALUES ($1,$2,'drive',$3,'registerkopia','drive:sparrmapp','fel','gammalt fel') RETURNING *`,
+      [companyId, contractId, `registerkopia:${contractId}`],
+    )).rows[0]!);
+    expect(a.ko_status).toBe('fel');
+    expect(c).toMatchObject({ ko_status: 'fel', registerkopia_id: null });
+    expect(await kopieposter(contractId)).toHaveLength(3);
+    const svar = await kvittera(b.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q4` },
+      { registerversion: vs[1]!.registerversion, registerhash: vs[1]!.registerhash });
+    expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    const efter = await kopieposter(contractId);
+    expect(efter.find((r) => r.id === b.id)?.ko_status).toBe('skriven');
+    for (const gammal of [a, c]) expect(efter.find((r) => r.id === gammal.id)).toEqual({ ...gammal, ko_status: 'ersatt' });
+    expect(await versioner(contractId)).toEqual(vs);
+    expect(await kon(contractId)).toEqual([]);
+  });
+  it('Q5 upprepad skriven är oförändrad med och utan version samt genom svepet', async () => {
+    const { contractId, b, vs } = await foljd('Q5');
+    const utfall = { lage: 'skriven', drive_id: `${DRIVE_ID}-Q5` };
+    const extra = { registerversion: vs[1]!.registerversion, registerhash: vs[1]!.registerhash };
+    const forsta = await kvittera(b.id, utfall, extra);
+    expect(forsta.status, JSON.stringify(forsta.body)).toBe(200);
+    const fore = (await kopieposter(contractId)).find((r) => r.id === b.id)!;
+    expect(fore.ko_status).toBe('skriven');
+    for (const falt of [extra, {}]) {
+      const svar = await kvittera(b.id, utfall, falt);
+      expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+      expect((await kopieposter(contractId)).find((r) => r.id === b.id)).toEqual(fore);
+    }
+    const svep = await act('kor_uppdragssvep', { drive_kopior: [{ referens_id: b.id, utfall, ...extra }] }, agent());
+    expect(svep.status, JSON.stringify(svep.body)).toBe(200);
+    expect((await kopieposter(contractId)).find((r) => r.id === b.id)).toEqual(fore);
+  });
+  it('Q6 ersatt är oförändrad för båda utfallen, skriven fäller fel och annat fil-id', async () => {
+    const { contractId, a, b, vs } = await foljd('Q6');
+    const forsta = await kvittera(b.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q6` },
+      { registerversion: vs[1]!.registerversion, registerhash: vs[1]!.registerhash });
+    expect(forsta.status, JSON.stringify(forsta.body)).toBe(200);
+    const fore = await kopieposter(contractId);
+    expect(fore.find((r) => r.id === a.id)?.ko_status).toBe('ersatt');
+    expect(fore.find((r) => r.id === b.id)?.ko_status).toBe('skriven');
+    for (const utfall of [{ lage: 'skriven', drive_id: `${DRIVE_ID}-annat-Q6` }, { lage: 'fel', fel: 'Q6 fel' }]) {
+      const ersatt = await kvittera(a.id, utfall,
+        { registerversion: vs[0]!.registerversion, registerhash: vs[0]!.registerhash });
+      expect(ersatt.status, JSON.stringify(ersatt.body)).toBe(200);
+      expect(await kopieposter(contractId)).toEqual(fore);
+      const skriven = await kvittera(b.id, utfall,
+        { registerversion: vs[1]!.registerversion, registerhash: vs[1]!.registerhash });
+      expect(skriven.status, JSON.stringify(skriven.body)).toBe(409);
+      expect(skriven.body.error).toBe('ingen_oppen_kopost');
+      expect(await kopieposter(contractId)).toEqual(fore);
+    }
+  });
+  it('Q7 senaste felet och försöken saknar tak eller villkor som stänger kön', async () => {
+    const { contractId } = await importerat('Q7');
+    const post = (await kopieposter(contractId))[0]!;
+    const v = (await versioner(contractId))[0]!;
+    const extra = { registerversion: v.registerversion, registerhash: v.registerhash };
+    for (const feltext of ['första', 'andra', 'tredje']) {
+      const svar = await kvittera(post.id, { lage: 'fel', fel: feltext }, extra);
+      expect(svar.status, JSON.stringify(svar.body)).toBe(200);
+    }
+    expect((await kopieposter(contractId))[0]).toMatchObject({ forsok: 3, ko_fel: 'tredje' });
+    expect((await kon(contractId))[0]).toMatchObject({ referens_id: post.id, forsok: 3 });
+    await withAdmin((c) => c.query('UPDATE uppdrag_referens SET forsok=9999 WHERE company_id=$1 AND id=$2', [companyId, post.id]));
+    expect((await kopieposter(contractId))[0]!.forsok).toBe(9999);
+    const fjarde = await kvittera(post.id, { lage: 'fel', fel: 'fjärde' }, extra);
+    expect(fjarde.status, JSON.stringify(fjarde.body)).toBe(200);
+    expect((await kon(contractId))[0]).toMatchObject({ referens_id: post.id, forsok: 10000, ko_fel: 'fjärde' });
+    const skriven = await kvittera(post.id, { lage: 'skriven', drive_id: `${DRIVE_ID}-Q7` }, extra);
+    expect(skriven.status, JSON.stringify(skriven.body)).toBe(200);
+    expect((await kopieposter(contractId))[0]).toMatchObject({ forsok: 10001, ko_fel: null });
+    expect(await kon(contractId)).toEqual([]);
+    const filer = (await vyfiler(new URL('../src/', import.meta.url))).filter((text) => /\bforsok\b/.test(text));
+    expect(filer).toHaveLength(1);
+    expect(filer[0]).toContain('export async function rapporteraDriveKopia');
+    const villkor = /\bforsok\s*(?:<=?|>=?|<>|!=|=(?!\s*(?:\w+\.)?forsok\s*\+\s*1\b))/;
+    expect(filer[0]).not.toMatch(villkor);
+    expect('AND r.forsok < 10').toMatch(villkor);
+    expect('forsok = 0').toMatch(villkor);
+    expect('forsok = forsok + 1').not.toMatch(villkor);
+  });
+  it('Q8 fullständighet, format och uppslagsordning fälls utan ändring', async () => {
+    const { contractId } = await importerat('Q8');
+    const post = (await kopieposter(contractId))[0]!;
+    const v = (await versioner(contractId))[0]!;
+    for (const [extra, kod] of [
+      [{ registerversion: v.registerversion }, 'kvittens_ofullstandig'],
+      [{ registerhash: v.registerhash }, 'kvittens_ofullstandig'],
+      [{ registerversion: 0, registerhash: v.registerhash }, 'validation_error'],
+      [{ registerversion: v.registerversion, registerhash: 'xyz' }, 'validation_error'],
+    ] as const) {
+      const svar = await kvittera(post.id, { lage: 'fel', fel: 'Q8' }, extra);
+      expect(svar.status, JSON.stringify(svar.body)).toBe(400);
+      expect(svar.body.error).toBe(kod);
+      expect((await kopieposter(contractId))[0]).toEqual(post);
+    }
+    const saknas = await kvittera(randomUUID(), { lage: 'fel', fel: 'Q8' }, { registerversion: 1 });
+    expect(saknas.status, JSON.stringify(saknas.body)).toBe(404);
+    expect(saknas.body.error).toBe('not_found');
+    expect((await kopieposter(contractId))[0]).toEqual(post);
+  });
+});
+
+it('D3 dokumentationen beskriver fryst arbetslista och kvittens utan nya ensamma åtgärdsnamn', async () => {
+  const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+  const sektion = doc.split(/^## Uppdragsytan[^\n]*\n/m)[1]?.split(/^## /m)[0];
+  expect(sektion).toBeDefined();
+  const punkt = sektion!.split('- **Arbetslistan och kvittensen (Story 3.6).**')[1]?.split(/\n\s*\n/)[0];
+  expect(punkt, 'arbetslistans och kvittensens punkt saknas').toBeDefined();
+  for (const ord of ['registertext', 'forsok', 'ersatt']) expect(punkt).toContain(ord);
+  const gamla = (text: string) => ['härledda vid hämtningen', 'ingen försöksräknare', 'räknar inga försök']
+    .filter((fras) => normalisera(text).includes(fras));
+  expect(gamla(sektion!)).toEqual([]);
+  expect(gamla('härledda vid\nhämtningen; ingen\nförsöksräknare; räknar inga\nförsök'))
+    .toEqual(['härledda vid hämtningen', 'ingen försöksräknare', 'räknar inga försök']);
+  const namn = ['kvittens_annan_version', 'kvittens_ofullstandig'];
+  const ensamma = (text: string) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]!).filter((n) => namn.includes(n));
+  expect(ensamma(sektion!)).toEqual([]);
+  for (const n of namn) {
+    expect(ensamma(`planterat \`${n}\``)).toEqual([n]);
+    expect(ensamma(`\`409 ${n}\``)).toEqual([]);
+  }
 });
