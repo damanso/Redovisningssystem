@@ -328,11 +328,15 @@ describe('(f) vyn', () => {
   it('visar panelen med de öppna leverabelkoderna, JS-fritt', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${huvud.projektId}`);
     expect(html).toContain('Öppet vid avslutet');
-    expect(html).toContain('2 leverabler stod öppna');
-    expect(html).toContain('>L2<');
-    expect(html).toContain('>L4<');
+    const start = html.indexOf('aria-labelledby="avslut-oppet"');
+    const panel = start === -1 ? '' : html.slice(start, html.indexOf('</section>', start));
+    expect(panel).not.toBe('');
+    expect(panel).toContain('Öppet vid avslutet');
+    expect(panel).toContain('2 leverabler stod öppna');
+    expect(panel).toContain('>L2<');
+    expect(panel).toContain('>L4<');
     // L1 var godkänd vid avslutet och står inte i listan.
-    expect(html).not.toContain('>L1<');
+    expect(panel).not.toContain('>L1<');
     expect(html).not.toContain('<script');
   });
 

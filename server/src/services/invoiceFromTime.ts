@@ -13,6 +13,11 @@
 // ur samma rader och samma rader låses till fakturan. Faller något steg rullar
 // hela transaktionen tillbaka: en faktura med olåsta tidposter går inte längre
 // att skapa — inte som ett handhavandefel heller.
+//
+// Story 4.4 (FR-12): faktureringsflödet läser också leverabelregistret och
+// visar leverabler i läget godkänd som underlag. Bara läsning: inget belopp
+// kopieras och ingen faktura skapas. Importriktningen går från faktureringen
+// till registret, aldrig tvärtom.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import type { VatRate } from '../domain/vat.js';
@@ -22,6 +27,9 @@ import {
 } from './invoiceAppendix.js';
 import { delarOverBekraftatTak, gallandeTaxa } from './contracts.js';
 import { writeAudit } from './auditService.js';
+import { lasLeverabelregister, type Leverabelrad } from './uppdragRegister.js';
+import { faltvarde } from '../lib/leverabelfalt.js';
+import { last, KALLA_REDOVISNING, type Lasvarde } from '../lib/lasvarde.js';
 
 /**
  * Bilagans gruppering (story 3).
@@ -275,4 +283,119 @@ export async function createInvoiceFromTime(
       ? { cap_override: over.map((d) => ({ code: d.code, name: d.name, share: d.share })) }
       : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Uppdragsytan Story 4.4, FR-12: faktureringsflödet läser registret,
+// aldrig tvärtom. Bara läsning, inga belopp och ingen automatisk faktura.
+
+/** Endast ett registrerat godkänt läge är underlag för faktureringen. */
+export const FAKTURERBARA_LAGEN = ['godkand'] as const;
+
+/** Samma besked i åtgärdssvaret och på projektsidan. */
+export const FAKTURA_TEXT = {
+  rubrik: 'Godkända leverabler — underlag för fakturering',
+  regel: 'Bara en leverabel i läget godkänd är underlag. En levererad leverabel blir underlag först när kundens godkännande är registrerat.',
+  inga: 'Ingen leverabel är godkänd ännu, så registret ger inget underlag för fakturering.',
+  ingen_faktura: 'Underlaget skapar ingen faktura. Fakturan skapas av en människa ur godkänd tid, och betalning registreras först med din bekräftelse.',
+  godkannande_saknas: 'Godkännandet saknas i historiken',
+  kalla: 'ur registret',
+} as const;
+
+/** Den senaste godkännandehändelsens egna fält, utan härledda uppgifter. */
+export interface Godkannandehandelse {
+  kod: string; dag: string | null; kanal: string | null; mottagare: string | null;
+}
+
+/** Sluten registerrad utan ekonomidata, med ärliga saknastexter per fält. */
+export interface Fakturaunderlagsrad {
+  contract_id: string;
+  kod: string;
+  namn: { varde: string | null; text: string };
+  acceptanskriterium: { varde: string | null; text: string };
+  revision: { varde: number | null; text: string };
+  overlamnad: { varde: string | null; text: string };
+  godkannande: { dag: string | null; kanal: string | null; mottagare: string | null; text: string };
+  kalla: 'registret';
+}
+
+/** Ren urvalsregel: behåller registrets ordning och hittar aldrig på ett godkännande. */
+export function valjFakturaunderlag(
+  register: readonly Leverabelrad[], godkannanden: readonly Godkannandehandelse[],
+): Fakturaunderlagsrad[] {
+  return register.filter((r) => (FAKTURERBARA_LAGEN as readonly string[]).includes(r.status)).map((r) => {
+    const textfalt = (falt: 'namn' | 'acceptanskriterium' | 'overlamnad') => {
+      const v = faltvarde(r, falt);
+      return v.lage === 'angivet' ? { varde: String(v.varde), text: String(v.varde) } : { varde: null, text: v.text };
+    };
+    const revision = faltvarde(r, 'revision');
+    const g = godkannanden.find((h) => h.kod === r.kod);
+    return {
+      contract_id: r.contract_id, kod: r.kod,
+      namn: textfalt('namn'), acceptanskriterium: textfalt('acceptanskriterium'),
+      revision: revision.lage === 'angivet'
+        ? { varde: Number(revision.varde), text: String(revision.varde) } : { varde: null, text: revision.text },
+      overlamnad: textfalt('overlamnad'),
+      godkannande: g ? {
+        dag: g.dag, kanal: g.kanal, mottagare: g.mottagare,
+        text: `${g.dag ?? 'saknas'}, ${g.kanal ?? 'saknas'}${g.mottagare ? `, ${g.mottagare}` : ''}`,
+      } : { dag: null, kanal: null, mottagare: null, text: FAKTURA_TEXT.godkannande_saknas },
+      kalla: 'registret',
+    };
+  });
+}
+
+/** Ett avtals underlag med källan och samma lästid för hela läsningen. */
+export interface Avtalsunderlag {
+  contract_id: string; namn: string; underlag: Lasvarde<Fakturaunderlagsrad[]>;
+}
+
+/** Projektets godkända leverabler, utan koppling till en skapad faktura. */
+export interface Faktureringsunderlag {
+  project_id: string; regel: string; ingen_faktura: string; avtal: Avtalsunderlag[];
+}
+
+/** En fråga för samtliga avtals senaste godkännanden, med bolaget på båda joinleden. */
+async function lasGodkannanden(
+  client: PoolClient, companyId: string, contractIds: string[],
+): Promise<Map<string, Godkannandehandelse[]>> {
+  const res = await client.query<Godkannandehandelse & { contract_id: string }>(
+    `SELECT DISTINCT ON (h.contract_id, l.kod) h.contract_id, l.kod,
+            (h.bekraftat_nar::date)::text AS dag, h.kanal, h.mottagare
+       FROM uppdrag_leverabel_handelse h
+       JOIN uppdrag_leverabel l ON l.id = h.leverabel_id AND l.company_id = h.company_id
+      WHERE h.company_id = $1 AND h.contract_id = ANY($2::uuid[]) AND h.till = $3
+      ORDER BY h.contract_id, l.kod, h.created_at DESC, h.id DESC`,
+    [companyId, contractIds, FAKTURERBARA_LAGEN[0]],
+  );
+  const perAvtal = new Map<string, Godkannandehandelse[]>();
+  for (const r of res.rows) {
+    const handelser = perAvtal.get(r.contract_id) ?? [];
+    handelser.push({ kod: r.kod, dag: r.dag, kanal: r.kanal, mottagare: r.mottagare });
+    perAvtal.set(r.contract_id, handelser);
+  }
+  return perAvtal;
+}
+
+/** Gemensam läsväg för MCP, REST och projektsidan; varje värde kommer ur registret. */
+export async function lasFaktureringsunderlag(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Faktureringsunderlag> {
+  const projekt = await client.query('SELECT 1 FROM projects WHERE id = $1 AND company_id = $2', [projectId, companyId]);
+  if (projekt.rowCount === 0) throw new NotFoundError('project');
+  const avtal = await client.query<{ id: string; name: string }>(
+    `SELECT id, name FROM contracts WHERE company_id = $1 AND project_id = $2
+      ORDER BY signed_date DESC NULLS LAST, name, id`,
+    [companyId, projectId],
+  );
+  const lastNar = new Date().toISOString();
+  const godkannanden = avtal.rows.length > 0
+    ? await lasGodkannanden(client, companyId, avtal.rows.map((a) => a.id)) : new Map<string, Godkannandehandelse[]>();
+  const underlag: Avtalsunderlag[] = [];
+  for (const a of avtal.rows) {
+    const register = await lasLeverabelregister(client, companyId, { contract_id: a.id });
+    underlag.push({ contract_id: a.id, namn: a.name,
+      underlag: last(valjFakturaunderlag(register, godkannanden.get(a.id) ?? []), KALLA_REDOVISNING, lastNar) });
+  }
+  return { project_id: projectId, regel: FAKTURA_TEXT.regel, ingen_faktura: FAKTURA_TEXT.ingen_faktura, avtal: underlag };
 }

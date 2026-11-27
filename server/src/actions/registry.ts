@@ -112,7 +112,7 @@ import {
   appendixFromTimeEntries, getInvoiceAppendix, setInvoiceAppendixManually,
   type AppendixKind, type AppendixRowInput,
 } from '../services/invoiceAppendix.js';
-import { APPENDIX_LAYOUTS, createInvoiceFromTime, type AppendixLayout } from '../services/invoiceFromTime.js';
+import { APPENDIX_LAYOUTS, createInvoiceFromTime, lasFaktureringsunderlag, type AppendixLayout } from '../services/invoiceFromTime.js';
 import { generateAndAttachPayslipPdf } from '../services/payslipPdf.js';
 import { deleteDraftInvoice, deleteDraftPayslip, deleteDraftReceipt, deleteDraftSupplierInvoice } from '../services/draftDelete.js';
 import { linkVoucher, unlinkVoucher, rejectPaymentMark, suggestVoucherLinks, type LinkableEntityType } from '../services/voucherLinks.js';
@@ -546,6 +546,16 @@ export const ACTIONS: readonly ActionDef<never>[] = [
       title: i.title, preamble: i.preamble, appendixLayout: i.appendix_layout,
       confirmOverCap: i.confirm_over_cap,
     }),
+  }),
+  def({
+    name: 'las_faktureringsunderlag',
+    title: 'Faktureringsunderlaget för ett uppdrag: godkända leverabler ur registret',
+    sensitivity: 'read',
+    // Uppdragsytan Story 4.4 (FR-12): läsning före fakturan; bara godkänd
+    // är underlag, inga belopp. Modulen fakturerar aldrig; fakturan skapas
+    // med create_invoice_from_time och betalning går genom kön (K5).
+    inputSchema: z.object({ project_id: UuidSchema }).strict(),
+    handler: (ctx, i: { project_id: string }) => lasFaktureringsunderlag(ctx.client, ctx.companyId, i.project_id),
   }),
   def({
     name: 'set_account_non_deductible',
