@@ -846,16 +846,16 @@ describe('K5 läsvägarna', () => {
       description: 'Före bedömningen', contract_part_id: s1 });
     await ok(las, 'tand_scopesignal', { contract_id: r3.contractId, fras: 'kan ni även före' });
     await withAdmin((c) => c.query(
-      `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till, created_at)
-       VALUES ($1, $2, $3, 'ej_paborjad', 'pagar', '2026-01-02T00:00:00Z')`, [las.id, r3.contractId, r3.leverabelId]));
+      `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till, created_at, bekraftat_av)
+       VALUES ($1, $2, $3, 'ej_paborjad', 'pagar', '2026-01-02T00:00:00Z', 'riggning')`, [las.id, r3.contractId, r3.leverabelId]));
     const bedomd = await ok(las, 'satt_bedomning', { contract_id: r3.contractId, ...PERIOD, lage: 'pa_spar' });
     const frysta = bedomd.frysta_siffror as { delar: Array<{ code: string; minuter: number; belopp_ore: number }> };
 
     await ok(las, 'log_time', { project_id: r3.projectId, work_date: '2026-09-16', minutes: 60,
       description: 'Efter bedömningen', contract_part_id: s1 });
     await withAdmin((c) => c.query(
-      `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till)
-       VALUES ($1, $2, $3, 'pagar', 'avvisad')`, [las.id, r3.contractId, r3.leverabelId]));
+      `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till, bekraftat_av)
+       VALUES ($1, $2, $3, 'pagar', 'avvisad', 'riggning')`, [las.id, r3.contractId, r3.leverabelId]));
     const sEfter = (await ok(las, 'tand_scopesignal', { contract_id: r3.contractId, fras: 'kan ni även efter' })).id as string;
     await koaOchGodkann(las, 'upsert_contract_part', { change_reason: 'Tillägg', contract_id: r3.contractId,
       code: 'S2', name: 'Fas 2', valid_from: '2026-01-01', cap_hours: 5 });

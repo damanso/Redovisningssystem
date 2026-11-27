@@ -116,8 +116,8 @@ async function riggaStatus(contractId: string, kod: string, status: string): Pro
 /** En händelse med explicit `created_at` — tabellen är append-only för `app`. */
 async function riggaHandelse(contractId: string, kod: string, till: string, dagarBakat: number): Promise<void> {
   await withAdmin((c) => c.query(
-    `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, created_at)
-     SELECT l.company_id, l.contract_id, l.id, $3, now() - make_interval(days => $4::int)
+    `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, created_at, bekraftat_av)
+     SELECT l.company_id, l.contract_id, l.id, $3, now() - make_interval(days => $4::int), 'riggning'
        FROM uppdrag_leverabel l WHERE l.contract_id = $1 AND l.kod = $2`,
     [contractId, kod, till, dagarBakat],
   ));
