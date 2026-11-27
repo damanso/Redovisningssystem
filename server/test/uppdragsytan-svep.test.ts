@@ -286,7 +286,10 @@ describe('KRAV-4: verifiering → spärrmapp → prognos, i den ordningen', () =
     // `cap_status` är 'vet_ej': ramarna svarar med sitt villkor i stället för
     // med ett datum. Ett prognosdatum ur ett oläst tak hade varit exakt den
     // gissning FR-5 förbjuder.
+    // Story 5.4: kalendern är läst (listan kom med), och båda händelserna
+    // ligger före i dag, så ingen av dem är bokad framtid.
     expect(varde(rader, 'prognos')).toEqual({
+      kalender: 'last', framtida_handelser: 0,
       handelser: 2, bokade_minuter: 180, forsta: '2026-10-01', sista: '2026-10-08',
       ram_timmar: { villkor: 'inget bekräftat tak' },
       ram_kronor: { villkor: 'inget bekräftat tak' },
@@ -791,6 +794,8 @@ describe('S7.4: prognosen läser rotramen, den registrerade tiden och taxan', ()
     // 600 minuter kvar av taket → den andra bokningen räcker.
     // 22 000 kr kvar och 8 800 kr per bokad vecka → först den tredje.
     expect(varde(await cache(ramavtal), 'prognos')).toEqual({
+      kalender: 'last',
+      framtida_handelser: 3,
       handelser: 3,
       bokade_minuter: 1440,
       forsta: omDagar(1),

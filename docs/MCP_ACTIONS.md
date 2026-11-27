@@ -1827,7 +1827,9 @@ egna databasen kommer in som validerad indata:
     (giltigt ISO-kalenderdatum från källhändelsen) och valfri `foralderkedja`
     (Drive-id:n, filens egen förälder först).
   - `kalenderhandelser[]`: `datum` + `minuter` som **heltal** — aldrig timmar som
-    flyttal, samma regel som tidposternas `billable_minutes`.
+    flyttal, samma regel som tidposternas `billable_minutes`. En utelämnad lista
+    betyder att kalendern inte är läst, och en tom lista att den är läst utan
+    bokningar (Story 5.4).
   - **Ett uppdrag som inte står i listan rörs inte.** Cachen speglar det senaste
     svepet av just det uppdraget; ett tomt anrop är giltigt och hämtar bara nästa
     arbetslista.
@@ -1875,8 +1877,9 @@ spärrmappen på de kedjor indatat bär, (3) räkna prognosen ur kalenderhändel
 sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat värde bär
 `kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
 avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`),
-`prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`, `ram_timmar`,
-`ram_kronor`) och `troskellarm` (`trosklar`, `larm`, `utan_egen_ram: [{ kod, enhet }]`).
+`prognos: { kalender, handelser, bokade_minuter, framtida_handelser, forsta, sista, ram_timmar, ram_kronor }`
+(med `kalender: 'last' | 'olast'`; framtida händelser räknar kalenderposterna
+efter i dag med minuter > 0) och `troskellarm` (`trosklar`, `larm`, `utan_egen_ram: [{ kod, enhet }]`).
 
 **Prognosens två ramdatum (S7.4, FR-5).** `ram_timmar` och `ram_kronor` säger när
 uppdragets ram nås, härlett ur den registrerade tiden t.o.m. i dag (rotdelens
@@ -1888,9 +1891,12 @@ uppdragets). Varje fält är **antingen** `{ "datum": "YYYY-MM-DD" }` **eller**
 (rotens `cap_status` är `vet_ej`, eller ramens takfält är tomt) → **`ingen taxa`**
 (bara `ram_kronor`) → **`ingen bokad framtid`** (ingen kalenderhändelse efter i
 dag med minuter > 0). Är ramen redan nådd är datumet **i dag** — det är fakta,
-inte en gissning. Räcker bokningarna inte fram till ramen förlängs de med sin
-egen takt (resterande mängd ställd mot vad som bokats över spannet i dag→sista
-bokningen, avrundat uppåt till hela dagar).
+inte en gissning. Räcker bokningarna inte fram till ramen är fältet
+`{ "villkor": "ingen bokad framtid" }` (Davids svar 2026-10-23): ett datum efter
+den sista bokningen härleds aldrig. Utan kalenderlista är kalendern oläst, och
+båda fälten är `{ "villkor": "underlaget kunde inte läsas" }`. Ramdatumen är
+cache som ingen läsväg för vidare (Story 5.4): Pengarna och Läget visar
+prognosens plats i stället (se Läget nedan).
 
 **Tröskellarmen (S6.2, FR-3).** `troskellarm` (källa `redovisning`) bär avtalets
 `trosklar` och listan `larm` — och **ingen färdigställandegrad i procent**
@@ -2280,7 +2286,15 @@ inloggning visar scopelinjen (NFR-9).
   `avtal[]` med **`forbrukning`** (rotdelens upprullade minuter och ören, taket i
   hela minuter/ören, `tak_status`, plus tidsunderlaget `tidposter` och
   `registrerade_minuter`), **`troskellarm`** (S6.2:s redan härledda larm ur
-  svepets cache, `null` = svepet har inte kört), **`leverabler`** (alla fem lägen
+  svepets cache, `null` = svepet har inte kört), **`prognos`** (Story 5.4: ett
+  läsvärde med källa och lästid ur svepets cacherad,
+  `prognos: { varde, kalla, last_nar, lage }`, med värdet
+  `varde: { besked, beslut }` och beskedet ett av
+  `'ingen_bokad_framtid' | 'regel_ej_beslutad' | 'regel_ej_inford'`; läget saknas
+  betyder att svepet inte har kört för avtalet (värdet och lästiden är null),
+  läget olast att kalendern inte lästes (värdet null, lästiden svepets), och
+  beslut finns bara med beskedet regel_ej_inford; samma värde som Pengarna, och
+  inget datum), **`leverabler`** (alla fem lägen
   i skalans ordning med antal — uppräknade tillstånd, aldrig procent),
   **`bedomning`** (senaste raden plus `forsta_meningen` ur kommentaren, med
   `satt_av_namn` och `begaran_id` sedan Story 1.10), **`oppen_begaran`**

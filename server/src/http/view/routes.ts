@@ -57,7 +57,6 @@ import {
   type Dokumentfamilj, type Dokumentforteckning, type Dokumentrad,
 } from '../../services/uppdragDokument.js';
 import type { Larm, Trosklar } from '../../lib/troskel.js';
-import type { Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, lasOplaneradeKostnader, type Kostnadsrad, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import type { Lasvarde } from '../../lib/lasvarde.js';
@@ -92,7 +91,7 @@ import { listDocuments } from '../../services/documents.js';
 import { checkApprovalDependency } from '../../actions/dependencies.js';
 import { getUserId } from '../middleware/authenticate.js';
 import type { Referensvisning } from '../../lib/referens.js';
-import { aiMarkning, amount, chip, direktFarskhet, entityLink, errorPage, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, ramkurva, raw, referensvisning, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
+import { aiMarkning, amount, chip, direktFarskhet, entityLink, errorPage, esc, eyebrow, farskhetsrad, farskhetstid, html, kronor, layout, loginPage, money, monthlyChart, raw, referensvisning, registerPage as registerAccountPage, statusChip, totpChallengePage, type EntityKind, type Raw } from './html.js';
 import { clearSessionCookie, issuePendingSession, issueSession, page, readPendingUserId, registerUser, verifyCredentials, viewAuth } from './auth.js';
 import { beginTotpSetup, changePassword, confirmTotp, disableTotp, getProfile, updateName, verifyLoginTotp } from '../../services/profile.js';
 import { listNotifications, markAllRead, markRead, unreadCount } from '../../services/notifications.js';
@@ -121,6 +120,7 @@ import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
 import { nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
 import { golvmarkering, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
+import { prognosplatsHtml } from './uppdragPrognos.js';
 
 // En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
 // (Idag, Relationer, åtagandevyn, Lova något och kundkortets Åtaganden) skriver
@@ -4170,7 +4170,10 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
               chip(a.troskellarm.larm.length === 1 ? '1 tröskel passerad' : `${String(a.troskellarm.larm.length)} trösklar passerade`, 'warn', '!')}</p>
             <ul style="margin:4px 16px 4px;padding-left:20px;font-size:12.5px">
               ${a.troskellarm.larm.map((larm) => html`<li>${larmtext(larm, a.troskellarm?.trosklar)}</li>`)}
-            </ul>`)}`;
+            </ul>`)}
+      ${/* Story 5.4: prognosens plats per avtal, också i tomläget. Källa och tid
+            står i platsens mening, så kortets färskhetsrad är oförändrad. */ ''}
+      <div style="padding:0 16px 2px">${prognosplatsHtml(a.prognos, { bas, contractId: a.contract_id, idag })}</div>`;
   })}`;
   return faktakort('kort-ram', 'Förbrukning mot ram',
     chip(l.avtal.length === 1 ? '1 avtal' : `${String(l.avtal.length)} avtal`, 'muted'),
@@ -5291,25 +5294,29 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
 // 1D:s fråga är en enda: *hur ligger vi mot ram — i timmar, kronor och enskilda
 // kostnader?* Sju beslut styr sidan:
 //
-//  1. **Allt är LÄST, ingenting räknat här.** Kurvan kommer ur husets enda
-//     takberäkning genom `lasUppdragspengar`, de två ramdatumen ordagrant ur
-//     svepets cache, tröskellarmet ur samma cache, beloppen ur redovisningen.
+//  1. **Allt är LÄST, ingenting räknat här.** Talen och taket kommer ur husets
+//     enda takberäkning genom `lasUppdragspengar`, prognosens läge och
+//     tröskellarmet ur svepets cache, beloppen ur redovisningen.
 //     Vyn har inte en enda egen jämförelse — kan sidan visa något tjänsten inte
 //     svarar har en av dem fel, och då vet ingen vilken.
 //  2. **Ingen procent, ingen progressbar (NFR-11).** Två tal bredvid varandra —
 //     förbrukat och tak — säger vilket av dem som rörde sig. "72 % klart" säger
 //     det aldrig, och en `<progress>` säger dessutom att någon VET hur långt
 //     kvar det är. Det är precis vad prognosen vägrar påstå.
-//  3. **Kurvan ritas bara när cachen bär ett DATUM.** Bär den ett villkor —
-//     'inget bekräftat tak', 'ingen taxa', 'ingen bokad framtid' — står villkoret
-//     i klartext i stället, med samma ord som cachen. En kurva som slutade i en
-//     gissning hade gjort svepets vägran till en bild som ändå svarar.
-//  4. **Heldraget är mätning, streckat är prognos.** Skillnaden bärs av
-//     streckningen OCH av texten under bilden: bilden är aldrig ensam bärare
-//     (WCAG 1.1.1), och därför står ramdatumet som text utanför SVG:n.
+//  3. **Inget prognosdatum och ingen kurva innan regeln är införd (Story 5.4).**
+//     Platsens regel i lib säger i stället varför inget slutdatum står: ingen
+//     bokad framtid, ett underlag som inte kunde läsas, eller prognosregelns
+//     läge. Ramdatumen i cachen läses aldrig av läsvägen. En kurva som slutade
+//     i ett datum utan beslutad regel hade varit en gissning som ser ut som ett
+//     svar.
+//  4. **Kurvan väntar på regeln.** Kurvfunktionen i html-modulen står kvar utan
+//     anropare tills Story 5.6 ritar kurvan och de två meningarna enligt den
+//     beslutade regeln. Då gäller det som gällde förut: heldraget är mätning,
+//     streckat är prognos, och bilden är aldrig ensam bärare (WCAG 1.1.1).
 //  5. **Färskhet per källa (FR-35).** Prognosen och tröskeln är SVEPTA värden
 //     och bär svepets lästidpunkt, inte sidans. Har svepet aldrig kört säger
-//     raden DET — ett tomt larm ser annars ut som lugn.
+//     raden DET — ett tomt larm ser annars ut som lugn. Platsen bär sin källa
+//     och tid i meningen och lägger ingen egen färskhetsrad till.
 //  6. **Kostnaden är bunden eller föreslagen, aldrig hittad här.** Bindningen
 //     kvitto → avtalsdel görs bara genom kön (S6.1, Story 1.8); här läses den.
 //     Ett föreslaget men obundet kvitto står som Obunden utan avtalsdel,
@@ -5321,13 +5328,15 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
 //     pengar går genom Att göra.
 // ---------------------------------------------------------------------------
 
-/** En ram som den ska läsas: seriens tal i ramens egen enhet, mot ramens tak. */
+/**
+ * En ram som den ska läsas: seriens tal i ramens egen enhet, mot ramens tak.
+ * Serien, taket och bildtexten väntar på kurvan i Story 5.6; till dess läser
+ * blocket bara rubriken och etiketterna.
+ */
 interface Rambild {
   rubrik: string;
   serie: { datum: string; varde: number }[];
   tak: number | null;
-  /** Cachens utfall. null = svepet har inte kört (eller värdet bar okänd form). */
-  utfall: Ramutfall | null;
   /** Taket i klartext — husets egna format, aldrig ett eget talformat. */
   takEtikett: string | null;
   /** Seriens sista tal i klartext: "här står vi". */
@@ -5338,13 +5347,11 @@ interface Rambild {
 /** Timramen och kronramen ur SAMMA tjänstesvar — två enheter, ett underlag. */
 function rambilder(a: Avtalspengar): Rambild[] {
   const sista = a.serie[a.serie.length - 1] ?? null;
-  const prognos = a.prognos?.varde ?? null;
   return [
     {
       rubrik: 'Timmarna',
       serie: a.serie.map((p) => ({ datum: p.work_date, varde: p.kum_minuter })),
       tak: a.ram.tak_minuter,
-      utfall: prognos?.ram_timmar ?? null,
       takEtikett: a.ram.tak_minuter === null ? null : hhmm(a.ram.tak_minuter),
       forbrukatEtikett: sista === null ? null : hhmm(sista.kum_minuter),
       ariaLabel: 'Kumulativ registrerad tid mot timramen',
@@ -5353,7 +5360,6 @@ function rambilder(a: Avtalspengar): Rambild[] {
       rubrik: 'Kronorna',
       serie: a.serie.map((p) => ({ datum: p.work_date, varde: p.kum_oren })),
       tak: a.ram.tak_ore,
-      utfall: prognos?.ram_kronor ?? null,
       // `money` är husets egen plaintextform av ett örebelopp — SVG-text kan
       // inte bära `kronor()`:s markup, och ett eget talformat hade varit ett
       // andra sätt att skriva samma belopp.
@@ -5365,47 +5371,10 @@ function rambilder(a: Avtalspengar): Rambild[] {
 }
 
 /**
- * Ramdatumet — eller varför det inte finns.
- *
- * Tre utfall, tre olika besked. Ett saknat svep är inte samma sak som ett
- * villkor: det första betyder "vi vet inte", det andra "vi vet, och därför
- * svarar vi inte". En yta som blandar ihop dem lär läsaren att tomt betyder
- * lugnt.
+ * Ett ramblock: rubriken och talen i klartext. Ingen kurva och inget ramdatum
+ * innan prognosregeln är införd (Story 5.4); platsen under blocken säger varför.
  */
-function ramdatumtext(b: Rambild, harSvep: boolean): Raw {
-  // Raden är EN komponent i alla fyra lägena — 1D:s `.harledning` (S10.7) — och
-  // det är hela poängen: den som läser ska hitta svaret på "varifrån kommer det
-  // här?" på samma plats oavsett om svaret är ett datum eller ett skäl till att
-  // datum saknas. Byter raden form när den saknar tal blir tomheten osynlig.
-  if (!harSvep) {
-    return html`<p class="harledning muted">Svepet har inte kört för uppdraget
-      — ingen prognos är läst, och därför står här inget datum och ritas ingen kurva.</p>`;
-  }
-  if (b.utfall === null) {
-    return html`<p class="harledning muted">Svepets cache bär inget läsbart
-      ramutfall för den här ramen. Inget datum härleds här i stället.</p>`;
-  }
-  if ('villkor' in b.utfall) {
-    return html`<p class="harledning">Inget ramdatum:
-      <strong>${b.utfall.villkor}</strong>.
-      ${/* Ordet är cachens eget. Systemet hellre säger varför frågan inte går
-            att besvara än levererar ett tal som ser ut som ett svar (FR-5). */ ''}
-      Prognosen gissar aldrig ett datum ur ett underlag som saknas.</p>`;
-  }
-  return html`<p class="harledning">Ramen nås
-    <span class="code">${b.utfall.datum}</span> — svepets prognos, läst ur cachen och aldrig omräknad här.</p>`;
-}
-
-/** Ett ramblock: bilden om den går att rita, och talen i klartext under den. */
-function ramblock(b: Rambild, harSvep: boolean): Raw {
-  const kurva = b.tak === null || b.utfall === null || b.takEtikett === null
-    ? null
-    : ramkurva({
-      serie: b.serie, tak: b.tak, utfall: b.utfall,
-      takEtikett: b.takEtikett,
-      ariaLabel: `${b.ariaLabel} ${b.takEtikett}${
-        'datum' in b.utfall ? `, ramen nås ${b.utfall.datum}` : ''}.`,
-    });
+function ramblock(b: Rambild): Raw {
   return html`<div style="padding:12px 16px 4px">
     <h3 style="margin:0">${b.rubrik}</h3>
     <p style="margin:4px 0 0;font-size:13px">${
@@ -5413,22 +5382,21 @@ function ramblock(b: Rambild, harSvep: boolean): Raw {
         ? html`<span class="muted">Ingen förbrukande tid är registrerad på avtalet ännu.</span>`
         : html`Registrerat på avtalsdelarna <strong>${b.forbrukatEtikett}</strong> av ${
           b.takEtikett === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : b.takEtikett}`}</p>
-    ${kurva ?? ''}
-    ${ramdatumtext(b, harSvep)}
   </div>`;
 }
 
-/** Ramarna, deras kurvor och deras datum — plus svepets färskhet, sist. */
-function rampanel(a: Avtalspengar, idag: string): Raw {
+/** Ramarna, prognosens plats och svepets färskhet, sist. */
+function rampanel(a: Avtalspengar, bas: string, idag: string): Raw {
   const id = `ram-${a.contract_id}`;
   return html`<section class="panel" aria-labelledby="${id}" style="margin-top:14px">
     <div class="panel__head"><h2 id="${id}">Mot ramen</h2>${takstatusChipYta(a.ram.tak_status)}</div>
     <div class="panel__body">
-      ${rambilder(a).map((b) => ramblock(b, a.prognos !== null))}
+      ${rambilder(a).map((b) => ramblock(b))}
+      <div style="padding:4px 16px 4px">${prognosplatsHtml(a.prognos, { bas, contractId: a.contract_id, idag })}</div>
       ${farskhetsrad([
-        a.prognos === null
+        a.prognos.last_nar === null
           ? 'prognosen: svepet har inte kört för uppdraget'
-          : `prognosen läst av svepet ${farskhetstid(a.prognos.farskhet.last_nar, idag)}`,
+          : `prognosen läst av svepet ${farskhetstid(a.prognos.last_nar, idag)}`,
       ])}
     </div>
   </section>`;
@@ -5530,12 +5498,13 @@ function pengasida(companyId: string, u: Uppdragspengar, idag: string): Raw {
       <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
         <a class="btn btn--ghost btn--sm" href="${bas}/laget">← Läget</a></div></div>
     ${subnav(companyId, p.project_id, 'pengarna')}
-    <p class="muted" style="margin:0 0 4px;font-size:13px">Varje tal och datum på sidan är LÄST: kurvan och
-      taket ur husets takberäkning, de två ramdatumen ordagrant ur svepets cache, beloppen ur redovisningen.
-      Sidan räknar ingen egen takt, ingen egen prognos och ingen färdigställandegrad.</p>
+    <p class="muted" style="margin:0 0 4px;font-size:13px">Varje tal på sidan är LÄST: taket ur husets
+      takberäkning, prognosens läge ur svepets cache, beloppen ur redovisningen. Sidan visar inget
+      prognosdatum och ingen kurva innan prognosregeln är införd, och räknar ingen egen takt, ingen egen
+      prognos och ingen färdigställandegrad.</p>
     ${flera ? ofordeladUppdrag(u.ofordelad, idag) : ''}
     ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.contract_name}</h2>` : ''}
-      ${rampanel(a, idag)}
+      ${rampanel(a, bas, idag)}
       ${nivapanel(a, idag)}
       ${troskelpanel(a, idag)}
       ${kostnadspanel(companyId, a, idag)}`)}`;

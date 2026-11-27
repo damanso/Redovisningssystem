@@ -90,35 +90,36 @@ describe('KRAV-4: ramen nås — datumet härleds ur registrerat plus bokat', ()
   });
 });
 
-describe('KRAV-4: ramen ligger bortom bokningarna — takten förlängs', () => {
-  it('taktförlängningen räknar spannet från idag till sista bokningen', () => {
+describe('KRAV-4 (Story 5.4): bokningar som inte når ramen ger villkoret, aldrig ett förlängt datum', () => {
+  it('timramen bortom bokningarna ger villkoret, inte spannet förlängt', () => {
     // Tak 48 h = 2 880 minuter, inget registrerat. Bokat framåt: 3 × 480 =
-    // 1 440 minuter över spannet 6/9 → 21/9 = 15 dagar. Kvar efter
-    // bokningarna: 1 440 minuter, alltså exakt ett spann till:
-    // 21/9 + ceil(1440 × 15 ÷ 1440) = 21/9 + 15 = 6/10.
+    // 1 440 minuter, så ramen nås inte inom bokningarna. Förlängningen med
+    // den bokade takten (tidigare 6/10) är borttagen (FR-5, Davids svar
+    // 2026-10-23): bokad framtid som inte förbrukar ramen ger villkoret.
     const svar = harledPrognosramar(indata({ cap_hours: 48, handelser: VECKOVIS }));
-    expect(svar.ram_timmar).toEqual({ datum: '2026-10-06' });
+    expect(svar.ram_timmar).toEqual({ villkor: INGEN_BOKAD_FRAMTID });
   });
 
-  it('förlängningen avrundar UPPÅT — en halv dag till är en dag till', () => {
-    // En minut mer i taket (2 881) ger resterande 1 441 → 15,01 dagar → 16.
+  it('en minut mer i taket ger samma villkor, inget avrundat datum', () => {
+    // 2 881 minuter i taket gav tidigare 7/10 genom avrundningen uppåt.
+    // Utan förlängningen finns ingen avrundning kvar (FR-5, Davids svar 2026-10-23).
     const svar = harledPrognosramar(indata({
       cap_hours: 48 + 1 / 60,
       handelser: VECKOVIS,
     }));
-    expect(svar.ram_timmar).toEqual({ datum: '2026-10-07' });
+    expect(svar.ram_timmar).toEqual({ villkor: INGEN_BOKAD_FRAMTID });
   });
 
-  it('kronramen förlängs med sin egen takt, inte med timramens', () => {
-    // Tak 88 000 kr, bokat 3 × 8 800 kr = 26 400 kr över 15 dagar.
-    // Kvar 61 600 kr → ceil(6 160 000 × 15 ÷ 2 640 000) = ceil(35,0) = 35
-    // dagar efter 21/9 → 26/10.
+  it('kronramen bortom bokningarna ger samma villkor som timramen', () => {
+    // Tak 88 000 kr, bokat 3 × 8 800 kr = 26 400 kr. Kronramen nås inte inom
+    // bokningarna; den förlängda takten (tidigare 26/10) är borttagen
+    // (FR-5, Davids svar 2026-10-23).
     const svar = harledPrognosramar(indata({
       cap_hours: 1000,
       cap_amount_ore: 8_800_000,
       handelser: VECKOVIS,
     }));
-    expect(svar.ram_kronor).toEqual({ datum: '2026-10-26' });
+    expect(svar.ram_kronor).toEqual({ villkor: INGEN_BOKAD_FRAMTID });
   });
 });
 

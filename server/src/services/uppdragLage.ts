@@ -23,6 +23,8 @@
 //     (`troskellarm`). Att räkna om det här hade varit en andra utvärderare av
 //     FR-3:s dubbelvillkor — och två svar på "larmar det?" är ett fel. Larmet är
 //     alltså ett SVEPT värde, och bär därför svepets `kalla`/`last_nar`.
+//     Prognosens plats (Story 5.4) byggs på samma sätt ur cacheraden `prognos`
+//     med platsens regel i lib, samma anrop som Pengarna gör, och bär inget datum.
 //   * **Färskhet per källa, aldrig en sidstämpel (FR-35).** Varje del bär
 //     varifrån den lästes och när. De fyra direktlästa delarna bär
 //     redovisningens lästidpunkt; tröskeln bär svepets. Har svepet aldrig kört
@@ -52,6 +54,7 @@ import {
   mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
 } from '../lib/leveranskontrakt.js';
 import { last, saknas, type Lasvarde } from '../lib/lasvarde.js';
+import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognosplats.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
@@ -152,6 +155,11 @@ export interface Avtalslage {
    * ingen prioritering.
    */
   nasta_leverans: Lasvarde<Nastaleverans>;
+  /**
+   * Prognosens plats (Story 5.4) ur svepets cacherad, med svepets källa och
+   * lästid. Läget saknas när svepet inte har kört för avtalet.
+   */
+  prognos: Prognosplats;
   bedomning: Senastebedomning | null;
   /** Avtalets obesvarade begäran om ny bedömning (Story 1.10), eller null. */
   oppen_begaran: Begaransrad | null;
@@ -441,6 +449,7 @@ export async function lasUppdragslage(
     const rot = rotdel(usage.parts);
 
     const cache = await svepcache(client, companyId, contractId);
+    const prognosrad = cache.find((v) => v.nyckel === 'prognos');
     const larmrad = cache.find((v) => v.nyckel === 'troskellarm');
     const larm = larmrad ? troskelutfall(larmrad.varde) : null;
     // Färskheten tas från den rad larmet faktiskt står i — inte från cachens
@@ -497,6 +506,9 @@ export async function lasUppdragslage(
       leverabler_totalt: register.length,
       nasta_leverans: last(nastaLeverans({ register, plan: byggPlan(delar, lastNar.slice(0, 10)).rader, parter }),
         KALLA_REDOVISNING, lastNar),
+      // Samma anrop med samma rad som Pengarna, så att de två aldrig svarar olika (FR-23).
+      prognos: prognosplats(prognosrad === undefined ? null
+        : { varde: prognosrad.varde, kalla: prognosrad.kalla, last_nar: prognosrad.last_nar.toISOString() }, PROGNOSREGEL),
       bedomning: senaste === null ? null : { ...senaste, forsta_meningen: forstaMeningen(senaste.kommentar) },
       oppen_begaran: oppnaBegaranden.find((b) => b.contract_id === contractId) ?? null,
       oppna_signaler: signaler.filter((s) => s.avgjord === null),
