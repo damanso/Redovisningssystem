@@ -41,6 +41,7 @@ describe('V0 nivåpanelen (ren)', () => {
   it('V0 f varje sluten orsak har en mening', h.provaV0f);
   it('V0 g förbrukningen har sin egen färskhetsrad', h.provaV0g);
   it('V0 h husets former, tomläge, avslutad och escaping', h.provaV0h);
+  it('V0 i saknad taxas omfattning syns vid ett och flera avtal, med giltig nolltaxa som kontroll', h.provaV0i);
 });
 
 const IDAG = new Date().toISOString().slice(0, 10);
@@ -247,6 +248,38 @@ describe('V1 Pengarna genom sidan', () => {
   });
   it('V1 f rampanelen namnger sin begränsning', async () => {
     expect(kort(await sida(u), `ram-${u.contractId}`)).toContain('Registrerat på avtalsdelarna');
+  });
+  it.each([
+    { namn: 'helt', utanTaxa: 60, medTaxa: 0, oren: 0, avtal: 2 },
+    { namn: 'delvis', utanTaxa: 45, medTaxa: 30, oren: 55000, avtal: 3 },
+  ])('V1 g flera avtal med $namn saknad taxa visar luckans omfattning', async (f) => {
+    const b = await bolag(`taxa-${f.namn}`);
+    const projectId = (await ok(b, 'create_project', { name: 'Ofördelat utan projekttaxa' })).id as string;
+    await tid(b, projectId, f.utanTaxa);
+    if (f.medTaxa > 0) await ok(b, 'log_time', { project_id: projectId, work_date: IDAG, minutes: f.medTaxa, hourly_rate_ore: 110000, description: 'Analys med taxa' });
+    const avtal: string[] = [];
+    for (let i = 0; i < f.avtal; i++) {
+      const id = (await ok(b, 'create_contract', { project_id: projectId, name: `Avtal ${i + 1}`, signed_date: '2026-08-31' })).id as string;
+      await rotdel(b, id); avtal.push(id);
+    }
+    const r = { b, projectId, contractId: avtal[0]!, delar: [], receiptId: '' };
+    const fore = await tidposter(r);
+    const lasning = await pengar(r);
+    expect(lasning.ofordelad).toMatchObject({ lage: 'last', kalla: 'redovisning', last_nar: expect.any(String),
+      varde: { minuter: f.utanTaxa + f.medTaxa, oren: f.oren, minuter_utan_taxa: f.utanTaxa, poster: f.medTaxa > 0 ? 2 : 1 } });
+    const main = await sida(r); const p = kort(main, 'ofordelad-uppdrag');
+    expect(blank(text(p))).toContain(`${hhmm(f.utanTaxa)} utan avtalsdel saknar taxa. Kronorna för den tiden kan inte härledas.`);
+    expect(blank(text(p))).toContain(`${hhmm(f.utanTaxa + f.medTaxa)} och ${blank(text(kronor(f.oren).value)).trim()}`);
+    expect(p).toContain('tiden utan avtalsdel läst ur redovisningen');
+    expect(main.split('utan avtalsdel saknar taxa.')).toHaveLength(2);
+    expect(main.split('kan inte föras till något av avtalen')).toHaveLength(2);
+    expect(p).not.toMatch(/<(?:a|form|button|input)\b/);
+    for (const a of lasning.avtal) {
+      expect(a.forbrukning.varde!.uppdrag).toMatchObject({ minuter: 0, oren: 0 });
+      expect(a.forbrukning.varde!.ofordelad).toBeNull();
+      expect(kort(main, `niva-${a.contract_id}`)).not.toContain('saknar taxa');
+    }
+    expect(await tidposter(r)).toEqual(fore);
   });
 });
 

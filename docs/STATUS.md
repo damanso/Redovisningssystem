@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 5-2-forbrukningen-mot-ram-tar-med-det-som-inte-ar-fordelat.**
+  Granskningsfyndet om saknad taxa vid flera avtal rättat i
+  `uppdragForbrukning.ts`: uppdragets ofördelade tid visar nu hur mycket tid
+  som saknar taxa och att kronorna för den tiden inte kan härledas.
+  Beskedet delas med avtalspanelens befintliga text. Båda återgivningarna
+  av ofördelade belopp har kontrollerats; beräkning och fördelning följer
+  samma regel. V0 i täcker helt och delvis saknad taxa i båda panelerna,
+  full taxa, giltig nolltaxa och tomt. V1 g täcker riktiga sidan med två
+  respektive tre avtal, känt belopp, luckans minuter, egen färskhet och
+  oförändrade tidposter. Husets paneler, Public Sans, skala och färger
+  används för att hålla beskedet nära beloppet och läsbart utan nya
+  kontroller. Tomt och oläst följer befintliga lägen; laddning och sidfel
+  följer serverrenderingen. Ingen migration, rutt, åtgärd eller beroende
+  tillkom; CRM-kontraktet berörs inte. Testförsök före och efter rättelsen,
+  riktade regressioner och fullsviten stoppas före fallen: exit 1,
+  `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+  Fallen är inte körda; kedjan verifierar dem enligt databasundantaget.
+  Typkontroll före och efter rättelsen: exit 0.
+  Även steg 9:s upprepade fullsvit stoppas före fallen med samma EPERM.
+  DoD prövad punkt för punkt i Dev Agent Record; Status åter review med
+  databasundantaget öppet. git diff --check utan fel.
+  Inga tjänster, visuella webbläsarprov, byggen eller driftprov startade.
+  bmadglidning står RÖD enligt tidigare baslinje. Läget saknar fortsatt
+  ofördelad tid tills Story 6.1 och 6.2 läser samma regel.
+
 - **2026-11-27 — 5-2-forbrukningen-mot-ram-tar-med-det-som-inte-ar-fordelat.**
   Pengarna läser ofördelad förbrukande tid en gång per uppdrag, med husets
   taxeordning och öresregel. Den rena nivåregeln räknar totalen med ofördelat

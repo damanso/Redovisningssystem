@@ -8,6 +8,11 @@ import { takstatusChipYta } from './uppdragUppfoljning.js';
 
 export const RAM_SAKNAS = 'ram saknas';
 
+/** Samma lucka i beloppet beskrivs där den ofördelade tiden visas. */
+function ingenTaxaText(minuter: number): string {
+  return `${hhmm(minuter)} utan avtalsdel saknar taxa. Kronorna för den tiden kan inte härledas.`;
+}
+
 /** Varje orsak har en text; en utökning av regeln kräver också en ny mening. */
 export const EJ_HARLEDD_TEXT: Record<EjHarleddOrsak, (p: EjHarledd) => string> = {
   rotdel_saknas: () => 'Avtalet saknar rotdel, så uppdragsnivån kan inte härledas.',
@@ -16,7 +21,7 @@ export const EJ_HARLEDD_TEXT: Record<EjHarleddOrsak, (p: EjHarledd) => string> =
   utan_leverabel: (p) => `${p.kod}: ${hhmm(p.minuter ?? 0)} är registrerat på avtalet utan att höra till en leverabel.`,
   avtalsdel_saknas: (p) => `${p.kod}: registrets leverabel saknar avtalsdel, så förbrukningen kan inte härledas.`,
   ram_saknas: (p) => `${p.kod}: egen ram i ${p.enhet} saknas. Förbrukningen visas utan gissad ram.`,
-  ingen_taxa: (p) => `${hhmm(p.minuter ?? 0)} utan avtalsdel saknar taxa. Kronorna för den tiden kan inte härledas.`,
+  ingen_taxa: (p) => ingenTaxaText(p.minuter ?? 0),
 };
 
 function farskhet(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
@@ -66,7 +71,8 @@ export function ofordeladUppdrag(o: Lasvarde<Ofordelad>, idag: string): Raw {
       ? olastEllerSaknas(o, 'Tiden utan avtalsdel', idag)
       : html`${o.varde.minuter === 0
         ? html`<p class="tomt">Ingen förbrukande tid utan avtalsdel.</p>`
-        : html`<p>${hhmm(o.varde.minuter)} och ${kronor(o.varde.oren)} i ${o.varde.poster} tidposter utan avtalsdel kan inte föras till något av avtalen och ingår därför inte i något avtals total.</p>`}
+        : html`<p>${hhmm(o.varde.minuter)} och ${kronor(o.varde.oren)} i ${o.varde.poster} tidposter utan avtalsdel kan inte föras till något av avtalen och ingår därför inte i något avtals total.</p>
+          ${o.varde.minuter_utan_taxa > 0 ? html`<p>${ingenTaxaText(o.varde.minuter_utan_taxa)}</p>` : ''}`}
         ${farskhet(o, 'tiden utan avtalsdel', idag)}`}
     </div></section>`;
 }

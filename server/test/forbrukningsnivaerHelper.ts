@@ -6,6 +6,7 @@ import { timeEntryAmountOre } from '../src/services/projects.js';
 import { last, olast, saknas } from '../src/lib/lasvarde.js';
 import { nivapanel, ofordeladUppdrag, RAM_SAKNAS, EJ_HARLEDD_TEXT } from '../src/http/view/uppdragForbrukning.js';
 import { kronor } from '../src/http/view/html.js';
+import { hhmm } from '../src/lib/duration.js';
 import type { EjHarledd } from '../src/lib/forbrukningsnivaer.js';
 import { forbrukningsnivaer, EJ_HARLEDD_ORSAKER, STROMNIVA_HARLEDS_EJ, type Forbrukningsdel } from '../src/lib/forbrukningsnivaer.js';
 
@@ -147,4 +148,33 @@ export function provaV0h() {
   const p = nivapanel(a, idag).value; assert.ok(p.includes('Avslutad')); assert.ok(p.includes('&lt;script&gt;')); assert.ok(!p.includes('<script>'));
   const olastPanel = nivapanel({ contract_id: 'ett', forbrukning: olast('redovisning', null) }, idag).value;
   assert.ok(!olastPanel.includes('class="muted"'));
+}
+
+/** Båda placeringarna måste visa beloppets lucka, oberoende av fördelningen. */
+export function provaV0i() {
+  const fall = [
+    { minuter: 60, oren: 0, minuter_utan_taxa: 60, poster: 1 },
+    { minuter: 105, oren: 175000, minuter_utan_taxa: 15, poster: 4 },
+    { minuter: 120, oren: 55000, minuter_utan_taxa: 90, poster: 2 },
+    { minuter: 60, oren: 110000, minuter_utan_taxa: 0, poster: 1 },
+    // Nolltaxa är läst och giltig, inte en saknad taxa.
+    { minuter: 60, oren: 0, minuter_utan_taxa: 0, poster: 1 },
+    { minuter: 0, oren: 0, minuter_utan_taxa: 0, poster: 0 },
+  ];
+  for (const o of fall) {
+    const n = forbrukningsnivaer({ ...indata(), ofordelad: o });
+    const paneler = [nivapanel({ contract_id: 'ett', forbrukning: last(n, 'redovisning', lastNar) }, idag).value,
+      ofordeladUppdrag(last(o, 'redovisning', lastNar), idag).value];
+    for (const p of paneler) {
+      assert.equal(p.split('utan avtalsdel saknar taxa.').length - 1, o.minuter_utan_taxa > 0 ? 1 : 0, JSON.stringify(o));
+      if (o.minuter_utan_taxa > 0) {
+        assert.ok(blank(p).includes(`${hhmm(o.minuter_utan_taxa)} utan avtalsdel saknar taxa. Kronorna för den tiden kan inte härledas.`));
+      }
+      if (o.minuter > 0) {
+        assert.ok(blank(p).includes(hhmm(o.minuter)));
+        assert.ok(blank(p).includes(blank(kronor(o.oren).value).trim()));
+      }
+      assert.doesNotMatch(p, /<(?:a|form|button|input)\b/);
+    }
+  }
 }
