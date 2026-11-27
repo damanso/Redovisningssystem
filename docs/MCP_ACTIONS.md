@@ -1532,8 +1532,8 @@ sida utan formulär. Formuläret postar till
 
 - `las_leverabelregister` (read) — `contract_id`. Avtalets rader ur
   `uppdrag_leverabel`, sorterade på `kod`: `contract_id`, `kod`, `namn`, `klausul`,
-  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status` (FR-9) och
-  `dagar_i_laget` (FR-37).
+  `acceptanskriterium`, `uppfoljningsmatt`, `matt_lasvag`, `status` (FR-9),
+  `revision`, `mottagare` och `overlamnad` (FR-13, Story 4.1) och `dagar_i_laget` (FR-37).
   `namn` läses ur avtalsdelens första version med samma kod; är namnet koden
   blir det NULL. Senare baselinebeslut ändrar inte kontraktets namn (Story 2.4).
   Importen (S1.2) fyllde registret, men ingen ingång kunde läsa det.
@@ -1561,7 +1561,17 @@ sida utan formulär. Formuläret postar till
   utan historik är en gissning") — en lagrad kolumn hade varit ett andra ställe
   där samma sanning står, och den driftar ifrån historiken första gången en
   skrivväg glömmer den. Ett schemaprov vaktar att kolumnen inte smyger tillbaka.
-  Fältet följer med oförändrat till den frysta registerkopian och svepet.
+  Fältet hör till lästillfället och fryses inte i registerkopian (Story 3.3).
+
+- **Transmittalfälten (Story 4.1).** `revision` och `mottagare` läses ur leverabelns
+  senaste överlämning, den händelse som bär en revision. Returen och godkännandet
+  bär ingen revision och räknas inte som överlämningar. Alla tre transmittalfält
+  är NULL före första överlämningen. Mottagaren är transmittalens, aldrig avtalets
+  godkännare; avtalets mottagarpart läses genom kontraktsytans läsåtgärd.
+  `overlamnad` hämtas ur överlämningshandlingen och är NULL tills Story 4.2
+  registrerar handlingen. Bekräftelsens tid är aldrig överlämningsdatum.
+  Registerkopian fryser samma sju fält som förut. Vyns bräda och tabell visar
+  samma fält ur samma svar.
 
 ### Scopesignalen (S5.1, våg 3)
 

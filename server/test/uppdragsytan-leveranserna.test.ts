@@ -11,6 +11,8 @@
 // sökare som aldrig hittar något passerar varje jämförelse.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { LEVERABELFALT, faltvarde } from '../src/lib/leverabelfalt.js';
+import { LUCKTEXT } from '../src/lib/kontraktsluckor.js';
 import { LEVERABELLAGEN } from '../src/services/uppdragLage.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
@@ -230,15 +232,62 @@ describe('(b) brädan och tabellen', () => {
     const okant = await sida(`/app/c/${companyId}/projects/${projektId}/leveranserna?lage=kanban`);
     for (const html of [utan, okant]) {
       expect(html).toContain('Ingen leverabel står här');
-      expect(huvud(html)).not.toContain('Acceptanskriterium');
+      expect(huvud(html)).toContain('<div class="brada">');
+      expect(huvud(html)).not.toContain('<table');
       // Växeln: varje läge bär en synlig länk till det andra, som en ren
       // serverlänk — adressen ÄR läget.
       expect(html).toContain(`/projects/${projektId}/leveranserna?lage=tabell">Visa tabellen</a>`);
     }
     const t = await tabell();
     expect(huvud(t)).toContain('Acceptanskriterium');
+    expect(huvud(t)).toContain('<table');
+    expect(huvud(t)).not.toContain('<div class="brada">');
     expect(t).toContain(`/projects/${projektId}/leveranserna">Visa brädan</a>`);
     expect(huvud(t)).not.toContain('Ingen leverabel står här');
+  });
+});
+
+describe('Story 4.1: fältlistan och saknastexterna', () => {
+  const ifylld: Leverabelrad = {
+    contract_id: OKANT, kod: 'L9', namn: ' Namn & <text> ', status: 'pagar', klausul: '2.9',
+    acceptanskriterium: ' Godkänt resultat ', uppfoljningsmatt: 'Antal resultat', matt_lasvag: 'register',
+    revision: 3, mottagare: 'Eva', overlamnad: '2026-10-01', dagar_i_laget: 4,
+  };
+  it('4.1-F1 sluten lista med unika rubriker i kriteriets ordning', () => {
+    expect(LEVERABELFALT.map((f) => f.falt)).toEqual(['kod', 'namn', 'status', 'klausul', 'acceptanskriterium', 'uppfoljningsmatt', 'matt_lasvag', 'revision', 'mottagare', 'overlamnad', 'dagar_i_laget']);
+    const rubriker = LEVERABELFALT.map((f) => f.rubrik);
+    expect(rubriker).toEqual(['Id', 'Namn', 'Läge', 'Klausul', 'Acceptanskriterium', 'Uppföljningsmått', 'Måttets läsväg', 'Revision', 'Mottagare', 'Överlämnad', 'Ålder (dagar i läget)']);
+    expect(new Set(rubriker).size).toBe(rubriker.length);
+    const nio = ['Id', 'Namn', 'Läge', 'Klausul', 'Acceptanskriterium', 'Revision', 'Mottagare', 'Överlämnad', 'Ålder (dagar i läget)'];
+    expect(rubriker.filter((r) => nio.includes(r))).toEqual(nio);
+  });
+  it('4.1-F2 varje ifyllt värde lämnas ordagrant', () => {
+    for (const { falt } of LEVERABELFALT) expect(faltvarde(ifylld, falt)).toEqual({ lage: 'angivet', varde: ifylld[falt] });
+  });
+  it('4.1-F3 NULL och blankt ger exakt saknastext i varje gren', () => {
+    const texter: string[] = [];
+    for (const revision of [null, 1]) {
+      const fall = [
+        ['namn', LUCKTEXT.namn.vad], ['klausul', LUCKTEXT.klausul.vad],
+        ['acceptanskriterium', LUCKTEXT.acceptanskriterium.vad], ['uppfoljningsmatt', LUCKTEXT.uppfoljningsmatt.vad],
+        ['matt_lasvag', 'Läsväg saknas i kontraktet'],
+        ['mottagare', revision === null ? 'Mottagare saknas: ingen överlämning ännu' : 'Mottagare saknas i överlämningen'],
+        ['overlamnad', revision === null ? 'Överlämningsdatum saknas: ingen överlämning ännu' : 'Datum saknas: överlämningen bär inget datum ur handlingen'],
+      ] as const;
+      for (const [falt, text] of fall) {
+        texter.push(text);
+        expect(text).toMatch(/saknas/i);
+        for (const v of [null, '', '   ']) expect(faltvarde({ ...ifylld, revision, [falt]: v }, falt)).toEqual({ lage: 'saknas', text });
+      }
+    }
+    const revisionstext = 'Revision saknas: ingen överlämning ännu';
+    expect(revisionstext).toMatch(/saknas/i);
+    expect(faltvarde({ ...ifylld, revision: null }, 'revision')).toEqual({ lage: 'saknas', text: revisionstext });
+    texter.push(revisionstext);
+    for (const { falt } of LEVERABELFALT) {
+      expect(faltvarde(ifylld, falt).lage).toBe('angivet');
+      expect(texter).not.toContain(String(ifylld[falt]));
+    }
   });
 });
 
@@ -281,7 +330,7 @@ describe('(c) lägena bärs av färg, form och ord', () => {
     expect(l6.matt_lasvag, 'fixturen ska sakna L6:s läsväg').toBeNull();
 
     const main = huvud(await tabell());
-    for (const rubrik of ['Kod', 'Klausul', 'Acceptanskriterium', 'Uppföljningsmått', 'Måttets läsväg', 'Läge', 'Dagar i läget']) {
+    for (const { rubrik } of LEVERABELFALT) {
       expect(main, `kolumnen ${rubrik} saknas`).toContain(rubrik);
     }
     // Fälten står som tjänsten svarade dem.
@@ -289,7 +338,9 @@ describe('(c) lägena bärs av färg, form och ord', () => {
     expect(main).toContain('Antal överlämnade rutiner');
     expect(main).toContain('arenden');
     // …och luckan redovisas som en lucka.
-    expect(main).toContain('Ingen läsväg angavs');
+    const lasvag = faltvarde(l6, 'matt_lasvag');
+    expect(lasvag.lage).toBe('saknas');
+    if (lasvag.lage === 'saknas') expect(main).toContain(lasvag.text);
   });
 
   it('åldern renderas ur tjänstens dagar_i_laget i båda lägena', async () => {
@@ -473,5 +524,163 @@ describe('(f) handgreppen på kortet', () => {
     expect(res.headers.location).toContain(`/app/c/${companyId}/projects/${projektId}?fel=`);
     // Ingenting skrevs: leverabeln står kvar i sitt läge.
     expect((await register()).find((r) => r.kod === 'L3')!.status).toBe('levererad');
+  });
+});
+
+/** Historik riggas som ägaren; appens append-only-skrivväg förblir orörd. */
+async function riggaOverlamning(contractId: string, kod: string, h: {
+  fran: string; till: string; revision: number | null; mottagare: string | null; dagarBakat: number;
+}): Promise<void> {
+  await withAdmin((c) => c.query(
+    `INSERT INTO uppdrag_leverabel_handelse
+      (company_id, contract_id, leverabel_id, fran, till, revision, mottagare, bekraftat_av, bekraftat_nar, created_at)
+     SELECT l.company_id, l.contract_id, l.id, $3, $4, $5, $6, $7,
+       now() - make_interval(days => $8::int), now() - make_interval(days => $8::int)
+     FROM uppdrag_leverabel l WHERE l.company_id = $9 AND l.contract_id = $1 AND l.kod = $2`,
+    [contractId, kod, h.fran, h.till, h.revision, h.mottagare, user.userId, h.dagarBakat, companyId],
+  ));
+}
+
+
+describe('Story 4.1: brädan och tabellen visar samma fält', () => {
+  let projectId: string;
+  let contractId: string;
+  let rader: Leverabelrad[];
+  let bradmain: string;
+  let tabmain: string;
+  const adress = () => `/app/c/${companyId}/projects/${projectId}/leveranserna`;
+  const normalisera = (s: string) => s.replace(/\s+/g, ' ').trim();
+  function celltext(s: string): string {
+    const tecken: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" };
+    return normalisera(s.replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot|#39);/g, (v) => tecken[v]!));
+  }
+  function kort(main: string, kod: string): string {
+    const korten = main.split('<li class="leverabelkort">').slice(1).map((b) => b.slice(0, b.indexOf('</li>')));
+    const valda = korten.filter((b) => b.includes(`>${kod}</strong>`));
+    expect(valda).toHaveLength(1);
+    return valda[0]!;
+  }
+  function tabellrad(main: string, kod: string): string {
+    const tbody = main.match(/<tbody\b[^>]*>([\s\S]*?)<\/tbody>/)![1]!;
+    const valda = [...tbody.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) => m[1]!).filter((b) => b.includes(`>${kod}<`));
+    expect(valda).toHaveLength(1);
+    return valda[0]!;
+  }
+  const innehall = (s: string, tagg: string) => [...s.matchAll(new RegExp(`<${tagg}\\b[^>]*>([\\s\\S]*?)<\\/${tagg}>`, 'g'))].map((m) => m[1]!);
+  const kortpar = (main: string, kod: string) => {
+    const k = kort(main, kod);
+    const etiketter = innehall(k, 'dt');
+    return innehall(k, 'dd').map((v, i) => [celltext(etiketter[i]!), celltext(v)]);
+  };
+  const radpar = (main: string, kod: string) => {
+    const rubriker = innehall(main.match(/<thead\b[^>]*>([\s\S]*?)<\/thead>/)![1]!, 'th');
+    return innehall(tabellrad(main, kod), 'td').map((v, i) => [celltext(rubriker[i]!), celltext(v)]);
+  };
+  beforeAll(async () => {
+    projectId = (await ok('create_project', { name: '4.1 vyparitet', customer_id: customerId, hourly_rate_ore: 110_000 }) as { id: string }).id;
+    contractId = (await ok('skapa_uppdrag', { project_id: projectId, name: '4.1 vyparitet', signed_date: SIGNERAT }) as { contract_id: string }).contract_id;
+    await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    await withAdmin((c) => c.query("UPDATE contracts SET godkannare='Styrgruppen', godkannare_kalla='leveranskontraktet' WHERE company_id=$1 AND id=$2", [companyId, contractId]));
+    await riggaOverlamning(contractId, 'L2', { fran: 'pagar', till: 'levererad', revision: 1, mottagare: 'Styrgruppen', dagarBakat: 20 });
+    await riggaStatus(contractId, 'L2', 'levererad');
+    await riggaOverlamning(contractId, 'L4', { fran: 'pagar', till: 'levererad', revision: 1, mottagare: 'Styrgruppen', dagarBakat: 30 });
+    await riggaOverlamning(contractId, 'L4', { fran: 'levererad', till: 'avvisad', revision: null, mottagare: null, dagarBakat: 8 });
+    await riggaStatus(contractId, 'L4', 'avvisad');
+    rader = await ok('las_leverabelregister', { contract_id: contractId }) as Leverabelrad[];
+    bradmain = huvud(await sida(adress()));
+    tabmain = huvud(await sida(`${adress()}?lage=tabell`));
+  });
+
+  it('4.1-B1 varje kort och tabellrad har samma elva rubrik–textpar', () => {
+    expect(rader).toHaveLength(6);
+    expect(bradmain.split('<li class="leverabelkort">').length - 1).toBe(6);
+    expect(innehall(tabmain.match(/<tbody\b[^>]*>([\s\S]*?)<\/tbody>/)![1]!, 'tr')).toHaveLength(6);
+    for (const r of rader) {
+      const par = kortpar(bradmain, r.kod);
+      expect(par).toHaveLength(LEVERABELFALT.length);
+      expect(par.map((p) => p[0])).toEqual(LEVERABELFALT.map((f) => f.rubrik));
+      expect(radpar(tabmain, r.kod)).toEqual(par);
+    }
+  });
+
+  it('4.1-B2 varje cell är tjänstens värde genom fältlistan, med samma chip och ålder', () => {
+    for (const r of rader) {
+      expect(Object.keys(r).filter((f) => f !== 'contract_id').sort()).toEqual(LEVERABELFALT.map((f) => f.falt).sort());
+      const kortceller = innehall(kort(bradmain, r.kod), 'dd');
+      const radceller = innehall(tabellrad(tabmain, r.kod), 'td');
+      for (const celler of [kortceller, radceller]) {
+        expect(celler).toHaveLength(LEVERABELFALT.length);
+        for (const [i, { falt }] of LEVERABELFALT.entries()) {
+          const cell = celler[i]!;
+          const v = faltvarde(r, falt);
+          if (falt === 'status') expect(cell).toContain(chipMarkup(r.status));
+          else if (falt === 'dagar_i_laget') expect(celltext(cell)).toBe(r.dagar_i_laget === 0 ? 'Mindre än ett dygn i läget' : `${r.dagar_i_laget} ${r.dagar_i_laget === 1 ? 'dag' : 'dagar'} i läget`);
+          else expect(celltext(cell)).toBe(normalisera(v.lage === 'saknas' ? v.text : String(v.varde)));
+        }
+      }
+    }
+    for (const main of [bradmain, tabmain]) {
+      const par = main === bradmain ? kortpar : radpar;
+      expect(par(main, 'L2').find((p) => p[0] === 'Revision')?.[1]).toBe('1');
+      expect(par(main, 'L2').find((p) => p[0] === 'Mottagare')?.[1]).toBe('Styrgruppen');
+      for (const f of ['revision', 'mottagare', 'overlamnad'] as const) {
+        const v = faltvarde(rader.find((r) => r.kod === 'L1')!, f);
+        expect(v.lage).toBe('saknas');
+        if (v.lage === 'saknas') expect(par(main, 'L1').flat()).toContain(v.text);
+      }
+      const datum = faltvarde(rader.find((r) => r.kod === 'L2')!, 'overlamnad');
+      expect(datum.lage).toBe('saknas');
+      if (datum.lage === 'saknas') expect(par(main, 'L2').flat()).toContain(datum.text);
+      const lasvag = faltvarde(rader.find((r) => r.kod === 'L6')!, 'matt_lasvag');
+      expect(lasvag.lage).toBe('saknas');
+      if (lasvag.lage === 'saknas') expect(par(main, 'L6').flat()).toContain(lasvag.text);
+    }
+  });
+
+  it('4.1-B3 ingen tom cell och ingen gissad mottagare från kontraktet', () => {
+    for (const main of [bradmain, tabmain]) {
+      const mottagarpart = main.match(new RegExp(`id="mottagarpart-${contractId}"[^>]*>([\\s\\S]*?)<\\/p>`));
+      expect(mottagarpart?.[1]).toContain('Styrgruppen');
+      for (const r of rader) {
+        const celler = main === bradmain ? innehall(kort(main, r.kod), 'dd') : innehall(tabellrad(main, r.kod), 'td');
+        expect(celler).toHaveLength(LEVERABELFALT.length);
+        for (const cell of celler) expect(celltext(cell).length).toBeGreaterThan(0);
+      }
+      for (const kod of ['L1', 'L3']) {
+        const par = main === bradmain ? kortpar(main, kod) : radpar(main, kod);
+        const mottagare = par.find((p) => p[0] === 'Mottagare');
+        expect(mottagare).toBeDefined();
+        expect(mottagare![1]).not.toContain('Styrgruppen');
+      }
+    }
+  });
+
+  it('4.1-B4 brädan är default och tabellen har en tidig serverlänk för skärmläsare och utskrift', async () => {
+    for (const main of [bradmain, huvud(await sida(`${adress()}?lage=kanban`))]) {
+      const lank = main.indexOf('?lage=tabell">Visa tabellen</a>');
+      expect(lank).toBeGreaterThan(-1);
+      expect(main.indexOf('<div class="brada">')).toBeGreaterThan(lank);
+      expect(main).toContain('läses upp av skärmläsare och skrivs ut');
+    }
+    expect(tabmain).toContain('läses upp av skärmläsare och skrivs ut');
+    expect(tabmain).toContain('<table');
+  });
+
+  it('4.1-B5 regression: CSP förbjuder skript och båda lägena fungerar utan drag', async () => {
+    for (const suffix of ['', '?lage=tabell']) {
+      const res = await ua.get(`${adress()}${suffix}`);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.headers['content-security-policy']).toContain("script-src 'none'");
+      expect(huvud(res.text)).not.toMatch(/<script|draggable/);
+    }
+  });
+
+  it('4.1-B6 returens och överlämningens ålder är samma text i båda lägena', () => {
+    for (const [kod, dagar] of [['L4', 8], ['L2', 20]] as const) {
+      expect(rader.find((r) => r.kod === kod)!.dagar_i_laget).toBe(dagar);
+      for (const par of [kortpar(bradmain, kod), radpar(tabmain, kod)]) {
+        expect(par.find((p) => p[0] === 'Ålder (dagar i läget)')?.[1]).toBe(`${dagar} dagar i läget`);
+      }
+    }
   });
 });

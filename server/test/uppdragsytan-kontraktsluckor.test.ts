@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import supertest from 'supertest';
+import { LEVERABELFALT } from '../src/lib/leverabelfalt.js';
 import { ACTIONS, actionManifest } from '../src/actions/registry.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { bedomningsrytmlage } from '../src/lib/bedomningsrytm.js';
@@ -433,9 +434,7 @@ describe('Databas och produktväg' , () => {
     const a = await nyttAvtal('V1');
     await importeraOchGodkann(bolag, human(), { contract_id: a.contractId, kontraktstext: LUCKKONTRAKT });
     const tabell = await vy(a.projectId, 'leveranserna?lage=tabell');
-    expect(kolumnrubriker(tabell)).toEqual([
-      'Kod', 'Namn', 'Klausul', 'Acceptanskriterium', 'Uppföljningsmått', 'Måttets läsväg', 'Läge', 'Dagar i läget',
-    ]);
+    expect(kolumnrubriker(tabell)).toEqual(LEVERABELFALT.map((f) => f.rubrik));
     for (const l of luckor().filter((l) => l.kod)) {
       const start = tabell.indexOf(`>${l.kod}<`); expect(start).toBeGreaterThan(-1);
       expect(tabell.slice(start, tabell.indexOf('</tr>', start))).toContain(l.vad);
@@ -443,7 +442,8 @@ describe('Databas och produktväg' , () => {
     const brada = await vy(a.projectId, 'leveranserna');
     const kort = brada.slice(brada.indexOf('>L1<'), brada.indexOf('</li>', brada.indexOf('>L1<')));
     expect(kort).toContain(LUCKTEXT.namn.vad);
-    expect(brada).not.toContain('Acceptanskriterium');
+    expect(brada).not.toContain('<table');
+    for (const l of luckor().filter((l) => l.kod === 'L1')) expect(kort).toContain(l.vad);
     for (const main of [tabell, brada]) {
       const markor = `id="mottagarpart-${a.contractId}"`;
       expect(main.split(markor)).toHaveLength(2);

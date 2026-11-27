@@ -1,4 +1,4 @@
-import { LUCKTEXT, LUCKRUBRIK, mottagarpartlage, godkannandeformtext } from '../../lib/kontraktsluckor.js';
+import { LUCKRUBRIK, mottagarpartlage, godkannandeformtext } from '../../lib/kontraktsluckor.js';
 import { randomUUID } from 'node:crypto';
 import { Router, urlencoded, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -42,6 +42,7 @@ import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgora
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { listaReferenser, tillReferensvisning } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
+import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
@@ -4976,11 +4977,9 @@ viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läg
 //     `status`, åldern radens egen `dagar_i_laget` — vyn räknar ingenting och
 //     härleder ingenting. Två lägen som räknade var för sig hade kunnat säga
 //     emot varandra, och då vet ingen vilket som gäller.
-//  2. **Likvärdiga, inte huvudsak och sammanfattning.** Brädan svarar på "var
-//     står det?" med formen; tabellen bär ALLA fält och är den som läses upp och
-//     skrivs ut. Samma rader, samma koder, samma lägen — bara två sätt att se
-//     dem. En dold sr-only-tabell bakom brädan hade gjort skärmläsarens väg till
-//     en andrahandsversion; här är den en adress.
+//  2. Samma fält i båda lägena, ur LEVERABELFALT genom faltinnehall;
+//     tabellen är den som läses upp och skrivs ut. Skärmläsarens väg är en
+//     egen adress med hela registret.
 //  3. **Växeln är en serverlänk.** `?lage=tabell` är en adress man kan bokmärka,
 //     skicka vidare och skriva ut, och sidan är JS-fri i båda lägena. Utan
 //     parametern — eller med ett värde ingen känner igen — visas brädan: en
@@ -4997,9 +4996,9 @@ viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läg
 //     ägs av `bekrafta_statusbyte` (S3.2) och går genom kön där en människa
 //     läser transmittalen; ett drag i en kolumn hade varit en andra skrivväg
 //     förbi hela den ordningen.
-//  7. **Ingen ny klass.** `.panel`, `.chip`, `.table-wrap`, `.subnav`, `.empty`
-//     och `.code` bär ytan, och kolumnrutnätet ligger i en inline-stil — samma
-//     teknik som Lägets kortrutnät (S10.1).
+//  7. **Ingen ny klass.** Husets paneler, chip och tabellgrammatik bär ytan.
+//     Kortets definitionslista har inline-stil med kontraktsytans tokens och
+//     textstorlek, med tätare marginaler för brädans kolumner.
 // ---------------------------------------------------------------------------
 
 /** Ett avtal med sitt register — exakt tjänstens rader, i tjänstens ordning. */
@@ -5051,6 +5050,16 @@ function dagarILaget(dagar: number): string {
 /** Ett fält kontraktstexten inte angav. Redovisas som saknat, aldrig ifyllt. */
 const saknatFalt = (vad: string): Raw => html`<span class="muted">${vad}</span>`;
 
+/** Enda vägen från en registerrad till en cell i båda lägena (FR-39). */
+function faltinnehall(rad: Leverabelrad, falt: Leverabelfalt): Raw {
+  const v = faltvarde(rad, falt);
+  if (v.lage === 'saknas') return saknatFalt(v.text);
+  if (falt === 'kod') return html`<strong class="code">${v.varde}</strong>`;
+  if (falt === 'status') return statusChip(String(v.varde));
+  if (falt === 'dagar_i_laget') return html`${dagarILaget(Number(v.varde))}`;
+  return html`${String(v.varde)}`;
+}
+
 /**
  * Raderna PLACERADE i sina kolumner — aldrig ett urval.
  *
@@ -5081,12 +5090,9 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  */
 function leverabelkort(bas: string, contractId: string, r: Leverabelrad): Raw {
   return html`<li class="leverabelkort">
-    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
-      <strong class="code">${r.kod}</strong>${statusChip(r.status)}</div>
-    <div>${r.namn ?? saknatFalt(LUCKTEXT.namn.vad)}</div>
-    <div class="muted" style="font-size:12.5px;margin-top:3px">${
-      r.klausul === null ? LUCKTEXT.klausul.vad : html`Klausul ${r.klausul}`}</div>
-    <div class="muted" style="font-size:12.5px;margin-top:2px">${dagarILaget(r.dagar_i_laget)}</div>
+    <dl style="margin:0">${LEVERABELFALT.map(({ falt, rubrik }) => html`
+      <dt style="font-size:12.5px;color:var(--ink-3);margin-top:6px">${rubrik}</dt>
+      <dd style="margin:1px 0 0;overflow-wrap:anywhere">${faltinnehall(r, falt)}</dd>`)}</dl>
     ${leverabelhandgrepp(bas, contractId, r)}
   </li>`;
 }
@@ -5194,23 +5200,17 @@ function bradlage(bas: string, a: Leveransavtal): Raw {
  */
 function tabellage(a: Leveransavtal): Raw {
   return html`<div class="table-wrap" style="margin-top:14px"><table>
-      <thead><tr><th>Kod</th><th>Namn</th><th>Klausul</th><th>Acceptanskriterium</th><th>Uppföljningsmått</th>
-        <th>Måttets läsväg</th><th>Läge</th><th class="num">Dagar i läget</th></tr></thead>
-      ${/* NULL står som saknat i sin egen ruta — aldrig som ett tomt fält och
-            aldrig ifyllt med en gissning. L6 i NVR-001 saknar med flit sin
-            läsväg, och det ska SYNAS att avtalet inte angav någon. */ ''}
-      <tbody>${a.rader.map((r) => html`<tr>
-        <td class="code">${r.kod}</td>
-        <td>${r.namn ?? saknatFalt(LUCKTEXT.namn.vad)}</td>
-        <td class="code">${r.klausul ?? saknatFalt(LUCKTEXT.klausul.vad)}</td>
-        <td>${r.acceptanskriterium ?? saknatFalt(LUCKTEXT.acceptanskriterium.vad)}</td>
-        <td>${r.uppfoljningsmatt ?? saknatFalt(LUCKTEXT.uppfoljningsmatt.vad)}</td>
-        <td>${r.matt_lasvag ?? saknatFalt('Ingen läsväg angavs')}</td>
-        <td>${statusChip(r.status)}</td>
-        <td class="num">${String(r.dagar_i_laget)}</td></tr>`)}
+      <thead><tr>${LEVERABELFALT.map(({ rubrik }) => html`<th>${rubrik}</th>`)}</tr></thead>
+      ${/* Saknastexten kommer ur lib i båda lägena, aldrig en tom ruta. */ ''}
+      <tbody>${a.rader.map((r) => html`<tr>${LEVERABELFALT.map(({ falt }) =>
+        falt === 'dagar_i_laget'
+          ? html`<td class="num">${faltinnehall(r, falt)}</td>`
+          : html`<td>${faltinnehall(r, falt)}</td>`)}</tr>`)}
       </tbody></table></div>
-    <p class="muted" style="margin:8px 2px 14px;font-size:12.5px">Fälten är avtalets egna: de läses ur
-      leveranskontraktets text och skrivs aldrig här. Åldern räknas ur registrets historik och säger hur länge
+    <p class="muted" style="margin:8px 2px 14px;font-size:12.5px">Namn, klausul, acceptanskriterium,
+      uppföljningsmått och läsväg läses ur leveranskontraktet. Revision och mottagare läses ur den senaste
+      registrerade överlämningen och överlämningsdatumet ur överlämningshandlingen. Inget av fälten skrivs här,
+      och ett fält som saknas står som saknat. Åldern räknas ur registrets historik och säger hur länge
       leverabeln stått i sitt nuvarande läge — inte hur nära den är att bli klar.</p>`;
 }
 
@@ -5249,10 +5249,8 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean)
           <a href="${bas}/avtal">Läs in avtal</a> först.</div>`
       : html`<p class="muted" style="margin:0 0 4px;font-size:13px">${
           tabell
-            ? html`Tabellen bär hela registret: en rad per leverabel med varenda fält som lästes ur avtalet. Det är
-                den som läses upp och skrivs ut.`
-            : html`Brädan visar en kolumn per läge — där en leverabel står, står den. Tabellen bär samma rader med
-                alla fält.`}
+            ? html`Tabellen bär samma rader och samma fält som brädan, en rad per leverabel. Tabellen är den som läses upp av skärmläsare och skrivs ut.`
+            : html`Brädan visar en kolumn per läge — där en leverabel står, står den. Korten och tabellen bär samma fält. Tabellen är den som läses upp av skärmläsare och skrivs ut.`}
           ${/* Länktexten säger vart den går, inte "här": en länk ska gå att
                 förstå upplyst ur sin mening (WCAG 2.4.4). S10.9: raden sa
                 tidigare att statusen aldrig flyttas här. Det är inte längre

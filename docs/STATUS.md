@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — 4-1-bradan-och-tabellen-visar-samma-falt.**
+  Registret läser revision och mottagare ur senaste överlämningen med bolagsfilter.
+  Brädan och tabellen renderar samma elva fält ur en ren lista och cellrenderare,
+  med gemensamma saknastexter och samma härledda ålderstext. Ingen migration;
+  överlämningsdatumet står som saknat tills Story 4.2 ger det handlingens datum.
+  Femton nya fall R1–R5, F1–F3, B1–B6 och D1 samt fem föreskrivna gamla
+  påståenden ändrade. Typkontroll efter uppgift 1–4 och slutlig kontroll exit 0. Rött före kod
+  belagt med saknade fält (TS7053/TS2339) och modul (TS2307).
+  Databastester inte körda på fallnivå: samtliga rött/grönt-försök och fulla
+  regressioner hittills stoppas i globalSetup med `connect EPERM 127.0.0.1:5433`,
+  exit 1. Även steg 9:s fulla regression stoppades före fallen. DoD:s 26 punkter
+  prövade; berättelsen och sprintstatus står review med EPERM-undantaget.
+  Kedjan kör den exekverande grinden före granskningen. Inga gröna databasutfall påstås.
+  Inga RESTER hittades; inget nytt driftutfall verifierat. CRM:s intagskontrakt
+  berörs inte. Husets kort, statuschip, typografi och tokens bevaras; listan
+  följer kontraktsytans skala och radbryter i brädans smala kolumner. Befintliga
+  formulär och fokusordning, tomlägen och felvägar bevaras; inga klientladdningar
+  tillkommer i den serverrenderade ytan. Inga beroenden eller tjänster tillkom.
+
 - **2026-11-27 (Story 3.6, 3-6-kopians-kopost-bar-sin-frysta-version-och-kvitteras-bara-for-den):**
   Arbetslistan läser versionens frysta text och rader med version, hash och
   fil-id i en fråga. Svepet fryser öppna avtals äldre köposter utan version

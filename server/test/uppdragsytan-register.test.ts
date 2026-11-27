@@ -14,9 +14,11 @@
 //   * **Positiv kontroll (KRAV-5):** samma text med L6:s läsväg ifylld ska ge
 //     noll saknade. Utan den vore den negativa kontrollen bara ett prov på att
 //     något alltid fälls.
+import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { withTenantTransaction } from '../src/db/tx.js';
 import { ACTIONS } from '../src/actions/registry.js';
-import type { Leverabelrad } from '../src/services/uppdragRegister.js';
+import { lasLeverabelregister, type Leverabelrad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -150,7 +152,7 @@ describe('leverabelregistret för det importerade kontraktet', () => {
     for (const rad of rader) {
       expect(Object.keys(rad).sort()).toEqual([
         'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
-        'matt_lasvag', 'namn', 'status', 'uppfoljningsmatt',
+        'matt_lasvag', 'mottagare', 'namn', 'overlamnad', 'revision', 'status', 'uppfoljningsmatt',
       ]);
     }
   });
@@ -302,4 +304,117 @@ describe('KRAV-2: tomt är inte fel, okänt är 404', () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('not_found');
   });
+});
+
+
+/** Historik riggas som ägaren; appens append-only-skrivväg förblir orörd. */
+async function riggaOverlamning(contractId: string, kod: string, h: {
+  fran: string; till: string; revision: number | null; mottagare: string | null; dagarBakat: number;
+}): Promise<void> {
+  await withAdmin((c) => c.query(
+    `INSERT INTO uppdrag_leverabel_handelse
+      (company_id, contract_id, leverabel_id, fran, till, revision, mottagare, bekraftat_av, bekraftat_nar, created_at)
+     SELECT l.company_id, l.contract_id, l.id, $3, $4, $5, $6, $7,
+       now() - make_interval(days => $8::int), now() - make_interval(days => $8::int)
+     FROM uppdrag_leverabel l WHERE l.company_id = $9 AND l.contract_id = $1 AND l.kod = $2`,
+    [contractId, kod, h.fran, h.till, h.revision, h.mottagare, user.userId, h.dagarBakat, companyId],
+  ));
+}
+
+async function riggaStatus(contractId: string, kod: string, status: string): Promise<void> {
+  await withAdmin((c) => c.query(
+    'UPDATE uppdrag_leverabel SET status = $1 WHERE company_id = $2 AND contract_id = $3 AND kod = $4',
+    [status, companyId, contractId, kod],
+  ));
+}
+
+describe('Story 4.1: transmittalfälten i samma registerläsning', () => {
+  let contractId: string;
+  beforeAll(async () => {
+    contractId = await nyttAvtal('4.1 historik');
+    await importeraOchGodkann(companyId, auth(), { contract_id: contractId, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    for (const h of [
+      { fran: 'pagar', till: 'levererad', revision: 1, mottagare: 'Styrgruppen', dagarBakat: 30 },
+      { fran: 'levererad', till: 'avvisad', revision: null, mottagare: null, dagarBakat: 20 },
+      { fran: 'pagar', till: 'levererad', revision: 2, mottagare: 'Eva Larsson (VD)', dagarBakat: 10 },
+      { fran: 'levererad', till: 'godkand', revision: null, mottagare: 'Annan mottagare', dagarBakat: 5 },
+    ]) await riggaOverlamning(contractId, 'L2', h);
+    await riggaStatus(contractId, 'L2', 'godkand');
+    await riggaOverlamning(contractId, 'L4', { fran: 'pagar', till: 'levererad', revision: 1, mottagare: 'Styrgruppen', dagarBakat: 30 });
+    await riggaOverlamning(contractId, 'L4', { fran: 'levererad', till: 'avvisad', revision: null, mottagare: null, dagarBakat: 8 });
+    await riggaStatus(contractId, 'L4', 'avvisad');
+  });
+
+  it('4.1-R1 varje importerad rad har tre egna nullbara transmittalfält', async () => {
+    const id = await nyttAvtal('4.1 utan överlämning');
+    await importeraOchGodkann(companyId, auth(), { contract_id: id, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    const rader = await las(id);
+    expect(rader).toHaveLength(6);
+    for (const r of rader) for (const f of ['revision', 'mottagare', 'overlamnad'] as const) {
+      expect(Object.hasOwn(r, f), `${r.kod}: ${f}`).toBe(true);
+      expect(r[f]).toBeNull();
+    }
+  });
+
+  it('4.1-R2 senaste överlämningen överlever retur och godkännande; åldern följer senaste händelsen', async () => {
+    const rader = await las(contractId);
+    expect(rader.find((r) => r.kod === 'L2')).toMatchObject({ revision: 2, mottagare: 'Eva Larsson (VD)', overlamnad: null, dagar_i_laget: 5 });
+    expect(rader.find((r) => r.kod === 'L4')).toMatchObject({ revision: 1, mottagare: 'Styrgruppen', dagar_i_laget: 8 });
+    expect(rader.find((r) => r.kod === 'L1')).toMatchObject({ revision: null, mottagare: null, overlamnad: null, dagar_i_laget: 0 });
+  });
+
+  it('4.1-R3 bekräftelsens tid blir aldrig överlämningsdatum', async () => {
+    await withAdmin(async (c) => {
+      const h = (await c.query('SELECT bekraftat_nar, created_at FROM uppdrag_leverabel_handelse WHERE company_id=$1 AND contract_id=$2 AND revision=2', [companyId, contractId])).rows;
+      expect(h).toHaveLength(1);
+      expect(h[0].bekraftat_nar).not.toBeNull();
+      expect(h[0].created_at).not.toBeNull();
+    });
+    for (const r of await las(contractId)) expect(r.overlamnad).toBeNull();
+  });
+
+  it('4.1-R4 tjänsten, människan och agentens MCP-manifest ger samma register', async () => {
+    const tok = await api.post(`${co()}/agent-tokens`).set(auth()).send({ name: 'Registerläsaren' });
+    expect(tok.status, JSON.stringify(tok.body)).toBe(201);
+    const agent = await api.post(`${co()}/actions/las_leverabelregister`).set({ Authorization: `Bearer ${tok.body.token}` }).send({ contract_id: contractId });
+    expect(agent.status, JSON.stringify(agent.body)).toBe(200);
+    const direkt = await withTenantTransaction(user.userId, companyId, (c) => lasLeverabelregister(c, companyId, { contract_id: contractId }));
+    expect(agent.body.result).toEqual(direkt);
+    expect(await las(contractId)).toEqual(direkt);
+    const l2 = direkt.find((r) => r.kod === 'L2')!;
+    for (const f of ['revision', 'mottagare', 'overlamnad']) expect(Object.hasOwn(l2, f)).toBe(true);
+    const manifest = await api.get(`${co()}/actions`).set(auth());
+    expect(manifest.status, JSON.stringify(manifest.body)).toBe(200);
+    expect(manifest.body.actions).toContainEqual(expect.objectContaining({ name: 'las_leverabelregister', requires_approval: false }));
+  });
+
+  it('4.1-R5 regression: den frysta registerkopian behåller sina sju fält', async () => {
+    const id = await nyttAvtal('4.1 frysta fält');
+    await importeraOchGodkann(companyId, auth(), { contract_id: id, kontraktstext: LEVERANSKONTRAKT_NVR001 });
+    await ok('paborja_leverabel', { contract_id: id, leverabel_kod: 'L1' });
+    await withAdmin(async (c) => {
+      const v = (await c.query('SELECT rader FROM uppdrag_registerkopia WHERE company_id=$1 AND contract_id=$2 ORDER BY registerversion DESC LIMIT 1', [companyId, id])).rows[0]!;
+      expect(v.rader).toHaveLength(6);
+      expect(v.rader.find((r: { kod: string }) => r.kod === 'L1').status).toBe('pagar');
+      for (const r of v.rader) expect(Object.keys(r).sort()).toEqual(['acceptanskriterium', 'klausul', 'kod', 'matt_lasvag', 'namn', 'status', 'uppfoljningsmatt']);
+    });
+  });
+});
+
+
+it('4.1-D1 transmittalfälten dokumenteras utan falskt fryst ålder eller nya åtgärdsnamn', async () => {
+  const doc = await readFile(new URL('../../docs/MCP_ACTIONS.md', import.meta.url), 'utf8');
+  const start = doc.indexOf('### Leverabelregistret läses (S3.1, våg 3)');
+  expect(start).toBeGreaterThan(-1);
+  const avsnitt = doc.slice(start).split(/\n#{2,3} /)[0]!;
+  const punkt = avsnitt.match(/(?:^|\n)- \*\*Transmittalfälten \(Story 4\.1\)\.\*\*[\s\S]*?(?=\n- |$)/)?.[0];
+  const normalisera = (s: string) => s.replace(/\s+/g, ' ');
+  const ensammaNamn = (s: string) => [...s.matchAll(/`([^`]+)`/g)].map((m) => m[1]!).filter((v) => /^[a-z_]+$/.test(v) && v.includes('_'));
+  const gammalMening = 'följer med oförändrat till den frysta registerkopian';
+  expect(ensammaNamn('- **Transmittalfälten (Story 4.1).** `planterat_namn`')).toEqual(['planterat_namn']);
+  expect(normalisera('Fältet följer med oförändrat till den frysta\n registerkopian och svepet.')).toContain(gammalMening);
+  expect(punkt).toBeDefined();
+  for (const f of ['revision', 'mottagare', 'overlamnad']) expect(avsnitt).toContain(f);
+  expect(normalisera(avsnitt)).not.toContain(gammalMening);
+  expect(ensammaNamn(punkt!)).toEqual([]);
 });
