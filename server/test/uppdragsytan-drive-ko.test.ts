@@ -21,7 +21,7 @@ import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
 import { withTenantTransaction } from '../src/db/tx.js';
-import type { Leverabelrad } from '../src/services/uppdragRegister.js';
+import type { Registerkopierad } from '../src/services/uppdragRegister.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { importeraOchGodkann, sattBaselineDirekt } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
@@ -90,7 +90,7 @@ interface Kopost {
   extern_id: string;
   ko_status: string;
   ko_fel: string | null;
-  innehall: Leverabelrad[];
+  innehall: Registerkopierad[];
 }
 
 /** Den öppna kön, filtrerad till ETT uppdrag (bolaget har flera i provet). */
@@ -303,8 +303,8 @@ describe('KRAV-3: hämtningen', () => {
     expect(post.referens_id).toBe((await kopian(contractId)).id);
     expect(post.ko_status).toBe('koad');
     expect(post.ko_fel).toBeNull();
-    // Innehållet HÄRLEDS vid hämtningen ur leverabelregistret — det lagras
-    // aldrig i kön, för en lagrad kopia kan vara gammal redan när den hämtas.
+    // Innehållet är versionens frysta rader (Story 3.6), oberoende av
+    // hur leverabelregistret ser ut när arbetslistan hämtas.
     expect(post.innehall.map((r) => r.kod)).toEqual(['L1', 'L2', 'L3', 'L4', 'L5', 'L6']);
     expect(post.innehall[0]).toMatchObject({
       kod: 'L1', klausul: '2.1', uppfoljningsmatt: 'Antal kartlagda flöden', matt_lasvag: 'arenden',

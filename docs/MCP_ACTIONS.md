@@ -1709,35 +1709,50 @@ annars föds den overifierad. Saknas filen används platshållaren
 `ko_status = 'ersatt'`. Rullas ändringen tillbaka finns varken versionen eller
 köposten kvar.
 
-- **`hamta_drive_ko` (read)** — inga fält. Bolagets öppna kö, äldst först: per
-  post `referens_id`, `contract_id`, `extern_id`, `ko_status`, `ko_fel` och
-  `innehall` (registerraderna, **härledda vid hämtningen** ur
-  `las_leverabelregister` — kopian är ett derivat och lagras aldrig i kön).
-  **`fel`-poster ingår med flit:** det är det som gör att kön töms automatiskt
-  när Drive svarar igen. Repot provar aldrig om av sig självt — ingen scheduler,
-  ingen backoff, ingen försöksräknare; nästa svep hämtar posten på nytt.
-- **`rapportera_drive_kopia` (write)** — `referens_id` + `utfall`, en
-  diskriminerad union på `lage`:
+- **`hamta_drive_ko` (read)** — inga fält. Bolagets öppna kö, avtal för avtal
+  i stigande registerversion. Per post: `referens_id`, `contract_id`, `extern_id`,
+  `ko_status`, `ko_fel`, `forsok`, registerkopia_id, `registerversion`,
+  `registerhash`, `registertext` (versionens frysta text) och `innehall`
+  (versionens frysta rader). Innehållet läses ur den lagrade versionen och
+  renderas aldrig om vid hämtningen. En köpost utan version delas aldrig ut;
+  svepet fryser en version för ett öppet avtal med en sådan köpost och ersätter
+  den gamla. **`fel`-poster ingår med flit:** nästa svep hämtar dem igen.
+  Försöksräknaren räknas upp per mottaget utfall och har inget tak.
+- **`rapportera_drive_kopia` (write)** — `referens_id` + `utfall`, med valfria
+  `registerversion` och `registerhash`. Skickas ett av dem måste båda finnas
+  (`400 kvittens_ofullstandig`), och båda måste stämma med köposten
+  (`409 kvittens_annan_version`). Uppslaget av en okänd referens ger först
+  404 `not_found`. Utfallet är en diskriminerad union på `lage`:
   - `{ lage: 'skriven', drive_id }` → `ko_status = 'skriven'`, `extern_id` blir
-    Drive-id:t, `ko_fel` nollställs. Id:t prövas med **samma spärr som varje
-    annan referens**: aldrig en url, aldrig en sökväg (400 `validation_error`) —
-    en delningslänk hade slutat fungera nästa gång filen delades om.
-    Drive-formen är bokstäver, siffror, `_` och `-`. Ett känt utanför-utfall
-    i samma avtal ger 409 `utanfor_sparr`. Samma prövning gäller svepets
-    `drive_kopior`: ett fel fäller hela svepet, utan att stänga kön.
-  - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med källsystemets egna ord i
-    `ko_fel`. Posten står kvar i hämtningen.
-  - **En rapport mot en rad utan öppen köpost fälls:** 409 `ingen_oppen_kopost`
-    (`ko_status` NULL eller redan `skriven`), 404 `not_found` för en okänd
-    referens. Det finns ingen tyst övergång — en rapport om något ingen bett om
-    är antingen ett svep på gammal data eller ett fel i anroparen.
+    Drive-id:t, `ko_fel` nollställs och försöksräknaren räknas upp med ett.
+    Avtalets andra oskrivna köposter med lägre version eller utan version blir
+    `ersatt`; deras feltext och frysta innehåll står kvar. Högre versioner och
+    redan skrivna poster ändras aldrig. En kvitterad köpost utan version
+    ersätter bara andra köposter utan version.
+    Id:t prövas med **samma spärr som varje annan referens**: aldrig en url,
+    aldrig en sökväg (400 `validation_error`). Drive-formen är bokstäver,
+    siffror, `_` och `-`. Ett känt utanför-utfall i samma avtal ger
+    409 `utanfor_sparr`, och ett id som en vanlig referens redan har ger
+    `409 referens_finns_redan`. Samma prövning gäller svepets `drive_kopior`:
+    ett fel fäller hela svepet, utan att stänga kön.
+  - `{ lage: 'fel', fel }` → `ko_status = 'fel'` med senaste felets egna ord i
+    `ko_fel` och försöksräknaren ökad med ett. Posten står kvar i hämtningen.
+  - **Idempotens:** upprepad `skriven` med samma Drive-id ger 200 utan ändring,
+    om version och hash stämmer när de skickas. Båda utfallen mot en `ersatt`
+    köpost ger 200 utan ändring, också med annan version och hash.
+  - **409 `ingen_oppen_kopost`** gäller en rad utan köpost (`ko_status` NULL),
+    `fel` mot en skriven post och `skriven` med ett annat Drive-id mot en
+    skriven post. Version och hash prövas under avtalslåset före det skrivna
+    läget; en felaktig versionskvittens ger därför versionsfelet först.
 
 **Vyn:** projektsidan, Läget och undantagsvyn visar aldrig köstatus, köfel
 eller Drive-fel. Ett tekniskt fel blir en driftpost på Hermes driftyta enligt
 B-10. Uppdragsytan visar registrets gällande databaspost och referensens
 verifieringsläge; en oskriven kopia framställs aldrig som färdig.
 
-- **Versionsbunden kopia (Story 3.3).** Migration 0098 skapar tabellen uppdrag_registerkopia som FRYST HISTORIK, append-only med RLS och avslutsspärr. Varje registerversion har fryst text, rader och registerhash; köpostens registerkopia_id och hash binds med en sammansatt främmande nyckel. En gammal öppen köpost utan version blir ersatt, och en kvittens mot en ersatt post ger 200 utan ändring. Referenslistorna visar bara den senaste kopieposten per avtal. Verifieringens skrivväg håller oskrivna kopior overifierade även vid inskickade observationer för ett ärvt fil-id. En spärrdom gäller filidentiteten över versionerna; senaste spärrade kopian med verkligt fil-id finns i verifieringslistan så att en uttryckligt verifierad återflytt kan häva även äldre raders spärr. Återflytten färdigställer ingen oskriven version. Båda kvittensutfallen tar avtalslåset före tillståndsläsningen, så en väntande kvittens aldrig skriver över ersatt. Varje skrivning av ett Drive-id tar avtalslåset; en kvittens med ett id som en vanlig Drive-referens i avtalet redan har ger `409 referens_finns_redan`. Köstatus visas på Hermes driftyta och aldrig på projektsidan. Arbetslistan och den versionsbundna kvittensen kommer i Story 3.6; tills dess härleder hämtningen innehållet som förut och räknar inga försök.
+- **Versionsbunden kopia (Story 3.3).** Migration 0098 skapar tabellen uppdrag_registerkopia som FRYST HISTORIK, append-only med RLS och avslutsspärr. Varje registerversion har fryst text, rader och registerhash; köpostens registerkopia_id och hash binds med en sammansatt främmande nyckel. En gammal öppen köpost utan version blir ersatt, och en kvittens mot en ersatt post ger 200 utan ändring. Referenslistorna visar bara den senaste kopieposten per avtal. Verifieringens skrivväg håller oskrivna kopior overifierade även vid inskickade observationer för ett ärvt fil-id. En spärrdom gäller filidentiteten över versionerna; senaste spärrade kopian med verkligt fil-id finns i verifieringslistan så att en uttryckligt verifierad återflytt kan häva även äldre raders spärr. Återflytten färdigställer ingen oskriven version. Båda kvittensutfallen tar avtalslåset före tillståndsläsningen, så en väntande kvittens aldrig skriver över ersatt. Varje skrivning av ett Drive-id tar avtalslåset; en kvittens med ett id som en vanlig Drive-referens i avtalet redan har ger `409 referens_finns_redan`. Köstatus visas på Hermes driftyta och aldrig på projektsidan. Arbetslistan och den versionsbundna kvittensen beskrivs i punkten för Story 3.6 nedan.
+
+- **Arbetslistan och kvittensen (Story 3.6).** Arbetslistans `registertext` och rader läses ur den frysta versionen, med hash, version och fil-id. `forsok` räknar mottagna utfall utan tak; senaste felet står kvar till en lyckad skrivning. Kvittensen kan bära version och hash och gäller bara sin köpost. Äldre oskrivna köposter blir `ersatt` när en senare version kvitteras, medan innehållet står kvar. Upprepad kvittens med samma fil-id ändrar ingenting. Story 3.4 börjar skicka version och hash; tills dess godtas båda utelämnade för Hermes i drift.
 
 ### Svepet (S7.3, våg 3)
 

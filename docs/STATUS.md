@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 (Story 3.6, 3-6-kopians-kopost-bar-sin-frysta-version-och-kvitteras-bara-for-den):**
+  Arbetslistan läser versionens frysta text och rader med version, hash och
+  fil-id i en fråga. Svepet fryser öppna avtals äldre köposter utan version
+  under avtalslåset. Kvittensen prövar version/hash, är idempotent, ersätter
+  bara äldre oskrivna poster och räknar mottagna försök utan tak. Ingen
+  migration, vy, rutt eller nytt beroende. H1–H4, H7, H9, Q1–Q8 och D3 tillagda
+  i 3.3:s provfil; drive-ko-provets typ och kommentar följer frysta rader.
+  Typkontroller för uppgift 1–4 passerade (exit 0). Databastester **inte körda**:
+  varje försökt röd/grön körning stoppades i globalSetup med
+  `connect EPERM 127.0.0.1:5433`. Körning 4:s hela svit stoppades likadant;
+  steg 9:s omkörning stoppades också före fallen. Inga gröna databastestutfall
+  påstås. DoD prövad punktvis, berättelsen står review med miljöundantaget;
+  kedjan kör den exekverande grinden.
+  Inga RESTER-träffar vid ingången. Driftproven körs av kedjan efter leverans;
+  inga nya driftutfall är verifierade här. MCP_ACTIONS beskriver kontraktet;
+  CRM-kontraktet berörs inte. Befintligt formspråk behålls eftersom berättelsen
+  uttryckligen förbjuder nya användarytor och teknisk köstatus för David.
+
 - **2026-11-27 — Omtag: 3-3-registerkopian-ar-versionsbunden-har-fryst-underlag-och-syns-aldrig-som-kostatus-for-david.**
   Fyra AI-granskningspunkter rättade som tre felklasser: verifieringens
   skrivväg håller oskrivna kopior overifierade, spärrdomen följer fil-id:t
