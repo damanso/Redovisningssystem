@@ -15,8 +15,8 @@ import {
 } from './uppdragBedomning.js';
 import { forbrukningsandringar, sammanfattaAndringar, type Andringsunderlag } from '../lib/bedomningsbegaran.js';
 import { bedomningsperiod, type Bedomningsperiod, type Bedomningsrytm } from '../lib/bedomningsrytm.js';
-import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag } from '../lib/beslutsunderlag.js';
-import { OVRIGT_SCHEMA, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
+import { DAVIDS_ANTECKNING, andratSedanForslaget, tidtext, type Andringsjamforelse, type OvrigtUnderlag, type Bindningsunderlag } from '../lib/beslutsunderlag.js';
+import { OVRIGT_SCHEMA, BindaKostnadSchema, orsaksmening, versionsorsak, type Ovrigtatgard } from '../lib/avtalsdelsfalt.js';
 import { visaDatum, type Datumprecision } from '../lib/uppdragsplan.js';
 import { getContractUsage, type Delforbrukning } from './contracts.js';
 
@@ -399,6 +399,7 @@ export function beskrivBaselineandring(
 }
 
 interface Kostnadsunderlag extends Kounderlag {
+  forslagsunderlag?: Bindningsunderlag;
   del: { code: string; name: string };
   kvitto?: { total_ore: number; nuvarande_del: string | null };
   sammanfattning: string | null;
@@ -406,6 +407,19 @@ interface Kostnadsunderlag extends Kounderlag {
 }
 /** Ren: cacheradens ursprung bevaras vid skälet och dess referens. */
 export function beskrivKostnadsbindning(u: Kostnadsunderlag, bas: string, lastNar: string): Undantagspost {
+  const f = u.forslagsunderlag;
+  if (f) {
+    const kallsidor: Kallreferens[] = f.kallor.flatMap((k): Kallreferens[] => k.typ === 'referens'
+      ? (u.referenser ?? []).filter((r) => r.typ === 'referens' && r.referens_id.toLowerCase() === k.id.toLowerCase())
+      : [{ typ: 'yta', etikett: k.typ === 'kvitto' ? 'Kvittot' : k.typ === 'verifikat' ? 'Verifikatet' : 'Tidigare bindning', sokvag: `${bas}/receipts` }]);
+    return { ...kopostbas(u, 'kostnadsbindning', lastNar),
+      val: { kod: 'ja_nej', text: 'Godkänn bindningen, eller säg nej med skäl.' },
+      varfor_mandat: 'Bindningen avgör vilken del av avtalet kostnaden belastar. Den kräver ditt godkännande, oavsett belopp.',
+      forslag: u.kvitto ? last({ fran: u.kvitto.nuvarande_del ?? 'obunden', till: `${u.del.code} · ${u.del.name}`, belopp_ore: u.kvitto.total_ore }, KALLA_REDOVISNING, lastNar) : saknas(KALLA_REDOVISNING, lastNar),
+      skal: last(f.skal.map((s) => s.text).join(' '), KALLA_REDOVISNING, f.last_nar),
+      kallor: kallor(kallsidor, f.last_nar, KALLA_REDOVISNING),
+      ja_registrerar: `Kvittot binds till ${u.del.code}. Beloppet läses ur redovisningen och kopieras inte. ${f.oplanerad ? 'Kostnaden märks Oplanerad, eftersom avtalets plan inte har den. ' : ''}${BESLUTSRADEN}` };
+  }
   const cacheKod = text(eget(u.cache?.varde, 'leverabel_kod'));
   const cacheForslag = text(eget(u.cache?.varde, 'forslag_kod'));
   const cacheDatum = text(eget(u.cache?.varde, 'datum'));
@@ -695,6 +709,12 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
       poster.push(beskrivBaselineandring({ ...underlag, forklaring, mal, giltigFran,
         referenser: await referens(client, companyId, signal?.underlag_ref_id) }, bas, lastNar));
     } else if (slag === 'kostnadsbindning') {
+      const prov = BindaKostnadSchema.safeParse(q.input);
+      if (!prov.success) {
+        hoppade.push({ id: q.id, identitet: 'kopost', atgard: q.action, orsak: 'underlag_ogiltigt' });
+        continue;
+      }
+      const f = prov.data.forslagsunderlag;
       const receiptId = uuid(eget(q.input, 'receipt_id'));
       const kvitto = receiptId ? (await client.query<{ total_ore: number; nuvarande_del: string | null }>(
         `SELECT r.total_ore, CASE WHEN cp.id IS NULL THEN NULL ELSE cp.code || ' · ' || cp.name END AS nuvarande_del
@@ -706,8 +726,13 @@ export async function koburnaPoster(client: PoolClient, companyId: string, kopos
         [companyId, r.contract_id, `kostnadsforslag:${receiptId}`],
       )).rows[0] : undefined;
       const sammanfattning = receiptId ? await describeApproval(client, companyId, { receipt_id: receiptId }) : null;
+      const referenser: Kallreferens[] = [];
+      if (f) {
+        for (const k of f.kallor) if (k.typ === 'referens') referenser.push(...await referens(client, companyId, k.id));
+      } else referenser.push(...await referens(client, companyId, eget(cache?.varde, 'referens_id')));
       poster.push(beskrivKostnadsbindning({ ...underlag, kvitto, cache, sammanfattning,
-        del: { code: r.del_code!, name: r.del_name! }, referenser: await referens(client, companyId, eget(cache?.varde, 'referens_id')) }, bas, lastNar));
+        ...(f ? { forslagsunderlag: f } : {}),
+        del: { code: r.del_code!, name: r.del_name! }, referenser }, bas, lastNar));
     } else {
       const leverabler = await client.query<{ contract_name: string; code: string }>(
         `SELECT c.name AS contract_name,l.kod AS code FROM uppdrag_leverabel l

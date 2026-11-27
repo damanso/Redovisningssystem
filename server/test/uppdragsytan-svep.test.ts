@@ -537,7 +537,7 @@ describe('KRAV-5/6: statusförslaget och kostnadsförslaget', () => {
     const rader = await cache();
     // 2026-11-20 ligger i S2 (2026-10 – 2027-02).
     expect(varde(rader, `kostnadsforslag:${kvittoS2}`)).toMatchObject({
-      receipt_id: kvittoS2, datum: '2026-11-20', leverantor: 'Axis Communications AB',
+      receipt_id: kvittoS2, datum: '2026-11-20',
       leverabel_kod: 'L3', forslag_kod: 'S2', forslag_part_id: delS2,
     });
     // 2026-03-05 ligger utanför varje ström → rotdelen, aldrig en leverabel.
@@ -549,7 +549,8 @@ describe('KRAV-5/6: statusförslaget och kostnadsförslaget', () => {
     expect(varde(rader, `kostnadsforslag:${kvittoS1}`)).toMatchObject({
       datum: '2026-10-15', forslag_kod: 'S1', forslag_part_id: delS1,
     });
-    expect(varde(rader, `kostnadsforslag:${kvittoS2}`).belopp_ore).toBe(500000);
+    expect(varde(rader, `kostnadsforslag:${kvittoS2}`)).not.toHaveProperty('belopp_ore');
+    expect(varde(rader, `kostnadsforslag:${kvittoS2}`)).not.toHaveProperty('leverantor');
   });
 
   it('bara bokförda, obundna kvitton med matchande leverantör får förslag', async () => {

@@ -6,8 +6,19 @@
 // REN fil: ingen databas och ingen klocka.
 import { z } from 'zod';
 import { IsoDateSchema, OreSchema, UuidSchema, safeText } from './validation.js';
-import { OvrigtUnderlagSchema } from './beslutsunderlag.js';
+import { OvrigtUnderlagSchema, KostnadsunderlagSchema } from './beslutsunderlag.js';
 import { LEVERABELKOD } from './leveranskontrakt.js';
+
+/** Samma schema i registret, svepets köning och undantagsvyns läsväg. */
+export const BindaKostnadSchema = z.object({
+  receipt_id: UuidSchema, contract_part_id: UuidSchema,
+  forslagsunderlag: KostnadsunderlagSchema.optional(),
+}).strict().superRefine((i, ctx) => {
+  const u = i.forslagsunderlag;
+  if (u && (u.receipt_id.toLowerCase() !== i.receipt_id.toLowerCase() || u.mal.part_id.toLowerCase() !== i.contract_part_id.toLowerCase())) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['forslagsunderlag'], message: 'underlaget gäller samma kvitto och avtalsdel som bindningen' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Avtalsdelens fält — delade av `upsert_contract_part` och `andra_baseline`

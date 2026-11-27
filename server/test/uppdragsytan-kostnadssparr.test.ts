@@ -3,6 +3,7 @@
 // Rena regler och verklig REST/tenant/SQL/HTML provas tillsammans.
 import { describe, it } from 'vitest';
 import * as h from './kostnadssparrHelper.js';
+import { forslagFor, kvitto as rentKvitto, tid as renTid } from './kostnadsforslagHelper.js';
 import supertest from 'supertest';
 import { beforeAll, expect } from 'vitest';
 import { withTenantTransaction } from '../src/db/tx.js';
@@ -177,22 +178,25 @@ beforeAll(async () => {
 describe('K1 svepet köar alla nivåer med agentens aktör', () => {
   it('a–f exakta köposter och audit, inga kvittoskrivningar', async () => {
     const u = await svep(sparr, sparrData);
-    expect(Object.keys(u.bindningar).sort()).toEqual(['automatiska', 'koade', 'redan_koade']);
-    expect(u.bindningar.automatiska).toEqual([]); expect(u.bindningar.redan_koade).toEqual([]);
+    expect(Object.keys(u.bindningar).sort()).toEqual(['automatiska', 'avvisade', 'koade', 'redan_koade']);
+    expect(u.bindningar.automatiska).toEqual([]);
+    expect(u.bindningar.avvisade).toEqual([]); expect(u.bindningar.redan_koade).toEqual([]);
     expect(u.bindningar.koade).toHaveLength(3);
     for (const m of sparrMal.values()) {
       const q = await koposter(sparr, m.receipt); expect(q).toHaveLength(1);
       m.approval = q[0]!.id;
       expect(q[0]).toMatchObject({ status: 'pending', requested_actor: 'agent', requested_by: sparr.user.userId });
-      expect(q[0]!.input).toEqual({ receipt_id: m.receipt, contract_part_id: m.del });
-      expect(u.bindningar.koade).toContainEqual({ receipt_id: m.receipt, contract_part_id: m.del, approval_id: m.approval });
+      expect(q[0]!.input).toEqual({ receipt_id: m.receipt, contract_part_id: m.del, forslagsunderlag: expect.objectContaining({ mal: expect.objectContaining({ part_id: m.del }) }) });
+      expect(u.bindningar.koade).toContainEqual({ receipt_id: m.receipt, contract_part_id: m.del, approval_id: m.approval, forslag_hash: (q[0]!.input.forslagsunderlag as { forslag_hash: string }).forslag_hash });
     }
     expect(await audit(sparr, 'receipt.contract_part_assigned')).toEqual([]);
     for (const r of (await kvitton(sparr)).values()) expect(r).toMatchObject({ contract_part_id: null, oplanerad: false });
     const log = (await audit(sparr, 'action.approval_requested')).filter((r) => r.details.action === 'binda_kostnad');
     expect(log).toHaveLength(3);
-    for (const m of sparrMal.values()) expect(log).toContainEqual({ entity_id: m.approval,
-      details: { action: 'binda_kostnad', actor: 'agent', receipt_id: m.receipt, leverabel_kod: m.leverabel } });
+    for (const m of sparrMal.values()) {
+      const underlag = (await koposter(sparr, m.receipt))[0]!.input.forslagsunderlag as { forslag_hash: string };
+      expect(log).toContainEqual({ entity_id: m.approval, details: { action: 'binda_kostnad', actor: 'agent', receipt_id: m.receipt, leverabel_kod: m.kod === 'L3' ? 'L3' : null, forslag_hash: underlag.forslag_hash } });
+    }
     expect(u.bindningar.koade.map((r) => r.receipt_id)).not.toContain(allmant);
   });
 });
@@ -211,7 +215,8 @@ describe('K2 endast ett mänskligt ja binder', () => {
     }
   });
   it('b–f REST köar, direkt handler och agentens ja fälls, människans ja verkställs', async () => {
-    const rest = await bokatKvitto(sparr, '2026-11-21', kontor, 'REST-kontroll');
+    const restSupplier = (await ok(sparr, 'create_supplier', { name: 'REST-leverantören' })).id as string;
+    const rest = await bokatKvitto(sparr, '2026-11-21', restSupplier, 'REST-kontroll');
     const del = sparrMal.get(teliaSen)!.del;
     const input = { receipt_id: rest, contract_part_id: del };
     let qid = '';
@@ -270,10 +275,10 @@ describe('K3 alla statusar och versaler är idempotenta', () => {
       if (i === 6) korda.versaler++; else korda.status++;
     }
     const r = await withTenantTransaction(idempotens.user.userId, idempotens.id, (c) => bindSvepetsForslag(
-      c, idempotens.id, idempotens.user.userId, ids.map((receipt_id) => ({ receipt_id, datum: '2026-11-20', leverabel_kod: 'L3' })), delar,
+      c, idempotens.id, idempotens.user.userId, ids.map((receipt_id) => forslagFor({ ...rentKvitto, receipt_id, datum: '2026-11-20' }, delar, { titeltraffar: [{ kod: 'L3', referens_id: rentKvitto.receipt_id }], tidigare: null, uppdragsnamn: [] }, renTid)), delar,
     ));
     expect(r.redan_koade).toEqual(ids.slice(0, 7));
-    expect(r.koade).toEqual([{ receipt_id: ids[7], contract_part_id: delar.alla.find((d) => d.code === 'L3')!.part_id, approval_id: expect.any(String) }]);
+    expect(r.koade).toEqual([{ receipt_id: ids[7], contract_part_id: delar.alla.find((d) => d.code === 'L3')!.part_id, approval_id: expect.any(String), forslag_hash: expect.any(String) }]);
     expect(r.automatiska).toEqual([]);
     for (const id of ids) { expect(await koposter(idempotens, id)).toHaveLength(1); expect((await kvitton(idempotens)).get(id)!.contract_part_id).toBeNull(); }
   });
@@ -325,27 +330,26 @@ describe('K5 skälet följer förslaget', () => {
   it('e saknad cache och saknat datum', h.provaSaknatSkal);
   it('f–h läsvägen och det frysta nej-underlaget bär samma skäl och källor', async () => {
     const ps = (await undantag(sparr)).poster;
-    for (const [id, text] of [[teliaSen, h.STROMTEXT], [teliaTidig, h.ROTTEXT]]) {
+    for (const id of [teliaSen, teliaTidig]) {
       const m = sparrMal.get(id!)!;
       const p = ps.find((p) => p.id === m.approval)!;
       expect(p).toBeDefined();
-      const cache = await withAdmin(async (c) => (await c.query<{ last_nar: Date }>(
-        'SELECT last_nar FROM uppdrag_svepvarde WHERE company_id=$1 AND contract_id=$2 AND nyckel=$3',
-        [sparr.id, sparrU.contractId, `kostnadsforslag:${id}`],
-      )).rows);
-      expect(cache).toHaveLength(1);
-      expect(p.skal).toMatchObject({ varde: text, kalla: 'redovisning', last_nar: cache[0]!.last_nar.toISOString() });
+      const f = (await koposter(sparr, id))[0]!.input.forslagsunderlag as { skal: Array<{ text: string }>; last_nar: string };
+      const skal = f.skal.map((s) => s.text).join(' ');
+      expect(p.skal).toMatchObject({ varde: skal, kalla: 'redovisning', last_nar: f.last_nar });
+      expect(skal).toContain(id === teliaSen ? 'Ingen leverabel kan härledas ur underlaget, så förslaget gäller S2.' : 'Ingen leverabel kan härledas, och kvittots datum 2026-03-05 ligger utanför strömmarnas intervall, så förslaget gäller uppdraget.');
       expect(p.kallor.varde).toEqual(expect.arrayContaining([
         expect.objectContaining({ typ: 'referens', referens_id: refL4 }),
         expect.objectContaining({ typ: 'yta', sokvag: `/app/c/${sparr.id}/receipts` }),
       ]));
     }
     expect(ps.find((p) => p.id === sparrMal.get(axisSen)!.approval)!.skal.varde)
-      .toBe('Svepet kopplade kvittot till L3 genom handlingens titel.');
+      .toBe('Leverantörens namn står i titeln på leverabelhandlingen för L3.');
     const q = sparrMal.get(teliaSen)!.approval;
     await ok(sparr, 'avboj_beslutsforslag', { approval_id: q, skal: 'Kostnaden hör till annat uppdrag' });
     const b = await beslutsrad(sparr, q);
-    expect(b.underlag).toMatchObject({ skal: h.STROMTEXT, foreslagen_av: 'agent' });
+    const f = (await koposter(sparr, teliaSen))[0]!.input.forslagsunderlag as { skal: Array<{ text: string }>; forslag_hash: string };
+    expect(b.underlag).toMatchObject({ skal: f.skal.map((s) => s.text).join(' '), foreslagen_av: 'agent', indata: { forslagsunderlag: { forslag_hash: f.forslag_hash } } });
     expect(b.underlag.kallor).toEqual(expect.arrayContaining([
       { typ: 'kvitto', id: teliaSen }, { typ: 'referens', id: refL4 },
     ]));
@@ -395,10 +399,10 @@ describe('K6 ja och nej till ström och uppdrag', () => {
     vantande = await bokatKvitto(janej, '2026-11-20', supplier, 'Väntande');
     janejAllmant = await bokatKvitto(janej, '2026-11-21', kontorId, 'Allmänt');
     const r = await svep(janej, indata(p1, [[ref, 'L4']])); expect(r.bindningar.koade).toHaveLength(5);
-    for (const [id, kod, skal] of [[s2Ja,'S2',h.STROMTEXT],[s2Nej,'S2',h.STROMTEXT],[rotJa,'UPPDRAG',h.ROTTEXT],[rotNej,'UPPDRAG',h.ROTTEXT],[vantande,'S2',h.STROMTEXT]]) {
+    for (const [id, kod] of [[s2Ja,'S2'],[s2Nej,'S2'],[rotJa,'UPPDRAG'],[rotNej,'UPPDRAG'],[vantande,'S2']]) {
       const q = r.bindningar.koade.find((r) => r.receipt_id === id)!;
       expect(q).toBeDefined();
-      beslut.set(id!, { approval: q.approval_id, del: await delId(janej, p1, kod!), kod: kod!, skal: skal! });
+      beslut.set(id!, { approval: q.approval_id, del: await delId(janej, p1, kod!), kod: kod!, skal: ((await koposter(janej, id!))[0]!.input.forslagsunderlag as { skal: Array<{ text: string }> }).skal.map((s) => s.text).join(' ') });
     }
     ua = supertest.agent(app);
     const login = await ua.post('/app/login').type('form').send({ email: janej.user.email, password: 'mycket-hemligt-losen-123' });

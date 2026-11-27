@@ -59,7 +59,7 @@ import { lasUppdragslage } from '../services/uppdragLage.js';
 import { registreraJa, registreraNej, avbojForslag, kompletteraForslag } from '../services/uppdragBeslut.js';
 import { TimmarSchema } from '../lib/beslutsunderlag.js';
 import {
-  AndraBaselineSchema, AvtalsdelFalt, DatePrecisionSchema, OrsakSchema, RegistreraUppdragsbeslutSchema,
+  AndraBaselineSchema, AvtalsdelFalt, BindaKostnadSchema, DatePrecisionSchema, OrsakSchema, RegistreraUppdragsbeslutSchema,
   kravAndraBaselineForLeverabeldatum, kravPrecisionVidDatum,
 } from '../lib/avtalsdelsfalt.js';
 import { provaOvrigtKalla, registreraRyms } from '../services/uppdragOvrigt.js';
@@ -2082,7 +2082,8 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // `contract_part_id` är OBLIGATORISKT: kvitton har inget `project_id`, så
     // delen är kvittots enda bindning till uppdraget. En kostnad binds aldrig
     // "till uppdraget" i största allmänhet.
-    inputSchema: z.object({ receipt_id: UuidSchema, contract_part_id: UuidSchema }).strict(),
+    inputSchema: BindaKostnadSchema,
+    koasAvSvepet: (i) => i.forslagsunderlag !== undefined,
     tvafas: true,
     handler: (ctx, i) => registreraJa(ctx.client, ctx.companyId, ctx, 'binda_kostnad', i,
       () => bindaKostnad(ctx.client, ctx.companyId, ctx.userId, i as never)),

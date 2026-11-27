@@ -31,6 +31,7 @@
 //
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
 import type { PoolClient } from 'pg';
+import { assertSafeOre } from '../domain/money.js';
 import { NotFoundError } from '../lib/errors.js';
 import { last, type Lasvarde } from '../lib/lasvarde.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
@@ -138,6 +139,24 @@ export interface Avtalspengar {
    * Det senaste förslaget avgör avtalet.
    */
   obundna_kostnader: Lasvarde<ObundenKostnad[]>;
+  kostnadstotal: Lasvarde<Kostnadstotal>;
+}
+
+export interface Kostnadstotal { bokfort_ore: number; varav_obundet_ore: number; ej_bokforda: number }
+
+/** Bara bokförda belopp summeras; alla andra statusar räknas utan belopp. */
+function kostnadstotal(kostnader: Kostnadsrad[], obundna: ObundenKostnad[]): Kostnadstotal {
+  let bokfort_ore = 0; let varav_obundet_ore = 0; let ej_bokforda = 0;
+  for (const k of kostnader) {
+    if (k.status !== 'booked') { ej_bokforda++; continue; }
+    assertSafeOre(k.total_ore); bokfort_ore += k.total_ore; assertSafeOre(bokfort_ore);
+  }
+  for (const k of obundna) {
+    if (k.status !== 'booked') { ej_bokforda++; continue; }
+    assertSafeOre(k.total_ore); bokfort_ore += k.total_ore; varav_obundet_ore += k.total_ore;
+    assertSafeOre(bokfort_ore); assertSafeOre(varav_obundet_ore);
+  }
+  return { bokfort_ore, varav_obundet_ore, ej_bokforda };
 }
 
 export interface Uppdragspengar {
@@ -449,6 +468,14 @@ async function obundnaForAvtal(
   }));
 }
 
+/** Levande periodkostnader ur samma läsning som pengadelen, ingen frysning. */
+export async function lasOplaneradeKostnader(
+  client: PoolClient, companyId: string, contractId: string, start: string, slut: string,
+): Promise<Lasvarde<Kostnadsrad[]>> {
+  const kostnader = await kostnaderForAvtal(client, companyId, contractId);
+  return last(kostnader.filter((k) => k.oplanerad && k.datum >= start && k.datum <= slut), KALLA_REDOVISNING, new Date().toISOString());
+}
+
 /**
  * Pengarna för ETT uppdrag: serien, ramen, de två cachade svepvärdena och de
  * bundna och de föreslagna men obundna kostnaderna — per avtal, allt läst
@@ -473,6 +500,8 @@ export async function lasUppdragspengar(
     const delar = (rad.parts as Delforbrukning[] | undefined) ?? [];
     const rot = rotdel(delar);
     const cache = await svepvarden(client, companyId, contractId);
+    const kostnader = await kostnaderForAvtal(client, companyId, contractId);
+    const obundna = await obundnaForAvtal(client, companyId, contractId);
 
     avtal.push({
       contract_id: contractId,
@@ -485,8 +514,9 @@ export async function lasUppdragspengar(
       },
       prognos: svept(cache.find((v) => v.nyckel === 'prognos'), prognosramar),
       troskellarm: svept(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall),
-      kostnader: await kostnaderForAvtal(client, companyId, contractId),
-      obundna_kostnader: last(await obundnaForAvtal(client, companyId, contractId), KALLA_REDOVISNING, lastNar),
+      kostnader,
+      obundna_kostnader: last(obundna, KALLA_REDOVISNING, lastNar),
+      kostnadstotal: last(kostnadstotal(kostnader, obundna), KALLA_REDOVISNING, lastNar),
     });
   }
 

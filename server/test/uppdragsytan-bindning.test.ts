@@ -15,8 +15,7 @@
 //       sätter delen och skriver `receipt.contract_part_assigned`;
 //   (c) flytten: en redan bunden kostnad går att flytta — det är just vad kön
 //       är till för (en bunden ström → rätt leverabel);
-//   (d) `oplanerad` rörs aldrig: märkningen säger att kostnaden inte fanns i
-//       baselinen, och det blir inte osant för att någon flyttar den;
+//   (d) `oplanerad` tas aldrig bort, och en leverabelbindning sätter märkningen;
 //   (e) okänt kvitto, okänd del och grannbolagets rader svarar "finns inte".
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { ACTIONS } from '../src/actions/registry.js';
@@ -244,9 +243,8 @@ describe('flytten: kön är vägen från ström till leverabel', () => {
   });
 
   it('`oplanerad` rörs aldrig av en bindning — den säger något om baselinen', async () => {
-    // Märkningen finns på historiska rader och sätts från Story 5.1 av
-    // förifyllningen. En flytt ändrar inte vad som fanns i det avtalade,
-    // och åtgärden har därför inget fält för märkningen.
+    // Verkställigheten märker bindningen när målet är en leverabel.
+    // Ingen bindning tar bort märkningen, inte heller en flytt till roten.
     await withAdmin((c) => c.query('UPDATE receipts SET oplanerad = true WHERE id = $1', [kvitto]));
     await okKoad('binda_kostnad', { receipt_id: kvitto, contract_part_id: delRot });
     expect(await kvittoraden()).toEqual({ contract_part_id: delRot, oplanerad: true });

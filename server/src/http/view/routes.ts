@@ -59,7 +59,8 @@ import {
 import type { Larm } from '../../lib/troskel.js';
 import type { Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
-import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
+import { lasUppdragspengar, lasOplaneradeKostnader, type Kostnadsrad, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
+import type { Lasvarde } from '../../lib/lasvarde.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import {
   byggPlan, grupperaEfterSlut, visaDatum, type Datumprecision, type Plan, type Plandel, type Planrad,
@@ -2568,6 +2569,7 @@ interface Bedomningshistorik {
 }
 
 interface Bedomningsunderlag extends Bedomningshistorik {
+  oplanerade: Lasvarde<Kostnadsrad[]> | null;
   /**
    * Perioden ur det förvalda avtalets rytm — formulärets förval OCH rapportens
    * period. Utan period (inget ankare, ingen rytm) är båda gränserna NULL.
@@ -2634,6 +2636,9 @@ async function bedomningsunderlag(
     idag,
     rapport: forsta && period.lage === 'raknad'
       ? await byggRapportunderlag(client, companyId, forsta.id, period.start, period.slut)
+      : null,
+    oplanerade: forsta && period.lage === 'raknad'
+      ? await lasOplaneradeKostnader(client, companyId, forsta.id, period.start, period.slut)
       : null,
     scopelinje: forsta ? await lasScopelinjer(client, companyId, forsta.id) : [],
     oppnaBegaranden: avtal.length === 0 ? [] : await listaObesvaradeBegaranden(client, companyId, avtal.map((a) => a.id)),
@@ -2728,6 +2733,20 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
         med bedömningen; det är de frysta talen historiken visar${u.avtal.length > 1
           ? html`. Rapporten gäller <b>${u.avtal[0]!.name}</b>, avtalet som är förvalt i formuläret`
           : ''}.</p>
+      <h3>Oplanerade kostnader i perioden</h3>
+      ${u.oplanerade?.lage !== 'last'
+        ? html`<p>Periodens kostnader kunde inte läsas.</p>`
+        : (u.oplanerade.varde ?? []).length === 0
+          ? html`<p>Inga oplanerade kostnader i perioden.</p>`
+          : html`<div class="table-wrap"><table><thead><tr>
+              <th scope="col">Datum</th><th scope="col">Leverantör</th><th scope="col">Avtalsdel</th><th scope="col" class="num">Belopp</th>
+            </tr></thead><tbody>${u.oplanerade.varde!.map((k) => html`<tr>
+              <td class="code">${k.datum}</td><td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
+              <td><span class="code">${k.kod}</span> ${chip('Oplanerad', 'warn', '!')}</td><td class="num">${beloppForKostnad(k)}</td>
+            </tr>`)}</tbody></table></div>
+            <p>Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`}
+      ${u.oplanerade ? farskhetsrad([u.oplanerade.last_nar === null ? 'periodens kostnader: lästid saknas'
+        : `periodens kostnader ${direktFarskhet({ kalla: u.oplanerade.kalla, last_nar: u.oplanerade.last_nar }, idag)}`]) : ''}
     </div>
   </section>`;
 }
@@ -5423,6 +5442,10 @@ function troskelpanel(a: Avtalspengar, idag: string): Raw {
  * Beloppet är redovisningens eget (`amount`); ett obokfört kvitto står som
  * ej bokförd i stället för ett tal. Ett förslag visar aldrig en beslutad del.
  */
+function beloppForKostnad(k: { status: string; total_ore: number }): Raw {
+  return k.status === 'booked' ? amount(k.total_ore) : html`<span class="muted">ej bokförd</span>`;
+}
+
 function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
   const obundna = a.obundna_kostnader.varde ?? [];
   if (a.kostnader.length === 0 && obundna.length === 0) {
@@ -5430,22 +5453,23 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
       En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, efter ditt godkännande — aldrig på den här sidan.
       <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</p>`;
   }
-  const belopp = (k: { status: string; total_ore: number }): Raw => k.status === 'booked'
-    ? amount(k.total_ore)
-    : html`<span class="muted">ej bokförd</span>`;
+  const total = a.kostnadstotal.varde;
   return html`<div class="table-wrap" style="margin-top:14px"><table>
       <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th></tr></thead>
       <tbody>${a.kostnader.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
         <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
         <td><span class="code">${k.kod}</span>${k.oplanerad ? html` ${chip('Oplanerad', 'warn', '!')}` : ''}</td>
-        <td class="num">${belopp(k)}</td></tr>`)}
+        <td class="num">${beloppForKostnad(k)}</td></tr>`)}
       ${obundna.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
         <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
         <td>${chip('Obunden', 'muted', '○')}</td>
-        <td class="num">${belopp(k)}</td></tr>`)}
+        <td class="num">${beloppForKostnad(k)}</td></tr>`)}
       </tbody></table></div>
+    ${total ? html`<p>Kostnader totalt, bokfört: ${amount(total.bokfort_ore)}, varav obundet ${amount(total.varav_obundet_ore)}.
+      ${total.ej_bokforda > 0 ? `${total.ej_bokforda} ${total.ej_bokforda === 1 ? 'kostnad är' : 'kostnader är'} ej bokförd${total.ej_bokforda === 1 ? '' : 'a'} och ingår inte i summan.` : ''}
+      ${a.kostnadstotal.last_nar === null ? 'Kostnadstotalen: lästid saknas' : `kostnadstotalen ${direktFarskhet({ kalla: a.kostnadstotal.kalla, last_nar: a.kostnadstotal.last_nar }, idag)}`}.</p>` : html`<p>Kostnadstotalen kunde inte läsas.</p>`}
     ${a.kostnader.some((k) => k.oplanerad)
       // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
       // märkning, och två olika förklaringar vore två olika märkningar.

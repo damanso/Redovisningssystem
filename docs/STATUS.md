@@ -153,6 +153,30 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
+  Svepet förifyller bindningsförslag ur titel, tidigare leverantörsbindning
+  och uppdragets namn i bokföringstext, med skäl, källor och stabil hash.
+  Delat strikt schema prövas före kön och av läsvägen. Öppna mandat och
+  äldre förslag spärrar alltid; ändrat underlag kan köas efter avgörande.
+  Verkställigheten märker leverabelbindningar Oplanerad och tar aldrig bort
+  märkningen. Cachen och förslaget bär inga belopp eller leverantörsnamn.
+  Pengadelen visar bokförd total inklusive obundet, och rapporten läser
+  periodens oplanerade kostnader levande. Ej bokfört visas utan belopp.
+  Husets Public Sans, skala, tabeller, chip och fokusram används; inga nya
+  kontroller ändrar fokusordningen. Tomt och oläst underlag har egna besked,
+  och serverrenderingen använder befintlig laddning och felsida.
+  Ingen migration, rutt eller nytt beroende tillkom; CRM-kontraktet berörs
+  inte. Inga RESTER. 40 nya fall F0–F5 samt föreskrivna uppdateringar av
+  kostnadsspärrs- och svepproven. Typkontroll exit 0. Sandlådans testförsök
+  före/efter varje uppgift gav EPERM på 127.0.0.1:5433 före fallen; med
+  utökad verktygsbehörighet nåddes samma stående testdatabas. Första riktade
+  körningen gav 39 gröna och ett riggfel (blanksteg i testmejladressen), som
+  rättades. Slutgrind: `npm run typecheck` exit 0, hela `npm test` exit 0:
+  `Test Files 217 passed (217)`, `Tests 4233 passed (4233)`, inklusive
+  alla 40 nya. `git diff --check` exit 0. DoD prövad punkt för punkt och
+  berättelsen/sprintposten står review. Bygge och Hermes driftprov är inte
+  körda här enligt uppdraget; inget nytt driftutfall påstås.
+
 - **2026-11-27 — Story 5.11 (crm).**
   AI-samtalet tillagt bland löftesvägarna i `CAPTURE_PATHS_IN_OPERATION`;
   hintens form skiljer källor från tillfällen enligt UX K8. De befintliga tre
