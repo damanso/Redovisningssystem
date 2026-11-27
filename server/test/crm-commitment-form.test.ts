@@ -198,12 +198,12 @@ describe('formuläret Lova något', () => {
     expect(knapp, form).toBeGreaterThan(lovades);
   });
 
-  it('F2 formulärets mål, hint och knapp är oförändrade', async () => {
+  it('F2 formulärets mål och knapp är oförändrade, och hinten nämner AI-samtalet (5.11)', async () => {
     const form = blocket(await las(`/app/c/${bolag}/relations/${relation}`));
     expect(form).toContain(`action="/app/c/${bolag}/relations/${relation}/commit"`);
     expect(form).toContain('<input type="hidden" name="back"');
     expect(form).toContain('<button class="btn btn--primary btn--sm" type="submit">Spara löftet</button>');
-    expect(form).toContain('<p class="hint">Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.</p>');
+    expect(form).toContain('<p class="hint">Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.</p>');
   });
 });
 

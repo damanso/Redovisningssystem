@@ -436,9 +436,8 @@ export interface CaptureTexts {
 /**
  * Frastabellerna. Nyckelordningen är den kanoniska: texterna följer den och inte
  * konstantens ordning. `Record` över de slutna nyckeltyperna gör att en ny väg
- * utan fras fäller typkontrollen. Kalendern (5.9) och AI-samtalet (5.11) står
- * här redan, så att en väg som tas i drift bara ändrar konstanten; AI-samtalets
- * fraser är provisoriska och ägs av 5.11.
+ * utan fras fäller typkontrollen. Kalenderns fraser följer 5.9 och
+ * AI-samtalets 5.11, med hintens tillfällesform enligt UX K8.
  */
 const CONTACT_PATH_WORDS: Readonly<Record<ContactCapturePath, string>> = Object.freeze({
   mail: 'mail',
@@ -446,14 +445,15 @@ const CONTACT_PATH_WORDS: Readonly<Record<ContactCapturePath, string>> = Object.
   issues: 'ärenden',
 } as const);
 
-/** `outOf` är ur-formen i hinten, `from` från-formen i tomlägena; bara automatiska vägar har en ur-form. */
+/** `outOf` är källans ur-form i hinten, `when` tillfällets form i hinten och `from` från-formen i tomlägena. */
 type CommitmentPhrase =
   | { readonly automatic: true; readonly outOf: string; readonly from: string }
+  | { readonly automatic: true; readonly when: string; readonly from: string }
   | { readonly automatic: false; readonly from: string };
 
 const COMMITMENT_PATH_PHRASES: Readonly<Record<CommitmentCapturePath, CommitmentPhrase>> = Object.freeze({
   issues_waiting_external: { automatic: true, outOf: 'ur ärenden märkta Väntar-extern', from: 'från ärenden märkta Väntar-extern' },
-  ai_conversation: { automatic: true, outOf: 'som du nämner för AI:n', from: 'när du nämner det för AI:n' },
+  ai_conversation: { automatic: true, when: 'när du nämner det för AI:n', from: 'när du nämner det för AI:n' },
   promise_form: { automatic: false, from: 'från Lova något på relationen' },
 } as const);
 
@@ -481,6 +481,8 @@ export function captureTexts(paths: CapturePaths): CaptureTexts {
   const contactWords = inOperation(CONTACT_PATH_WORDS, paths.contacts);
   const commitmentPhrases = inOperation(COMMITMENT_PATH_PHRASES, paths.commitments);
   const automatic = commitmentPhrases.filter((p): p is Extract<CommitmentPhrase, { automatic: true }> => p.automatic);
+  const sources = automatic.filter((p) => 'outOf' in p).map((p) => p.outOf);
+  const occasions = automatic.filter((p) => 'when' in p).map((p) => p.when);
   const byHand = paths.commitments.includes('promise_form');
   const saidInPerson = 'Det här är för det som sades i ett samtal eller möte.';
   return {
@@ -495,7 +497,8 @@ export function captureTexts(paths: CapturePaths): CaptureTexts {
         byHand ? ', och du kan lägga till ett under Lova något på en relation.' : '.'}`
       : byHand ? 'Du kan lägga till ett under Lova något på en relation.' : '',
     promiseFormHint: automatic.length > 0
-      ? `Löften ${andList(automatic.map((p) => p.outOf))} kommer in av sig själva. ${saidInPerson}` : saidInPerson,
+      ? `Löften${sources.length > 0 ? ` ${andList(sources)}` : ''} kommer in av sig själva${
+        occasions.length > 0 ? `${sources.length > 0 ? ', eller' : ''} ${orList(occasions)}` : ''}. ${saidInPerson}` : saidInPerson,
     customerCardEmpty: commitmentPhrases.length > 0
       ? `Inga öppna löften. Löften kommer ${andList(commitmentPhrases.map((p) => p.from))}.` : 'Inga öppna löften.',
   };

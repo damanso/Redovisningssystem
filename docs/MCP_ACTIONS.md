@@ -3274,10 +3274,13 @@ Davids besked 2026-10-16 (PRD fråga 13 b): *direkt*, så obekräftade AI-löfte
 ingår som standard. `false` är mellanläget *först efter bekräftelse*, då de
 utesluts ur Idag, `crm_today` och listan utan val. Ingen annan åtgärd ändras.
 
-Beskrivningen är en instruktion till agenten och visas inte på någon yta. Att
-löften fångas i samtalet är i drift först när chattagenten anropar åtgärden
-(berättelse 5.10), och samtalet blir en fångstväg i ytans texter i berättelse
-5.11. ✦ och Stämmer på Idags löfteskort återstår (berättelse 5.6).
+Beskrivningen är en instruktion till agenten och visas inte på någon yta.
+Löften fångas i samtalet när chattagenten anropar åtgärden (berättelse 5.10).
+Sedan berättelse 5.11 är samtalet en fångstväg i ytans texter: åtagandevyns
+tomläge, hinten i Lova något och kundkortets tomma Åtaganden säger att löften
+kommer in när du nämner det för AI:n. Idag och Relationer nämner det inte,
+eftersom AI-samtalet fångar löften och inte kontakter. ✦ och Stämmer på Idags
+löfteskort återstår (berättelse 5.6).
 
 ## Läsnyckeln (crm 5.7)
 
