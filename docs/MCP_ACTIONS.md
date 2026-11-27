@@ -571,6 +571,18 @@ eller senare överhoppat. Nu är de tre stegen ETT.
   Uppdraget sätts på fakturahuvudet (`invoices.project_id`).
   De undantagna posterna rörs **inte alls** och ligger kvar som godkänd,
   ofakturerad tid.
+- `las_faktureringsunderlag` (read) — `project_id`. Faktureringsunderlaget ur
+  leverabelregistret (Uppdragsytan FR-12, Story 4.4): per avtal i uppdraget
+  listas bara leverabler i läget godkänd. En levererad leverabel är inte
+  fakturerbar förrän godkännandet är registrerat. Varje rad bär kod, namn,
+  acceptanskriterium, revision, överlämningsdatum och godkännandet (dag, kanal,
+  mottagare ur händelsen), med källan registret. Varje avtals underlag bär
+  läsningens lästid. Ett godkänt läge utan registrerat godkännande visas som
+  ”Godkännandet saknas i historiken”, aldrig med ett påhittat datum.
+  Läsningen skriver ingenting, skapar ingen faktura och bär inga belopp eller
+  timmar. Modulen fakturerar aldrig; fakturan skapas med
+  `create_invoice_from_time` av en människa och betalning registreras bara
+  genom kön (K5). Fel: 404 för ett projekt utanför bolaget.
 - `set_invoice_appendix` med `kind: 'time'` kräver nu `bypass_time_entries:
   true` **och** `reason` — annars 409 `use_create_invoice_from_time`. En
   handskriven tidsbilaga låser ingen tidpost, så samma timmar kan faktureras

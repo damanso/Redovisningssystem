@@ -15,6 +15,7 @@ import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '.
 import { EmailSchema, UuidSchema, safeText } from '../../lib/validation.js';
 import { csvKronor, toCsv } from '../../lib/csv.js';
 import { generateInvoicePdfFile, getInvoice, listInvoices } from '../../services/invoices.js';
+import { FAKTURA_TEXT, lasFaktureringsunderlag, type Faktureringsunderlag } from '../../services/invoiceFromTime.js';
 import { hasBeenVoucherLinked } from '../../services/draftDelete.js';
 import { getInvoiceAppendix } from '../../services/invoiceAppendix.js';
 import { HOUSEWORK_DISCLAIMER } from '../../services/housework.js';
@@ -1804,6 +1805,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
     // i sidans egen transaktion. Ett projekt utan avtal får ingen undermeny: nio
     // av tio poster hade bara svarat "uppdraget har inget avtal ännu".
     const harUppdrag = (await listContracts(client, companyId, { project_id: projectId })).length > 0;
+    const underlag = harUppdrag ? await lasFaktureringsunderlag(client, companyId, projectId) : null;
     const b = html`<div class="page-head"><div>${eyebrow('Projekt')}<h1>${p.name}</h1>
         <p class="lede">Projekt ${p.number} · ${p.customer_name ? html`${entityLink(companyId, 'customer', p.customer_id, p.customer_name)} · ` : ''}<a href="/app/c/${companyId}/projects">← Projekt</a></p></div>
         <div class="actions">${p.status === 'active' ? chip('Aktivt', 'ok') : chip('Stängt', 'muted')}
@@ -1856,6 +1858,7 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
         ${p.summary.cost_amount_ore > 0 ? kpiCell('Marginal', amount(p.summary.margin_ore)) : ''}
         ${p.budget_ore != null ? kpiCell('Budget', amount(p.budget_ore)) : ''}
       </div>
+      ${underlag ? faktureringsunderlagsblock(underlag, idag) : ''}
       ${
         p.by_actor.length > 1 || p.summary.cost_amount_ore > 0
           ? html`<h2 style="margin-top:18px">Per utförare</h2>
@@ -9610,6 +9613,29 @@ function kapaOrd(text: string, ord = 15): string {
   const delar = (text ?? '').trim().split(/\s+/);
   if (delar.length <= ord) return text ?? '';
   return delar.slice(0, ord).join(' ') + '…';
+}
+
+/** Story 4.4, FR-12: läst underlag ur registret, ingen faktura, inga belopp eller formulär. */
+function faktureringsunderlagsblock(u: Faktureringsunderlag, idag: string): Raw {
+  return html`<section aria-labelledby="faktureringsunderlag" data-faktureringsunderlag style="margin-top:18px">
+    <h2 id="faktureringsunderlag">${FAKTURA_TEXT.rubrik}</h2>
+    <p class="muted" style="font-size:13px">${u.regel} ${u.ingen_faktura}</p>
+    ${u.avtal.map((a) => html`
+      ${u.avtal.length > 1 ? html`<p style="margin:10px 0 4px;font-weight:550">${a.namn}</p>` : ''}
+      ${!a.underlag.varde || a.underlag.varde.length === 0
+        ? html`<p class="tomt" style="padding:.6rem .8rem">${FAKTURA_TEXT.inga}</p>`
+        : html`<div class="table-wrap" tabindex="0" role="region" aria-label="${FAKTURA_TEXT.rubrik}"><table>
+            <thead><tr><th scope="col">Id</th><th scope="col">Namn</th><th scope="col">Acceptanskriterium</th>
+              <th scope="col">Revision</th><th scope="col">Överlämnad</th><th scope="col">Godkännande</th><th scope="col">Källa</th></tr></thead>
+            <tbody>${a.underlag.varde.map((r) => html`<tr><td class="code">${r.kod}</td>
+              <td>${r.namn.text}</td><td>${r.acceptanskriterium.text}</td><td>${r.revision.text}</td>
+              <td>${r.overlamnad.text}</td><td>${r.godkannande.dag === null
+                ? chip(FAKTURA_TEXT.godkannande_saknas, 'warn') : r.godkannande.text}</td><td>${FAKTURA_TEXT.kalla}</td></tr>`)}</tbody>
+          </table></div>`}
+      ${a.underlag.last_nar === null ? '' : farskhetsrad([
+        direktFarskhet({ kalla: a.underlag.kalla, last_nar: a.underlag.last_nar }, idag),
+      ])}`)}
+  </section>`;
 }
 
 /**

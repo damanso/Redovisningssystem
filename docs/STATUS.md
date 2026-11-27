@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (217
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (218
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,48 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-27 — Omtag: 4-4-faktureringsflodet-laser-godkanda-leverabler-som-underlag.**
+  Rättat läsordningen i `server/src/services/invoiceFromTime.ts`: samtliga
+  avtals register läses före den gemensamma godkännandehistoriken. Med
+  READ COMMITTED kunde ett godkännande annars committa mellan frågorna och
+  ge en falsk saknasvarning i både åtgärdssvaret och projektsidan.
+  A8 i `server/test/uppdragsytan-faktureringsunderlag.test.ts` skrevs före
+  rättelsen: fyra samtidighetsförlopp med ett/flera avtal, commit efter
+  historiken, före sista registret och efter sista registret. Riktiga
+  HTTP-godkännanden mellan riktiga Postgres-frågor; inga databassvar mockas.
+  Befintliga A2/V4 behåller varningen när historiken faktiskt saknas.
+  Husets befintliga tabell, typografi, tomläge och fokusram passar fortsatt
+  projektsidan. Läsfel följer befintlig felsida och laddning serverrenderas.
+  Inget kontrakt, beroende, schema eller rutt ändras; 218 actions kvar.
+  Typkontroll före/efter rättelsen exit 0. Riktade tester och hela `npm test`
+  ej körda på fallnivå: globalSetup ger `connect EPERM 127.0.0.1:5433`, exit 1.
+  Kedjans exekverande grind återstår enligt databasundantaget; inga gröna
+  databasutfall eller nya driftutfall påstås. CRM-kontraktet berörs inte.
+
+- **2026-11-27 — 4-4-faktureringsflodet-laser-godkanda-leverabler-som-underlag.**
+  Faktureringsflödet läser godkända leverabler ur registret genom regeln och
+  den gemensamma läsningen i `server/src/services/invoiceFromTime.ts`.
+  Läsåtgärden `las_faktureringsunderlag` och projektsidans block visar samma
+  underlag med registerfält, godkännandets händelse, källa och lästid per avtal.
+  Saknat godkännande varnas; ett tomt underlag förklaras. Husets tabell,
+  textskala, färskhetsrad och varningschip används för att följa projektsidan.
+  Tabellens rullningsyta kan fokuseras med tangentbord och får husets fokusram;
+  kolumnrubriker har scope. Serverrenderat utan separat klientladdning;
+  befintlig felsida hanterar läsfel utan att visa ett falskt tomläge.
+  Ingen migration och ingen rutt tillkom; rubrikstycket anger nu 218 actions.
+  21 nya fall R1–R6, S1–S2, A1–A7, V1–V4 och D1–D2 skrevs före respektive
+  implementation. Avslutsprovets fyra panelkontroller avgränsas till panelen.
+  Typkontroll efter uppgift 1–4 samt före dokumentändringen: exit 0. Rött för
+  uppgift 1 och 2 belagt med saknade exporter i typkontrollen. Databasprov
+  inte körda på fallnivå: rött/grönt-försök och fulla regressioner stoppades
+  i globalSetup med `connect EPERM 127.0.0.1:5433`, exit 1. Kedjan kör den
+  exekverande grinden enligt uppdragets databasundantag. Inga gröna databas-
+  eller visuella webbläsarutfall påstås. Inga RESTER; minnet är inte installerat.
+  Steg 9:s fulla regression stoppades också före fallen med samma EPERM.
+  DoD:s 26 punkter prövade; berättelsen och sprintstatus står review med
+  det uttryckliga databasundantaget. Diffkontroll exit 0.
+  CRM-kontraktet berörs inte. Inget nytt driftutfall verifierat.
 
 - **2026-11-27 — Omtag 2: 4-2-overlamningen-registreras-ur-den-faktiska-handlingen.**
   Omtagets U4/O4 och kontrollvakter körda före någon kodändring tillsammans
