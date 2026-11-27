@@ -649,12 +649,12 @@ describe('update_time_entry med expected — posten skrivs bara om den står som
       const bPid = pid.rows[0]!.pid;
       await a.query('BEGIN');
       await setTenantContext(a, user.userId, companyId);
-      await updateTimeEntry(a, companyId, user.userId, {
+      await updateTimeEntry(a, companyId, user.userId, 'human', {
         time_entry_id: id, minutes: 45, billable_minutes: 45,
       });
       await b.query('BEGIN');
       await setTenantContext(b, user.userId, companyId);
-      bUtfall = updateTimeEntry(b, companyId, user.userId, {
+      bUtfall = updateTimeEntry(b, companyId, user.userId, 'agent', {
         time_entry_id: id, ...KOMPLETTERING, expected,
       }).then(() => null, (err: unknown) => err);
       await vantaPaRadlaset(admin, bPid);

@@ -17,6 +17,7 @@
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import { ACTIONS } from '../src/actions/registry.js';
 import type { UnbilledTimeReport } from '../src/services/timeReports.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
@@ -419,6 +420,137 @@ describe('approve_time_entries', () => {
     const res = await act('approve_time_entries', { ids: [id], status: 'fakturerad' });
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect((await post(id)).status).toBe('forslag');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Davids beslut 26/11: Hermes föreslår tid, en människa godkänner den
+// ---------------------------------------------------------------------------
+
+// Att propose_time_entries från en agent skriver förslag som förut prövas i
+// 'skriver förslag som status forslag, aldrig som godkänd tid' ovan.
+describe('godkännandet av tid kräver en människa (beslut 26/11)', () => {
+  async function auditrader(): Promise<{ action: string; entity_id: string | null }[]> {
+    const res = await api.get(`${co()}/audit?limit=200`).set(auth());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.entries as { action: string; entity_id: string | null }[];
+  }
+
+  it('approve_time_entries är write + kravManniska, propose_time_entries är write utan spärr', () => {
+    const godkann = ACTIONS.find((a) => a.name === 'approve_time_entries');
+    expect(godkann, 'åtgärden saknas i registret').toBeTruthy();
+    expect(godkann!.sensitivity).toBe('write');
+    expect(godkann!.kravManniska).toBe(true);
+
+    const foreslag = ACTIONS.find((a) => a.name === 'propose_time_entries');
+    expect(foreslag, 'åtgärden saknas i registret').toBeTruthy();
+    expect(foreslag!.sensitivity).toBe('write');
+    expect(foreslag!.kravManniska).toBeUndefined();
+  });
+
+  it('agentanropet fälls med 403 human_required — posten är kvar som förslag, ingen auditrad', async () => {
+    const id = await ettForslag({ project_id: nvrPilot, source_ref: 'calendar:hm1' });
+
+    // FÖRST: varje icke-känslig action auditloggas, även en läsning, så
+    // jämförelsen måste tas före allt annat i provet.
+    const fore = await auditrader();
+
+    for (const kropp of [
+      { ids: [id] },
+      { ids: [id], status: 'justerad', adjustment_reason: 'Hermes tyckte 30 min' },
+      { ids: [id], status: 'ignorerad', adjustment_reason: 'Hermes tyckte inte' },
+    ]) {
+      const res = await act('approve_time_entries', kropp, agent());
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe('human_required');
+    }
+
+    // Avvisningen sker FÖRE withTenantTransaction: ingen auditrad alls, och
+    // ingen rad om godkännandet av just den här posten.
+    const efter = await auditrader();
+    expect(efter).toEqual(fore);
+    expect(efter.some((l) => l.action === 'time_entry.updated' && l.entity_id === id)).toBe(false);
+
+    // Ingen domänskrivning: posten är kvar som förslag.
+    expect((await post(id)).status).toBe('forslag');
+
+    // Och ingen köpost: åtgärden är `write`, inte `sensitive`.
+    const kon = await api.get(`${co()}/approvals?status=pending`).set(auth());
+    expect(kon.status).toBe(200);
+    expect((kon.body.approvals as { action: string }[]).some((a) => a.action === 'approve_time_entries')).toBe(false);
+  });
+
+  it('samma förslag godkänns av en människa som förut — spärren är på actor, inte på indatat', async () => {
+    const id = await ettForslag({ project_id: nvrPilot, source_ref: 'calendar:hm2' });
+    expect((await act('approve_time_entries', { ids: [id] }, agent())).status).toBe(403);
+
+    const svar = await ok('approve_time_entries', { ids: [id] });
+    expect(svar.processed).toBe(1);
+    expect(svar.godkand).toBe(1);
+    expect((await post(id)).status).toBe('godkand');
+    expect((await auditrader()).some((l) => l.action === 'time_entry.updated' && l.entity_id === id)).toBe(true);
+  });
+
+  // Den andra vägen till godkänd tid: statusbytet i update_time_entry.
+  it('update_time_entry från en agent kan inte byta status — förslaget står kvar, ingen auditrad', async () => {
+    const id = await ettForslag({ project_id: nvrPilot, source_ref: 'calendar:hm3' });
+    const fore = await auditrader();
+
+    for (const kropp of [
+      { status: 'godkand' },
+      { status: 'justerad', billable_minutes: 30, adjustment_reason: 'Hermes tyckte 30 min' },
+      { status: 'ignorerad', adjustment_reason: 'Hermes tyckte inte' },
+    ]) {
+      const res = await act('update_time_entry', { time_entry_id: id, ...kropp }, agent());
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe('human_required');
+    }
+
+    // Avvisningen sker i tjänsten, före första skrivningen: transaktionen
+    // rullas tillbaka, och executeActions auditrad skrivs aldrig.
+    expect(await auditrader()).toEqual(fore);
+    const rad = await post(id);
+    expect(rad.status).toBe('forslag');
+    expect(rad.minutes).toBe(60);
+    expect(rad.billable_minutes).toBe(60);
+    expect(rad.approved_by).toBeNull();
+
+    // Kompletteringen (Story 10.2) går som förut: förslaget förblir förslag.
+    const kompletterad = await ok('update_time_entry', {
+      time_entry_id: id, status: 'forslag', minutes: 90, billable_minutes: 90,
+      adjustment_reason: 'Källan kompletterad: 60 → 90 min',
+    }, agent());
+    expect(kompletterad.status).toBe('forslag');
+    expect(kompletterad.minutes).toBe(90);
+
+    // Och människan godkänner samma post med samma åtgärd.
+    const godkand = await ok('update_time_entry', { time_entry_id: id, status: 'godkand' });
+    expect(godkand.status).toBe('godkand');
+    expect(godkand.approved_by).toBe(user.userId);
+  });
+
+  it('update_time_entry från en agent rör inte godkänd tid — minuterna står kvar', async () => {
+    const id = await ettForslag({ project_id: nvrPilot, source_ref: 'calendar:hm4' });
+    await ok('approve_time_entries', { ids: [id] });
+    const fore = await auditrader();
+
+    for (const kropp of [
+      { minutes: 240, billable_minutes: 240 },
+      { billable_minutes: 30, status: 'justerad', adjustment_reason: 'Hermes tyckte 30 min' },
+      { description: 'Omskrivet av Hermes' },
+      { status: 'forslag', minutes: 30, billable_minutes: 30 },
+    ]) {
+      const res = await act('update_time_entry', { time_entry_id: id, ...kropp }, agent());
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe('human_required');
+    }
+
+    expect(await auditrader()).toEqual(fore);
+    const rad = await post(id);
+    expect(rad.status).toBe('godkand');
+    expect(rad.minutes).toBe(60);
+    expect(rad.billable_minutes).toBe(60);
+    expect(rad.description).toBe('Arbete');
   });
 });
 
