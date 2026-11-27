@@ -30,16 +30,19 @@
 //     inget uppdrag". Samma mönster som `kravUppdrag` i `uppdragLage.ts`.
 //
 // Inga externa anrop (ADR-4/NFR-6): filen läser bara redan lagrad data.
+// Ofördelad tid läses här och räknas i totalen, aldrig fördelad vidare (FR-31).
 import type { PoolClient } from 'pg';
 import { assertSafeOre } from '../domain/money.js';
 import { NotFoundError } from '../lib/errors.js';
-import { last, type Lasvarde } from '../lib/lasvarde.js';
+import { last, olast, type Lasvarde } from '../lib/lasvarde.js';
+import { forbrukningsnivaer, type Forbrukningsnivaer, type Ofordelad } from '../lib/forbrukningsnivaer.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import type { Troskelutfall } from '../lib/troskel.js';
 import { gallandeTaxa, listContracts, type Delforbrukning } from './contracts.js';
 import { arFakturerad, arGodkannande, timeEntryAmountOre, TIME_ENTRY_STATUSES } from './projects.js';
 import type { Farskhet } from './uppdragLage.js';
 import type { Prognosramar, Ramutfall } from './uppdragSvep.js';
+import { lasLeverabelregister } from './uppdragRegister.js';
 
 export interface LasUppdragspengarInput {
   project_id: string;
@@ -133,7 +136,8 @@ export interface Avtalspengar {
   prognos: Svepvarde<Prognosramar> | null;
   /** S6.2:s redan härledda larm ur cachen. null = samma sak. */
   troskellarm: Svepvarde<Troskelutfall> | null;
-  kostnader: Kostnadsrad[];
+  forbrukning: Lasvarde<Forbrukningsnivaer>;
+  kostnader: Lasvarde<Kostnadsrad[]>;
   /**
    * Föreslagna men obundna kvitton (Story 1.8), med källa och lästid (B-12).
    * Det senaste förslaget avgör avtalet.
@@ -169,6 +173,59 @@ export interface Uppdragspengar {
     customer_name: string | null;
   };
   avtal: Avtalspengar[];
+  ofordelad: Lasvarde<Ofordelad>;
+}
+
+/** Husets taxeordning och heltalsregel, en avrundning per taxegrupp. */
+export function ofordeladUrGrupper(grupper: {
+  post_taxa: number | null; projekt_taxa: number | null; minuter: number; poster: number;
+}[]): Ofordelad {
+  const summa: Ofordelad = { minuter: 0, oren: 0, minuter_utan_taxa: 0, poster: 0 };
+  for (const g of grupper) {
+    summa.minuter += g.minuter; summa.poster += g.poster;
+    const taxa = gallandeTaxa(g.post_taxa, null, null, g.projekt_taxa);
+    if (taxa === null) summa.minuter_utan_taxa += g.minuter;
+    else summa.oren += timeEntryAmountOre(g.minuter, taxa);
+    assertSafeOre(summa.oren);
+  }
+  return summa;
+}
+
+/** Bara projektets förbrukande tid utan avtalsdel, aldrig en gissad märkning. */
+export async function lasOfordeladTid(client: PoolClient, companyId: string, projectId: string): Promise<Ofordelad> {
+  const r = await client.query<{
+    post_taxa: number | null; projekt_taxa: number | null; minuter: number; poster: number;
+  }>(
+    `SELECT t.hourly_rate_ore AS post_taxa, p.hourly_rate_ore AS projekt_taxa,
+            SUM(t.billable_minutes)::int AS minuter, COUNT(*)::int AS poster
+       FROM time_entries t
+       JOIN projects p ON p.id = t.project_id AND p.company_id = t.company_id
+      WHERE t.company_id = $1 AND t.project_id = $2
+        AND t.contract_part_id IS NULL AND t.status = ANY($3::text[])
+      GROUP BY t.hourly_rate_ore, p.hourly_rate_ore`,
+    [companyId, projectId, FORBRUKANDE_STATUSAR],
+  );
+  return ofordeladUrGrupper(r.rows);
+}
+
+export const SAVEPOINT_FORBRUKNING = 'forbrukning_niva';
+
+/** Ett läsfel blir oläst och lämnar transaktionen användbar för övriga värden. */
+export async function lasEllerOlast<T>(client: PoolClient, avtalId: string | null, las: () => Promise<T>): Promise<Lasvarde<T>> {
+  await client.query(`SAVEPOINT ${SAVEPOINT_FORBRUKNING}`);
+  try {
+    const varde = await las();
+    await client.query(`RELEASE SAVEPOINT ${SAVEPOINT_FORBRUKNING}`);
+    return last(varde, KALLA_REDOVISNING, new Date().toISOString());
+  } catch (err) {
+    await client.query(`ROLLBACK TO SAVEPOINT ${SAVEPOINT_FORBRUKNING}`);
+    await client.query(`RELEASE SAVEPOINT ${SAVEPOINT_FORBRUKNING}`);
+    // Driftloggen får id och SQLSTATE, aldrig fritext eller hela felobjektet.
+    const code = err !== null && typeof err === 'object' && Object.hasOwn(err, 'code') ? (err as { code: unknown }).code : undefined;
+    const felkod = typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? code : 'okant_fel';
+    console.error('[förbrukning] läsning misslyckades', avtalId ?? 'uppdraget', felkod);
+    return olast(KALLA_REDOVISNING, null);
+  }
 }
 
 interface Uppdragsrad {
@@ -491,14 +548,21 @@ export async function lasUppdragspengar(
   if (avtalsrader.length === 0) throw new NotFoundError('project');
 
   const avtal: Avtalspengar[] = [];
-  const lastNar = new Date().toISOString();
+  const ofordelad = await lasEllerOlast(client, null, () => lasOfordeladTid(client, companyId, input.project_id));
   for (const rad of avtalsrader) {
+    const lastNar = new Date().toISOString();
     const contractId = rad.id as string;
     // `listContracts` bär redan husets enda takberäkning per avtal
     // (`forbrukningForAvtal`) — en egen omkörning hade varit samma fråga två
     // gånger, och två svar på den frågan är ett fel.
     const delar = (rad.parts as Delforbrukning[] | undefined) ?? [];
     const rot = rotdel(delar);
+    const koder = await lasEllerOlast(client, contractId, async () =>
+      (await lasLeverabelregister(client, companyId, { contract_id: contractId })).map((l) => l.kod));
+    const forbrukning = ofordelad.lage === 'olast' || koder.lage === 'olast' || ofordelad.varde === null || koder.varde === null
+      ? olast<Forbrukningsnivaer>(KALLA_REDOVISNING, null)
+      : last(forbrukningsnivaer({ delar, leverabelkoder: koder.varde, ofordelad: ofordelad.varde, ofordelad_ingar: avtalsrader.length === 1 }), KALLA_REDOVISNING, lastNar);
+    if (forbrukning.varde?.uppdrag) assertSafeOre(forbrukning.varde.uppdrag.oren);
     const cache = await svepvarden(client, companyId, contractId);
     const kostnader = await kostnaderForAvtal(client, companyId, contractId);
     const obundna = await obundnaForAvtal(client, companyId, contractId);
@@ -514,7 +578,8 @@ export async function lasUppdragspengar(
       },
       prognos: svept(cache.find((v) => v.nyckel === 'prognos'), prognosramar),
       troskellarm: svept(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall),
-      kostnader,
+      forbrukning,
+      kostnader: last(kostnader, KALLA_REDOVISNING, lastNar),
       obundna_kostnader: last(obundna, KALLA_REDOVISNING, lastNar),
       kostnadstotal: last(kostnadstotal(kostnader, obundna), KALLA_REDOVISNING, lastNar),
     });
@@ -530,5 +595,6 @@ export async function lasUppdragspengar(
       customer_name: uppdrag.customer_name,
     },
     avtal,
+    ofordelad,
   };
 }

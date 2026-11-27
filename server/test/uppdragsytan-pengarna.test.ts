@@ -422,7 +422,7 @@ describe('(c) bekräftat tak, taxa och bokad framtid', () => {
     expect(main).toContain('tröskeln läst av svepet');
     expect(main).toContain('prognosen läst av svepet');
     // Färskheten står per värde och aldrig som en sidstämpel.
-    expect((main.match(/class="farskhet"/g) ?? [])).toHaveLength(2);
+    expect((main.match(/class="farskhet"/g) ?? [])).toHaveLength(4);
   });
 });
 
@@ -476,7 +476,7 @@ describe('(d) när prognosen vägrar gissa ritas ingen kurva', () => {
 
 describe('(e) kostnaderna', () => {
   it('tjänsten läser båda de bundna kvittona, i datumordning', async () => {
-    const kostnader = (await pengar(projektA)).avtal[0]!.kostnader;
+    const kostnader = (await pengar(projektA)).avtal[0]!.kostnader.varde!;
     expect(kostnader.map((k) => k.receipt_id)).toEqual([axisKvitto, obokfortKvitto]);
     expect(kostnader[0]).toMatchObject({
       datum: dag(-5), leverantor: 'Axis Communications AB', status: 'booked', oplanerad: true,

@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — 5-2-forbrukningen-mot-ram-tar-med-det-som-inte-ar-fordelat.**
+  Pengarna läser ofördelad förbrukande tid en gång per uppdrag, med husets
+  taxeordning och öresregel. Den rena nivåregeln räknar totalen med ofördelat
+  vid ett avtal, visar egen ram per nivå och gissar ingen leverabel eller
+  strömram. Flera avtal visar ofördelat en gång före avtalen. Förbrukningens
+  läsningar skyddas med savepoint och blir olästa vid fel. Kostnaderna bär
+  källa och lästid per avtal och rad. Husets Public Sans, tokens, numeriska
+  tabeller, statuschip och tomgrammatik följs; befintlig mobilstapling och
+  fokusordning används utan nya kontroller, CSS eller skript. Laddning och
+  sidfel följer den befintliga serverrenderingen. Ingen migration, rutt,
+  åtgärd eller nytt beroende tillkom; CRM-kontraktet oförändrat. Inga RESTER.
+  N0 a–l, N1, F1 a–i, V0 a–h, V1 a–f, A1 a–c och D1 är skrivna i
+  uppdragsytan-forbrukning och dess rena hjälpfil. Befintliga prov ändras
+  endast enligt Task 2.5 och 3.5. Typkontrollen har passerat efter Task 1–4.
+  Riktade och fulla testförsök före/efter kodstegen gav exit 1 före fallen:
+  `Error: connect EPERM 127.0.0.1:5433 - Local (undefined:undefined)`.
+  Fallen är inte körda här och kallas inte gröna; kedjan kör typkontrollen
+  och hela sviten före granskningen. Slutgrinden: typkontroll exit 0,
+  riktat och fullt npm test exit 1 före fallen med samma EPERM; även den
+  upprepade fullsviten i steg 9 stoppas före fallen. git diff --check exit 0.
+  Definition-of-done prövad i berättelsens Dev Agent Record punkt för punkt,
+  med testgrinden uttryckligen öppen enligt databasundantaget. Status review.
+  Ingen tjänst eller visuell webbläsarkontroll startad, inget bygge eller
+  Hermes driftprov kört. bmadglidning står RÖD sedan tidigare enligt
+  berättelsens baslinje. Läget visar ännu förbrukningen utan ofördelad tid
+  tills Story 6.1 och 6.2 läser samma regel. Kedjan granskar, mergar och
+  driftsätter; ingen driftåtgärd utförd här.
+
 - **2026-11-27 — Omtag: 5-1-varje-kostnadsbindning-nar-david-som-forifyllt-forslag.**
   Granskningsfyndet om sex saknade provfiler prövat mot git, inte bara
   arbetskopian. Alla sex finns redan i `main...HEAD`, commit `0747ec0`:
