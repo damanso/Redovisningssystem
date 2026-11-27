@@ -18,7 +18,10 @@ zod-schema och en känslighetsnivå:
 En action kan dessutom ha det valfria fältet `kravManniska: true`, som betyder att
 bara en människa får köra den: ett agent-anrop avvisas i `executeAction` med
 `403 human_required` innan något skrivs (till skillnad från `sensitive`, som köar
-begäran för godkännande). Uppdragsytans mänskliga beslut och bedömningar använder fältet.
+begäran för godkännande). Uppdragsytans mänskliga beslut och bedömningar använder fältet,
+och sedan Davids beslut 26/11 även `approve_time_entries`. Samma beslut stänger
+statusbytet i `update_time_entry` för agenter, men där i tjänsten och inte med
+fältet, eftersom Hermes kompletterar sina förslag med den åtgärden.
 
 Alla actions kör mot kärnans tjänster med samma serverpåtvingade regler: tenant
 härleds från medlemskap (RLS), verifikat är oföränderliga, allt auditloggas.
@@ -511,6 +514,14 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
   `justerad` och `ignorerad` utom tillbaka till `forslag` — aldrig till eller
   från `fakturerad` (409 `invalid_status_transition`). `justerad`/`ignorerad`
   kräver `adjustment_reason`.
+  **En agent får bara komplettera ett förslag (Davids beslut 26/11).** Åtgärden
+  saknar `kravManniska`, för Hermes kompletterar sina förslag här (Story 10.2).
+  Tjänsten (`updateTimeEntry`) ger däremot en agent **403 `human_required`** när
+  anropet byter status (även `forslag → godkand`) eller rör en post som inte är
+  `forslag`, till exempel minuterna på godkänd tid. Bytena ovan gäller alltså
+  bara en människa. Agentens anrop som stannar på `forslag` går som förut.
+  Spärren prövas efter `expected` (se nedan) och före första skrivningen, så
+  ingenting skrivs, inte heller någon auditrad.
   **Debiterbar tid skrivs aldrig tyst:** ändras `minutes` utan att
   `billable_minutes` skickas lämnas de debiterbara orörda, och skiljer de sig
   därefter måste posten uttryckligen sättas till `justerad` med skäl (400
@@ -522,7 +533,8 @@ fortfarande vad som HÄNDE; `billable_minutes` är vad kunden betalar, och
     av statusarna ovan. `adjustment_reason: null` är ett eget värde.
     Ordningen är först 409 `time_entry_locked` för fakturerad tid, sedan 409
     `time_entry_changed` om något värde skiljer sig från raden låst med
-    `SELECT … FOR UPDATE`, sedan `invalid_status_transition` och övriga regler.
+    `SELECT … FOR UPDATE`, sedan 403 `human_required` för en agent, sedan
+    `invalid_status_transition` och övriga regler.
     Vid `time_entry_changed` skrivs ingenting, inte heller någon auditrad.
     Utan `expected` görs ingen jämförelse. `work_date`, `duration`,
     `description` och `contract_part_id` jämförs inte. Vyn skickar aldrig
@@ -853,12 +865,28 @@ Avsändarens hela kontrakt — med exempel och regeln för `reasoning` — står
   på förslaget, och kön frågar *"redan registrerad?"*. Vi vägrar inte — det kan
   vara två olika arbeten — men en tyst andra rad är hur samma timme faktureras
   två gånger.
-- `approve_time_entries` (write) — `ids[]` (max 500), valfria `status`
+- `approve_time_entries` (write, **`kravManniska: true`**, bara en människa) —
+  `ids[]` (max 500), valfria `status`
   (`godkand`|`justerad`|`ignorerad`, default `godkand`) och
   `adjustment_reason` som gäller hela batchen, samt `per_id[]` med
   `{id, status?, billable_minutes?, adjustment_reason?, contract_part_id?,
   project_id?}` för raderna som avviker. Svar:
   `{processed, godkand, justerad, ignorerad, moved}`.
+  - **Kräver en människa (Davids beslut 26/11).** Godkänd tid är det som
+    faktureras. Ett agentanrop med giltigt indata, till exempel från Hermes
+    MCP-nyckel, ger **403 `human_required`** i `executeAction` före varje
+    skrivning. Ogiltigt indata ger 400 `validation_error` först, eftersom
+    schemat prövas före spärren, som för övriga åtgärder med `kravManniska`.
+    Spärren gäller alla tre statusarna. Den ger ingen köpost, ingen auditrad
+    och ingen statusändring, så posten står kvar som `forslag`. Den andra vägen
+    till samma statusbyte, `update_time_entry`, är stängd för agenter i
+    tjänsten (se ovan). Tjänsten får också aktören från åtgärden, så den
+    spärren gäller även här. Hermes föreslår tid med `propose_time_entries`,
+    som saknar spärren, och David godkänner den i vyn under *Tidsförslag* eller
+    med sin egen inloggning. MCP-verktygslistan visar ännu inte att åtgärden
+    kräver en människa (`requires_approval` gäller bara `sensitive`). Agenten
+    får veta det först när den får 403. Det gäller alla åtgärder med
+    `kravManniska`.
   - Statusbytet går genom **`updateTimeEntry`** och därmed genom
     `TILLATNA_BYTEN`, kravet på skäl för `justerad`/`ignorerad`, kravet på
     avtalsdel (400 `contract_part_required`) och låset mot fakturerade poster

@@ -1420,6 +1420,10 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     title: 'Ändra eller omklassa tidpost',
     // write, inte sensitive: posten är ett underlag, inte pengar. Det som
     // flyttar pengar är faktureringen, och en fakturerad post är låst här.
+    // Ingen `kravManniska`: Hermes kompletterar sina förslag här (Story 10.2).
+    // Men ctx.actor går till tjänsten, som ger en agent 403 `human_required`
+    // för varje statusbyte och varje post som inte är ett förslag (Davids
+    // beslut 26/11, samma skäl som på approve_time_entries).
     sensitivity: 'write',
     inputSchema: z
       .object({
@@ -1450,7 +1454,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
           .optional(),
       })
       .strict(),
-    handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => updateTimeEntry(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
   }),
   def({
     name: 'list_time_entries',
@@ -1504,7 +1508,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   //
   // Båda är `write`: ett förslag är ett utkast, inte pengar, och spärren mot
   // att det blir pengar sitter i statusen (`forslag` kan aldrig faktureras) och
-  // i att godkännandet kräver en människa i vyn. Att lägga dem i
+  // i att godkännandet kräver en människa (beslut 26/11). Att lägga dem i
   // godkännandekön hade betytt att varje natt-batch krävde ett klick för att
   // ens få SYNAS i kön — en kö framför kön.
   // -------------------------------------------------------------------------
@@ -1548,7 +1552,14 @@ export const ACTIONS: readonly ActionDef<never>[] = [
   def({
     name: 'approve_time_entries',
     title: 'Godkänn, justera eller ignorera tidsförslag (batch)',
+    // `write` + `kravManniska` (Davids beslut 26/11): godkänd tid är det som
+    // faktureras, så det ja:et får bara en människa ge. Hermes föreslår tid
+    // (`propose_time_entries`, ingen spärr) men godkänner den inte: ett
+    // agentanrop avvisas i executeAction med 403 `human_required`, före varje
+    // skrivning. Den andra vägen, statusbyte med update_time_entry, stängs i
+    // updateTimeEntry. Vyns knappar kör som actor 'human' och går igenom som förut.
     sensitivity: 'write',
+    kravManniska: true,
     inputSchema: z
       .object({
         ids: z.array(UuidSchema).min(1).max(500),
@@ -1573,7 +1584,7 @@ export const ACTIONS: readonly ActionDef<never>[] = [
           .optional(),
       })
       .strict(),
-    handler: (ctx, i) => approveTimeEntries(ctx.client, ctx.companyId, ctx.userId, i as never),
+    handler: (ctx, i) => approveTimeEntries(ctx.client, ctx.companyId, ctx.userId, ctx.actor, i as never),
   }),
   // -------------------------------------------------------------------------
   // Avtal och avtalsdelar (story 3). Avtalet är det kunden känner igen: faser

@@ -153,6 +153,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Tidsgodkännandet kräver en människa (Davids beslut 26/11 22:03, «ja»).**
+  `approve_time_entries` bär `kravManniska: true` i registret, med en kommentar
+  om skälet: godkänd tid är det som faktureras. Ett agentanrop, till exempel
+  Hermes MCP-nyckel, får 403 `human_required` före varje skrivning, oavsett
+  status. Det ger ingen köpost, ingen auditrad och ingen statusändring.
+  Andra varvet stängde den andra vägen: `update_time_entry` lät en agent byta
+  `forslag → godkand` och ändra minuterna på godkänd tid. `updateTimeEntry`
+  (och `approveTimeEntries`, som anropar den) tar nu aktören som
+  `createTimeEntry`. En agent får 403 `human_required` för varje statusbyte och
+  för varje post som inte är `forslag`. Spärren prövas efter `expected` och före
+  första skrivningen. Hermes komplettering med `status: 'forslag'` (Story 10.2)
+  går som förut. Tolkningen är att beslutet 26/11 gäller båda vägarna. Ska
+  agenten få röra beslutad tid igen, ändras villkoret i `updateTimeEntry`.
+  `propose_time_entries` är orörd, och vyns godkännande (`korTidsAction`, actor
+  `human`) går igenom som förut. Testerna i `tidsforslag.test.ts`: deklarationen,
+  agentens avvisade godkännande i båda åtgärderna, agenten mot godkänd tid och
+  människans godkännande. Agentens förslag prövas redan i intagstestet. I
+  `tidpost-livscykel.test.ts` (P8) anropas `updateTimeEntry` direkt med aktör.
+  Körningarna gjordes med `TEST_DB_NAME=redovisning_test_tidgodk`, eftersom en
+  hel svit körde i `/opt/redovisning/server` mot `redovisning_test`. Grön
+  körning: båda filerna gav 86/86. Typecheck och build gav exit 0. Röd
+  kontroll: utan båda spärrarna fälls 5 av 43 i `tidsforslag`, och utan
+  tjänstespärren fälls 2 av 43. Utan bara flaggan fälls 1 av 43
+  (deklarationen), eftersom tjänsten stoppar agenten ändå. **Obs:** två tidiga
+  körningar mot standardnamnet hann starta globalSetup (`DROP DATABASE … WITH
+  (FORCE)`) medan den hela sviten körde. Den sviten kan ha fått fel som inte är
+  kodfel. Hela sviten är inte körd här. Öppet (lågt, gäller alla
+  `kravManniska`): MCP-verktygslistan säger inte att åtgärden kräver en
+  människa. MCP_ACTIONS är uppdaterad. Ingen migration och inga nya beroenden.
+
 - **2026-11-27 — 4-1-bradan-och-tabellen-visar-samma-falt.**
   Registret läser revision och mottagare ur senaste överlämningen med bolagsfilter.
   Brädan och tabellen renderar samma elva fält ur en ren lista och cellrenderare,

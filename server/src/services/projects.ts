@@ -2,7 +2,7 @@
 // en valfri timtaxa/budget. Tidposter loggas i minuter mot ett projekt. Belopp
 // beräknas i ören som round(minuter/60 * timtaxa), aldrig float i lagring.
 import type { PoolClient } from 'pg';
-import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { hhmm, parseDuration } from '../lib/duration.js';
@@ -466,9 +466,12 @@ export function avvikandeFalt(rad: ForvantadTidpost, expected: ForvantadTidpost)
  *     sig därefter måste posten uttryckligen sättas till 'justerad' med skäl.
  *     Alternativet (låta debiterbar tid följa med automatiskt) hade gjort en
  *     rättelse av registrerad tid till en tyst ändring av vad kunden betalar.
+ *
+ * `andradAv` avgör vad anroparen får röra: en agent bara ett förslag som
+ * förblir förslag (Davids beslut 26/11, se spärren nedan).
  */
 export async function updateTimeEntry(
-  client: PoolClient, companyId: string, userId: string, input: UpdateTimeEntryInput,
+  client: PoolClient, companyId: string, userId: string, andradAv: Actor, input: UpdateTimeEntryInput,
 ): Promise<Record<string, unknown>> {
   const res = await client.query<TimeEntryRow>(
     `SELECT id, project_id, status, minutes, billable_minutes, adjustment_reason, approved_by, contract_part_id
@@ -499,6 +502,22 @@ export async function updateTimeEntry(
   }
 
   const nyStatus = input.status ?? rad.status;
+
+  // Davids beslut 26/11: godkänd tid är det som faktureras, så bara en människa
+  // godkänner den. En agent får komplettera ett förslag som förblir förslag
+  // (Story 10.2), men inte byta status och inte röra en post som en människa
+  // redan beslutat om. Annars hade den här åtgärden varit en andra väg runt
+  // `kravManniska` på approve_time_entries, och en agent hade kunnat ändra
+  // minuterna på godkänd tid. Prövas efter expected, så att en post som
+  // ändrats sedan den lästes fortfarande rapporteras som ändrad, och före
+  // första skrivningen: transaktionen rullas tillbaka utan auditrad.
+  if (andradAv !== 'human' && (rad.status !== 'forslag' || nyStatus !== 'forslag')) {
+    throw new ForbiddenError(
+      'human_required',
+      'bara en människa byter status på en tidpost eller ändrar en post som inte är ett förslag',
+    );
+  }
+
   if (nyStatus !== rad.status && !TILLATNA_BYTEN[rad.status].includes(nyStatus)) {
     throw new ConflictError(
       'invalid_status_transition', `statusbytet ${rad.status} → ${nyStatus} är inte tillåtet`,

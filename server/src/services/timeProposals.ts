@@ -26,6 +26,7 @@
 //      en människa sagt vems arbetet var.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
+import type { Actor } from '../http/middleware/authenticate.js';
 import { buildAllowlistedUpdate } from '../lib/updateBuilder.js';
 import { writeAudit } from './auditService.js';
 import { listContracts } from './contracts.js';
@@ -390,9 +391,12 @@ export interface ApproveResult {
  * **Batchen är allt eller inget.** Faller en rad rullas hela anropet tillbaka.
  * Alternativet — hoppa över raden och svara ok — är exakt den tysta halva
  * skrivningen som julifelet bestod av: kön ser tömd ut, en post ligger kvar.
+ *
+ * `godkandAv` förs vidare till `updateTimeEntry`, som avvisar en agents
+ * statusbyte. Åtgärden bär redan `kravManniska`, så det är en andra spärr.
  */
 export async function approveTimeEntries(
-  client: PoolClient, companyId: string, userId: string, input: ApproveInput,
+  client: PoolClient, companyId: string, userId: string, godkandAv: Actor, input: ApproveInput,
 ): Promise<ApproveResult> {
   const per = new Map<string, ApproveOverride>();
   for (const o of input.per_id ?? []) {
@@ -476,7 +480,7 @@ export async function approveTimeEntries(
       );
     }
 
-    await updateTimeEntry(client, companyId, userId, {
+    await updateTimeEntry(client, companyId, userId, godkandAv, {
       time_entry_id: id,
       status,
       ...(o.billable_minutes !== undefined ? { billable_minutes: o.billable_minutes } : {}),
