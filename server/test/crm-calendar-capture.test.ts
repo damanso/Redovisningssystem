@@ -22,11 +22,11 @@ const IDAG_TEXT = 'Kommer något in via mail, möten eller ärenden dyker det up
 const LEDE_TEXT = 'Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten, ärenden och bokförda fakturor. Ingen inmatning krävs.';
 /** Relationers tomläge med kalendern i drift. */
 const TOMT_TEXT = 'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.';
-/** De tre löftestexterna, 5.1:s literaler: kalendern är ingen löftesväg och ändrar dem inte. */
+/** De tre löftestexterna med konstanten i drift (5.11): kalendern är ingen löftesväg och ändrar dem inte. */
 const LOFTESTEXTER = {
-  commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern, och du kan lägga till ett under Lova något på en relation.',
-  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.',
-  customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.',
+  commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.',
+  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.',
+  customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.',
 };
 /**
  * Länkfragmentet för ett `eid`, som källraden skriver det (UX K5). En hjälpare
@@ -79,17 +79,17 @@ function harTystnad(text: string, n: number, enhet: ' d sedan' | ' dagar'): bool
 }
 
 describe('kalendern i fångstvägarna (5.9)', () => {
-  it('F1 konstanten är exakt mail, kalendern och ärenden bland kontaktvägarna, löftesvägarna som förut, och är fryst', () => {
+  it('F1 konstanten är exakt mail, kalendern och ärenden bland kontaktvägarna, AI-samtalet bland löftesvägarna (5.11), och är fryst', () => {
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual({
       contacts: ['mail', 'calendar', 'issues'],
-      commitments: ['issues_waiting_external', 'promise_form'],
+      commitments: ['issues_waiting_external', 'ai_conversation', 'promise_form'],
     });
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION)).toBe(true);
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION.contacts)).toBe(true);
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION.commitments)).toBe(true);
   });
 
-  it('F2 löftestexterna är 5.1:s och nämner varken möten eller kalendern', () => {
+  it('F2 löftestexterna är konstantens och nämner varken möten eller kalendern', () => {
     const t = captureTexts(CAPTURE_PATHS_IN_OPERATION);
     const loften = {
       commitmentsOpenEmpty: t.commitmentsOpenEmpty,
@@ -111,7 +111,7 @@ describe('kalendern i fångstvägarna (5.9)', () => {
       // möte skett, inte vad som lovades). Vidgas typen blir direktivet oanvänt
       // och typkontrollen röd.
       // @ts-expect-error 'calendar' är ingen CommitmentCapturePath
-      commitments: ['issues_waiting_external', 'calendar', 'promise_form'],
+      commitments: ['issues_waiting_external', 'ai_conversation', 'calendar', 'promise_form'],
     });
     expect(t).toEqual(captureTexts(CAPTURE_PATHS_IN_OPERATION));
   });

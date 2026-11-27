@@ -153,6 +153,25 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Story 5.11 (crm).**
+  AI-samtalet tillagt bland löftesvägarna i `CAPTURE_PATHS_IN_OPERATION`;
+  hintens form skiljer källor från tillfällen enligt UX K8. De befintliga tre
+  löftesytorna läser fortsatt samma textbyggare. Husets Public Sans, textskala,
+  färgtokens, hintar, tomlägen och fokusram används; markup och fokusordning
+  är oförändrade. Två nya provfiler: S1–S6 täcker konstant, exakta texter,
+  slutna typer och hintformer; Y1–Y4 läser de renderade ytorna; U0–U3 tar bort
+  AI-samtalet ur konstanten. Y5 prövar stycket i `docs/MCP_ACTIONS.md`.
+  Exakta facit uppdaterade i fem befintliga provfiler. Faktiskt rött före kod:
+  hintassertionen, S1/S2/S5 och Y5. Typkontroll och bygge exit 0; S1–S6,
+  P1–P8 och Y5 gav `Tests 15 passed | 13 skipped (28)` i kompletterande
+  Vitest-körning utan databasuppstart. Hela `npm test` har anropats före och
+  efter varje uppgift men stannar före fallnivå med
+  `connect EPERM 127.0.0.1:5433`; vyprov och full regression är därmed inte
+  körda här. Kedjans testgrind återstår enligt databasundantaget.
+  Inget API-kontrakt ändrat. Texterna lovar fångsten i AI-samtalet:
+  driftsättningen förutsätter att 5.10:s avsnitt står i valvets CLAUDE.md och
+  att provet loftesfangst säger *avsnittet finns*. Det är inte verifierat här.
+
 - **2026-11-27 — Omtag: 4-3-uppdragsvyn-visar-nasta-leverans.**
   Rättat D1:s Markdown-avgränsning i
   `server/test/uppdragsytan-nasta-leverans.test.ts`: ett borttaget `#` gjorde

@@ -1,10 +1,9 @@
-// Story 5.1, FR-31, kriterium 4: en yta som skriver sin fångsttext för hand i
-// stället för att läsa `CAPTURE_TEXTS` glider isär från konstanten, och nästa
-// väg som tas i drift (kalendern i 5.9, AI-samtalet i 5.11) syns då inte där.
-// Den negativa kontrollen byter `CAPTURE_PATHS_IN_OPERATION` mot en utökad
-// konstant och läser samma fem ytor genom hela stacken (inloggning, pageFor,
-// tenanttransaktionen, Postgres). `vi.mock` gäller hela filen; därför är den
-// här kontrollen en egen fil. Facit är literaler ur Dev Notes (P4 och P5).
+// Story 5.1, FR-31: fångsttexterna läses genom hela stacken med en utbytt
+// konstant. UTOKAD är efter 5.9 och 5.11 lika med konstanten i drift, så
+// M1–M5 är regressionsfall med facit som literaler från 5.1:s Dev Notes.
+// Negativa kontroller: N0–N2 i crm-calendar-capture-mock.test.ts för
+// kontakttexterna och U0–U3 i crm-ai-capture-mock.test.ts för löftestexterna.
+// `vi.mock` gäller hela filen; därför ligger kontrollen i en egen fil.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { CapturePaths } from '../src/lib/crmRules.js';
@@ -41,7 +40,7 @@ const UTOKADE = {
   relationsLede: 'härlett ur mail, möten, ärenden och bokförda fakturor',
   relationsEmpty: 'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.',
   commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.',
-  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern och som du nämner för AI:n kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.',
+  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.',
   customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.',
 };
 
@@ -87,31 +86,31 @@ describe('fångsttexterna följer konstanten i alla fem ytor (negativ kontroll)'
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual(UTOKAD);
   });
 
-  it('M1 åtagandevyn säger AI-samtalet och inte dagens mening', async () => {
+  it('M1 åtagandevyn säger AI-samtalet och inte 5.1:s mening', async () => {
     const sida = await las(`/app/c/${tomt}/commitments`);
     expect(sida).toContain(UTOKADE.commitmentsOpenEmpty);
     expect(sida).not.toContain(I_DRIFT.commitmentsOpenEmpty);
   });
 
-  it('M2 hinten i Lova något säger AI-samtalet och inte dagens mening', async () => {
+  it('M2 hinten i Lova något säger AI-samtalet och inte 5.1:s mening', async () => {
     const sida = await las(`/app/c/${fullt}/relations/${relationId}`);
     expect(sida).toContain(UTOKADE.promiseFormHint);
     expect(sida).not.toContain(I_DRIFT.promiseFormHint);
   });
 
-  it('M3 kundkortets tomma Åtaganden säger AI-samtalet och inte dagens mening', async () => {
+  it('M3 kundkortets tomma Åtaganden säger AI-samtalet och inte 5.1:s mening', async () => {
     const sida = await las(`/app/c/${fullt}/customers/${kundId}`);
     expect(sida).toContain(UTOKADE.customerCardEmpty);
     expect(sida).not.toContain(I_DRIFT.customerCardEmpty);
   });
 
-  it('M4 Idag säger möten och inte dagens mening', async () => {
+  it('M4 Idag säger möten och inte 5.1:s mening', async () => {
     const sida = await las(`/app/c/${tomt}/idag`);
     expect(sida).toContain(UTOKADE.todayQuiet);
     expect(sida).not.toContain(I_DRIFT.todayQuiet);
   });
 
-  it('M5 Relationers ingress och tomläge säger möten och inte dagens meningar', async () => {
+  it('M5 Relationers ingress och tomläge säger möten och inte 5.1:s meningar', async () => {
     const sida = await las(`/app/c/${tomt}/relations`);
     expect(sida).toContain(UTOKADE.relationsLede);
     expect(sida).toContain(UTOKADE.relationsEmpty);

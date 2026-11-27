@@ -5,31 +5,32 @@
 // och de fem ytorna i webbvyn genom hela stacken. Facit är literaler ur
 // epics.md och berättelsens Dev Notes, aldrig räknade ur koden som prövas.
 // Story 5.9 lade kalendern bland kontaktvägarna, så facit beskriver konstanten
-// i drift efter den.
+// i drift efter den. Story 5.11 lade AI-samtalet bland löftesvägarna, så
+// facit beskriver konstanten i drift efter den.
 import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { captureTexts, type CapturePaths } from '../src/lib/crmRules.js';
 import { CAPTURE_PATHS_IN_OPERATION } from '../src/services/crmDerivations.js';
 import { api, app, createCompany, registerUser, type TestUser } from './helpers.js';
 
-/** De sex texterna för konstanten i drift (5.9), ordagrant (kriterium 2 och 3). */
+/** De sex texterna för konstanten i drift (5.9 och 5.11), ordagrant (kriterium 2 och 3). */
 const I_DRIFT = {
   todayQuiet: 'Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.',
   relationsLede: 'Senaste kontakt, öppna löften och vad relationen är värd — härlett ur mail, möten, ärenden och bokförda fakturor. Ingen inmatning krävs.',
   relationsEmpty: 'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.',
-  commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern, och du kan lägga till ett under Lova något på en relation.',
-  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.',
-  customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.',
+  commitmentsOpenEmpty: 'Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.',
+  promiseFormHint: 'Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.',
+  customerCardEmpty: 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.',
 };
 const P4_TODAY = 'Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.';
 const P5_CUSTOMER = 'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.';
 const BARA_SAMTALET = 'Det här är för det som sades i ett samtal eller möte.';
 
 describe('fångsttexterna, rena', () => {
-  it('P1 konstanten är exakt vägarna i drift — kalendern sedan 5.9 — och är fryst', () => {
+  it('P1 konstanten är exakt vägarna i drift — kalendern sedan 5.9, AI-samtalet sedan 5.11 — och är fryst', () => {
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual({
       contacts: ['mail', 'calendar', 'issues'],
-      commitments: ['issues_waiting_external', 'promise_form'],
+      commitments: ['issues_waiting_external', 'ai_conversation', 'promise_form'],
     });
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION)).toBe(true);
     expect(Object.isFrozen(CAPTURE_PATHS_IN_OPERATION.contacts)).toBe(true);
@@ -65,13 +66,13 @@ describe('fångsttexterna, rena', () => {
     expect(t.customerCardEmpty).toBe(I_DRIFT.customerCardEmpty);
   });
 
-  it('P5 negativ kontroll: AI-samtalet i drift ändrar de tre löftestexterna och inga andra', () => {
+  it('P5 AI-samtalet i drift (5.11) ger de tre löftestexterna och ändrar inga andra', () => {
     const t = captureTexts({
       contacts: CAPTURE_PATHS_IN_OPERATION.contacts,
       commitments: ['issues_waiting_external', 'ai_conversation', 'promise_form'],
     });
     expect(t.commitmentsOpenEmpty).toBe('Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.');
-    expect(t.promiseFormHint).toBe('Löften ur ärenden märkta Väntar-extern och som du nämner för AI:n kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.');
+    expect(t.promiseFormHint).toBe('Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.');
     expect(t.customerCardEmpty).toBe(P5_CUSTOMER);
     expect(t.todayQuiet).toBe(I_DRIFT.todayQuiet);
     expect(t.relationsLede).toBe(I_DRIFT.relationsLede);
@@ -170,9 +171,9 @@ describe('fångsttexterna i ytorna', () => {
     expect(login.status, JSON.stringify(login.body)).toBe(302);
   });
 
-  it('A1 Öppna utan löften: hela meningen, länken till Klara och länken till Idag', async () => {
+  it('A1 Öppna utan löften: hela meningen med AI-samtalet, länken till Klara och länken till Idag', async () => {
     const sida = await las(`/app/c/${tomt}/commitments`);
-    expect(synlig(sida)).toContain('Inga öppna löften. Löften kommer in av sig själva från ärenden märkta Väntar-extern, och du kan lägga till ett under Lova något på en relation.');
+    expect(synlig(sida)).toContain('Inga öppna löften. Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.');
     const block = tomlaget(sida);
     expect(block).toContain(`href="/app/c/${tomt}/commitments?status=done"`);
     expect(block).toContain(`href="/app/c/${tomt}/idag"`);
@@ -206,15 +207,15 @@ describe('fångsttexterna i ytorna', () => {
     expect(tomlaget(klara)).toContain(`href="/app/c/${tomt}/commitments?status=open&amp;sfar=privat"`);
   });
 
-  it('H1 hinten i Lova något nämner ärendevägen och inte mail och möten', async () => {
+  it('H1 hinten i Lova något nämner ärendevägen och AI-samtalet och inte mail och möten', async () => {
     const sida = synlig(await las(`/app/c/${fullt}/relations/${relationId}`));
-    expect(sida).toContain('Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.');
+    expect(sida).toContain('Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.');
     expect(sida).not.toContain('Löften fångas normalt');
   });
 
-  it('C1 kundkortets tomma Åtaganden säger ärendevägen och Lova något', async () => {
+  it('C1 kundkortets tomma Åtaganden säger ärendevägen, AI-samtalet och Lova något', async () => {
     const sida = synlig(await las(`/app/c/${fullt}/customers/${kundId}`));
-    expect(sida).toContain('Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.');
+    expect(sida).toContain('Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.');
     expect(sida).not.toContain('Löften fångas ur mail');
   });
 

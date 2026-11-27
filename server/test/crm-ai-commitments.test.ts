@@ -461,19 +461,27 @@ describe('fångstvägarna och dokumentet', () => {
     kundkortet = kund.body.customer.id as string;
   });
 
-  it('C1 konstanten för fångstvägar har kalendern (5.9) och inget AI-samtal', () => {
+  it('C1 konstanten för fångstvägar har kalendern (5.9) och AI-samtalet (5.11)', () => {
     expect(CAPTURE_PATHS_IN_OPERATION).toEqual({
       contacts: ['mail', 'calendar', 'issues'],
-      commitments: ['issues_waiting_external', 'promise_form'],
+      commitments: ['issues_waiting_external', 'ai_conversation', 'promise_form'],
     });
   });
 
-  it('C2 ingen yta påstår att löften fångas när David nämner dem för AI:n', async () => {
-    const ytor: Array<[string, string[]]> = [
+  it('C2 löftesytorna nämner AI-samtalet (5.11), och Idag och Relationer gör det inte', async () => {
+    const loftesytor: Array<[string, string[]]> = [
       [`/app/c/${tomt}/commitments`, [
         'Inga öppna löften.',
-        'Löften kommer in av sig själva från ärenden märkta Väntar-extern, och du kan lägga till ett under Lova något på en relation.',
+        'Löften kommer in av sig själva från ärenden märkta Väntar-extern och när du nämner det för AI:n, och du kan lägga till ett under Lova något på en relation.',
       ]],
+      [`/app/c/${tomt}/customers/${kundkortet}`, [
+        'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern, när du nämner det för AI:n och från Lova något på relationen.',
+      ]],
+      [`/app/c/${bolag}/relations/${relation}`, [
+        'Löften ur ärenden märkta Väntar-extern kommer in av sig själva, eller när du nämner det för AI:n. Det här är för det som sades i ett samtal eller möte.',
+      ]],
+    ];
+    const kontaktytor: Array<[string, string[]]> = [
       [`/app/c/${tomt}/idag`, [
         'Avbetat för i dag',
         'Kommer något in via mail, möten eller ärenden dyker det upp av sig självt.',
@@ -482,16 +490,15 @@ describe('fångstvägarna och dokumentet', () => {
         'härlett ur mail, möten, ärenden och bokförda fakturor',
         'De flesta dyker upp av sig själva när mail, möten och ärenden kommer in.',
       ]],
-      [`/app/c/${tomt}/customers/${kundkortet}`, [
-        'Inga öppna löften. Löften kommer från ärenden märkta Väntar-extern och från Lova något på relationen.',
-      ]],
-      [`/app/c/${bolag}/relations/${relation}`, [
-        'Löften ur ärenden märkta Väntar-extern kommer in av sig själva. Det här är för det som sades i ett samtal eller möte.',
-      ]],
     ];
-    for (const [sokvag, texter] of ytor) {
+    for (const [sokvag, texter] of loftesytor) {
       const sida = synlig(await las(sokvag));
-      // Ytans egen text först, så att den negativa assertionen inte går igenom på en sida som saknar ytan.
+      for (const text of texter) expect(sida, sokvag).toContain(text);
+      expect(sida, sokvag).toContain('för AI:n');
+    }
+    for (const [sokvag, texter] of kontaktytor) {
+      const sida = synlig(await las(sokvag));
+      // Ytans egen text först, så att frånvaron inte går igenom utan ytan.
       for (const text of texter) expect(sida, sokvag).toContain(text);
       expect(sida, sokvag).not.toContain('för AI:n');
     }

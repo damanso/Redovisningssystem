@@ -181,15 +181,17 @@ export const DEFAULT_SILENCE_DAYS = 30;
  * bara det som faktiskt fångar kontakter och löften. Konstanten ändras i samma
  * ändring som en väg tas i drift: kalendern är i drift sedan 5.9 (Hermes
  * kalendergren, FR-3) och är bara en kontaktväg, eftersom ett möte registreras
- * som att det skett och inte vad som lovades; 5.11 lägger till
- * `ai_conversation`. Konstanten styr fångstmeningarna i de fem ytorna (Idag,
+ * som att det skett och inte vad som lovades. AI-samtalet är i drift sedan
+ * 5.11: Hermes chattagent registrerar löftet med `record_crm_commitment`
+ * (5.10, FR-39), och det är bara en löftesväg. Konstanten styr
+ * fångstmeningarna i de fem ytorna (Idag,
  * Relationer, åtagandevyn, Lova något och kundkortets Åtaganden), men inte
  * personregistrets ingress och kundkortets rad under Kontaktpersoner, som
  * skriver sin egen text.
  */
 export const CAPTURE_PATHS_IN_OPERATION: CapturePaths = Object.freeze({
   contacts: Object.freeze(['mail', 'calendar', 'issues'] as const),
-  commitments: Object.freeze(['issues_waiting_external', 'promise_form'] as const),
+  commitments: Object.freeze(['issues_waiting_external', 'ai_conversation', 'promise_form'] as const),
 });
 
 /**
