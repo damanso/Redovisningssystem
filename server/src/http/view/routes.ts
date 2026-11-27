@@ -890,6 +890,14 @@ async function reportingPeriod(client: PoolClient, companyId: string): Promise<{
     : { from: '0001-01-01', to: '9999-12-31' };
 }
 
+const MANADER_KORT = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+/** "27 nov" — med året när datumet ligger ett annat år än `idag`. */
+function dagManad(iso: string, idag: string): string {
+  const [ar, manad, dag] = iso.split('-');
+  const text = `${Number(dag)} ${MANADER_KORT[Number(manad) - 1]}`;
+  return ar === idag.slice(0, 4) ? text : `${text} ${ar}`;
+}
+
 // Dashboard
 viewRouter.get(
   '/c/:companyId',
@@ -933,7 +941,25 @@ viewRouter.get(
         <div class="hero-card">
           <div class="l muted" style="font-size:13px;font-weight:550">Likvida medel</div>
           <div class="big">${amount(d.bank_ore)}</div>
-          <div class="hero-note"><span>Saldo på bankkonton (1910–1940)</span></div>
+          <div class="hero-note"><span>Bokfört på bankkontona 1910–1940 per ${dagManad(d.bank_as_of, d.bank_as_of)}${
+            d.bank_last_voucher_date ? ` · senast bokförd bankhändelse ${dagManad(d.bank_last_voucher_date, d.bank_as_of)}` : ''
+          }</span></div>
+          ${
+            d.bank_import_date === null
+              ? html`<div class="hero-note"><span>Banken är inte inläst – talet är bokföringen. <a href="/app/c/${companyId}/import#bank-csv">Importera kontoutdraget</a> för att stämma av.</span></div>`
+              : d.bank_statement_date === null || d.bank_statement_ore === null
+                ? html`<div class="hero-note"><span>Banken inläst t.o.m. ${dagManad(d.bank_import_date, d.bank_as_of)}, men kontoutdraget saknar saldo – det går inte att stämma av.</span></div>`
+                : html`<div class="hero-note"><span>Banken ${dagManad(d.bank_statement_date, d.bank_as_of)}: ${amount(d.bank_statement_ore)}</span>${
+                    d.bank_diff_ore !== null && d.bank_diff_ore !== 0
+                      ? chip(`Skillnad mot bokföringen: ${money(d.bank_diff_ore)} kr`, 'warn', '!')
+                      : ''
+                  }</div>`
+          }
+          ${
+            d.bank_future_ore !== 0
+              ? html`<div class="hero-note"><span>${amount(d.bank_future_ore)} bokfört med datum efter i dag ingår inte.</span></div>`
+              : ''
+          }
         </div>
       </div>
       <div class="kpi-grid">
@@ -11288,7 +11314,7 @@ viewRouter.get('/c/:companyId/import', pageFor('import', 'Import', async (client
               <label class="field" style="margin:0"><span>SIE-innehåll</span><textarea name="sie_content" rows="8" required style="width:100%;font-family:monospace;font-size:12.5px"></textarea></label>
               <div><button class="btn btn--primary" type="submit">Importera SIE…</button></div></form>`
       }</div></div>
-    <div class="panel" style="margin-top:14px"><div class="panel__head"><h2>Bank-CSV</h2></div><div class="panel__body" style="padding:14px 16px">
+    <div class="panel" id="bank-csv" style="margin-top:14px"><div class="panel__head"><h2>Bank-CSV</h2></div><div class="panel__body" style="padding:14px 16px">
       <p class="muted" style="font-size:12.5px;margin-bottom:8px">Klistra in en CSV med kolumnerna datum, text, belopp (och valfritt saldo). Dubbletter hoppas automatiskt.</p>
       <form method="post" action="/app/c/${companyId}/import/bank" style="display:grid;gap:10px">
         <label class="field" style="margin:0"><span>CSV-innehåll</span><textarea name="csv_content" rows="6" required style="width:100%;font-family:monospace;font-size:12.5px"></textarea></label>
