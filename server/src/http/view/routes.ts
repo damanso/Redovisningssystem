@@ -119,6 +119,7 @@ import { createFiscalYear, listFiscalYears } from '../../services/accounting/fis
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
+import { nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
 
 // En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
 // (Idag, Relationer, åtagandevyn, Lova något och kundkortets Åtaganden) skriver
@@ -5408,7 +5409,7 @@ function ramblock(b: Rambild, harSvep: boolean): Raw {
     <p style="margin:4px 0 0;font-size:13px">${
       b.forbrukatEtikett === null
         ? html`<span class="muted">Ingen förbrukande tid är registrerad på avtalet ännu.</span>`
-        : html`Registrerat <strong>${b.forbrukatEtikett}</strong> av ${
+        : html`Registrerat på avtalsdelarna <strong>${b.forbrukatEtikett}</strong> av ${
           b.takEtikett === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : b.takEtikett}`}</p>
     ${kurva ?? ''}
     ${ramdatumtext(b, harSvep)}
@@ -5474,29 +5475,33 @@ function beloppForKostnad(k: { status: string; total_ore: number }): Raw {
 
 function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
   const obundna = a.obundna_kostnader.varde ?? [];
-  if (a.kostnader.length === 0 && obundna.length === 0) {
+  const bundna = a.kostnader.varde ?? [];
+  const lastText = (v: { kalla: string; last_nar: string | null }): string => v.last_nar === null
+    ? 'lästid saknas' : direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag);
+  if (bundna.length === 0 && obundna.length === 0) {
     return html`<p style="margin:14px 0 0;font-size:14px"><strong>Ingen kostnad är bunden till avtalet.</strong>
       En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, efter ditt godkännande — aldrig på den här sidan.
       <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</p>`;
   }
   const total = a.kostnadstotal.varde;
   return html`<div class="table-wrap" style="margin-top:14px"><table>
-      <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th></tr></thead>
-      <tbody>${a.kostnader.map((k) => html`<tr class="pengarad">
+      <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th><th>Läst</th></tr></thead>
+      <tbody>${bundna.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
         <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
         <td><span class="code">${k.kod}</span>${k.oplanerad ? html` ${chip('Oplanerad', 'warn', '!')}` : ''}</td>
-        <td class="num">${beloppForKostnad(k)}</td></tr>`)}
+        <td class="num">${beloppForKostnad(k)}</td><td>${lastText(a.kostnader)}</td></tr>`)}
       ${obundna.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
         <td>${k.leverantor ?? saknatFalt('Ingen leverantör')}</td>
         <td>${chip('Obunden', 'muted', '○')}</td>
-        <td class="num">${beloppForKostnad(k)}</td></tr>`)}
+        <td class="num">${beloppForKostnad(k)}</td><td>${lastText(a.obundna_kostnader)}</td></tr>`)}
       </tbody></table></div>
+    ${bundna.length > 0 ? farskhetsrad([a.kostnader.last_nar === null ? 'bundna kostnader: lästid saknas' : `bundna kostnader ${lastText(a.kostnader)}`]) : ''}
     ${total ? html`<p>Kostnader totalt, bokfört: ${amount(total.bokfort_ore)}, varav obundet ${amount(total.varav_obundet_ore)}.
       ${total.ej_bokforda > 0 ? `${total.ej_bokforda} ${total.ej_bokforda === 1 ? 'kostnad är' : 'kostnader är'} ej bokförd${total.ej_bokforda === 1 ? '' : 'a'} och ingår inte i summan.` : ''}
       ${a.kostnadstotal.last_nar === null ? 'Kostnadstotalen: lästid saknas' : `kostnadstotalen ${direktFarskhet({ kalla: a.kostnadstotal.kalla, last_nar: a.kostnadstotal.last_nar }, idag)}`}.</p>` : html`<p>Kostnadstotalen kunde inte läsas.</p>`}
-    ${a.kostnader.some((k) => k.oplanerad)
+    ${bundna.some((k) => k.oplanerad)
       // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
       // märkning, och två olika förklaringar vore två olika märkningar.
       ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
@@ -5523,8 +5528,10 @@ function pengasida(companyId: string, u: Uppdragspengar, idag: string): Raw {
     <p class="muted" style="margin:0 0 4px;font-size:13px">Varje tal och datum på sidan är LÄST: kurvan och
       taket ur husets takberäkning, de två ramdatumen ordagrant ur svepets cache, beloppen ur redovisningen.
       Sidan räknar ingen egen takt, ingen egen prognos och ingen färdigställandegrad.</p>
+    ${flera ? ofordeladUppdrag(u.ofordelad, idag) : ''}
     ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.contract_name}</h2>` : ''}
       ${rampanel(a, idag)}
+      ${nivapanel(a, idag)}
       ${troskelpanel(a, idag)}
       ${kostnadspanel(companyId, a, idag)}`)}`;
 }

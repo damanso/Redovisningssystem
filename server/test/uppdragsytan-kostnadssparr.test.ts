@@ -366,6 +366,9 @@ async function pengar(b: Bolag, u: Uppdrag) {
   const r = await withTenantTransaction(b.user.userId, b.id, (c) => lasUppdragspengar(c, b.id, { project_id: u.projectId }));
   expect(r.avtal).toHaveLength(1);
   const a = r.avtal[0]!;
+  expect(a.kostnader).toMatchObject({ lage: 'last', kalla: 'redovisning', last_nar: expect.any(String) });
+  expect(Number.isNaN(Date.parse(a.kostnader.last_nar!))).toBe(false);
+  expect(a.kostnader.varde).not.toBeNull();
   expect(a.obundna_kostnader).toMatchObject({ lage: 'last', kalla: 'redovisning', last_nar: expect.any(String) });
   expect(Number.isNaN(Date.parse(a.obundna_kostnader.last_nar!))).toBe(false);
   expect(a.obundna_kostnader.varde).not.toBeNull();
@@ -425,10 +428,10 @@ describe('K6 ja och nej till ström och uppdrag', () => {
     if (!ja) expect(b.skal).toBe('Kostnaden hör inte till uppdraget');
     const a = await pengar(janej, p1);
     if (ja) {
-      expect(a.kostnader).toEqual(expect.arrayContaining([expect.objectContaining({ receipt_id: id, kod: q.kod })]));
+      expect(a.kostnader.varde).toEqual(expect.arrayContaining([expect.objectContaining({ receipt_id: id, kod: q.kod })]));
       expect(a.obundna_kostnader.varde!.map((r) => r.receipt_id)).not.toContain(id);
     } else {
-      expect(a.kostnader.map((r) => r.receipt_id)).not.toContain(id);
+      expect(a.kostnader.varde!.map((r) => r.receipt_id)).not.toContain(id);
       expect(a.obundna_kostnader.varde).toContainEqual({ receipt_id: id, datum: q.kod === 'S2' ? '2026-11-20' : '2026-03-05', leverantor: 'Telia Sverige AB', total_ore: 500000, status: 'booked' });
     }
   });
@@ -440,7 +443,7 @@ describe('K7 obundna kostnader syns utan beslutad avtalsdel', () => {
     expect(a.obundna_kostnader.varde!.map((r) => r.receipt_id)).toEqual([rotNej, s2Nej, vantande]);
     const rs = await kvitton(janej);
     for (const r of a.obundna_kostnader.varde!) expect(r.total_ore).toBe(Number(rs.get(r.receipt_id)!.total_ore));
-    expect(a.kostnader.map((r) => r.receipt_id)).not.toContain(janejAllmant);
+    expect(a.kostnader.varde!.map((r) => r.receipt_id)).not.toContain(janejAllmant);
     expect(a.obundna_kostnader.varde!.map((r) => r.receipt_id)).not.toContain(janejAllmant); korda.pengar++;
   });
   it('d den senaste köposten placerar kvittot hos exakt ett avtal', async () => {
@@ -457,8 +460,8 @@ describe('K7 obundna kostnader syns utan beslutad avtalsdel', () => {
     const r = await act(grannen, 'binda_kostnad', { receipt_id: id, contract_part_id: beslut.get(s2Ja)!.del });
     expect(r.status, JSON.stringify(r.body)).toBe(202);
     const a = await pengar(janej, p1); const b = await pengar(grannen, grannU);
-    expect([...a.kostnader,...a.obundna_kostnader.varde!].map((r) => r.receipt_id)).not.toContain(id);
-    expect(b.kostnader).toEqual([]); expect(b.obundna_kostnader.varde).toEqual([]); korda.pengar++;
+    expect([...a.kostnader.varde!,...a.obundna_kostnader.varde!].map((r) => r.receipt_id)).not.toContain(id);
+    expect(b.kostnader.varde).toEqual([]); expect(b.obundna_kostnader.varde).toEqual([]); korda.pengar++;
   });
   it('f sidan ritar rader, belopp, Obunden och en färskhetsrad utan föreslagna koder', async () => {
     const a = await pengar(janej, p1); const main = await sida(p1);
@@ -467,7 +470,7 @@ describe('K7 obundna kostnader syns utan beslutad avtalsdel', () => {
     expect(blank(text(main))).toContain(blank(`${formatOre(500000)} kr`));
     expect(main).toContain('Obunden = kostnaden är föreslagen för uppdraget');
     expect((main.match(/obundna kostnader läst ur redovisningen/g) ?? [])).toHaveLength(1);
-    expect((main.match(/class="pengarad"/g) ?? [])).toHaveLength(a.kostnader.length + a.obundna_kostnader.varde!.length);
+    expect((main.match(/class="pengarad"/g) ?? [])).toHaveLength(a.kostnader.varde!.length + a.obundna_kostnader.varde!.length);
     const start = main.indexOf('<div class="table-wrap"'); expect(start).toBeGreaterThan(-1);
     const tabell = main.slice(start, main.indexOf('</table>', start));
     expect((tabell.match(/<span class="code">S2<\/span>/g) ?? [])).toHaveLength(1);
