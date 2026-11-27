@@ -26,7 +26,46 @@
 //     glömmer den driftar kolumnen ifrån historiken utan att någon ser det.
 //     Härledningen kan per definition inte drifta.
 import type { PoolClient } from 'pg';
+import { createHash } from 'node:crypto';
 import { NotFoundError } from '../lib/errors.js';
+
+/** Registrets sju frysta fält; härledda åldrar hör inte till kopian (B-11). */
+export interface Registerkopierad {
+  kod: string;
+  namn: string | null;
+  status: string;
+  klausul: string | null;
+  acceptanskriterium: string | null;
+  uppfoljningsmatt: string | null;
+  matt_lasvag: string | null;
+}
+
+export const REGISTERKOPIA_TEXT = {
+  rubrik: 'Leverabelregister — {projekt}',
+  derivat: 'Derivat ur redovisningens leverabelregister (Uppdragsytan FR-11). Redigeras aldrig för hand.',
+  version: 'Registerversion {n}, fryst {tid}.',
+  kolumner: ['Kod', 'Status', 'Klausul', 'Acceptanskriterium', 'Uppföljningsmått', 'Läsväg'],
+} as const;
+
+/** Renderar utan klocka eller databas: återförsök använder samma text (FR-11). */
+export function renderaRegisterkopia(input: {
+  projektnamn: string; registerversion: number; fryst: string; rader: readonly Registerkopierad[];
+}): string {
+  const cell = (v: string | null) => (v ?? '').replace(/\|/g, '\\|').replace(/\r\n|[\r\n]/g, ' ');
+  return [
+    `# ${REGISTERKOPIA_TEXT.rubrik.replace('{projekt}', () => input.projektnamn)}`, '',
+    `> ${REGISTERKOPIA_TEXT.derivat}`,
+    `> ${REGISTERKOPIA_TEXT.version.replace('{n}', String(input.registerversion)).replace('{tid}', input.fryst)}`,
+    '', `| ${REGISTERKOPIA_TEXT.kolumner.join(' | ')} |`, '|---|---|---|---|---|---|',
+    ...input.rader.map((r) => `| ${[r.kod, r.status, r.klausul, r.acceptanskriterium,
+      r.uppfoljningsmatt, r.matt_lasvag].map(cell).join(' | ')} |`), '',
+  ].join('\n');
+}
+
+/** Hashen binds till kopians exakta UTF-8-text, aldrig till ett senare register. */
+export function registerkopiansHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
 
 export interface LasLeverabelregisterInput {
   contract_id: string;

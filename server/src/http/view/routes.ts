@@ -40,7 +40,7 @@ import { bedomningsperiod, type Bedomningsperiod } from '../../lib/bedomningsryt
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
-import { hamtaDriveKo, listaReferenser, tillReferensvisning, type Kopost } from '../../services/uppdragReferens.js';
+import { listaReferenser, tillReferensvisning } from '../../services/uppdragReferens.js';
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
 import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
@@ -1700,35 +1700,6 @@ viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (c
     }`;
 }));
 
-// Uppdragsytan S7.2: den frysta kopian till Drive.
-//
-// Kopian skrivs inte av det här systemet (ADR-4) utan av svepet, senare. Den
-// enda ärliga ytan för det är därför en ÖPPEN POST som står kvar tills den är
-// skriven — och ett fel som är läsbart där, i klartext. Två beslut:
-//
-//  1. **Raden syns bara när det finns något att veta.** Är kopian skriven står
-//     ingenting; en evig "allt är skrivet"-rad hade varit brus, och brus lär
-//     läsaren att inte titta den dagen det står något annat.
-//  2. **Felet står i sina egna ord, på uppdragets förstasida.** Ett fel som
-//     bara finns i en kolumn är ett tyst fel (NFR-3). Chippet bär färgen OCH en
-//     glyf OCH en text — färgen är aldrig ensam bärare — och feltexten står
-//     bredvid, inte bakom ett klick.
-const registerkopiaRad = (k: Kopost): Raw => html`<p class="muted" style="margin:10px 0 0;font-size:12.5px">
-  ${k.ko_status === 'fel'
-    ? html`${chip('Kopian kunde inte skrivas', 'neg', '!')} ${k.ko_fel ?? 'okänt fel'}
-        — posten ligger kvar i kön och provas om vid nästa svep.`
-    : html`${chip('Kopia köad', 'info', '◔')} Registret har ändrats. Den frysta kopian till kundens
-        Drive-mapp skrivs vid nästa svep — systemet skriver den aldrig själv.`}</p>`;
-
-/** Uppdragets öppna köposter, lästa genom S7.2:s tjänst — aldrig ur tabellen. */
-async function registerkopiaKo(
-  client: PoolClient, companyId: string, projectId: string,
-): Promise<Kopost[]> {
-  const avtal = new Set((await listContracts(client, companyId, { project_id: projectId }))
-    .map((a) => a.id as string));
-  return (await hamtaDriveKo(client, companyId)).filter((k) => avtal.has(k.contract_id));
-}
-
 // ---------------------------------------------------------------------------
 // Uppdragsytan S3.2, våg 4: statusförslaget bekräftas av en människa (FR-12,
 // FR-13, NFR-4).
@@ -1942,7 +1913,6 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
     const snabb = await snabbunderlag(client, companyId, projectId);
-    const kopior = await registerkopiaKo(client, companyId, projectId);
     const forslag = await statusforslag(client, companyId, projectId);
     // S8.1: bara ett STÄNGT uppdrag har ett avslut att redovisa. Kolumnen kan
     // stå kvar från ett avslut som återöppnats på annat håll, och en panel om
@@ -1987,7 +1957,6 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
             `.nav__quick` är dold. `aria-current` sitter på "Projektet". */ ''}
       ${harUppdrag ? subnav(companyId, projectId, '') : ''}
       ${tidsnotiser(req)}
-      ${kopior.map((k) => registerkopiaRad(k))}
       ${/* S8.1: högst upp på ett avslutat uppdrag — det öppna är det enda som
             är kvar att veta. Har uppdraget aldrig avslutats via åtgärden står
             ingenting alls. */ ''}
@@ -4738,8 +4707,8 @@ interface Uppdragslistrad {
 }
 
 /**
- * Uppdragen: projekt med minst ETT avtal, härlett ur `listContracts` — samma
- * regel som `registerkopiaKo` använder. Ett projekt utan avtal är ett projekt,
+ * Uppdragen: projekt med minst ett avtal, ur `listContracts`.
+ * Ett projekt utan avtal är ett projekt,
  * inte ett uppdrag, och listan hittar aldrig på ett avtal åt det.
  */
 async function uppdragslista(client: PoolClient, companyId: string): Promise<Uppdragslistrad[]> {

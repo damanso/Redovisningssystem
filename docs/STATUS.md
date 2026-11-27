@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-26 — 3-3-registerkopian-ar-versionsbunden-har-fryst-underlag-och-syns-aldrig-som-kostatus-for-david.**
+  Migration 0098 fryser registerkopian som append-only FRYST HISTORIK med RLS
+  och sammansatt versions-/hashkoppling. Varje registerändring får egen köpost;
+  hämtning/svep läser frysta rader och text, och kvittensen är versionsbunden,
+  räknar försök och ersätter äldre öppna poster idempotent. Köraden lämnar
+  projektsidan; husets tokens, typografi och tangentbordsfokus behålls.
+  34 nya fall R1–R3, M1–M6, K1–K6, H1–H5/H7–H9, Q1–Q8, V1–V2 och D1
+  skrivna före respektive kod. KRAV-2 vänt och KRAV-7 bort enligt kriterierna.
+  Typkontroll efter uppgift 1–6 exit 0 (rött före rendering: TS2305).
+  Rött-/gröntförsöken och fullsviterna: inte kört på fallnivå, `connect EPERM
+  127.0.0.1:5433` i globalSetup, exit 1. Kedjan kör verifieringen enligt
+  nätverksundantaget. Inga RESTER, inga nya beroenden, inga tjänster startade.
+  Slutgrind 2026-11-27: typkontroll exit 0, diff-check exit 0; fullsvit åter
+  blockerad av samma EPERM innan något fall körts. Story och sprint står kvar
+  in-progress, och 1–7 är okryssade enligt kravet på gröna tester före kryss.
+  DoD prövad punktvis i berättelsens Dev Agent Record; testbelägg saknas.
+  CRM:s intagskontrakt oförändrat; arbetslistans kontrakt speglas i MCP_ACTIONS.
+
 - **2026-11-26 — 2-8-forslagets-underlag-visar-luckorna-parterna-och-ankaret.**
   Gemensam ren beräkning av parter, ankare och luckor i importens svar och
   baselineförslagets förklaring. Undantagsvyn för vidare manifestet; samma
