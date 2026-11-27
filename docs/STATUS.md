@@ -153,6 +153,34 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Bygge: 5-3-trosklarna-indikerar-avvikelse-men-filtrerar-aldrig-ett-mandat.**
+  Tröskelregeln i `lib/troskel.ts` prövar nu nivåns egen ram genom
+  `egenRam` (ett tak summerat ur barnen, `cap_derived`, är ingen ram), skriver
+  `utan_egen_ram` (kod och enhet, inga tal) för varje mätnivå utan egen ram,
+  tänder ett ärvt intervall dagen efter slutet (`ARVT_INTERVALL_DAGAR`) i
+  stället för efter avtalets fem dagar, och bär golvets märkning
+  `GOLVETS_MARKNING` («förslag, ej beslutat av David», Story 5.7 byter den)
+  med `golvetBinder`. `forbrukningsnivaer` läser samma `egenRam`. Pengarnas
+  läsväg ger `Troskelvarde`; ett cachevärde utan ramläget läses som `null`.
+  Panelen Tröskeln visar tröskelregeln och «<kod>: <enhet> — ram saknas»
+  (ny ren vyfil `uppdragTroskel.ts`), och tim- och kronlarm där golvet binder
+  bär märkningen på Pengarna och i Lägets kort. Undantagsvyn är orörd:
+  `lasUndantag` läser aldrig tröskeln, vaktat av MA1 (riktig tänd indikator,
+  100 öre-bindning och baselineändring över sänkta och höjda trösklar) och
+  MA2 (tillåtelselista över filer, negativ kontroll). Ingen migration, ingen
+  rutt, ingen åtgärd, inget beroende. `docs/MCP_ACTIONS.md` beskriver
+  värdets nya form (`utan_egen_ram` och dagsregeln för ärvt intervall), och
+  `docs/ARKITEKTUR.md` har stycket «Troskeln indikerar, aldrig ett mandat».
+  Tröskelprovets ärvda dagslarm och grannavtalets värde skrivna om enligt
+  berättelsens Task 1.2. Körningar mot testdatabasen: delkörningarna 1–3
+  gröna (126, 75 och 257 prov), `uppdragsytan-troskelmandat` 37/37 grönt,
+  `npm run typecheck` utan fel och hela `npm test` grönt: 220 filer, 4323
+  prov, exit 0. Inga RESTER. Efter driftsättningen får
+  cachens tröskelvärden den nya formen vid nästa svep; till dess visar
+  panelen «Ramläget per nivå står här efter nästa svep». Ett uppdrag vars
+  leverabler bara ärver ett passerat stegintervall får dagslarmet direkt vid
+  det svepet, utan köpost eller post i undantagsvyn.
+
 - **2026-11-27 — Omtag: 5-2-forbrukningen-mot-ram-tar-med-det-som-inte-ar-fordelat.**
   Granskningsfyndet om saknad taxa vid flera avtal rättat i
   `uppdragForbrukning.ts`: uppdragets ofördelade tid visar nu hur mycket tid

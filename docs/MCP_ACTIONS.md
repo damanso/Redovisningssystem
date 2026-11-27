@@ -1876,7 +1876,7 @@ sorterad), så ordningen går att pröva utan att läsa koden. Varje lagrat vär
 `kalla` och `last_nar` (FR-35): `referenser:<drive|kalender|mejl>` (lägen och
 avvikelser per källsystem), `sparrmapp` (`ok`, `provade`, `utanfor`),
 `prognos` (`handelser`, `bokade_minuter`, `forsta`, `sista`, `ram_timmar`,
-`ram_kronor`) och `troskellarm` (`trosklar`, `larm`).
+`ram_kronor`) och `troskellarm` (`trosklar`, `larm`, `utan_egen_ram: [{ kod, enhet }]`).
 
 **Prognosens två ramdatum (S7.4, FR-5).** `ram_timmar` och `ram_kronor` säger när
 uppdragets ram nås, härlett ur den registrerade tiden t.o.m. i dag (rotdelens
@@ -1901,6 +1901,11 @@ ensam larmar om ingenting — 30 % av en post på 8 000 kr är 2 400 kr — och 
 ensamt tiger på ett litet uppdrag där 22 000 kr är halva ramen. En avvikelse som
 är noll eller negativ tänder aldrig, och ett **obekräftat eller saknat tak**
 larmar aldrig (samma regel som takvarningen: ett oläst tak varnar aldrig).
+Procentbasen är alltid nivåns egen ram: en ram som summerats ur barnen är ingen
+ram och prövas inte (Story 5.3). Värdet bär därför också
+`utan_egen_ram: [{ kod, enhet }]`, en post för varje mätnivå och enhet
+(`timmar` före `kronor`) utan egen ram, utan tal och utan procent. Ett värde
+skrivet före Story 5.3 saknar listan tills nästa svep.
 
 - **Nivåerna är uppdraget (rotdelen) och posterna (lövdelarna)**, lästa ur
   `forbrukningForAvtal` — modulen räknar aldrig om förbrukningen och har inga
@@ -1911,11 +1916,13 @@ larmar aldrig (samma regel som takvarningen: ett oläst tak varnar aldrig).
   `gallandeTaxa`/`timeEntryAmountOre`) − ram, på uppdragets nivå. Utan taxa
   finns ingen kronprognos, och utan bokad framtid ingen prognos alls — den vore
   utfallet en gång till.
-- **Dagslarmet** är den tredje ramen och tänder när förseningen mot intervallets
-  slut **når** `troskel_dagar` — oberoende av beloppen och utan krav på ett tak.
-  Slutdatumet är delens eget, annars det **ärvda** enligt `byggPlan`:s regel, så
-  en leverabel som bara har strömmens period aldrig kan larma före periodens
-  slut (FR-3:s sista sats). Larmet bär `arvt_fran` när intervallet är ärvt.
+- **Dagslarmet** är den tredje ramen — oberoende av beloppen och utan krav på
+  ett tak. En daterad post tänder när förseningen mot sitt slutdatum **når**
+  `troskel_dagar`, medan en leverabel med bara ärvt intervall tänder
+  dagen efter intervallets slut, med `troskel_dagar` 1 i larmet (Story 5.3). Slutdatumet är
+  delens eget, annars det **ärvda** enligt `byggPlan`:s regel, så en leverabel
+  som bara har strömmens period aldrig kan larma före periodens slut (FR-3:s
+  sista sats). Larmet bär `arvt_fran` när intervallet är ärvt.
 - **Trösklarna läses per uppdrag** ur `contracts.troskel_*` och står i cachen,
   så att larmet går att läsa utan att slå upp avtalet. Ingen åtgärd skriver dem
   i den här storyn; standardvärdena kommer ur 0068 (5,00 %, 22 000 kr, 20 h,

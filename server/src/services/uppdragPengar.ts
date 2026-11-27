@@ -37,7 +37,7 @@ import { NotFoundError } from '../lib/errors.js';
 import { last, olast, type Lasvarde } from '../lib/lasvarde.js';
 import { forbrukningsnivaer, type Forbrukningsnivaer, type Ofordelad } from '../lib/forbrukningsnivaer.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
-import type { Troskelutfall } from '../lib/troskel.js';
+import type { Troskelutfall, UtanEgenRam } from '../lib/troskel.js';
 import { gallandeTaxa, listContracts, type Delforbrukning } from './contracts.js';
 import { arFakturerad, arGodkannande, timeEntryAmountOre, TIME_ENTRY_STATUSES } from './projects.js';
 import type { Farskhet } from './uppdragLage.js';
@@ -126,6 +126,12 @@ export interface ObundenKostnad {
   status: string;
 }
 
+/**
+ * Tröskelutfallet som cachen bär det. `utan_egen_ram` är null när raden
+ * skrevs före Story 5.3 och saknar ramläget — inte att alla nivåer har ram.
+ */
+export type Troskelvarde = Omit<Troskelutfall, 'utan_egen_ram'> & { utan_egen_ram: UtanEgenRam[] | null };
+
 export interface Avtalspengar {
   contract_id: string;
   contract_name: string;
@@ -135,7 +141,7 @@ export interface Avtalspengar {
   /** S7.4:s två ramdatum ur cachen. null = svepet har inte kört (eller okänd form). */
   prognos: Svepvarde<Prognosramar> | null;
   /** S6.2:s redan härledda larm ur cachen. null = samma sak. */
-  troskellarm: Svepvarde<Troskelutfall> | null;
+  troskellarm: Svepvarde<Troskelvarde> | null;
   forbrukning: Lasvarde<Forbrukningsnivaer>;
   kostnader: Lasvarde<Kostnadsrad[]>;
   /**
@@ -429,10 +435,15 @@ function prognosramar(varde: unknown): Prognosramar | null {
 }
 
 /** Tröskellarmet, om raden ser ut som ett larmutfall (mönstret `troskelutfall`). */
-function troskelutfall(varde: unknown): Troskelutfall | null {
+function troskelutfall(varde: unknown): Troskelvarde | null {
   if (typeof varde !== 'object' || varde === null) return null;
-  const v = varde as { larm?: unknown };
-  return Array.isArray(v.larm) ? (varde as Troskelutfall) : null;
+  const v = varde as { larm?: unknown; trosklar?: unknown; utan_egen_ram?: unknown };
+  if (!Array.isArray(v.larm) || typeof v.trosklar !== 'object' || v.trosklar === null) return null;
+  // Ett värde skrivet före Story 5.3 saknar ramläget: null, aldrig en tom lista.
+  return {
+    ...(varde as Troskelutfall),
+    utan_egen_ram: Array.isArray(v.utan_egen_ram) ? (v.utan_egen_ram as UtanEgenRam[]) : null,
+  };
 }
 
 /** Ett cachat värde med sin egen rad-färskhet, eller null om formen inte bär. */

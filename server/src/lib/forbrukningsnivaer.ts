@@ -1,6 +1,7 @@
 // FR-3/FR-31, Story 5.2: en ren regel för egen ram och synligt ofördelad tid.
 // Takberäkningens upprullade tal läses; ingen tid flyttas mellan nivåer.
 import { ROTKOD } from './leveranskontrakt.js';
+import { egenRam } from './troskel.js';
 
 export interface Forbrukningsdel {
   code: string; name: string; parent_code: string | null; active: boolean;
@@ -37,9 +38,9 @@ const kodordning = (a: string, b: string): number => a.localeCompare(b, 'sv', { 
 
 /** Nivåns egen ram är aldrig ett tak som beräknats genom summering av barnen. */
 function niva(d: Forbrukningsdel): Nivaforbrukning {
+  const egen = egenRam(d);
   return { kod: d.code, namn: d.name, minuter: d.billable_minutes, oren: d.amount_ore,
-    ram_minuter: d.cap_derived || d.cap_hours === null ? null : Math.round(d.cap_hours * 60),
-    ram_ore: d.cap_derived ? null : d.cap_amount_ore, tak_status: d.cap_status, aktiv: d.active };
+    ram_minuter: egen.minuter, ram_ore: egen.ore, tak_status: d.cap_status, aktiv: d.active };
 }
 
 /** Förbrukningen per nivå med en uttrycklig, aldrig gissad ofördelad rad. */

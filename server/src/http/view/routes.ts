@@ -56,7 +56,7 @@ import {
   lasDokumentforteckning,
   type Dokumentfamilj, type Dokumentforteckning, type Dokumentrad,
 } from '../../services/uppdragDokument.js';
-import type { Larm } from '../../lib/troskel.js';
+import type { Larm, Trosklar } from '../../lib/troskel.js';
 import type { Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, lasOplaneradeKostnader, type Kostnadsrad, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
@@ -120,6 +120,7 @@ import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
 import { nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
+import { golvmarkering, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
 
 // En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
 // (Idag, Relationer, åtagandevyn, Lova något och kundkortets Åtaganden) skriver
@@ -4115,17 +4116,18 @@ function handgreppsband(companyId: string, l: Uppdragslage): Raw {
 /**
  * Ett tröskellarm i klartext (S6.2). Talen är AVVIKELSEN och TRÖSKELN i sin
  * egen enhet — aldrig en kvot och aldrig en färdigställandegrad (NFR-11): det
- * som gör ett larm läsbart är att man kan pröva jämförelsen för hand.
+ * som gör ett larm läsbart är att man kan pröva jämförelsen för hand. När
+ * tröskeln är absolutgolvet bär den golvets märkning (Story 5.3, kriterium 7).
  */
-function larmtext(larm: Larm): Raw {
+function larmtext(larm: Larm, trosklar: Trosklar | undefined): Raw {
   const grund = 'grund' in larm && larm.grund === 'prognos' ? html` <span class="muted">(prognos)</span>` : html``;
   if (larm.ram === 'timmar') {
     return html`<span class="code">${larm.kod}</span> ${hhmm(larm.avvikelse_minuter)} över tröskeln ${
-      hhmm(larm.troskel_minuter)}${grund}`;
+      hhmm(larm.troskel_minuter)}${golvmarkering(larm, trosklar)}${grund}`;
   }
   if (larm.ram === 'kronor') {
     return html`<span class="code">${larm.kod}</span> ${kronor(larm.avvikelse_ore)} över tröskeln ${
-      kronor(larm.troskel_ore)}${grund}`;
+      kronor(larm.troskel_ore)}${golvmarkering(larm, trosklar)}${grund}`;
   }
   // Ett äldre cachevärde saknar `precision` fram till nästa svep: då visas datumet som det står.
   return html`<span class="code">${larm.kod}</span> ${String(larm.forsening_dagar)} dagar efter ${
@@ -4167,7 +4169,7 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
           : html`<p class="muted" style="margin:6px 16px 0;font-size:12.5px">${
               chip(a.troskellarm.larm.length === 1 ? '1 tröskel passerad' : `${String(a.troskellarm.larm.length)} trösklar passerade`, 'warn', '!')}</p>
             <ul style="margin:4px 16px 4px;padding-left:20px;font-size:12.5px">
-              ${a.troskellarm.larm.map((larm) => html`<li>${larmtext(larm)}</li>`)}
+              ${a.troskellarm.larm.map((larm) => html`<li>${larmtext(larm, a.troskellarm?.trosklar)}</li>`)}
             </ul>`)}`;
   })}`;
   return faktakort('kort-ram', 'Förbrukning mot ram',
@@ -5452,8 +5454,11 @@ function troskelpanel(a: Avtalspengar, idag: string): Raw {
           ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Ingen av avtalets trösklar är
               passerad. Trösklarna är avtalets egna och prövas av svepet, aldrig av den här sidan.</p>`
           : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
-              ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l)}</li>`)}
+              ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l, a.troskellarm?.varde.trosklar)}</li>`)}
             </ul>`)}
+      ${a.troskellarm === null
+        ? ''
+        : html`${troskelregel(a.troskellarm.varde.trosklar)}${utanEgenRamLista(a.troskellarm.varde.utan_egen_ram)}`}
       ${farskhetsrad([
         a.troskellarm === null
           ? 'tröskeln: svepet har inte kört för uppdraget'
