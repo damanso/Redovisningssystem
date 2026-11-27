@@ -1698,15 +1698,16 @@ kolumnen **`ko_fel text`** läggs till (NULL = inget fel). Ingen ny tabell, inge
 GRANT-ändring — **kön bor på referensen** (1E Del 3): en köad kopia ÄR en
 oskriven referens, och en egen kötabell hade betytt två rader om samma sak.
 
-**Köningen sitter i registrets skrivväg.** `importera_leveranskontrakt` anropar
-`koaRegisterkopia` i SAMMA transaktion som registerraderna (steg e). Uppdragets
-ENA kopiereferens är `sort = 'drive'`, `extern_nyckel = 'registerkopia'`,
-`extern_kalla = 'drive:sparrmapp'`; första gången finns ingen fil, så raden föds
-med status `overifierad` och det deterministiska platshållar-id:t **`registerkopia:<contract_id>`** och
-får sitt riktiga `extern_id` när kopian rapporteras skriven. Köningen sker även
-från `skriven` och `fel` (omkö vid ny ändring) och nollställer då `ko_fel`.
-Rullas importen tillbaka finns ingen köpost kvar — och går den igenom kan kopian
-aldrig glömmas bort.
+**Köningen sitter i registrets skrivväg.** Import, statusbyte och överlämning
+anropar `koaRegisterkopia` i samma transaktion som registerändringen. Varje
+ändring fryser en ny registerversion med text, rader och registerhash och
+skapar en egen köpost med `sort = 'drive'`, `extern_nyckel = 'registerkopia'`
+och `extern_kalla = 'drive:sparrmapp'`. Nästa löpnummer sätts under avtalslås.
+Köposten ärver avtalets befintliga Drive-id och dess eventuella spärrdom;
+annars föds den overifierad. Saknas filen används platshållaren
+`registerkopia:<contract_id>`. Tidigare versioner och deras feltext står kvar. En öppen köpost utan fryst version får i stället
+`ko_status = 'ersatt'`. Rullas ändringen tillbaka finns varken versionen eller
+köposten kvar.
 
 - **`hamta_drive_ko` (read)** — inga fält. Bolagets öppna kö, äldst först: per
   post `referens_id`, `contract_id`, `extern_id`, `ko_status`, `ko_fel` och
@@ -1731,12 +1732,12 @@ aldrig glömmas bort.
     referens. Det finns ingen tyst övergång — en rapport om något ingen bett om
     är antingen ett svep på gammal data eller ett fel i anroparen.
 
-**Vyn:** uppdragets projektsida (`/app/c/:id/projects/:projectId`) visar den
-öppna köposten tills den är skriven — `koad` som *Kopia köad*, `fel` som *Kopian
-kunde inte skrivas* **med `ko_fel`-texten utskriven**. Är kopian skriven står
-ingenting: en evig "allt är skrivet"-rad hade varit brus, och brus lär läsaren
-att inte titta den dag det står något annat. Ett fel som bara finns i en kolumn
-är ett tyst fel (NFR-3).
+**Vyn:** projektsidan, Läget och undantagsvyn visar aldrig köstatus, köfel
+eller Drive-fel. Ett tekniskt fel blir en driftpost på Hermes driftyta enligt
+B-10. Uppdragsytan visar registrets gällande databaspost och referensens
+verifieringsläge; en oskriven kopia framställs aldrig som färdig.
+
+- **Versionsbunden kopia (Story 3.3).** Migration 0098 skapar tabellen uppdrag_registerkopia som FRYST HISTORIK, append-only med RLS och avslutsspärr. Varje registerversion har fryst text, rader och registerhash; köpostens registerkopia_id och hash binds med en sammansatt främmande nyckel. En gammal öppen köpost utan version blir ersatt, och en kvittens mot en ersatt post ger 200 utan ändring. Referenslistorna visar bara den senaste kopieposten per avtal. Verifieringens skrivväg håller oskrivna kopior overifierade även vid inskickade observationer för ett ärvt fil-id. En spärrdom gäller filidentiteten över versionerna; senaste spärrade kopian med verkligt fil-id finns i verifieringslistan så att en uttryckligt verifierad återflytt kan häva även äldre raders spärr. Återflytten färdigställer ingen oskriven version. Båda kvittensutfallen tar avtalslåset före tillståndsläsningen, så en väntande kvittens aldrig skriver över ersatt. Varje skrivning av ett Drive-id tar avtalslåset; en kvittens med ett id som en vanlig Drive-referens i avtalet redan har ger `409 referens_finns_redan`. Köstatus visas på Hermes driftyta och aldrig på projektsidan. Arbetslistan och den versionsbundna kvittensen kommer i Story 3.6; tills dess härleder hämtningen innehållet som förut och räknar inga försök.
 
 ### Svepet (S7.3, våg 3)
 
