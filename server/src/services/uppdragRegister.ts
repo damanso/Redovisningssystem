@@ -26,7 +26,7 @@
 //     glömmer den driftar kolumnen ifrån historiken utan att någon ser det.
 //     Härledningen kan per definition inte drifta.
 //   * Transmittalfälten läses ur senaste överlämningen (händelsen med revision),
-//     förs aldrig in i den frysta kopian, och datumet hämtas ur handlingen,
+//     förs aldrig in i den frysta kopian, och datumet läses ur handlingens referens,
 //     aldrig ur bekräftelsens tid.
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
@@ -84,7 +84,7 @@ export interface Leverabelrad {
   revision: number | null;
   /** Samma överlämnings mottagare, ordagrant; NULL om saknad, aldrig avtalets godkännare. */
   mottagare: string | null;
-  /** ISO-datum ur handlingen, aldrig bekräftelsens tid (FR-13). Källa i Story 4.2; tills dess NULL. */
+  /** ISO-datum ur överlämningshandlingens händelsedatum (Story 4.2); NULL när handlingen saknar datum eller överlämningen saknar handling; aldrig bekräftelsens tid (FR-13). */
   overlamnad: string | null;
   /**
    * Hela dagar (avrundat nedåt) sedan leverabelns SENASTE händelse — alltså hur
@@ -131,14 +131,17 @@ export async function lasLeverabelregister(
               WHERE p.company_id = l.company_id AND p.contract_id = l.contract_id AND p.code = l.kod
               ORDER BY p.valid_from LIMIT 1), l.kod) AS namn,
             l.klausul, l.acceptanskriterium, l.uppfoljningsmatt,
-            l.matt_lasvag, l.status, o.revision, o.mottagare, NULL::text AS overlamnad,
+            l.matt_lasvag, l.status, o.revision, o.mottagare, o.overlamnad,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - COALESCE(
               (SELECT max(h.created_at) FROM uppdrag_leverabel_handelse h
                 WHERE h.leverabel_id = l.id AND h.company_id = l.company_id),
               l.created_at))) / 86400)::int) AS dagar_i_laget
        FROM uppdrag_leverabel l
        LEFT JOIN LATERAL (
-         SELECT h.revision, h.mottagare FROM uppdrag_leverabel_handelse h
+         SELECT h.revision, h.mottagare,
+                (SELECT r.handelse_datum::text FROM uppdrag_referens r
+                  WHERE r.id = h.referens_id AND r.company_id = h.company_id) AS overlamnad
+           FROM uppdrag_leverabel_handelse h
           WHERE h.leverabel_id = l.id AND h.company_id = l.company_id
             AND h.revision IS NOT NULL
           ORDER BY h.revision DESC, h.created_at DESC, h.id DESC LIMIT 1

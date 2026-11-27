@@ -1,4 +1,4 @@
-import { LUCKRUBRIK, mottagarpartlage, godkannandeformtext } from '../../lib/kontraktsluckor.js';
+import { LUCKRUBRIK, LUCKTEXT, mottagarpartlage, godkannandeformtext } from '../../lib/kontraktsluckor.js';
 import { randomUUID } from 'node:crypto';
 import { Router, urlencoded, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -55,7 +55,7 @@ import {
   type Dokumentfamilj, type Dokumentforteckning, type Dokumentrad,
 } from '../../services/uppdragDokument.js';
 import type { Larm } from '../../lib/troskel.js';
-import { lasSvepvarden, type Ramutfall } from '../../services/uppdragSvep.js';
+import type { Ramutfall } from '../../services/uppdragSvep.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
@@ -1702,132 +1702,6 @@ viewRouter.get('/c/:companyId/projects', pageFor('projects', 'Projekt', async (c
 }));
 
 // ---------------------------------------------------------------------------
-// Uppdragsytan S3.2, våg 4: statusförslaget bekräftas av en människa (FR-12,
-// FR-13, NFR-4).
-//
-// Svepet skriver `statusforslag:<kod>` i cachen när Drive rapporterat en ny
-// revision av leverabelns handling. Ett förslag är ingen åtgärd (1E Del 4) —
-// och till dess att någon svarar på det ligger uppdragets viktigaste fråga
-// obesvarad. Fyra beslut styr ytan:
-//
-//  1. **Förslaget bor på uppdragets förstasida, högst upp.** Registervyn finns
-//     inte ännu (den uteslöts i S3.1), och en obesvarad leverans som läses sist
-//     blir i praktiken ett ja. Samma mönster som S4.1/S5.1: husets knappband och
-//     uppdragssidan, ingen andra navigationsrad.
-//  2. **Husets `.ai-card` med `aiMarkning()`** — samma komponent som
-//     tidsförslagen, för det ÄR samma sorts sak: en maskins observation som
-//     väntar på en människa. Märkningen (AI-förordningen art. 50) bor i den
-//     delade hjälparen, så en omskriven vy kan inte tappa den. Ingen ny CSS.
-//  3. **Bekräfta och Retur är två likvärdiga knappar utan förval.** Till
-//     skillnad från tidsförslagets *Godkänn/Justera* — där godkänn är
-//     normalfallet — är det här två olika sanna svar på "tog kunden emot den?",
-//     och svaret kommer utifrån, inte ur kortet. Görs den ena tyngre svarar man
-//     med handen i stället för med omdömet (S5.1:s regel).
-//  4. **Oåterkalleligheten står FÖRE knappen**, och transmittalfälten står inte
-//     som fält: överlämningsdatum, revision och mottagare fylls av systemet.
-//     Ett redigerbart mottagarfält hade gjort FR-13:s spärr till en textruta.
-// ---------------------------------------------------------------------------
-
-const FORSLAGSPREFIX = 'statusforslag:';
-
-interface Statusforslagskort {
-  avtalId: string;
-  avtalsnamn: string;
-  kod: string;
-  klausul: string | null;
-  /** Drive-revisionen ur svepets förslag — aldrig samma tal som överlämningens. */
-  revision: string | null;
-  referens: Referensvisning | null;
-}
-
-/** Ett jsonb-fält som text, eller null. Cachen är fri JSON och lovar ingen form. */
-function forslagsfalt(varde: unknown, nyckel: string): string | null {
-  if (typeof varde !== 'object' || varde === null || !Object.hasOwn(varde, nyckel)) return null;
-  const v = (varde as Record<string, unknown>)[nyckel];
-  return typeof v === 'string' || typeof v === 'number' ? String(v) : null;
-}
-
-/**
- * Uppdragets öppna statusförslag, lästa genom tjänstelagret (`lasSvepvarden` +
- * `lasLeverabelregister`) — aldrig ur tabellerna, samma regel som köposterna.
- *
- * Bara leverabler som står i `pagar` kommer med: statusen är svaret på
- * frågan, och ett förslag om något som redan är levererat eller avvisat är
- * inget att svara på. Cachen rensar sig själv vid nästa svep.
- */
-async function statusforslag(
-  client: PoolClient, companyId: string, projectId: string,
-): Promise<Statusforslagskort[]> {
-  const avtal = await listContracts(client, companyId, { project_id: projectId });
-  const kort: Statusforslagskort[] = [];
-  for (const a of avtal) {
-    const contractId = a.id as string;
-    const register = new Map<string, Leverabelrad>(
-      (await lasLeverabelregister(client, companyId, { contract_id: contractId }))
-        .map((r) => [r.kod, r] as const),
-    );
-    const referenser = new Map((await listaReferenser(client, companyId, contractId)).map((r) => [r.id, tillReferensvisning(r)]));
-    for (const v of await lasSvepvarden(client, companyId, contractId)) {
-      if (!v.nyckel.startsWith(FORSLAGSPREFIX)) continue;
-      const kod = v.nyckel.slice(FORSLAGSPREFIX.length);
-      const leverabel = register.get(kod);
-      if (leverabel === undefined || leverabel.status !== 'pagar') continue;
-      kort.push({
-        avtalId: contractId,
-        avtalsnamn: String(a.name ?? ''),
-        kod,
-        klausul: leverabel.klausul,
-        revision: forslagsfalt(v.varde, 'revision'),
-        referens: referenser.get(forslagsfalt(v.varde, 'referens_id') ?? '') ?? null,
-      });
-    }
-  }
-  return kort;
-}
-
-function statusforslagskort(companyId: string, projectId: string, k: Statusforslagskort, flera: boolean, idag: string): Raw {
-  const post = `/app/c/${companyId}/projects/${projectId}/statusforslag`;
-  const knapp = (utfall: 'bekraftad' | 'retur', etikett: string, beskrivning: string): Raw =>
-    html`<form method="post" action="${post}" style="margin:0">
-      <input type="hidden" name="contract_id" value="${k.avtalId}">
-      <input type="hidden" name="leverabel_kod" value="${k.kod}">
-      <input type="hidden" name="utfall" value="${utfall}">
-      <button class="btn btn--ghost btn--sm" type="submit"
-        aria-label="${beskrivning} ${k.kod}">${etikett}</button>
-    </form>`;
-  return html`<article class="ai-card" aria-labelledby="sf-${k.avtalId}-${k.kod}">
-    <div class="ai-card__head">
-      ${aiMarkning()}
-      <span class="ai-card__title" id="sf-${k.avtalId}-${k.kod}">Leverabel ${k.kod} kan vara levererad</span>
-      ${chip('Pågår', 'info', '◔')}
-      ${k.klausul ? html`<span class="code">${k.klausul}</span>` : ''}
-      ${flera ? html`<span class="muted" style="margin-left:auto;font-size:12.5px">${k.avtalsnamn}</span>` : ''}
-    </div>
-    ${/* Husets "varför föreslogs den här"-slot bär BÅDA meningarna, och den står
-          före både underlaget och knapparna: vad maskinen såg, och vad ditt svar
-          skriver. Läggs oåterkalleligheten sist i kortet kommer den efter
-          knapparna också för den som lyssnar på sidan. */ ''}
-    <div class="ai-card__why">Svepet såg en ny revision av leverabelns handling i kundens spärrmapp.
-      Om den faktiskt är levererad kan bara du avgöra. Bekräftelsen skrivs som en överlämning med
-      dagens datum, nästa revisionsnummer och avtalets godkännare som mottagare — och posten går
-      inte att ändra efteråt.</div>
-    ${/* Underlaget i klartext: vad svepet såg, och var. En bekräftelse som bara
-          visar en knapp är en bekräftelse av ingenting. */ ''}
-    <div class="ai-fields">
-      <div class="ai-field"><span class="l">Leverabel</span><span class="v code">${k.kod}</span></div>
-      <div class="ai-field"><span class="l">Drive-revision</span><span class="v">${k.revision ?? '—'}</span></div>
-      <div class="ai-field"><span class="l">Handling</span><span class="v">${k.referens ? referensvisning(k.referens, idag) : '—'}</span></div>
-    </div>
-    ${/* Två likvärdiga knappar, ingen förvald: svaret kommer utifrån, inte ur
-          kortet (S5.1:s regel för Innanför/Utanför). */ ''}
-    <div class="ai-actions">
-      ${knapp('bekraftad', 'Bekräfta', 'Bekräfta att leverabel')}
-      ${knapp('retur', 'Retur', 'Registrera retur för leverabel')}
-    </div>
-  </article>`;
-}
-
-// ---------------------------------------------------------------------------
 // Uppdragsytan S8.1, våg 4: avslutet med öppna leverabler (FR-8).
 //
 // Åtgärden `avsluta_uppdrag` fryser `contracts.avslutat_med_oppna` och stänger
@@ -1881,14 +1755,21 @@ viewRouter.post('/c/:companyId/projects/:projectId/statusforslag', page(async (r
   const projectId = parseApprovalId(req.params.projectId);
   const kropp = req.body as Record<string, unknown>;
   const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
-  // Samma väg som AI:t hade tagit om den fick — den får inte: åtgärden bär
-  // `kravManniska`, och här är actor 'human' (lärdom 5). Tillbaka till
-  // uppdragssidan; `saknad mottagare` kommer tillbaka som ?fel= och visas av
-  // `tidsnotiser` → `felNotis`.
+  // Formulären på leverabelns kort i Leveranserna postar hit. Adressens namn
+  // är historiskt och står kvar eftersom navigationskontraktet bara synkas
+  // genom generatorn (docs/project-context.md, Navigationskontraktet).
+  // Rutten visar ingenting och väntar inte på något förslag. Samma action-lager
+  // som övriga vyn; tjänstens fel visas på förstasidan genom felNotis.
+  const handlingId = falt(kropp.handling_id);
+  const mottagare = falt(kropp.mottagare);
   await runViewAction(req, res, companyId, 'bekrafta_statusbyte', {
     contract_id: falt(kropp.contract_id),
     leverabel_kod: falt(kropp.leverabel_kod),
     utfall: falt(kropp.utfall),
+    ...(handlingId ? { handling: {
+      sort: falt(kropp.handling_sort), extern_id: handlingId, extern_kalla: falt(kropp.handling_kalla),
+    } } : {}),
+    ...(mottagare ? { mottagare } : {}),
   }, `/app/c/${companyId}/projects/${projectId}`);
 }));
 
@@ -1914,7 +1795,6 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
       by_actor: Array<{ name: string; minutes: number; billable_minutes: number; cost_ore: number; margin_ore: number }>;
     };
     const snabb = await snabbunderlag(client, companyId, projectId);
-    const forslag = await statusforslag(client, companyId, projectId);
     // S8.1: bara ett STÄNGT uppdrag har ett avslut att redovisa. Kolumnen kan
     // stå kvar från ett avslut som återöppnats på annat håll, och en panel om
     // "avslutet" på ett pågående uppdrag hade beskrivit ett läge som inte gäller.
@@ -1962,18 +1842,6 @@ viewRouter.get('/c/:companyId/projects/:projectId', page(async (req, res) => {
             är kvar att veta. Har uppdraget aldrig avslutats via åtgärden står
             ingenting alls. */ ''}
       ${avslut.length === 0 ? '' : avslutspanel(avslut)}
-      ${/* S3.2: överst på sidan, före tidrapporteringen. Ett obesvarat
-            leveransförslag som läses sist blir i praktiken ett ja — och
-            ingenting visas alls när det inte finns något att svara på. */ ''}
-      ${forslag.length === 0
-        ? ''
-        : html`<h2 style="margin-top:18px">Väntar på ditt svar</h2>
-            ${(() => {
-              // Avtalsnamnet skrivs bara ut när uppdraget har flera avtal — annars
-              // upprepar varje kort en uppgift som redan står i sidhuvudet.
-              const flera = new Set(forslag.map((f) => f.avtalId)).size > 1;
-              return forslag.map((f) => statusforslagskort(companyId, projectId, f, flera, idag));
-            })()}`}
       ${p.status === 'active'
         ? snabbformular(companyId, `/app/c/${companyId}/projects/${projectId}`, snabb)
         : html`<p class="muted" style="margin:14px 0">Uppdraget är stängt — ny tid registreras inte här. Öppna det igen för att fortsätta rapportera.</p>`}
@@ -4107,12 +3975,12 @@ interface Handgrepp {
   ai: boolean;
 }
 
-function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforslagskort[]): Raw {
+function handgreppsband(companyId: string, l: Uppdragslage): Raw {
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
   const grepp: Handgrepp[] = [];
   // Ordningen är hur hårt något blockerar: en köpost stoppar en åtgärd som
-  // redan är begärd, en signal väntar på ett omdöme, ett statusförslag väntar
-  // på en bekräftelse.
+  // redan är begärd, sedan signal och begärd bedömning. Statusbytet görs
+  // där David utför handlingen, på leverabelns kort.
   for (const k of l.koposter) {
     grepp.push({
       marke: chip('Köpost', 'warn', '◔'),
@@ -4151,17 +4019,6 @@ function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforsl
       });
     }
   }
-  for (const f of forslag) {
-    grepp.push({
-      marke: chip('Leverans', 'warn', '→'),
-      text: `Leverabel ${f.kod} kan vara levererad`,
-      detalj: f.klausul,
-      href: bas,
-      knapp: 'Bekräfta',
-      ai: true,
-    });
-  }
-
   if (grepp.length === 0) {
     // Tomt band: en mening om vad tomheten BETYDER plus en väg vidare — aldrig
     // en nolla. Och `.panel`, inte `.ai-card`: ockran betyder "väntar på en
@@ -4173,7 +4030,7 @@ function handgreppsband(companyId: string, l: Uppdragslage, forslag: Statusforsl
               töms bara av medvetna beslut, och det är den meningen som gör tomt
               till ett trovärdigt tillstånd i stället för ett misstänkt. */ ''}
         <p class="muted" style="margin:10px 16px 12px;font-size:13px">
-          Ingen köpost, ingen oavgjord scopesignal, ingen begärd bedömning att sätta och inget obekräftat statusbyte ligger på uppdraget.
+          Ingen köpost, ingen oavgjord scopesignal, ingen begärd bedömning att sätta ligger på uppdraget.
           Kön töms bara av medvetna beslut, så tomt betyder att allt är avgjort — inte att inget hände.
           <a href="${bas}/bedomning">Sätt periodens bedömning</a> när det är dags.</p>
       </div>
@@ -4580,7 +4437,7 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
 }
 
 function lagessida(
-  req: Request, companyId: string, l: Uppdragslage, forslag: Statusforslagskort[],
+  req: Request, companyId: string, l: Uppdragslage,
   anteckningar: readonly Anteckningsrad[], idag: string,
 ): Raw {
   const p = l.uppdrag;
@@ -4592,7 +4449,7 @@ function lagessida(
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag/lista">← Uppdragen</a></div></div>
     ${subnav(companyId, p.project_id, 'laget')}
     ${felNotis(req)}
-    ${handgreppsband(companyId, l, forslag)}
+    ${handgreppsband(companyId, l)}
     ${/* Fem kort, alltid alla fem, i FR-18:s ordning. Rutnätet ligger i en
           inline-stil och inte i en ny klass: överlämningen namnger `.farskhet`
           och `.subnav` som de enda nya, och husets `.panel` bär korten. */ ''}
@@ -4628,16 +4485,12 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
     const lage = await lasUppdragslage(client, companyId, { project_id: projectId });
-    // Statusförslagen är svepets cache, inte en innehållsdel i FR-18 — de hör
-    // till bandet. Samma hjälpare som uppdragssidan använder, så de två ytorna
-    // aldrig kan visa olika förslag.
-    const forslag = await statusforslag(client, companyId, projectId);
     // Anteckningarna hör till uppdragets avtal, och avtalen slås upp ur
     // uppdragsläget som rutten redan läst — ingen egen avtalsfråga här.
     const anteckningar = await listaUppdragsanteckningar(
       client, companyId, lage.avtal.map((a) => a.contract_id),
     );
-    return { name: company.name, body: lagessida(req, companyId, lage, forslag, anteckningar, idag) };
+    return { name: company.name, body: lagessida(req, companyId, lage, anteckningar, idag) };
   });
   res.type('html').send(layout({
     title: 'Läget', companyId, companyName: name, active: 'projects', objekt: 'Läget',
@@ -4992,10 +4845,8 @@ viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läg
 //     kolumn som försvinner lär läsaren att brädan är ofullständig — och gör
 //     dessutom kolumnernas ordning olika för varje avtal. Ett TOMT register är
 //     något annat: då säger sidan varför det är tomt och var det fylls.
-//  6. **Ren läsvy.** Inget `draggable`, inget formulär, ingen knapp. Statusbytet
-//     ägs av `bekrafta_statusbyte` (S3.2) och går genom kön där en människa
-//     läser transmittalen; ett drag i en kolumn hade varit en andra skrivväg
-//     förbi hela den ordningen.
+//  6. Brädans kort bär de tre människospärrade handgreppen. Inget läge
+//     ändras genom drag; varje registrering går genom samma action-lager.
 //  7. **Ingen ny klass.** Husets paneler, chip och tabellgrammatik bär ytan.
 //     Kortets definitionslista har inline-stil med kontraktsytans tokens och
 //     textstorlek, med tätare marginaler för brädans kolumner.
@@ -5012,6 +4863,7 @@ interface Leveransavtal {
 interface Leveransunderlag {
   projekt: { id: string; number: number; name: string };
   avtal: Leveransavtal[];
+  epost: string;
 }
 
 /**
@@ -5021,7 +4873,7 @@ interface Leveransunderlag {
  * svarar.
  */
 async function leveransunderlag(
-  client: PoolClient, companyId: string, projectId: string,
+  client: PoolClient, companyId: string, projectId: string, userId: string,
 ): Promise<Leveransunderlag> {
   const projekt = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
   const avtal: Leveransavtal[] = [];
@@ -5034,7 +4886,7 @@ async function leveransunderlag(
       parter: await lasKontraktsparter(client, companyId, contractId),
     });
   }
-  return { projekt, avtal };
+  return { projekt, avtal, epost: (await getProfile(client, userId)).email };
 }
 
 /**
@@ -5088,12 +4940,12 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  * stället för av ett villkor här: ett kort ska inte behöva veta var i kolumnen
  * det står för att se rätt ut.
  */
-function leverabelkort(bas: string, contractId: string, r: Leverabelrad): Raw {
+function leverabelkort(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw {
   return html`<li class="leverabelkort">
     <dl style="margin:0">${LEVERABELFALT.map(({ falt, rubrik }) => html`
       <dt style="font-size:12.5px;color:var(--ink-3);margin-top:6px">${rubrik}</dt>
       <dd style="margin:1px 0 0;overflow-wrap:anywhere">${faltinnehall(r, falt)}</dd>`)}</dl>
-    ${leverabelhandgrepp(bas, contractId, r)}
+    ${leverabelhandgrepp(bas, contractId, r, parter, epost)}
   </li>`;
 }
 
@@ -5107,12 +4959,9 @@ const KANALORD: Record<Godkannandekanal, string> = {
  *
  * Fyra beslut styr formuläret:
  *
- *  1. **En knapp per läge, aldrig fler.** `ej_paborjad` får Påbörja och
- *     `levererad` får Godkänn; `pagar`, `godkand` och `avvisad` får ingenting.
- *     Åtgärderna svarar 409 på varje annat utgångsläge, och en knapp som ger
- *     409 är en knapp som ljuger om vad den gör. Steget `pagar → levererad` har
- *     en maskinell iakttagelse bakom sig och bekräftas därför bland
- *     statusförslagen på förstasidan — inte här.
+ *  1. Läget avgör handgreppen: ej påbörjad får Påbörja; pågår får
+ *     Registrera överlämning och Retur; levererad får Godkänn. Godkänd och
+ *     avvisad får inget handgrepp. Varje steg görs där David utför handlingen.
  *  2. **Kanalen är synlig och obligatorisk för godkännandet.** HUR beskedet kom
  *     är hela dess bevisvärde (0072:s CHECK), så den kan inte bo i en hopfälld
  *     `details`: ett obligatoriskt fält som webbläsaren inte kan fokusera
@@ -5127,7 +4976,46 @@ const KANALORD: Record<Godkannandekanal, string> = {
  *     (`aria-label`), för sex likadana "Påbörja" i en kolumn är sex knappar
  *     utan urskiljbart namn (WCAG 2.4.6).
  */
-function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad): Raw | '' {
+function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw | '' {
+  if (r.status === 'pagar') {
+    const mottagare = parter.godkannare?.trim();
+    const eskalering = parter.godkannare_eskalering?.trim();
+    const hjalpId = `overlamning-mottagare-${contractId}-${r.kod}`;
+    return html`<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
+      <input type="hidden" name="contract_id" value="${contractId}">
+      <input type="hidden" name="leverabel_kod" value="${r.kod}">
+      <input type="hidden" name="utfall" value="bekraftad">
+      <label class="field" style="margin:0 0 7px"><span>Handlingen är</span>
+        <select name="handling_sort">
+          <option value="mejl">Ett mejl</option>
+          <option value="drive">Ett dokument i Drive</option>
+        </select></label>
+      <label class="field" style="margin:0 0 7px"><span>Message-ID eller Drive-id</span>
+        <input type="text" name="handling_id" maxlength="200" required></label>
+      <label class="field" style="margin:0 0 7px"><span>Mottagare</span>
+        <input type="text" name="mottagare" maxlength="200" value="${mottagare ?? ''}" aria-describedby="${hjalpId}"></label>
+      <p class="muted" id="${hjalpId}" style="margin:0 0 7px;font-size:12.5px">${mottagare
+        ? html`Förifylld ur kontraktets mottagarpart${eskalering ? html`, eskalering ${eskalering}` : ''}. Ändra om du lämnar över till någon annan.`
+        : html`${LUCKTEXT.mottagarpart.vad}. Skriv mottagaren själv.`}</p>
+      <details style="margin-bottom:8px">
+        <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0"
+          aria-label="Källa för överlämningen av leverabel ${r.kod}">Källa</summary>
+        <label class="field" style="margin:7px 0 0"><span>Läst ur</span>
+          <input type="text" name="handling_kalla" maxlength="200" value="${epost}"></label>
+      </details>
+      <p class="muted" style="margin:0 0 7px;font-size:12.5px">Överlämningsdatumet hämtas ur handlingen när Hermes läst den,
+        och revisionen räknas upp av systemet. Posten går inte att ändra efteråt.</p>
+      <button class="btn btn--ghost btn--sm" type="submit"
+        aria-label="Registrera överlämning av leverabel ${r.kod}">Registrera överlämning</button>
+    </form>
+    <form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
+      <input type="hidden" name="contract_id" value="${contractId}">
+      <input type="hidden" name="leverabel_kod" value="${r.kod}">
+      <input type="hidden" name="utfall" value="retur">
+      <button class="btn btn--ghost btn--sm" type="submit"
+        aria-label="Registrera retur för leverabel ${r.kod}">Retur</button>
+    </form>`;
+  }
   const steg = r.status === 'ej_paborjad' ? 'paborja' : r.status === 'levererad' ? 'godkann' : null;
   if (steg === null) return '';
   const etikett = steg === 'paborja' ? 'Påbörja' : 'Godkänn';
@@ -5135,7 +5023,10 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad): R
     <input type="hidden" name="contract_id" value="${contractId}">
     <input type="hidden" name="leverabel_kod" value="${r.kod}">
     ${steg === 'godkann'
-      ? html`<label class="field" style="margin:0 0 7px"><span>Beskedet kom via</span>
+      ? html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">${parter.godkannare?.trim()
+          ? html`Godkänns av ${parter.godkannare}${parter.godkannare_eskalering?.trim() ? html`, eskalering ${parter.godkannare_eskalering}` : ''}.`
+          : LUCKTEXT.mottagarpart.vad} ${godkannandeformtext(parter.godkannandeform)}</p>
+          <label class="field" style="margin:0 0 7px"><span>Beskedet kom via</span>
           <select name="kanal" required>
             <option value="">Välj kanal…</option>
             ${GODKANNANDEKANALER.map((k) => html`<option value="${k}">${KANALORD[k]}</option>`)}
@@ -5160,7 +5051,7 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad): R
 }
 
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
-function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[]): Raw {
+function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string): Raw {
   const id = `kol-${lage}-${contractId}`;
   return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
@@ -5169,7 +5060,7 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
       ${rader.length === 0
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
-            ${rader.map((r) => leverabelkort(bas, contractId, r))}
+            ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost))}
           </ul>`}
     </div>
   </section></div>`;
@@ -5183,9 +5074,9 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
  * designkontraktet, och en komponent som bara finns som en attributsträng går
  * varken att peka på eller mäta.
  */
-function bradlage(bas: string, a: Leveransavtal): Raw {
+function bradlage(bas: string, a: Leveransavtal, epost: string): Raw {
   return html`<div class="brada">
-    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader))}
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost))}
   </div>`;
 }
 
@@ -5251,18 +5142,12 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean)
           tabell
             ? html`Tabellen bär samma rader och samma fält som brädan, en rad per leverabel. Tabellen är den som läses upp av skärmläsare och skrivs ut.`
             : html`Brädan visar en kolumn per läge — där en leverabel står, står den. Korten och tabellen bär samma fält. Tabellen är den som läses upp av skärmläsare och skrivs ut.`}
-          ${/* Länktexten säger vart den går, inte "här": en länk ska gå att
-                förstå upplyst ur sin mening (WCAG 2.4.4). S10.9: raden sa
-                tidigare att statusen aldrig flyttas här. Det är inte längre
-                sant — två av skalans steg görs på korten — och en mening som
-                ljuger om var handgreppet finns är värre än ingen mening. */ ''}
-          Påbörja och Godkänn görs på brädans kort: de stegen har ingen maskinell iakttagelse bakom sig,
-          utan en människa som gjorde eller fick något. Steget Pågår → Levererad bekräftas i stället bland
-          statusförslagen på <a href="${bas}">uppdragets förstasida</a>.</p>
+          Påbörja, Registrera överlämning, Retur och Godkänn görs på brädans kort, där du själv utför handlingen.
+          Överlämningen registreras ur handlingen — mejlet eller dokumentet — och dess datum läses ur handlingen.</p>
         ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
           ${a.rader.length === 0 ? tomtRegister(bas) : html`
             <p class="muted" id="mottagarpart-${a.contractId}">${mottagarpartlage(a.parter, a.parter.lage !== 'ej_inlast').text}</p>
-            ${tabell ? tabellage(a) : bradlage(bas, a)}`}`)}`}`;
+            ${tabell ? tabellage(a) : bradlage(bas, a, u.epost)}`}`)}`}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -5326,7 +5211,7 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
     // Okänt värde ger brädan. En parameter någon skrivit fel ska landa i
     // default-läget, aldrig i en tom sida.
     const tabell = req.query.lage === 'tabell';
-    return leveransersida(companyId, await leveransunderlag(client, companyId, projectId), tabell);
+    return leveransersida(companyId, await leveransunderlag(client, companyId, projectId, getUserId(req)), tabell);
   }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------

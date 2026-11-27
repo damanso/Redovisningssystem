@@ -1,59 +1,72 @@
-// Uppdragsytan S3.2, våg 4 (PRD FR-12/FR-13, NFR-4): statusbytet med transmittal.
-//
-// Svepet (S7.3) skriver `statusforslag:<kod>` i cachen när Drive rapporterat en
-// ny revision av leverabelns handling. Ett förslag är inte en åtgärd (1E Del 4):
-// fram till den här filen fanns ingen kodväg alls till `uppdrag_leverabel.status`
-// — vilket var rätt, men gjorde också att INGEN kunde flytta en leverabel. Den
-// här tjänsten är den enda vägen, och den kräver en människas handgrepp.
-//
-// Fyra meningar bär filen:
-//
-//   * **Ingen maskin flyttar en status.** Åtgärden `bekrafta_statusbyte` bär
-//     `kravManniska`, så ett agentanrop fälls i `executeAction` med 403
-//     `human_required` FÖRE varje skrivning (NFR-4). Spärren sitter där och inte
-//     här: alla tre ingångarna går genom `executeAction`.
-//   * **Transmittalfälten fylls av systemet, aldrig av handen.** Mottagaren
-//     läses ur avtalets `godkannare` och revisionen räknas ur historiken.
-//     Saknas godkännaren skrivs INGENTING (FR-13) — en gissad mottagare i en
-//     append-only historik är en uppgift som ser ut som ett faktum.
-//   * **Revisionen är systemets egen uppräkning.** 1 + högsta `revision` i
-//     leverabelns händelser; första överlämningen blir 1. Drive-revisionen i
-//     förslaget deltar aldrig i räkningen: den räknar filens versioner, inte
-//     våra överlämningar, och de två talen har ingen anledning att följas åt.
-//   * **Retur är en post, inte en tyst flytt bakåt.** `avvisad` skrivs som en
-//     händelse med samma spår som bekräftelsen — den enda skillnaden är att
-//     ingen överlämning skedde, alltså varken revision eller mottagare.
-//
-// S2.1, våg 1 (FR-12): de två övergångar som saknades. `bekraftaStatusbyte`
-// flyttar bara `pagar` vidare, så `ej_paborjad → pagar` och `levererad → godkand`
-// hade ingen skrivväg alls — och därmed kunde ingen leverabel någonsin bli
-// `godkand`, alltså kunde inget uppdrag avslutas med en TOM öppna-lista (FR-8).
-// `paborjaLeverabel` och `godkannLeverabel` nedan är de vägarna, byggda på samma
-// fyra meningar: människan handgriper (`kravManniska`), transmittalfälten fylls
-// av systemet, och båda skriver EN händelse i samma transaktion som statusen.
-// Skillnaden mot bekräftelsen är tre: inget svepförslag krävs (ingen maskin har
-// observerat något — en människa gjorde något), revisionen räknas aldrig (varken
-// ett påbörjande eller ett godkännande är en överlämning), och steget får
-// bakåtdateras inom ett fönster: aldrig i framtiden, aldrig före avtalet.
+// Story 4.2 (FR-12/FR-13/FR-26): överlämningen registreras ur handlingen.
+// Ingen maskin flyttar en status: de tre åtgärderna bär kravManniska.
+// Transmittalen kommer ur handlingen och kontraktet: handlingen blir en
+// referens, datumet läses ur den och mottagaren förifylls ur avtalet och kan
+// anges, men gissas aldrig. Saknas mottagaren skrivs ingenting.
+// Revisionen är systemets egen uppräkning: 1 + högsta revision i historiken.
+// Retur är en post, inte en tyst flytt bakåt; den räknas inte som överlämning.
+// Svepets förslag krävs inte längre (FR-13, Struket). Påbörjande och godkännande
+// behåller sina kanaler och sitt datumfönster: aldrig framtid, aldrig före avtalet.
 import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
-import { koaRegisterkopia } from './uppdragReferens.js';
+import { koaRegisterkopia, skapaReferens } from './uppdragReferens.js';
+import { kanonisktReferensId, type Referenssort } from '../lib/referens.js';
 
-/** De två svaren på svepets förslag. Ett fritt statusfält vore en andra skrivväg. */
+/** De två registrerade utfallen. Ett fritt statusfält vore en andra skrivväg. */
 export const STATUSUTFALL = ['bekraftad', 'retur'] as const;
 export type Statusutfall = (typeof STATUSUTFALL)[number];
 
-/** Statusen ett förslag kan besvaras FRÅN, och de två det kan leda TILL (0068). */
+/** Registreringens utgångsläge och de två målen (0068). */
 const FRAN_STATUS = 'pagar';
 const TILL_STATUS: Record<Statusutfall, string> = {
   bekraftad: 'levererad',
   retur: 'avvisad',
 };
 
+/** Bara mejlet eller dokumentet utgör överlämningshandlingen (FR-13). */
+export const OVERLAMNINGSHANDLINGAR = ['mejl', 'drive'] as const satisfies readonly Referenssort[];
+export interface Overlamningshandling {
+  sort: (typeof OVERLAMNINGSHANDLINGAR)[number];
+  extern_id: string;
+  extern_kalla: string;
+}
+const HANDLINGSNYCKEL: Record<Overlamningshandling['sort'], string> = {
+  mejl: 'rfc822#message-id', drive: 'drive#file',
+};
+
+/** Uppslag och skapande under avtalslåset; kopieposter är aldrig handlingar. */
+export async function overlamningsreferens(
+  client: PoolClient, companyId: string, contractId: string, handling: Overlamningshandling,
+): Promise<string> {
+  const avtal = await client.query(
+    'SELECT 1 FROM contracts WHERE id = $1 AND company_id = $2 FOR NO KEY UPDATE',
+    [contractId, companyId],
+  );
+  if (avtal.rowCount === 0) throw new NotFoundError('contract');
+  const externId = kanonisktReferensId(handling.sort, handling.extern_id);
+  const fanns = await client.query<{ id: string; status: string }>(
+    `SELECT id, status FROM uppdrag_referens
+      WHERE company_id = $1 AND contract_id = $2 AND sort = $3 AND extern_id = $4
+        AND extern_nyckel IS DISTINCT FROM 'registerkopia'`,
+    [companyId, contractId, handling.sort, externId],
+  );
+  const rad = fanns.rows[0];
+  if (rad?.status === 'utanfor_sparr') {
+    throw new ConflictError('utanfor_sparr', 'filen ligger enligt svepet utanför uppdragets spärrmapp och kan inte länkas');
+  }
+  if (rad) return rad.id;
+  const skapad = await skapaReferens(client, companyId, {
+    contract_id: contractId, ...handling, extern_nyckel: HANDLINGSNYCKEL[handling.sort],
+  });
+  return skapad.id;
+}
+
 export interface BekraftaStatusbyteInput {
   contract_id: string;
   leverabel_kod: string;
   utfall: Statusutfall;
+  handling?: Overlamningshandling;
+  mottagare?: string;
 }
 
 export interface Statusbytesutfall {
@@ -64,6 +77,8 @@ export interface Statusbytesutfall {
   handelse_id: string;
   revision: number | null;
   mottagare: string | null;
+  /** Handlingens referens; NULL för påbörjande, godkännande och retur utan handling. */
+  referens_id: string | null;
   bekraftat_av: string;
   bekraftat_nar: string;
   /** Registerkopians köläge efter köningen — kopian är inaktuell så fort statusen bytt. */
@@ -74,12 +89,14 @@ interface Handelserad {
   id: string;
   revision: number | null;
   mottagare: string | null;
+  /** Handlingens referens; NULL för påbörjande, godkännande och retur utan handling. */
+  referens_id: string | null;
   bekraftat_av: string | null;
   bekraftat_nar: string | null;
 }
 
 /**
- * Bekräftar (eller returnerar) svepets statusförslag för en leverabel.
+ * Registrerar överlämningen ur handlingen, eller en retur, för en leverabel.
  *
  * `userId` kommer ur åtgärdskontexten, aldrig ur indatat — samma regel som
  * `satt_av_manniska` och `tand_av`: ett fält anroparen fyller i om sig själv är
@@ -88,18 +105,6 @@ interface Handelserad {
 export async function bekraftaStatusbyte(
   client: PoolClient, companyId: string, userId: string, input: BekraftaStatusbyteInput,
 ): Promise<Statusbytesutfall> {
-  // (1) Förslaget måste finnas. Bekräftelsen är ett svar på något svepet sett i
-  // Drive; utan förslag finns ingen observation att bekräfta, och ett
-  // statusbyte utan underlag är just det handgreppet ska hindra. Ett avtal i
-  // ett annat bolag har inga rader här (RLS + den sammansatta FK:n) och svarar
-  // därför också "finns inte" — aldrig ett databasfel.
-  const forslag = await client.query(
-    `SELECT 1 FROM uppdrag_svepvarde
-      WHERE company_id = $1 AND contract_id = $2 AND nyckel = $3`,
-    [companyId, input.contract_id, `statusforslag:${input.leverabel_kod}`],
-  );
-  if (forslag.rowCount === 0) throw new NotFoundError('statusforslag');
-
   // (2) Leverabeln, låst för raden. FOR UPDATE och inte en vanlig SELECT: utan
   // låset kan två samtidiga bekräftelser båda läsa `pagar`, båda skriva en
   // händelse med revision 1 och båda sätta `levererad` — två överlämningar av
@@ -130,8 +135,8 @@ export async function bekraftaStatusbyte(
       'SELECT godkannare FROM contracts WHERE id = $1 AND company_id = $2',
       [input.contract_id, companyId],
     );
-    const godkannare = avtal.rows[0]?.godkannare?.trim();
-    // FR-13: mottagaren gissas ALDRIG. Utan avtalets godkännare skrivs
+    const godkannare = input.mottagare !== undefined ? input.mottagare.trim() : avtal.rows[0]?.godkannare?.trim();
+    // FR-13: mottagaren gissas ALDRIG. Utan angiven eller avtalets mottagare skrivs
     // ingenting alls — varken händelse eller status. Ett tomt mottagarfält i en
     // append-only överlämning hade sett ut som en överlämning utan mottagare;
     // en påhittad hade varit värre.
@@ -153,16 +158,23 @@ export async function bekraftaStatusbyte(
     revision = Number(nasta.rows[0]!.nasta);
   }
 
+  if (input.utfall === 'bekraftad' && !input.handling) {
+    throw new BadRequestError('handling_saknas', 'överlämningen registreras ur handlingen — ange mejlets Message-ID eller dokumentets Drive-id');
+  }
+  const referensId = input.handling
+    ? await overlamningsreferens(client, companyId, input.contract_id, input.handling)
+    : null;
+
   // (4) Händelsen först, statusen sedan — i EN transaktion (anroparens
   // `withTenantTransaction`). Tabellen har SELECT + INSERT för rollen `app` och
   // ingenting annat (0068): raden går inte att skriva om i efterhand.
   const till = TILL_STATUS[input.utfall];
   const handelse = await client.query<Handelserad>(
     `INSERT INTO uppdrag_leverabel_handelse
-       (company_id, contract_id, leverabel_id, fran, till, bekraftat_av, bekraftat_nar, revision, mottagare)
-     VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)
-     RETURNING id, revision, mottagare, bekraftat_av, bekraftat_nar::text`,
-    [companyId, input.contract_id, leverabel.id, FRAN_STATUS, till, userId, revision, mottagare],
+       (company_id, contract_id, leverabel_id, fran, till, bekraftat_av, bekraftat_nar, revision, mottagare, referens_id)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9)
+     RETURNING id, revision, mottagare, referens_id, bekraftat_av, bekraftat_nar::text`,
+    [companyId, input.contract_id, leverabel.id, FRAN_STATUS, till, userId, revision, mottagare, referensId],
   );
 
   await client.query(
@@ -187,6 +199,7 @@ export async function bekraftaStatusbyte(
     handelse_id: rad.id,
     revision: rad.revision,
     mottagare: rad.mottagare,
+    referens_id: rad.referens_id,
     bekraftat_av: rad.bekraftat_av!,
     bekraftat_nar: rad.bekraftat_nar!,
     ko_status: ko.ko_status,
@@ -335,7 +348,7 @@ async function flyttaLeverabel(
        (company_id, contract_id, leverabel_id, fran, till, bekraftat_av, bekraftat_nar,
         revision, mottagare, kanal, notering)
      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::date::timestamptz, now()), NULL, $8, $9, $10)
-     RETURNING id, revision, mottagare, bekraftat_av, bekraftat_nar::text, kanal, notering`,
+     RETURNING id, revision, mottagare, referens_id, bekraftat_av, bekraftat_nar::text, kanal, notering`,
     [
       companyId, input.contract_id, leverabel.id, steg.fran, steg.till, userId,
       input.nar ?? null, mottagare, steg.arOverlamning ? input.kanal ?? null : null,
@@ -363,6 +376,7 @@ async function flyttaLeverabel(
     handelse_id: rad.id,
     revision: rad.revision,
     mottagare: rad.mottagare,
+    referens_id: rad.referens_id,
     bekraftat_av: rad.bekraftat_av!,
     bekraftat_nar: rad.bekraftat_nar!,
     kanal: rad.kanal,

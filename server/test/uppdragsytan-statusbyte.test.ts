@@ -9,10 +9,9 @@
 //   (1) **Ingen maskin flyttar en status.** Agenten fälls med 403
 //       `human_required` FÖRE varje skrivning — ingen händelse, ingen status,
 //       ingen köpost, ingen auditrad.
-//   (2) **Transmittalfälten kommer aldrig ur indata.** Mottagaren läses ur
-//       `contracts.godkannare`, datumet ur `now()`, och revisionen räknas ur
-//       historiken — inte ur Drive-revisionen i förslaget, som provet därför
-//       sätter till ett HELT annat tal.
+//   (2) **Transmittalen har sin källa.** Mottagaren förifylls ur avtalet
+//       när den inte anges, datumet läses ur handlingen och revisionen räknas
+//       ur historiken, aldrig ur Drive-revisionen i förslaget.
 //   (3) **Saknad mottagare skriver ingenting.** Inte en händelse, inte en
 //       status. Ett tomt mottagarfält i en append-only historik hade sett ut
 //       som en överlämning utan mottagare.
@@ -29,6 +28,7 @@ import { upsertSvepvarden } from '../src/services/uppdragSvep.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const MOTTAGARE = 'Eva Lind, NVR Bygg AB';
+const HANDLING = { sort: 'mejl', extern_id: 'overlamning-1@nvr.se', extern_kalla: 'gmail:locollabs' };
 const MIGRATION_0072 = new URL('../migrations/0072_leverabelhandelse_kanal_notering.sql', import.meta.url);
 
 let user: TestUser;
@@ -251,7 +251,7 @@ describe('(e) kravManniska: agenten fälls före varje skrivning', () => {
 describe('(a) bekräftelsen flyttar statusen och fyller transmittalen', () => {
   it('revision 1, mottagaren ur kontraktet, datum ur klockan — inget ur indata', async () => {
     const svar = await ok('bekrafta_statusbyte', {
-      contract_id: avtalId, leverabel_kod: 'L1', utfall: 'bekraftad',
+      contract_id: avtalId, leverabel_kod: 'L1', utfall: 'bekraftad', handling: HANDLING,
     });
     expect(svar.status).toBe('levererad');
     expect(svar.fran).toBe('pagar');
@@ -306,7 +306,7 @@ describe('(b) andra överlämningen', () => {
     await skrivForslag(avtalId, ['L1', 'L3', 'L6'], 12);
 
     const svar = await ok('bekrafta_statusbyte', {
-      contract_id: avtalId, leverabel_kod: 'L1', utfall: 'bekraftad',
+      contract_id: avtalId, leverabel_kod: 'L1', utfall: 'bekraftad', handling: HANDLING,
     });
     expect(svar.revision).toBe(2);
 
@@ -319,7 +319,7 @@ describe('(b) andra överlämningen', () => {
 
   it('räkningen är per leverabel, inte per avtal', async () => {
     const svar = await ok('bekrafta_statusbyte', {
-      contract_id: avtalId, leverabel_kod: 'L3', utfall: 'bekraftad',
+      contract_id: avtalId, leverabel_kod: 'L3', utfall: 'bekraftad', handling: HANDLING,
     });
     // L1 står på 2, men L3 är en egen leverabel med sin egen första överlämning.
     expect(svar.revision).toBe(1);
@@ -418,7 +418,7 @@ describe('(d) retur', () => {
     await sattStatus(returavtal, 'L2', 'pagar');
     await skrivForslag(returavtal, ['L2'], 5);
     const svar = await ok('bekrafta_statusbyte', {
-      contract_id: returavtal, leverabel_kod: 'L2', utfall: 'bekraftad',
+      contract_id: returavtal, leverabel_kod: 'L2', utfall: 'bekraftad', handling: HANDLING,
     });
     expect(svar.revision).toBe(1);
     expect((await handelser(returavtal)).map((h) => `${h.till}:${String(h.revision)}`))
@@ -430,25 +430,25 @@ describe('(d) retur', () => {
 // (f)/(g) Saknat förslag och grannbolaget svarar likadant: finns inte
 // ---------------------------------------------------------------------------
 
-describe('(f) saknat förslag', () => {
-  it('404 — en bekräftelse utan observation är ett statusbyte utan underlag', async () => {
+describe('(f) inget förslag krävs', () => {
+  it('överlämningen och returen kräver inget svepförslag (FR-13, Struket)', async () => {
     const { avtalId: tomt } = await nyttUppdrag('Utan förslag', {
       koder: ['L1', 'L4'], godkannare: MOTTAGARE, forslagFor: ['L1'],
     });
 
     const res = await act('bekrafta_statusbyte', {
-      contract_id: tomt, leverabel_kod: 'L4', utfall: 'bekraftad',
+      contract_id: tomt, leverabel_kod: 'L4', utfall: 'bekraftad', handling: HANDLING,
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(404);
-    expect(res.body.error).toBe('not_found');
-    expect(await handelser(tomt)).toHaveLength(0);
-    expect((await statusar(tomt)).L4).toBe('pagar');
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await statusar(tomt)).L4).toBe('levererad');
+    expect((await handelser(tomt)).filter((h) => h.kod === 'L4').map((h) => h.revision)).toEqual([1]);
 
-    // Och returen kräver samma underlag: den är inte en bakdörr förbi förslaget.
+    await sattStatus(tomt, 'L4', 'pagar');
     const retur = await act('bekrafta_statusbyte', {
       contract_id: tomt, leverabel_kod: 'L4', utfall: 'retur',
     });
-    expect(retur.status).toBe(404);
+    expect(retur.status, JSON.stringify(retur.body)).toBe(200);
+    expect((await statusar(tomt)).L4).toBe('avvisad');
   });
 });
 
@@ -501,76 +501,12 @@ describe('(h) uppdrag_leverabel_handelse är append-only för rollen app', () =>
 // KRAV-7: vyn — Davids egen väg in, genom samma action-lager (lärdom 5)
 // ---------------------------------------------------------------------------
 
-describe('vyn: statusförslaget på uppdragssidan', () => {
+describe('vyn: uppdragssidan', () => {
   async function sida(path: string): Promise<string> {
     const res = await ua.get(path);
     expect(res.status, `${path} gav ${res.status}`).toBe(200);
     return res.text;
   }
-
-  it('öppna förslag för leverabler i `pagar` visas med AI-märkning och sitt underlag', async () => {
-    const html = await sida(`/app/c/${companyId}/projects/${projektId}`);
-    expect(html).toContain('AI-genererat förslag');
-    expect(html).toContain('Leverabel L6 kan vara levererad');
-    // Underlaget: koden, Drive-revisionen och handlingen — i klartext.
-    expect(html).toContain('Drive-revision');
-    expect(html).toContain('1AbC_L6');
-    const ref = await withAdmin(async (c) => (await c.query(
-      "SELECT id FROM uppdrag_referens WHERE company_id = $1 AND contract_id = $2 AND extern_id = '1AbC_L6'", [companyId, avtalId],
-    )).rows[0]);
-    expect(ref).toBeDefined();
-    expect(html).toContain(`data-referens="${ref!.id}"`);
-    expect(html).toContain('Ej verifierad');
-    expect(html).toContain('name="utfall" value="bekraftad"');
-    expect(html).toContain('name="utfall" value="retur"');
-    // JS-fritt, som resten av vyn.
-    expect(html).not.toContain('<script');
-  });
-
-  it('en besvarad leverabel försvinner från sidan — bara `pagar` väntar på svar', async () => {
-    const html = await sida(`/app/c/${companyId}/projects/${projektId}`);
-    // L1 och L3 är bekräftade ovan; deras förslag ligger kvar i cachen tills
-    // nästa svep, men de är inte längre frågor.
-    expect(html).not.toContain('Leverabel L1 kan vara levererad');
-    expect(html).not.toContain('Leverabel L3 kan vara levererad');
-  });
-
-  it('POST från kortet skriver händelsen som människa och auditloggas', async () => {
-    const { projektId: p, avtalId: a } = await nyttUppdrag('Vybekräftad', {
-      koder: ['L5'], godkannare: MOTTAGARE, driveRevision: 8,
-    });
-
-    const res = await ua.post(`/app/c/${companyId}/projects/${p}/statusforslag`).type('form').send({
-      contract_id: a, leverabel_kod: 'L5', utfall: 'bekraftad',
-    });
-    expect(res.status).toBe(302);
-    expect(res.headers.location).toBe(`/app/c/${companyId}/projects/${p}`);
-
-    const rader = await handelser(a);
-    expect(rader).toHaveLength(1);
-    expect(rader[0]!.till).toBe('levererad');
-    expect(rader[0]!.revision).toBe(1);
-    expect(rader[0]!.mottagare).toBe(MOTTAGARE);
-    expect(await auditrader()).toContain('action.executed:bekrafta_statusbyte');
-  });
-
-  it('`saknad mottagare` syns som notis på uppdragssidan i stället för en felsida', async () => {
-    const { projektId: p, avtalId: a } = await nyttUppdrag('Vy utan godkännare', {
-      koder: ['L5'], godkannare: null, driveRevision: 8,
-    });
-
-    const res = await ua.post(`/app/c/${companyId}/projects/${p}/statusforslag`).type('form').send({
-      contract_id: a, leverabel_kod: 'L5', utfall: 'bekraftad',
-    });
-    expect(res.status).toBe(302);
-    expect(res.headers.location).toContain(`/app/c/${companyId}/projects/${p}?fel=`);
-    expect(decodeURIComponent(res.headers.location!)).toContain('saknad mottagare');
-    expect(await handelser(a)).toHaveLength(0);
-
-    // Notisen står på uppdragssidan, i klartext — inte som en felsida.
-    const html = await sida(res.headers.location!);
-    expect(html).toContain('saknad mottagare');
-  });
 
   it('ett uppdrag utan förslag visar ingenting alls — brus lär läsaren att sluta titta', async () => {
     const { projektId: p } = await nyttUppdrag('Vy utan förslag', {
@@ -783,7 +719,7 @@ describe('(a) hela vägen genom skalan', () => {
 
     // Mittensteget ägs av S3.2 och är orört: samma åtgärd, samma revision.
     const levererad = await ok('bekrafta_statusbyte', {
-      contract_id: a, leverabel_kod: 'L1', utfall: 'bekraftad',
+      contract_id: a, leverabel_kod: 'L1', utfall: 'bekraftad', handling: HANDLING,
     });
     expect(levererad.status).toBe('levererad');
     expect(levererad.revision).toBe(1);
@@ -1031,7 +967,7 @@ describe('(f) avslut med tom öppna-lista', () => {
 
     for (const kod of ['L1', 'L2']) {
       await ok('paborja_leverabel', { contract_id: a, leverabel_kod: kod });
-      await ok('bekrafta_statusbyte', { contract_id: a, leverabel_kod: kod, utfall: 'bekraftad' });
+      await ok('bekrafta_statusbyte', { contract_id: a, leverabel_kod: kod, utfall: 'bekraftad', handling: HANDLING });
       await ok('godkann_leverabel', { contract_id: a, leverabel_kod: kod, kanal: 'mejl' });
     }
     expect(await statusar(a)).toEqual({ L1: 'godkand', L2: 'godkand' });
