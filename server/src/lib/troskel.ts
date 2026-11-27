@@ -29,12 +29,17 @@
 //     — en tröskel som råkar hamna 0,000001 fel är en tröskel som tänder eller
 //     tiger av fel skäl.
 //
+// Procentbasen är nivåns EGEN ram (Story 5.3): ett tak som summerats ur barnen
+// (`cap_derived`) är ingen ram för nivån, och en mätnivå utan egen ram står i
+// `utan_egen_ram` i stället för att prövas mot ett tal ingen skrivit under.
+//
 // Dagslarmet är den tredje ramen och står för sig: det mäter FÖRSENING, inte
 // pengar, och prövas därför oberoende av beloppen och utan krav på ett tak. Det
 // intervall som gäller är delens eget, annars det ÄRVDA — samma regel som
 // planen ritar med, hämtad ur `byggPlan` och inte skriven en andra gång. Därav
 // FR-3:s sista sats: en leverabel som bara har strömmens period kan aldrig
-// larma före periodens slut.
+// larma före periodens slut. Ett ärvt intervall tänder dagen efter sitt slut
+// (`ARVT_INTERVALL_DAGAR`); avtalets dagar gäller bara daterade poster.
 
 import { byggPlan, type Datumprecision, type Plandel } from './uppdragsplan.js';
 
@@ -111,9 +116,42 @@ export interface Niva {
   cap_status: 'bekraftat' | 'vet_ej';
   cap_hours: number | null;
   cap_amount_ore: number | null;
+  /** Taket är summerat ur barnen. Ett summerat tak är inte nivåns egen ram. */
+  cap_derived: boolean;
   billable_minutes: number;
   amount_ore: number;
 }
+
+/**
+ * Den enda platsen där egen ram avgörs, i heltalsenheter. Ett saknat tak ger
+ * null för enheten, och ett summerat tak ger null för båda: barnens summa är
+ * ingen procentbas.
+ */
+export function egenRam(
+  n: { cap_hours: number | null; cap_amount_ore: number | null; cap_derived: boolean },
+): { minuter: number | null; ore: number | null } {
+  if (n.cap_derived) return { minuter: null, ore: null };
+  return {
+    // Taket i HELA MINUTER: numeric(8,2) blir heltal en gång, aldrig i en summa.
+    minuter: n.cap_hours === null ? null : Math.round(n.cap_hours * 60),
+    ore: n.cap_amount_ore,
+  };
+}
+
+/** En mätnivå och enhet utan egen ram. Inga tal: ingen ram, ingen procent. */
+export interface UtanEgenRam {
+  kod: string;
+  enhet: 'timmar' | 'kronor';
+}
+
+/**
+ * Ett ärvt intervall tänder dagen efter intervallets slut (FR-3: larmar när
+ * intervallets slut passerats, inte vid glidning inom intervallet).
+ */
+export const ARVT_INTERVALL_DAGAR = 1;
+
+/** Golvets märkning, ordagrant ur kriterium 7. Story 5.7 byter den här. */
+export const GOLVETS_MARKNING = 'förslag, ej beslutat av David';
 
 /**
  * Uppdragets prognosunderlag — SAMMA indata som `harledPrognosramar` räknar
@@ -145,6 +183,8 @@ export interface Troskelutfall {
   /** Trösklarna som gällde. Cachen ska gå att läsa utan att slå upp avtalet. */
   trosklar: Trosklar;
   larm: Larm[];
+  /** Mätnivåerna utan egen ram, per enhet, i mätnivåernas ordning. */
+  utan_egen_ram: UtanEgenRam[];
 }
 
 /**
@@ -168,6 +208,16 @@ export function passerarTroskel(
 ): boolean {
   if (avvikelse <= 0) return false;
   return avvikelse > bindandeTroskel(ram, procentHundradelar, golv);
+}
+
+/**
+ * Är larmets bindande tröskel absolutgolvet? Avgör bara vilken text som visas
+ * (golvets märkning), aldrig om ett larm tänds. Ett dagslarm har inget golv.
+ */
+export function golvetBinder(larm: Larm, t: Trosklar): boolean {
+  if (larm.ram === 'timmar') return larm.troskel_minuter === heltalstrosklar(t).golv_minuter;
+  if (larm.ram === 'kronor') return larm.troskel_ore === t.golv_ore;
+  return false;
 }
 
 /** `YYYY-MM-DD` → dygn sedan epok. Samma grepp som `lib/uppdragsplan.ts`. */
@@ -208,10 +258,11 @@ function beloppslarm(
   // Ett obekräftat eller saknat tak larmar aldrig (KRAV-3).
   if (niva.cap_status !== 'bekraftat') return [];
   const larm: Larm[] = [];
+  // Procentbasen är nivåns egen ram; ett summerat tak prövas inte.
+  const egen = egenRam(niva);
 
-  if (niva.cap_hours !== null) {
-    // Taket i HELA MINUTER: numeric(8,2) blir heltal en gång, aldrig i en summa.
-    const ram = Math.round(niva.cap_hours * 60);
+  if (egen.minuter !== null) {
+    const ram = egen.minuter;
     const avvikelse = minuter - ram;
     const troskel = bindandeTroskel(ram, t.procent_hundradelar, t.golv_minuter);
     if (passerarTroskel(avvikelse, ram, t.procent_hundradelar, t.golv_minuter)) {
@@ -222,8 +273,8 @@ function beloppslarm(
     }
   }
 
-  if (niva.cap_amount_ore !== null && oren !== null) {
-    const ram = niva.cap_amount_ore;
+  if (egen.ore !== null && oren !== null) {
+    const ram = egen.ore;
     const avvikelse = oren - ram;
     const troskel = bindandeTroskel(ram, t.procent_hundradelar, t.golv_ore);
     if (passerarTroskel(avvikelse, ram, t.procent_hundradelar, t.golv_ore)) {
@@ -284,18 +335,30 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
       const slut = dagnummer(rad.stapel.end_date);
       if (slut === null) continue;
       const forsening = nu - slut;
-      // Dagslarmet är det enda som tänder PÅ tröskeln: `troskel_dagar` är ett
-      // antal hela dygn, och femte dagens försening ÄR fem dagar.
-      if (forsening < t.dagar) continue;
+      // Avtalets dagar gäller en daterad post; ett ärvt intervall tänder
+      // genast när slutet passerats, inte vid glidning inom intervallet.
+      const troskel = rad.stapel.arvd ? ARVT_INTERVALL_DAGAR : t.dagar;
+      // Dagslarmet är det enda som tänder PÅ tröskeln: tröskeln är ett antal
+      // hela dygn, och femte dagens försening ÄR fem dagar.
+      if (forsening < troskel) continue;
       larm.push({
         ram: 'dagar', kod: rad.code,
         slutdatum: rad.stapel.end_date,
         precision: rad.stapel.precision,
         arvt_fran: rad.stapel.arvd ? rad.stapel.kalla_kod : null,
-        forsening_dagar: forsening, troskel_dagar: t.dagar,
+        forsening_dagar: forsening, troskel_dagar: troskel,
       });
     }
   }
 
-  return { trosklar: indata.trosklar, larm };
+  // (4) RAMLÄGET. Varje mätnivå och enhet utan egen ram, timmar före kronor —
+  //     utan tal, så att ingen procent kan visas för en ram som inte finns.
+  const utan_egen_ram: UtanEgenRam[] = [];
+  for (const niva of nivaer) {
+    const egen = egenRam(niva);
+    if (egen.minuter === null) utan_egen_ram.push({ kod: niva.code, enhet: 'timmar' });
+    if (egen.ore === null) utan_egen_ram.push({ kod: niva.code, enhet: 'kronor' });
+  }
+
+  return { trosklar: indata.trosklar, larm, utan_egen_ram };
 }

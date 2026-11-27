@@ -45,6 +45,7 @@ function niva(code: string, parent_code: string | null, over: Partial<Niva> = {}
     cap_status: 'bekraftat',
     cap_hours: null,
     cap_amount_ore: null,
+    cap_derived: false,
     billable_minutes: 0,
     amount_ore: 0,
     ...over,
@@ -303,7 +304,9 @@ describe('KRAV-6 (5): fem kalenderdagars försening mot en daterad post tänder'
 describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets slut passerats', () => {
   // L2 har inga egna datum (importen ger leverabler NULL med flit: strömmens
   // period gäller). Den ärver S1:s intervall enligt `byggPlan`:s regel, och
-  // FR-3:s sista sats säger att den då inte får larma förrän S1:s slut passerats.
+  // FR-3:s sista sats säger att den då inte får larma förrän S1:s slut passerats
+  // — och att den larmar genast därefter (Story 5.3): dagen efter slutet, inte
+  // efter avtalets fem dagar, som bara gäller daterade poster.
   const delar = [niva('UPPDRAG', null), niva('L2', 'S1')];
   const perioder = [
     period('UPPDRAG', null, null, null),
@@ -315,12 +318,10 @@ describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets s
     expect(larm({ idag: '2026-09-06', delar, perioder })).toEqual([]);
     // Inte heller på slutdagen: förseningen är noll.
     expect(larm({ idag: '2026-09-30', delar, perioder })).toEqual([]);
-    // Och inte fyra dagar efter — tröskeln är fem.
-    expect(larm({ idag: '2026-10-04', delar, perioder })).toEqual([]);
   });
 
-  it('fem dagar efter det ärvda slutet tänder det, med arvet utskrivet', () => {
-    expect(larm({ idag: '2026-10-05', delar, perioder })).toEqual([{
+  it('dagen efter det ärvda slutet tänder det, med arvet utskrivet', () => {
+    expect(larm({ idag: '2026-10-01', delar, perioder })).toEqual([{
       ram: 'dagar',
       kod: 'L2',
       slutdatum: '2026-09-30',
@@ -328,8 +329,8 @@ describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets s
       // Vilken del intervallet KOM ifrån. Ett larm på ett datum som inte står
       // på posten självt är obegripligt utan den upplysningen.
       arvt_fran: 'S1',
-      forsening_dagar: 5,
-      troskel_dagar: 5,
+      forsening_dagar: 1,
+      troskel_dagar: 1,
     }]);
   });
 
@@ -346,7 +347,7 @@ describe('KRAV-6 (6): enbart ärvt intervall — larm först när intervallets s
       precision: 'manad',
       arvt_fran: 'S1',
       forsening_dagar: 5,
-      troskel_dagar: 5,
+      troskel_dagar: 1,
     }]);
   });
 
@@ -506,11 +507,12 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
     });
 
     // 300 minuter och 5 500 kr över ramen passerar procenten men inte golvet.
-    // Kvar står dagslarmet: L1 ärver S1:s period, som tog slut i januari.
+    // Kvar står dagslarmet: L1 ärver S1:s period, som tog slut i januari. Ett
+    // ärvt intervall tänder dagen efter slutet (Story 5.3), så tröskeln är 1.
     const rader = varde.larm as Array<Record<string, unknown>>;
     expect(rader).toHaveLength(1);
     expect(rader[0]).toMatchObject({
-      ram: 'dagar', kod: 'L1', slutdatum: '2026-01-31', arvt_fran: 'S1', troskel_dagar: 5,
+      ram: 'dagar', kod: 'L1', slutdatum: '2026-01-31', arvt_fran: 'S1', troskel_dagar: 1,
     });
     expect(rader[0]!.forsening_dagar as number).toBeGreaterThanOrEqual(5);
     // Strömmen S1 är ingen mätnivå, och rotdelen har ingen period alls.
@@ -530,7 +532,7 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
       ));
     });
 
-    it('samma förbrukning, nya trösklar: beloppen larmar och dagslarmet tystnar', async () => {
+    it('samma förbrukning, nya trösklar: beloppen larmar, och det ärvda dagslarmet står kvar', async () => {
       await ok('kor_uppdragssvep', { uppdrag: [{ contract_id: avtal }] });
       const { varde } = await troskelrad();
       expect(varde.trosklar).toEqual({
@@ -538,7 +540,13 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
       });
       // Exakt samma tidpost och exakt samma period som i provet ovan — bara
       // trösklarna är andra. Ett hårdkodat tal hade gett samma svar båda gångerna.
-      expect(varde.larm).toEqual([
+      // Avtalets höjda dagströskel gäller bara daterade poster: L1 ärver S1:s
+      // intervall och tänder fortfarande dagen efter slutet (Story 5.3).
+      const rader = varde.larm as Array<Record<string, unknown>>;
+      expect(rader.filter((l) => l.ram === 'dagar')).toEqual([
+        expect.objectContaining({ ram: 'dagar', kod: 'L1', arvt_fran: 'S1', troskel_dagar: 1 }),
+      ]);
+      expect(rader.filter((l) => l.ram !== 'dagar')).toEqual([
         {
           ram: 'timmar', kod: 'UPPDRAG', grund: 'utfall',
           ram_minuter: 600, avvikelse_minuter: 300, troskel_minuter: 240,
@@ -561,7 +569,7 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
           kalenderhandelser: [{ datum: framat.toISOString().slice(0, 10), minuter: 480 }],
         }],
       });
-      expect(await larmen()).toEqual([
+      expect((await larmen()).filter((l) => l.ram !== 'dagar')).toEqual([
         {
           ram: 'timmar', kod: 'UPPDRAG', grund: 'utfall',
           ram_minuter: 600, avvikelse_minuter: 300, troskel_minuter: 240,
@@ -586,6 +594,7 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
       expect((await troskelrad(grannavtal)).varde).toEqual({
         trosklar: { procent: 5, golv_ore: 2_200_000, golv_timmar: 20, dagar: 5 },
         larm: [],
+        utan_egen_ram: [],
       });
     });
   });
