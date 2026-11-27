@@ -389,13 +389,16 @@ export async function lasFaktureringsunderlag(
     [companyId, projectId],
   );
   const lastNar = new Date().toISOString();
+  // READ COMMITTED ger en ny ögonblicksbild per fråga. Läs ALLA register
+  // före historiken: ett godkännande som statusläsningen ser har då redan
+  // sin händelse committad, även när flera avtal läses i samma anrop.
+  const lastaAvtal: { id: string; name: string; register: Leverabelrad[] }[] = [];
+  for (const a of avtal.rows) {
+    lastaAvtal.push({ ...a, register: await lasLeverabelregister(client, companyId, { contract_id: a.id }) });
+  }
   const godkannanden = avtal.rows.length > 0
     ? await lasGodkannanden(client, companyId, avtal.rows.map((a) => a.id)) : new Map<string, Godkannandehandelse[]>();
-  const underlag: Avtalsunderlag[] = [];
-  for (const a of avtal.rows) {
-    const register = await lasLeverabelregister(client, companyId, { contract_id: a.id });
-    underlag.push({ contract_id: a.id, namn: a.name,
-      underlag: last(valjFakturaunderlag(register, godkannanden.get(a.id) ?? []), KALLA_REDOVISNING, lastNar) });
-  }
+  const underlag: Avtalsunderlag[] = lastaAvtal.map((a) => ({ contract_id: a.id, namn: a.name,
+    underlag: last(valjFakturaunderlag(a.register, godkannanden.get(a.id) ?? []), KALLA_REDOVISNING, lastNar) }));
   return { project_id: projectId, regel: FAKTURA_TEXT.regel, ingen_faktura: FAKTURA_TEXT.ingen_faktura, avtal: underlag };
 }

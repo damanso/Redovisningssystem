@@ -6,17 +6,19 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { PoolClient } from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { app, api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
-import { FAKTURERBARA_LAGEN, FAKTURA_TEXT, valjFakturaunderlag } from '../src/services/invoiceFromTime.js';
+import { FAKTURERBARA_LAGEN, FAKTURA_TEXT, lasFaktureringsunderlag, valjFakturaunderlag } from '../src/services/invoiceFromTime.js';
 import type { Faktureringsunderlag } from '../src/services/invoiceFromTime.js';
 import { getAction } from '../src/actions/registry.js';
 import type { Leverabelrad } from '../src/services/uppdragRegister.js';
 import { faltvarde } from '../src/lib/leverabelfalt.js';
 import { LUCKTEXT } from '../src/lib/kontraktsluckor.js';
 import { esc } from '../src/http/view/html.js';
+import { withTenantTransaction } from '../src/db/tx.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const PARTER = { godkannare: 'Styrgruppen', godkannare_eskalering: 'Eva Larsson (VD)',
@@ -343,6 +345,85 @@ describe('Story 4.4: läsvägen', () => {
     const karta = await kallor(); expect(skrivbrister(karta)).toEqual([]);
     const planterad = new Map(karta); planterad.set('services/uppdragLage.ts', `${planterad.get('services/uppdragLage.ts')}\nUPDATE uppdrag_leverabel SET status = 'godkand'`);
     expect(skrivbrister(planterad)).not.toEqual([]);
+  }, 120_000);
+  it.each([
+    { namn: 'ett avtal, efter historiken', antal: 1, grans: 'efter_historik' },
+    { namn: 'flera avtal, efter historiken', antal: 3, grans: 'efter_historik' },
+    { namn: 'flera avtal, före sista registret', antal: 3, grans: 'fore_sista_register' },
+    { namn: 'flera avtal, efter sista registret', antal: 3, grans: 'efter_sista_register' },
+  ])('4.4-A8 samtidiga godkännanden ger ingen falsk saknasvarning: $namn', async ({ antal, grans }) => {
+    const avtal: Avtal[] = [];
+    for (let i = 0; i < antal; i++) {
+      avtal.push(await nyttAvtal(`Samtidighet ${i}`, PARTER, avtal[0]?.projectId));
+    }
+    // Samma kod i olika avtal och en annan kod i det sista prövar även att
+    // historiken binds till rätt avtal. L4 är godkänd redan före läsningen.
+    const mal = avtal.map((a, i) => ({ a, kod: i === 2 ? 'L2' : 'L1' }));
+    for (const { a, kod } of mal) { await paborja(a, kod); await overlamna(a, kod); }
+    await paborja(avtal[0]!, 'L4'); await overlamna(avtal[0]!, 'L4'); await godkann(avtal[0]!, 'L4');
+    for (const { a, kod } of mal) expect((await register(a)).find((r) => r.kod === kod)!.status).toBe('levererad');
+
+    let committat = false;
+    let historikfragor = 0;
+    const lastaRegister = new Map<string, string[]>();
+    async function godkannUnderLasningen() {
+      expect(committat).toBe(false);
+      for (const { a, kod } of mal) await godkann(a, kod);
+      committat = true;
+    }
+    const u = await withTenantTransaction(user.userId, companyId, async (client) => {
+      expect((await client.query('SHOW transaction_isolation')).rows[0].transaction_isolation).toBe('read committed');
+      // Samma klientomslag som atomicitetsprovet i faktura-ur-tid: alla
+      // frågor och svar går till Postgres. Omslaget pausar bara läsningen
+      // medan riktiga HTTP-godkännanden committar på en annan anslutning.
+      const synkroniserad = new Proxy(client, {
+        get(riktig, prop) {
+          if (prop === 'query') return async (text: string, params?: unknown[]) => {
+            const arRegister = text.includes('SELECT l.contract_id, l.kod,');
+            const arHistorik = text.includes('SELECT DISTINCT ON (h.contract_id, l.kod)');
+            if (arRegister && grans === 'fore_sista_register' && lastaRegister.size === antal - 1) {
+              await godkannUnderLasningen();
+            }
+            const svar = await riktig.query(text, params);
+            if (arRegister) {
+              lastaRegister.set(params![1] as string, (svar.rows as Leverabelrad[])
+                .filter((r) => r.status === 'godkand').map((r) => r.kod));
+              if (grans === 'efter_sista_register' && lastaRegister.size === antal) await godkannUnderLasningen();
+            }
+            if (arHistorik) {
+              historikfragor++;
+              expect(params![1]).toEqual(avtal.map((a) => a.contractId));
+              if (grans === 'efter_historik') await godkannUnderLasningen();
+            }
+            return svar;
+          };
+          const varde = Reflect.get(riktig, prop) as unknown;
+          return typeof varde === 'function' ? varde.bind(riktig) : varde;
+        },
+      }) as PoolClient;
+      return lasFaktureringsunderlag(synkroniserad, companyId, avtal[0]!.projectId);
+    });
+    expect(committat).toBe(true);
+    expect(historikfragor).toBe(1);
+    expect(lastaRegister.size).toBe(antal);
+    expect(u.avtal).toHaveLength(antal);
+    expect(u.avtal.find((a) => a.contract_id === avtal[0]!.contractId)!.underlag.varde!.map((r) => r.kod)).toContain('L4');
+    for (const a of u.avtal) {
+      // Bara det godkända läge som registerfrågan faktiskt såg får listas.
+      // Varje sådan rad ska ha den redan committade godkännandehändelsen.
+      expect(a.underlag.varde!.map((r) => r.kod)).toEqual(lastaRegister.get(a.contract_id));
+      for (const r of a.underlag.varde!) expect(r.godkannande).toMatchObject({
+        dag: '2026-09-20', kanal: 'telefon', mottagare: PARTER.godkannare,
+      });
+    }
+    const efter = await underlag(avtal[0]!.projectId);
+    for (const { a, kod } of mal) {
+      expect(efter.avtal.find((x) => x.contract_id === a.contractId)!.underlag.varde)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ kod, godkannande: expect.objectContaining({ kanal: 'telefon' }) })]));
+    }
+    const b = block(await projektsida(avtal[0]!.projectId));
+    expect(b).toContain('>L4<');
+    expect(b).not.toContain(esc(FAKTURA_TEXT.godkannande_saknas));
   }, 120_000);
 });
 

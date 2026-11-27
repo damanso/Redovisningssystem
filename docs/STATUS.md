@@ -153,6 +153,24 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-27 — Omtag: 4-4-faktureringsflodet-laser-godkanda-leverabler-som-underlag.**
+  Rättat läsordningen i `server/src/services/invoiceFromTime.ts`: samtliga
+  avtals register läses före den gemensamma godkännandehistoriken. Med
+  READ COMMITTED kunde ett godkännande annars committa mellan frågorna och
+  ge en falsk saknasvarning i både åtgärdssvaret och projektsidan.
+  A8 i `server/test/uppdragsytan-faktureringsunderlag.test.ts` skrevs före
+  rättelsen: fyra samtidighetsförlopp med ett/flera avtal, commit efter
+  historiken, före sista registret och efter sista registret. Riktiga
+  HTTP-godkännanden mellan riktiga Postgres-frågor; inga databassvar mockas.
+  Befintliga A2/V4 behåller varningen när historiken faktiskt saknas.
+  Husets befintliga tabell, typografi, tomläge och fokusram passar fortsatt
+  projektsidan. Läsfel följer befintlig felsida och laddning serverrenderas.
+  Inget kontrakt, beroende, schema eller rutt ändras; 218 actions kvar.
+  Typkontroll före/efter rättelsen exit 0. Riktade tester och hela `npm test`
+  ej körda på fallnivå: globalSetup ger `connect EPERM 127.0.0.1:5433`, exit 1.
+  Kedjans exekverande grind återstår enligt databasundantaget; inga gröna
+  databasutfall eller nya driftutfall påstås. CRM-kontraktet berörs inte.
+
 - **2026-11-27 — 4-4-faktureringsflodet-laser-godkanda-leverabler-som-underlag.**
   Faktureringsflödet läser godkända leverabler ur registret genom regeln och
   den gemensamma läsningen i `server/src/services/invoiceFromTime.ts`.
