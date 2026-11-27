@@ -59,14 +59,23 @@ export interface Svepvarde {
 export const UTKASTFRAGENYCKEL = 'kontrakt_utkastfragor';
 
 /**
+ * Rutinvägens förslag till David (Story 14.1, FR-13): de källhändelser regeln
+ * fällde, en rad per avtal. Skrivs bara av rutinvägen i uppdragStatus.ts, i ett
+ * eget omfång, och aldrig av svepet. Värdet är omräkningsbart: Hermes lämnar
+ * samma källhändelse igen tills den registrerats, så tabellen förblir CACHE.
+ */
+export const RUTINFORSLAGSNYCKEL = 'rutinforslag';
+
+/**
  * Skriver svepets värden för ett uppdrag med upsert på
  * (company_id, contract_id, nyckel) — 0068:s uppdrag_svepvarde_uk. Två
  * körningar på samma indata ger exakt samma rader (last_nar undantaget:
  * den säger NÄR värdet lästes, inte VAD det är). Nycklar som inte längre
  * finns i indata tas bort inom samma omfång.
  *
- * Två nycklar är reserverade och har var sitt omfång: `tackning`
- * (täckningssteget) och `kontrakt_utkastfragor` (importens utkastläge). Ett
+ * Tre nycklar är reserverade och har var sitt omfång: `tackning`
+ * (täckningssteget), `kontrakt_utkastfragor` (importens utkastläge) och
+ * `rutinforslag` (rutinvägens förslag). Ett
  * reserverat omfång skriver bara sin egen nyckel och raderar bara den.
  * Standardomfånget 'svep' varken skriver eller raderar någon reserverad nyckel;
  * ett indata med en sådan kastar. Stegen kan därför inte radera varandras
@@ -75,7 +84,7 @@ export const UTKASTFRAGENYCKEL = 'kontrakt_utkastfragor';
  */
 export async function upsertSvepvarden(
   client: PoolClient, companyId: string, contractId: string, varden: Svepvarde[],
-  omfang: 'svep' | 'tackning' | 'kontrakt_utkastfragor' = 'svep',
+  omfang: 'svep' | 'tackning' | 'kontrakt_utkastfragor' | 'rutinforslag' = 'svep',
 ): Promise<{ skrivna: number; borttagna: number }> {
   const sorterade = [...varden].sort((a, b) => a.nyckel.localeCompare(b.nyckel, 'sv'));
   const nycklar = sorterade.map((v) => v.nyckel);
@@ -83,8 +92,10 @@ export async function upsertSvepvarden(
     throw new Error('upsertSvepvarden: samma nyckel två gånger i ett svep');
   }
   // Läses här och inte på modulnivå: importcykeln via uppdragUndantag (ESM).
-  const reserverade: string[] = [TACKNINGSNYCKEL, UTKASTFRAGENYCKEL];
-  const egen = omfang === 'tackning' ? TACKNINGSNYCKEL : omfang === 'kontrakt_utkastfragor' ? UTKASTFRAGENYCKEL : null;
+  const reserverade: string[] = [TACKNINGSNYCKEL, UTKASTFRAGENYCKEL, RUTINFORSLAGSNYCKEL];
+  const egen = omfang === 'tackning' ? TACKNINGSNYCKEL
+    : omfang === 'kontrakt_utkastfragor' ? UTKASTFRAGENYCKEL
+      : omfang === 'rutinforslag' ? RUTINFORSLAGSNYCKEL : null;
   for (const v of sorterade) {
     if (egen === null ? reserverade.includes(v.nyckel) : v.nyckel !== egen) {
       throw new Error(`upsertSvepvarden: nyckeln ${v.nyckel} hör inte till omfånget ${omfang}`);

@@ -479,8 +479,8 @@ async function riggaRorelse(
 ): Promise<void> {
   await withAdmin((c) => c.query(
     `INSERT INTO uppdrag_leverabel_handelse
-       (company_id, contract_id, leverabel_id, fran, till, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+       (company_id, contract_id, leverabel_id, fran, till, created_at, bekraftat_av)
+     VALUES ($1, $2, $3, $4, $5, $6, 'riggning')`,
     [companyId, contractId, leverabelId, fran, till, nar],
   ));
 }

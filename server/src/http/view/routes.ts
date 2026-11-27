@@ -45,7 +45,10 @@ import { listaReferenser, tillReferensvisning } from '../../services/uppdragRefe
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
 import { NASTA_TEXT, type Nastaleverans } from '../../lib/nastaLeverans.js';
-import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
+import {
+  GODKANNANDEKANALER, lasRutinforslag, type Godkannandekanal, type Rutinforslag,
+} from '../../services/uppdragStatus.js';
+import { RUTINSKALTEXT, kallhandelsesteg } from '../../lib/rutinregel.js';
 import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
@@ -4929,6 +4932,8 @@ interface Leveransavtal {
   namn: string;
   rader: Leverabelrad[];
   parter: LastaKontraktsparter;
+  /** Rutinvägens fällda källhändelser (Story 14.1), förifyllda på sina kort. */
+  forslag: Rutinforslag[];
 }
 
 interface Leveransunderlag {
@@ -4955,6 +4960,7 @@ async function leveransunderlag(
       namn: String(a.name ?? ''),
       rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
       parter: await lasKontraktsparter(client, companyId, contractId),
+      forslag: await lasRutinforslag(client, companyId, contractId),
     });
   }
   return { projekt, avtal, epost: (await getProfile(client, userId)).email };
@@ -5011,12 +5017,15 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  * stället för av ett villkor här: ett kort ska inte behöva veta var i kolumnen
  * det står för att se rätt ut.
  */
-function leverabelkort(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw {
+function leverabelkort(
+  bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string,
+  forslag: readonly Rutinforslag[],
+): Raw {
   return html`<li class="leverabelkort">
     <dl style="margin:0">${LEVERABELFALT.map(({ falt, rubrik }) => html`
       <dt style="font-size:12.5px;color:var(--ink-3);margin-top:6px">${rubrik}</dt>
       <dd style="margin:1px 0 0;overflow-wrap:anywhere">${faltinnehall(r, falt)}</dd>`)}</dl>
-    ${leverabelhandgrepp(bas, contractId, r, parter, epost)}
+    ${leverabelhandgrepp(bas, contractId, r, parter, epost, kortetsForslag(r, forslag))}
   </li>`;
 }
 
@@ -5026,9 +5035,22 @@ const KANALORD: Record<Godkannandekanal, string> = {
 };
 
 /**
+ * Rutinvägens förslag som gäller kortet (Story 14.1): samma leverabel, och en
+ * källhändelse vars steg i regeln börjar i kortets läge. Ett förslag av den
+ * andra typen visas inte — kortet visar aldrig ett förslag som inte går att
+ * utföra där.
+ */
+function kortetsForslag(r: Leverabelrad, forslag: readonly Rutinforslag[]): Rutinforslag | null {
+  return forslag.find((f) => f.leverabel_kod === r.kod && kallhandelsesteg(f.kallhandelse.typ).fran === r.status) ?? null;
+}
+
+/** Skälen som regeln fällde bytet för, i klartext och i regelns ordning. */
+const forslagsskal = (f: Rutinforslag): string => f.skal.map((s) => RUTINSKALTEXT[s]).join('; ');
+
+/**
  * Handgreppet på kortet (S10.9): det ENDA steg leverabeln kan ta härifrån.
  *
- * Fyra beslut styr formuläret:
+ * Fem beslut styr formuläret:
  *
  *  1. Läget avgör handgreppen: ej påbörjad får Påbörja; pågår får
  *     Registrera överlämning och Retur; levererad får Godkänn. Godkänd och
@@ -5046,23 +5068,39 @@ const KANALORD: Record<Godkannandekanal, string> = {
  *     ögat och för tangentbordets ordning. Knappens namn bär koden
  *     (`aria-label`), för sex likadana "Påbörja" i en kolumn är sex knappar
  *     utan urskiljbart namn (WCAG 2.4.6).
+ *  5. **Ett fällt rutinbyte förifyller samma formulär** (Story 14.1). Raden
+ *     före säger vad Hermes hittade och varför det inte registrerades, och
+ *     fälten bär källhändelsens värden. David beslutar genom samma handling
+ *     som förut — inget nytt formulär och ingen ny knapp. Utan förslag är
+ *     kortet tecken för tecken som tidigare.
  */
-function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw | '' {
+function leverabelhandgrepp(
+  bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string,
+  forslag: Rutinforslag | null,
+): Raw | '' {
+  const kallhandelse = forslag?.kallhandelse ?? null;
   if (r.status === 'pagar') {
     const mottagare = parter.godkannare?.trim();
     const eskalering = parter.godkannare_eskalering?.trim();
     const hjalpId = `overlamning-mottagare-${contractId}-${r.kod}`;
-    return html`<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
+    const transmittal = kallhandelse?.typ === 'transmittal' ? kallhandelse : null;
+    const handling = transmittal?.handling ?? null;
+    const vald = (sort: string): Raw | '' => handling?.sort === sort ? html` selected` : '';
+    const forslagsrad = forslag && transmittal
+      ? html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">Hermes hittade överlämningen i ${transmittal.handling.sort === 'mejl' ? 'mejlet' : 'dokumentet'} ${transmittal.handling.extern_id} den ${transmittal.handelse_datum}, men registrerade den inte: ${forslagsskal(forslag)}.</p>
+    `
+      : '';
+    return html`${forslagsrad}<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
       <input type="hidden" name="contract_id" value="${contractId}">
       <input type="hidden" name="leverabel_kod" value="${r.kod}">
       <input type="hidden" name="utfall" value="bekraftad">
       <label class="field" style="margin:0 0 7px"><span>Handlingen är</span>
         <select name="handling_sort">
-          <option value="mejl">Ett mejl</option>
-          <option value="drive">Ett dokument i Drive</option>
+          <option value="mejl"${vald('mejl')}>Ett mejl</option>
+          <option value="drive"${vald('drive')}>Ett dokument i Drive</option>
         </select></label>
       <label class="field" style="margin:0 0 7px"><span>Message-ID eller Drive-id</span>
-        <input type="text" name="handling_id" maxlength="200" required></label>
+        <input type="text" name="handling_id" maxlength="200"${handling ? html` value="${handling.extern_id}"` : ''} required></label>
       <label class="field" style="margin:0 0 7px"><span>Mottagare</span>
         <input type="text" name="mottagare" maxlength="200" value="${mottagare ?? ''}" aria-describedby="${hjalpId}"></label>
       <p class="muted" id="${hjalpId}" style="margin:0 0 7px;font-size:12.5px">${mottagare
@@ -5072,7 +5110,7 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
         <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0"
           aria-label="Källa för överlämningen av leverabel ${r.kod}">Källa</summary>
         <label class="field" style="margin:7px 0 0"><span>Läst ur</span>
-          <input type="text" name="handling_kalla" maxlength="200" value="${epost}"></label>
+          <input type="text" name="handling_kalla" maxlength="200" value="${handling ? handling.extern_kalla : epost}"></label>
       </details>
       <p class="muted" style="margin:0 0 7px;font-size:12.5px">Överlämningsdatumet hämtas ur handlingen när Hermes läst den,
         och revisionen räknas upp av systemet. Posten går inte att ändra efteråt.</p>
@@ -5090,6 +5128,11 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
   const steg = r.status === 'ej_paborjad' ? 'paborja' : r.status === 'levererad' ? 'godkann' : null;
   if (steg === null) return '';
   const etikett = steg === 'paborja' ? 'Påbörja' : 'Godkänn';
+  const godkannande = steg === 'godkann' && kallhandelse?.typ === 'godkannande' ? kallhandelse : null;
+  const forslagsrad = forslag && godkannande
+    ? html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">Hermes hittade ett godkännande från ${godkannande.godkand_av} via ${KANALORD[godkannande.kanal]} den ${godkannande.handelse_datum}, men registrerade det inte: ${forslagsskal(forslag)}.</p>
+          `
+    : '';
   return html`<form method="post" action="${bas}/leverabel/${steg}" style="margin:8px 0 0">
     <input type="hidden" name="contract_id" value="${contractId}">
     <input type="hidden" name="leverabel_kod" value="${r.kod}">
@@ -5097,10 +5140,10 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
       ? html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">${parter.godkannare?.trim()
           ? html`Godkänns av ${parter.godkannare}${parter.godkannare_eskalering?.trim() ? html`, eskalering ${parter.godkannare_eskalering}` : ''}.`
           : LUCKTEXT.mottagarpart.vad} ${godkannandeformtext(parter.godkannandeform)}</p>
-          <label class="field" style="margin:0 0 7px"><span>Beskedet kom via</span>
+          ${forslagsrad}<label class="field" style="margin:0 0 7px"><span>Beskedet kom via</span>
           <select name="kanal" required>
             <option value="">Välj kanal…</option>
-            ${GODKANNANDEKANALER.map((k) => html`<option value="${k}">${KANALORD[k]}</option>`)}
+            ${GODKANNANDEKANALER.map((k) => html`<option value="${k}"${godkannande?.kanal === k ? html` selected` : ''}>${KANALORD[k]}</option>`)}
           </select></label>`
       : ''}
     <details style="margin-bottom:8px">
@@ -5110,7 +5153,7 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
       <summary class="muted" style="cursor:pointer;font-size:12.5px;padding:2px 0"
         aria-label="Datum och notering för leverabel ${r.kod}">Datum och notering</summary>
       <label class="field" style="margin:7px 0 0"><span>Skedde den</span>
-        <input type="date" name="nar"></label>
+        <input type="date" name="nar"${godkannande ? html` value="${godkannande.handelse_datum}"` : ''}></label>
       <label class="field" style="margin:7px 0 0"><span>Notering</span>
         <input type="text" name="notering" maxlength="500"></label>
       <p class="muted" style="margin:6px 0 0;font-size:12px">Lämnas datumet tomt antecknas steget som skett nu.
@@ -5122,7 +5165,10 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
 }
 
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
-function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string): Raw {
+function bradkolumn(
+  bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string,
+  forslag: readonly Rutinforslag[],
+): Raw {
   const id = `kol-${lage}-${contractId}`;
   return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
@@ -5131,7 +5177,7 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
       ${rader.length === 0
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
-            ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost))}
+            ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost, forslag))}
           </ul>`}
     </div>
   </section></div>`;
@@ -5147,7 +5193,7 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
  */
 function bradlage(bas: string, a: Leveransavtal, epost: string): Raw {
   return html`<div class="brada">
-    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost))}
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost, a.forslag))}
   </div>`;
 }
 

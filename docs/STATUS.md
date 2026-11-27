@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (218
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (219
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-27 — Bygge: 14-1-ett-rutinmassigt-statusbyte-registreras-ur-sin-kallhandelse-utan-fraga.**
+  Rutinvägen (FR-13, Davids svar 2026-10-07) finns. Regeln bor ren i
+  `lib/rutinregel.ts` (`OVERGANGAR`, `KALLHANDELSETYPER`, sex skäl i
+  `RUTINSKAL`/`RUTINSKALTEXT`, `provaRutinhandelse`). Åtgärden
+  `registrera_rutinstatus` (write, utan människospärr och utan kö) tar aldrig
+  emot ett läge, och `registreraRutinstatus`/`lasRutinforslag` ligger i
+  `services/uppdragStatus.ts`. Migration `0100_rutinstatus.sql` lägger
+  `registrerad_av` (manniska|system), `kallhandelse_typ` och `kallhandelse_ref`,
+  villkoret som tillåter NULL i `bekraftat_av` bara för system, det unika
+  indexet på leverabel, typ och nyckel och en sann kolumnkommentar på
+  `referens_id`. Rutinvägen registrerar bara det regeln medger: transmittal ger
+  levererad och ett godkännande från avtalets godkännare eller eskalering ger
+  godkand, båda bara utan öppen scopesignal och utan tänd eller oläst
+  indikator. Det fällda skriver bara ett förslag i svepcachens reserverade
+  nyckel `rutinforslag` (nytt omfång i `upsertSvepvarden`), och förslaget står
+  förifyllt på leverabelns kort i Leveranserna, aldrig i undantagsvyn, på
+  förstasidan eller i Läget. De tre människospärrade åtgärderna är orörda.
+  Registret har 219 åtgärder. 4.4-A7 väntar tre statusuppdateringar, och
+  sändvägslistan har 37 poster (`uppdragStatus.ts` → `uppdragSvep.ts`). Elva
+  riggningar i åtta provfiler fick `bekraftat_av = 'riggning'`. Prov:
+  `uppdragsytan-rutinstatus` (R1–R8, M1–M3, A1–A7, F1–F5, V1–V3, D1–D2).
+  Körningar mot testdatabasen: Körning 1–4 gröna (8, 447, 565 och 172 prov);
+  hela `npm test` efter uppgift 3 gav 220 gröna filer och V1/V2 röda före vyn
+  (väntat). KÖRNING5. Inga RESTER. Efter driftsättningen prövar 0100:s villkor
+  driftens befintliga rader: en handriggad rad utan `bekraftat_av` fäller
+  migrationen högt. Hermes lämnar källhändelserna först i Story 14.2.
 
 - **2026-11-27 — Bygge: 5-3-trosklarna-indikerar-avvikelse-men-filtrerar-aldrig-ett-mandat.**
   Tröskelregeln i `lib/troskel.ts` prövar nu nivåns egen ram genom
