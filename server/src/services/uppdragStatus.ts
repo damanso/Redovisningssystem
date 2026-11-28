@@ -1,5 +1,7 @@
 // Story 4.2 (FR-12/FR-13/FR-26): överlämningen registreras ur handlingen.
-// Ingen maskin flyttar en status: de tre åtgärderna bär kravManniska.
+// De tre människovägarna bär kravManniska. Rutinvägen (Story 14.1) registrerar
+// bara det som rutinregeln medger ur en källhändelse; det fällda svarar med
+// skälen och skriver ingenting.
 // Transmittalen kommer ur handlingen och kontraktet: handlingen blir en
 // referens, datumet läses ur den och mottagaren förifylls ur avtalet och kan
 // anges, men gissas aldrig. Saknas mottagaren skrivs ingenting.
@@ -11,6 +13,9 @@ import type { PoolClient } from 'pg';
 import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js';
 import { koaRegisterkopia, skapaReferens } from './uppdragReferens.js';
 import { kanonisktReferensId, type Referenssort } from '../lib/referens.js';
+import {
+  provaRutinhandelse, type Kallhandelsetyp, type Rutinskal, type Rutinutfall,
+} from '../lib/rutinregel.js';
 
 /** De två registrerade utfallen. Ett fritt statusfält vore en andra skrivväg. */
 export const STATUSUTFALL = ['bekraftad', 'retur'] as const;
@@ -397,4 +402,260 @@ export function godkannLeverabel(
   client: PoolClient, companyId: string, userId: string, input: LeverabelstegInput,
 ): Promise<Leverabelstegutfall> {
   return flyttaLeverabel(client, companyId, userId, input, GODKANNANDE);
+}
+
+// ---------------------------------------------------------------------------
+// Story 14.1 (FR-13): rutinvägen, den fjärde skrivvägen
+// ---------------------------------------------------------------------------
+
+/**
+ * Källhändelsen som Hermes lämnar: handlingen, dagen och — för godkännandet —
+ * kanalen och avsändaren som källan anger. Ingen variant bär ett målläge: målet
+ * läses ur rutinregelns steg för källhändelsens typ.
+ */
+export type Kallhandelse =
+  | { typ: 'transmittal'; handling: Overlamningshandling; handelse_datum: string }
+  | {
+    typ: 'godkannande'; handling: Overlamningshandling; handelse_datum: string;
+    godkand_av: string; kanal: Godkannandekanal;
+  };
+
+export interface RutinhandelseInput {
+  contract_id: string;
+  leverabel_kod: string;
+  kallhandelse: Kallhandelse;
+}
+
+/** Svaret har inget fält som pekar på en människoväg eller ett förslag (Story 14.4). */
+export type Rutinstatusutfall =
+  | {
+    utfall: 'registrerad'; handelse_id: string; leverabel_kod: string; fran: string; status: string;
+    revision: number | null; mottagare: string; referens_id: string; registrerad_av: 'system';
+    kallhandelse_typ: Kallhandelsetyp; kallhandelse_ref: string; kallhandelse_aktor: string | null;
+    ko_status: string | null;
+  }
+  | { utfall: 'redan_registrerad'; handelse_id: string; leverabel_kod: string; status: string }
+  | { utfall: 'falld'; leverabel_kod: string; status: string; skal: Rutinskal[] };
+
+/** Svepets cachenyckel för tröskellarmet. Läses här, skrivs bara av svepet. */
+const TROSKELLARMNYCKEL = 'troskellarm';
+
+/** Källhändelsens stabila nyckel: sort och kanoniskt id, t.ex. `mejl:godkant-L2@nvr.se`. */
+function kallhandelsensNyckel(handling: Overlamningshandling): string {
+  return `${handling.sort}:${kanonisktReferensId(handling.sort, handling.extern_id)}`;
+}
+
+/**
+ * Larmkoderna ur svepets tröskellarm, eller `null` när värdet inte är ett
+ * larmutfall. Cachen är fri JSON och lovar ingen form (samma försiktighet som
+ * `troskelutfall` i Läget): ett värde som inte går att läsa är en oläst
+ * indikator, aldrig ett tomt larm.
+ */
+function larmkoder(varde: unknown): string[] | null {
+  if (typeof varde !== 'object' || varde === null) return null;
+  const larm = (varde as { larm?: unknown }).larm;
+  if (!Array.isArray(larm)) return null;
+  const koder = larm.map((l: unknown) => (typeof l === 'object' && l !== null ? (l as { kod?: unknown }).kod : undefined));
+  return koder.every((k): k is string => typeof k === 'string') ? koder : null;
+}
+
+/**
+ * Den enda koden som skriver en rad med källhändelse. Anroparen har låst
+ * leverabeln och avtalet och fått stegets medgivande av rutinregeln; `steg` är
+ * regelns medgivna steg ur `OVERGANGAR`, med mottagaren. Raden registreras av
+ * systemet och tillskrivs aldrig någon: `bekraftat_av` är NULL, och källans
+ * aktör står i sin egen kolumn. Story 14.4 skriver Davids ja genom samma
+ * funktion (B21).
+ */
+async function skrivKallhandelse(
+  client: PoolClient, companyId: string, contractId: string,
+  leverabel: { id: string; kod: string }, steg: Extract<Rutinutfall, { medges: true }>, kallhandelse: Kallhandelse,
+): Promise<Extract<Rutinstatusutfall, { utfall: 'registrerad' }>> {
+  // (1) Handlingen blir en referens först nu, när bytet är medgivet. Fel form,
+  // en krock eller en fil utanför spärrmappen kastas här, före varje skrivning.
+  const referensId = await overlamningsreferens(client, companyId, contractId, kallhandelse.handling);
+
+  // (2) Revisionen räknar överlämningar, som i `bekraftaStatusbyte`. Ett
+  // godkännande är ingen överlämning och bär NULL.
+  let revision: number | null = null;
+  if (kallhandelse.typ === 'transmittal') {
+    const nasta = await client.query<{ nasta: number }>(
+      `SELECT COALESCE(MAX(revision), 0) + 1 AS nasta
+         FROM uppdrag_leverabel_handelse
+        WHERE company_id = $1 AND leverabel_id = $2`,
+      [companyId, leverabel.id],
+    );
+    revision = Number(nasta.rows[0]!.nasta);
+  }
+  const arGodkannande = kallhandelse.typ === 'godkannande';
+
+  // (3) Händelsen. `bekraftat_nar` är källhändelsens dag — faktureringsflödet
+  // läser godkännandets dag där — och registreringens tid står i `created_at`.
+  // Mottagaren är avtalets godkännare på varje väg (B5).
+  const handelse = await client.query<{
+    id: string; revision: number | null; mottagare: string; referens_id: string; kallhandelse_aktor: string | null;
+  }>(
+    `INSERT INTO uppdrag_leverabel_handelse
+       (company_id, contract_id, leverabel_id, fran, till, registrerad_av, bekraftat_av, bekraftat_nar,
+        revision, mottagare, kanal, notering, referens_id, kallhandelse_typ, kallhandelse_ref, kallhandelse_aktor)
+     VALUES ($1, $2, $3, $4, $5, 'system', NULL, $6::date::timestamptz, $7, $8, $9, NULL, $10, $11, $12, $13)
+     RETURNING id, revision, mottagare, referens_id, kallhandelse_aktor`,
+    [
+      companyId, contractId, leverabel.id, steg.fran, steg.till, kallhandelse.handelse_datum, revision, steg.mottagare,
+      arGodkannande ? kallhandelse.kanal : null, referensId, kallhandelse.typ, kallhandelsensNyckel(kallhandelse.handling),
+      arGodkannande ? kallhandelse.godkand_av.trim() : null,
+    ],
+  );
+
+  // (4) Statusen, i samma form som de två människovägarna.
+  await client.query(
+    `UPDATE uppdrag_leverabel SET status = $1
+      WHERE id = $2 AND company_id = $3`,
+    [steg.till, leverabel.id, companyId],
+  );
+
+  // (5) Registerkopian köas om i samma transaktion (FR-11). Svepcachen rörs inte.
+  const ko = await koaRegisterkopia(client, companyId, contractId);
+
+  const rad = handelse.rows[0]!;
+  return {
+    utfall: 'registrerad',
+    handelse_id: rad.id,
+    leverabel_kod: leverabel.kod,
+    fran: steg.fran,
+    status: steg.till,
+    revision: rad.revision,
+    mottagare: rad.mottagare,
+    referens_id: rad.referens_id,
+    registrerad_av: 'system',
+    kallhandelse_typ: kallhandelse.typ,
+    kallhandelse_ref: kallhandelsensNyckel(kallhandelse.handling),
+    kallhandelse_aktor: rad.kallhandelse_aktor,
+    ko_status: ko.ko_status,
+  };
+}
+
+/**
+ * Registrerar ett rutinmässigt statusbyte ur sin källhändelse, utan fråga, när
+ * rutinregeln medger det (FR-13, Davids svar 2026-10-07).
+ *
+ * Regeln avgör, inte anroparen: tjänsten samlar regelns indata under
+ * leverabelns och avtalets lås och skickar utfallet vidare oförändrat. Det
+ * fällda svarar `falld` med regelns skäl och skriver ingenting — ingen händelse,
+ * ingen status, ingen referens, ingen registerkopia, ingen köpost och ingen
+ * cache — så det blir aldrig ett tyst byte. Att det fällda blir ett
+ * beslutsförslag till David är Story 14.4. Samma källhändelse registreras
+ * aldrig två gånger.
+ *
+ * Ingen `userId`: raden tillskrivs aldrig anroparen.
+ */
+export async function registreraRutinstatus(
+  client: PoolClient, companyId: string, input: RutinhandelseInput,
+): Promise<Rutinstatusutfall> {
+  const { kallhandelse } = input;
+
+  // (1) Leverabeln, låst för raden — samma grepp och samma ordning som
+  // `bekraftaStatusbyte`: först leverabeln, sedan avtalet. Ett avtal i ett annat
+  // bolag har inga rader här och svarar "finns inte".
+  const lev = await client.query<{ id: string; kod: string; status: string }>(
+    `SELECT id, kod, status FROM uppdrag_leverabel
+      WHERE company_id = $1 AND contract_id = $2 AND kod = $3
+      FOR UPDATE`,
+    [companyId, input.contract_id, input.leverabel_kod],
+  );
+  const leverabel = lev.rows[0];
+  if (!leverabel) throw new NotFoundError('leverabel');
+
+  // (2) Samma källhändelse en gång till: ingenting skrivs. Uppslaget gäller
+  // oavsett vem som registrerade raden, så att Davids ja (Story 14.4) räknas.
+  // Det unika indexet är sista försvarslinjen.
+  const fanns = await client.query<{ id: string }>(
+    `SELECT id FROM uppdrag_leverabel_handelse
+      WHERE company_id = $1 AND leverabel_id = $2 AND kallhandelse_typ = $3 AND kallhandelse_ref = $4`,
+    [companyId, leverabel.id, kallhandelse.typ, kallhandelsensNyckel(kallhandelse.handling)],
+  );
+  const registrerad = fanns.rows[0];
+  if (registrerad) {
+    return { utfall: 'redan_registrerad', handelse_id: registrerad.id, leverabel_kod: leverabel.kod, status: leverabel.status };
+  }
+
+  // (3) Avtalet, låst före regelns indata så att signalerna och indikatorn läses
+  // under samma lås som skrivningen. FOR NO KEY UPDATE och aldrig FOR UPDATE:
+  // det senare krockar med främmande nycklars FOR KEY SHARE.
+  const avtal = await client.query<{
+    signed_date: string | null; godkannare: string | null; godkannare_eskalering: string | null; idag: string;
+  }>(
+    `SELECT signed_date::text AS signed_date, godkannare, godkannare_eskalering, current_date::text AS idag
+       FROM contracts WHERE id = $1 AND company_id = $2
+       FOR NO KEY UPDATE`,
+    [input.contract_id, companyId],
+  );
+  const avtalsrad = avtal.rows[0];
+  if (!avtalsrad) throw new NotFoundError('avtal');
+
+  // Datumfönstret är människovägens. Ett fel här är ett tekniskt fel i
+  // indatat, aldrig ett förslag till David.
+  if (kallhandelse.handelse_datum > avtalsrad.idag) {
+    throw new BadRequestError(
+      'framtida_datum',
+      `${kallhandelse.handelse_datum} ligger i framtiden — ett steg antecknas när det skett, aldrig innan`,
+    );
+  }
+  if (avtalsrad.signed_date && kallhandelse.handelse_datum < avtalsrad.signed_date) {
+    throw new BadRequestError(
+      'fore_avtalet',
+      `${kallhandelse.handelse_datum} ligger före avtalets signeringsdatum ${avtalsrad.signed_date}`,
+    );
+  }
+
+  // (4) Regelns indata. En öppen signal är en signal utan avgörande, med samma
+  // predikat som undantagsvyn.
+  const signaler = await client.query<{ antal: number }>(
+    `SELECT count(*)::int AS antal
+       FROM uppdrag_scopesignal s
+      WHERE s.company_id = $1 AND s.contract_id = $2
+        AND NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande a WHERE a.company_id = s.company_id AND a.signal_id = s.id)`,
+    [companyId, input.contract_id],
+  );
+  // Svepets tröskellarm läses med en egen fråga, som Läget gör: tjänsten
+  // importerar ingenting ur svepet.
+  const cache = await client.query<{ varde: unknown }>(
+    `SELECT varde FROM uppdrag_svepvarde
+      WHERE company_id = $1 AND contract_id = $2 AND nyckel = $3`,
+    [companyId, input.contract_id, TROSKELLARMNYCKEL],
+  );
+  // Leverabelns kod är dess avtalsdels kod, men koden är inte unik ensam:
+  // varje version av delen räknas, så att en omflyttad del aldrig tappar en
+  // förälder. Kedjan går uppåt till rotdelen.
+  const kedja = await client.query<{ code: string }>(
+    `WITH RECURSIVE kedja (id, code, parent_part_id) AS (
+       SELECT id, code, parent_part_id FROM contract_parts
+        WHERE company_id = $1 AND contract_id = $2 AND code = $3
+       UNION
+       SELECT f.id, f.code, f.parent_part_id FROM contract_parts f
+         JOIN kedja k ON f.id = k.parent_part_id
+        WHERE f.company_id = $1
+     )
+     SELECT DISTINCT code FROM kedja ORDER BY code`,
+    [companyId, input.contract_id, leverabel.kod],
+  );
+
+  // (5) Regeln. Tjänsten skriver aldrig om villkoret.
+  const utfall = provaRutinhandelse({
+    typ: kallhandelse.typ,
+    status: leverabel.status,
+    oppna_signaler: signaler.rows[0]?.antal ?? 0,
+    larmkoder: cache.rows[0] ? larmkoder(cache.rows[0].varde) : null,
+    leverabelkedja: [...new Set([leverabel.kod, ...kedja.rows.map((r) => r.code)])],
+    parter: { godkannare: avtalsrad.godkannare, godkannare_eskalering: avtalsrad.godkannare_eskalering },
+    ...(kallhandelse.typ === 'godkannande' ? { godkand_av: kallhandelse.godkand_av } : {}),
+  });
+
+  // (6) Fälld: svaret bär skälen, och ingenting skrivs.
+  if (!utfall.medges) {
+    return { utfall: 'falld', leverabel_kod: leverabel.kod, status: leverabel.status, skal: utfall.skal };
+  }
+
+  // (7) Medgiven.
+  return skrivKallhandelse(client, companyId, input.contract_id, { id: leverabel.id, kod: leverabel.kod }, utfall, kallhandelse);
 }
