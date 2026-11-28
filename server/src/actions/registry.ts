@@ -76,7 +76,9 @@ import {
 } from '../services/uppdragDokument.js';
 import {
   GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, OVERLAMNINGSHANDLINGAR, godkannLeverabel, paborjaLeverabel,
+  KallhandelseSchema, bekraftaRutinforslag, registreraRutinstatus,
 } from '../services/uppdragStatus.js';
+import { KALLHANDELSETYPER } from '../lib/rutinregel.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
@@ -2210,6 +2212,62 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // mottagare anroparen skriver in själv är ett påstående, inte ett spår —
     // samma regel som `bekraftat_av`, `satt_av_manniska` och `tand_av`.
     handler: (ctx, i) => godkannLeverabel(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Story 14.1 (FR-13): rutinvägen, den fjärde skrivvägen. Regeln är Davids
+  // svar 2026-10-07 och bor i lib/rutinregel.ts: ett registrerat transmittal
+  // ger levererad, och ett godkännande från avtalets godkännare eller
+  // eskalering ger godkänd, båda bara utan tänd signal eller indikator.
+  // Åtgärden tar aldrig emot ett målläge. Det fällda blir ett förslag på
+  // leverabelns kort och aldrig ett tyst byte; Davids ja på förslaget är
+  // åtgärden efter. De tre människospärrade åtgärderna ovan står kvar
+  // oförändrade.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'registrera_rutinstatus',
+    title: 'Registrera ett rutinmässigt statusbyte ur sin källhändelse',
+    description: 'Anropas av Hermes med en källhändelse: ett överlämningsmejl eller överlämningsdokument, '
+      + 'eller ett godkännande från avtalets godkännare. Registrerar bara det rutinregeln medger, '
+      + 'svarar falld med skälen annars och tar aldrig emot ett läge.',
+    // `write` utan människospärr och utan kö: regeln avgör, inte anroparen, och
+    // ett rutinbyte ska aldrig bli en fråga till David. Raden blir systemets och
+    // tillskrivs aldrig anroparen, så tjänsten får inget användar-id.
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        leverabel_kod: safeText(50),
+        // Inget fält för läge, status eller mål: målet läses ur regelns tabell
+        // för källhändelsens typ, och ett okänt fält fälls av `.strict()`.
+        kallhandelse: KallhandelseSchema,
+      })
+      .strict(),
+    handler: (ctx, i) => registreraRutinstatus(ctx.client, ctx.companyId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Story 14.1 (FR-13, FR-41): Davids ja på ett fällt rutinförslag, spärrad för
+  // agenter. Källhändelsen läses ur förslaget och aldrig ur indata, och raden
+  // blir Davids med källan kvar som referens och källhändelsenyckel. Åtgärden
+  // skriver genom rutinvägens skrivfunktion och inte genom de tre spärrade
+  // åtgärderna ovan.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'bekrafta_rutinforslag',
+    title: 'Säg ja till ett rutinförslag och registrera det ur källhändelsen',
+    description: 'David registrerar källhändelsen som Hermes hittade men rutinregeln höll tillbaka. '
+      + 'Källhändelsen läses ur förslaget, och raden bär hans namn och källan som referens.',
+    sensitivity: 'write',
+    kravManniska: true,
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        leverabel_kod: safeText(50),
+        // Bara typen pekar ut förslaget. Inget fält för handling, dag,
+        // avsändare, kanal, mottagare eller läge: allt det står i förslaget.
+        typ: z.enum(KALLHANDELSETYPER),
+      })
+      .strict(),
+    handler: (ctx, i) => bekraftaRutinforslag(ctx.client, ctx.companyId, ctx.userId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S8.1, våg 4: uppdraget avslutas — med det öppna utskrivet

@@ -325,8 +325,8 @@ it('P8: sexton rutin-/driftfall ger noll poster, riktig mandatpost ger en', asyn
   // begäran om ny bedömning (FR-40, AC 8); bara David begär den.
   const efter = await koa(id, 'andra_baseline', andring(u.contractId, 'EFTER'));
   await besluta(id, efter, 'approve');
-  await withAdmin((db) => db.query(`INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till)
-    SELECT company_id, contract_id, id, 'pagar', 'avvisad' FROM uppdrag_leverabel WHERE company_id=$1 AND contract_id=$2 AND kod='L1'`,
+  await withAdmin((db) => db.query(`INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till, bekraftat_av)
+    SELECT company_id, contract_id, id, 'pagar', 'avvisad', 'riggning' FROM uppdrag_leverabel WHERE company_id=$1 AND contract_id=$2 AND kod='L1'`,
   [id, u.contractId]));
   await ok(id, 'log_time', { project_id: u.projektId, work_date: '2026-09-20', minutes: 60, description: 'Efter bedömningen', contract_part_id: await del(id, u.contractId) });
   await svep(id);

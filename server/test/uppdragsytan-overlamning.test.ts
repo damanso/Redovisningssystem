@@ -185,8 +185,8 @@ describe('Story 4.2: överlämningen och handlingen', () => {
       { contract_id: b.contractId, ...MEJL, extern_nyckel: 'rfc822#message-id' }));
     const before = await handelser(a);
     await expect(withAdmin((c) => c.query(`INSERT INTO uppdrag_leverabel_handelse
-      (company_id, contract_id, leverabel_id, fran, till, referens_id)
-      SELECT company_id, contract_id, id, 'pagar', 'levererad', $3 FROM uppdrag_leverabel
+      (company_id, contract_id, leverabel_id, fran, till, referens_id, bekraftat_av)
+      SELECT company_id, contract_id, id, 'pagar', 'levererad', $3, 'riggning' FROM uppdrag_leverabel
       WHERE company_id=$1 AND contract_id=$2 AND kod='L1'`, [companyId, a.contractId, ref.id]))).rejects.toMatchObject({ code: '23503' });
     expect(await handelser(a)).toEqual(before);
   });
@@ -336,8 +336,8 @@ describe('Story 4.2: transmittalen i registret', () => {
   });
   it('4.2-R4: äldre överlämning utan handling behåller saknat datum (regression)', async () => {
     await withAdmin((c) => c.query(`INSERT INTO uppdrag_leverabel_handelse
-      (company_id, contract_id, leverabel_id, fran, till, revision, mottagare)
-      SELECT company_id, contract_id, id, 'pagar', 'levererad', 1, 'Styrgruppen'
+      (company_id, contract_id, leverabel_id, fran, till, revision, mottagare, bekraftat_av)
+      SELECT company_id, contract_id, id, 'pagar', 'levererad', 1, 'Styrgruppen', 'riggning'
       FROM uppdrag_leverabel WHERE company_id=$1 AND contract_id=$2 AND kod='L3'`, [companyId, a.contractId]));
     expect((await register(a)).find((x) => x.kod === 'L3')).toMatchObject({ revision: 1, overlamnad: null });
   });

@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (218
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (220
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -152,6 +152,36 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
   i roten först — binärerna hamnar i ROT-`node_modules/.bin/`.
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
+
+- **2026-11-28 — 14-1-ett-rutinmassigt-statusbyte-registreras-ur-sin-kallhandelse-utan-fraga
+  (FR-13, Davids svar 2026-10-07).** Rutinvägen, den fjärde skrivvägen för
+  leverabelns läge, är byggd. Regeln står på ett ställe, `lib/rutinregel.ts`
+  (`provaRutinhandelse`, `OVERGANGAR` med fyra steg, två källhändelser och sex
+  skäl). `registrera_rutinstatus` (write, utan människospärr) tar en källhändelse,
+  aldrig ett läge, och registrerar bara det regeln medger: transmittalen ger
+  levererad, godkännandet från avtalets godkännare eller eskalering ger godkänd,
+  båda bara utan öppen scopesignal och utan tänd eller oläst avvikelseindikator för
+  leverabeln eller en nivå över den. Raden är systemets (`registrerad_av` system,
+  `bekraftat_av` NULL) och bär handlingen som referens och källhändelsens nyckel;
+  godkännandets avsändare står i `kallhandelse_aktor`. Det fällda skriver ingenting
+  utom ett förslag i svepcachens reserverade nyckel `rutinforslag`, som står på
+  leverabelns kort i Leveranserna med skäl och källa och en knapp. Davids ja är
+  `bekrafta_rutinforslag` (write + `kravManniska`): källhändelsen läses ur
+  förslaget, aldrig ur formuläret, och raden skrivs med hans id och källan kvar
+  genom samma skrivfunktion. De tre människospärrade åtgärderna är orörda.
+  Migrationen `0101_rutinstatus.sql` lägger fyra kolumner, fyra CHECK-villkor och
+  det unika indexet. Registret har 220 åtgärder. Prov: nya
+  `server/test/uppdragsytan-rutinstatus.test.ts` (R1–R8, M1–M3, A1–A7, F1–F5,
+  J1–J4, V1–V4, D1–D2); elva riggningar i åtta provfiler fick `bekraftat_av`;
+  4.4-A7 räknar tre statusuppdateringar och sändvägslistan har 37 poster.
+  Körningar (testdatabasen nåddes): typkontrollen grön efter varje uppgift;
+  körning 1–4 gröna; hela `npm test` efter uppgift 3: 225 filer, 4502 prov gröna,
+  efter uppgift 4: 225 filer, 4510 prov gröna, och i körning 5 (grinden, efter
+  dokumenten): 225 filer, 4512 prov gröna. `npm run build` kördes inte
+  (kedjan ger inte kommandot; typkontrollens `tsc --noEmit` mot samma tsconfig är
+  grön). Inga RESTER. Avvikelse: kortets knapp heter synligt «Registrera
+  källhändelsen» (WCAG 2.5.3), aria-label som i berättelsen. Utanför repot:
+  Hermes lämnar inga källhändelser förrän Story 14.2; Hermes prov rördes inte.
 
 - **2026-11-28 — Omtag: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
   Granskningens fyra fynd (AC4 och AC6 på Pengarna) var samma felklass: en
