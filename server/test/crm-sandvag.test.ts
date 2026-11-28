@@ -51,8 +51,8 @@ describe('CRM:s sändspärr är kod och ingen inställning (FR-23)', () => {
     for (const fil of [REGISTER, EPOST, 'services/notifications.ts']) expect(filer.has(fil), fil).toBe(true);
     expect(sandvagsmangd(filer)).toEqual(expect.arrayContaining([REGISTER, 'services/notifications.ts']));
     expect(sandvagsbrister(filer, TILLATNA_SANDVAGAR)).toEqual([]);
-    expect(TILLATNA_SANDVAGAR).toHaveLength(36);
-    expect(new Set(TILLATNA_SANDVAGAR).size).toBe(36);
+    expect(TILLATNA_SANDVAGAR).toHaveLength(37);
+    expect(new Set(TILLATNA_SANDVAGAR).size).toBe(37);
     korda.add('S1');
   });
   it('S2 ingen CRM-tjänst når e-postkön, också utanför registrets graf', async () => {

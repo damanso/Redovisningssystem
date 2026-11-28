@@ -45,7 +45,8 @@ import { listaReferenser, tillReferensvisning } from '../../services/uppdragRefe
 import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
 import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
 import { NASTA_TEXT, type Nastaleverans } from '../../lib/nastaLeverans.js';
-import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
+import { GODKANNANDEKANALER, lasRutinforslag, type Godkannandekanal, type Rutinforslag } from '../../services/uppdragStatus.js';
+import { OVERGANGAR, RUTINSKALTEXT } from '../../lib/rutinregel.js';
 import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Kontraktsyta, type Scopelinjerad } from '../../services/uppdragKontrakt.js';
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
@@ -1786,6 +1787,17 @@ viewRouter.post('/c/:companyId/projects/:projectId/statusforslag', page(async (r
   const projectId = parseApprovalId(req.params.projectId);
   const kropp = req.body as Record<string, unknown>;
   const falt = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  // Story 14.1: Davids ja på rutinvägens förslag. Bara avtalet, koden och typen
+  // skickas; källhändelsen läses ur förslaget i tjänsten och aldrig ur formuläret.
+  const forslagTyp = falt(kropp.forslag_typ);
+  if (forslagTyp) {
+    await runViewAction(req, res, companyId, 'bekrafta_rutinforslag', {
+      contract_id: falt(kropp.contract_id),
+      leverabel_kod: falt(kropp.leverabel_kod),
+      typ: forslagTyp,
+    }, `/app/c/${companyId}/projects/${projectId}`);
+    return;
+  }
   // Formulären på leverabelns kort i Leveranserna postar hit. Adressens namn
   // är historiskt och står kvar eftersom navigationskontraktet bara synkas
   // genom generatorn (docs/project-context.md, Navigationskontraktet).
@@ -4932,6 +4944,8 @@ interface Leveransavtal {
   namn: string;
   rader: Leverabelrad[];
   parter: LastaKontraktsparter;
+  /** Rutinvägens förslag (Story 14.1), lästa genom tjänsten. */
+  forslag: Rutinforslag[];
 }
 
 interface Leveransunderlag {
@@ -4958,6 +4972,7 @@ async function leveransunderlag(
       namn: String(a.name ?? ''),
       rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
       parter: await lasKontraktsparter(client, companyId, contractId),
+      forslag: await lasRutinforslag(client, companyId, contractId),
     });
   }
   return { projekt, avtal, epost: (await getProfile(client, userId)).email };
@@ -5014,19 +5029,68 @@ function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelr
  * stället för av ett villkor här: ett kort ska inte behöva veta var i kolumnen
  * det står för att se rätt ut.
  */
-function leverabelkort(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw {
+function leverabelkort(
+  bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string, forslag: readonly Rutinforslag[],
+): Raw {
   return html`<li class="leverabelkort">
     <dl style="margin:0">${LEVERABELFALT.map(({ falt, rubrik }) => html`
       <dt style="font-size:12.5px;color:var(--ink-3);margin-top:6px">${rubrik}</dt>
       <dd style="margin:1px 0 0;overflow-wrap:anywhere">${faltinnehall(r, falt)}</dd>`)}</dl>
-    ${leverabelhandgrepp(bas, contractId, r, parter, epost)}
+    ${leverabelhandgrepp(bas, contractId, r, parter, epost, kortetsForslag(r, forslag))}
   </li>`;
+}
+
+/**
+ * Förslaget som gäller kortet: kortets kod, och en typ vars steg utgår från
+ * kortets läge (regelns `OVERGANGAR`, B20). Ett förslag av den andra typen går
+ * inte att utföra här och visas därför inte — knappen kan bara lyckas.
+ */
+function kortetsForslag(r: Leverabelrad, forslag: readonly Rutinforslag[]): Rutinforslag | undefined {
+  return forslag.find((f) => f.leverabel_kod === r.kod
+    && OVERGANGAR.find((o) => o.kallhandelse === f.kallhandelse.typ)?.fran === r.status);
 }
 
 /** Kanalerna som ord — registrets värden är nycklar, aldrig etiketter. */
 const KANALORD: Record<Godkannandekanal, string> = {
   telefon: 'Telefon', mejl: 'Mejl', mote: 'Möte', protokoll: 'Protokoll',
 };
+
+/**
+ * Rutinvägens förslag på kortet (Story 14.1, FR-13 och FR-41): källhändelsen
+ * Hermes hittade men regeln höll tillbaka, med valet, skälen och källan.
+ *
+ * Fyra beslut styr blocket:
+ *
+ *  1. **Det står först i handgreppet.** Källan läses före den manuella vägen,
+ *     och tangentbordets ordning följer ögats: raden, knappen, sedan de
+ *     befintliga formulären, som står kvar oförändrade för det fall David vill
+ *     registrera något annat än källhändelsen.
+ *  2. **Formuläret bär bara avtalet, koden och typen.** Källhändelsen läses ur
+ *     förslaget i tjänsten och står aldrig i ett fält som kan tappas eller
+ *     skrivas om på vägen (B18).
+ *  3. **Knappen visas bara när den kan lyckas** (B20). Utan avtalets
+ *     mottagarpart sägs luckan i stället, och David registrerar själv nedanför.
+ *  4. **Inga nya klasser.** Raden har formulärets hjälptextstil och knappen
+ *     grannarnas ghost-knapp: ett förslag är en rad på kortet, ingen väntande
+ *     uppgift, och ska inte se ut som en.
+ */
+function forslagsblock(bas: string, contractId: string, kod: string, f: Rutinforslag, parter: LastaKontraktsparter): Raw {
+  const k = f.kallhandelse;
+  const skal = f.skal.map((s) => RUTINSKALTEXT[s]).join('; ');
+  const rad = k.typ === 'transmittal'
+    ? html`Hermes hittade överlämningen i ${k.handling.sort === 'mejl' ? 'mejlet' : 'dokumentet'} ${k.handling.extern_id} den ${k.handelse_datum}, men registrerade den inte: ${skal}.`
+    : html`Hermes hittade ett godkännande från ${k.godkand_av} via ${KANALORD[k.kanal]} den ${k.handelse_datum}, men registrerade det inte: ${skal}.`;
+  return html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">${rad}</p>
+    ${parter.godkannare?.trim()
+      ? html`<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
+      <input type="hidden" name="contract_id" value="${contractId}">
+      <input type="hidden" name="leverabel_kod" value="${kod}">
+      <input type="hidden" name="forslag_typ" value="${k.typ}">
+      <button class="btn btn--ghost btn--sm" type="submit"
+        aria-label="Registrera källhändelsen för leverabel ${kod}">Registrera ur källan</button>
+    </form>`
+      : html`<p class="muted" style="margin:0 0 7px;font-size:12.5px">${LUCKTEXT.mottagarpart.vad}. Registrera själv nedan.</p>`}`;
+}
 
 /**
  * Handgreppet på kortet (S10.9): det ENDA steg leverabeln kan ta härifrån.
@@ -5050,12 +5114,16 @@ const KANALORD: Record<Godkannandekanal, string> = {
  *     (`aria-label`), för sex likadana "Påbörja" i en kolumn är sex knappar
  *     utan urskiljbart namn (WCAG 2.4.6).
  */
-function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string): Raw | '' {
+function leverabelhandgrepp(
+  bas: string, contractId: string, r: Leverabelrad, parter: LastaKontraktsparter, epost: string, forslag?: Rutinforslag,
+): Raw | '' {
+  // Utan förslag är markupen byte för byte densamma som före Story 14.1.
+  const block = forslag ? forslagsblock(bas, contractId, r.kod, forslag, parter) : '';
   if (r.status === 'pagar') {
     const mottagare = parter.godkannare?.trim();
     const eskalering = parter.godkannare_eskalering?.trim();
     const hjalpId = `overlamning-mottagare-${contractId}-${r.kod}`;
-    return html`<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
+    return html`${block}<form method="post" action="${bas}/statusforslag" style="margin:8px 0 0">
       <input type="hidden" name="contract_id" value="${contractId}">
       <input type="hidden" name="leverabel_kod" value="${r.kod}">
       <input type="hidden" name="utfall" value="bekraftad">
@@ -5093,7 +5161,7 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
   const steg = r.status === 'ej_paborjad' ? 'paborja' : r.status === 'levererad' ? 'godkann' : null;
   if (steg === null) return '';
   const etikett = steg === 'paborja' ? 'Påbörja' : 'Godkänn';
-  return html`<form method="post" action="${bas}/leverabel/${steg}" style="margin:8px 0 0">
+  return html`${block}<form method="post" action="${bas}/leverabel/${steg}" style="margin:8px 0 0">
     <input type="hidden" name="contract_id" value="${contractId}">
     <input type="hidden" name="leverabel_kod" value="${r.kod}">
     ${steg === 'godkann'
@@ -5125,7 +5193,10 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
 }
 
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
-function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string): Raw {
+function bradkolumn(
+  bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string,
+  forslag: readonly Rutinforslag[],
+): Raw {
   const id = `kol-${lage}-${contractId}`;
   return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
@@ -5134,7 +5205,7 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
       ${rader.length === 0
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
-            ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost))}
+            ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost, forslag))}
           </ul>`}
     </div>
   </section></div>`;
@@ -5150,7 +5221,7 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
  */
 function bradlage(bas: string, a: Leveransavtal, epost: string): Raw {
   return html`<div class="brada">
-    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost))}
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost, a.forslag))}
   </div>`;
 }
 

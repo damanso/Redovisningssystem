@@ -43,6 +43,7 @@ export const TILLATNA_SANDVAGAR: readonly string[] = [
   'services/uppdragImport.ts', // → services/uppdragSvep.ts
   'services/uppdragLage.ts', // → services/uppdragBeslut.ts
   'services/uppdragOvrigt.ts', // → services/uppdragUndantag.ts
+  'services/uppdragStatus.ts', // → services/uppdragSvep.ts
   'services/uppdragSvep.ts', // → services/uppdragUndantag.ts
   'services/uppdragUndantag.ts', // → services/approvalSummary.ts
   'services/vatDeclaration.ts', // → services/reports.ts

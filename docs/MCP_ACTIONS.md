@@ -2123,6 +2123,89 @@ hur färdigt det än var.
 - **Vyn:** stegen görs på leverabelns kort i Leveranserna (S10.9). Godkänn
   visar avtalets godkännare och godkännandeform före kanalvalet.
 
+### Rutinvägen (Story 14.1)
+
+Regeln är Davids svar 2026-10-07 på FR-13, «Det räcker enligt din
+rekommendation», och bor bara i `server/src/lib/rutinregel.ts`. Två åtgärder
+bär den: en utan människospärr som Hermes anropar med källhändelser (Story
+14.2), och en människospärrad för Davids ja på det regeln höll tillbaka. De tre
+människospärrade åtgärderna ovan står kvar oförändrade.
+
+- **registrera_rutinstatus** (write, utan människospärr och utan kö) — indata:
+  avtalets id, leverabelns kod och en källhändelse. Schemat är strikt och har
+  inget fält för läge, status eller mål: målet läses ur regelns steg för
+  källhändelsens typ. En människa får anropa åtgärden, men regeln avgör ändå,
+  och raden märks system.
+- **Två källhändelser**, var och en till exakt ett steg:
+  - transmittal (pågår till levererad): handlingen, ett mejl med Message-ID
+    eller ett Drive-dokument med Drive-id och kontot det lästes ur, och dagen;
+  - godkannande (levererad till godkänd): handlingen, dagen, kanalen (telefon,
+    mejl, möte eller protokoll) och avsändaren som källan anger den.
+
+  Påbörjandet och returen har ingen källhändelse och går bara genom de
+  människospärrade åtgärderna. En url eller sökväg som handling ger 400, också
+  när regeln hade hållit tillbaka källhändelsen.
+- **Regeln** medger steget bara när inget av sex skäl gäller. Skälen samlas,
+  alla och i den här ordningen: fel_utgangslage (leverabeln står inte i stegets
+  utgångsläge), saknad_mottagare (avtalets godkännare saknas), obehorig_godkannare
+  (avsändaren är varken avtalets godkännare eller eskalering efter
+  normalisering — trimmad, blanktecken sammanslagna, gemener — och ingen
+  delsträng räknas), signal_tand (en obesvarad scopesignal i avtalet),
+  indikator_tand (ett larm i svepets tröskellarm på leverabeln eller en nivå
+  över den) och indikator_olast (tröskellarmet saknas eller är inget
+  larmutfall).
+- **Svaret** har tre utfall:
+  - registrerad: händelsens id, från och till, revision (transmittalen räknas
+    upp som en överlämning, godkännandet bär NULL), mottagare, referens,
+    registrerad av, källhändelsens typ, nyckel och aktör och registerkopians
+    köläge;
+  - redan registrerad: händelsens id och leverabelns läge, utan skrivning;
+  - falld: leverabelns läge och skälen. Ingen händelse, ingen status och ingen
+    referens skrivs, bara förslaget.
+- **Raden** bär `registrerad_av = 'system'` och bekräftaren NULL. Mottagaren är
+  avtalets godkännare, trimmad, på varje väg, precis som i människovägen.
+  Godkännandets avsändare står i källans aktör (kolumnen kallhandelse_aktor),
+  aldrig som bekräftare eller mottagare. Dagen i bekraftat_nar är
+  källhändelsens dag; registreringens tid står i created_at. Handlingen blir
+  en referens genom samma väg som människans överlämning, så 409 utanfor_sparr
+  och 409 referens_finns_redan gäller också här. Registerkopian köas i samma
+  transaktion. Ingen köpost och ingen fråga till David skapas.
+- **Datumfönstret** är människovägens: en dag i framtiden ger 400
+  framtida_datum, och en dag före avtalets signeringsdatum ger 400 fore_avtalet.
+  Det är tekniska fel i indatat och blir aldrig förslag.
+- **Idempotensen:** källhändelsens nyckel är sort och kanoniskt id, till
+  exempel `mejl:godkant-L2@nvr.se`. Finns en rad med samma leverabel, typ och
+  nyckel, registrerad av regeln eller genom Davids ja, svarar åtgärden redan
+  registrerad utan skrivning. Det unika indexet är sista linjen.
+- **Förslaget:** det fällda står i svepcachens reserverade nyckel rutinforslag,
+  i ett eget omfång som svepet varken skriver eller raderar, med hela
+  källhändelsen och skälen. Det visas på leverabelns kort i Leveranserna med en
+  knapp för Davids ja, bara när förslagets typ hör till kortets läge, och
+  knappen bara när avtalets mottagarpart finns. Det står aldrig i
+  undantagsvyn, på förstasidan eller i Läget.
+
+- **bekrafta_rutinforslag** (write, människospärrad: agenten får 403
+  human_required före varje skrivning) — tre fält: avtalets id, leverabelns kod
+  och källhändelsens typ. Inget fält för handling, dag, avsändare, kanal,
+  mottagare eller läge. Källhändelsen läses ur förslaget under leverabelns och
+  avtalets lås och skrivs genom rutinvägens skrivfunktion, aldrig genom de tre
+  människospärrade åtgärderna. Regeln prövas inte igen: jaet är beslutet över
+  signalen, indikatorn och avsändaren, och signalen står kvar obesvarad.
+- **Felen:** 404 när leverabeln eller förslaget saknas; 409 fel_utgangslage
+  när leverabeln inte står där förslaget gäller; 409 saknad_mottagare när
+  avtalets godkännare saknas. Förslaget står då kvar, och ingenting skrivs.
+- **Raden** bär `registrerad_av = 'manniska'`, Davids id som bekräftare och
+  källan kvar som referens och nyckel, för godkännandet också avsändaren som
+  källans aktör. Förslaget tas bort.
+
+- **Migration 0100** (additiv, idempotent): händelsetabellen får fyra kolumner,
+  registrerad av (manniska eller system, standardvärdet manniska), källhändelsens
+  typ, nyckel och aktör. Villkoret för registreringen tillåter exakt tre former:
+  människa utan källhändelse, människa med källhändelse och referens, och
+  system utan bekräftare men med källhändelse och referens. Villkoret för
+  aktören kräver den om och endast om källhändelsen är ett godkännande. Det
+  unika indexet ligger på leverabel, typ och nyckel. Rättigheterna är orörda.
+
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
 - `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`, valfritt `forslagsunderlag` (bara svepet köar det; annars 409 `koas_av_svepet`). Binder ett
