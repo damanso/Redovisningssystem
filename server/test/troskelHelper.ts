@@ -71,7 +71,10 @@ export function provaT0c() {
     niva('L2', 'S1'),
     niva('L3', 'S1', { active: false }),
   ] });
+  // S1 är en ström och står där med sin strömram (Story 5.7): timramen saknas
+  // eftersom L2 saknar egen ram. Den avslutade L3 står inte där.
   assert.deepEqual(r.utan_egen_ram, [
+    { kod: 'S1', enhet: 'timmar' }, { kod: 'S1', enhet: 'kronor' },
     { kod: 'L1', enhet: 'kronor' }, { kod: 'L2', enhet: 'timmar' }, { kod: 'L2', enhet: 'kronor' },
   ]);
 }
@@ -155,7 +158,7 @@ export function provaT0g() {
 
 /** (h) Märkningen står på ett ställe, och golvetBinder avgör bara texten. */
 export function provaT0h() {
-  assert.equal(GOLVETS_MARKNING, 'förslag, ej beslutat av David');
+  assert.equal(GOLVETS_MARKNING, 'beslutat av David 2026-10-07');
   const forsta = (delar: Niva[], idag = '2026-09-06', perioder: Plandel[] = []) => {
     const l = utfall({ idag, delar, perioder }).larm[0];
     assert.ok(l, 'larmet tändes inte');

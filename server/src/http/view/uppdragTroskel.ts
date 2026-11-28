@@ -1,8 +1,11 @@
 // Story 5.3, FR-3/FR-4/FR-40: tröskelns texter på Pengarna och Läget.
 // Regeln, ramläget per nivå och golvets märkning (kriterium 7) visas ur lib
 // och cachen; vyn prövar aldrig själv om ett larm tänds. Ren: ingen databas,
-// ingen klocka, husets klasser.
-import { GOLVETS_MARKNING, golvetBinder, type Larm, type Trosklar, type UtanEgenRam } from '../../lib/troskel.js';
+// ingen klocka, husets klasser. Story 5.7: regeln säger strömmens ram och dess
+// källa, och märkningen är Davids beslut.
+import {
+  GOLVETS_MARKNING, STROMRAMENS_KALLA, golvetBinder, type Larm, type Trosklar, type UtanEgenRam,
+} from '../../lib/troskel.js';
 import { html, kronor, type Raw } from './html.js';
 import { RAM_SAKNAS } from './uppdragForbrukning.js';
 
@@ -16,7 +19,8 @@ const tal = (n: number): string => String(n).replace('.', ',');
 export function troskelregel(t: Trosklar): Raw {
   return html`<p style="margin:10px 16px 2px;font-size:13px">Avvikelsen tänder när den överstiger både ${
     tal(t.procent)} procent av nivåns egen ram och absolutgolvet ${kronor(t.golv_ore)} eller ${
-    tal(t.golv_timmar)} h (${GOLVETS_MARKNING}). En daterad post tänder ${String(t.dagar)} ${
+    tal(t.golv_timmar)} h (${GOLVETS_MARKNING}). En ströms ram är summan av stegets leverabelramar (${
+    STROMRAMENS_KALLA}). En daterad post tänder ${String(t.dagar)} ${
     t.dagar === 1 ? 'kalenderdag' : 'kalenderdagar'} efter sitt slutdatum, och en leverabel med bara
     ärvt intervall dagen efter intervallets slut. Bara bekräftade tak prövas.</p>`;
 }

@@ -33,6 +33,10 @@
 // (`cap_derived`) är ingen ram för nivån, och en mätnivå utan egen ram står i
 // `utan_egen_ram` i stället för att prövas mot ett tal ingen skrivit under.
 //
+// Strömmarna mäts mot summan av stegets leverabelramar (Davids svar
+// 2026-10-07, Story 5.7), avgjord i `stromramar` och aldrig ur strömmens eget
+// tak eller fasramen. Dagslarmet gäller rotdelen och posterna, inte strömmarna.
+//
 // Dagslarmet är den tredje ramen och står för sig: det mäter FÖRSENING, inte
 // pengar, och prövas därför oberoende av beloppen och utan krav på ett tak. Det
 // intervall som gäller är delens eget, annars det ÄRVDA — samma regel som
@@ -138,6 +142,63 @@ export function egenRam(
   };
 }
 
+/** De fält strömmens ram läses ur. Både `Niva` och förbrukningspanelens del passar. */
+export type Ramdel = Pick<Niva, 'code' | 'parent_code' | 'active' | 'cap_status' | 'cap_hours' | 'cap_amount_ore' | 'cap_derived'>;
+
+/** En ströms ram per enhet; null = minst en leverabel saknar egen ram i enheten. */
+export interface Stromram {
+  kod: string;
+  /** Stegets aktiva leverabler, i indatas ordning. */
+  leverabler: string[];
+  minuter: number | null;
+  ore: number | null;
+  /** Varje leverabels tak är bekräftat. Avgör om strömmen prövas, aldrig talet. */
+  bekraftad: boolean;
+}
+
+/**
+ * Strömnivån mäts mot summan av stegets leverabelramar (FR-3,
+ * underlag/davids-svar.md). Fasramen ur kontraktets text är aldrig strömram.
+ */
+export const STROMRAMENS_KALLA = 'Davids svar 2026-10-07';
+
+/** Summan av leverablernas tal, eller null när ett av dem saknas: aldrig en delsumma. */
+function helSumma(tal: (number | null)[]): number | null {
+  let summa = 0;
+  for (const t of tal) {
+    if (t === null) return null;
+    summa += t;
+  }
+  return summa;
+}
+
+/**
+ * Den enda platsen där en ströms ram avgörs. En ström är en aktiv del direkt
+ * under rotdelen med minst ett aktivt barn, så styrningen (direkt under
+ * rotdelen utan barn) är ingen ström. Ramen är summan av barnens EGNA ramar
+ * (`egenRam`); strömmens egna takfält läses aldrig, så varken fasramen eller
+ * ett tak summerat i takberäkningen kan bli strömram.
+ */
+export function stromramar(delar: Ramdel[]): Stromram[] {
+  const rotkoder = new Set(delar.filter((d) => d.parent_code === null).map((d) => d.code));
+  const strommar: Stromram[] = [];
+  for (const strom of delar) {
+    if (!strom.active || strom.parent_code === null || !rotkoder.has(strom.parent_code)) continue;
+    // En avslutad leverabel räknas inte, som i `matnivaer`.
+    const barn = delar.filter((d) => d.active && d.parent_code === strom.code);
+    if (barn.length === 0) continue;
+    const ramar = barn.map((d) => egenRam(d));
+    strommar.push({
+      kod: strom.code,
+      leverabler: barn.map((d) => d.code),
+      minuter: helSumma(ramar.map((r) => r.minuter)),
+      ore: helSumma(ramar.map((r) => r.ore)),
+      bekraftad: barn.every((d) => d.cap_status === 'bekraftat'),
+    });
+  }
+  return strommar;
+}
+
 /** En mätnivå och enhet utan egen ram. Inga tal: ingen ram, ingen procent. */
 export interface UtanEgenRam {
   kod: string;
@@ -150,8 +211,11 @@ export interface UtanEgenRam {
  */
 export const ARVT_INTERVALL_DAGAR = 1;
 
-/** Golvets märkning, ordagrant ur kriterium 7. Story 5.7 byter den här. */
-export const GOLVETS_MARKNING = 'förslag, ej beslutat av David';
+/**
+ * Golvets märkning (Story 5.7). Absolutgolvet 22 000 kr och 20 h godkändes av
+ * David 2026-10-07. Värdet bärs av avtalets kolumner (0068), aldrig av koden.
+ */
+export const GOLVETS_MARKNING = 'beslutat av David 2026-10-07';
 
 /**
  * Uppdragets prognosunderlag — SAMMA indata som `harledPrognosramar` räknar
@@ -231,10 +295,11 @@ function dagnummer(datum: string): number | null {
 }
 
 /**
- * Nivåerna FR-3 mäter på: rotdelen (uppdraget) och lövdelarna (posterna).
- * Strömmarna däremellan är med flit inte med — en ströms ramandel finns inte
- * förrän en baselineversion bär den, och ett larm på en ram som ingen skrivit
- * under är ett larm utan avsändare.
+ * Rotdelen (uppdraget) och lövdelarna (posterna): de nivåer som prövas mot sin
+ * egen ram och som har dagslarm. Strömmarna däremellan mäts mot stegets
+ * leverabelramar (`stromramar`, Davids svar 2026-10-07) och har inget
+ * dagslarm: leverablerna som ärver stegets intervall larmar redan när det
+ * passerats.
  *
  * En avslutad del är ingen nivå: dess ram gäller inte längre.
  */
@@ -246,46 +311,56 @@ function matnivaer(delar: Niva[]): Niva[] {
   return aktiva.filter((d) => d.parent_code === null || !foraldrar.has(d.code));
 }
 
+/** En nivås ram i heltalsenheter och om den prövas alls. */
+interface Matram {
+  ram: { minuter: number | null; ore: number | null };
+  /** Ett obekräftat eller saknat tak larmar aldrig (KRAV-3). */
+  provas: boolean;
+}
+
 /**
  * Belopps- och timlarmen för EN nivå, mätta på ett förbrukningstal. Samma
  * funktion och samma trösklar för utfallet och för prognosen — skillnaden är
  * bara vilket tal som mäts, och det är hela storyns "lika för utfall och
- * prognos".
+ * prognos". Samma funktion också för strömmen: bara ramen kommer ur
+ * `stromramar` i stället för `egenRam`.
  */
 function beloppslarm(
-  niva: Niva, grund: Grund, minuter: number, oren: number | null, t: Heltalstrosklar,
+  kod: string, m: Matram, grund: Grund, minuter: number, oren: number | null, t: Heltalstrosklar,
 ): Larm[] {
-  // Ett obekräftat eller saknat tak larmar aldrig (KRAV-3).
-  if (niva.cap_status !== 'bekraftat') return [];
+  if (!m.provas) return [];
   const larm: Larm[] = [];
-  // Procentbasen är nivåns egen ram; ett summerat tak prövas inte.
-  const egen = egenRam(niva);
 
-  if (egen.minuter !== null) {
-    const ram = egen.minuter;
+  if (m.ram.minuter !== null) {
+    const ram = m.ram.minuter;
     const avvikelse = minuter - ram;
     const troskel = bindandeTroskel(ram, t.procent_hundradelar, t.golv_minuter);
     if (passerarTroskel(avvikelse, ram, t.procent_hundradelar, t.golv_minuter)) {
       larm.push({
-        ram: 'timmar', kod: niva.code, grund,
+        ram: 'timmar', kod, grund,
         ram_minuter: ram, avvikelse_minuter: avvikelse, troskel_minuter: troskel,
       });
     }
   }
 
-  if (egen.ore !== null && oren !== null) {
-    const ram = egen.ore;
+  if (m.ram.ore !== null && oren !== null) {
+    const ram = m.ram.ore;
     const avvikelse = oren - ram;
     const troskel = bindandeTroskel(ram, t.procent_hundradelar, t.golv_ore);
     if (passerarTroskel(avvikelse, ram, t.procent_hundradelar, t.golv_ore)) {
       larm.push({
-        ram: 'kronor', kod: niva.code, grund,
+        ram: 'kronor', kod, grund,
         ram_ore: ram, avvikelse_ore: avvikelse, troskel_ore: troskel,
       });
     }
   }
 
   return larm;
+}
+
+/** Rotdelens och postens ram: nivåns egen; ett summerat tak prövas inte. */
+function egenMatram(niva: Niva): Matram {
+  return { ram: egenRam(niva), provas: niva.cap_status === 'bekraftat' };
 }
 
 /**
@@ -300,10 +375,25 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
   const nivaer = matnivaer(indata.delar);
   const larm: Larm[] = [];
 
+  // Belopp och timmar mäts på rotdelen, strömmarna och posterna, i indatas
+  // ordning. En ströms ram och prövning kommer bara ur `stromramar`.
+  const strommar = new Map(stromramar(indata.delar).map((s) => [s.kod, s]));
+  const rotOchPoster = new Set(nivaer);
+  const matt: { niva: Niva; m: Matram }[] = [];
+  for (const niva of indata.delar) {
+    const strom = niva.active ? strommar.get(niva.code) : undefined;
+    if (strom !== undefined) {
+      matt.push({ niva, m: { ram: { minuter: strom.minuter, ore: strom.ore }, provas: strom.bekraftad } });
+    } else if (rotOchPoster.has(niva)) {
+      matt.push({ niva, m: egenMatram(niva) });
+    }
+  }
+
   // (1) UTFALLET, per nivå: avvikelsen är förbrukat − ram (FR-25 — talen är
-  //     lästa ur takberäkningen, aldrig omräknade här).
-  for (const niva of nivaer) {
-    larm.push(...beloppslarm(niva, 'utfall', niva.billable_minutes, niva.amount_ore, t));
+  //     lästa ur takberäkningen, aldrig omräknade här). En ströms förbrukning
+  //     är takberäkningens upprullade tal.
+  for (const { niva, m } of matt) {
+    larm.push(...beloppslarm(niva.code, m, 'utfall', niva.billable_minutes, niva.amount_ore, t));
   }
 
   // (2) PROGNOSEN, på uppdragets nivå. Kalenderbokningarna bär ingen avtalsdel,
@@ -317,7 +407,7 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
   const prognos = indata.prognos;
   if (prognos !== null && rot !== undefined && prognos.framtida_minuter > 0) {
     larm.push(...beloppslarm(
-      rot, 'prognos',
+      rot.code, egenMatram(rot), 'prognos',
       rot.billable_minutes + prognos.framtida_minuter,
       prognos.framtida_oren === null ? null : rot.amount_ore + prognos.framtida_oren,
       t,
@@ -352,12 +442,12 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
   }
 
   // (4) RAMLÄGET. Varje mätnivå och enhet utan egen ram, timmar före kronor —
-  //     utan tal, så att ingen procent kan visas för en ram som inte finns.
+  //     utan tal, så att ingen procent kan visas för en ram som inte finns. En
+  //     ström står där i den enhet där en leverabel saknar egen ram.
   const utan_egen_ram: UtanEgenRam[] = [];
-  for (const niva of nivaer) {
-    const egen = egenRam(niva);
-    if (egen.minuter === null) utan_egen_ram.push({ kod: niva.code, enhet: 'timmar' });
-    if (egen.ore === null) utan_egen_ram.push({ kod: niva.code, enhet: 'kronor' });
+  for (const { niva, m } of matt) {
+    if (m.ram.minuter === null) utan_egen_ram.push({ kod: niva.code, enhet: 'timmar' });
+    if (m.ram.ore === null) utan_egen_ram.push({ kod: niva.code, enhet: 'kronor' });
   }
 
   return { trosklar: indata.trosklar, larm, utan_egen_ram };

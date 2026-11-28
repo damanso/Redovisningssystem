@@ -1,7 +1,9 @@
 // FR-3/FR-31, Story 5.2: en ren regel för egen ram och synligt ofördelad tid.
 // Takberäkningens upprullade tal läses; ingen tid flyttas mellan nivåer.
+// Story 5.7: strömmarnas ram kommer ur `stromramar`, summan av stegets
+// leverabelramar (Davids svar 2026-10-07), och räknas aldrig här.
 import { ROTKOD } from './leveranskontrakt.js';
-import { egenRam } from './troskel.js';
+import { egenRam, stromramar } from './troskel.js';
 
 export interface Forbrukningsdel {
   code: string; name: string; parent_code: string | null; active: boolean;
@@ -23,12 +25,11 @@ export type EjHarleddOrsak = typeof EJ_HARLEDD_ORSAKER[number];
 export interface EjHarledd {
   orsak: EjHarleddOrsak; kod: string | null; enhet: 'timmar' | 'kronor' | null; minuter: number | null;
 }
-export const STROMNIVA_HARLEDS_EJ = 'strömnivån härleds inte förrän ramen är vald';
 
 export interface Forbrukningsnivaer {
   uppdrag: Nivaforbrukning | null;
   ofordelad: Ofordelad | null;
-  strom: { lage: 'harleds_ej' };
+  strommar: Nivaforbrukning[];
   leverabler: Nivaforbrukning[];
   utan_leverabel: { kod: string; namn: string; minuter: number; oren: number }[];
   ej_harledda: EjHarledd[];
@@ -58,6 +59,12 @@ export function forbrukningsnivaer(i: {
   const leverabler = [...koder].sort(kodordning).flatMap((kod) => {
     const d = noder.get(kod); return d ? [niva(d)] : [];
   });
+  // Förbrukningen är takberäkningens upprullade tal, ramen strömmens ram.
+  const strommar = stromramar(i.delar).flatMap((s): Nivaforbrukning[] => {
+    const d = noder.get(s.kod);
+    return d ? [{ kod: s.kod, namn: d.name, minuter: d.billable_minutes, oren: d.amount_ore,
+      ram_minuter: s.minuter, ram_ore: s.ore, tak_status: s.bekraftad ? 'bekraftat' : 'vet_ej', aktiv: true }] : [];
+  }).sort((a, b) => kodordning(a.kod, b.kod));
   const utan_leverabel = i.delar.filter((d) => {
     if (d.own_billable_minutes <= 0) return false;
     let nod: Forbrukningsdel | undefined = d;
@@ -84,5 +91,5 @@ export function forbrukningsnivaer(i: {
   }
   if (i.ofordelad_ingar && i.ofordelad.minuter_utan_taxa > 0) ej('ingen_taxa', null, null, i.ofordelad.minuter_utan_taxa);
   ej_harledda.sort((a, b) => EJ_HARLEDD_ORSAKER.indexOf(a.orsak) - EJ_HARLEDD_ORSAKER.indexOf(b.orsak) || kodordning(a.kod ?? '', b.kod ?? ''));
-  return { uppdrag, ofordelad: i.ofordelad_ingar ? i.ofordelad : null, strom: { lage: 'harleds_ej' }, leverabler, utan_leverabel, ej_harledda };
+  return { uppdrag, ofordelad: i.ofordelad_ingar ? i.ofordelad : null, strommar, leverabler, utan_leverabel, ej_harledda };
 }

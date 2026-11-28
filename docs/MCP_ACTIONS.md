@@ -1913,10 +1913,14 @@ ram och prövas inte (Story 5.3). Värdet bär därför också
 (`timmar` före `kronor`) utan egen ram, utan tal och utan procent. Ett värde
 skrivet före Story 5.3 saknar listan tills nästa svep.
 
-- **Nivåerna är uppdraget (rotdelen) och posterna (lövdelarna)**, lästa ur
+- **Nivåerna är uppdraget (rotdelen), strömmarna (delar direkt under rotdelen
+  med aktiva barn) och posterna (lövdelarna)**, lästa ur
   `forbrukningForAvtal` — modulen räknar aldrig om förbrukningen och har inga
-  egna belopps- eller timkolumner (FR-25). Strömmarna däremellan mäts inte:
-  deras ramandel finns inte förrän en baselineversion bär den.
+  egna belopps- eller timkolumner (FR-25). En ströms ram är
+  **summan av stegets leverabelramar** (Davids svar 2026-10-07), aldrig
+  strömmens eget tak eller fasramen; saknar en leverabel egen ram står strömmen
+  i ramläget i den enheten. Strömmen prövas bara när varje leverabels tak är
+  bekräftat, och den har inget dagslarm.
 - **Prognosen prövas mot samma funktion och samma trösklar som utfallet:**
   registrerat + bokat framåt (kalenderminuterna efter i dag, i ören genom
   `gallandeTaxa`/`timeEntryAmountOre`) − ram, på uppdragets nivå. Utan taxa
@@ -1932,7 +1936,8 @@ skrivet före Story 5.3 saknar listan tills nästa svep.
 - **Trösklarna läses per uppdrag** ur `contracts.troskel_*` och står i cachen,
   så att larmet går att läsa utan att slå upp avtalet. Ingen åtgärd skriver dem
   i den här storyn; standardvärdena kommer ur 0068 (5,00 %, 22 000 kr, 20 h,
-  5 dagar).
+  5 dagar). Absolutgolvet 22 000 kr och 20 h är
+  **beslutat av David 2026-10-07** (Story 5.7).
 
 - **Låset är transaktionsbundet:**
   `pg_try_advisory_xact_lock(hashtextextended(company_id::text, 0))`. Är det

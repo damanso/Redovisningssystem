@@ -153,6 +153,40 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Bygge: 5-7-stromnivan-och-absolutgolvet-enligt-davids-beslut.**
+  Strömnivån mäts nu mot summan av stegets leverabelramar (Davids svar
+  2026-10-07). Ny ren regel `stromramar` i `lib/troskel.ts` med källan i
+  `STROMRAMENS_KALLA`: en ström är en aktiv del direkt under rotdelen med
+  aktiva barn, ramen är summan av barnens `egenRam`, strömmens egna takfält
+  (fasramen, det summerade taket) läses aldrig, och saknar en leverabel egen
+  ram i en enhet saknar strömmen ram där, aldrig en delsumma. Styrningen är
+  ingen ström. `harledTroskellarm` prövar rotdelen, strömmarna och posterna
+  med samma regel (strömmen bara när varje leverabels tak är bekräftat, utan
+  dagslarm), och `utan_egen_ram` omfattar strömmarna. Förbrukningspanelen bär
+  `strommar` i stället för `strom`, en rad per ström i samma tabell och
+  tomläget «Avtalet har inga strömmar.»; texten «strömnivån härleds inte förrän
+  ramen är vald» och konstanten är borttagna. `GOLVETS_MARKNING` är «beslutat
+  av David 2026-10-07», och tröskelregelns mening säger strömmens ram och
+  källa. Golvets värde ligger kvar bara i 0068:s kolumner. Ingen migration,
+  ingen rutt, ingen åtgärd och inget beroende; talet över antalet åtgärder i
+  rubrikstycket är oförändrat. `docs/ARKITEKTUR.md` har stycket «Stromnivan»,
+  och `docs/MCP_ACTIONS.md` beskriver nivåerna och golvets beslut. Prov: nya
+  `uppdragsytan-stromniva` (SR0, SB0, SN0, riggen S med SG1 a–d och SB1 a,
+  SD; hjälpfil `stromnivaHelper.ts`) och SA0 a–g i `uppdragsytan-troskel`,
+  plus omskrivna fall i 5.2:s och 5.3:s prov (T0 c, T0 h, F2 a, W1 a, W1 c,
+  W1 d, KRAV-6 (2), N0 c, N0 j, N0 l, V0 c, F1 c, V1 c). Körningar mot
+  testdatabasen 127.0.0.1:5433: delkörningarna 1–4 gröna (73, 161, 187 och 198
+  prov) och typkontrollen exit 0 efter varje uppgift; grinden (körning 5):
+  `uppdragsytan-stromniva` 19/19, `npm run typecheck` exit 0 och hela `npm
+  test` 222 filer och 4386 prov gröna (1136 s). `npm run build` är inte kört
+  (kedjan nekar det). Inga RESTER. Efter driftsättningen får cachens
+  tröskelvärden strömnivån vid nästa svep; Pengarnas panel Förbrukning per
+  nivå visar strömraderna direkt. Designskillen `impeccable` gick inte att
+  köra (Skill-felet «Execute skill: impeccable»); `accessibility` tillämpades,
+  och raderna använder husets `nivarad` utan nya klasser. Rött utanför repot,
+  orört av berättelsen: continuityvakt (KUNDE_INTE), overlamningsregister_fr6
+  och scope_grind (RÖDA) i provvaktens körning 2026-11-27.
+
 - **2026-11-27 — Bygge: 5-4-inget-prognosdatum-visas-utan-beslutad-regel.**
   Svepet förlänger inte längre ramdatumet bortom den sista bokningen:
   bokningar som inte når ramen ger villkoret «ingen bokad framtid» (Davids
