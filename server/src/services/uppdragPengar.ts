@@ -37,7 +37,7 @@
 import type { PoolClient } from 'pg';
 import { assertSafeOre } from '../domain/money.js';
 import { NotFoundError } from '../lib/errors.js';
-import { last, olast, type Lasvarde } from '../lib/lasvarde.js';
+import { cachevarde, last, olast, type Lasvarde } from '../lib/lasvarde.js';
 import { forbrukningsnivaer, type Forbrukningsnivaer, type Ofordelad } from '../lib/forbrukningsnivaer.js';
 import { ROTKOD } from '../lib/leveranskontrakt.js';
 import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognosplats.js';
@@ -146,7 +146,10 @@ export interface Avtalspengar {
    * Alltid satt: läget saknas säger att svepet inte har kört för avtalet.
    */
   prognos: Prognosplats;
-  /** S6.2:s redan härledda larm ur cachen. null = svepet har inte kört (eller okänd form). */
+  /**
+   * S6.2:s redan härledda larm ur cachen. null = inte läst: svepet har inte
+   * kört, eller raden bär inte. `troskel` skiljer de två åt.
+   */
   troskellarm: Svepvarde<Troskelvarde> | null;
   forbrukning: Lasvarde<Forbrukningsnivaer>;
   kostnader: Lasvarde<Kostnadsrad[]>;
@@ -156,6 +159,14 @@ export interface Avtalspengar {
    */
   obundna_kostnader: Lasvarde<ObundenKostnad[]>;
   kostnadstotal: Lasvarde<Kostnadstotal>;
+  /** Story 6.1, FR-35: ramen med redovisningens källa och lästid; `ram` står kvar. */
+  ramvarde: Lasvarde<Pengaram>;
+  /**
+   * Story 6.1, FR-22/FR-35: tröskeln som läsvärde ur avtalets egen cacherad.
+   * Ej svept är oläst utan lästid; en rad som inte bär är oläst med radens
+   * tid, så att sidan aldrig säger att svepet inte har kört när det har det.
+   */
+  troskel: Lasvarde<Troskelvarde>;
 }
 
 export interface Kostnadstotal { bokfort_ore: number; varav_obundet_ore: number; ej_bokforda: number }
@@ -429,15 +440,13 @@ function troskelutfall(varde: unknown): Troskelvarde | null {
   };
 }
 
-/** Ett cachat värde med sin egen rad-färskhet, eller null om formen inte bär. */
-function svept<T>(rad: Svepvarderad | undefined, las: (v: unknown) => T | null): Svepvarde<T> | null {
-  if (rad === undefined) return null;
-  const varde = las(rad.varde);
-  if (varde === null) return null;
-  return {
-    varde,
-    farskhet: { kalla: rad.kalla ?? KALLA_REDOVISNING, last_nar: rad.last_nar.toISOString() },
-  };
+/**
+ * Det äldre fältet ur läsvärdet: bara ett läst värde blir ett svept värde.
+ * Läsvärdet byggs av `cachevarde`, cachevärdenas enda byggare (Story 6.1).
+ */
+function svept<T>(v: Lasvarde<T>): Svepvarde<T> | null {
+  if (v.lage !== 'last' || v.varde === null || v.last_nar === null) return null;
+  return { varde: v.varde, farskhet: { kalla: v.kalla, last_nar: v.last_nar } };
 }
 
 /**
@@ -559,26 +568,30 @@ export async function lasUppdragspengar(
     if (forbrukning.varde?.uppdrag) assertSafeOre(forbrukning.varde.uppdrag.oren);
     const cache = await svepvarden(client, companyId, contractId);
     const prognosrad = cache.find((v) => v.nyckel === 'prognos');
+    const troskel = cachevarde(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall, KALLA_REDOVISNING);
     const kostnader = await kostnaderForAvtal(client, companyId, contractId);
     const obundna = await obundnaForAvtal(client, companyId, contractId);
+    const ram: Pengaram = {
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+      tak_ore: rot?.cap_amount_ore ?? null,
+      tak_status: rot?.cap_status ?? 'vet_ej',
+    };
 
     avtal.push({
       contract_id: contractId,
       contract_name: String(rad.name ?? ''),
       serie: rot === null ? [] : await byggSerie(client, companyId, versionerITradet(delar, rot)),
-      ram: {
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
-        tak_ore: rot?.cap_amount_ore ?? null,
-        tak_status: rot?.cap_status ?? 'vet_ej',
-      },
+      ram,
       // Samma anrop med samma rad som Läget, så att de två aldrig svarar olika (FR-23).
       prognos: prognosplats(prognosrad === undefined ? null
         : { varde: prognosrad.varde, kalla: prognosrad.kalla, last_nar: prognosrad.last_nar.toISOString() }, PROGNOSREGEL),
-      troskellarm: svept(cache.find((v) => v.nyckel === 'troskellarm'), troskelutfall),
+      troskellarm: svept(troskel),
       forbrukning,
       kostnader: last(kostnader, KALLA_REDOVISNING, lastNar),
       obundna_kostnader: last(obundna, KALLA_REDOVISNING, lastNar),
       kostnadstotal: last(kostnadstotal(kostnader, obundna), KALLA_REDOVISNING, lastNar),
+      ramvarde: last(ram, KALLA_REDOVISNING, lastNar),
+      troskel,
     });
   }
 

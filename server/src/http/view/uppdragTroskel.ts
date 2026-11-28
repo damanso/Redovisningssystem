@@ -8,11 +8,28 @@ import {
   GOLVETS_MARKNING, STROMRAMENS_KALLA, golvetBinder, type Larm, type Trosklar, type UtanEgenRam,
 } from '../../lib/troskel.js';
 import { hhmm } from '../../lib/duration.js';
+import type { Lasvarde } from '../../lib/lasvarde.js';
 import { html, kronor, type Raw } from './html.js';
-import { RAM_SAKNAS } from './uppdragForbrukning.js';
+import { RAM_SAKNAS, svepvardesFarskhet } from './uppdragForbrukning.js';
 
 /** Ett cachevärde skrivet före Story 5.3 saknar ramläget tills nästa svep. */
 export const RAMLAGE_EFTER_SVEP = 'Ramläget per nivå står här efter nästa svep.';
+
+/** Story 6.1: tröskelns färskhet i tre fasta former, per avtal (FR-35, FR-22). */
+export const TROSKEL_SVEPT_EJ = 'tröskeln: svepet har inte kört för uppdraget';
+export const TROSKEL_LAST = 'tröskeln läst av svepet';
+export const TROSKEL_KUNDE_INTE = 'tröskeln kunde inte läsas ur svepet · senast läst';
+
+/**
+ * Tröskelns del i färskhetsraden, ur just det avtalets cachevärde. Ett oläst
+ * värde visas aldrig som läst: utan lästid har svepet inte kört, med lästid
+ * kunde raden inte läsas. Med flera avtal står avtalsnamnet sist, så att
+ * ingen tid kan läsas som ett annat avtals. Samma skrivare som varje annat
+ * cachevärde, så att formerna ovan aldrig kan glida isär från prognosens.
+ */
+export function troskelnsFarskhet(v: Lasvarde<unknown>, idag: string, avtalsnamn: string | null): string {
+  return svepvardesFarskhet(v, 'tröskeln', idag, avtalsnamn);
+}
 
 /** Decimalkomma utan utfyllnad: 5 blir 5, 5.25 blir 5,25. */
 const tal = (n: number): string => String(n).replace('.', ',');

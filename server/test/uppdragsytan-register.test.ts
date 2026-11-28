@@ -151,8 +151,8 @@ describe('leverabelregistret för det importerade kontraktet', () => {
     expect(rader.every((r) => r.contract_id === contractId)).toBe(true);
     for (const rad of rader) {
       expect(Object.keys(rad).sort()).toEqual([
-        'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
-        'matt_lasvag', 'mottagare', 'namn', 'overlamnad', 'revision', 'status', 'uppfoljningsmatt',
+        'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'kalla', 'klausul', 'kod', 'lage', 'last_nar',
+        'matt_lasvag', 'mottagare', 'namn', 'overlamnad', 'revision', 'status', 'uppfoljningsmatt', 'varde',
       ]);
     }
   });
@@ -379,8 +379,13 @@ describe('Story 4.1: transmittalfälten i samma registerläsning', () => {
     const agent = await api.post(`${co()}/actions/las_leverabelregister`).set({ Authorization: `Bearer ${tok.body.token}` }).send({ contract_id: contractId });
     expect(agent.status, JSON.stringify(agent.body)).toBe(200);
     const direkt = await withTenantTransaction(user.userId, companyId, (c) => lasLeverabelregister(c, companyId, { contract_id: contractId }));
-    expect(agent.body.result).toEqual(direkt);
-    expect(await las(contractId)).toEqual(direkt);
+    // Story 6.1: varje anrop har sin egen lästid, så den jämförs inte.
+    const utanLastid = (rader: readonly object[]) => rader.map((rad) => {
+      const { last_nar: _t, ...r } = rad as { last_nar?: unknown };
+      return r;
+    });
+    expect(utanLastid(agent.body.result)).toEqual(utanLastid(direkt));
+    expect(utanLastid(await las(contractId))).toEqual(utanLastid(direkt));
     const l2 = direkt.find((r) => r.kod === 'L2')!;
     for (const f of ['revision', 'mottagare', 'overlamnad']) expect(Object.hasOwn(l2, f)).toBe(true);
     const manifest = await api.get(`${co()}/actions`).set(auth());

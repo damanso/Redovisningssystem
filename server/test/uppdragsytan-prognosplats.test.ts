@@ -258,7 +258,12 @@ describe('PF2 och PF4 läsvägarna och sidorna (riggen P)', () => {
         if (yta === 'pengarna') {
           const panel = rampanelen(sida, u.contractId);
           expect(panel.match(/class="farskhet"/g) ?? []).toHaveLength(1);
-          expect(panel).toContain(tid === null ? 'prognosen: svepet har inte kört' : 'prognosen läst av svepet');
+          // Story 6.1, granskningen: färskheten följer läget. U3:s kalender är
+          // oläst, så raden säger det med svepets tid och aldrig «läst».
+          expect(panel).toContain(tid === null
+            ? 'prognosen: svepet har inte kört'
+            : (u === U3 ? `prognosen kunde inte läsas ur svepet · senast läst ${tid}` : 'prognosen läst av svepet'));
+          if (u === U3) expect(panel).not.toContain('läst av svepet');
         }
       }
     }

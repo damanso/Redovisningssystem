@@ -153,6 +153,65 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Omtag: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
+  Granskningens fyra fynd (AC4 och AC6 på Pengarna) var samma felklass: en
+  färskhetstext som avgör «läst» av lästiden i stället för läget. Klassen är
+  stängd med en väg in. Varje färskhetsdel för ett läsvärde skrivs nu av
+  `lasvardesdel` (direkta värden; `lasvardesFarskhet` bygger på den) eller
+  `svepvardesFarskhet` (cachevärden, tre fasta former), som väljer form efter
+  `lage`. `troskelnsFarskhet` är samma skrivare med namnet tröskeln, och
+  routes.ts skriver aldrig svepets färskhet själv. Pengarnas tröskel är nu
+  läsvärdet `troskel` ur `cachevarde`, så en rad som inte bär behåller sin
+  tid och sägs oläst («kunde inte läsas ur svepet · senast läst»), aldrig
+  «svepet har inte kört». Rampanelens prognosdel säger detsamma när kalendern
+  inte lästes. `troskellarm` härleds ur `troskel` och står kvar. Ingen
+  migration, rutt, åtgärd eller beroende, och inget MCP-svar ändrat. Prov:
+  LV2 d (varje skrivare mot fem lägen, planterad kontroll), LV6 a–e (nu också
+  Pengarna; LV6 e förbjuder svepets färskhetsord i routes.ts), N3 c (hela
+  Pengarnas rampanel) och prognosplatsprovets PF4 d omskrivet för U3 på
+  granskningens begäran. `docs/ARKITEKTUR.md` fick en mening om mekanismen.
+  Körningar: rött `npm run typecheck` (saknade `svepvardesFarskhet` och
+  `troskel`) och 8 röda fall; därefter `npm run typecheck` utan fel och hela
+  `npm test` 224 filer och 4479 prov gröna, exit 0 (1112 s). `npm run build`
+  är inte kört (kedjan nekar det).
+
+- **2026-11-28 — Bygge: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
+  Varje värde i uppdragsytans tre läsvägar bär nu källa och lästid (FR-35,
+  FR-23). `lasUppdragslage` och `lasKontraktsyta` har fått det additiva fältet
+  `varden`. Det byggs av den rena `avtalsvarden` (elva värden per avtal plus
+  köposterna och besluten) respektive i `lasKontraktsyta` (åtta värden; Drive-
+  pekarna genom den rena `pekarvarde`, oläst tills svepet verifierat dem).
+  Varje rad ur `lasLeverabelregister` är själv ett `Lasvarde` genom
+  `registerrad`. Alla befintliga nycklar står kvar för Hermes läsare.
+  Tröskeln byggs av den nya rena `cachevarde` i `lib/lasvarde.ts` ur just det
+  avtalets cacherad, och Lägets kort skriver en tröskeldel per avtal
+  (`troskelnsFarskhet`, tre fasta former). Den sammanslagna `farskhet.troskel`
+  ritas inte längre, och en rad som inte bär visas som oläst, inte som läst.
+  Planens fråga flyttades ur vyn till `lasPlandelar`, så att vyns underlag för
+  Läget, Planen, Leveranserna och Kontraktet inte gör någon egen SQL.
+  Färskhetsraden står nu i varje värdeblock med ett tal på Läget, Planen,
+  Leveranserna, Pengarna, Rapporterna och Kontraktet. Planens tabell
+  Avtalsdelar och Pengarnas kostnader står i var sin `section.panel`, och
+  ingen sida har en global tidsstämpel. Ingen migration, rutt eller åtgärd
+  tillkom (talet över antalet åtgärder i rubrikstycket är oförändrat), och
+  inget beroende. `docs/ARKITEKTUR.md` har stycket «Lasvarden per varde»,
+  och `docs/MCP_ACTIONS.md` har en punkt per läsåtgärd. Prov: nya
+  `uppdragsytan-lasvarde` (LV1–LV12, F0–F6 med sidregeln härledd ur den
+  renderade sidan och planterade kontroller, N0–N4 med en spion på det
+  globala nätanropet; 47 fall). Omskrivna påståenden: laget-provets
+  färskhetsräkning (8 → 10), registerprovets nyckellista och
+  agentjämförelse (utan lästid) och, utöver berättelsens lista,
+  leveransprovets 4.1-B2. Det sista filtrerar nu bort läsvärdets fyra
+  nycklar, eftersom kriterium 1 kräver dem på varje rad. Körningar mot
+  testdatabasen 127.0.0.1:5433: delkörningarna 1–6 gröna och typkontrollen
+  utan fel efter varje uppgift; grinden: `uppdragsytan-lasvarde` och
+  dokumentproven 19 filer och 598 prov gröna, `npm run typecheck` utan fel
+  och hela `npm test` 224 filer och 4477 prov gröna, exit 0 (1120 s).
+  `npm run build` är inte kört (kedjan nekar
+  det). Inga RESTER. Rött utanför repot före bygget, orört av berättelsen:
+  bmadglidning och scope_grind (RÖDA) och modulprov och continuityvakt
+  (KUNDE_INTE) i provvaktens körning 2026-11-27.
+
 - **2026-11-28 — Bygge: 5-8-larmregeln-for-nedlagd-tid-mot-ram-enligt-davids-beslut.**
   Måttet ”Nedlagd tid mot ram” larmar nu på FR-3:s avvikelsetröskel enligt
   Davids beslut 2026-10-07 («Ersätt, skriv inte om»), med källan
