@@ -4,6 +4,7 @@
 // mänsklig signatur. Regeln prövas ren; migrationen, åtgärden och den fällda
 // grenen prövas mot Postgres genom hela stacken, med före och efter.
 import { readFile } from 'node:fs/promises';
+import type { PoolClient } from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   KALLHANDELSETYPER, OVERGANGAR, RUTINSKAL, RUTINSKALTEXT, provaRutinhandelse, type Rutinindata,
@@ -15,6 +16,7 @@ import { withTenantTransaction } from '../src/db/tx.js';
 import { loadMigrations } from '../src/db/migrate.js';
 import { skapaReferens } from '../src/services/uppdragReferens.js';
 import { upsertSvepvarden } from '../src/services/uppdragSvep.js';
+import { registreraRutinstatus, type Kallhandelse } from '../src/services/uppdragStatus.js';
 import { getAction } from '../src/actions/registry.js';
 
 // ---------------------------------------------------------------------------
@@ -608,6 +610,113 @@ describe('Story 14.1: det fällda ändrar ingenting', () => {
     const efter = await ofort(a);
     expect(efter).toEqual(fore);
     expect(efter.handelser.filter((h) => h.kod === 'L3')).toEqual([]);
+  });
+
+  // Samtidigheten. Signalen och indikatorn skrivs av vägar som inte tar
+  // rutinvägens lås (tand_scopesignal, avgor_scopesignal och svepets cache).
+  // Rutinvägen körs därför i en egen transaktion, och ett förlopp av sådana
+  // skrivningar läggs in före var och en av dess satser i tur och ordning.
+  // Förloppet checkas in på egna anslutningar medan rutinvägens transaktion står
+  // öppen. Sammanflätningen är densamma varje gång, utan klocka och utan slump.
+  // Når rutinvägen aldrig satsen körs förloppet efter sista satsen, före
+  // incheckningen.
+  async function rutinMedForlopp(a: Avtal, kod: string, kallhandelse: Record<string, unknown>, fore: number,
+    forlopp: () => Promise<void>) {
+    let satser = 0;
+    let inomRutinen = false;
+    const utfall = await withTenantTransaction(user.userId, companyId, async (c) => {
+      const query = async (...args: unknown[]) => {
+        if (satser === fore) { inomRutinen = true; await forlopp(); }
+        satser += 1;
+        return (c.query as (...x: unknown[]) => Promise<unknown>)(...args);
+      };
+      const r = await registreraRutinstatus({ query } as unknown as PoolClient, companyId,
+        { contract_id: a.contractId, leverabel_kod: kod, kallhandelse: kallhandelse as unknown as Kallhandelse });
+      if (!inomRutinen) await forlopp();
+      return r;
+    });
+    return { utfall, inomRutinen };
+  }
+  const oppnaSignaler = (a: Avtal) => withAdmin(async (c) => Number((await c.query(`SELECT count(*) AS n FROM uppdrag_scopesignal s
+    WHERE s.company_id=$1 AND s.contract_id=$2 AND NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande g
+      WHERE g.company_id=s.company_id AND g.signal_id=s.id)`, [companyId, a.contractId])).rows[0].n));
+  const larmkoder = async (a: Avtal) => ((await svepcache(a)).find((r) => r.nyckel === 'troskellarm')?.varde as
+    { larm: Array<{ kod: string }> } | undefined)?.larm.map((l) => l.kod) ?? null;
+
+  // Tre lägen finns i förloppet: före, mellan de två incheckningarna och efter.
+  // Rutinvägens skäl ska vara regelns skäl för ett av dem. Ett underlag ur två
+  // lägen, signalerna ur det ena och indikatorn ur det andra, hade medgetts.
+  async function provaForlopp(namn: string, rigga: (a: Avtal) => Promise<() => Promise<void>>,
+    lagen: Array<{ oppna_signaler: number; larmkoder: string[] }>, blandat: { oppna_signaler: number; larmkoder: string[] }) {
+    const regel = async (a: Avtal, l: { oppna_signaler: number; larmkoder: string[] }) => provaRutinhandelse({
+      typ: 'transmittal', status: 'pagar', ...l, leverabelkedja: ['L1', await foralder(a, 'L1'), 'UPPDRAG'], parter: PARTER });
+    const inne: number[] = [];
+    for (let fore = 0; ; fore += 1) {
+      const a = await rutinavtal(`14.1 ${namn} ${fore}`); await paborja(a, 'L1');
+      const forlopp = await rigga(a);
+      const forvantade = await Promise.all(lagen.map((l) => regel(a, l)));
+      for (const f of forvantade) expect(f.medges, `${namn}: varje verkligt läge fäller`).toBe(false);
+      const blandad = await regel(a, blandat);
+      expect(blandad.medges, `${namn}: negativ kontroll, det blandade underlaget medges`).toBe(true);
+      const sakFore = { statusar: await statusar(a), handelser: await handelser(a), referenser: await referenser(a) };
+
+      const { utfall, inomRutinen } = await rutinMedForlopp(a, 'L1', TRANSMITTAL('L1'), fore, forlopp);
+      expect(utfall.utfall, `${namn}, före sats ${fore}: ${JSON.stringify(utfall)}`).toBe('falld');
+      expect(forvantade.map((f) => !f.medges && f.skal), `${namn}, före sats ${fore}`)
+        .toContainEqual(utfall.utfall === 'falld' ? utfall.skal : null);
+      expect({ statusar: await statusar(a), handelser: await handelser(a), referenser: await referenser(a) }).toEqual(sakFore);
+      // Förloppet checkades verkligen in: avtalet står i sista läget.
+      expect({ oppna_signaler: await oppnaSignaler(a), larmkoder: await larmkoder(a) }).toEqual(lagen.at(-1));
+      if (!inomRutinen) break;
+      inne.push(fore);
+    }
+    // Förloppet lades in mellan rutinvägens satser, inte bara före eller efter dem.
+    expect(inne.length, namn).toBeGreaterThanOrEqual(2);
+  }
+
+  it('14.1-F6: en signal som tänds medan svepet släcker indikatorn ger aldrig ett blandat underlag', async () => {
+    await provaForlopp('F6', async (a) => {
+      await tandIndikator(a, 'L1');
+      return async () => {
+        await ok('tand_scopesignal', { contract_id: a.contractId, fras: 'kan ni även ta' });
+        await friskIndikator(a);
+      };
+    }, [
+      { oppna_signaler: 0, larmkoder: ['L1'] }, { oppna_signaler: 1, larmkoder: ['L1'] }, { oppna_signaler: 1, larmkoder: [] },
+    ], { oppna_signaler: 0, larmkoder: [] });
+  }, 180_000);
+
+  it('14.1-F7: en indikator som tänds medan signalen avgörs ger aldrig ett blandat underlag', async () => {
+    await provaForlopp('F7', async (a) => {
+      const signal = await ok<{ id: string }>('tand_scopesignal', { contract_id: a.contractId, fras: 'kan ni även ta' });
+      return async () => {
+        await tandIndikator(a, 'L1');
+        await ok('avgor_scopesignal', { signal_id: signal.id, avgjord: 'innanfor' });
+      };
+    }, [
+      { oppna_signaler: 1, larmkoder: [] }, { oppna_signaler: 1, larmkoder: ['L1'] }, { oppna_signaler: 0, larmkoder: ['L1'] },
+    ], { oppna_signaler: 0, larmkoder: [] });
+  }, 180_000);
+
+  // Regelns underlag ur databasen läses i en enda sats, alltså ur ett enda läge.
+  // Tabellerna nedan är de som bara regelns underlag läser i statustjänsten.
+  const UNDERLAGSTABELLER = ['uppdrag_scopesignal', 'uppdrag_scopeavgorande', 'uppdrag_svepvarde', 'contract_parts'];
+  function underlagsbrister(kalla: string): string[] {
+    const utanKommentarer = kalla.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const satser = [...utanKommentarer.matchAll(/`[^`]*`/g)].map((m) => m[0])
+      .filter((m) => UNDERLAGSTABELLER.some((t) => new RegExp(`\\b${t}\\b`).test(m)));
+    if (satser.length !== 1) return [`${String(satser.length)} satser läser regelns underlag`];
+    return UNDERLAGSTABELLER.filter((t) => !new RegExp(`\\b${t}\\b`).test(satser[0]!)).map((t) => `${t} läses inte i satsen`);
+  }
+
+  it('14.1-F8: signalerna, indikatorn och leverabelkedjan läses i en och samma sats', async () => {
+    const kalla = await readFile(new URL('../src/services/uppdragStatus.ts', import.meta.url), 'utf8');
+    expect(underlagsbrister(kalla)).toEqual([]);
+    // Negativa kontroller: en andra sats som läser signalerna, och en sats som saknar kedjan.
+    expect(underlagsbrister(`${kalla}\nconst x = \`SELECT 1 FROM uppdrag_scopesignal WHERE company_id = $1\`;`))
+      .toEqual(['2 satser läser regelns underlag']);
+    expect(underlagsbrister('const x = `uppdrag_scopesignal uppdrag_scopeavgorande uppdrag_svepvarde`;'))
+      .toEqual(['contract_parts läses inte i satsen']);
   });
 });
 

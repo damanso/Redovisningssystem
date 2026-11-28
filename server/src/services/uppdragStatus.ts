@@ -14,7 +14,7 @@ import { BadRequestError, ConflictError, NotFoundError } from '../lib/errors.js'
 import { koaRegisterkopia, skapaReferens } from './uppdragReferens.js';
 import { kanonisktReferensId, type Referenssort } from '../lib/referens.js';
 import {
-  provaRutinhandelse, type Kallhandelsetyp, type Rutinskal, type Rutinutfall,
+  provaRutinhandelse, type Kallhandelsetyp, type Rutinindata, type Rutinskal, type Rutinutfall,
 } from '../lib/rutinregel.js';
 
 /** De två registrerade utfallen. Ett fritt statusfält vore en andra skrivväg. */
@@ -460,6 +460,71 @@ function larmkoder(varde: unknown): string[] | null {
 }
 
 /**
+ * Regelns underlag ur databasen, i EN sats och alltså ur ett enda läge.
+ *
+ * Varje sats i en transaktion ser databasen som den var när satsen började.
+ * Lästes signalerna och indikatorn i var sin sats kunde regeln få signalerna
+ * från före en incheckning och indikatorn från efter nästa: ett underlag som
+ * aldrig funnits, där varken signalen eller larmet syns fast det ena av dem
+ * hela tiden var tänt. Därför läses allt här på en gång, och rutinvägen har
+ * ingen annan väg in till regeln.
+ *
+ * Anroparen har låst leverabeln och avtalet före satsen. Status och parter står
+ * därför stilla till incheckningen: varje statusbyte och varje ändring av
+ * avtalet väntar på låsen. Signalerna och svepets tröskellarm skrivs av vägar
+ * som inte tar de låsen och som inte går att stänga ute härifrån, eftersom det
+ * hade krävt det förbjudna FOR UPDATE på avtalet. Ingen av dem läser det
+ * rutinvägen ändrar: en signal tänds och avgörs utan att leverabelns status
+ * eller historik läses (en ny referens för signalens underlag går genom samma
+ * avtalslås som rutinvägens), och tröskellarmet härleds ur tak, förbrukning,
+ * perioder och kalendern. En sådan skrivning som checkas in efter satsen ger
+ * därför samma läge som om den kommit efter registreringen.
+ */
+async function lasRutinunderlag(
+  client: PoolClient, companyId: string, contractId: string, leverabel: { id: string; kod: string },
+): Promise<Omit<Rutinindata, 'typ' | 'godkand_av'>> {
+  // En öppen signal är en signal utan avgörande, med samma predikat som
+  // undantagsvyn. Tröskellarmet läses ur svepets cache som Läget gör, utan
+  // import ur svepet. Leverabelns kod är dess avtalsdels kod, men koden är inte
+  // unik ensam: varje version av delen räknas, så att en omflyttad del aldrig
+  // tappar en förälder, och kedjan går uppåt till rotdelen.
+  const res = await client.query<{
+    status: string; godkannare: string | null; godkannare_eskalering: string | null;
+    oppna_signaler: number; troskellarm: unknown; kedja: string[];
+  }>(
+    `WITH RECURSIVE kedja (id, code, parent_part_id) AS (
+       SELECT id, code, parent_part_id FROM contract_parts
+        WHERE company_id = $1 AND contract_id = $2 AND code = $4
+       UNION
+       SELECT f.id, f.code, f.parent_part_id FROM contract_parts f
+         JOIN kedja k ON f.id = k.parent_part_id
+        WHERE f.company_id = $1
+     )
+     SELECT l.status, c.godkannare, c.godkannare_eskalering,
+            (SELECT count(*)::int FROM uppdrag_scopesignal s
+              WHERE s.company_id = $1 AND s.contract_id = $2
+                AND NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande a
+                                 WHERE a.company_id = s.company_id AND a.signal_id = s.id)) AS oppna_signaler,
+            (SELECT v.varde FROM uppdrag_svepvarde v
+              WHERE v.company_id = $1 AND v.contract_id = $2 AND v.nyckel = $5) AS troskellarm,
+            ARRAY(SELECT DISTINCT code FROM kedja ORDER BY code) AS kedja
+       FROM uppdrag_leverabel l
+       JOIN contracts c ON c.id = l.contract_id AND c.company_id = l.company_id
+      WHERE l.company_id = $1 AND l.contract_id = $2 AND l.id = $3`,
+    [companyId, contractId, leverabel.id, leverabel.kod, TROSKELLARMNYCKEL],
+  );
+  const rad = res.rows[0]!;
+  return {
+    status: rad.status,
+    oppna_signaler: rad.oppna_signaler,
+    // Ingen rad i cachen och ett värde som inte går att läsa är båda en oläst indikator.
+    larmkoder: larmkoder(rad.troskellarm),
+    leverabelkedja: [...new Set([leverabel.kod, ...rad.kedja])],
+    parter: { godkannare: rad.godkannare, godkannare_eskalering: rad.godkannare_eskalering },
+  };
+}
+
+/**
  * Den enda koden som skriver en rad med källhändelse. Anroparen har låst
  * leverabeln och avtalet och fått stegets medgivande av rutinregeln; `steg` är
  * regelns medgivna steg ur `OVERGANGAR`, med mottagaren. Raden registreras av
@@ -539,7 +604,7 @@ async function skrivKallhandelse(
  * Registrerar ett rutinmässigt statusbyte ur sin källhändelse, utan fråga, när
  * rutinregeln medger det (FR-13, Davids svar 2026-10-07).
  *
- * Regeln avgör, inte anroparen: tjänsten samlar regelns indata under
+ * Regeln avgör, inte anroparen: tjänsten läser regelns underlag i en sats efter
  * leverabelns och avtalets lås och skickar utfallet vidare oförändrat. Det
  * fällda svarar `falld` med regelns skäl och skriver ingenting — ingen händelse,
  * ingen status, ingen referens, ingen registerkopia, ingen köpost och ingen
@@ -579,13 +644,11 @@ export async function registreraRutinstatus(
     return { utfall: 'redan_registrerad', handelse_id: registrerad.id, leverabel_kod: leverabel.kod, status: leverabel.status };
   }
 
-  // (3) Avtalet, låst före regelns indata så att signalerna och indikatorn läses
-  // under samma lås som skrivningen. FOR NO KEY UPDATE och aldrig FOR UPDATE:
-  // det senare krockar med främmande nycklars FOR KEY SHARE.
-  const avtal = await client.query<{
-    signed_date: string | null; godkannare: string | null; godkannare_eskalering: string | null; idag: string;
-  }>(
-    `SELECT signed_date::text AS signed_date, godkannare, godkannare_eskalering, current_date::text AS idag
+  // (3) Avtalet, låst före regelns underlag, så att parterna står stilla till
+  // incheckningen. FOR NO KEY UPDATE och aldrig FOR UPDATE: det senare krockar
+  // med främmande nycklars FOR KEY SHARE.
+  const avtal = await client.query<{ signed_date: string | null; idag: string }>(
+    `SELECT signed_date::text AS signed_date, current_date::text AS idag
        FROM contracts WHERE id = $1 AND company_id = $2
        FOR NO KEY UPDATE`,
     [input.contract_id, companyId],
@@ -608,52 +671,20 @@ export async function registreraRutinstatus(
     );
   }
 
-  // (4) Regelns indata. En öppen signal är en signal utan avgörande, med samma
-  // predikat som undantagsvyn.
-  const signaler = await client.query<{ antal: number }>(
-    `SELECT count(*)::int AS antal
-       FROM uppdrag_scopesignal s
-      WHERE s.company_id = $1 AND s.contract_id = $2
-        AND NOT EXISTS (SELECT 1 FROM uppdrag_scopeavgorande a WHERE a.company_id = s.company_id AND a.signal_id = s.id)`,
-    [companyId, input.contract_id],
-  );
-  // Svepets tröskellarm läses med en egen fråga, som Läget gör: tjänsten
-  // importerar ingenting ur svepet.
-  const cache = await client.query<{ varde: unknown }>(
-    `SELECT varde FROM uppdrag_svepvarde
-      WHERE company_id = $1 AND contract_id = $2 AND nyckel = $3`,
-    [companyId, input.contract_id, TROSKELLARMNYCKEL],
-  );
-  // Leverabelns kod är dess avtalsdels kod, men koden är inte unik ensam:
-  // varje version av delen räknas, så att en omflyttad del aldrig tappar en
-  // förälder. Kedjan går uppåt till rotdelen.
-  const kedja = await client.query<{ code: string }>(
-    `WITH RECURSIVE kedja (id, code, parent_part_id) AS (
-       SELECT id, code, parent_part_id FROM contract_parts
-        WHERE company_id = $1 AND contract_id = $2 AND code = $3
-       UNION
-       SELECT f.id, f.code, f.parent_part_id FROM contract_parts f
-         JOIN kedja k ON f.id = k.parent_part_id
-        WHERE f.company_id = $1
-     )
-     SELECT DISTINCT code FROM kedja ORDER BY code`,
-    [companyId, input.contract_id, leverabel.kod],
-  );
+  // (4) Regelns underlag, i en sats efter låsen: ett enda läge, aldrig delar
+  // av två.
+  const underlag = await lasRutinunderlag(client, companyId, input.contract_id, { id: leverabel.id, kod: leverabel.kod });
 
   // (5) Regeln. Tjänsten skriver aldrig om villkoret.
   const utfall = provaRutinhandelse({
     typ: kallhandelse.typ,
-    status: leverabel.status,
-    oppna_signaler: signaler.rows[0]?.antal ?? 0,
-    larmkoder: cache.rows[0] ? larmkoder(cache.rows[0].varde) : null,
-    leverabelkedja: [...new Set([leverabel.kod, ...kedja.rows.map((r) => r.code)])],
-    parter: { godkannare: avtalsrad.godkannare, godkannare_eskalering: avtalsrad.godkannare_eskalering },
+    ...underlag,
     ...(kallhandelse.typ === 'godkannande' ? { godkand_av: kallhandelse.godkand_av } : {}),
   });
 
   // (6) Fälld: svaret bär skälen, och ingenting skrivs.
   if (!utfall.medges) {
-    return { utfall: 'falld', leverabel_kod: leverabel.kod, status: leverabel.status, skal: utfall.skal };
+    return { utfall: 'falld', leverabel_kod: leverabel.kod, status: underlag.status, skal: utfall.skal };
   }
 
   // (7) Medgiven.

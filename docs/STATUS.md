@@ -153,6 +153,29 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — 14-1-ett-rutinmassigt-statusbyte-registreras-ur-sin-kallhandelse-utan-fraga (med omtag).**
+  Rutinvägen (FR-13, Davids svar 2026-10-07): den rena regeln
+  `server/src/lib/rutinregel.ts`, migrationen `0101_rutinstatus.sql` (fyra
+  kolumner på händelsetabellen, fyra villkor och ett unikt index på leverabel,
+  typ och nyckel) och åtgärden `registrera_rutinstatus` (write, utan
+  människospärr och utan kö) med `registreraRutinstatus` i statustjänsten.
+  Rutinvägen registrerar bara det regeln medger: ett transmittal ger levererad,
+  och ett godkännande från avtalets godkännare eller eskalering ger godkänd, båda
+  utan öppen scopesignal och utan tänd eller oläst indikator. Raden är märkt
+  system, utan bekräftare, med handlingen som referens. Det fällda svarar `falld`
+  med skälen och skriver ingenting. Förslaget till David är Story 14.4. De tre
+  människospärrade åtgärderna är orörda. Omtaget efter granskningen (fyra fynd,
+  en felklass): regelns underlag lästes i flera satser och kunde blanda två
+  databaslägen. Nu läses status, parter, öppna signaler, svepets tröskellarm och
+  leverabelkedjan i en enda sats efter leverabelns och avtalets lås
+  (`lasRutinunderlag`). Prov: 27 fall i
+  `server/test/uppdragsytan-rutinstatus.test.ts`, bland dem de deterministiska
+  samtidighetsproven F6 och F7 och F8 (en sats läser underlaget), och
+  riggningarna i åtta provfiler. Körningar mot testdatabasen: Körning 1–3 gröna;
+  i omtaget F6 och F8 röda före och 27/27 gröna efter; Körning 4:
+  `npm run typecheck` utan fel, och hela `npm test` gav
+  `Test Files 226 passed (226)`, `Tests 4557 passed (4557)`. `npm run build`
+  inte kört (nekas i kedjan). Inga `RESTER`- och inga `UTANFÖR`-rader.
 - **2026-11-28 — 6-2-uppdragsvyn-visar-de-fem-delarna-och-bara-verkliga-mandatfragor.**
   Läget visar FR-18:s fem delar: överst uppdragets frågor som kräver Davids
   mandat och därunder fyra kort (förbrukning, leverabler, senaste bedömning,
