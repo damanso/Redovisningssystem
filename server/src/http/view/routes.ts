@@ -37,7 +37,7 @@ import { listaBedomningar, listaObesvaradeBegaranden, byggRapportunderlag, lasSc
   kalenderreferenser, lasBedomningsrytm, rytmUrKolumner,
   type Avtalsrytm, type Begaransrad, type Begaransvar, type Bedomningslage, type Bedomningsrad, type FrystaSiffror,
   type Kalenderreferens, type Rapportunderlag, type Scopelinje } from '../../services/uppdragBedomning.js';
-import { bedomningsperiod, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
+import { bedomningsperiod, INGEN_BEDOMNING_SATT, periodensBedomning, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
 import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgorandrad, type Scopefras,
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
@@ -116,7 +116,7 @@ import { k10Prefill } from '../../services/k10Store.js';
 import { ecSalesList, generateEcSalesFile, type EcSalesList } from '../../services/ecSalesList.js';
 import { createFiscalYear, listFiscalYears } from '../../services/accounting/fiscalYears.js';
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
-import { undantagssida } from './undantagsvyn.js';
+import { mandatdel, undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
 import { lasvardesdel, lasvardesFarskhet, nivapanel, ofordeladUppdrag, svepvardesFarskhet } from './uppdragForbrukning.js';
 import { golvmarkering, troskelnsFarskhet, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
@@ -3932,14 +3932,17 @@ viewRouter.get('/c/:companyId/projects/:projectId/kontraktet', page(async (req, 
 // redan, men i fem vyer — och en fråga man måste ställa fem gånger ställer man
 // till slut noll gånger. Sex beslut styr ytan:
 //
-//  1. **Bandet överst, sedan fem kort.** Det som VÄNTAR på ett människosvar står
-//     före det som bara är sant: en obesvarad fråga som läses sist blir i
-//     praktiken ett ja. Korten står i FR-18:s egen ordning, och alla fem finns
-//     alltid i sidan — ett kort som försvinner när det saknar data lär läsaren
-//     att ytan är ofullständig.
-//  2. **Ockran är bandets, aldrig kortens.** `.ai-card` betyder "väntar på en
-//     människa" i huset (S8.1). Är bandet tomt byter det till `.panel` — det är
-//     inte längre något som ropar, och färgskiftet säger det innan orden gör det.
+//  1. **Mandatdelen överst, sedan fyra kort.** Det som VÄNTAR på ett
+//     människosvar står före det som bara är sant: en obesvarad fråga som läses
+//     sist blir i praktiken ett ja. Story 6.2: frågorna är undantagsvyns poster
+//     för uppdraget (`varden.mandatfragor`), och de avgörs där — delen länkar dit
+//     och svarar aldrig själv. Korten står i FR-18:s egen ordning, och alla fyra
+//     finns alltid i sidan — ett kort som försvinner när det saknar data lär
+//     läsaren att ytan är ofullständig.
+//  2. **Ockran är mandatdelens när det finns frågor, aldrig kortens.** `.ai-card`
+//     betyder "väntar på en människa" i huset (S8.1). Utan frågor står delen som
+//     `.panel` — det är inte längre något som ropar, och färgskiftet säger det
+//     innan orden gör det.
 //  3. **Aldrig en naken nolla (FR-22).** Varje kort som saknar sin innehållsdel
 //     skriver vad tomheten BETYDER och en väg vidare. En tyst nolla ser ut som
 //     ett sant svar (lärdom 7 i STATUS.md), och det är exakt den lögnen som gör
@@ -4031,106 +4034,7 @@ function faktakort(id: string, rubrik: string, marke: Raw, kropp: Raw, farskhet:
 const avtalsrubrik = (namn: string, flera: boolean): Raw =>
   flera ? html`<h3 style="margin:12px 16px 2px">${namn}</h3>` : html``;
 
-// --- Handgreppsbandet -------------------------------------------------------
-
-/** Ett handgrepp: vad som väntar, och vart man går för att svara på det. */
-interface Handgrepp {
-  marke: Raw;
-  text: string;
-  detalj: string | null;
-  href: string;
-  knapp: string;
-  /** Maskinens observation (AI-förordningen art. 50) — inte en människas fråga. */
-  ai: boolean;
-}
-
-function handgreppsband(companyId: string, l: Uppdragslage, idag: string): Raw {
-  const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
-  const grepp: Handgrepp[] = [];
-  // Ordningen är hur hårt något blockerar: en köpost stoppar en åtgärd som
-  // redan är begärd, sedan signal och begärd bedömning. Statusbytet görs
-  // där David utför handlingen, på leverabelns kort.
-  for (const k of l.koposter) {
-    grepp.push({
-      marke: chip('Köpost', 'warn', '◔'),
-      text: getAction(k.action)?.title ?? k.action,
-      detalj: k.action,
-      href: `/app/c/${companyId}/approvals`,
-      knapp: 'Granska',
-      ai: k.requested_actor === 'agent',
-    });
-  }
-  for (const a of l.avtal) {
-    for (const s of a.oppna_signaler) {
-      grepp.push({
-        marke: chip('Signal', 'warn', '!'),
-        text: `Scopesignal: ”${s.fras}”`,
-        detalj: s.klausul,
-        href: `${bas}/signaler`,
-        knapp: 'Avgör',
-        ai: false,
-      });
-    }
-  }
-  // Story 1.10: en begärd bedömning väntar på David — men bara på ett aktivt
-  // uppdrag. På ett stängt hade knappen bara kunnat ge 409, och kortet säger
-  // där varför begäran står kvar.
-  if (l.uppdrag.status === 'active') {
-    for (const a of l.avtal) {
-      if (a.oppen_begaran === null) continue;
-      grepp.push({
-        marke: chip('Bedömning', 'warn', '!'),
-        text: 'Ny bedömning begärd',
-        detalj: a.oppen_begaran.begard_nar.slice(0, 10),
-        href: `${bas}/bedomning`,
-        knapp: 'Bedöm',
-        ai: false,
-      });
-    }
-  }
-  if (grepp.length === 0) {
-    // Tomt band: en mening om vad tomheten BETYDER plus en väg vidare — aldrig
-    // en nolla. Och `.panel`, inte `.ai-card`: ockran betyder "väntar på en
-    // människa", och just nu gör ingenting det.
-    return html`<section class="panel" aria-labelledby="handgrepp">
-      <div class="panel__head"><h2 id="handgrepp">Väntar på dig</h2>${chip('Inget väntar', 'ok', '✓')}</div>
-      <div class="panel__body">
-        ${/* Tomheten SÄGS, den räknas inte: "0" hade varit ett databassvar. Kön
-              töms bara av medvetna beslut, och det är den meningen som gör tomt
-              till ett trovärdigt tillstånd i stället för ett misstänkt. */ ''}
-        <p class="muted" style="margin:10px 16px 12px;font-size:13px">
-          Ingen köpost, ingen oavgjord scopesignal, ingen begärd bedömning att sätta ligger på uppdraget.
-          Kön töms bara av medvetna beslut, så tomt betyder att allt är avgjort — inte att inget hände.
-          <a href="${bas}/bedomning">Sätt periodens bedömning</a> när det är dags.</p>
-      </div>
-    </section>`;
-  }
-
-  const etikett = grepp.length === 1 ? '1 handgrepp' : `${String(grepp.length)} handgrepp`;
-  return html`<section class="ai-card" aria-labelledby="handgrepp" style="margin:0 0 16px">
-    <div class="ai-card__head">
-      <span class="ai-card__title" id="handgrepp">Väntar på dig</span>${chip(etikett, 'warn', '!')}
-    </div>
-    <div class="ai-card__why">Det här är allt på uppdraget som står och väntar på ett svar från en
-      människa. Varje rad leder dit svaret ges — bandet svarar aldrig åt dig.</div>
-    ${/* En rad per handgrepp: vad som väntar till vänster, vägen dit till
-          höger. Husets komponenter bär raden (chip + knappband); bandets egen
-          form bärs sedan S10.7 av `.handgrepp` — 1D:s namn på just den här
-          komponenten — i stället för av en inline-stil utan namn. */ ''}
-    <ul class="handgrepp">
-      ${grepp.map((g) => html`<li>
-        ${g.marke}
-        <span style="flex:1 1 220px;min-width:0">${g.text}
-          ${g.detalj ? html`<span class="code" style="margin-left:6px">${g.detalj}</span>` : ''}</span>
-        ${g.ai ? aiMarkning() : ''}
-        <a class="btn btn--ghost btn--sm" href="${g.href}">${g.knapp}</a>
-      </li>`)}
-    </ul>
-    ${lasvardesFarskhet(l.varden.koposter, 'väntande', idag)}
-  </section>`;
-}
-
-// --- De fem faktakorten -----------------------------------------------------
+// --- De fyra faktakorten ----------------------------------------------------
 
 /**
  * Ett tröskellarm i klartext (S6.2). Talen är AVVIKELSEN och TRÖSKELN i sin
@@ -4280,22 +4184,30 @@ function kortBedomning(companyId: string, l: Uppdragslage, idag: string): Raw {
   const flera = l.avtal.length > 1;
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
   const aktivt = l.uppdrag.status === 'active';
-  const nagon = l.avtal.some((a) => a.bedomning !== null);
-  const kropp = html`${l.avtal.map((a) => {
+  // Story 6.2: en regel per avtal avgör om den senaste bedömningen gäller rytmens
+  // innevarande period. Ett äldre läge ärvs aldrig tyst (FR-17); det nämns bara
+  // som en tidigare period, och läget står på Rapporterna.
+  const perioder = l.avtal.map((a) => periodensBedomning(a.bedomning, a.rytm));
+  const nagon = perioder.some((p) => p.lage === 'satt');
+  const kropp = html`${l.avtal.map((a, i) => {
     const b = a.bedomning;
+    const p = perioder[i]!;
     return html`${avtalsrubrik(a.contract_name, flera)}
-      ${b === null
-        ? tomtIKort(
-          'Ingen bedömning är satt. Läget är alltså inte okänt för att det är bra — det är okänt, '
-          + 'och en bedömning är alltid en människas.',
-          html`<a href="${bas}/bedomning">Sätt bedömningen</a>.`,
-        )
+      ${b === null || p.lage === 'ingen'
+        ? html`<p class="tomt" data-falt="ingen-bedomning" style="margin:10px 16px 4px;padding:.6rem .8rem;font-size:13px"><b>${
+            p.lage === 'ingen' && p.period !== null
+              ? `${INGEN_BEDOMNING_SATT} för perioden ${p.period.start} – ${p.period.slut}.` : `${INGEN_BEDOMNING_SATT}.`}</b>${
+            p.lage === 'ingen' && p.tidigare !== null
+              ? html`Den senaste bedömningen gällde ${p.tidigare.start} – ${p.tidigare.slut} och står på
+                  <a href="${bas}/rapporterna">Rapporterna</a>. Ett läge förs aldrig vidare av sig självt.`
+              : 'Läget är okänt, inte bra — en bedömning sätts alltid av en människa.'}
+            <a href="${bas}/bedomning">Bedömning</a> är platsen där den sätts.</p>`
         : html`<p style="margin:10px 16px 2px">${bedomningsChip(b.lage)}
             <span class="code" style="margin-left:6px">${b.period_start} – ${b.period_slut}</span>
-            ${/* Raden bär `satt_av` sedan 0082, men äldre rader saknar namnet.
-                  Kortet visar därför fortfarande bara om en människa satte den. */ ''}
-            <span class="muted" style="margin-left:6px;font-size:12.5px">${
-              b.satt_av_manniska ? 'satt av en människa' : 'satt utan människa'} ${b.created_at.slice(0, 10)}</span></p>
+            ${/* Raden bär `satt_av` och namnet sedan 0082; äldre rader saknar
+                  namnet och säger då bara att en människa satte den. */ ''}
+            <span class="muted" style="margin-left:6px;font-size:12.5px">satt ${b.created_at.slice(0, 10)} ${
+              b.satt_av_namn !== null ? `av ${b.satt_av_namn}` : b.satt_av_manniska ? 'av en människa' : 'utan människa'}</span></p>
           <p class="muted" style="margin:4px 16px 4px;font-size:13px">${
             b.forsta_meningen ?? html`<em>Ingen kommentar skrevs till bedömningen.</em>`}</p>`}
       ${begaranIKort(bas, a, aktivt)}`;
@@ -4333,27 +4245,6 @@ function kortSignaler(companyId: string, l: Uppdragslage, idag: string): Raw {
   return faktakort('kort-signaler', 'Tända scopesignaler',
     oppna === 0 ? chip('Inga öppna', 'ok', '✓') : chip(`${String(oppna)} öppna`, 'warn', '!'),
     kropp, farskhetsrad([direktFarskhet(l.farskhet.signaler, idag)]));
-}
-
-function kortKoposter(companyId: string, l: Uppdragslage, idag: string): Raw {
-  const kropp = l.koposter.length === 0
-    ? tomtIKort(
-      'Ingen köpost väntar på uppdraget. Känsliga åtgärder — avsluta uppdraget, binda en kostnad, '
-      + 'ändra baselinen — bokförs aldrig automatiskt utan hamnar här först.',
-      html`<a href="/app/c/${companyId}/approvals">Öppna Att göra</a>.`,
-    )
-    : html`<ul style="margin:10px 16px 4px;padding-left:20px;font-size:13px">
-        ${l.koposter.map((k) => html`<li style="margin-bottom:3px">${getAction(k.action)?.title ?? k.action}
-          <span class="code">${k.action}</span>
-          <span class="muted" style="font-size:12.5px">${
-            k.requested_actor === 'agent' ? 'begärd av AI:t' : 'begärd av en människa'}
-            ${k.created_at.slice(0, 10)}</span></li>`)}
-      </ul>
-      <p class="muted" style="margin:2px 16px 4px;font-size:12.5px">Avgörs i
-        <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>`;
-  return faktakort('kort-koposter', 'Öppna köposter',
-    l.koposter.length === 0 ? chip('Inga', 'ok', '✓') : chip(`${String(l.koposter.length)} väntar`, 'warn', '!'),
-    kropp, farskhetsrad([direktFarskhet(l.farskhet.koposter, idag)]));
 }
 
 // --- Panelen Övrigt: anteckningsloggen (överlämning #268) -------------------
@@ -4545,8 +4436,10 @@ function lagessida(
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag/lista">← Uppdragen</a></div></div>
     ${subnav(companyId, p.project_id, 'laget')}
     ${felNotis(req)}
-    ${handgreppsband(companyId, l, idag)}
-    ${/* Fem kort, alltid alla fem, i FR-18:s ordning. Rutnätet ligger i en
+    ${/* Story 6.2: FR-18:s femte del, frågorna som kräver Davids mandat, står
+          överst och ritas av undantagsvyns fil ur samma läsvärde som MCP läser. */ ''}
+    ${mandatdel(companyId, l.varden.mandatfragor, idag)}
+    ${/* Fyra kort, alltid alla fyra, i FR-18:s ordning. Rutnätet ligger i en
           inline-stil och inte i en ny klass: överlämningen namnger `.farskhet`
           och `.subnav` som de enda nya, och husets `.panel` bär korten. */ ''}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(298px,1fr));gap:14px;align-items:start">
@@ -4554,7 +4447,6 @@ function lagessida(
       ${kortLeverabler(companyId, l, idag)}
       ${kortBedomning(companyId, l, idag)}
       ${kortSignaler(companyId, l, idag)}
-      ${kortKoposter(companyId, l, idag)}
     </div>
     ${ovrigtpanelen(companyId, l, anteckningar, idag)}
     ${beslutspanelen(companyId, l, idag)}

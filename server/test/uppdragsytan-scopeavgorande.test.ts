@@ -644,11 +644,18 @@ describe('K4 läsvägarna', () => {
     const l2 = await nyttUppdrag(las, 'Las L2');
     const sl = await tand(las, l2.contractId, 'läget-fras');
     const vag = `/app/c/${las.id}/projects/${l2.projectId}/laget`;
-    expect(await sida(las, vag)).toContain('Scopesignal: ”läget-fras”');
+    // Story 6.2: handgreppsbandet är borta. Den tända signalen står som en fråga
+    // i mandatdelen, med länk till posten i undantagsvyn, och som öppen i kortet.
+    const del = (html: string) => html.split('aria-labelledby="handgrepp"')[1]?.split('</section>')[0] ?? '';
+    const signalkort = (html: string) => html.split('id="kort-signaler"')[1]?.split('</section>')[0] ?? '';
+    const fore = await sida(las, vag);
+    expect(del(fore)).toContain(`/uppdrag#post-${sl}"`);
+    expect(signalkort(fore)).toContain('”läget-fras”');
     await ok(las, 'avgor_scopesignal', { signal_id: sl, avgjord: 'innanfor' });
     const efter = await sida(las, vag);
-    expect(efter).not.toContain('Scopesignal: ”läget-fras”');
-    const kort = efter.split('id="kort-signaler"')[1]?.split('</section>')[0] ?? '';
+    expect(del(efter)).not.toContain(`#post-${sl}`);
+    const kort = signalkort(efter);
+    expect(kort).not.toContain('”läget-fras”');
     expect(kort).toContain('avgjorda står i historiken');
   });
 

@@ -58,6 +58,7 @@ import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognospla
 import { uppdragsnivansTimlage, type Troskelutfall, type Uppdragstimlage } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
+import { lasUndantag, uppdragetsMandat, type Uppdragsmandat } from './uppdragUndantag.js';
 import type { Actor } from '../http/middleware/authenticate.js';
 
 export interface LasUppdragslageInput {
@@ -244,6 +245,11 @@ export interface Uppdragsvarden {
   avtal: Avtalsvarden[];
   koposter: Lasvarde<Kopostrad[]>;
   beslut: Lasvarde<Beslutslage>;
+  /**
+   * Story 6.2 (FR-18, FR-40): frågorna som kräver Davids mandat, exakt
+   * undantagsvyns poster för uppdraget, med undantagets egen lästid.
+   */
+  mandatfragor: Lasvarde<Uppdragsmandat>;
 }
 
 export interface Uppdragslage {
@@ -659,6 +665,10 @@ export async function lasUppdragslage(
   const koposter: Kopostrad[] = (await listApprovals(client, companyId, 'pending')).filter(horHit).map((a) => ({
     id: a.id, action: a.action, requested_actor: a.requested_actor, created_at: a.created_at.toISOString(),
   }));
+  // Story 6.2: frågorna kommer bara ur undantagsvyns läsväg, utan fönster och
+  // med samma stängda lista av postslag, avgränsade till uppdraget. Köposterna
+  // ovan står kvar i svaret men är ingen fråga till David.
+  const undantag = await lasUndantag(client, companyId);
 
   return {
     uppdrag: {
@@ -689,6 +699,8 @@ export async function lasUppdragslage(
       avtal: varden,
       koposter: last(koposter, KALLA_REDOVISNING, lastNar),
       beslut: last(beslut, KALLA_REDOVISNING, lastNar),
+      mandatfragor: last(uppdragetsMandat(undantag, { project_id: uppdrag.id, status: uppdrag.status }),
+        KALLA_REDOVISNING, undantag.last_nar),
     },
   };
 }

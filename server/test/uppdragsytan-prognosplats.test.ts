@@ -273,7 +273,7 @@ describe('PF2 och PF4 läsvägarna och sidorna (riggen P)', () => {
     const ko = await api.get(`/api/companies/${companyId}/approvals?status=pending`).set(auth());
     expect(ko.status, JSON.stringify(ko.body)).toBe(200);
     expect(ko.body.approvals).toEqual([]);
-    expect(await sidan(U1, 'laget')).toContain('Inget väntar');
+    expect(await sidan(U1, 'laget')).not.toContain('/uppdrag#post-');
     for (const u of [U1, U2, U3, U4]) {
       for (const yta of ['pengarna', 'laget'] as const) {
         const plats = platsen(await sidan(u, yta), u.contractId);

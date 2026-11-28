@@ -484,7 +484,7 @@ describe('LV4 Lägets läsväg bär varden', () => {
   it('LV4 a svaret har varden med avtalen i samma ordning', async () => {
     const l = await ok('las_uppdragslage', { project_id: R.projekt }) as unknown as Uppdragslage;
     expect(Object.keys(l)).toEqual(['uppdrag', 'avtal', 'koposter', 'beslut', 'farskhet', 'varden']);
-    expect(Object.keys(l.varden)).toEqual(['avtal', 'koposter', 'beslut']);
+    expect(Object.keys(l.varden)).toEqual(['avtal', 'koposter', 'beslut', 'mandatfragor']);
     expect(l.varden.avtal.map((v) => v.contract_id)).toEqual(l.avtal.map((a) => a.contract_id));
   });
 

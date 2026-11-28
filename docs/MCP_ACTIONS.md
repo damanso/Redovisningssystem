@@ -2372,6 +2372,7 @@ inloggning visar scopelinjen (NFR-9).
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
   skillnaden i stället för att visa ett gammalt värde som färskt.
 - Källa och lästid per värde (Story 6.1, FR-35): svaret bär också `varden: { avtal, koposter, beslut }`, där varje avtal har `{ contract_id, forbrukning, troskel, leverabler, nasta_leverans, prognos, bedomning, oppen_begaran, signaler, scopelinje, matt, rytm }` som `Lasvarde`. Tröskeln bär sitt eget avtals cacherad och är oläst utan lästid när svepet inte har kört. `farskhet` står kvar oförändrad.
+- Uppdragets mandatfrågor (Story 6.2, FR-18, FR-40): svaret bär också `varden: { avtal, koposter, beslut, mandatfragor }`, där `mandatfragor` är ett `Lasvarde` med värdet `{ utfall, poster, ofullstandig_tackning, aldsta_tackning, last_nar }`. Posterna är exakt undantagsvyns poster för uppdraget, i läsvägens ordning, ur `lasUndantag` genom `uppdragetsMandat`. Utfallet är poster, verifierat tomt, ofullständigt eller avslutat. `koposter` står kvar oförändrad men är ingen fråga till David och ritas inte.
 - **Köfiltret ligger i tjänsten.** Kön är hela bolagets; en post hör till
   uppdraget när dess indata namnger `project_id`, ett av avtalen (`contract_id`)
   eller en av avtalsdelarnas versioner (`contract_part_id`, vägen `binda_kostnad`
@@ -2379,12 +2380,13 @@ inloggning visar scopelinjen (NFR-9).
 
 **Vyerna:** `/app/c/:id/projects/:projectId/laget` (knappen **Läget** först i
 uppdragets knappband) och listan `/app/c/:id/uppdrag`. Läget bär
-handgreppsbandet överst — köposter, öppna signaler och svepets statusförslag,
-byggt med husets `.ai-card`, chip och knappband, med en rad per handgrepp som
-leder dit svaret ges — och därunder FR-18:s fem faktakort, alltid alla fem, var
-och ett med sin `.farskhet`-rad. Saknar ett kort sin innehållsdel renderas det
+överst uppdragets frågor som kräver Davids mandat, ur `varden.mandatfragor`, med
+en länk per fråga till posten i undantagsvyn där den avgörs, och därunder FR-18:s
+fyra faktakort, alltid alla fyra, var och ett med sin `.farskhet`-rad. Saknar ett
+kort sin innehållsdel renderas det
 ändå, med en mening om vad tomheten betyder och en väg vidare (FR-22) — aldrig en
-naken nolla. Tomt band byter från `.ai-card` till `.panel`: ockran betyder
+naken nolla. Utan frågor står delen som `.panel` med `.tomt`: verifierat tomt,
+ofullständigt med källan namngiven, eller avslutat. Ockran betyder
 "väntar på en människa". Sidan bär `.subnav` till uppdragets undersidor
 (`aria-current="page"` på exakt en post). Listan visar ett uppdrag per rad
 (projekt med minst ett avtal, härlett ur `listContracts`) med läge ur den

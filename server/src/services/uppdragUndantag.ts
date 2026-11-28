@@ -642,6 +642,36 @@ export function bedomUndantag(
     aldsta_tackning: tider.length === 0 || tider.some((t) => t === null) ? null : (tider as string[]).sort()[0]! };
 }
 
+/** Undantagsvyns svar avgränsat till ett uppdrag (Story 6.2, FR-18, FR-40). */
+export interface Uppdragsmandat {
+  utfall: 'poster' | 'verifierat_tomt' | 'ofullstandigt' | 'avslutat';
+  poster: Undantagspost[];
+  ofullstandig_tackning: Tackningspost[];
+  aldsta_tackning: string | null;
+  last_nar: string;
+}
+
+/**
+ * Ren: läsvägens poster och täckning för ETT uppdrag, med samma utfallsregel
+ * som hela vyn. Ett avslutat uppdrag har inga frågor, eftersom läsvägen redan
+ * hoppar över dess köposter, signaler och begäranden. En post vars uppdrag inte
+ * är läst hör inte hit; den står kvar i undantagsvyn. Utan en enda täckningsrad
+ * är uppdraget oläst, och "inget kräver ditt mandat" kräver läst täckning (FR-22).
+ * Nycklarna skrivs i typens ordning; svaret ur `bedomUndantag` sprids aldrig.
+ */
+export function uppdragetsMandat(u: Undantag, uppdrag: { project_id: string; status: string }): Uppdragsmandat {
+  if (uppdrag.status !== 'active') {
+    return { utfall: 'avslutat', poster: [], ofullstandig_tackning: [], aldsta_tackning: null, last_nar: u.last_nar };
+  }
+  const poster = u.poster.filter((p) => p.uppdrag.varde?.project_id === uppdrag.project_id);
+  const tackning = u.tackning.filter((t) => t.project_id === uppdrag.project_id);
+  if (tackning.length === 0) {
+    return { utfall: 'ofullstandigt', poster, ofullstandig_tackning: [], aldsta_tackning: null, last_nar: u.last_nar };
+  }
+  const b = bedomUndantag(poster, tackning);
+  return { utfall: b.utfall, poster, ofullstandig_tackning: b.ofullstandig_tackning, aldsta_tackning: b.aldsta_tackning, last_nar: u.last_nar };
+}
+
 /** Bara stabila referenser läses, aldrig innehåll eller en extern adress. */
 async function referens(client: PoolClient, companyId: string, id: unknown): Promise<Kallreferens[]> {
   const refId = uuid(id);

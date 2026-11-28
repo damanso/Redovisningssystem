@@ -18,6 +18,7 @@ import { LEVERABELLAGEN, type Uppdragslage } from '../src/services/uppdragLage.j
 import { LEVERANSKONTRAKT_NVR001 } from './fixtures/leveranskontrakt-nvr-001.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
 import { app, api, createCompany, createFiscalYear, registerUser, type TestUser } from './helpers.js';
+import { MANDATDEL_RUBRIK } from '../src/http/view/undantagsvyn.js';
 
 const PASSWORD = 'mycket-hemligt-losen-123';
 const SIGNERAT = '2026-09-03';
@@ -298,7 +299,7 @@ describe('(b) tenantgränsen', () => {
 // (c) TOMFALLET — fem kort, tomtext, och ingen naken nolla (KRAV-8, KRAV-9c)
 // ---------------------------------------------------------------------------
 
-const KORTEN = ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler', 'kort-koposter'];
+const KORTEN = ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler'];
 
 describe('(c) tomfallet', () => {
   it('nollsökaren fäller en insmugen nolla — annars mäter den ingenting', () => {
@@ -309,7 +310,7 @@ describe('(c) tomfallet', () => {
     expect(nakenNolla('<p>10 h 30 min av 430 h</p>')).toBe(false);
   });
 
-  it('alla fem korten finns, bär tomtext och saknar naken nolla', async () => {
+  it('alla fyra korten finns, bär tomtext och saknar naken nolla', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${tomtProjekt}/laget`);
     for (const id of KORTEN) {
       const k = kort(html, id);
@@ -320,10 +321,10 @@ describe('(c) tomfallet', () => {
     // Tomheten FÖRKLARAS, med en väg vidare — `.tomt`-grammatiken (FR-22).
     expect(kort(html, 'kort-ram')).toContain('/kontraktet');
     expect(kort(html, 'kort-leverabler')).toContain('inget leverabelregister ännu');
-    expect(kort(html, 'kort-bedomning')).toContain('Ingen bedömning är satt');
+    expect(kort(html, 'kort-bedomning')).toContain('Ingen bedömning satt');
     expect(kort(html, 'kort-bedomning')).toContain('/bedomning');
     expect(kort(html, 'kort-signaler')).toContain('Ingen scopesignal har tänts');
-    expect(kort(html, 'kort-koposter')).toContain('Ingen köpost väntar');
+    expect(kort(html, 'handgrepp')).toContain('Underlaget är ofullständigt');
     // Bedömningen får ALDRIG en grön förvald etikett när den saknas.
     expect(kort(html, 'kort-bedomning')).toContain('Saknad');
     expect(kort(html, 'kort-bedomning')).not.toContain('chip--ok');
@@ -331,8 +332,8 @@ describe('(c) tomfallet', () => {
 
   it('tomt band förklarar tomheten och bär ockran bara när något väntar', async () => {
     const tomt = await sida(`/app/c/${companyId}/projects/${tomtProjekt}/laget`);
-    expect(tomt).toContain('Inget väntar');
-    expect(tomt).toContain('Kön töms bara av medvetna beslut');
+    expect(tomt).toContain('Underlaget är ofullständigt');
+    expect(tomt).not.toContain('#post-');
     // Ockran betyder "väntar på en människa". Väntar ingenting bär bandet den
     // inte — och den enda `.ai-card` som annars fanns är bandet självt.
     expect(tomt).not.toContain('class="ai-card"');
@@ -383,22 +384,22 @@ describe('(d) uppdragslistan', () => {
 describe('(e) Läget som yta', () => {
   it('bandet visar det som väntar på en människa och leder dit svaret ges', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${projektId}/laget`);
-    expect(html).toContain('Väntar på dig');
-    // Köposterna, med vägen till Att göra.
-    expect(html).toContain('Avsluta uppdraget');
-    expect(html).toContain(`/app/c/${companyId}/approvals`);
-    // Den öppna signalen, med vägen till signalsidan.
-    expect(html).toContain(SIGNALFRAS);
-    expect(html).toContain(`/app/c/${companyId}/projects/${projektId}/signaler`);
+    // Story 6.2: mandatdelen bär undantagsvyns poster för uppdraget — de två
+    // köposterna och signalen — med en länk per fråga till posten där den avgörs.
+    const del = kort(html, 'handgrepp');
+    expect(del).toContain(MANDATDEL_RUBRIK);
+    for (const etikett of ['Baselineändring', 'Avslut', 'Scopeavgörande']) expect(del).toContain(etikett);
+    expect(del.match(new RegExp(`href="/app/c/${companyId}/uppdrag#post-`, 'g')) ?? []).toHaveLength(3);
+    expect(del).not.toContain('/approvals');
   });
 
-  it('fem kort med var sin farskhetsrad, och tröskeln daterad av svepet', async () => {
+  it('fyra kort med var sin farskhetsrad, och tröskeln daterad av svepet', async () => {
     const html = await sida(`/app/c/${companyId}/projects/${projektId}/laget`);
     for (const id of KORTEN) expect(kort(html, id)).toContain('class="farskhet"');
     // En per innehållsdel: fem kort, panelen Beslut, scopelinjens panel (Story
     // 2.6) och panelen Uppföljning och rytm (Story 2.3) för uppdragets enda
     // avtal, aldrig en sidstämpel. v1 saknar del 3, så panelen har bara sin egen.
-    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(10);
+    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(9);
     expect(html.split('id="beslut"')[1]!.split('</section>')[0]!.match(/class="farskhet"/g) ?? []).toHaveLength(1);
 
     const ram = kort(html, 'kort-ram');

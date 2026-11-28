@@ -109,6 +109,31 @@ export function bedomningsperiod(rytm: Bedomningsrytm, idag: string): Bedomnings
   return { lage: utfall.lage, start: null, slut: null };
 }
 
+/** Story 6.2: tomläget för en period utan bedömning — aldrig grönt och aldrig ett ärvt läge. */
+export const INGEN_BEDOMNING_SATT = 'Ingen bedömning satt';
+
+/** Gäller den senaste bedömningen rytmens innevarande period? Bara `ingen` bär perioderna. */
+export type Periodensbedomning =
+  | { lage: 'satt' }
+  | { lage: 'ingen'; period: { start: string; slut: string } | null; tidigare: { start: string; slut: string } | null };
+
+/**
+ * Story 6.2 (FR-17, FR-18): ett läge ärvs aldrig tyst. En bedömning gäller
+ * innevarande period när den når in i den; en äldre nämns bara som tidigare
+ * period, aldrig med sitt läge. Utan räknad period går det inte att säga att
+ * bedömningen är gammal, så den senaste står. Datumen jämförs som text i formen
+ * `YYYY-MM-DD`. Ren: dagen är redan räknad i utfallet, och indatat muteras inte.
+ */
+export function periodensBedomning(
+  b: { period_start: string; period_slut: string } | null, utfall: Rytmutfall,
+): Periodensbedomning {
+  const period = utfall.lage === 'raknad' ? { start: utfall.period.start, slut: utfall.period.slut } : null;
+  if (b === null) return { lage: 'ingen', period, tidigare: null };
+  if (period === null) return { lage: 'satt' };
+  if (b.period_slut >= period.start) return { lage: 'satt' };
+  return { lage: 'ingen', period, tidigare: { start: b.period_start, slut: b.period_slut } };
+}
+
 /**
  * Ankarets källa som den lagras i `bedomning_ankare_kalla`. Davids uppgift bär
  * datumet han lämnade den; en kalenderreferens bär sitt id, aldrig innehållet.

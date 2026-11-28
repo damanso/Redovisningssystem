@@ -341,7 +341,7 @@ describe('Story 4.3: Läget', () => {
     const band = v.html.slice(start, v.html.indexOf('</section>', start));
     expect(band).not.toContain(NASTA_TEXT.rubrik);
     expect(band).not.toContain('>L1<');
-    for (const id of ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler', 'kort-koposter']) expect(v.html).toContain(`aria-labelledby="${id}"`);
+    for (const id of ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler']) expect(v.html).toContain(`aria-labelledby="${id}"`);
   });
   it('4.3-V5: saknad mottagarpart och allt överlämnat får tydliga tomlägen', async () => {
     const saknad = await laget(s);

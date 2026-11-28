@@ -1222,7 +1222,7 @@ describe('V: Läget', () => {
   it('V3 (regression) de fem korten och scopelinjens panel står kvar', async () => {
     const u = await v3Uppdrag(companyId, 'Läget V3');
     const html = await sida(`/app/c/${companyId}/projects/${u.projekt}/laget`);
-    for (const id of ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler', 'kort-koposter']) {
+    for (const id of ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler']) {
       expect(html, id).toContain(`id="${id}"`);
     }
     expect(html).toContain(`aria-labelledby="scope-${u.avtal}"`);

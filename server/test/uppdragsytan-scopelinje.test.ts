@@ -448,7 +448,7 @@ const SAKNAS = chip('Saknas', 'warn', '!').value;
 const SAKNADMENING = 'Saknas i kontraktet. Det gissas inte här — en ny kontraktsversion fyller det.';
 const UTKASTMENING = 'Avtalet är ett utkast. Scopelinjen läses in ur leveranskontraktets del 5 först när kontraktet är fryst och baselinen godkänd — till dess står den i handlingen.';
 const GRUPPERNA = ['Innanför uppdraget', 'Utanför uppdraget', 'Fraser att lyssna efter', 'När en signal tänds'];
-const KORTEN = ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler', 'kort-koposter'];
+const KORTEN = ['kort-ram', 'kort-leverabler', 'kort-bedomning', 'kort-signaler'];
 
 const antal = (text: string, nal: string): number => text.split(nal).length - 1;
 
