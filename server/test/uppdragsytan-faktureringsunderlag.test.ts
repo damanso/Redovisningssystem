@@ -232,7 +232,7 @@ function skrivbrister(karta: Map<string, string>): string[] {
   const uppdateringar = [...karta].flatMap(([f, t]) => [...t.matchAll(/\bUPDATE\s+uppdrag_leverabel\s/gi)].map(() => f));
   const infogningar = [...karta].flatMap(([f, t]) => [...t.matchAll(/\bINSERT\s+INTO\s+uppdrag_leverabel\s([\s\S]*?)\bVALUES\b/gi)].map((m) => ({ fil: f, kolumner: m[1]! })));
   const brister: string[] = [];
-  if (uppdateringar.length !== 2 || uppdateringar.some((f) => f !== 'services/uppdragStatus.ts')) brister.push('annan statusuppdatering');
+  if (uppdateringar.length !== 3 || uppdateringar.some((f) => f !== 'services/uppdragStatus.ts')) brister.push('annan statusuppdatering');
   if (infogningar.length !== 1 || infogningar[0]?.fil !== 'services/uppdragImport.ts' || /\bstatus\b/i.test(infogningar[0]?.kolumner ?? '')) brister.push('annan registerimport');
   if ((karta.get('services/uppdragStatus.ts')!.match(/'godkand'/g) ?? []).length !== 1) brister.push('annat godkännandesteg');
   return brister;

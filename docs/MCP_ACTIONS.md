@@ -2132,6 +2132,65 @@ hur färdigt det än var.
 - **Vyn:** stegen görs på leverabelns kort i Leveranserna (S10.9). Godkänn
   visar avtalets godkännare och godkännandeform före kanalvalet.
 
+### Rutinvägen (Story 14.1)
+
+Den fjärde skrivvägen för leverabelns status (FR-13, Davids svar 2026-10-07:
+«Det räcker enligt din rekommendation»). De tre människospärrade åtgärderna ovan
+står kvar oförändrade.
+
+- **registrera_rutinstatus** (write, utan människospärr och utan kö). Anropas av
+  Hermes med en källhändelse (Story 14.2). Indata: avtalets id, leverabelns kod
+  och källhändelsen. Schemat är strikt och har inget fält för läge, status eller
+  mål: målet läses ur rutinregelns steg för källhändelsens typ, och påbörjandet
+  och returen har ingen källhändelse.
+- **Två källhändelser.** `transmittal` bär handlingen (mejlets Message-ID eller
+  dokumentets Drive-id, med kontot den lästes ur) och dagen, och ger `pagar →
+  levererad`. `godkannande` bär dessutom kanalen (telefon, mejl, möte eller
+  protokoll) och avsändaren, och ger `levererad → godkand`. Handlingen prövas
+  redan i schemat: en url eller sökväg ger 400 också när regeln hade fällt
+  källhändelsen.
+- **Regeln** bor bara i rutinregeln (`server/src/lib/rutinregel.ts`) och
+  medger bytet när leverabeln står i stegets utgångsläge, avtalet har en
+  godkännare, ingen scopesignal i avtalet är obesvarad och svepets
+  avvikelseindikator är läst och inte tänd för leverabeln eller en nivå över
+  den. Godkännandets avsändare ska efter normalisering (trimmad, blanktecken
+  sammanslagna, gemener) vara exakt avtalets godkännare eller eskalering, utan
+  delsträngar och utan namnlikhet. Sex skäl, i den här ordningen: fel
+  utgångsläge (fel_utgangslage), saknad mottagare (saknad_mottagare), obehörig
+  godkännare (obehorig_godkannare), tänd signal (signal_tand), tänd indikator
+  (indikator_tand) och oläst indikator (indikator_olast).
+- **Tre utfall.** **registrerad**: en händelse, statusen, handlingens referens
+  (om den är ny) och registerkopians köpost, i samma transaktion.
+  **redan_registrerad**: samma källhändelse fanns redan för leverabeln, och
+  ingenting skrivs. `falld`: svaret bär leverabelns kod, dess läge och regelns skäl, och
+  ingenting skrivs (ingen händelse, ingen status, ingen referens, ingen
+  registerkopia, ingen köpost och ingen cache). Det fällda blir aldrig ett
+  tyst byte. Att det blir ett beslutsförslag till David med ja och nej är
+  Story 14.4.
+- **Raden tillskrivs aldrig någon.** Den bär `registrerad_av = 'system'` och
+  bekräftaren NULL. Mottagaren är avtalets godkännare, som på människovägen.
+  Godkännandets avsändare står som källuppgift i källans aktör
+  (kallhandelse_aktor), aldrig som bekräftare och aldrig som mottagare.
+  Händelsens dag är källhändelsens dag; registreringens tid står i radens
+  skapelsetid.
+- **Datumfönstret är människovägens:** en dag i framtiden ger 400
+  framtida_datum, en dag före avtalets signering 400 fore_avtalet, med samma
+  texter som påbörjandet och godkännandet. Det är tekniska fel i indatat och
+  blir aldrig förslag till David.
+- **Idempotent.** Källhändelsens nyckel är `sort:kanoniskt id`, till exempel
+  `mejl:godkant-L2@nvr.se`. Samma nyckel för samma leverabel och typ ger
+  redan_registrerad utan skrivning, oavsett vem som registrerade den förra raden.
+  Ett unikt index är sista försvarslinjen.
+- **Migration 0101** (additiv, idempotent): händelsetabellen får fyra kolumner,
+  registrerad_av (manniska eller system, standard manniska), kallhandelse_typ
+  (transmittal eller godkannande), kallhandelse_ref och kallhandelse_aktor. Fyra
+  villkor: värdet i registrerad_av, källhändelsens typ och de två som bär formen.
+  Registreringens villkor tillåter en bekräftare som är NULL bara för system, med
+  källhändelse och referens, och aktörens villkor kräver källans aktör om och
+  endast om källhändelsen är ett godkännande. Det unika indexet ligger på
+  leverabel, typ och nyckel. Befintliga rader får manniska; inga rader skrivs om,
+  och rättigheterna är orörda.
+
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
 - `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`, valfritt `forslagsunderlag` (bara svepet köar det; annars 409 `koas_av_svepet`). Binder ett

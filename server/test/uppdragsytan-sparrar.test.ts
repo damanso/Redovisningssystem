@@ -403,7 +403,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
 
   it('uppdrag_leverabel_handelse: INSERT fälls på avslutat, går igenom på öppet', async () => {
     await expect(withAdmin((c) => c.query(
-      "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till) VALUES ($1, $2, $3, 'pagar')",
+      "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, bekraftat_av) VALUES ($1, $2, $3, 'pagar', 'riggning')",
       [companyId, stangtAvtal, leverabelStangt],
     ))).rejects.toThrow(/uppdraget är avslutat/);
 
@@ -412,7 +412,7 @@ describe('vagrar_skrivning_pa_avslutat', () => {
       [companyId, oppetAvtal],
     )).rows[0]!.id);
     await expect(withAdmin((c) => c.query(
-      "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till) VALUES ($1, $2, $3, 'pagar')",
+      "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, bekraftat_av) VALUES ($1, $2, $3, 'pagar', 'riggning')",
       [companyId, oppetAvtal, oppen],
     ))).resolves.toBeTruthy();
   });
