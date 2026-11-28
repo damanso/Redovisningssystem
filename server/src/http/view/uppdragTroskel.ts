@@ -9,8 +9,8 @@ import {
 } from '../../lib/troskel.js';
 import { hhmm } from '../../lib/duration.js';
 import type { Lasvarde } from '../../lib/lasvarde.js';
-import { farskhetstid, html, kronor, type Raw } from './html.js';
-import { RAM_SAKNAS } from './uppdragForbrukning.js';
+import { html, kronor, type Raw } from './html.js';
+import { RAM_SAKNAS, svepvardesFarskhet } from './uppdragForbrukning.js';
 
 /** Ett cachevärde skrivet före Story 5.3 saknar ramläget tills nästa svep. */
 export const RAMLAGE_EFTER_SVEP = 'Ramläget per nivå står här efter nästa svep.';
@@ -24,15 +24,11 @@ export const TROSKEL_KUNDE_INTE = 'tröskeln kunde inte läsas ur svepet · sena
  * Tröskelns del i färskhetsraden, ur just det avtalets cachevärde. Ett oläst
  * värde visas aldrig som läst: utan lästid har svepet inte kört, med lästid
  * kunde raden inte läsas. Med flera avtal står avtalsnamnet sist, så att
- * ingen tid kan läsas som ett annat avtals.
+ * ingen tid kan läsas som ett annat avtals. Samma skrivare som varje annat
+ * cachevärde, så att formerna ovan aldrig kan glida isär från prognosens.
  */
 export function troskelnsFarskhet(v: Lasvarde<unknown>, idag: string, avtalsnamn: string | null): string {
-  const text = v.lage === 'last' && v.last_nar !== null
-    ? `${TROSKEL_LAST} ${farskhetstid(v.last_nar, idag)}`
-    : v.last_nar === null
-      ? TROSKEL_SVEPT_EJ
-      : `${TROSKEL_KUNDE_INTE} ${farskhetstid(v.last_nar, idag)}`;
-  return avtalsnamn === null ? text : `${text} — ${avtalsnamn}`;
+  return svepvardesFarskhet(v, 'tröskeln', idag, avtalsnamn);
 }
 
 /** Decimalkomma utan utfyllnad: 5 blir 5, 5.25 blir 5,25. */

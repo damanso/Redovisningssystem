@@ -27,17 +27,48 @@ export const EJ_HARLEDD_TEXT: Record<EjHarleddOrsak, (p: EjHarledd) => string> =
   ingen_taxa: (p) => ingenTaxaText(p.minuter ?? 0),
 };
 
-/** Story 6.1: ett läst värdes färskhetsrad; ett oläst värde ritas med `olastEllerSaknas`. */
+/** Story 6.1: meningen för ett oläst eller saknat värde, skriven på ett enda ställe. */
+function olastmening(v: Lasvarde<unknown>, namn: string, idag: string): string {
+  const kalla = v.kalla === 'redovisning' ? 'redovisningen' : v.kalla;
+  const tid = v.last_nar === null ? 'aldrig' : farskhetstid(v.last_nar, idag);
+  return v.lage === 'olast'
+    ? `${namn} kunde inte läsas ur ${kalla} · senast läst ${tid}`
+    : `${namn} saknas i underlaget från ${kalla} · senast läst ${tid}`;
+}
+
+/**
+ * Story 6.1: en del i färskhetsraden för ett läsvärde. Formen följer läget,
+ * aldrig bara lästiden: ett värde som inte är läst sägs aldrig läst, också
+ * när det har en lästid (FR-22).
+ */
+export function lasvardesdel(v: Lasvarde<unknown>, namn: string, idag: string): string {
+  if (v.lage !== 'last') return olastmening(v, namn, idag);
+  return v.last_nar === null ? `${namn}: lästid saknas` : `${namn} ${direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)}`;
+}
+
+/** Story 6.1: ett läsvärdes färskhetsrad, med en enda del. */
 export function lasvardesFarskhet(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
-  return farskhetsrad([v.last_nar === null ? `${namn}: lästid saknas` : `${namn} ${direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)}`]);
+  return farskhetsrad([lasvardesdel(v, namn, idag)]);
 }
 
 /** Story 6.1: den enda texten för ett oläst eller saknat värde; ingen länk, knapp eller formulär. */
 export function olastEllerSaknas(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
-  const kalla = v.kalla === 'redovisning' ? 'redovisningen' : v.kalla;
-  return v.lage === 'olast'
-    ? html`<p class="tomt" data-falt="olast">${namn} kunde inte läsas ur ${kalla} · senast läst ${v.last_nar === null ? 'aldrig' : farskhetstid(v.last_nar, idag)}</p>`
-    : html`<p class="tomt" data-falt="saknas">${namn} saknas i underlaget från ${kalla} · senast läst ${v.last_nar === null ? 'aldrig' : farskhetstid(v.last_nar, idag)}</p>`;
+  return html`<p class="tomt" data-falt="${v.lage === 'olast' ? 'olast' : 'saknas'}">${olastmening(v, namn, idag)}</p>`;
+}
+
+/**
+ * Story 6.1: en del i färskhetsraden för ett värde ur svepets cache, i tre
+ * fasta former som följer läget. Utan lästid har svepet inte kört; med lästid
+ * men inte läst kunde raden inte läsas, och den senaste tiden står kvar. Bara
+ * ett läst värde sägs läst av svepet. Med flera avtal står avtalsnamnet sist.
+ */
+export function svepvardesFarskhet(v: Lasvarde<unknown>, namn: string, idag: string, avtalsnamn: string | null): string {
+  const text = v.lage === 'last' && v.last_nar !== null
+    ? `${namn} läst av svepet ${farskhetstid(v.last_nar, idag)}`
+    : v.last_nar === null
+      ? `${namn}: svepet har inte kört för uppdraget`
+      : `${namn} kunde inte läsas ur svepet · senast läst ${farskhetstid(v.last_nar, idag)}`;
+  return avtalsnamn === null ? text : `${text} — ${avtalsnamn}`;
 }
 
 function nivarad(n: Nivaforbrukning, etikett: string): Raw {

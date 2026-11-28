@@ -153,6 +153,28 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Omtag: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
+  Granskningens fyra fynd (AC4 och AC6 på Pengarna) var samma felklass: en
+  färskhetstext som avgör «läst» av lästiden i stället för läget. Klassen är
+  stängd med en väg in. Varje färskhetsdel för ett läsvärde skrivs nu av
+  `lasvardesdel` (direkta värden; `lasvardesFarskhet` bygger på den) eller
+  `svepvardesFarskhet` (cachevärden, tre fasta former), som väljer form efter
+  `lage`. `troskelnsFarskhet` är samma skrivare med namnet tröskeln, och
+  routes.ts skriver aldrig svepets färskhet själv. Pengarnas tröskel är nu
+  läsvärdet `troskel` ur `cachevarde`, så en rad som inte bär behåller sin
+  tid och sägs oläst («kunde inte läsas ur svepet · senast läst»), aldrig
+  «svepet har inte kört». Rampanelens prognosdel säger detsamma när kalendern
+  inte lästes. `troskellarm` härleds ur `troskel` och står kvar. Ingen
+  migration, rutt, åtgärd eller beroende, och inget MCP-svar ändrat. Prov:
+  LV2 d (varje skrivare mot fem lägen, planterad kontroll), LV6 a–e (nu också
+  Pengarna; LV6 e förbjuder svepets färskhetsord i routes.ts), N3 c (hela
+  Pengarnas rampanel) och prognosplatsprovets PF4 d omskrivet för U3 på
+  granskningens begäran. `docs/ARKITEKTUR.md` fick en mening om mekanismen.
+  Körningar: rött `npm run typecheck` (saknade `svepvardesFarskhet` och
+  `troskel`) och 8 röda fall; därefter `npm run typecheck` utan fel och hela
+  `npm test` 224 filer och 4479 prov gröna, exit 0 (1112 s). `npm run build`
+  är inte kört (kedjan nekar det).
+
 - **2026-11-28 — Bygge: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
   Varje värde i uppdragsytans tre läsvägar bär nu källa och lästid (FR-35,
   FR-23). `lasUppdragslage` och `lasKontraktsyta` har fått det additiva fältet

@@ -118,7 +118,7 @@ import { createFiscalYear, listFiscalYears } from '../../services/accounting/fis
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
-import { lasvardesFarskhet, nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
+import { lasvardesdel, lasvardesFarskhet, nivapanel, ofordeladUppdrag, svepvardesFarskhet } from './uppdragForbrukning.js';
 import { golvmarkering, troskelnsFarskhet, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
 import { prognosplatsHtml } from './uppdragPrognos.js';
 import { kostnadstackning } from './kostnadstackning.js';
@@ -5423,46 +5423,53 @@ function rampanel(a: Avtalspengar, bas: string, idag: string): Raw {
     <div class="panel__body">
       ${rambilder(a).map((b) => ramblock(b))}
       <div style="padding:4px 16px 4px">${prognosplatsHtml(a.prognos, { bas, contractId: a.contract_id, idag })}</div>
+      ${/* Story 6.1: båda delarna följer läget, aldrig bara lästiden — en
+            oläst kalender sägs oläst, med svepets tid (FR-22). */ ''}
       ${farskhetsrad([
-        `ramen ${direktFarskhet({ kalla: a.ramvarde.kalla, last_nar: a.ramvarde.last_nar! }, idag)}`,
-        a.prognos.last_nar === null
-          ? 'prognosen: svepet har inte kört för uppdraget'
-          : `prognosen läst av svepet ${farskhetstid(a.prognos.last_nar, idag)}`,
+        lasvardesdel(a.ramvarde, 'ramen', idag),
+        svepvardesFarskhet(a.prognos, 'prognosen', idag, null),
       ])}
     </div>
   </section>`;
 }
 
-/** Tröskellarmet ur cachen — samma larmtext som Läget, aldrig omräknat. */
+/**
+ * Tröskellarmet ur cachen — samma larmtext som Läget, aldrig omräknat.
+ * Story 6.1: panelen läser tröskelns läsvärde, så att ett svep som inte har
+ * kört och en rad som inte bär aldrig blir samma sak, och bara ett läst värde
+ * ritas som ett utfall (FR-22).
+ */
 function troskelpanel(a: Avtalspengar, idag: string): Raw {
   const id = `troskel-${a.contract_id}`;
-  const larm = a.troskellarm?.varde.larm ?? [];
+  const t = a.troskel;
+  const utfall = t.lage === 'last' ? t.varde : null;
+  const larm = utfall?.larm ?? [];
   return html`<section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">Tröskeln</h2>${
-      a.troskellarm === null
+      utfall === null
         ? chip('Inte läst', 'muted', '○')
         : (larm.length === 0
           ? chip('Ingen tröskel passerad', 'ok', '✓')
           : chip(larm.length === 1 ? '1 tröskel passerad' : `${String(larm.length)} trösklar passerade`, 'warn', '!'))}</div>
     <div class="panel__body">
-      ${a.troskellarm === null
-        ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Svepet har inte kört för
-            uppdraget, så inget tröskellarm är läst. Tomt betyder här "vi vet inte" — inte "ingen tröskel
-            passerad".</p>`
+      ${utfall === null
+        ? (t.last_nar === null
+          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Svepet har inte kört för
+              uppdraget, så inget tröskellarm är läst. Tomt betyder här "vi vet inte" — inte "ingen tröskel
+              passerad".</p>`
+          : html`<p class="tomt" data-falt="olast" style="margin:10px 16px 2px;padding:.6rem .8rem;font-size:13px">Svepets
+              tröskelrad kunde inte läsas, så inget tröskellarm visas. Att inget larm står här betyder "vi vet
+              inte", inte att avtalet ligger under sina trösklar.</p>`)
         : (larm.length === 0
           ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Ingen av avtalets trösklar är
               passerad. Trösklarna är avtalets egna och prövas av svepet, aldrig av den här sidan.</p>`
           : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
-              ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l, a.troskellarm?.varde.trosklar)}</li>`)}
+              ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l, utfall.trosklar)}</li>`)}
             </ul>`)}
-      ${a.troskellarm === null
+      ${utfall === null
         ? ''
-        : html`${troskelregel(a.troskellarm.varde.trosklar)}${utanEgenRamLista(a.troskellarm.varde.utan_egen_ram)}`}
-      ${farskhetsrad([
-        a.troskellarm === null
-          ? 'tröskeln: svepet har inte kört för uppdraget'
-          : `tröskeln läst av svepet ${farskhetstid(a.troskellarm.farskhet.last_nar, idag)}`,
-      ])}
+        : html`${troskelregel(utfall.trosklar)}${utanEgenRamLista(utfall.utan_egen_ram)}`}
+      ${farskhetsrad([troskelnsFarskhet(t, idag, null)])}
     </div>
   </section>`;
 }
@@ -5480,8 +5487,10 @@ function beloppForKostnad(k: { status: string; total_ore: number }): Raw {
 function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
   const obundna = a.obundna_kostnader.varde ?? [];
   const bundna = a.kostnader.varde ?? [];
-  const lastText = (v: { kalla: string; last_nar: string | null }): string => v.last_nar === null
-    ? 'lästid saknas' : direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag);
+  // Story 6.1: läget avgör, aldrig bara lästiden (FR-22).
+  const lastText = (v: Lasvarde<unknown>): string => (v.lage !== 'last'
+    ? 'kunde inte läsas'
+    : (v.last_nar === null ? 'lästid saknas' : direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)));
   if (bundna.length === 0 && obundna.length === 0) {
     return html`<p style="margin:14px 0 0;font-size:14px"><strong>Ingen kostnad är bunden till avtalet.</strong>
       En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, efter ditt godkännande — aldrig på den här sidan.
@@ -5507,10 +5516,10 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
         <td>${chip('Obunden', 'muted', '○')}</td>
         <td class="num">${beloppForKostnad(k)}</td><td>${lastText(a.obundna_kostnader)}</td></tr>`)}
       </tbody></table></div>
-    ${bundna.length > 0 ? farskhetsrad([a.kostnader.last_nar === null ? 'bundna kostnader: lästid saknas' : `bundna kostnader ${lastText(a.kostnader)}`]) : ''}
+    ${bundna.length > 0 ? lasvardesFarskhet(a.kostnader, 'bundna kostnader', idag) : ''}
     ${total ? html`<p style="margin:8px 16px">Kostnader totalt, bokfört: ${amount(total.bokfort_ore)}, varav obundet ${amount(total.varav_obundet_ore)}.
       ${total.ej_bokforda > 0 ? `${total.ej_bokforda} ${total.ej_bokforda === 1 ? 'kostnad är' : 'kostnader är'} ej bokförd${total.ej_bokforda === 1 ? '' : 'a'} och ingår inte i summan.` : ''}
-      ${a.kostnadstotal.last_nar === null ? 'Kostnadstotalen: lästid saknas' : `kostnadstotalen ${direktFarskhet({ kalla: a.kostnadstotal.kalla, last_nar: a.kostnadstotal.last_nar }, idag)}`}.</p>` : html`<p style="margin:8px 16px">Kostnadstotalen kunde inte läsas.</p>`}
+      ${lasvardesdel(a.kostnadstotal, 'kostnadstotalen', idag)}.</p>` : html`<p style="margin:8px 16px">Kostnadstotalen kunde inte läsas.</p>`}
     ${bundna.some((k) => k.oplanerad)
       // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
       // märkning, och två olika förklaringar vore två olika märkningar.
@@ -5518,9 +5527,7 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
       : ''}
     ${obundna.length > 0
       ? html`<p class="muted" style="font-size:12.5px;margin:8px 16px 0">Obunden = kostnaden är föreslagen för uppdraget, men ingen bindning till en avtalsdel är godkänd. Den ingår i uppdragets kostnader utan avtalsdel.</p>
-        ${farskhetsrad([a.obundna_kostnader.last_nar === null
-          ? 'obundna kostnader: lästid saknas'
-          : `obundna kostnader ${direktFarskhet({ kalla: a.obundna_kostnader.kalla, last_nar: a.obundna_kostnader.last_nar }, idag)}`])}`
+        ${lasvardesFarskhet(a.obundna_kostnader, 'obundna kostnader', idag)}`
       : ''}
     </div>
   </section>`;

@@ -13,7 +13,8 @@
 //     avtals tröskel ett nyare avtals lästid (LV1, LV3, LV5).
 //   * **Ett oläst värde som visas som färskt eller som noll.** En rad som inte
 //     bär, ett svep som inte kört och en Drive-pekare som aldrig verifierats är
-//     olästa, aldrig lästa (LV1, LV6, LV9, LV10, N1).
+//     olästa, aldrig lästa (LV1, LV6, LV9, LV10, N1). Varje färskhetstext följer
+//     läget och aldrig bara lästiden, på Läget och på Pengarna (LV2 d, LV6, N3).
 //   * **En yta som ringer ett grannsystem.** Redovisningen ringer aldrig ut
 //     (ADR-4). Ett nedtaget grannsystem är ett lagrat tillstånd, och ytorna
 //     håller (N0–N4).
@@ -24,9 +25,9 @@
 import { readFile } from 'node:fs/promises';
 import supertest from 'supertest';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { cachevarde, last, olast } from '../src/lib/lasvarde.js';
+import { cachevarde, last, olast, saknas, type Lasvarde } from '../src/lib/lasvarde.js';
 import { direktFarskhet, esc, farskhetsrad, farskhetstid } from '../src/http/view/html.js';
-import { lasvardesFarskhet, olastEllerSaknas } from '../src/http/view/uppdragForbrukning.js';
+import { lasvardesdel, lasvardesFarskhet, olastEllerSaknas, svepvardesFarskhet } from '../src/http/view/uppdragForbrukning.js';
 import {
   TROSKEL_KUNDE_INTE, TROSKEL_LAST, TROSKEL_SVEPT_EJ, troskelnsFarskhet,
 } from '../src/http/view/uppdragTroskel.js';
@@ -36,6 +37,7 @@ import {
 } from '../src/services/uppdragRegister.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import { pekarvarde, type Dokumentpekare, type Kontraktsyta } from '../src/services/uppdragKontrakt.js';
+import { lasUppdragspengar } from '../src/services/uppdragPengar.js';
 import { UNDERLAGET_KUNDE_INTE_LASAS } from '../src/lib/prognosplats.js';
 import { LEVERANSKONTRAKT_NVR001_V3 } from './fixtures/leveranskontrakt-nvr-001-v3.js';
 import { importeraOchGodkann } from './uppdragImportHelper.js';
@@ -113,6 +115,52 @@ describe('LV2 de delade texterna (ren)', () => {
     const igar = troskelnsFarskhet(olast('svep', '2026-10-08T06:00:00.000Z'), idag, null);
     expect(igar.startsWith(TROSKEL_KUNDE_INTE)).toBe(true);
     expect(igar).toContain('2026-10-08');
+  });
+
+  // Granskningen: en färskhetstext som avgör «läst» av lästiden i stället för
+  // läget säger att ett oläst värde är läst. Fallet prövar varje skrivare av en
+  // färskhetsdel för ett läsvärde mot varje läge, inte bara det granskade.
+  it('LV2 d varje skrivare säger läst bara om ett läst värde, i varje läge och med eller utan lästid', () => {
+    const tid = '2026-10-08T06:00:00.000Z';
+    const lagen: Array<[string, Lasvarde<unknown>]> = [
+      ['läst med lästid', last({}, 'kalender', tid)],
+      ['oläst utan lästid', olast('kalender', null)],
+      ['oläst med lästid', olast('kalender', tid)],
+      ['saknat utan lästid', saknas('kalender', null)],
+      ['saknat med lästid', saknas('kalender', tid)],
+    ];
+    const skrivare: Array<[string, (v: Lasvarde<unknown>) => string]> = [
+      ['lasvardesdel', (v) => lasvardesdel(v, 'ramen', idag)],
+      ['lasvardesFarskhet', (v) => lasvardesFarskhet(v, 'värdet', idag).value],
+      ['svepvardesFarskhet', (v) => svepvardesFarskhet(v, 'prognosen', idag, null)],
+      ['troskelnsFarskhet', (v) => troskelnsFarskhet(v, idag, null)],
+    ];
+    const LAST = / läst (?:ur|av) /;
+    for (const [namn, skriv] of skrivare) {
+      for (const [lage, v] of lagen) {
+        const text = skriv(v);
+        expect(LAST.test(text), `${namn}, ${lage}: ${text}`).toBe(v.lage === 'last');
+        if (v.lage !== 'last' && v.last_nar !== null) {
+          expect(text, `${namn}, ${lage}`).toMatch(/kunde inte läsas|saknas/);
+          expect(text, `${namn}, ${lage}`).toContain(farskhetstid(tid, idag));
+        }
+      }
+    }
+    // Svepets tre former för prognosen, och tröskelns är samma skrivare med sitt namn.
+    expect(svepvardesFarskhet(olast('kalender', tid), 'prognosen', idag, null))
+      .toBe(`prognosen kunde inte läsas ur svepet · senast läst ${farskhetstid(tid, idag)}`);
+    expect(svepvardesFarskhet(saknas('kalender', null), 'prognosen', idag, null)).toBe('prognosen: svepet har inte kört för uppdraget');
+    expect(svepvardesFarskhet(last({}, 'kalender', tid), 'prognosen', idag, 'A'))
+      .toBe(`prognosen läst av svepet ${farskhetstid(tid, idag)} — A`);
+    for (const [, v] of lagen) expect(troskelnsFarskhet(v, idag, 'A')).toBe(svepvardesFarskhet(v, 'tröskeln', idag, 'A'));
+    // Raden för ett direkt värde är delen i husets färskhetsrad, och en läst del skrivs som förut.
+    for (const [, v] of lagen) expect(lasvardesFarskhet(v, 'ramen', idag).value).toBe(farskhetsrad([lasvardesdel(v, 'ramen', idag)]).value);
+    expect(lasvardesdel(last({}, 'redovisning', tid), 'ramen', idag))
+      .toBe(`ramen ${direktFarskhet({ kalla: 'redovisning', last_nar: tid }, idag)}`);
+    // Negativ kontroll: regeln som granskningen fällde (läst så snart en lästid finns) fälls av samma påstående.
+    const lastidsregel = (v: Lasvarde<unknown>): string => (v.last_nar === null
+      ? 'prognosen: svepet har inte kört för uppdraget' : `prognosen läst av svepet ${farskhetstid(v.last_nar, idag)}`);
+    expect(LAST.test(lastidsregel(olast('kalender', tid)))).not.toBe(olast('kalender', tid).lage === 'last');
   });
 });
 
@@ -517,11 +565,18 @@ describe('LV5 tröskelns färskhet slås aldrig ihop mellan avtal', () => {
 // LV6 — ett oläst tröskelvärde visas aldrig som läst (Task 2)
 // ---------------------------------------------------------------------------
 
-describe('LV6 tröskelns tre former på Läget', () => {
+describe('LV6 tröskelns och prognosens tre former på Läget och Pengarna', () => {
   let bolag6 = '';
   let u6: Uppdrag;
   let sidaB = '';
+  let pengarB = '';
   let tidB = '';
+  const ALLA_LARMUTFALL = ['tröskel passerad', 'trösklar passerade', 'Ingen tröskel passerad'];
+  /** De tre panelerna med ett cachevärde: Lägets kort, Pengarnas tröskel och Pengarnas ram (prognosen). */
+  const troskelPanel = (html: string): string => kort(html, `troskel-${u6.avtal}`);
+  const ramPanel = (html: string): string => kort(html, `ram-${u6.avtal}`);
+  const pengar = async () => (await withTenantTransaction(user.userId, bolag6, (c) =>
+    lasUppdragspengar(c, bolag6, { project_id: u6.projekt }))).avtal[0]!;
 
   beforeAll(async () => {
     bolag6 = await nyttBolag('Oläst tröskel AB');
@@ -532,16 +587,45 @@ describe('LV6 tröskelns tre former på Läget', () => {
     const { delar } = farskhetsdelar(kort(await sida(sidvag(bolag6, u6.projekt, 'laget')), 'kort-ram'));
     expect(delar).toContain(esc(TROSKEL_SVEPT_EJ));
     expect(delar.some((d) => d.startsWith(TROSKEL_LAST))).toBe(false);
+    // Pengarna: tröskeln och prognosen säger att svepet inte har kört, och ingen del sägs läst av svepet.
+    const html = await sida(sidvag(bolag6, u6.projekt, 'pengarna'));
+    expect(farskhetsdelar(troskelPanel(html)).delar).toEqual([esc(TROSKEL_SVEPT_EJ)]);
+    expect(farskhetsdelar(ramPanel(html)).delar).toContain('prognosen: svepet har inte kört för uppdraget');
+    for (const panel of [troskelPanel(html), ramPanel(html)]) expect(panel).not.toContain('läst av svepet');
+    expect((await pengar()).troskel).toStrictEqual({ varde: null, kalla: 'redovisning', last_nar: null, lage: 'olast' });
   });
 
   it('LV6 b en rad som inte bär: kunde inte läsas med radens tid, och inget larmutfall visas', async () => {
+    // Svepet utan kalenderhändelser: också prognosens rad är oläst, med svepets tid.
     await ok('kor_uppdragssvep', { uppdrag: [{ contract_id: u6.avtal }] }, bolag6);
     tidB = new Date().toISOString();
     await sattCacherad(u6.avtal, 'troskellarm', tidB, {});
+    const idag = idagLokalt();
     sidaB = await sida(sidvag(bolag6, u6.projekt, 'laget'));
     const ram = kort(sidaB, 'kort-ram');
-    expect(farskhetsdelar(ram).delar).toContain(esc(`${TROSKEL_KUNDE_INTE} ${farskhetstid(tidB, idagLokalt())}`));
-    for (const text of ['tröskel passerad', 'trösklar passerade', 'Ingen tröskel passerad']) expect(ram).not.toContain(text);
+    expect(farskhetsdelar(ram).delar).toContain(esc(`${TROSKEL_KUNDE_INTE} ${farskhetstid(tidB, idag)}`));
+    for (const text of ALLA_LARMUTFALL) expect(ram).not.toContain(text);
+
+    // Pengarna: samma rad, samma form. Svepet HAR kört, så panelen säger aldrig att det inte har det.
+    pengarB = await sida(sidvag(bolag6, u6.projekt, 'pengarna'));
+    const troskel = troskelPanel(pengarB);
+    expect(farskhetsdelar(troskel).delar).toEqual([esc(`${TROSKEL_KUNDE_INTE} ${farskhetstid(tidB, idag)}`)]);
+    expect(troskel).toContain('data-falt="olast"');
+    expect(troskel).toContain('Inte läst');
+    for (const text of [...ALLA_LARMUTFALL, 'Svepet har inte kört', 'svepet har inte kört', 'läst av svepet']) {
+      expect(troskel, text).not.toContain(text);
+    }
+    const tjanst = await pengar();
+    expect(tjanst.troskel).toStrictEqual({ varde: null, kalla: 'redovisning', last_nar: tidB, lage: 'olast' });
+    expect(tjanst.troskellarm).toBeNull();
+
+    // Prognosen på Pengarna: oläst kalender med svepets tid, aldrig «läst av svepet».
+    const tidP = farskhetstid((await cacherad(u6.avtal, 'prognos')).last_nar, idag);
+    expect(tjanst.prognos.lage).toBe('olast');
+    const prognosen = ramPanel(pengarB);
+    expect(prognosen).toContain(esc(UNDERLAGET_KUNDE_INTE_LASAS));
+    expect(farskhetsdelar(prognosen).delar).toContain(esc(`prognosen kunde inte läsas ur svepet · senast läst ${tidP}`));
+    expect(prognosen).not.toContain('läst av svepet');
   });
 
   it('LV6 c ett gammalt men läst värde bär sitt datum', async () => {
@@ -553,13 +637,29 @@ describe('LV6 tröskelns tre former på Läget', () => {
     expect(tid.startsWith(new Date(gammal).toLocaleDateString('sv-SE'))).toBe(true);
     const { delar } = farskhetsdelar(kort(await sida(sidvag(bolag6, u6.projekt, 'laget')), 'kort-ram'));
     expect(delar).toContain(esc(`${TROSKEL_LAST} ${tid}`));
+    const troskel = troskelPanel(await sida(sidvag(bolag6, u6.projekt, 'pengarna')));
+    expect(farskhetsdelar(troskel).delar).toEqual([esc(`${TROSKEL_LAST} ${tid}`)]);
+    expect(troskel).not.toContain('data-falt="olast"');
+    expect((await pengar()).troskel).toMatchObject({ kalla: 'redovisning', last_nar: gammal, lage: 'last' });
   });
 
   it('LV6 d delen står i färskhetsraden, utan länk', () => {
-    const { rad } = farskhetsdelar(kort(sidaB, 'kort-ram'));
-    expect(rad.startsWith('<p class="farskhet">')).toBe(true);
-    expect(rad).toContain(esc(`${TROSKEL_KUNDE_INTE} ${farskhetstid(tidB, idagLokalt())}`));
-    expect(rad).not.toContain('<a ');
+    for (const block of [kort(sidaB, 'kort-ram'), troskelPanel(pengarB), ramPanel(pengarB)]) {
+      const { rad } = farskhetsdelar(block);
+      expect(rad.startsWith('<p class="farskhet">')).toBe(true);
+      expect(rad).toContain('kunde inte läsas ur svepet · senast läst');
+      expect(rad).not.toContain('<a ');
+    }
+    expect(farskhetsdelar(kort(sidaB, 'kort-ram')).rad).toContain(esc(`${TROSKEL_KUNDE_INTE} ${farskhetstid(tidB, idagLokalt())}`));
+  });
+
+  it('LV6 e vyn skriver aldrig svepets färskhet själv, bara genom skrivaren som läser läget', async () => {
+    const SVEPETS_FARSKHET = /läst av svepet|: svepet har inte kört/;
+    const kalla = await readFile(new URL('../src/http/view/routes.ts', import.meta.url), 'utf8');
+    expect(SVEPETS_FARSKHET.test(kalla)).toBe(false);
+    // Negativ kontroll: de två raderna som granskningen fällde fälls av samma regel.
+    expect(SVEPETS_FARSKHET.test("          : `prognosen läst av svepet ${farskhetstid(a.prognos.last_nar, idag)}`,")).toBe(true);
+    expect(SVEPETS_FARSKHET.test("          ? 'tröskeln: svepet har inte kört för uppdraget'")).toBe(true);
   });
 });
 
@@ -953,6 +1053,18 @@ describe('N grannsystemen nere', () => {
     // N3 b
     expect(kort(sidor.laget!, 'kort-ram')).toContain(esc(UNDERLAGET_KUNDE_INTE_LASAS));
     expect(l.varden.avtal[0]!.prognos.lage).toBe('olast');
+    // N3 c: hela Pengarnas rampanel. Platsen och färskhetsraden säger båda att
+    // underlaget inte kunde läsas, med svepets tid, och inget i panelen säger
+    // att prognosen är läst. Lägets plats säger det inte heller.
+    const tidP = farskhetstid((await cacherad(R.avtal, 'prognos')).last_nar, idagLokalt());
+    const rampanel = kort(sidor.pengarna!, `ram-${R.avtal}`);
+    expect(rampanel).toContain(esc(UNDERLAGET_KUNDE_INTE_LASAS));
+    expect(rampanel).toContain(tidP);
+    expect(farskhetsdelar(rampanel).delar).toContain(esc(`prognosen kunde inte läsas ur svepet · senast läst ${tidP}`));
+    expect(rampanel).not.toContain('läst av svepet');
+    const lagetsPlats = sidor.laget!.slice(sidor.laget!.indexOf(`data-prognosplats="${R.avtal}"`));
+    expect(lagetsPlats.slice(0, lagetsPlats.indexOf('</p>'))).not.toContain('läst av svepet');
+    for (const [del, html] of Object.entries(sidor)) expect(html, del).not.toContain('prognosen läst av svepet');
     expect(spion).toHaveBeenCalledTimes(0);
   });
 
