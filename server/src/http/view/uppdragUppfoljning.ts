@@ -18,6 +18,10 @@
  *  - **Vyn säger vad databasen har, aldrig vad kontraktet innehåller.** Ett
  *    tomt fält är ”inte inläst”, och ett tak som inte är läst har husets ord
  *    och husets takstatus, samma som kortet Förbrukning mot ram.
+ *
+ * Story 5.8 (FR-19, Davids beslut 2026-10-07): en härledd larmregel visas som
+ * ersatt, ordagrant och dämpad som historik, med källan och tröskelns läge ur
+ * svepet. Vyn läser läget och jämför aldrig ett tal.
  */
 import { INGEN_PERIOD, type Rytmutfall } from '../../lib/bedomningsrytm.js';
 import { hhmm } from '../../lib/duration.js';
@@ -25,6 +29,7 @@ import { larmregelKraverAndel, type Mattlasvag } from '../../lib/leveranskontrak
 import type { Avtalsrytm, Kalenderreferens } from '../../services/uppdragBedomning.js';
 import type { Mattrad } from '../../services/uppdragLage.js';
 import { chip, direktFarskhet, farskhetsrad, farskhetstid, html, type Raw } from './html.js';
+import { timlarmtext } from './uppdragTroskel.js';
 
 /** Läsvägarnas etiketter. En ny läsväg i `MATTLASVAGAR` fäller typkontrollen tills den har sin. */
 export const LASVAGSETIKETT: Record<Mattlasvag, string> = {
@@ -42,6 +47,22 @@ export const INGA_MATT = 'Inga uppföljningsmått är inlästa för avtalet. De 
 const LARMREGEL_HARLEDS_EJ = 'larmregel HÄRLEDS EJ';
 const LARMREGEL_KRAVER_SVAR = 'larmregel HÄRLEDS EJ — kräver Davids svar';
 const UTFALL_HARLEDS_EJ = 'utfall HÄRLEDS EJ';
+
+// Story 5.8: den härledda larmregelns texter, var och en på en rad.
+export const LARMREGEL_ERSATT = 'larmregel ersatt';
+export const LARM_PA_TROSKELN = 'Larmar i stället på avvikelsetröskeln mot uppdragets timram';
+export const TROSKEL_EJ_SVEPT = 'Tröskeln är inte prövad: svepet har inte kört för avtalet';
+export const TROSKEL_OLAST = 'Tröskelvärdet kunde inte läsas ur svepet';
+export const TROSKEL_TIGER = 'Inget larm: avvikelsen mot uppdragets timram passerar inte tröskeln';
+export const TROSKEL_RAM_SAKNAS = 'Uppdraget saknar egen timram, så tröskeln prövas inte';
+export const TROSKEL_TAK_EJ_BEKRAFTAT = 'Uppdragets tak är inte bekräftat, och ett obekräftat tak larmar aldrig';
+
+/** De lägen som inte tänder, med sin mening. Ett nytt läge fäller typkontrollen tills det har sin. */
+const TYST_LAGE: Record<'tiger' | 'ram_saknas' | 'tak_ej_bekraftat', string> = {
+  tiger: TROSKEL_TIGER,
+  ram_saknas: TROSKEL_RAM_SAKNAS,
+  tak_ej_bekraftat: TROSKEL_TAK_EJ_BEKRAFTAT,
+};
 
 /**
  * Husets ord för ett tak som inte är läst — kortet Förbrukning mot ram, Pengar
@@ -84,18 +105,51 @@ function utfall(m: Mattrad, idag: string): Raw {
 }
 
 /**
+ * Tröskelns läge för en härledd larmregel: svepets värde som det står, med
+ * cacheradens egen färskhet (FR-35). Ett svep som inte kört är oläst, aldrig
+ * ”inget larm”. Ett tänt larm bär ingen ockra — ockran betyder att något väntar
+ * på en människa, och ett larm skapar ingen fråga (FR-3) — utan full färg mot
+ * de dämpade lägena som inte tänder.
+ */
+function troskellage(larm: Mattrad['larm'], idag: string): Raw {
+  if (larm === null) return html``;
+  if (larm.lage !== 'last' || larm.varde === null || larm.last_nar === null) {
+    return html`<p class="tomt" data-falt="troskel_olast" style="margin:6px 0 0;padding:.6rem .8rem">${
+      larm.last_nar === null
+        ? html`${TROSKEL_EJ_SVEPT} · senast läst aldrig`
+        : html`${TROSKEL_OLAST} · senast läst ${farskhetstid(larm.last_nar, idag)}`}</p>`;
+  }
+  const v = larm.varde;
+  const rader = v.lage === 'tander'
+    ? v.larm.map((l) => html`<p class="num" data-falt="troskel_larm" style="margin:4px 0 0;font-size:13px">${timlarmtext(l, v.trosklar)}</p>`)
+    : html`<p class="muted" data-falt="troskel_lage" style="margin:4px 0 0;font-size:13px">${TYST_LAGE[v.lage]}</p>`;
+  return html`${rader}${farskhetsrad([direktFarskhet({ kalla: larm.kalla, last_nar: larm.last_nar }, idag)])}`;
+}
+
+/**
  * Larmregeln ordagrant, och markeringen när den inte härleds. Ockran betyder i
  * huset ”väntar på en människa”, så bara en regel som kräver Davids svar bär
  * den; en regel som bara inte härleds är dämpad och påstår ingen fråga.
+ *
+ * En härledd larmregel (Story 5.8) är ersatt av FR-3:s avvikelsetröskel enligt
+ * Davids beslut: kontraktets ord står kvar dämpade som historik med ett dämpat
+ * chip — en ersatt regel väntar inte på någon — följda av källan och läget.
  */
-function larmrad(m: Mattrad): Raw {
-  const markering = m.larmregel_lage === 'harleds'
-    ? ''
+function larmrad(m: Mattrad, idag: string): Raw {
+  const harleds = m.larmregel_lage === 'harleds';
+  const markering = harleds
+    ? (m.larmregel === null ? '' : chip(LARMREGEL_ERSATT, 'muted', '↷'))
     : larmregelKraverAndel(m.larmregel)
       ? chip(LARMREGEL_KRAVER_SVAR, 'warn', '!')
       : chip(LARMREGEL_HARLEDS_EJ, 'muted', '○');
-  return html`<p style="margin:6px 0 0;font-size:13px"><span class="muted">Larmar när:</span> ${
-    m.larmregel === null ? html`<span class="muted">ingen larmregel inläst</span>` : html`<span>${m.larmregel}</span>`} ${markering}</p>`;
+  const regel = html`<p style="margin:6px 0 0;font-size:13px"><span class="muted">Larmar när:</span> ${
+    m.larmregel === null
+      ? html`<span class="muted">ingen larmregel inläst</span>`
+      : html`<span${harleds ? html` class="muted"` : ''}>${m.larmregel}</span>`} ${markering}</p>`;
+  if (!harleds) return regel;
+  return html`${regel}
+    <p data-falt="larmregel_kalla" style="margin:4px 0 0;font-size:13px">${LARM_PA_TROSKELN} · <span class="muted">${m.larmregel_kalla}</span></p>
+    ${troskellage(m.larm, idag)}`;
 }
 
 /** Ett mått: namnet och läsvägen först, sedan var och hur ofta, utfallet och larmregeln. */
@@ -105,7 +159,7 @@ function mattrad(m: Mattrad, idag: string, forsta: boolean): Raw {
       m.lasvag === null ? chip('Läsväg saknas', 'neg', '!') : chip(LASVAGSETIKETT[m.lasvag], 'info', '→')}</div>
     <p class="muted" style="margin:3px 0 0;font-size:12.5px">${m.hur_ofta ?? 'Frekvens inte inläst'} · Läses ur: ${m.kallreferenser ?? '—'}</p>
     ${utfall(m, idag)}
-    ${larmrad(m)}
+    ${larmrad(m, idag)}
   </li>`;
 }
 

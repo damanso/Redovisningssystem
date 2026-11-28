@@ -42,12 +42,13 @@ import {
 } from '../src/lib/bedomningsrytm.js';
 import { withTenantTransaction } from '../src/db/tx.js';
 import {
-  larmregelKraverAndel, MATTLAGEN, MATTLASVAGAR, mattlasvag, parseLeveranskontrakt, rytmregel,
+  LARMREGELNS_KALLA, larmregelKraverAndel, MATTLAGEN, MATTLASVAGAR, mattlasvag, parseLeveranskontrakt, rytmregel,
   type Uppfoljningsmatt,
 } from '../src/lib/leveranskontrakt.js';
 import { esc, farskhetstid } from '../src/http/view/html.js';
 import {
-  INGA_MATT, LASVAGSETIKETT, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel, type Uppdragsram,
+  INGA_MATT, LARMREGEL_ERSATT, LASVAGSETIKETT, TAK_INTE_LAST, takstatusChipYta, TROSKEL_EJ_SVEPT, uppfoljningspanel,
+  type Uppdragsram,
 } from '../src/http/view/uppdragUppfoljning.js';
 import { kalendermanad } from '../src/lib/bedomningsbegaran.js';
 import { hhmm } from '../src/lib/duration.js';
@@ -381,7 +382,7 @@ function forvantadeMatt(): Uppfoljningsmatt[] {
   expect(rader).toHaveLength(V3LASVAGAR.length);
   return rader.map((c, i): Uppfoljningsmatt => ({
     namn: c[0]!, hur_ofta: c[1]!, kallreferenser: c[2]!, lasvag: V3LASVAGAR[i]!, larmregel: c[3]!,
-    larmregel_lage: 'harleds_ej', utfall_lage: i === 0 ? 'harleds' : 'harleds_ej',
+    larmregel_lage: i === 0 ? 'harleds' : 'harleds_ej', utfall_lage: i === 0 ? 'harleds' : 'harleds_ej',
   }));
 }
 
@@ -417,7 +418,7 @@ describe('P: parsern', () => {
     }
     expect(matt.map((m) => m.lasvag)).toEqual([...V3LASVAGAR]);
     expect(matt.map((m) => m.utfall_lage)).toEqual(['harleds', 'harleds_ej', 'harleds_ej', 'harleds_ej', 'harleds_ej']);
-    expect(new Set(matt.map((m) => m.larmregel_lage))).toEqual(new Set(['harleds_ej']));
+    expect(matt.map((m) => m.larmregel_lage)).toEqual(['harleds', 'harleds_ej', 'harleds_ej', 'harleds_ej', 'harleds_ej']);
   });
 
   it('P2 v3:s rytm är den fulla styrgruppens rad, ordagrann', () => {
@@ -1057,7 +1058,7 @@ describe('L: läsvägen', () => {
     const u = await v3Uppdrag(companyId, 'Läsvägen L2');
     const l = await lage(companyId, u.projekt);
     const a = l.avtal.find((x) => x.contract_id === u.avtal)!;
-    expect(a.matt.map(({ varde: _v, ...rad }) => rad)).toEqual(await mattrader(u.avtal));
+    expect(a.matt.map(({ varde: _v, larm: _l, larmregel_kalla: _k, ...rad }) => rad)).toEqual(await mattrader(u.avtal));
     const [nedlagd, ...ovriga] = a.matt;
     expect(nedlagd!.namn).toBe(NEDLAGD);
     expect(nedlagd!.varde).toMatchObject({ lage: 'last', kalla: 'redovisning', last_nar: expect.any(String) });
@@ -1165,8 +1166,11 @@ describe('V: Läget', () => {
     const nedlagd = mattLi(panel, 0);
     expect(nedlagd).toContain(`${hhmm(a.forbrukning.minuter)} nedlagda mot ramen`);
     expect(antal(nedlagd, 'class="farskhet"')).toBe(1);
-    expect(antal(panel, esc('larmregel HÄRLEDS EJ — kräver Davids svar'))).toBe(1);
-    expect(nedlagd).toContain(esc('larmregel HÄRLEDS EJ — kräver Davids svar'));
+    expect(antal(panel, esc('kräver Davids svar'))).toBe(0);
+    expect(nedlagd).toContain(esc(forvantat[0]!.larmregel!));
+    expect(antal(nedlagd, esc(LARMREGEL_ERSATT))).toBe(1);
+    expect(nedlagd).toContain(esc(LARMREGELNS_KALLA));
+    expect(nedlagd).toContain(esc(TROSKEL_EJ_SVEPT));
 
     // Beslutspunkterna: källreferensen och utfallet, och utan kontraktets egen
     // larmregel varken ett datum eller ett passerat läge.
@@ -1192,7 +1196,7 @@ describe('V: Läget', () => {
     const IDAG = '2026-10-09';
     const rad = (ordning: number, namn: string, varde: Mattrad['varde']): Mattrad => ({
       namn, hur_ofta: 'Varje vecka', kallreferenser: 'Redovisningen', lasvag: 'redovisning', larmregel: null,
-      larmregel_lage: 'harleds_ej', utfall_lage: 'harleds', ordning, varde,
+      larmregel_lage: 'harleds_ej', utfall_lage: 'harleds', ordning, varde, larmregel_kalla: null, larm: null,
     });
     const rytm: Avtalsrytm = {
       rytm_text: null, bedomning_intervall_dagar: null, bedomning_veckodag: null, bedomning_ankare: null,
@@ -1286,6 +1290,7 @@ describe('V: Läget', () => {
     const matt = varden.map((varde, ordning): Mattrad => ({
       namn: `Mått ${ordning}`, hur_ofta: null, kallreferenser: null, lasvag: ordning % 2 === 0 ? 'redovisning' : null,
       larmregel: null, larmregel_lage: 'harleds_ej', utfall_lage: varde === null ? 'harleds_ej' : 'harleds', ordning, varde,
+      larmregel_kalla: null, larm: null,
     }));
     // Varje läge i rytmregeln, med rytmens text tom så att inget kontraktsord står i panelen.
     const rytmer: Bedomningsrytm[] = [

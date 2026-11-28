@@ -153,6 +153,37 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Bygge: 5-8-larmregeln-for-nedlagd-tid-mot-ram-enligt-davids-beslut.**
+  Måttet ”Nedlagd tid mot ram” larmar nu på FR-3:s avvikelsetröskel enligt
+  Davids beslut 2026-10-07 («Ersätt, skriv inte om»), med källan
+  `LARMREGELNS_KALLA` i `lib/leveranskontrakt.ts`. Läget avgörs bara av
+  `larmregelLage` (härleds exakt där utfallet härleds, läsaren tid mot ram),
+  och parsern sätter det genom den. Den rena `uppdragsnivansTimlage` i
+  `lib/troskel.ts` väljer uppdragsnivåns timlarm (utfall och prognos) ur
+  svepets lagrade `troskellarm` och jämför inget tal; `harledTroskellarm` är
+  orörd. Läsvägen bär `larmregel_kalla` och `larm` på varje mått genom den
+  rena `mattlarm` (cacheradens källa och lästid, oläst när svepet inte kört),
+  utan nytt SQL. Panelen Uppföljning och rytm visar den ersatta regeln
+  ordagrant och dämpad med chipet ”larmregel ersatt”, källraden och
+  tröskelns läge med svepets färskhet; en larmregel som inte härleds ritas
+  som förut. Migrationen 0100 sätter bara läget på öppna uppdrags befintliga
+  rader och lägger villkoret `uppdrag_matt_larmregel_kraver_utfall` — ingen
+  kolumn, ingen rättighet, ingen policy och ingen trigger; kontraktets
+  larmregel står kvar ordagrant. Ingen rutt och ingen åtgärd tillkom (talet
+  över antalet åtgärder i rubrikstycket är oförändrat). `docs/ARKITEKTUR.md`
+  har stycket «Larmregeln», och `docs/MCP_ACTIONS.md` beskriver fälten och
+  panelen. Prov: nya `uppdragsytan-larmregel` (LR1–LR8, 30 fall) och de
+  omskrivna L2, V2, V7, P1 och V1 i `uppdragsytan-matt-rytm`. Körningar mot
+  testdatabasen 127.0.0.1:5433: delkörningarna 1–3 gröna (99, 254 och 257
+  prov) och typkontrollen exit 0 efter varje uppgift; grinden (körning 4):
+  `uppdragsytan-larmregel` och `uppdragsytan-matt-rytm` 89/89, `npm run
+  typecheck` exit 0 och hela `npm test` 223 filer och 4430 prov gröna
+  (1130 s). `npm run build` är inte kört (kedjan nekar det). Inga RESTER.
+  Måttets larm visas först efter nästa svep efter driftsättningen; till dess
+  säger raden att tröskeln inte är prövad. Rött utanför repot före bygget,
+  orört av berättelsen: continuityvakt (KUNDE_INTE), bmadglidning och
+  scope_grind (RÖDA) i provvaktens körning 2026-11-27.
+
 - **2026-11-28 — Story 6.1 (crm): kostnadstäckningen som schablon, med täckningsgapet (FR-20, FR-41):**
   `steeringOverview` bär `coverage.gap_ore` ur den nya rena `coverageGapOre`
   i steering-tjänsten (schablonen minus tre gånger snittkostnaden, i ören med

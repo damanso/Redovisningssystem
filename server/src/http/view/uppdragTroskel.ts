@@ -2,10 +2,12 @@
 // Regeln, ramläget per nivå och golvets märkning (kriterium 7) visas ur lib
 // och cachen; vyn prövar aldrig själv om ett larm tänds. Ren: ingen databas,
 // ingen klocka, husets klasser. Story 5.7: regeln säger strömmens ram och dess
-// källa, och märkningen är Davids beslut.
+// källa, och märkningen är Davids beslut. Story 5.8: måttet ”Nedlagd tid mot
+// ram” skriver sitt larm med samma mening som Lägets kort (`timlarmtext`).
 import {
   GOLVETS_MARKNING, STROMRAMENS_KALLA, golvetBinder, type Larm, type Trosklar, type UtanEgenRam,
 } from '../../lib/troskel.js';
+import { hhmm } from '../../lib/duration.js';
 import { html, kronor, type Raw } from './html.js';
 import { RAM_SAKNAS } from './uppdragForbrukning.js';
 
@@ -39,4 +41,15 @@ export function golvmarkering(l: Larm, t: Trosklar | undefined): Raw {
   return t !== undefined && golvetBinder(l, t)
     ? html` <span class="muted">(absolutgolvet, ${GOLVETS_MARKNING})</span>`
     : html``;
+}
+
+/**
+ * Ett timlarm i klartext: avvikelsen och tröskeln i timmar, aldrig en kvot
+ * (NFR-11), med golvets märkning där golvet binder och prognosen utskriven.
+ * Samma mening som Lägets kort skriver för ett timlarm.
+ */
+export function timlarmtext(larm: Extract<Larm, { ram: 'timmar' }>, trosklar: Trosklar | undefined): Raw {
+  return html`<span class="code">${larm.kod}</span> ${hhmm(larm.avvikelse_minuter)} över tröskeln ${
+    hhmm(larm.troskel_minuter)}${golvmarkering(larm, trosklar)}${
+    larm.grund === 'prognos' ? html` <span class="muted">(prognos)</span>` : html``}`;
 }
