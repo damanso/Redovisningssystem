@@ -2,6 +2,8 @@
 // 6.5: obelagt som likviditet — det som saknar belagd tidpunkt står för sig med
 // belopp och skäl och når aldrig en månad.
 // 6.6: läsåtgärden ger samma svar som funktionen, bara för det egna bolaget, och dokumentet och rubrikstycket följer registret.
+// 6.1: täckningsgapet räknas i tjänsten med tecken och null utan kostnader, och styrvyn visar det som schablon i två kolumner.
+import supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   rollLiquidity, notCountedRows, NOT_COUNTED_LIQUIDITY_SOURCES, NOT_COUNTED_ACCOUNT_PARTITION, VAT_UNSETTLED_NOTE, AGI_REST_NOTE,
@@ -9,9 +11,11 @@ import {
 import type { LiquidityRollInput } from '../src/domain/liquidity.js';
 import { HOUSEWORK_RECEIVABLE_ACCOUNT } from '../src/services/housework.js';
 
-import { api, registerUser, createCompany, createFiscalYear, type TestUser } from './helpers.js';
+import { api, app, registerUser, createCompany, createFiscalYear, type TestUser } from './helpers.js';
 import { liquidityByMonth, COUNTED_LIQUIDITY_SOURCES, recurringMonthOre, accountSums } from '../src/services/reports.js';
-import { steeringOverview } from '../src/services/steering.js';
+import { coverageGapOre, steeringOverview, type SteeringOverview } from '../src/services/steering.js';
+import { kostnadstackning } from '../src/http/view/kostnadstackning.js';
+import { amount } from '../src/http/view/html.js';
 import { pool } from '../src/db/pool.js';
 import { setTenantContext } from '../src/db/tx.js';
 import type { Liquidity, LiquidityByMonth } from '../src/services/reports.js';
@@ -941,5 +945,390 @@ describe('dokumentet och rubrikstycket (6.6 D)', () => {
     expect(rubrikbrister(`ett action-lager (${n - 1}\nactions)\n\n## Sessionslogg\n`, n)).toHaveLength(1);
     expect(rubrikbrister('ett action-lager\n\n## Sessionslogg\n', n)).toHaveLength(1);
     expect(rubrikbrister(`ett action-lager (${n} actions)\n\n## Sessionslogg\n\n- ${n - 1} actions\n`, n)).toEqual([]);
+  });
+});
+
+/** Bokförd kostnad mot banken, i samma form som `cashSeed`. */
+async function kostnadSeed(user: TestUser, companyId: string, fiscalYearId: string, date: string, amount: number) {
+  await approveAction(user, companyId, 'post_voucher', {
+    fiscal_year_id: fiscalYearId, voucher_date: date, description: 'Bokförd kostnad',
+    lines: [{ account_number: 6110, debit_ore: amount }, { account_number: 1930, credit_ore: amount }],
+  });
+}
+/**
+ * Gapets brister, rent: facit räknas här ur svarets egna fält och aldrig ur
+ * funktionen som prövas. Med en snittkostnad över noll är gapet schablonen minus
+ * tre månaders kostnad; annars är det okänt, och okänt i samma fall som
+ * `months_covered`.
+ */
+function gapBrister(s: Pick<SteeringOverview, 'cost' | 'coverage'>): string[] {
+  const a = s.cost.avg_month_ore;
+  const k = s.coverage.known_next_3_months_ore;
+  const gap = s.coverage.gap_ore;
+  const brister: string[] = [];
+  if (a > 0) {
+    if (gap !== k - 3 * a) brister.push(`gap_ore ${gap} är inte ${k} − 3 × ${a}`);
+    if (!Number.isSafeInteger(gap)) brister.push(`gap_ore ${gap} är inget säkert heltal (${k}, ${a})`);
+  } else if (gap !== null) {
+    brister.push(`gap_ore ${gap} ska vara null när snittkostnaden är ${a} (schablonen ${k})`);
+  }
+  if ((gap === null) !== (s.coverage.months_covered === null)) {
+    brister.push(`gap_ore ${gap} och months_covered ${s.coverage.months_covered} är inte null i samma fall`);
+  }
+  return brister;
+}
+const AS_OF_61 = '2026-11-20';
+
+describe('steeringOverview — täckningsgapet (6.1 K)', () => {
+  let user: TestUser;
+  let tackning: string;
+  let underskott: string;
+  let kostnadslost: string;
+  const lagesvar = (bolag: string) => iTenant(user, bolag, (k) => steeringOverview(k, bolag, { as_of: AS_OF_61 }));
+  beforeAll(async () => {
+    user = await registerUser('tackning61');
+    tackning = await createCompany(user.token, 'Täckning AB');
+    const fy = await createFiscalYear(tackning, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await kostnadSeed(user, tackning, fy.id, '2026-10-15', 1200000);
+    await customerInvoice(user, tackning, fy.id, '2026-11-10', '2026-12-10', 800000);
+    const customer = await api.post(`${co(tackning)}/customers`).set(auth(user)).send({ name: 'Abonnent AB' });
+    expect(customer.status, JSON.stringify(customer.body)).toBe(201);
+    await action(user, tackning, 'create_recurring_invoice', {
+      customer_id: customer.body.customer.id, title: 'Support', interval: 'monthly', next_run_date: '2026-12-01',
+      lines: [{ description: 'Support', quantity: 1, unit_price_ore: 300000, vat_rate: 25 }],
+    });
+    const project = await action(user, tackning, 'create_project', {
+      name: 'Uppdraget', customer_id: customer.body.customer.id, hourly_rate_ore: 100000,
+    });
+    await action(user, tackning, 'log_time', { project_id: project.id, work_date: '2026-11-18', minutes: 120, description: 'Arbete' });
+
+    underskott = await createCompany(user.token, 'Underskott AB');
+    const fyUnderskott = await createFiscalYear(underskott, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await kostnadSeed(user, underskott, fyUnderskott.id, '2026-10-15', 6000000);
+    await customerInvoice(user, underskott, fyUnderskott.id, '2026-11-10', '2026-12-10', 400000);
+
+    kostnadslost = await createCompany(user.token, 'Kostnadslöst AB');
+    const fyKostnadslost = await createFiscalYear(kostnadslost, auth(user), { label: '2026', start_date: '2026-01-01', end_date: '2026-12-31' });
+    await customerInvoice(user, kostnadslost, fyKostnadslost.id, '2026-11-10', '2026-12-10', 400000);
+  });
+  it('K1: gapet är schablonen minus tre månaders kostnad, och okänt utan kostnad', () => {
+    expect(coverageGapOre(2100000, 100000)).toBe(1800000);
+    expect(coverageGapOre(500000, 500000)).toBe(-1000000);
+    expect(coverageGapOre(0, 1)).toBe(-3);
+    expect(coverageGapOre(500000, 0)).toBeNull();
+    expect(coverageGapOre(0, 0)).toBeNull();
+    expect(coverageGapOre(100, -5)).toBeNull();
+    expect(() => coverageGapOre(1.5, 1)).toThrow();
+  });
+  it('K2: Täckning AB — de befintliga fälten har dagens värden, och gapet är ett överskott', async () => {
+    const svar = await lagesvar(tackning);
+    expect(Object.keys(svar).sort()).toStrictEqual(['as_of', 'concentration', 'cost', 'coverage', 'revenue']);
+    expect(svar.cost).toStrictEqual({ total_12m_ore: 1200000, avg_month_ore: 100000 });
+    expect(svar.coverage).toStrictEqual({
+      receivables_ore: 1000000, unbilled_time_ore: 200000, recurring_month_ore: 300000,
+      known_next_3_months_ore: 2100000, months_covered: 21, gap_ore: 1800000,
+    });
+    expect(svar.revenue.total_12m_ore).toBe(800000);
+    expect(svar.revenue.avg_month_ore).toBe(66667);
+    expect(svar.revenue.last3_avg_ore).toBe(266667);
+    expect(svar.concentration.top_share_permille).toBe(1000);
+    // Positiv kontroll: den ofakturerade tiden är den enda definitionens tal.
+    const tid = await action(user, tackning, 'unbilled_time_report', { to: AS_OF_61 });
+    expect(tid.totals.amount_ore).toBe(200000);
+  });
+  it('K3: Underskott AB — det som saknas står med minustecken', async () => {
+    const svar = await lagesvar(underskott);
+    expect(svar.coverage.known_next_3_months_ore).toBe(500000);
+    expect(svar.cost.avg_month_ore).toBe(500000);
+    expect(svar.coverage.gap_ore).toBe(-1000000);
+    expect(svar.coverage.months_covered).toBe(1);
+  });
+  it('K4: Kostnadslöst AB — utan bokförd kostnad är gapet okänt, aldrig ett överskott mot noll', async () => {
+    const svar = await lagesvar(kostnadslost);
+    expect(svar.cost).toStrictEqual({ total_12m_ore: 0, avg_month_ore: 0 });
+    expect(svar.coverage.known_next_3_months_ore).toBe(500000);
+    expect(svar.coverage.gap_ore).toBeNull();
+    expect(svar.coverage.months_covered).toBeNull();
+  });
+  it('K5: kontrollen godtar svaren och fäller omvänt tecken och ett gap räknat mot noll', async () => {
+    const svar = [await lagesvar(tackning), await lagesvar(underskott), await lagesvar(kostnadslost)];
+    svar.forEach((s, i) => expect(gapBrister(s), `svar ${i}`).toEqual([]));
+    // Negativ kontroll: tre kopior, var och en med minst en brist.
+    const [omvantOverskott, omvantUnderskott, motNoll] = svar.map((s) => structuredClone(s));
+    omvantOverskott!.coverage.gap_ore = -1800000;
+    omvantUnderskott!.coverage.gap_ore = 1000000;
+    motNoll!.coverage.gap_ore = 500000;
+    for (const [namn, kopia] of [['K2 omvänt', omvantOverskott!], ['K3 omvänt', omvantUnderskott!], ['K4 mot noll', motNoll!]] as const) {
+      expect(gapBrister(kopia).length, namn).toBeGreaterThan(0);
+    }
+  });
+});
+
+const TACKNINGSRUBRIK = 'Kostnadstäckning (schablon)';
+const OPPNA_AFFARER = 'Öppna affärer räknas inte in i täckningen.';
+const MINUS = '−';
+/** Hårda blanksteg (U+00A0, U+202F) blir blanksteg, och följder av blanktecken slås ihop. */
+const normalisera = (text: string): string => text.replace(/[  ]/g, ' ').replace(/\s+/g, ' ').trim();
+const utanTaggar = (text: string): string => normalisera(text.replace(/<[^>]*>/g, ''));
+/** Tabellen efter rubriken, eller null. */
+function tackningstabell(fragment: string): string | null {
+  const efter = fragment.split(TACKNINGSRUBRIK)[1];
+  if (efter === undefined) return null;
+  return /<table\b[^>]*>[\s\S]*?<\/table>/.exec(efter)?.[0] ?? null;
+}
+interface Tackningsrad { namn: string; belopp: string; forklaring: string }
+/**
+ * Kostnadstäckningens rader, rent: radnamnet före `<br>`, förklaringen efter
+ * med alla taggar borttagna (förklaringen till Abonnemang × 3 bär en inre
+ * amount-span, så den läses aldrig fram till första `</span>`) och beloppet i
+ * andra cellen.
+ */
+function tackningsrader(fragment: string): Tackningsrad[] {
+  const tabell = tackningstabell(fragment);
+  if (tabell === null) return [];
+  const tbody = /<tbody\b[^>]*>([\s\S]*?)<\/tbody>/.exec(tabell)?.[1] ?? '';
+  return (tbody.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g) ?? []).map((rad) => {
+    const celler = [...rad.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1]!);
+    const [namn = '', forklaring = ''] = (celler[0] ?? '').split(/<br\s*\/?>/);
+    return { namn: utanTaggar(namn), belopp: utanTaggar(celler[1] ?? ''), forklaring: utanTaggar(forklaring) };
+  });
+}
+interface Tackningsfacit { rader: Tackningsrad[]; harledning: string }
+/** Skillnaderna mot facit, rent: varje rad i ordning, härledningsraden och meningen om öppna affärer. */
+function tackningsBrister(fragment: string, facit: Tackningsfacit): string[] {
+  const brister: string[] = [];
+  const rader = tackningsrader(fragment);
+  if (rader.length !== facit.rader.length) brister.push(`${rader.length} rader, facit har ${facit.rader.length}`);
+  facit.rader.forEach((f, i) => {
+    const r = rader[i];
+    if (r === undefined) return;
+    for (const falt of ['namn', 'belopp', 'forklaring'] as const) {
+      if (r[falt] !== f[falt]) brister.push(`rad ${i + 1} ${falt}: «${r[falt]}», facit «${f[falt]}»`);
+    }
+  });
+  const harledning = /<p class="harledning"[^>]*>([\s\S]*?)<\/p>/.exec(fragment);
+  const text = harledning ? utanTaggar(harledning[1]!) : null;
+  if (text !== facit.harledning) brister.push(`härledningsraden: «${text}», facit «${facit.harledning}»`);
+  const affarer = utanTaggar(fragment).split('Öppna affärer').length - 1;
+  if (affarer !== 1 || !utanTaggar(fragment).includes(OPPNA_AFFARER)) brister.push(`meningen om öppna affärer står ${affarer} gånger`);
+  return brister;
+}
+/** Tvåspaltsformen, rent: inget staplas, två rubriker, två celler per rad, förklaringen under radnamnet. */
+function tvaspaltBrister(fragment: string): string[] {
+  const tabell = tackningstabell(fragment);
+  if (tabell === null) return [`ingen tabell efter rubriken ${TACKNINGSRUBRIK}`];
+  const brister: string[] = [];
+  const oppning = /^<table\b[^>]*>/.exec(tabell)![0];
+  if (!oppning.includes('style="min-width:0"')) brister.push(`öppningstaggen saknar min-width:0: ${oppning}`);
+  if (oppning.includes('data-staplas')) brister.push('tabellen staplas');
+  const thead = /<thead\b[^>]*>([\s\S]*?)<\/thead>/.exec(tabell)?.[1] ?? '';
+  const rubriker = thead.match(/<th\b/g)?.length ?? 0;
+  if (rubriker !== 2) brister.push(`${rubriker} kolumnrubriker, inte två`);
+  const tbody = /<tbody\b[^>]*>([\s\S]*?)<\/tbody>/.exec(tabell)?.[1] ?? '';
+  const rader = tbody.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g) ?? [];
+  if (rader.length === 0) brister.push('tabellen har inga rader');
+  rader.forEach((rad, i) => {
+    const celler = [...rad.matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/g)];
+    if (celler.length !== 2) {
+      brister.push(`rad ${i + 1} har ${celler.length} celler`);
+      return;
+    }
+    const forsta = celler[0]![2]!;
+    if (!/<br\s*\/?>/.test(forsta)) brister.push(`rad ${i + 1}: första cellen saknar <br>`);
+    if (!forsta.includes('<span class="muted">')) brister.push(`rad ${i + 1}: första cellen saknar förklaringen`);
+    if (!celler[1]![1]!.includes('class="num"')) brister.push(`rad ${i + 1}: andra cellen saknar class="num"`);
+  });
+  return brister;
+}
+
+type Tackningssvar = Pick<SteeringOverview, 'as_of' | 'cost' | 'coverage'>;
+const OVERSKOTT: Tackningssvar = {
+  as_of: '2026-11-20',
+  cost: { total_12m_ore: 1200000, avg_month_ore: 100000 },
+  coverage: {
+    receivables_ore: 1000000, unbilled_time_ore: 200000, recurring_month_ore: 300000,
+    known_next_3_months_ore: 2100000, months_covered: 21, gap_ore: 1800000,
+  },
+};
+const SAKNAS: Tackningssvar = {
+  as_of: '2026-11-20',
+  cost: { total_12m_ore: 6000000, avg_month_ore: 500000 },
+  coverage: {
+    receivables_ore: 500000, unbilled_time_ore: 0, recurring_month_ore: 0,
+    known_next_3_months_ore: 500000, months_covered: 1, gap_ore: -1000000,
+  },
+};
+const OKANT: Tackningssvar = {
+  as_of: '2026-11-20',
+  cost: { total_12m_ore: 0, avg_month_ore: 0 },
+  coverage: {
+    receivables_ore: 500000, unbilled_time_ore: 0, recurring_month_ore: 0,
+    known_next_3_months_ore: 500000, months_covered: null, gap_ore: null,
+  },
+};
+const FORKLARING = {
+  fakturor: 'Fakturerat men ej betalt — utan hänsyn till förfallodatum',
+  tid: 'Utfört arbete till i dag',
+  abonnemang: (perManad: string) => `${perManad} kr per månad × 3 — tre månader av varje aktivt abonnemang, även de som slutar tidigare`,
+  schablon: 'Inte belagd täckning under en period — se Likviditet nedan',
+  kostnad: 'Bokförd kostnad 12 mån ÷ 12 × 3',
+  gap: 'Positivt är överskott, negativt är vad som saknas',
+  okant: 'Inga bokförda kostnader att jämföra med ännu — gapet räknas inte mot noll',
+};
+const HARLEDNING = 'Räknat ur bokförda verifikat, obetalda fakturor, aktiva abonnemang och ofakturerad tid per 2026-11-20.';
+const FACIT_V1: Tackningsfacit = {
+  rader: [
+    { namn: 'Obetalda bokförda fakturor', belopp: '10 000,00', forklaring: FORKLARING.fakturor },
+    { namn: 'Ofakturerad fakturerbar tid', belopp: '2 000,00', forklaring: FORKLARING.tid },
+    { namn: 'Abonnemang × 3', belopp: '9 000,00', forklaring: FORKLARING.abonnemang('3 000,00') },
+    { namn: 'Schablon', belopp: '21 000,00', forklaring: FORKLARING.schablon },
+    { namn: 'Kostnad tre månader', belopp: `${MINUS}3 000,00`, forklaring: FORKLARING.kostnad },
+    { namn: 'Överskott', belopp: '+18 000,00', forklaring: FORKLARING.gap },
+  ],
+  harledning: `${HARLEDNING} Räcker till ca 21 månaders kostnader.`,
+};
+const FACIT_V2: Tackningsfacit = {
+  rader: [
+    { namn: 'Obetalda bokförda fakturor', belopp: '5 000,00', forklaring: FORKLARING.fakturor },
+    { namn: 'Ofakturerad fakturerbar tid', belopp: '0,00', forklaring: FORKLARING.tid },
+    { namn: 'Abonnemang × 3', belopp: '0,00', forklaring: FORKLARING.abonnemang('0,00') },
+    { namn: 'Schablon', belopp: '5 000,00', forklaring: FORKLARING.schablon },
+    { namn: 'Kostnad tre månader', belopp: `${MINUS}15 000,00`, forklaring: FORKLARING.kostnad },
+    { namn: 'Saknas', belopp: `${MINUS}10 000,00`, forklaring: FORKLARING.gap },
+  ],
+  harledning: `${HARLEDNING} Räcker till ca 1 månaders kostnader.`,
+};
+const FACIT_V3: Tackningsfacit = {
+  rader: [
+    { namn: 'Obetalda bokförda fakturor', belopp: '5 000,00', forklaring: FORKLARING.fakturor },
+    { namn: 'Ofakturerad fakturerbar tid', belopp: '0,00', forklaring: FORKLARING.tid },
+    { namn: 'Abonnemang × 3', belopp: '0,00', forklaring: FORKLARING.abonnemang('0,00') },
+    { namn: 'Schablon', belopp: '5 000,00', forklaring: FORKLARING.schablon },
+    { namn: 'Kostnad tre månader', belopp: 'Okänt', forklaring: FORKLARING.kostnad },
+    { namn: 'Täckningsgap', belopp: 'Okänt', forklaring: FORKLARING.okant },
+  ],
+  harledning: `${HARLEDNING} Inga bokförda kostnader att jämföra med ännu.`,
+};
+
+describe('kostnadstackning — K10 i styrvyn (6.1 V)', () => {
+  it('V1: överskottet — sex rader som går jämnt, härledningsraden och meningen om öppna affärer', () => {
+    const fragment = kostnadstackning(OVERSKOTT).value;
+    expect(fragment).toContain(`<h2 style="margin-top:18px">${TACKNINGSRUBRIK}</h2>`);
+    expect(tackningsBrister(fragment, FACIT_V1)).toEqual([]);
+  });
+  it('V2: det som saknas står med minustecken som text', () => {
+    expect(tackningsBrister(kostnadstackning(SAKNAS).value, FACIT_V2)).toEqual([]);
+  });
+  it('V3: utan bokförd kostnad står Okänt i ord, aldrig ett överskott mot noll', () => {
+    const fragment = kostnadstackning(OKANT).value;
+    expect(tackningsBrister(fragment, FACIT_V3)).toEqual([]);
+    const namn = tackningsrader(fragment).map((r) => r.namn);
+    expect(namn).not.toContain('Överskott');
+    expect(namn).not.toContain('Saknas');
+  });
+  it('V4: månaderna står med decimalkomma', () => {
+    const fragment = kostnadstackning({ ...SAKNAS, coverage: { ...SAKNAS.coverage, months_covered: 1.5 } }).value;
+    expect(tackningsBrister(fragment, { ...FACIT_V2, harledning: `${HARLEDNING} Räcker till ca 1,5 månaders kostnader.` })).toEqual([]);
+  });
+  it('V5: två kolumner som inte staplas, förklaringen under radnamnet', () => {
+    for (const [namn, svar] of [['V1', OVERSKOTT], ['V2', SAKNAS], ['V3', OKANT]] as const) {
+      expect(tvaspaltBrister(kostnadstackning(svar).value), namn).toEqual([]);
+    }
+  });
+  it('V6: negativ kontroll — omvänt gap, basens tre kolumner och en tabell utan min-width fälls', () => {
+    const omvant = structuredClone(OVERSKOTT);
+    omvant.coverage.gap_ore = -1800000;
+    expect(tackningsBrister(kostnadstackning(omvant).value, FACIT_V1).length).toBeGreaterThan(0);
+
+    const basform = `<h2 style="margin-top:18px">${TACKNINGSRUBRIK}</h2>
+      <div class="table-wrap"><table><thead><tr><th>Källa</th><th class="num">Belopp</th><th>Vad det är</th></tr></thead><tbody>
+        <tr><td>Obetalda bokförda fakturor</td><td class="num"><span class="amount">10 000,00</span></td>
+          <td class="muted">Fakturerat men ännu inte betalt</td></tr>
+      </tbody></table></div>`;
+    expect(tvaspaltBrister(basform).length).toBeGreaterThan(0);
+
+    const v1 = kostnadstackning(OVERSKOTT).value;
+    const utanMinWidth = v1.replace(' style="min-width:0"', '');
+    expect(utanMinWidth).not.toBe(v1);
+    expect(tvaspaltBrister(utanMinWidth).length).toBeGreaterThan(0);
+  });
+});
+
+const GAMLA_FORMULERINGAR = ['Känt de närmaste 3 månaderna', 'Känd täckning framåt', 'de bor i Linear'];
+/**
+ * Sidans brister, rent: varje gammal formulering, ordet Linear någonstans på
+ * sidan, och öppna affärer i `<main>` annat än exakt en gång i den fasta meningen.
+ */
+function gamlaFormuleringar(sida: string): string[] {
+  const brister = GAMLA_FORMULERINGAR.filter((g) => sida.includes(g)).map((g) => `«${g}» står på sidan`);
+  if (sida.includes('Linear')) brister.push('ordet Linear står på sidan');
+  const main = utanTaggar(/<main>([\s\S]*?)<\/main>/.exec(sida)?.[1] ?? '');
+  const antal = main.toLowerCase().split('öppna affärer').length - 1;
+  if (antal !== 1 || !main.includes(OPPNA_AFFARER)) brister.push(`öppna affärer står ${antal} gånger i <main>, inte en gång i den fasta meningen`);
+  return brister;
+}
+
+describe('styrvyn — kostnadstäckningen på sidan (6.1 S)', () => {
+  let user: TestUser;
+  let styrvy: string;
+  let ua: ReturnType<typeof supertest.agent>;
+  // Sidan läser dagens datum, så fixturen dateras samma dag (Kända gränser).
+  const idag = new Date().toISOString().slice(0, 10);
+  const ar = idag.slice(0, 4);
+  const tjanstens = () => iTenant(user, styrvy, (k) => steeringOverview(k, styrvy));
+  const sidan = async () => {
+    const res = await ua.get(`/app/c/${styrvy}/steering`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.text;
+  };
+  beforeAll(async () => {
+    user = await registerUser('styrvy61');
+    styrvy = await createCompany(user.token, 'Styrvy AB');
+    const fy = await createFiscalYear(styrvy, auth(user), { label: ar, start_date: `${ar}-01-01`, end_date: `${ar}-12-31` });
+    await kostnadSeed(user, styrvy, fy.id, idag, 1200000);
+    await customerInvoice(user, styrvy, fy.id, idag, idag, 400000);
+    ua = supertest.agent(app);
+    const login = await ua.post('/app/login').type('form').send({ email: user.email, password: 'mycket-hemligt-losen-123' });
+    expect([302, 303], JSON.stringify(login.body)).toContain(login.status);
+  });
+  it('S1: sidan visar renderarens fragment för tjänstens svar samma dag', async () => {
+    const svar = await tjanstens();
+    // Positiv kontroll: facit räknat för hand.
+    expect(svar.coverage.known_next_3_months_ore).toBe(500000);
+    expect(svar.cost.avg_month_ore).toBe(100000);
+    expect(svar.coverage.gap_ore).toBe(200000);
+    expect(svar.revenue.total_12m_ore).toBe(400000);
+    expect(svar.concentration.top_share_permille).toBe(1000);
+    const sida = await sidan();
+    expect(sida).toContain(kostnadstackning(svar).value);
+    expect(tackningsrader(sida).at(-1)?.namn).toBe('Överskott');
+    expect(normalisera(sida)).toContain('+2 000,00');
+  });
+  it('S2: de gamla formuleringarna och Linear står inte på sidan, och öppna affärer står en gång', async () => {
+    const sida = await sidan();
+    expect(gamlaFormuleringar(sida)).toEqual([]);
+    // Negativ kontroll: basens stycke och basens rubrik, planterade var för sig.
+    expect(sida).toContain('</main>');
+    const stycke = '<p class="muted">Öppna affärer räknas inte in: de bor i Linear med sin etikett och blir intäkt först när de fakturerats.</p>';
+    expect(gamlaFormuleringar(sida.replace('</main>', `${stycke}</main>`)).length).toBeGreaterThan(0);
+    expect(gamlaFormuleringar(sida.replace('</main>', '<h2>Känd täckning framåt</h2></main>')).length).toBeGreaterThan(0);
+  });
+  it('S3: nyckeltalen, koncentrationen och varningen står kvar, och abonnemangen står gånger tre', async () => {
+    const svar = await tjanstens();
+    expect(svar.revenue.total_12m_ore).toBe(400000);
+    expect(svar.cost.avg_month_ore).toBe(100000);
+    const sida = await sidan();
+    for (const [etikett, ore] of [
+      ['Intäkt 12 mån', svar.revenue.total_12m_ore],
+      ['Takt per månad', svar.revenue.avg_month_ore],
+      ['Senaste 3 mån (snitt)', svar.revenue.last3_avg_ore],
+      ['Kostnad per månad', svar.cost.avg_month_ore],
+    ] as const) {
+      expect(sida, etikett).toContain(`<div class="l">${etikett}</div><div class="v">${amount(ore).value}</div>`);
+    }
+    for (const text of ['Kundkoncentration (12 mån)', 'Betalare AB', '100,0 %', 'Koncentrationsrisk']) expect(sida, text).toContain(text);
+    expect(sida).not.toContain('Abonnemang per månad');
+    const abonnemang = tackningsrader(sida).find((r) => r.namn === 'Abonnemang × 3');
+    expect(abonnemang?.forklaring).toBe(FORKLARING.abonnemang('0,00'));
   });
 });

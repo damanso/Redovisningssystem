@@ -153,6 +153,26 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Story 6.1 (crm): kostnadstäckningen som schablon, med täckningsgapet (FR-20, FR-41):**
+  `steeringOverview` bär `coverage.gap_ore` ur den nya rena `coverageGapOre`
+  i steering-tjänsten (schablonen minus tre gånger snittkostnaden, i ören med
+  tecken), och gapet är `null` utan bokförda kostnader, i samma fall som
+  `months_covered`; övriga fält är orörda. Styrvyn ritar tabellen
+  «Kostnadstäckning (schablon)» i den nya vymodulen
+  `server/src/http/view/kostnadstackning.ts`, i två kolumner med förklaringen
+  under radnamnet, så att den ryms på telefonbredd utan att staplas. De gamla
+  formuleringarna och hänvisningen till Linear är borta ur rutten, och den enda
+  meningen om öppna affärer är «Öppna affärer räknas inte in i täckningen.».
+  Jämförelsegrunden är tre månaders kostnad enligt Davids svar 2026-10-16 (PRD
+  fråga 16), så 6.4 behöver ingen tabell och ingen åtgärd. Prov:
+  `server/test/steering-liquidity.test.ts` (K1–K5 tjänsten och gapets tecken,
+  V1–V6 renderaren och tvåspaltsformen, S1–S3 styrvyns sida, var och en med
+  negativ kontroll) och `server/test/crm-views.test.ts` (rubriken och titeln
+  uppdaterade). Ingen migration, åtgärd, tabell, rutt eller miljövariabel.
+  Kört i sessionen: `npm run typecheck` (båda tsconfig) och `npm test` per
+  berörd fil mot testdatabasen, och till sist hela `npm test`: 222 filer,
+  4400 prov gröna. **Inte kört:** `npm run build`.
+
 - **2026-11-28 — Bygge: 5-7-stromnivan-och-absolutgolvet-enligt-davids-beslut.**
   Strömnivån mäts nu mot summan av stegets leverabelramar (Davids svar
   2026-10-07). Ny ren regel `stromramar` i `lib/troskel.ts` med källan i

@@ -11,6 +11,7 @@
 // från en kund. Det är den enskilt största risken i bolaget och den ska stå
 // högst upp, inte gömmas i en rapportbilaga.
 import type { PoolClient } from 'pg';
+import { assertSafeOre, type Ore } from '../domain/money.js';
 import { monthlyRevenue, recurringMonthOre } from './reports.js';
 import { unbilledTimeReport } from './timeReports.js';
 
@@ -33,10 +34,23 @@ export interface SteeringOverview {
     recurring_month_ore: number;
     known_next_3_months_ore: number;
     months_covered: number | null;
+    gap_ore: number | null;
   };
 }
 
 const round = (n: number): number => Math.round(n);
+
+/**
+ * Täckningsgapet (FR-41): schablonen minus tre månaders kostnad, i den
+ * ordningen — positivt är överskott, negativt är vad som saknas. Utan bokförd
+ * kostnad (eller ett snitt som avrundats till noll) finns inget att jämföra
+ * med, och då är gapet okänt: ett gap räknat mot noll vore ett överskott som
+ * ingen kostnad står bakom. Samma villkor som `months_covered`.
+ */
+export function coverageGapOre(known3: Ore, avgCostOre: Ore): Ore | null {
+  if (avgCostOre <= 0) return null;
+  return assertSafeOre(known3 - 3 * avgCostOre);
+}
 
 export async function steeringOverview(
   client: PoolClient, companyId: string, opts: { as_of?: string } = {},
@@ -111,6 +125,7 @@ export async function steeringOverview(
       // kostnader i bokföringen finns inget att dela med — då är svaret okänt,
       // inte "oändligt".
       months_covered: avgCost > 0 ? Math.round((known3 / avgCost) * 10) / 10 : null,
+      gap_ore: coverageGapOre(known3, avgCost),
     },
   };
 }
