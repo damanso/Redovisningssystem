@@ -121,6 +121,7 @@ import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from '.
 import { nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
 import { golvmarkering, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
 import { prognosplatsHtml } from './uppdragPrognos.js';
+import { kostnadstackning } from './kostnadstackning.js';
 
 // En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
 // (Idag, Relationer, åtagandevyn, Lova något och kundkortets Åtaganden) skriver
@@ -8967,7 +8968,7 @@ viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (
   const top = s.concentration.customers[0];
   const risk = (s.concentration.top_share_permille ?? 0) >= 500;
   return html`<div class="page-head"><div>${eyebrow('Styrning')}<h1>Hur vi ligger till</h1>
-      <p class="lede">Intäktstakt, kundkoncentration och känd täckning framåt — räknat ur bokförda verifikat, obetalda fakturor, abonnemang och ofakturerad tid.</p></div></div>
+      <p class="lede">Intäktstakt, kundkoncentration och kostnadstäckningen som schablon — räknat ur bokförda verifikat, obetalda fakturor, abonnemang och ofakturerad tid.</p></div></div>
     <div class="kpi-grid">
       ${kpiCell('Intäkt 12 mån', amount(s.revenue.total_12m_ore))}
       ${kpiCell('Takt per månad', amount(s.revenue.avg_month_ore))}
@@ -8992,23 +8993,7 @@ viewRouter.get('/c/:companyId/steering', pageFor('steering', 'Styrning', async (
               <td class="num">${pct(c.share_permille)}${c.share_permille >= 500 ? html` ${chip('Stor andel', 'neg', '!')}` : ''}</td></tr>`)}
             </tbody></table></div>`
     }
-    <h2 style="margin-top:18px">Känd täckning framåt</h2>
-    <div class="table-wrap"><table><thead><tr><th>Källa</th><th class="num">Belopp</th><th>Vad det är</th></tr></thead><tbody>
-      <tr><td>Obetalda bokförda fakturor</td><td class="num">${amount(s.coverage.receivables_ore, { unit: false })}</td>
-        <td class="muted">Fakturerat men ännu inte betalt</td></tr>
-      <tr><td>Ofakturerad fakturerbar tid</td><td class="num">${amount(s.coverage.unbilled_time_ore, { unit: false })}</td>
-        <td class="muted">Utfört arbete som ännu inte fakturerats</td></tr>
-      <tr><td>Abonnemang per månad</td><td class="num">${amount(s.coverage.recurring_month_ore, { unit: false })}</td>
-        <td class="muted">Avtalad återkommande intäkt</td></tr>
-      <tr><td><strong>Känt de närmaste 3 månaderna</strong></td>
-        <td class="num"><strong>${amount(s.coverage.known_next_3_months_ore, { unit: false })}</strong></td>
-        <td class="muted">${
-          s.coverage.months_covered === null
-            ? 'Inga bokförda kostnader att jämföra med ännu'
-            : html`Räcker till ca ${String(s.coverage.months_covered).replace('.', ',')} månaders kostnader`
-        }</td></tr>
-    </tbody></table></div>
-    <p class="muted" style="font-size:12.5px;margin-top:10px">Öppna affärer räknas inte in: de bor i Linear med sin etikett och blir intäkt först när de fakturerats. Täckningen här är avtalat och utfört arbete — inte förhoppningar.</p>`;
+    ${kostnadstackning(s)}`;
 }));
 
 // Avancerad analys: nyckeltal, toppkunder och kostnadsfördelning för perioden.

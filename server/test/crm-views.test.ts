@@ -199,7 +199,7 @@ describe('styrvyn svarar på "hur ligger vi till"', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('Intäkt 12 mån');
     expect(res.text).toContain('Takt per månad');
-    expect(res.text).toContain('Känd täckning framåt');
+    expect(res.text).toContain('Kostnadstäckning (schablon)');
     expect(res.text).toContain('Obetalda bokförda fakturor');
   });
 
@@ -210,7 +210,7 @@ describe('styrvyn svarar på "hur ligger vi till"', () => {
     expect(res.text).toContain('75,0 %');
   });
 
-  it('öppna affärer räknas inte som täckning — de bor i Linear', async () => {
+  it('öppna affärer räknas inte in i täckningen', async () => {
     const res = await ua.get(`/app/c/${companyId}/steering`);
     expect(res.text).toContain('Öppna affärer räknas inte in');
   });
