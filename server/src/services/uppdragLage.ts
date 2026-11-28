@@ -51,11 +51,11 @@ import {
 import { listaSignaler, type Signalrad } from './uppdragSignal.js';
 import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.js';
 import {
-  mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
+  LARMREGELNS_KALLA, mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
 } from '../lib/leveranskontrakt.js';
-import { last, saknas, type Lasvarde } from '../lib/lasvarde.js';
+import { last, olast, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognosplats.js';
-import type { Troskelutfall } from '../lib/troskel.js';
+import { uppdragsnivansTimlage, type Troskelutfall, type Uppdragstimlage } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
 import { MANDATATGARDER } from './uppdragBeslut.js';
 import type { Actor } from '../http/middleware/authenticate.js';
@@ -123,6 +123,10 @@ export type Tidmotram = Pick<Forbrukning, 'minuter' | 'tak_minuter' | 'tak_statu
 export interface Mattrad extends Uppfoljningsmatt {
   ordning: number;
   varde: Lasvarde<Tidmotram> | null;
+  /** Davids beslut när larmregeln härleds (Story 5.8), annars null. */
+  larmregel_kalla: string | null;
+  /** Uppdragsnivåns timläge ur svepet; null när larmregeln inte härleds. */
+  larm: Lasvarde<Uppdragstimlage> | null;
 }
 
 /** Uppdragets senaste bedömning, med den första meningen ur kommentaren. */
@@ -399,6 +403,31 @@ export function mattvarde(
 }
 
 /**
+ * Måttets larm (Story 5.8, FR-19, FR-35). REN funktion.
+ *
+ * En härledd larmregel larmar på FR-3:s avvikelsetröskel enligt Davids beslut:
+ * larmet väljs ur svepets tröskelvärde för uppdragsnivån och räknas aldrig om
+ * här. Det bär cacheradens egen källa och lästid, samma regel som
+ * `farskhet.troskel`. Har svepet inte kört är larmet oläst utan lästid — aldrig
+ * ”inget larm”, för de två betyder olika saker för den som läser.
+ */
+export function mattlarm(
+  matt: Pick<Uppfoljningsmatt, 'larmregel_lage'>,
+  troskelrad: { varde: unknown; kalla: string | null; last_nar: Date } | undefined,
+  rot: { code: string; cap_status: 'bekraftat' | 'vet_ej' } | null,
+): Pick<Mattrad, 'larmregel_kalla' | 'larm'> {
+  if (matt.larmregel_lage === 'harleds_ej') return { larmregel_kalla: null, larm: null };
+  if (troskelrad === undefined) return { larmregel_kalla: LARMREGELNS_KALLA, larm: olast(KALLA_REDOVISNING, null) };
+  const kalla = troskelrad.kalla ?? KALLA_REDOVISNING;
+  const lastNar = troskelrad.last_nar.toISOString();
+  const utfall = troskelutfall(troskelrad.varde);
+  return {
+    larmregel_kalla: LARMREGELNS_KALLA,
+    larm: utfall === null ? olast(kalla, lastNar) : last(uppdragsnivansTimlage(utfall, rot), kalla, lastNar),
+  };
+}
+
+/**
  * Läget för ETT uppdrag: FR-18:s fem innehållsdelar, var och en ur den tjänst
  * som redan äger den, och var och en med sin egen färskhet.
  */
@@ -492,8 +521,13 @@ export async function lasUppdragslage(
     const tidMotRam = last<Tidmotram>({
       minuter: forbrukning.minuter, tak_minuter: forbrukning.tak_minuter, tak_status: forbrukning.tak_status,
     }, direkt.kalla, direkt.last_nar);
+    // Story 5.8: måttets larm väljs ur samma cacherad och rotdel som redan är lästa.
     const matt = (await lasUppfoljningsmatt(client, companyId, contractId))
-      .map((m): Mattrad => ({ ...m, varde: mattvarde(m, tidMotRam) }));
+      .map((m): Mattrad => ({
+        ...m,
+        varde: mattvarde(m, tidMotRam),
+        ...mattlarm(m, larmrad, rot === null ? null : { code: rot.code, cap_status: rot.cap_status }),
+      }));
     // Rytmen räknas på läsvägens egen klocka, samma dag som färskheten säger.
     const rytm = await lasBedomningsrytm(client, companyId, contractId, lastNar.slice(0, 10));
 

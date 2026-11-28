@@ -1382,9 +1382,11 @@ godkännandet, allt i samma transaktion:
   ”Sektion 5” löses mot dokumentets egna rubriker. Ingen läsväg gissas: en källa
   som ingen lista känner lagras med läsvägen NULL och redovisas i `saknade_falt[]`
   med nyckeln `uppfoljning.<namn>.lasvag`. Larmregelns och utfallets läge är ett
-  av `'harleds' | 'harleds_ej'`. Importen skriver alltid larmregeln som
-  HÄRLEDS EJ, och bara ”Nedlagd tid mot ram” på läsvägen redovisningen har ett
-  utfall. Ingen andel klara leverabler räknas, och inget fält bär en
+  av `'harleds' | 'harleds_ej'`. Larmregeln härleds exakt där utfallet
+  härleds: bara ”Nedlagd tid mot ram” på läsvägen redovisningen har ett
+  utfall, och dess larmregel ersätts enligt Davids beslut 2026-10-07 av FR-3:s
+  avvikelsetröskel (Story 5.8). Kontraktets larmregel lagras ändå ordagrant,
+  och övriga larmregler lagras som HÄRLEDS EJ. Ingen andel klara leverabler räknas, och inget fält bär en
   beslutspunkts datum eller läge. Rytmen är den första raden i ett
   rapporteringsavsnitt (rubriken nämner rapportering eller rytm) vars ”Hur
   ofta” är en hel rytm, till exempel ”Varannan torsdag”: texten lagras som den
@@ -2323,7 +2325,13 @@ inloggning visar scopelinjen (NFR-9).
   `{ minuter, tak_minuter, tak_status }` — två tal, aldrig en kvot, och takets
   status — med samma källa, lästid och läge som förbrukningen, så att en källa
   som inte kunde läsas visas som oläst och aldrig som noll, och ett obekräftat
-  tak aldrig visas som en ram. `rytm` är rytmkolumnerna, ankaret och dess källa
+  tak aldrig visas som en ram. Sedan Story 5.8 bär varje mått också
+  `{ larmregel_kalla, larm }`. Källan är texten
+  ”Davids beslut 2026-10-07: FR-3:s avvikelsetröskel ersätter kontraktets larmregel”
+  när larmregeln härleds, annars null. Larmet är null när larmregeln inte
+  härleds, annars ett `Lasvarde` med svepets tröskelrads källa och lästid och
+  ett av lägena `'tander' | 'tiger' | 'ram_saknas' | 'tak_ej_bekraftat'` (tänt
+  bär uppdragsnivåns timlarm), och oläst när svepet inte har kört. `rytm` är rytmkolumnerna, ankaret och dess källa
   plus `{ lage, period, nasta }` ur rytmregeln för läsvägens UTC-dag. Färskheten
   får `farskhet.matt` och `farskhet.rytm`, båda direktlästa ur redovisningen.
 - **Nästa leverans (Story 4.3, FR-45):** varje avtal bär
@@ -2389,7 +2397,10 @@ husets ord, aldrig som något kontraktet skulle sakna), ett oläst värde i
 `.tomt` med källan och senaste lästid, eller ”utfall HÄRLEDS EJ”. Ett tomt fält
 står som inte inläst. En larmregel
 som inte härleds märks ”larmregel HÄRLEDS EJ”, och ”— kräver Davids svar” läggs
-till när regeln kräver en andel. Rytmen visar texten, mottagarkretsen, ankaret
+till när regeln kräver en andel. En larmregel som härleds (Story 5.8) visas
+ordagrant med chipet ”larmregel ersatt”, raden ”Larmar i stället på
+avvikelsetröskeln mot uppdragets timram” med källan och tröskelns läge med
+svepets färskhet, aldrig som en andel. Rytmen visar texten, mottagarkretsen, ankaret
 med sin källa och nästa bedömningstillfälle, eller i `.tomt` samma mening som
 Bedömning och undantagsvyn visar. Länken till Bedömning, där ankaret sätts,
 står bara där Bedömning har ankarformuläret (samma regel: aktivt uppdrag, det

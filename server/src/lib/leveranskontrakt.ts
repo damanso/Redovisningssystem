@@ -614,6 +614,26 @@ export function rytmregel(
   };
 }
 
+/**
+ * Källan till en härledd larmregel (FR-19). Davids svar 2026-10-07 på frågan om
+ * kontraktets larmregel skulle ersättas eller skrivas om i en ny
+ * kontraktsversion: «Ersätt, skriv inte om» (underlag/davids-svar.md). Kontraktets
+ * larmregel lagras därför ordagrant och skrivs aldrig om.
+ */
+export const LARMREGELNS_KALLA = 'Davids beslut 2026-10-07: FR-3:s avvikelsetröskel ersätter kontraktets larmregel';
+
+/**
+ * Larmregelns läge — den enda platsen som avgör det (FR-19). Davids beslut
+ * ersätter kontraktets larmregel med FR-3:s avvikelsetröskel för varje mått
+ * vars läsare är tiden mot ramen, också när kontraktet saknar en regel: det är
+ * det utfallet tröskeln larmar på. Ett mått utan läsare har inget utfall att
+ * larma på, och villkoret `uppdrag_matt_larmregel_kraver_utfall` (0100) är
+ * spärren bakom.
+ */
+export function larmregelLage(namn: string, lasvag: Mattlasvag | null): Mattlage {
+  return mattlasare(namn, lasvag) === 'tid_mot_ram' ? 'harleds' : 'harleds_ej';
+}
+
 const ANDELSORD = ['andel', 'andelen', 'andelar', 'procent', 'procenten'];
 
 /**
@@ -653,8 +673,9 @@ function mattIAvsnitten(avsnitten: Avsnitt[]): Uppfoljningsmatt[] {
           kallreferenser,
           lasvag,
           larmregel: iLarm >= 0 ? text(rad[iLarm]) : null,
-          // Ingen larmregel operationaliseras här; den läses som den står.
-          larmregel_lage: 'harleds_ej',
+          // Larmregeln lagras som den står; läget följer Davids beslut 2026-10-07
+          // och bär källan `LARMREGELNS_KALLA`.
+          larmregel_lage: larmregelLage(namn, lasvag),
           utfall_lage: mattlasare(namn, lasvag) === null ? 'harleds_ej' : 'harleds',
         });
       }

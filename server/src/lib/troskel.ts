@@ -452,3 +452,39 @@ export function harledTroskellarm(indata: Troskelindata): Troskelutfall {
 
   return { trosklar: indata.trosklar, larm, utan_egen_ram };
 }
+
+/**
+ * Uppdragsnivåns timläge: det måttet ”Nedlagd tid mot ram” visar. Fyra former,
+ * och bara den tända bär larm — de smala timlarmen, i utfallets ordning.
+ */
+export type Uppdragstimlage =
+  | { lage: 'tander'; larm: Extract<Larm, { ram: 'timmar' }>[]; trosklar: Trosklar }
+  | { lage: 'tiger' }
+  | { lage: 'ram_saknas' }
+  | { lage: 'tak_ej_bekraftat' };
+
+/**
+ * Måttet ”Nedlagd tid mot ram” larmar på FR-3:s avvikelsetröskel enligt Davids
+ * beslut 2026-10-07 (FR-19): kontraktets larmregel om en andel klara
+ * leverabler ersätts. Funktionen VÄLJER ur svepets lagrade utfall exakt
+ * rotdelens timlarm, för utfall och prognos, och jämför inget tal — villkoret
+ * prövades redan av `harledTroskellarm` i svepet. Indatat bär varken
+ * leverabellägen eller register, så ingen andel kan räknas här (NFR-11).
+ *
+ * Ordningen: utan egen timram på uppdragsnivån finns inget att pröva; ett
+ * obekräftat tak larmar aldrig; annars tänder måttet på rotdelens timlarm.
+ */
+export function uppdragsnivansTimlage(
+  utfall: Troskelutfall, rot: { code: string; cap_status: 'bekraftat' | 'vet_ej' } | null,
+): Uppdragstimlage {
+  // Ett cachevärde skrivet före Story 5.3 saknar ramläget: det läses som tomt.
+  const utanEgenRam = utfall.utan_egen_ram ?? [];
+  if (rot === null || utanEgenRam.some((u) => u.kod === rot.code && u.enhet === 'timmar')) {
+    return { lage: 'ram_saknas' };
+  }
+  if (rot.cap_status !== 'bekraftat') return { lage: 'tak_ej_bekraftat' };
+  const larm = utfall.larm.filter(
+    (l): l is Extract<Larm, { ram: 'timmar' }> => l.ram === 'timmar' && l.kod === rot.code,
+  );
+  return larm.length > 0 ? { lage: 'tander', larm, trosklar: utfall.trosklar } : { lage: 'tiger' };
+}
