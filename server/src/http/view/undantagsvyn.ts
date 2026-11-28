@@ -18,14 +18,19 @@
  *
  * Ur `services/` importeras bara typer och konstanter; vyn anropar ingen
  * funktion därifrån.
+ *
+ * Story 6.2 (FR-18, FR-40): Lägets mandatdel (`mandatdel`) står också här,
+ * eftersom den ritar samma poster med samma etiketter och orsakstexter, avgränsade
+ * till ett uppdrag. Den visar frågorna och länkar till posterna här; den avgör inga.
  */
 import { driveLank } from '../../lib/referens.js';
-import { aiMarkning, amount, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, referensvisning, type Raw } from './html.js';
+import { aiMarkning, amount, chip, direktFarskhet, eyebrow, farskhetsrad, farskhetstid, html, kronor, raw, referensvisning, type Raw } from './html.js';
 import { KALLA_REDOVISNING, type Lasvarde } from '../../lib/lasvarde.js';
 import { DAVIDS_ANTECKNING, tidtext, type Andring, type Andringsfalt, type OvrigtUnderlag } from '../../lib/beslutsunderlag.js';
 import type {
-  Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost,
+  Begardbedomning, Kallreferens, Mandatkalla, Ovrigtpost, Postslag, Tackningspost, Undantag, Undantagspost, Uppdragsmandat,
 } from '../../services/uppdragUndantag.js';
+import { lasvardesFarskhet, olastEllerSaknas } from './uppdragForbrukning.js';
 import { BEDOMNINGSLAGEN, type Bedomningslage } from '../../services/uppdragBedomning.js';
 import { INGEN_PERIOD, type Bedomningsperiod } from '../../lib/bedomningsrytm.js';
 import type { Farskhet } from '../../services/uppdragLage.js';
@@ -36,6 +41,15 @@ export const INGET_KRAVER = 'Inget kräver ditt mandat i det underlag som lästs
 export const OFULLSTANDIGT = 'Underlaget är ofullständigt';
 /** Regeln om godkännande, i klartext i varje utfall (FR-4). */
 export const REGELN = 'Varje kostnadsbindning och baselineändring kräver ditt godkännande, oavsett storlek. Betalning registreras först med din bekräftelse enligt K5.';
+
+/** Story 6.2: Lägets mandatdel, en rubrik i varje form. */
+export const MANDATDEL_RUBRIK = 'Frågor som kräver ditt mandat';
+/** Verifierat tomt för ett uppdrag (FR-22): bara när uppdragets mandatkällor är lästa och färska. */
+export const INGET_FOR_UPPDRAGET = 'Inget kräver ditt mandat för uppdraget';
+/** Ett stängt uppdrag: läsvägen hoppar över dess poster, så inget påstås vara läst. */
+export const AVSLUTAT_UTAN_FRAGOR = 'Uppdraget är avslutat, och ett avslutat uppdrag har inga frågor som kräver ditt mandat.';
+/** Varje fråga på Läget leder hit, där den avgörs. */
+export const AVGOR_I_UNDANTAGSVYN = 'Avgör i undantagsvyn';
 
 /** Postslagens rubriker. Ett nytt slag i `POSTSLAG` fäller typkontrollen tills det har sin. */
 export const POSTSLAGSETIKETT: Record<Postslag, string> = {
@@ -400,7 +414,7 @@ function postlista(companyId: string, u: Undantag, idag: string, utfall: 'poster
 }
 
 /** Orsaken till att en källa inte räknas som läst, med lästiden när den finns. */
-function orsakstext(t: Tackningspost, idag: string): string {
+export function orsakstext(t: Tackningspost, idag: string): string {
   const tid = t.tackning.last_nar === null ? '' : ` ${farskhetstid(t.tackning.last_nar, idag)}`;
   switch (t.orsak) {
     case 'saknas': return 'har aldrig lästs av svepet';
@@ -417,10 +431,10 @@ function orsakstext(t: Tackningspost, idag: string): string {
   }
 }
 
-/** Ett avtal per rad, med varje källa som inte räknas som läst. */
-function ofullstandigaAvtal(u: Undantag, idag: string): Raw {
+/** Ett avtal per rad, med varje källa som inte räknas som läst. Undantagsvyn och mandatdelen delar den. */
+function ofullstandigaAvtal(rader: readonly Tackningspost[], idag: string): Raw {
   const per = new Map<string, Tackningspost[]>();
-  for (const t of u.ofullstandig_tackning) per.set(t.contract_id, [...per.get(t.contract_id) ?? [], t]);
+  for (const t of rader) per.set(t.contract_id, [...per.get(t.contract_id) ?? [], t]);
   return html`<ul style="margin:.4rem 0 0;padding-left:18px">${[...per.values()].map((rader) => {
     const a = rader[0]!;
     return html`<li>${a.project_name} · ${a.contract_name}: ${rader
@@ -439,12 +453,98 @@ function utfallsdel(companyId: string, u: Undantag, idag: string): Raw {
       } Läget för varje uppdrag står i <a href="/app/c/${companyId}/uppdrag/lista">Uppdragens läge</a>.</div>`;
     case 'ofullstandigt':
       return html`<section class="tomt" data-utfall="ofullstandigt"><b>${OFULLSTANDIGT}.</b>Svepet har inte läst allt underlag som kan kräva ditt mandat, så vyn kan inte säga att allt är avgjort. Det här är inte läst:
-        ${ofullstandigaAvtal(u, idag)}</section>
+        ${ofullstandigaAvtal(u.ofullstandig_tackning, idag)}</section>
         ${u.poster.length === 0 ? '' : postlista(companyId, u, idag, null)}`;
     case 'poster':
       return postlista(companyId, u, idag, 'poster');
     default: {
       const okant: never = u.utfall;
+      return html`${String(okant)}`;
+    }
+  }
+}
+
+// --- Lägets mandatdel (Story 6.2) --------------------------------------------
+
+/** Husets kortmarginal för `.tomt` i en del, så att blocket linjerar med färskhetsraden. */
+const DELENS_TOMT = 'margin:10px 16px 4px;padding:.6rem .8rem;font-size:13px';
+/** Samma block i ockran, mellan förklaringen och frågelistan. */
+const OCKRANS_TOMT = 'margin:6px 16px 8px;padding:.6rem .8rem;font-size:13px';
+/** Samma avstånd till korten i varje form, så att sidan inte hoppar när läget byts. */
+const DELENS_MARGINAL = 'margin:0 0 16px';
+
+/** Vägen till frågorna över alla uppdrag. */
+const tillUndantagsvyn = (companyId: string): Raw =>
+  html`Frågorna över alla uppdrag står i <a href="/app/c/${companyId}/uppdrag">undantagsvyn</a>.`;
+
+/** Delen utan ockra: rubriken, ett chip, kroppen och färskhetsraden. */
+function mandatpanel(marke: Raw | '', kropp: Raw, farskhet: Raw): Raw {
+  return html`<section class="panel" aria-labelledby="handgrepp" style="${DELENS_MARGINAL}">
+    <div class="panel__head"><h2 id="handgrepp">${MANDATDEL_RUBRIK}</h2>${marke}</div>
+    <div class="panel__body">${kropp}${farskhet}</div>
+  </section>`;
+}
+
+/**
+ * Ofullständigt underlag för uppdraget (FR-22): aldrig "inget kräver ditt
+ * mandat". Varje källa som inte räknas som läst står med undantagsvyns egen
+ * orsakstext; utan en enda täckningsrad står bara meningen.
+ */
+function ofullstandigtForUppdraget(companyId: string, m: Uppdragsmandat, idag: string, stil: string): Raw {
+  return html`<div class="tomt" data-utfall="ofullstandigt" style="${stil}"><b>${OFULLSTANDIGT}.</b>Svepet har inte läst allt underlag som kan kräva ditt mandat för uppdraget, så Läget kan inte säga att allt är avgjort.${
+    m.ofullstandig_tackning.length === 0 ? '' : html` Det här är inte läst:${ofullstandigaAvtal(m.ofullstandig_tackning, idag)}`}
+    ${tillUndantagsvyn(companyId)}</div>`;
+}
+
+/** En fråga: slaget, valet, AI-märkningen och vägen till posten där den avgörs. */
+function mandatfraga(companyId: string, p: Undantagspost): Raw {
+  return html`<li>
+    ${chip(POSTSLAGSETIKETT[p.slag], 'warn', '!')}
+    <span style="flex:1 1 220px;min-width:0">${p.val.text}</span>
+    ${formuleradAvHermes(p) ? aiMarkning() : ''}
+    <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag#post-${p.id}">${AVGOR_I_UNDANTAGSVYN}</a>
+  </li>`;
+}
+
+/**
+ * Lägets mandatdel (Story 6.2, FR-18, FR-40, FR-22): undantagsvyns poster för
+ * ett uppdrag, ur `varden.mandatfragor`. Ockran (`.ai-card`) betyder "väntar på
+ * en människa" och står bara när det finns frågor; annars står delen som
+ * `.panel` med `.tomt` i ett av tre besked — verifierat tomt, ofullständigt med
+ * källan namngiven, eller avslutat — och ett oläst värde säger att frågorna inte
+ * kunde läsas. Delen har inget formulär och ingen knapp: varje fråga länkar till
+ * sin post i undantagsvyn, där den avgörs. Varje form slutar med läsvärdets
+ * egen färskhetsrad. `handgrepp` är husets namn på delen (1D Del 5).
+ */
+export function mandatdel(companyId: string, v: Lasvarde<Uppdragsmandat>, idag: string): Raw {
+  const farskhet = lasvardesFarskhet(v, 'frågorna', idag);
+  const m = v.varde;
+  if (v.lage !== 'last' || m === null) return mandatpanel('', olastEllerSaknas(v, 'Frågorna', idag), farskhet);
+  if (m.poster.length > 0) {
+    const antal = m.poster.length === 1 ? '1 fråga' : `${String(m.poster.length)} frågor`;
+    return html`<section class="ai-card" aria-labelledby="handgrepp" style="${DELENS_MARGINAL}">
+      <div class="ai-card__head"><span class="ai-card__title" id="handgrepp">${MANDATDEL_RUBRIK}</span>${chip(antal, 'warn', '!')}</div>
+      <div class="ai-card__why">Frågorna avgörs i undantagsvyn, där förslaget, skälen och källorna står. Läget visar dem men svarar aldrig åt dig.</div>
+      ${m.utfall === 'ofullstandigt' ? ofullstandigtForUppdraget(companyId, m, idag, OCKRANS_TOMT) : ''}
+      <ul class="handgrepp">${m.poster.map((p) => mandatfraga(companyId, p))}</ul>
+      ${farskhet}
+    </section>`;
+  }
+  switch (m.utfall) {
+    case 'ofullstandigt':
+      return mandatpanel(chip('Ofullständigt', 'warn', '!'), ofullstandigtForUppdraget(companyId, m, idag, DELENS_TOMT), farskhet);
+    case 'verifierat_tomt':
+      return mandatpanel(chip('Inga frågor', 'ok', '✓'), html`<div class="tomt" data-utfall="verifierat_tomt" style="${DELENS_TOMT}"><b>${INGET_FOR_UPPDRAGET}.</b>Svepet läste godkännandekön, Övrigt-raderna, kostnadsraderna och baselineförslagen för uppdragets avtal.${
+        m.aldsta_tackning === null ? '' : ` Den äldsta läsningen är från ${farskhetstid(m.aldsta_tackning, idag)}.`}
+        ${tillUndantagsvyn(companyId)}</div>`, farskhet);
+    case 'avslutat':
+      return mandatpanel(chip('Avslutat', 'muted'), html`<div class="tomt" data-utfall="avslutat" style="${DELENS_TOMT}">${AVSLUTAT_UTAN_FRAGOR}</div>`, farskhet);
+    // `uppdragetsMandat` ger aldrig utfallet poster utan en post. Kommer det ändå
+    // påstår delen inget: den säger bara att värdet saknas, aldrig "inget kräver".
+    case 'poster':
+      return mandatpanel('', olastEllerSaknas(v, 'Frågorna', idag), farskhet);
+    default: {
+      const okant: never = m.utfall;
       return html`${String(okant)}`;
     }
   }

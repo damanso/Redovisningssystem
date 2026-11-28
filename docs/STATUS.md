@@ -153,6 +153,35 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — 6-2-uppdragsvyn-visar-de-fem-delarna-och-bara-verkliga-mandatfragor.**
+  Läget visar FR-18:s fem delar: överst uppdragets frågor som kräver Davids
+  mandat och därunder fyra kort (förbrukning, leverabler, senaste bedömning,
+  scopesignaler). Frågorna kommer bara ur `lasUndantag`, avgränsade av den rena
+  `uppdragetsMandat` i undantagets tjänst och lämnade som `varden.mandatfragor`
+  av `lasUppdragslage`; vyn ritar dem med `mandatdel` i undantagsvyns fil, med en
+  länk per fråga till posten i undantagsvyn. Handgreppsbandet och kortet Öppna
+  köposter, som läste `listApprovals` med sitt fönster på 200, är borta;
+  `koposter` står kvar i svaret men ritas inte. Bedömningskortet väljer form med
+  den rena `periodensBedomning` i rytmregeln: utan bedömning för rytmens
+  innevarande period står «Ingen bedömning satt» i `.tomt`, aldrig grönt och
+  aldrig föregående periods läge, och kortet säger vem som satte bedömningen.
+  Ingen migration, ingen rutt, ingen åtgärd (talet i rubrikstycket är
+  oförändrat) och inget beroende. Prov: LD1–LD11 i
+  `server/test/uppdragsytan-lagets-delar.test.ts` och de omskrivna påståendena i
+  sju provfiler (laget, lasvarde, scopelinje, matt-rytm, bedömningsbegäran,
+  prognosplats och nästa leverans). Körningar mot testdatabasen: Körning 1–4
+  gröna (131, 213, 682 och 384 prov i sina filter); Körning 5:s urval grönt
+  (454 prov), `npm run typecheck` utan fel, och hela `npm test` gav
+  `Test Files 1 failed | 224 passed (225)`, `Tests 1 failed | 4529 passed (4530)`.
+  Det röda var scopeavgörandeprovets K4 d, som läste bandets radtext
+  «Scopesignal: ”…”» på Läget och saknades i berättelsens lista. Påståendet är
+  omskrivet med samma avsikt (signalen står som fråga i mandatdelen och öppen i
+  kortet, och släpps efter avgörandet), och filen och vyns provfiler kördes om
+  gröna (276 prov). Hela sviten är inte omkörd efter rättelsen; kedjan kör den.
+  `npm run build` inte kört (nekas i kedjan). Inga rester ur ingången. Rött
+  utanför repot före bygget, orört av berättelsen: bmadglidning, scope_grind och
+  overlamningsregister_fr6 (RÖDA) och modulprov och continuityvakt (KUNDE_INTE) i
+  provvaktens körning 2026-11-28.
 - **2026-11-28 — Omtag: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
   Granskningens fyra fynd (AC4 och AC6 på Pengarna) var samma felklass: en
   färskhetstext som avgör «läst» av lästiden i stället för läget. Klassen är

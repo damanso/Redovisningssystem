@@ -27,6 +27,7 @@ import { LEVERABELORD, kalendermanad, sammanfattaAndringar } from '../src/lib/be
 import { BEDOMNINGSLAGEN } from '../src/services/uppdragBedomning.js';
 import { BESLUTSRADEN } from '../src/services/uppdragUndantag.js';
 import { esc, statusChip } from '../src/http/view/html.js';
+import { AVGOR_I_UNDANTAGSVYN } from '../src/http/view/undantagsvyn.js';
 import { INGEN_PERIOD } from '../src/lib/bedomningsrytm.js';
 import { saBedomningsrytm } from './bedomningsrytmHelper.js';
 
@@ -1024,8 +1025,7 @@ describe('K6 vyn', () => {
     expect(k).toContain('name="kommentar"');
     expect(k).toContain('Begär ny bedömning');
     const band = kort(html, 'handgrepp');
-    expect(band).toContain('ingen begärd bedömning');
-    expect(band).toContain('Kön töms bara av medvetna beslut');
+    expect(band).not.toContain('#post-');
   });
 
   it('b begäran från Läget går genom åtgärden som människa', async () => {
@@ -1047,9 +1047,10 @@ describe('K6 vyn', () => {
     expect(k).toContain(`href="/app/c/${vy.id}/projects/${q.projectId}/bedomning"`);
     expect(k).not.toContain('value="begar_bedomning"');
     const band = kort(html, 'handgrepp');
-    expect(band).toContain('Ny bedömning begärd');
-    expect(band).toContain(`href="/app/c/${vy.id}/projects/${q.projectId}/bedomning"`);
-    expect(band).toContain('>Bedöm</a>');
+    const begaranId = (await begaranRader(q.contractId))[0]!.id;
+    expect(band).toContain('Ny bedömning');
+    expect(band).toContain(`href="/app/c/${vy.id}/uppdrag#post-${begaranId}"`);
+    expect(band).toContain(`>${AVGOR_I_UNDANTAGSVYN}</a>`);
     expect(html).toContain('class="ai-card"');
   });
 
