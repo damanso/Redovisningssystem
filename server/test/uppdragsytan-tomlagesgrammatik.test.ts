@@ -180,6 +180,26 @@ function meningenForstIBlocket(html: string, id: string): boolean {
   return forst >= start && forst < slut;
 }
 
+/**
+ * Ett id som eget attribut på sidan. `data-destination-id="x"` slutar också på
+ * `id="x"`, så attributet måste stå efter ett blanktecken.
+ */
+const harId = (html: string, id: string): boolean => new RegExp(`\\sid="${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`).test(html);
+
+/** Varje väg i sidans tomlägen: blockets id och länkens `href`. */
+function tomlagesvagar(html: string): Array<{ id: string; href: string }> {
+  const vagar: Array<{ id: string; href: string }> = [];
+  for (const m of html.matchAll(/<p class="tomt" data-tomlage="([^"]+)"[\s\S]*?<\/p>/g)) {
+    for (const a of m[0].matchAll(/<a href="([^"]*)"/g)) vagar.push({ id: m[1]!, href: a[1]! });
+  }
+  return vagar;
+}
+
+/** Ankarena i sidans tomlägen som inte har sitt id på sidan, som `id → #ankare`. */
+const dodaAnkare = (html: string): string[] => tomlagesvagar(html)
+  .filter((v) => v.href.startsWith('#') && !harId(html, v.href.slice(1)))
+  .map((v) => `${v.id} → ${v.href}`);
+
 type Rigg = 'U' | 'UR' | 'F' | 'V' | 'A' | 'L' | 'D' | 'P' | 'H' | 'H2' | 'H3' | 'T';
 
 /**
@@ -244,7 +264,7 @@ async function provaFall(f: Fall): Promise<void> {
   expect(b!, f.id).toContain(`href="${vag}"`);
   for (const forbjudet of ['<form', '<button', '<input']) expect(b!.includes(forbjudet), `${f.id}: ${forbjudet}`).toBe(false);
   expect(meningenForstIBlocket(html, f.id), `${f.id}: meningen står först utanför blocket`).toBe(true);
-  if (vag.startsWith('#')) expect(html.includes(`id="${vag.slice(1)}"`), `${f.id}: ankaret ${vag}`).toBe(true);
+  if (vag.startsWith('#')) expect(harId(html, vag.slice(1)), `${f.id}: ankaret ${vag}`).toBe(true);
   expect(huvudet(html).includes('class="empty"'), `${f.rigg} ${f.sida}: class="empty" i <main>`).toBe(false);
 }
 
@@ -679,6 +699,10 @@ const OVRIGA_FALL: readonly Fall[] = [
     fras: ['Inga oplanerade kostnader'], vag: '<bas>/pengarna' },
   { grupp: 'a', rigg: 'U', sida: '<bas>/bedomning', id: 'bedomning_ingen_historik', slag: 'verifierat_tomt',
     fras: ['Den första du sätter'], vag: '#satt-bedomningen' },
+  // Utan avtal ritas inget formulär, men historikens tomläge står kvar — och
+  // dess ankare ska leda någonstans också här (granskningens fynd).
+  { grupp: 'a', rigg: 'P', sida: '<bas>/bedomning', id: 'bedomning_ingen_historik', slag: 'verifierat_tomt',
+    fras: ['Den första du sätter'], vag: '#satt-bedomningen' },
   { grupp: 'a', rigg: 'P', sida: '<bas>/bedomning', id: 'inget_avtal', slag: 'saknas',
     fras: ['Uppdraget har inget avtal ännu'], vag: '<bas>/avtal' },
   { grupp: 'b', rigg: 'U', sida: '<bas>/signaler', id: 'signaler_inget_obesvarat', slag: 'verifierat_tomt',
@@ -728,6 +752,62 @@ describe('TG7 Bedömning, Signaler, Rapporterna, Pengarna, Dokumenten och uppdra
     expect(saknar(planterad, 'Underlag fästs när en fras tänds')).toBe(false);
     expect(planterad.includes('Underlag fästs när en fras tänds')).toBe(false);
   });
+
+  // Fallistorna prövar vägen i de rigg och sidor de namnger. En väg som inte
+  // leder någonstans i en annan rigg — ett ankare vars mål bara ritas i en
+  // annan gren — syns inte där. Svepet prövar därför varje väg i varje tomläge
+  // på varje modulsida i varje rigg, oberoende av listorna.
+  it('TG7 g varje väg i varje tomläge leder någonstans: ankaret finns på sidan och den interna sidan svarar', async () => {
+    // Negativ kontroll: ett ankare utan sitt id fälls, också när id:t bara står
+    // som slutet på ett annat attribut, och ett ankare med sitt id släpps igenom.
+    const planterat = '<p class="tomt" data-tomlage="x" data-tomhet="saknas"><b>M.</b> <a href="#mal">V</a>.</p>';
+    expect(dodaAnkare(`<main>${planterat}</main>`)).toEqual(['x → #mal']);
+    expect(dodaAnkare(`<main><a data-destination-id="mal" href="/">N</a>${planterat}</main>`)).toEqual(['x → #mal']);
+    expect(dodaAnkare(`<main><div id="mal">${planterat}</div></main>`)).toEqual([]);
+
+    const sidorna: Array<{ rigg: Rigg; b: Bolag; vag: string }> = [];
+    for (const rigg of ['U', 'UR', 'F', 'V', 'A', 'L', 'D', 'P', 'H', 'H2', 'H3'] as const) {
+      const g = riggen(rigg);
+      for (const s of ['laget', 'bedomning', 'signaler', 'planen', 'leveranserna', 'leveranserna?lage=tabell',
+        'pengarna', 'rapporterna', 'kontraktet', 'dokumenten']) {
+        sidorna.push({ rigg, b: g.b, vag: `/app/c/${g.b.id}/projects/${g.projekt!}/${s}` });
+      }
+    }
+    for (const [rigg, b] of [['U', B1], ['H', B2], ['T', B3]] as const) {
+      for (const s of ['uppdrag', 'uppdrag/lista']) sidorna.push({ rigg, b, vag: `/app/c/${b.id}/${s}` });
+    }
+
+    const fel: string[] = [];
+    const utanSida: string[] = [];
+    const ankarbarande = new Set<string>();
+    const interna = new Map<string, Bolag>();
+    for (const s of sidorna) {
+      const res = await s.b.ua.get(s.vag);
+      if (res.status !== 200) {
+        utanSida.push(`${s.rigg} ${s.vag}`);
+        continue;
+      }
+      for (const v of tomlagesvagar(res.text)) {
+        if (v.href.startsWith('#')) ankarbarande.add(v.id);
+        else if (v.href.startsWith('/')) interna.set(v.href, s.b);
+        else if (!v.href.startsWith('https://')) fel.push(`${s.rigg} ${s.vag}: ${v.id} → ${v.href} är ingen adress`);
+      }
+      for (const d of dodaAnkare(res.text)) fel.push(`${s.rigg} ${s.vag}: ${d} saknar sitt id på sidan`);
+    }
+    for (const [href, b] of interna) {
+      const res = await b.ua.get(href);
+      if (res.status !== 200) fel.push(`${href} gav ${String(res.status)}`);
+    }
+    expect(fel).toEqual([]);
+
+    // Svepet är inte tomt: varje modulsida för ett uppdrag med avtal svarade, och
+    // varje id som fallistorna ger ett ankare nåddes av svepet.
+    expect(utanSida.filter((s) => !s.startsWith('P ') && !s.startsWith('D ')), 'sidor som inte svarade').toEqual([]);
+    const fallensAnkare = new Set([...LAGET_FALL, ...KONTRAKT_FALL, ...OVRIGA_FALL]
+      .filter((f) => f.vag.startsWith('#')).map((f) => f.id));
+    expect([...ankarbarande].sort()).toEqual([...fallensAnkare].sort());
+    expect(interna.size).toBeGreaterThan(10);
+  }, 240_000);
 });
 
 // ---------------------------------------------------------------------------

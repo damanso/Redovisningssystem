@@ -2913,11 +2913,14 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, 
     ${felNotis(req)}
     ${
       u.avtal.length === 0
-        ? saknasIUnderlaget('inget_avtal', {
+        // Story 6.3: historikens tomläge pekar på #satt-bedomningen i båda
+        // grenarna. Utan avtal är platsen där bedömningen sätts det här blocket:
+        // det säger varför ingen kan sättas än, och nästa Tab når dess väg.
+        ? html`<div id="satt-bedomningen">${saknasIUnderlaget('inget_avtal', {
           mening: 'Uppdraget har inget avtal ännu.',
           forklaring: 'Bedömningen sätts mot avtalet — det är där det står vad som lovats.',
           vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${u.projekt.id}`, sida: 'avtal', text: 'Läs in avtalet' },
-        }, 'sida')
+        }, 'sida')}</div>`
         : html`${/* Story 2.3: rytmen först, för den säger vilken period som
                 bedöms — eller varför ingen period räknas och vägen vidare. */ ''}
           ${u.rytm ? rytmpanel(companyId, u.projekt.id, u.avtal[0]!.id, u.rytm, u.kalenderref, u.idag,

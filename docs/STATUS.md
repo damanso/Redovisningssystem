@@ -153,7 +153,16 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
-- **2026-11-28 — 6-3-modulens-tomlagen-sager-vad-tomheten-betyder.**
+- **2026-11-28 — 6-3-modulens-tomlagen-sager-vad-tomheten-betyder (med omtag).**
+  Omtaget (code-review, tre fynd [High], samma fel): historikens tomläge på
+  Bedömning länkade till `#satt-bedomningen`, som bara ritades med avtal. Målet
+  ritas nu i båda grenarna av `bedomningsSida`. Utan avtal står id:t på blocket
+  `inget_avtal`, så vägen leder till «Läs in avtalet». Felklassen, en väg som
+  leder ingenstans, fälls av det nya svepet TG7 g: varje väg i varje tomläge på
+  varje modulsida i varje rigg, där ankaret ska ha sitt id på sidan och en intern
+  adress ska svara. Det har en planterad negativ kontroll, och TG7 a har fått
+  posten P. Inga andra ankarmål var villkorade. `npm run typecheck` gav inga fel,
+  och hela `npm test` gav `Test Files 227 passed (227)`, `Tests 4643 passed (4643)`.
   Modulens tomlägen (FR-22, NFR-2) ritas av en enda ritare,
   `server/src/http/view/uppdragTomhet.ts`, genom tre dörrar, en per slag
   (verifierat tomt, ofullständigt underlag och saknas i underlaget). Listan är
