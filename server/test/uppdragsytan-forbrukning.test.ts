@@ -1,5 +1,5 @@
 // Story 5.2: ofördelad tid får inte falla ur totalen eller gissas till en
-// leverabel, en strömram inte uppfinnas genom summering och oläst inte bli noll.
+// leverabel, en strömram bara komma ur stegets leverabelramar (Story 5.7) och oläst inte bli noll.
 import supertest from 'supertest';
 import type { PoolClient } from 'pg';
 import { readFile } from 'node:fs/promises';
@@ -23,7 +23,7 @@ describe('N0 nivåerna (ren)', () => {
   it('N0 g minuter utan taxa redovisas', h.provaN0g);
   it('N0 h saknad rot härleds inte', h.provaN0h);
   it('N0 i registerkod utan nod redovisas', h.provaN0i);
-  it('N0 j strömnivån är konstant', h.provaN0j);
+  it('N0 j strömmens ram är summan av stegets leverabelramar, aldrig strömmens eget tak', h.provaN0j);
   it('N0 k orsakerna har stabil sluten ordning', h.provaN0k);
   it('N0 l bara de beslutade nycklarna lämnas ut', h.provaN0l);
 });
@@ -35,7 +35,7 @@ describe('N1 taxan för ofördelat (ren)', () => {
 describe('V0 nivåpanelen (ren)', () => {
   it('V0 a två tal mot respektive ram och tillgänglig rubrik', h.provaV0a);
   it('V0 b saknad kronram står i kronorcellen', h.provaV0b);
-  it('V0 c strömnivåns besked står en gång', h.provaV0c);
+  it('V0 c strömraderna står mot sin ram, och tomläget en gång', h.provaV0c);
   it('V0 d ofördelat är synligt utan inmatning eller länk', h.provaV0d);
   it('V0 e oläst och saknat bär källa utan en nolla', h.provaV0e);
   it('V0 f varje sluten orsak har en mening', h.provaV0f);
@@ -127,11 +127,12 @@ describe('F1 läsvägen', () => {
     const poster = await tidposter(u);
     for (const [kod, minuter] of [['L1', 60], ['L3', 120], ['STEG2', 30], ['STYRNING', 45]] as const) expect(poster).toContainEqual(expect.objectContaining({ contract_part_id: u.delar.find((d) => d.code === kod)!.part_id, billable_minutes: minuter }));
   });
-  it('F1 c egen uppdragsram och ingen summerad strömram', async () => {
+  it('F1 c egen uppdragsram och strömmens ram ur stegets leverabler', async () => {
     const n = (await pengar(u)).avtal[0]!.forbrukning.varde!;
     expect(n.uppdrag).toMatchObject({ ram_minuter: 25800, ram_ore: 47300000 });
     expect(u.delar.find((d) => d.code === 'STEG2')!.cap_derived).toBe(true);
-    expect(n.strom).toEqual({ lage: 'harleds_ej' });
+    expect(n.strommar.map((s) => [s.kod, s.ram_minuter, s.ram_ore])).toEqual([['STEG1', 2400, null], ['STEG2', 16500, null], ['STEG3', 4800, null], ['STEG4', 1200, null]]);
+    expect(n.strommar.find((s) => s.kod === 'STEG2')!.minuter).toBe(150);
   });
   it('F1 d registrerad ström- och styrningstid syns utan leverabel', async () => {
     expect((await pengar(u)).avtal[0]!.forbrukning.varde!.utan_leverabel).toEqual(expect.arrayContaining([
@@ -223,8 +224,12 @@ describe('V1 Pengarna genom sidan', () => {
     const l1 = [...p.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].find((r) => r[0].includes('L1'));
     expect(l1?.[0]).toContain('ram saknas');
   });
-  it('V1 c strömnivån härleds inte en gång per avtal', async () => {
-    expect((await sida(u)).split('strömnivån härleds inte förrän ramen är vald')).toHaveLength(2);
+  it('V1 c strömnivån visas mot stegets leverabelramar', async () => {
+    const main = await sida(u);
+    expect(main).not.toContain('strömnivån härleds inte förrän ramen är vald');
+    const p = kort(main, `niva-${u.contractId}`);
+    const steg2 = [...p.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].find((r) => r[0].includes('STEG2'));
+    expect(steg2).toBeDefined(); expect(blank(text(steg2![0]))).toContain('02:30 av 275:00');
   });
   it('V1 d varje kostnadsrad bär källa och lästid', async () => {
     const p = await sida(u); const a = (await pengar(u)).avtal[0]!;

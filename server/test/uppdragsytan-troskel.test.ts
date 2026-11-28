@@ -25,6 +25,7 @@ import {
 } from '../src/lib/troskel.js';
 import { lasSvepvarden } from '../src/services/uppdragSvep.js';
 import { api, createCompany, createFiscalYear, registerUser, withAdmin, type TestUser } from './helpers.js';
+import * as h from './stromnivaHelper.js';
 
 const IDAG = '2026-09-06';
 
@@ -133,7 +134,9 @@ describe('KRAV-6 (2): 30 % av en post på 8 000 kr tänder INTE — golvet slår
       cap_hours: RAM_TIMMAR, cap_amount_ore: RAM_ORE,
       billable_minutes: RAM_TIMMAR * 60, amount_ore: RAM_ORE,
     }),
-    niva('S1', 'UPPDRAG', { cap_amount_ore: 5_000_000, amount_ore: 9_000_000 }),
+    // S1:s förbrukning är L1:s, upprullad som i takberäkningen. Strömmens eget
+    // tak står kvar för att visa att det aldrig läses (Story 5.7).
+    niva('S1', 'UPPDRAG', { cap_amount_ore: 5_000_000, amount_ore: 800_000 + avvikelseOre }),
     niva('L1', 'S1', { cap_amount_ore: 800_000, amount_ore: 800_000 + avvikelseOre }),
   ];
 
@@ -145,7 +148,7 @@ describe('KRAV-6 (2): 30 % av en post på 8 000 kr tänder INTE — golvet slår
     // 22 001 kr: procenten (400 kr) passerades vid första hundralappen, golvet
     // först nu. Det är golvet som binder på en liten post — och tvärtom på en
     // stor ram, provfall (1).
-    expect(larm({ delar: delar(2_200_100) })).toEqual([{
+    expect(larm({ delar: delar(2_200_100) }).filter((l) => l.kod === 'L1')).toEqual([{
       ram: 'kronor',
       kod: 'L1',
       grund: 'utfall',
@@ -155,10 +158,12 @@ describe('KRAV-6 (2): 30 % av en post på 8 000 kr tänder INTE — golvet slår
     }]);
   });
 
-  it('strömmen däremellan mäts inte — dess ramandel finns inte förrän en baseline bär den', () => {
-    // S1 ligger 40 000 kr över sitt tak och skulle passera båda villkoren. Att
-    // den ändå tiger är ett VAL: FR-3 mäter på uppdraget och på posterna.
-    expect(larm({ delar: delar(240_000) }).some((l) => l.kod === 'S1')).toBe(false);
+  it('strömmen mäts mot summan av sina leverablers ramar, aldrig mot sitt eget tak (Story 5.7)', () => {
+    // S1:s ram är L1:s 8 000 kr, inte strömmens egna 50 000 kr: mot sitt eget
+    // tak hade S1 tigit (Davids svar 2026-10-07).
+    expect(larm({ delar: delar(2_200_100) }).filter((l) => l.kod === 'S1')).toEqual([{
+      ram: 'kronor', kod: 'S1', grund: 'utfall', ram_ore: 800_000, avvikelse_ore: 2_200_100, troskel_ore: 2_200_000,
+    }]);
   });
 
   it('ett obekräftat eller saknat tak larmar aldrig — ett oläst tak varnar aldrig', () => {
@@ -405,6 +410,21 @@ describe('trösklarna är indata, aldrig konstanter i koden', () => {
 });
 
 // ---------------------------------------------------------------------------
+// SA0 (Story 5.7): PRD:ns sex acceptansfall mot det beslutade golvet, och
+// strömnivån, på NVR-001:s träd byggt ur v3-fixturen genom kontraktsparsern
+// ---------------------------------------------------------------------------
+
+describe('SA0 PRD:ns sex acceptansfall mot det beslutade golvet och NVR-001:s fyra steg', () => {
+  it('SA0 a PRD-fall 1: 30 000 kr över ramen 473 000 kr tänder', h.provaSA0a);
+  it('SA0 b PRD-fall 2: 30 procent av en kostnadsrad på 8 000 kr tänder inte', h.provaSA0b);
+  it('SA0 c PRD-fall 3: prognosen prövas med samma tröskel', h.provaSA0c);
+  it('SA0 d PRD-fall 4: 30 h över 430 h tänder, 18 h inte', h.provaSA0d);
+  it('SA0 e PRD-fall 5: dagslarmet för daterad och ärvd post, inget på steget', h.provaSA0e);
+  it('SA0 f PRD-fall 6: ingen färdigställandegrad i utfallet', h.provaSA0f);
+  it('SA0 g strömnivån mäts mot summan av stegets leverabelramar', h.provaSA0g);
+});
+
+// ---------------------------------------------------------------------------
 // KRAV-7: kopplingen — svepet skriver larmet ur avtalets egna trösklar
 // ---------------------------------------------------------------------------
 
@@ -515,7 +535,8 @@ describe('KRAV-7: svepet skriver troskellarm ur avtalets egna trösklar', () => 
       ram: 'dagar', kod: 'L1', slutdatum: '2026-01-31', arvt_fran: 'S1', troskel_dagar: 1,
     });
     expect(rader[0]!.forsening_dagar as number).toBeGreaterThanOrEqual(5);
-    // Strömmen S1 är ingen mätnivå, och rotdelen har ingen period alls.
+    // S1 är en ström utan ram, eftersom L1 saknar egen ram, och rotdelen har
+    // ingen period alls.
     expect(rader.every((l) => l.kod !== 'S1' && l.kod !== 'UPPDRAG')).toBe(true);
   });
 

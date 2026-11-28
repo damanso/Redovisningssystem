@@ -4,11 +4,11 @@ import { ofordeladUrGrupper } from '../src/services/uppdragPengar.js';
 import { gallandeTaxa } from '../src/services/contracts.js';
 import { timeEntryAmountOre } from '../src/services/projects.js';
 import { last, olast, saknas } from '../src/lib/lasvarde.js';
-import { nivapanel, ofordeladUppdrag, RAM_SAKNAS, EJ_HARLEDD_TEXT } from '../src/http/view/uppdragForbrukning.js';
+import { nivapanel, ofordeladUppdrag, RAM_SAKNAS, EJ_HARLEDD_TEXT, INGA_STROMMAR } from '../src/http/view/uppdragForbrukning.js';
 import { kronor } from '../src/http/view/html.js';
 import { hhmm } from '../src/lib/duration.js';
 import type { EjHarledd } from '../src/lib/forbrukningsnivaer.js';
-import { forbrukningsnivaer, EJ_HARLEDD_ORSAKER, STROMNIVA_HARLEDS_EJ, type Forbrukningsdel } from '../src/lib/forbrukningsnivaer.js';
+import { forbrukningsnivaer, EJ_HARLEDD_ORSAKER, type Forbrukningsdel } from '../src/lib/forbrukningsnivaer.js';
 
 export const ofordelad = { minuter: 120, oren: 220000, minuter_utan_taxa: 0, poster: 2 };
 const del = (code: string, parent_code: string | null, own: number, total: number, cap_hours: number | null, cap_amount_ore: number | null = null, cap_derived = false): Forbrukningsdel => ({
@@ -33,7 +33,7 @@ export function provaN0c() {
   const i = indata(); i.delar[0]!.cap_derived = true; const r = forbrukningsnivaer(i);
   assert.equal(r.uppdrag?.ram_minuter, null); assert.equal(r.uppdrag?.ram_ore, null);
   assert.deepEqual(r.ej_harledda.filter((p) => p.orsak === 'ram_saknas' && p.kod === 'UPPDRAG').map((p) => p.enhet), ['timmar', 'kronor']);
-  assert.deepEqual(Object.keys(r.strom), ['lage']); assert.ok(!r.leverabler.some((l) => l.kod.startsWith('STEG')));
+  assert.deepEqual(r.strommar.map((s) => s.kod), ['STEG1', 'STEG2']); assert.ok(!r.leverabler.some((l) => l.kod.startsWith('STEG')));
 }
 export function provaN0d() {
   const r = forbrukningsnivaer(indata()); const l = r.leverabler[0]!;
@@ -65,8 +65,13 @@ export function provaN0i() {
   assert.ok(forbrukningsnivaer(i).ej_harledda.some((p) => p.orsak === 'avtalsdel_saknas' && p.kod === 'L2'));
 }
 export function provaN0j() {
-  assert.deepEqual(forbrukningsnivaer(indata()).strom, { lage: 'harleds_ej' });
-  assert.equal(STROMNIVA_HARLEDS_EJ, 'strömnivån härleds inte förrän ramen är vald');
+  // Strömmens ram är summan av stegets leverabelramar (Story 5.7): STEG2 är L3 205 h och L10 5 h.
+  const strommar = (i: ReturnType<typeof indata>) => forbrukningsnivaer(i).strommar.map((s) => [s.kod, s.ram_minuter, s.minuter, s.ram_ore]);
+  const vantat = [['STEG1', 2400, 60, null], ['STEG2', 12600, 180, null]];
+  assert.deepEqual(strommar(indata()), vantat);
+  const egetTak = indata(); const steg2 = egetTak.delar.find((d) => d.code === 'STEG2')!;
+  steg2.cap_hours = 185; steg2.cap_derived = false;
+  assert.deepEqual(strommar(egetTak), vantat);
 }
 export function provaN0k() {
   assert.deepEqual([...EJ_HARLEDD_ORSAKER], ['rotdel_saknas', 'ofordelad_tid', 'flera_avtal', 'utan_leverabel', 'avtalsdel_saknas', 'ram_saknas', 'ingen_taxa']);
@@ -77,8 +82,8 @@ export function provaN0k() {
 }
 export function provaN0l() {
   const r = forbrukningsnivaer(indata());
-  assert.deepEqual(Object.keys(r).sort(), ['uppdrag', 'ofordelad', 'strom', 'leverabler', 'utan_leverabel', 'ej_harledda'].sort());
-  for (const n of [r.uppdrag!, ...r.leverabler]) assert.deepEqual(Object.keys(n).sort(), ['kod', 'namn', 'minuter', 'oren', 'ram_minuter', 'ram_ore', 'tak_status', 'aktiv'].sort());
+  assert.deepEqual(Object.keys(r).sort(), ['uppdrag', 'ofordelad', 'strommar', 'leverabler', 'utan_leverabel', 'ej_harledda'].sort());
+  for (const n of [r.uppdrag!, ...r.strommar, ...r.leverabler]) assert.deepEqual(Object.keys(n).sort(), ['kod', 'namn', 'minuter', 'oren', 'ram_minuter', 'ram_ore', 'tak_status', 'aktiv'].sort());
   assert.ok(!JSON.stringify(r).includes('share'));
 }
 
@@ -112,7 +117,17 @@ export function provaV0b() {
   const p = panel(); const l1 = p.match(/<tr[^>]*>(?:(?!<\/tr>)[\s\S])*L1(?:(?!<\/tr>)[\s\S])*<\/tr>/)?.[0];
   assert.ok(l1); assert.ok(l1.includes(RAM_SAKNAS)); assert.equal(RAM_SAKNAS, 'ram saknas');
 }
-export function provaV0c() { assert.equal(panel().split(STROMNIVA_HARLEDS_EJ).length - 1, 1); }
+export function provaV0c() {
+  const p = panel(); assert.ok(!p.includes('härleds inte'));
+  const rader = [...p.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map((m) => m[0]);
+  for (const [kod, tal] of [['STEG1', '01:00 av 40:00'], ['STEG2', '03:00 av 210:00']] as const) {
+    const rad = rader.find((r) => r.includes(`<strong>${kod}</strong>`)); assert.ok(rad, kod);
+    assert.ok(blank(rad).includes(tal), rad);
+    const kronorcell = [...rad.matchAll(/<td class="num">([\s\S]*?)<\/td>/g)][1]?.[1] ?? ''; assert.ok(kronorcell.includes(RAM_SAKNAS), rad);
+  }
+  const a = vydata(); a.forbrukning.varde!.strommar = [];
+  assert.equal(nivapanel(a, idag).value.split(INGA_STROMMAR).length - 1, 1);
+}
 export function provaV0d() {
   const p = panel(); assert.ok(p.includes('Ofördelad')); assert.ok(p.includes('2 tidposter utan avtalsdel')); assert.ok(p.includes('02:00'));
   assert.doesNotMatch(p, /<(?:a|form|button|input)\b/);

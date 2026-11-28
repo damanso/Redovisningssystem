@@ -1,12 +1,15 @@
 // Story 5.2, FR-3/FR-31/FR-35: rena paneler för förbrukningen per nivå.
 // Husets tabeller, chip och tomgrammatik; ingen egen beräkning eller klocka.
+// Story 5.7: en rad per ström mot strömmens ram, i samma tabell.
 import { hhmm } from '../../lib/duration.js';
-import { STROMNIVA_HARLEDS_EJ, type EjHarledd, type EjHarleddOrsak, type Forbrukningsnivaer, type Nivaforbrukning, type Ofordelad } from '../../lib/forbrukningsnivaer.js';
+import type { EjHarledd, EjHarleddOrsak, Forbrukningsnivaer, Nivaforbrukning, Ofordelad } from '../../lib/forbrukningsnivaer.js';
 import type { Lasvarde } from '../../lib/lasvarde.js';
 import { chip, direktFarskhet, farskhetsrad, farskhetstid, html, kronor, type Raw } from './html.js';
 import { takstatusChipYta } from './uppdragUppfoljning.js';
 
 export const RAM_SAKNAS = 'ram saknas';
+/** Tomläget för strömnivån: ett avtal utan strömmar säger det, i stället för en rad som saknas. */
+export const INGA_STROMMAR = 'Avtalet har inga strömmar.';
 
 /** Samma lucka i beloppet beskrivs där den ofördelade tiden visas. */
 function ingenTaxaText(minuter: number): string {
@@ -56,7 +59,9 @@ export function nivapanel(a: { contract_id: string; forbrukning: Lasvarde<Forbru
           <tbody>${n.uppdrag === null ? html`<tr><td colspan="4">Uppdragsnivån kan inte härledas eftersom rotdelen saknas.</td></tr>` : nivarad(n.uppdrag, 'Uppdraget')}
             ${n.ofordelad === null ? '' : html`<tr><td><strong>Ofördelad</strong></td><td class="num">${hhmm(n.ofordelad.minuter)}</td>
               <td class="num">${kronor(n.ofordelad.oren)}</td><td>${n.ofordelad.poster} tidposter utan avtalsdel</td></tr>`}
-            <tr><td>Strömnivån</td><td colspan="3">${STROMNIVA_HARLEDS_EJ}</td></tr>
+            ${n.strommar.length === 0
+              ? html`<tr><td>Strömnivån</td><td colspan="3">${INGA_STROMMAR}</td></tr>`
+              : n.strommar.map((s) => nivarad(s, s.kod))}
             ${n.leverabler.map((l) => nivarad(l, l.kod))}</tbody></table>
           ${n.ej_harledda.length === 0 ? '' : html`<ul>${n.ej_harledda.map((p) => html`<li>${EJ_HARLEDD_TEXT[p.orsak](p)}</li>`)}</ul>`}
           ${farskhet(v, 'förbrukningen', idag)}`}

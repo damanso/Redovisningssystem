@@ -9,7 +9,8 @@
 //   * ett ärvt intervall som väntar fem dagar — en leverabel med bara stegets
 //     period som larmar först efter avtalets dagströskel;
 //   * ett golv som ser beslutat ut — absolutgolvet visat utan märkningen att
-//     det är ett förslag.
+//     det är ett förslag. Sedan Story 5.7 är golvet Davids beslut och märkt
+//     så (beslutat av David 2026-10-07), på samma platser.
 //
 // De rena fallen står i hjälpfilen; integrationsfallen kör mot riktig Postgres
 // genom REST, tjänstelagret och sidorna, med ett eget bolag per grupp.
@@ -136,7 +137,12 @@ async function cache(r: Rigg, varde: unknown) {
     DO UPDATE SET varde=EXCLUDED.varde, kalla=EXCLUDED.kalla, last_nar=now()`,
   [r.b.id, r.contractId, JSON.stringify(varde)]));
 }
-const RIGGENS_RAMLAGE = [{ kod: 'L1', enhet: 'timmar' }, { kod: 'L1', enhet: 'kronor' }];
+// Delarna kommer sorterade på kod ur takberäkningen. S1 är en ström vars enda
+// leverabel L1 saknar ram, så strömmen saknar ram i båda enheterna (Story 5.7).
+const RIGGENS_RAMLAGE = [
+  { kod: 'L1', enhet: 'timmar' }, { kod: 'L1', enhet: 'kronor' },
+  { kod: 'S1', enhet: 'timmar' }, { kod: 'S1', enhet: 'kronor' },
+];
 
 describe('F2 läsvägen bär ramläget per nivå', () => {
   let r: Rigg;
@@ -180,7 +186,7 @@ async function sida(r: Rigg, yta: 'pengarna' | 'laget') {
 const troskelpanel = async (r: Rigg) => kort(await sida(r, 'pengarna'), `troskel-${r.contractId}`);
 const larmrader = (s: string) => [...s.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/g)].map((m) => m[1]!)
   .filter((rad) => rad.includes('över tröskeln'));
-const MARKERING = '(absolutgolvet, förslag, ej beslutat av David)';
+const MARKERING = '(absolutgolvet, beslutat av David 2026-10-07)';
 
 describe('W1 Pengarnas panel Tröskeln (riggen R)', () => {
   let r: Rigg;
@@ -189,7 +195,7 @@ describe('W1 Pengarnas panel Tröskeln (riggen R)', () => {
   it('W1 a tröskelregeln står i panelen och märkningen en gång', async () => {
     const panel = await troskelpanel(r);
     expect(blank(text(panel))).toContain(blank(text(troskelregel(h.STANDARD).value)).trim());
-    expect(panel.split('förslag, ej beslutat av David')).toHaveLength(2);
+    expect(panel.split('beslutat av David 2026-10-07')).toHaveLength(2);
   });
 
   it('W1 b varje mätnivå och enhet utan egen ram står som ram saknas, utan procent', async () => {
