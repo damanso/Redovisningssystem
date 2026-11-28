@@ -180,8 +180,8 @@ describe('RLS och rättigheter', () => {
   it('append-only i praktiken: app kan skriva en händelse men aldrig ändra den', async () => {
     const id = await withTenantTransaction(userA.userId, companyA, async (client) => {
       const skrivet = await client.query<{ id: string }>(
-        "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till)" +
-        " VALUES ($1, $2, $3, 'ej_paborjad', 'pagar') RETURNING id",
+        "INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, fran, till, bekraftat_av)" +
+        " VALUES ($1, $2, $3, 'ej_paborjad', 'pagar', 'riggning') RETURNING id",
         [companyA, avtalA, leverabelA],
       );
       expect(skrivet.rowCount).toBe(1);

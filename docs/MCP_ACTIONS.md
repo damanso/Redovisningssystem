@@ -2132,6 +2132,83 @@ hur färdigt det än var.
 - **Vyn:** stegen görs på leverabelns kort i Leveranserna (S10.9). Godkänn
   visar avtalets godkännare och godkännandeform före kanalvalet.
 
+### Rutinvägen (Story 14.1)
+
+**registrera_rutinstatus** (write, utan människospärr och utan köning)
+registrerar ett rutinmässigt statusbyte ur sin källhändelse, utan att David
+bekräftar det (FR-13, Davids svar 2026-10-07: «Det räcker enligt din
+rekommendation»). Hermes anropar den med de källhändelser det hittar i mejl och
+Drive (Story 14.2). Regeln bor på ett ställe, i `server/src/lib/rutinregel.ts`,
+och tjänsten skriver aldrig om villkoret. De tre människospärrade åtgärderna
+ovan står kvar oförändrade.
+
+- **Indata (strikt):** contract_id, leverabel_kod och kallhandelse. Det finns
+  inget fält för läge, status eller mål: målet läses ur regelns steg för
+  källhändelsens typ. Påbörjandet och returen har ingen källhändelse och går
+  bara människovägen.
+- **Två källhändelser:**
+  - **transmittal**: handlingen (sort mejl eller drive, extern_id och
+    extern_kalla, som i bekrafta_statusbyte) och handelse_datum. Ger
+    `pagar → levererad`.
+  - **godkannande**: handlingen, handelse_datum, kanalen (telefon, mejl, mote
+    eller protokoll) och avsändaren i godkand_av. Ger `levererad → godkand`.
+    Avsändaren medges bara när den efter normalisering (trimmad, blanktecken
+    sammanslagna, gemener) är exakt avtalets godkännare eller eskalering: ingen
+    delsträng och ingen namnlikhet. Modellen kan aldrig själv godkänna en
+    leverabel; ett godkännande som inte medges registreras bara av en människa
+    (godkann_leverabel, eller Davids ja i Story 14.4).
+  - Handlingens form prövas i schemat, så en url eller en sökväg ger 400
+    validation_error också när regeln fäller.
+- **Regeln fäller med sex skäl,** alla och i den här ordningen:
+  fel_utgangslage (leverabeln stod inte i stegets utgångsläge),
+  saknad_mottagare (avtalets godkännare saknas), obehorig_godkannare
+  (avsändaren är varken godkännare eller eskalering), signal_tand (en
+  obesvarad scopesignal i avtalet; signalen pekar inte ut en leverabel och
+  fäller därför varje leverabel i avtalet), indikator_tand (ett larm i svepets
+  tröskellarm på leverabelns kod eller en nivå över den, upp till rotdelen) och
+  indikator_olast (tröskellarmet är inte läst för avtalet). Texterna står i
+  regeln (RUTINSKALTEXT), så att förslaget i Story 14.4 läser samma ord.
+- **Svarets tre utfall:**
+  - **registrerad**: handelse_id, leverabel_kod, fran, status, revision,
+    mottagare, referens_id, registrerad_av, kallhandelse_typ, kallhandelse_ref,
+    kallhandelse_aktor och ko_status.
+  - **redan_registrerad**: samma källhändelse (leverabel, typ och nyckeln
+    `sort:kanoniskt id`) finns redan, oavsett vem som registrerade den. Svaret
+    bär den befintliga händelsens id och leverabelns status, och ingenting
+    skrivs. Det unika indexet är sista försvarslinjen.
+  - **falld**: leverabel_kod, status och skälen. Ingenting skrivs: ingen
+    händelse, ingen status, ingen referens, ingen registerkopia, ingen köpost
+    och ingen cache, aldrig ett tyst byte. Bara åtgärdslagrets auditrad visar
+    att anropet gjordes. Att det fällda blir ett beslutsförslag till David i
+    undantagsvyn, med ja och nej enligt FR-40 och FR-41, är Story 14.4.
+- **Raden:** `registrerad_av = 'system'` och bekräftaren NULL, eftersom det är
+  regeln och inte anroparen som beslutar; också en människas anrop ger en
+  systemrad. Mottagaren är avtalets godkännare, trimmad, som i människovägen,
+  och saknas den fälls källhändelsen. Godkännandets avsändare står i källans
+  aktör (kallhandelse_aktor), aldrig som bekräftare och aldrig som mottagare.
+  Dagen i bekraftat_nar är källhändelsens; registreringens tid står i
+  created_at. Transmittalen räknar revision som bekrafta_statusbyte, och
+  godkännandet bär NULL. Handlingen blir en rad i referenslagret, eller
+  återanvänds, först när regeln medger bytet. Registerkopian köas i samma
+  transaktion (FR-11). Inget rutinbyte ger en fråga, en köpost eller en post i
+  undantagsvyn.
+- **Fel:** en dag i framtiden ger 400 framtida_datum och en dag före avtalets
+  signeringsdatum 400 fore_avtalet, med människovägens texter. En leverabel som
+  inte finns i bolagets avtal, också ett grannbolags avtal, ger 404. En
+  handling utanför spärrmappen ger 409 utanfor_sparr, och registerkopians egna
+  poster godtas aldrig som handling.
+- **Migration 0101** (additiv, idempotent): händelsetabellen får fyra kolumner,
+  registrerad_av (manniska eller system, NOT NULL med standardvärdet manniska,
+  så att de tre människospärrade åtgärderna skriver rätt rad utan ändring),
+  kallhandelse_typ (transmittal eller godkannande), kallhandelse_ref och
+  kallhandelse_aktor. Två villkor bär regeln: registreringens tre tillåtna
+  former (människa utan källhändelse, människa med källhändelse och handling
+  för Davids ja i Story 14.4, och system utan bekräftare men med källhändelse
+  och handling), och källans aktör som finns om och endast om typen är
+  godkännande. Därtill två värdevillkor och det unika indexet på leverabel, typ
+  och nyckel. Rättigheterna är orörda: app har SELECT och INSERT och ingenting
+  annat, så en rutinrad går lika lite som en människorad att skriva om.
+
 ### Kostnaden bunden till avtalsdelen (S6.1, våg 4)
 
 - `binda_kostnad` (**sensitive**) — `receipt_id`, `contract_part_id`, valfritt `forslagsunderlag` (bara svepet köar det; annars 409 `koas_av_svepet`). Binder ett

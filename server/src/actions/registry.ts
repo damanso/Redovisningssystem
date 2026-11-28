@@ -76,7 +76,9 @@ import {
 } from '../services/uppdragDokument.js';
 import {
   GODKANNANDEKANALER, STATUSUTFALL, bekraftaStatusbyte, OVERLAMNINGSHANDLINGAR, godkannLeverabel, paborjaLeverabel,
+  registreraRutinstatus,
 } from '../services/uppdragStatus.js';
+import { kanonisktReferensId, referensFormFel } from '../lib/referens.js';
 import { avslutaUppdrag } from '../services/uppdragAvslut.js';
 import { contractUsageReport, idleProjectsReport, unbilledTimeReport } from '../services/timeReports.js';
 import {
@@ -185,6 +187,22 @@ function def<I>(d: ActionDef<I>): ActionDef<I> {
 const VAT = VatRateSchema;
 const ORE = OreSchema;
 const ACCOUNT = AccountNumberSchema;
+
+// Story 14.1: källhändelsens handling. Formen prövas redan i schemat, så att en
+// url eller en sökväg ger 400 också när regeln fäller och ingen referens skapas.
+// Förfiningen sitter här och aldrig på en variant: z.discriminatedUnion i zod 3
+// tar bara rena objekt som varianter.
+const RutinhandlingSchema = z
+  .object({
+    sort: z.enum(OVERLAMNINGSHANDLINGAR),
+    extern_id: safeText(200),
+    extern_kalla: safeText(200),
+  })
+  .strict()
+  .superRefine((h, ctx) => {
+    const fel = referensFormFel(h.sort, kanonisktReferensId(h.sort, h.extern_id));
+    if (fel) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['extern_id'], message: fel });
+  });
 
 const InvoiceLine = z
   .object({
@@ -2210,6 +2228,49 @@ export const ACTIONS: readonly ActionDef<never>[] = [
     // mottagare anroparen skriver in själv är ett påstående, inte ett spår —
     // samma regel som `bekraftat_av`, `satt_av_manniska` och `tand_av`.
     handler: (ctx, i) => godkannLeverabel(ctx.client, ctx.companyId, ctx.userId, i as never),
+  }),
+  // -------------------------------------------------------------------------
+  // Story 14.1 (FR-13): rutinvägen, den fjärde skrivvägen. Regeln är Davids svar
+  // 2026-10-07 («Det räcker enligt din rekommendation») och bor i
+  // `lib/rutinregel.ts`; tjänsten prövar källhändelsen mot den. Åtgärden tar
+  // aldrig emot ett målläge: målet läses ur regelns steg för källhändelsens typ.
+  // Ett byte som regeln fäller svarar `falld` med skälen och ändrar ingenting —
+  // aldrig ett tyst byte. Att det fällda blir ett beslutsförslag till David är
+  // Story 14.4. `write` utan människospärr och utan köning: det är regeln som
+  // beslutar, och raden registreras av systemet utan bekräftare. De tre
+  // människospärrade åtgärderna ovan står kvar oförändrade.
+  // -------------------------------------------------------------------------
+  def({
+    name: 'registrera_rutinstatus',
+    title: 'Registrera ett rutinmässigt statusbyte ur sin källhändelse',
+    description: 'Anropas av Hermes med en källhändelse: ett överlämningsmejl eller överlämningsdokument (transmittal), '
+      + 'eller ett godkännande från avtalets godkännare. Registrerar bara det byte som rutinregeln medger, svarar '
+      + 'falld med regelns skäl annars och tar aldrig emot ett läge.',
+    sensitivity: 'write',
+    inputSchema: z
+      .object({
+        contract_id: UuidSchema,
+        leverabel_kod: safeText(50),
+        kallhandelse: z.discriminatedUnion('typ', [
+          z.object({
+            typ: z.literal('transmittal'),
+            handling: RutinhandlingSchema,
+            handelse_datum: IsoDateSchema,
+          }).strict(),
+          z.object({
+            typ: z.literal('godkannande'),
+            handling: RutinhandlingSchema,
+            handelse_datum: IsoDateSchema,
+            // Avsändaren som källan anger den. Den prövas mot avtalets parter i
+            // regeln och tillskrivs aldrig registreringen.
+            godkand_av: safeText(200).refine((v) => v.trim().length > 0, 'texten får inte vara blank'),
+            kanal: z.enum(GODKANNANDEKANALER),
+          }).strict(),
+        ]),
+      })
+      .strict(),
+    // Inget userId: raden tillskrivs aldrig anroparen (registrerad_av system).
+    handler: (ctx, i) => registreraRutinstatus(ctx.client, ctx.companyId, i as never),
   }),
   // -------------------------------------------------------------------------
   // Uppdragsytan S8.1, våg 4: uppdraget avslutas — med det öppna utskrivet

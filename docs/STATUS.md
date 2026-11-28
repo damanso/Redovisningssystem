@@ -7,7 +7,7 @@
 
 ## Vad projektet är
 
-Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (218
+Svenskt redovisningssystem för AB (K2), byggt AI-först: ett action-lager (219
 actions) som drivs av antingen **Claude Desktop via MCP** eller **REST-API:t**
 eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärder
 (bokföra, betala, låsa period) kräver alltid mänskligt godkännande i **Att göra**
@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — 14-1-ett-rutinmassigt-statusbyte-registreras-ur-sin-kallhandelse-utan-fraga.**
+  Rutinvägen för leverabelns status (FR-13, Davids svar 2026-10-07), den fjärde
+  skrivvägen. Regeln är den rena `provaRutinhandelse` i
+  `server/src/lib/rutinregel.ts`: ett transmittal ger levererad och ett
+  godkännande från avtalets godkännare eller eskalering (exakt efter
+  normalisering) ger godkand, bara utan obesvarad scopesignal i avtalet och utan
+  tänd eller oläst avvikelseindikator för leverabeln eller en nivå över den.
+  Migration `0101_rutinstatus.sql` ger händelsetabellen `registrerad_av`,
+  `kallhandelse_typ`, `kallhandelse_ref` och `kallhandelse_aktor`, villkoret
+  med registreringens tre former, aktörvillkoret och ett unikt index på
+  leverabel, typ och nyckel; rättigheterna är orörda. Åtgärden
+  `registrera_rutinstatus` (write, utan `kravManniska`) tar aldrig emot ett
+  läge och registrerar bara det regeln medger, med `registrerad_av = 'system'`
+  och `bekraftat_av` NULL. Det fällda svarar `falld` med regelns skäl och
+  skriver ingenting (ingen händelse, status, referens, registerkopia, köpost
+  eller cache); beslutsförslaget till David är Story 14.4. De tre
+  människospärrade åtgärderna är orörda. Registret har 219 åtgärder. Prov: 24
+  fall i `server/test/uppdragsytan-rutinstatus.test.ts` (R1–R8, M1–M3, A1–A7,
+  F1–F3, F5, D1–D2), `bekraftat_av` i riggningarna i åtta provfiler och 4.4-A7
+  som räknar tre statusuppdateringar. Körningar mot testdatabasen: Körning 1–3
+  gröna (8, 447 och 637 prov i sina filter), `npm run typecheck` utan fel, och
+  hela `npm test` gav `Test Files 226 passed (226)`, `Tests 4554 passed (4554)`.
+  `npm run build` inte kört (kedjan ger inte kommandot; typkontrollens första
+  steg är samma `tsc`). Inga rester ur ingången och inga UTANFÖR-rader. Rött
+  utanför repot före bygget, orört av berättelsen: bmadglidning, scope_grind och
+  overlamningsregister_fr6 (RÖDA) och modulprov och continuityvakt (KUNDE_INTE)
+  i provvaktens körning 2026-11-27.
 - **2026-11-28 — 6-2-uppdragsvyn-visar-de-fem-delarna-och-bara-verkliga-mandatfragor.**
   Läget visar FR-18:s fem delar: överst uppdragets frågor som kräver Davids
   mandat och därunder fyra kort (förbrukning, leverabler, senaste bedömning,

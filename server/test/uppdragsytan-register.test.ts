@@ -231,8 +231,8 @@ async function riggaHandelse(
   companyId2: string, contractId: string, levId: string, till: string, dagarBakat: number,
 ): Promise<void> {
   await withAdmin((c) => c.query(
-    `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, created_at)
-     VALUES ($1, $2, $3, $4, now() - make_interval(days => $5::int))`,
+    `INSERT INTO uppdrag_leverabel_handelse (company_id, contract_id, leverabel_id, till, created_at, bekraftat_av)
+     VALUES ($1, $2, $3, $4, now() - make_interval(days => $5::int), 'riggning')`,
     [companyId2, contractId, levId, till, dagarBakat],
   ));
 }
