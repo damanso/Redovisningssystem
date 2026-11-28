@@ -153,6 +153,31 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — 6-3-modulens-tomlagen-sager-vad-tomheten-betyder.**
+  Modulens tomlägen (FR-22, NFR-2) ritas av en enda ritare,
+  `server/src/http/view/uppdragTomhet.ts`, genom tre dörrar, en per slag
+  (verifierat tomt, ofullständigt underlag och saknas i underlaget). Listan är
+  sluten: `TOMLAGEN` har 39 id med sitt slag. Vägen vidare är den slutna typen
+  `Vag`, alltid en länk och aldrig till Att göra, en POST-rutt eller Tid. Bara det
+  ofullständiga namnger källan och lästiden. Registrets tomhet har fyra orsaker ur
+  den rena `registertomhet` (`server/src/lib/registertomhet.ts`). Orsakerna läses
+  av `lasRegistertomhet` i registrets tjänst, och `lasUppdragslage` bär dem per
+  avtal (nytt fält `registertomhet` och ett nytt `Lasvarde` i `varden.avtal`).
+  Leveranserna läser samma funktion. De sju texterna som bad David läsa in avtalet
+  igen eller länka för hand är borta, och `tomtIKort`, `saknasText` och
+  `tomtRegister` är borttagna ur routes.ts. Ingen migration, ingen rutt, ingen
+  åtgärd (talet i rubrikstycket är oförändrat) och inget beroende. Prov: TG1–TG9
+  (84 fall) i `server/test/uppdragsytan-tomlagesgrammatik.test.ts`, och de
+  omskrivna påståendena i lasvarde- (LV3 a, `syntetisktAvtal`), laget- (rad 323),
+  beslut- (rad 466), leveranserna- (rad 412–413) och rapporterna-proven (rad 423).
+  En avvikelse i riggen: `troskel_inga_larm` prövas på riggen H3 (fryst utan
+  avtalsdelar, svept) i stället för H, eftersom v1:s datumlarm tänds mot klockan.
+  Körningar mot testdatabasen: Körning 1–6 gröna. `npm run typecheck` gav
+  inga fel, och hela `npm test` gav `Test Files 227 passed (227)`,
+  `Tests 4641 passed (4641)`. `npm run build` är inte kört (nekas i kedjan). Inga
+  `RESTER`-rader. Rött utanför repot före bygget, orört av berättelsen:
+  bmadglidning, scope_grind och overlamningsregister_fr6 (RÖDA) och modulprov och
+  continuityvakt (KUNDE_INTE) i provvaktens körning 2026-11-28 06.30.
 - **2026-11-28 — 14-1-ett-rutinmassigt-statusbyte-registreras-ur-sin-kallhandelse-utan-fraga (med omtag).**
   Rutinvägen (FR-13, Davids svar 2026-10-07): den rena regeln
   `server/src/lib/rutinregel.ts`, migrationen `0101_rutinstatus.sql` (fyra

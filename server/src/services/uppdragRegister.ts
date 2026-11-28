@@ -32,6 +32,7 @@ import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { NotFoundError } from '../lib/errors.js';
 import { KALLA_REDOVISNING, last, type Lasvarde } from '../lib/lasvarde.js';
+import { registertomhet, type Registertomhet } from '../lib/registertomhet.js';
 
 /** Bara registrets innehåll fryses; den härledda åldern hör till lästillfället. */
 export type Registerkopierad = Pick<Leverabelrad,
@@ -168,4 +169,47 @@ export async function lasLeverabelregister(
     [companyId, input.contract_id],
   );
   return res.rows.map((rad) => registerrad(rad, lastNar));
+}
+
+/**
+ * Story 6.3 (FR-22): varför varje avtals register är tomt, eller null när det
+ * har rader — en fråga för alla avtal, och orsaken ur den rena regeln.
+ *
+ * Underlaget är kontraktets tillstånd, registrets rader och baselineförslagen
+ * (`satt_baseline`) för avtalet. Avtals-id jämförs med `lower(...)` som i
+ * importens uppslag, eftersom indatats uuid inte normaliseras till gemener.
+ * Varje underfråga filtrerar på `company_id`; ett avtal i ett annat bolag ger
+ * ingen rad och alltså ingen nyckel. `lasLeverabelregister` och dess svar
+ * ändras inte: Läget och Leveranserna läser orsaken härifrån.
+ */
+export async function lasRegistertomhet(
+  client: PoolClient, companyId: string, contractIds: readonly string[],
+): Promise<Map<string, Registertomhet | null>> {
+  const karta = new Map<string, Registertomhet | null>();
+  if (contractIds.length === 0) return karta;
+  const res = await client.query<{
+    id: string; kontrakt_tillstand: 'utkast' | 'fryst'; har_rader: boolean;
+    vantande_forslag: boolean; senaste_forslag: string | null;
+  }>(
+    `SELECT c.id::text AS id, c.kontrakt_tillstand,
+            EXISTS (SELECT 1 FROM uppdrag_leverabel l
+                     WHERE l.company_id = c.company_id AND l.contract_id = c.id) AS har_rader,
+            EXISTS (SELECT 1 FROM action_approvals q
+                     WHERE q.company_id = c.company_id AND q.action = 'satt_baseline' AND q.status = 'pending'
+                       AND lower(q.input->>'contract_id') = c.id::text) AS vantande_forslag,
+            (SELECT q.status FROM action_approvals q
+              WHERE q.company_id = c.company_id AND q.action = 'satt_baseline'
+                AND lower(q.input->>'contract_id') = c.id::text
+              ORDER BY q.created_at DESC, q.id DESC LIMIT 1) AS senaste_forslag
+       FROM contracts c
+      WHERE c.company_id = $1 AND c.id = ANY($2::uuid[])`,
+    [companyId, contractIds],
+  );
+  for (const rad of res.rows) {
+    karta.set(rad.id, registertomhet({
+      kontrakt_tillstand: rad.kontrakt_tillstand, har_rader: rad.har_rader,
+      vantande_forslag: rad.vantande_forslag, senaste_forslag: rad.senaste_forslag,
+    }));
+  }
+  return karta;
 }

@@ -320,7 +320,7 @@ describe('(c) tomfallet', () => {
     }
     // Tomheten FÖRKLARAS, med en väg vidare — `.tomt`-grammatiken (FR-22).
     expect(kort(html, 'kort-ram')).toContain('/kontraktet');
-    expect(kort(html, 'kort-leverabler')).toContain('inget leverabelregister ännu');
+    expect(kort(html, 'kort-leverabler')).toContain('Registret är tomt eftersom inget kontrakt är fryst än.');
     expect(kort(html, 'kort-bedomning')).toContain('Ingen bedömning satt');
     expect(kort(html, 'kort-bedomning')).toContain('/bedomning');
     expect(kort(html, 'kort-signaler')).toContain('Ingen scopesignal har tänts');

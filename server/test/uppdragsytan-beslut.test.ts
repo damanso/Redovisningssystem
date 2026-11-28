@@ -463,7 +463,7 @@ describe('P6 Läget och beslutets plats', () => {
     expect((p.match(/class="farskhet"/g) ?? []).length).toBe(1); expect(sida.text).toContain(':focus-visible');
     const bolag = await createCompany(user.token, 'Tomt läge'); const a = await nyttAvtal(user, bolag);
     const tom = await vy.get(plats({ ...f, bolag, projekt: a.project })); expect(tom.status).toBe(200); const t = panel(tom.text);
-    expect(t).toContain('Inga beslut är registrerade i uppdraget.'); expect(t).toContain(`/app/c/${bolag}/approvals`); expect(t).not.toMatch(/<button|<form/); expect(t).toContain('Förslag som väntar på ditt svar'); korda.add('c');
+    expect(t).toContain('Inga beslut är registrerade i uppdraget.'); expect(t).toContain(`/app/c/${bolag}/uppdrag"`); expect(t).not.toMatch(/<button|<form/); expect(t).toContain('Frågorna som kräver ditt mandat'); korda.add('c');
   });
   it('d förlorat svar leder upprepningen till samma beslut; övrig kö behåller sin plats', async () => {
     for (const utfall of ['ja','nej'] as const) {

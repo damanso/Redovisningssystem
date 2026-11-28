@@ -409,8 +409,8 @@ describe('(e) tomt och stängt', () => {
     for (const fraga of ['', '?lage=tabell']) {
       const main = huvud(await sida(`/app/c/${companyId}/projects/${tomtProjekt}/leveranserna${fraga}`));
       expect(main).toContain('Registret är tomt');
-      expect(main).toContain('fylls när leveranskontraktet läses in');
-      expect(main).toContain(`/projects/${tomtProjekt}/avtal`);
+      expect(main).toContain('eftersom inget kontrakt är fryst än');
+      expect(main).toContain(`/projects/${tomtProjekt}/kontraktet`);
       // Ingen bräda som ser färdig ut, och ingen tom tabell heller.
       expect(main).not.toContain('Ingen leverabel står här');
       expect(main).not.toContain('Acceptanskriterium');
