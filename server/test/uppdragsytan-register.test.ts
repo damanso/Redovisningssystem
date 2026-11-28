@@ -150,9 +150,10 @@ describe('leverabelregistret för det importerade kontraktet', () => {
   it('radidentiteten är (contract_id, kod) — ingen contract_part_id i svaret', () => {
     expect(rader.every((r) => r.contract_id === contractId)).toBe(true);
     for (const rad of rader) {
+      // Story 6.1: raden är själv ett läsvärde (varde, kalla, last_nar, lage).
       expect(Object.keys(rad).sort()).toEqual([
-        'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'klausul', 'kod',
-        'matt_lasvag', 'mottagare', 'namn', 'overlamnad', 'revision', 'status', 'uppfoljningsmatt',
+        'acceptanskriterium', 'contract_id', 'dagar_i_laget', 'kalla', 'klausul', 'kod', 'lage', 'last_nar',
+        'matt_lasvag', 'mottagare', 'namn', 'overlamnad', 'revision', 'status', 'uppfoljningsmatt', 'varde',
       ]);
     }
   });
@@ -379,8 +380,10 @@ describe('Story 4.1: transmittalfälten i samma registerläsning', () => {
     const agent = await api.post(`${co()}/actions/las_leverabelregister`).set({ Authorization: `Bearer ${tok.body.token}` }).send({ contract_id: contractId });
     expect(agent.status, JSON.stringify(agent.body)).toBe(200);
     const direkt = await withTenantTransaction(user.userId, companyId, (c) => lasLeverabelregister(c, companyId, { contract_id: contractId }));
-    expect(agent.body.result).toEqual(direkt);
-    expect(await las(contractId)).toEqual(direkt);
+    // Story 6.1: varje anrop har sin egen lästid, så den jämförs inte.
+    const utanTid = (rader: ReadonlyArray<{ kod: string; last_nar?: unknown }>) => rader.map(({ last_nar: _t, ...r }) => r);
+    expect(utanTid(agent.body.result)).toEqual(utanTid(direkt));
+    expect(utanTid(await las(contractId))).toEqual(utanTid(direkt));
     const l2 = direkt.find((r) => r.kod === 'L2')!;
     for (const f of ['revision', 'mottagare', 'overlamnad']) expect(Object.hasOwn(l2, f)).toBe(true);
     const manifest = await api.get(`${co()}/actions`).set(auth());

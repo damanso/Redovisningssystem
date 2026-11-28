@@ -153,6 +153,33 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Bygge: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
+  Varje värde i uppdragsytan bär sin källa och lästid vid värdet (FR-35, FR-23,
+  FR-22). `lasUppdragslage` och `lasKontraktsyta` får det additiva fältet
+  `varden` (byggt av `avtalsvarden` respektive i `lasKontraktsyta`, slutna
+  listor), och varje rad ur `lasLeverabelregister` är själv ett läsvärde genom
+  `registerrad`; alla befintliga nycklar står kvar för Hermes läsare.
+  Cachevärden byggs av `cachevarde` i `lib/lasvarde.ts` med radens egen lästid
+  per avtal, och Lägets kort skriver tröskelns färskhet per avtal
+  (`troskelnsFarskhet`); den sammanslagna `farskhet.troskel` ritas inte längre.
+  Drive-pekare som aldrig verifierats är olästa (`pekarvarde`). Planens fråga
+  flyttades till `lasPlandelar`. Varje värdeblock med ett tal på Läget, Planen,
+  Leveranserna, Pengarna, Rapporterna och Kontraktet bär en färskhetsrad.
+  Pengarnas kostnader och Planens avtalsdelar står nu i husets `.panel`. Ingen
+  migration, ingen rutt och ingen åtgärd tillkom (talet i rubrikstycket är
+  oförändrat), och inga `RESTER` hittades. Täcks av LV1–LV12, F0–F6 och N0–N4 i
+  `server/test/uppdragsytan-lasvarde.test.ts`, de omskrivna påståendena i
+  laget-provet (tio färskhetsrader) och registerprovet (de fyra läsvärdesnycklarna,
+  jämförelsen utan lästid) samt leveransprovets 4.1-B2. Det sista står inte i
+  berättelsens lista och är omskrivet på samma sätt som registerprovets
+  nyckellista, eftersom kriterium 1 kräver nycklarna på raden. Körningar
+  2026-11-28: typkontrollen utan fel efter varje uppgift; Körning 1, 2, 4, 5
+  och 6 gröna (101, 475, 256, 318 och 65 fall); Körning 3 gav 280 av 281 med
+  4.1-B2 rött, och efter omskrivningen var leveransprovet 28 av 28.
+  `npm run build` inte kört (nekas i kedjan). Designskillsen gick inte att ladda
+  i sessionen; markupen följer husets befintliga klasser. Rött utanför repot före
+  bygget, orört av det: bmadglidning och scope_grind (RÖDA), modulprov och
+  continuityvakt (KUNDE_INTE) i provvaktens körning 2026-11-27.
 - **2026-11-28 — Bygge: 5-8-larmregeln-for-nedlagd-tid-mot-ram-enligt-davids-beslut.**
   Måttet ”Nedlagd tid mot ram” larmar nu på FR-3:s avvikelsetröskel enligt
   Davids beslut 2026-10-07 («Ersätt, skriv inte om»), med källan

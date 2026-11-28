@@ -141,6 +141,8 @@ export interface Avtalspengar {
   /** Kumulativt per `work_date`, i datumordning. Tom = ingen förbrukande tid. */
   serie: Forbrukningspunkt[];
   ram: Pengaram;
+  /** Story 6.1, FR-35: ramen med källa och lästid; `varde` är samma objekt som `ram`. */
+  ramvarde: Lasvarde<Pengaram>;
   /**
    * Prognosens plats (Story 5.4), ur cacheraden med svepets källa och lästid.
    * Alltid satt: läget saknas säger att svepet inte har kört för avtalet.
@@ -561,16 +563,18 @@ export async function lasUppdragspengar(
     const prognosrad = cache.find((v) => v.nyckel === 'prognos');
     const kostnader = await kostnaderForAvtal(client, companyId, contractId);
     const obundna = await obundnaForAvtal(client, companyId, contractId);
+    const ram: Pengaram = {
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+      tak_ore: rot?.cap_amount_ore ?? null,
+      tak_status: rot?.cap_status ?? 'vet_ej',
+    };
 
     avtal.push({
       contract_id: contractId,
       contract_name: String(rad.name ?? ''),
       serie: rot === null ? [] : await byggSerie(client, companyId, versionerITradet(delar, rot)),
-      ram: {
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
-        tak_ore: rot?.cap_amount_ore ?? null,
-        tak_status: rot?.cap_status ?? 'vet_ej',
-      },
+      ram,
+      ramvarde: last(ram, KALLA_REDOVISNING, lastNar),
       // Samma anrop med samma rad som Läget, så att de två aldrig svarar olika (FR-23).
       prognos: prognosplats(prognosrad === undefined ? null
         : { varde: prognosrad.varde, kalla: prognosrad.kalla, last_nar: prognosrad.last_nar.toISOString() }, PROGNOSREGEL),

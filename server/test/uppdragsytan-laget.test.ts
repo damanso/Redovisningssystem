@@ -398,7 +398,8 @@ describe('(e) Läget som yta', () => {
     // En per innehållsdel: fem kort, panelen Beslut, scopelinjens panel (Story
     // 2.6) och panelen Uppföljning och rytm (Story 2.3) för uppdragets enda
     // avtal, aldrig en sidstämpel. v1 saknar del 3, så panelen har bara sin egen.
-    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(8);
+    // Story 6.1: därtill panelen Övrigt och bandet med de två köposterna.
+    expect(html.match(/class="farskhet"/g) ?? []).toHaveLength(10);
     expect(html.split('id="beslut"')[1]!.split('</section>')[0]!.match(/class="farskhet"/g) ?? []).toHaveLength(1);
 
     const ram = kort(html, 'kort-ram');

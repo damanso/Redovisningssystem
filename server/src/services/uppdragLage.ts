@@ -53,7 +53,7 @@ import { listApprovals, listaMottagnaBeslut, type Approval } from './approvals.j
 import {
   LARMREGELNS_KALLA, mattlasare, ROTKOD, scopelinjelage, type Scopelinjelage, type Uppfoljningsmatt,
 } from '../lib/leveranskontrakt.js';
-import { last, olast, saknas, type Lasvarde } from '../lib/lasvarde.js';
+import { cachevarde, last, olast, saknas, type Lasvarde } from '../lib/lasvarde.js';
 import { PROGNOSREGEL, prognosplats, type Prognosplats } from '../lib/prognosplats.js';
 import { uppdragsnivansTimlage, type Troskelutfall, type Uppdragstimlage } from '../lib/troskel.js';
 import type { Nejutkast } from '../lib/utkast.js';
@@ -219,6 +219,34 @@ export interface Beslutsrad {
 export interface Mottagetbeslut { approval_id: string; atgard: string; utfall: 'ja' | 'nej'; beslutad_nar: string }
 export interface Beslutslage { registrerade: Beslutsrad[]; mottagna: Mottagetbeslut[] }
 
+/**
+ * Story 6.1, FR-35: varje värde ur ett avtal som `Lasvarde`, en sluten lista
+ * med en byggare (`avtalsvarden`). `contract_id` är nyckeln, inget läst värde.
+ * `varde` är samma objekt som avtalets råa fält; de råa fälten står kvar för
+ * Hermes läsare, och ett svar tappar aldrig ett fält.
+ */
+export interface Avtalsvarden {
+  contract_id: string;
+  forbrukning: Lasvarde<Forbrukning>;
+  troskel: Lasvarde<Troskelutfall>;
+  leverabler: Lasvarde<{ rakning: Leverabelrakning[]; totalt: number }>;
+  nasta_leverans: Lasvarde<Nastaleverans>;
+  prognos: Prognosplats;
+  bedomning: Lasvarde<Senastebedomning>;
+  oppen_begaran: Lasvarde<Begaransrad>;
+  signaler: Lasvarde<{ oppna: Signalrad[]; historik: Signalrad[]; avgjorda: number }>;
+  scopelinje: Lasvarde<{ rader: Scopelinje[]; lage: Scopelinjelage }>;
+  matt: Lasvarde<Mattrad[]>;
+  rytm: Lasvarde<Avtalsrytm>;
+}
+
+/** Story 6.1: uppdragets värden, avtalen i samma ordning som `Uppdragslage.avtal`. */
+export interface Uppdragsvarden {
+  avtal: Avtalsvarden[];
+  koposter: Lasvarde<Kopostrad[]>;
+  beslut: Lasvarde<Beslutslage>;
+}
+
 export interface Uppdragslage {
   uppdrag: {
     project_id: string;
@@ -232,6 +260,7 @@ export interface Uppdragslage {
   koposter: Kopostrad[];
   beslut: Beslutslage;
   farskhet: Lagesfarskhet;
+  varden: Uppdragsvarden;
 }
 
 const KALLA_REDOVISNING = 'redovisning';
@@ -371,6 +400,27 @@ async function avtalsdelar(client: PoolClient, companyId: string, contractId: st
   return res.rows;
 }
 
+/**
+ * Uppdragets avtalsdelar för Planen, alla versioner och båda `company_id`-leden
+ * (Story 6.1, FR-23): frågan flyttades ur vyn, så att ingen route gör egen SQL.
+ * Den rena `byggPlan` väljer den gällande versionen med samma regel som taket.
+ */
+export async function lasPlandelar(
+  client: PoolClient, companyId: string, projectId: string,
+): Promise<Lasvarde<Plandel[]>> {
+  const res = await client.query<Plandel>(
+    `SELECT cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name,
+            cp.valid_from::text, cp.start_date::text, cp.end_date::text,
+            cp.date_precision, cp.sort_order, cp.active
+       FROM contract_parts cp
+       JOIN contracts c ON c.id = cp.contract_id AND c.company_id = cp.company_id
+      WHERE cp.company_id = $1 AND c.project_id = $2
+      ORDER BY cp.sort_order, cp.code, cp.valid_from`,
+    [companyId, projectId],
+  );
+  return last(res.rows, KALLA_REDOVISNING, new Date().toISOString());
+}
+
 /** Avtalets uppföljningsmått ur del 3, i textens ordning (Story 2.3). */
 export async function lasUppfoljningsmatt(
   client: PoolClient, companyId: string, contractId: string,
@@ -428,6 +478,39 @@ export function mattlarm(
 }
 
 /**
+ * Avtalets värden som läsvärden (Story 6.1, FR-35). REN funktion.
+ *
+ * Allt som läses direkt ur redovisningen bär läsvägens lästid. Tröskeln bär
+ * sin EGEN cacherads källa och lästid, per avtal (kriterium 3): ett annat
+ * avtals svep daterar den aldrig, och har svepet inte kört är den oläst utan
+ * lästid. Prognosen och nästa leverans är redan läsvärden och förs vidare
+ * oförändrade. Muterar inget.
+ */
+export function avtalsvarden(
+  a: Avtalslage,
+  larmrad: { varde: unknown; kalla: string | null; last_nar: Date } | undefined,
+  lastNar: string,
+): Avtalsvarden {
+  return {
+    contract_id: a.contract_id,
+    forbrukning: last(a.forbrukning, KALLA_REDOVISNING, lastNar),
+    troskel: cachevarde(larmrad, troskelutfall, KALLA_REDOVISNING),
+    leverabler: last({ rakning: a.leverabler, totalt: a.leverabler_totalt }, KALLA_REDOVISNING, lastNar),
+    nasta_leverans: a.nasta_leverans,
+    prognos: a.prognos,
+    // Ingen bedömning är läst och tom: `varde` null med läget 'last'. Spridningen
+    // låter typen bära null, som `Lasvarde<T>.varde` redan tillåter.
+    bedomning: { ...last(a.bedomning, KALLA_REDOVISNING, lastNar) },
+    oppen_begaran: { ...last(a.oppen_begaran, KALLA_REDOVISNING, lastNar) },
+    signaler: last({ oppna: a.oppna_signaler, historik: a.signalhistorik, avgjorda: a.avgjorda_signaler },
+      KALLA_REDOVISNING, lastNar),
+    scopelinje: last({ rader: a.scopelinje, lage: a.scopelinje_lage }, KALLA_REDOVISNING, lastNar),
+    matt: last(a.matt, KALLA_REDOVISNING, lastNar),
+    rytm: last(a.rytm, KALLA_REDOVISNING, lastNar),
+  };
+}
+
+/**
  * Läget för ETT uppdrag: FR-18:s fem innehållsdelar, var och en ur den tjänst
  * som redan äger den, och var och en med sin egen färskhet.
  */
@@ -462,6 +545,7 @@ export async function lasUppdragslage(
   const direkt: Farskhet = { kalla: KALLA_REDOVISNING, last_nar: lastNar };
 
   const avtal: Avtalslage[] = [];
+  const avtalsvardena: Avtalsvarden[] = [];
   const partIds = new Set<string>();
   let troskelfarskhet: Farskhet | null = null;
   // Story 1.10: en läsning för alla avtal. Också på ett stängt uppdrag: en
@@ -531,7 +615,7 @@ export async function lasUppdragslage(
     // Rytmen räknas på läsvägens egen klocka, samma dag som färskheten säger.
     const rytm = await lasBedomningsrytm(client, companyId, contractId, lastNar.slice(0, 10));
 
-    avtal.push({
+    const avtalslage: Avtalslage = {
       contract_id: contractId,
       contract_name: usage.name,
       forbrukning,
@@ -552,7 +636,10 @@ export async function lasUppdragslage(
       scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
       matt,
       rytm,
-    });
+    };
+    avtal.push(avtalslage);
+    // Story 6.1: tröskeln ur just det här avtalets cacherad, aldrig den sammanslagna.
+    avtalsvardena.push(avtalsvarden(avtalslage, larmrad, lastNar));
   }
 
   const horHit = await uppdragsfilter(client, companyId, input.project_id,
@@ -564,6 +651,10 @@ export async function lasUppdragslage(
       utfall: q.status === 'approved' ? 'ja' : 'nej', beslutad_nar: q.decided_at!.toISOString() })),
   };
 
+  const koposter: Kopostrad[] = (await listApprovals(client, companyId, 'pending')).filter(horHit).map((a) => ({
+    id: a.id, action: a.action, requested_actor: a.requested_actor, created_at: a.created_at.toISOString(),
+  }));
+
   return {
     uppdrag: {
       project_id: uppdrag.id,
@@ -574,9 +665,7 @@ export async function lasUppdragslage(
       customer_name: uppdrag.customer_name,
     },
     avtal,
-    koposter: (await listApprovals(client, companyId, 'pending')).filter(horHit).map((a) => ({
-      id: a.id, action: a.action, requested_actor: a.requested_actor, created_at: a.created_at.toISOString(),
-    })),
+    koposter,
     beslut,
     farskhet: {
       forbrukning: direkt,
@@ -590,6 +679,11 @@ export async function lasUppdragslage(
       scopelinje: direkt,
       matt: direkt,
       rytm: direkt,
+    },
+    varden: {
+      avtal: avtalsvardena,
+      koposter: last(koposter, KALLA_REDOVISNING, lastNar),
+      beslut: last(beslut, KALLA_REDOVISNING, lastNar),
     },
   };
 }

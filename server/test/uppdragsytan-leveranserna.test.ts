@@ -616,7 +616,9 @@ describe('Story 4.1: brädan och tabellen visar samma fält', () => {
 
   it('4.1-B2 varje cell är tjänstens värde genom fältlistan, med samma chip och ålder', () => {
     for (const r of rader) {
-      expect(Object.keys(r).filter((f) => f !== 'contract_id').sort()).toEqual(LEVERABELFALT.map((f) => f.falt).sort());
+      // Story 6.1: raden är själv ett läsvärde (kalla, lage, last_nar, varde), som i registerprovet.
+      expect(Object.keys(r).filter((f) => f !== 'contract_id').sort())
+        .toEqual([...LEVERABELFALT.map((f) => f.falt), 'kalla', 'lage', 'last_nar', 'varde'].sort());
       const kortceller = innehall(kort(bradmain, r.kod), 'dd');
       const radceller = innehall(tabellrad(tabmain, r.kod), 'td');
       for (const celler of [kortceller, radceller]) {

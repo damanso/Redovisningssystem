@@ -1614,6 +1614,8 @@ sida utan formulär. Formuläret postar till
   när handlingen saknar datum eller överlämningen saknar handling (Story 4.2). Bekräftelsens tid är aldrig överlämningsdatum.
   Registerkopian fryser samma sju fält som förut. Vyns bräda och tabell visar
   samma fält ur samma svar.
+- Källa och lästid (Story 6.1, FR-35): varje rad bär också `{ varde, kalla, last_nar, lage }`,
+  där varde är radens egna fält och kalla är redovisning. De platta fälten står kvar.
 
 ### Scopesignalen (S5.1, våg 3)
 
@@ -2286,6 +2288,11 @@ står i handlingen tills kontraktet är fryst. Panelens enda länk går till
 uppdragets Signaler. Ingen ny rutt, ingen delningsvy och ingen yta utan
 inloggning visar scopelinjen (NFR-9).
 
+- Källa och lästid (Story 6.1, FR-35): svaret bär också
+  `varden: { kontrakt, parter, luckor, dokument, dokumentpekare, gallande, tillagg, scopelinje }`,
+  var och en ett `Lasvarde`. En Drive-pekare som aldrig verifierats eller väntar på verifiering
+  är oläst med källan drive.
+
 ### Läget (S10.1, våg 6)
 
 - `las_uppdragslage` (read, ingen `kravManniska`) — `project_id`. Uppdragets läge
@@ -2367,6 +2374,11 @@ inloggning visar scopelinjen (NFR-9).
   `last_nar` som står på svepets egen `troskellarm`-rad. `farskhet.troskel = null`
   betyder "svepet har inte kört" — inte "inga larm", och ytan skriver ut
   skillnaden i stället för att visa ett gammalt värde som färskt.
+- Källa och lästid per värde (Story 6.1, FR-35): svaret bär också `varden: { avtal, koposter, beslut }`,
+  där varje avtal har
+  `{ contract_id, forbrukning, troskel, leverabler, nasta_leverans, prognos, bedomning, oppen_begaran, signaler, scopelinje, matt, rytm }`
+  som `Lasvarde`. Tröskeln bär sitt eget avtals cacherad och är oläst utan lästid när svepet
+  inte har kört. `farskhet` står kvar oförändrad.
 - **Köfiltret ligger i tjänsten.** Kön är hela bolagets; en post hör till
   uppdraget när dess indata namnger `project_id`, ett av avtalen (`contract_id`)
   eller en av avtalsdelarnas versioner (`contract_part_id`, vägen `binda_kostnad`

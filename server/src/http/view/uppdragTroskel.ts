@@ -8,11 +8,32 @@ import {
   GOLVETS_MARKNING, STROMRAMENS_KALLA, golvetBinder, type Larm, type Trosklar, type UtanEgenRam,
 } from '../../lib/troskel.js';
 import { hhmm } from '../../lib/duration.js';
-import { html, kronor, type Raw } from './html.js';
+import type { Lasvarde } from '../../lib/lasvarde.js';
+import { farskhetstid, html, kronor, type Raw } from './html.js';
 import { RAM_SAKNAS } from './uppdragForbrukning.js';
 
 /** Ett cachevärde skrivet före Story 5.3 saknar ramläget tills nästa svep. */
 export const RAMLAGE_EFTER_SVEP = 'Ramläget per nivå står här efter nästa svep.';
+
+// Story 6.1: tröskelns färskhet har tre fasta former. Ett oläst värde visas
+// aldrig som läst (FR-22), och ett ej svept värde säger det.
+export const TROSKEL_SVEPT_EJ = 'tröskeln: svepet har inte kört för uppdraget';
+export const TROSKEL_LAST = 'tröskeln läst av svepet';
+export const TROSKEL_KUNDE_INTE = 'tröskeln kunde inte läsas ur svepet · senast läst';
+
+/**
+ * Tröskelns del av färskhetsraden, ur avtalets EGEN cacherad (Story 6.1,
+ * kriterium 3): ett avtals tid slås aldrig ihop med ett annats. Med flera
+ * avtal står avtalsnamnet sist. Ren: ingen klocka utöver `idag`.
+ */
+export function troskelnsFarskhet(v: Lasvarde<unknown>, idag: string, avtalsnamn: string | null): string {
+  const text = v.lage === 'last' && v.last_nar !== null
+    ? `${TROSKEL_LAST} ${farskhetstid(v.last_nar, idag)}`
+    : v.last_nar === null
+      ? TROSKEL_SVEPT_EJ
+      : `${TROSKEL_KUNDE_INTE} ${farskhetstid(v.last_nar, idag)}`;
+  return avtalsnamn === null ? text : `${text} — ${avtalsnamn}`;
+}
 
 /** Decimalkomma utan utfyllnad: 5 blir 5, 5.25 blir 5,25. */
 const tal = (n: number): string => String(n).replace('.', ',');

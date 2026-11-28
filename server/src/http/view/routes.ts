@@ -42,7 +42,7 @@ import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgora
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { listaReferenser, tillReferensvisning } from '../../services/uppdragReferens.js';
-import { lasLeverabelregister, type Leverabelrad } from '../../services/uppdragRegister.js';
+import { lasLeverabelregister, type Leverabelrad, type Registerrad } from '../../services/uppdragRegister.js';
 import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
 import { NASTA_TEXT, type Nastaleverans } from '../../lib/nastaLeverans.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -50,7 +50,7 @@ import { lasKontraktsyta, lasKontraktsparter, type LastaKontraktsparter, type Ko
 import { SCOPELINJESORTER, type Scopelinjelage, type Scopelinjesort } from '../../lib/leveranskontrakt.js';
 import { beslutsplats, beskrivHandling } from '../../services/uppdragBeslut.js';
 import { TimmarSchema } from '../../lib/beslutsunderlag.js';
-import { lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
+import { lasPlandelar, lasSvepfarskhet, lasUppdragslage, LEVERABELLAGEN, type Farskhet, type Uppdragslage } from '../../services/uppdragLage.js';
 import { listaUppdragsanteckningar, type Anteckningsrad } from '../../services/uppdragAnteckning.js';
 import {
   lasDokumentforteckning,
@@ -59,7 +59,7 @@ import {
 import type { Larm, Trosklar } from '../../lib/troskel.js';
 import { lasUndantag } from '../../services/uppdragUndantag.js';
 import { lasUppdragspengar, lasOplaneradeKostnader, type Kostnadsrad, type Avtalspengar, type Uppdragspengar } from '../../services/uppdragPengar.js';
-import type { Lasvarde } from '../../lib/lasvarde.js';
+import { KALLA_REDOVISNING, last, type Lasvarde } from '../../lib/lasvarde.js';
 import { lasAvslutslista, type Avslutatavtal } from '../../services/uppdragAvslut.js';
 import {
   byggPlan, grupperaEfterSlut, visaDatum, type Datumprecision, type Plan, type Plandel, type Planrad,
@@ -118,8 +118,8 @@ import { createFiscalYear, listFiscalYears } from '../../services/accounting/fis
 import { destination, destinationsAdress, destinationsFraga, ruttensAgare } from './kontrakt.js';
 import { undantagssida } from './undantagsvyn.js';
 import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from './uppdragUppfoljning.js';
-import { nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
-import { golvmarkering, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
+import { lasvardesFarskhet, nivapanel, ofordeladUppdrag } from './uppdragForbrukning.js';
+import { golvmarkering, troskelnsFarskhet, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
 import { prognosplatsHtml } from './uppdragPrognos.js';
 import { kostnadstackning } from './kostnadstackning.js';
 
@@ -2595,6 +2595,8 @@ interface Bedomningshistorik {
   projekt: { id: string; number: number; name: string; status: string };
   avtal: { id: string; name: string }[];
   historik: (Bedomningsrad & { avtalsnamn: string })[];
+  /** Story 6.1: historiken med källa och lästid; `varde` är samma lista som `historik`. */
+  varde: Lasvarde<(Bedomningsrad & { avtalsnamn: string })[]>;
 }
 
 interface Bedomningsunderlag extends Bedomningshistorik {
@@ -2634,14 +2636,14 @@ async function bedomningshistorik(
   // uppdraget, inte som en tabell per avtal.
   historik.sort((a, b) => a.period_start.localeCompare(b.period_start)
     || a.created_at.localeCompare(b.created_at));
-  return { projekt: p, avtal, historik };
+  return { projekt: p, avtal, historik, varde: last(historik, KALLA_REDOVISNING, new Date().toISOString()) };
 }
 
 /** Uppdraget, dess avtal, rapportunderlaget och alla bedömningar. */
 async function bedomningsunderlag(
   client: PoolClient, companyId: string, projectId: string,
 ): Promise<Bedomningsunderlag> {
-  const { projekt: p, avtal, historik } = await bedomningshistorik(client, companyId, projectId);
+  const { projekt: p, avtal, historik, varde } = await bedomningshistorik(client, companyId, projectId);
   // Perioden ur det förvalda avtalets rytm (Story 2.3), på UTC-dagen — samma
   // regel och samma dag som undantagsvyns post räknar sin period på. Samma
   // period styr rapporten ovanför formuläret, så att sidan aldrig visar tal för
@@ -2659,6 +2661,7 @@ async function bedomningsunderlag(
     projekt: p,
     avtal,
     historik,
+    varde,
     period,
     rytm,
     kalenderref: forsta ? await kalenderreferenser(client, companyId, forsta.id) : [],
@@ -3444,12 +3447,15 @@ interface Planunderlag {
   avtal: { id: string; name: string }[];
   plan: Plan;
   idag: string;
+  /** Avtalsdelarna med källa och lästid (Story 6.1). null = uppdraget saknar avtal. */
+  delar: Lasvarde<Plandel[]> | null;
 }
 
 /**
  * Uppdragets avtalsdelar med sina perioder. ALLA versioner läses — den rena
  * funktionen väljer den gällande, med samma regel som takberäkningen, så att
- * planen och taket aldrig kan visa var sin version av samma del.
+ * planen och taket aldrig kan visa var sin version av samma del. Frågan står
+ * i läsvägen `lasPlandelar` (Story 6.1): vyn gör ingen egen SQL.
  */
 async function planunderlag(
   client: PoolClient, companyId: string, projectId: string, idag: string,
@@ -3457,17 +3463,8 @@ async function planunderlag(
   const p = await getProject(client, companyId, projectId) as { id: string; number: number; name: string };
   const avtal = (await listContracts(client, companyId, { project_id: projectId }))
     .map((a) => ({ id: a.id as string, name: a.name as string }));
-  const delar = avtal.length === 0 ? [] : (await client.query<Plandel>(
-    `SELECT cp.id, cp.contract_id, cp.parent_part_id, cp.code, cp.name,
-            cp.valid_from::text, cp.start_date::text, cp.end_date::text,
-            cp.date_precision, cp.sort_order, cp.active
-       FROM contract_parts cp
-       JOIN contracts c ON c.id = cp.contract_id AND c.company_id = cp.company_id
-      WHERE cp.company_id = $1 AND c.project_id = $2
-      ORDER BY cp.sort_order, cp.code, cp.valid_from`,
-    [companyId, projectId],
-  )).rows;
-  return { projekt: p, avtal, plan: byggPlan(delar, idag), idag };
+  const delar = avtal.length === 0 ? null : await lasPlandelar(client, companyId, projectId);
+  return { projekt: p, avtal, plan: byggPlan(delar?.varde ?? [], idag), idag, delar };
 }
 
 /** En rad i tidslinjen: rutnätet, och noll eller en stapel i det. */
@@ -3529,7 +3526,8 @@ function precisionscell(rad: Planrad): Raw {
     ${arvd ? html`· ${arvd}` : ''}`;
 }
 
-function plansida(companyId: string, u: Planunderlag): Raw {
+/** `dag` är det lokala datumet för färskheten; planens egna rader räknas på `u.idag`. */
+function plansida(companyId: string, u: Planunderlag, dag: string): Raw {
   const p = u.plan;
   const spann = p.forsta_manad && p.sista_manad
     ? (p.forsta_manad === p.sista_manad ? p.forsta_manad : `${p.forsta_manad} – ${p.sista_manad}`)
@@ -3560,24 +3558,34 @@ function plansida(companyId: string, u: Planunderlag): Raw {
                     Grafiken är en bild av tabellen nedan — den bär inga egna värden.</p>`}
               ${datumlista(u)}
             </div>
+            ${/* Sist i panelen, utanför kroppens egen utfyllnad, så att raden
+                  linjerar med innehållet som på de andra korten. */ ''}
+            ${u.delar === null ? '' : lasvardesFarskhet(u.delar, 'avtalsdelarna', dag)}
           </div>`
     }
-    <h2 style="margin-top:18px">Avtalsdelar</h2>
-    ${
-      p.rader.length === 0
-        ? html`<p class="muted">Avtalet har inga aktiva delar ännu.</p>`
-        : html`<div class="table-wrap"><table>
-            <thead><tr><th>Kod</th><th>Del</th><th>Start</th><th>Slut</th><th>Precision</th></tr></thead>
-            <tbody>${p.rader.map((rad) => html`<tr>
-              <td class="code">${rad.code}</td>
-              <td>${rad.name}</td>
-              <td>${plandatum(rad.start_date, rad.date_precision)}</td>
-              <td>${plandatum(rad.end_date, rad.date_precision)}</td>
-              <td>${precisionscell(rad)}</td></tr>`)}
-            </tbody></table></div>
-          <p class="muted" style="margin-top:8px;font-size:12.5px">Gällande version per delkod, aktiva delar,
-            i avtalets egen ordning. Ett tomt datum är ett datum som inte står i avtalet.</p>`
-    }`;
+    ${/* Story 6.1: tabellen är ett värdeblock med sin egen färskhetsrad, i
+          husets panel som Kontraktets delar — inget tal står utanför ett block. */ ''}
+    <section class="panel" aria-labelledby="avtalsdelar" style="margin-top:16px">
+      <div class="panel__head"><h2 id="avtalsdelar">Avtalsdelar</h2></div>
+      <div class="panel__body">
+        ${
+          p.rader.length === 0
+            ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga aktiva delar ännu.</p>`
+            : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
+                <thead><tr><th>Kod</th><th>Del</th><th>Start</th><th>Slut</th><th>Precision</th></tr></thead>
+                <tbody>${p.rader.map((rad) => html`<tr>
+                  <td class="code">${rad.code}</td>
+                  <td>${rad.name}</td>
+                  <td>${plandatum(rad.start_date, rad.date_precision)}</td>
+                  <td>${plandatum(rad.end_date, rad.date_precision)}</td>
+                  <td>${precisionscell(rad)}</td></tr>`)}
+                </tbody></table></div>
+              <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Gällande version per delkod, aktiva delar,
+                i avtalets egen ordning. Ett tomt datum är ett datum som inte står i avtalet.</p>`
+        }
+        ${u.delar === null ? '' : lasvardesFarskhet(u.delar, 'avtalsdelarna', dag)}
+      </div>
+    </section>`;
 }
 
 viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res) => {
@@ -3585,9 +3593,11 @@ viewRouter.get('/c/:companyId/projects/:projectId/planen', page(async (req, res)
   const companyId = parseCompanyId(req.params.companyId);
   const projectId = parseApprovalId(req.params.projectId);
   const idag = new Date().toISOString().slice(0, 10);
+  // Färskheten jämförs mot det lokala datumet, som på de andra sidorna; planens UTC-dag ovan ändras inte.
+  const dag = new Date().toLocaleDateString('sv-SE');
   const { name, body } = await withTenantTransaction(userId, companyId, async (client) => {
     const company = await loadCompany(client, companyId);
-    return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag)) };
+    return { name: company.name, body: plansida(companyId, await planunderlag(client, companyId, projectId, idag), dag) };
   });
   res.type('html').send(layout({
     title: 'Planen', companyId, companyName: name, active: 'projects', objekt: 'Planen',
@@ -3696,12 +3706,15 @@ function dokumentpanel(companyId: string, y: Kontraktsyta, idag: string): Raw {
             En rad med nyckelrymden <span class="code">registerkopia</span> är den frysta registerkopian i spärrmappen —
             den får sitt riktiga id först när svepet skrivit filen. Innehållet står kvar i handlingen: den här ytan är
             vägen dit, aldrig en kopia av den.</p>`}
+      ${/* Story 6.1: pekarna lästes ur redovisningen nu; varje pekares eget
+            läge och verifieringstid står på dess rad ovan. */ ''}
+      ${lasvardesFarskhet(y.varden.dokument, 'pekarna', idag)}
     </div>
   </section>`;
 }
 
 /** Det som gäller — eller, för ett osignerat avtal, det som bara föreslås. */
-function gallandepanel(y: Kontraktsyta): Raw {
+function gallandepanel(y: Kontraktsyta, idag: string): Raw {
   const utkast = y.contract.kontrakt_tillstand === 'utkast';
   return html`<section class="panel" style="margin-top:14px" aria-labelledby="gallande-${y.contract.id}">
     <div class="panel__head"><h2 id="gallande-${y.contract.id}">${utkast ? 'Utkastets delar' : 'Det som gäller nu'}</h2>
@@ -3733,12 +3746,13 @@ function gallandepanel(y: Kontraktsyta): Raw {
           <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Den gällande versionen per delkod — samma
             regel som takvarningen och faktureringsspärren läser. Ett tak som ingen bekräftat står som
             <em>vet ej</em>: det varnar aldrig och spärrar aldrig.</p>`}
+      ${lasvardesFarskhet(y.varden.gallande, 'delarna', idag)}
     </div>
   </section>`;
 }
 
 /** Tilläggen: varje version utöver den första, i tidsordning, med sitt skäl. */
-function tillaggspanel(y: Kontraktsyta): Raw {
+function tillaggspanel(y: Kontraktsyta, idag: string): Raw {
   return html`<section class="panel" style="margin-top:14px" aria-labelledby="tillagg-${y.contract.id}">
     <div class="panel__head"><h2 id="tillagg-${y.contract.id}">Tilläggen</h2>
       ${y.tillagg.length === 0 ? chip('Inga', 'muted', '○') : chip(String(y.tillagg.length), 'info', '±')}</div>
@@ -3759,6 +3773,7 @@ function tillaggspanel(y: Kontraktsyta): Raw {
             </tbody></table></div>
           <p class="muted" style="margin:8px 16px 12px;font-size:12.5px">Delen är koden, raderna är dess versioner. Den
             version som gällde i juli går att läsa i oktober — ett tillägg skriver aldrig över den gamla raden.</p>`}
+      ${lasvardesFarskhet(y.varden.tillagg, 'tilläggen', idag)}
     </div>
   </section>`;
 }
@@ -3833,7 +3848,7 @@ function scopelinjepanel(
 }
 
 /** Kontraktets lagrade parter och beräknade luckor, med husets panel och textskala. */
-function parterpanel(y: Kontraktsyta): Raw {
+function parterpanel(y: Kontraktsyta, idag: string): Raw {
   const p = y.parter;
   return html`<section class="panel" style="margin-top:14px" aria-labelledby="parter-${y.contract.id}">
     <div class="panel__head"><h2 id="parter-${y.contract.id}">Parterna och luckorna</h2></div>
@@ -3851,6 +3866,7 @@ function parterpanel(y: Kontraktsyta): Raw {
             : html`<div style="margin:8px 16px 12px"><h3>${LUCKRUBRIK}</h3>
                 <ul>${y.luckor.map((l) => html`<li><strong>${l.vad}</strong><br>
                   ${l.var}<br><span class="muted">${l.ja_innebar}</span></li>`)}</ul></div>`}`}
+      ${lasvardesFarskhet(y.varden.parter, 'parterna', idag)}
     </div>
   </section>`;
 }
@@ -3862,10 +3878,11 @@ function kontraktsavsnitt(companyId: string, y: Kontraktsyta, flera: boolean, id
           <span style="font-weight:400"> ${tillstandChip(y.contract.kontrakt_tillstand)}</span></h2>`
       : ''}
     ${dokumentpanel(companyId, y, idag)}
-    ${gallandepanel(y)}
-    ${tillaggspanel(y)}
-    ${parterpanel(y)}
-    ${scopelinjepanel(companyId, y.contract.project_id, y.contract.id, y.scopelinje, y.scopelinje_lage)}`;
+    ${gallandepanel(y, idag)}
+    ${tillaggspanel(y, idag)}
+    ${parterpanel(y, idag)}
+    ${scopelinjepanel(companyId, y.contract.project_id, y.contract.id, y.scopelinje, y.scopelinje_lage, undefined,
+      lasvardesFarskhet(y.varden.scopelinje, 'scopelinjen', idag))}`;
 }
 
 function kontraktssida(companyId: string, u: Kontraktsunderlag, idag: string): Raw {
@@ -4027,7 +4044,7 @@ interface Handgrepp {
   ai: boolean;
 }
 
-function handgreppsband(companyId: string, l: Uppdragslage): Raw {
+function handgreppsband(companyId: string, l: Uppdragslage, idag: string): Raw {
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
   const grepp: Handgrepp[] = [];
   // Ordningen är hur hårt något blockerar: en köpost stoppar en åtgärd som
@@ -4109,6 +4126,8 @@ function handgreppsband(companyId: string, l: Uppdragslage): Raw {
         <a class="btn btn--ghost btn--sm" href="${g.href}">${g.knapp}</a>
       </li>`)}
     </ul>
+    ${/* Story 6.1: bandet räknar det som väntar, och talet bär sin lästid. */ ''}
+    ${lasvardesFarskhet(l.varden.koposter, 'väntande', idag)}
   </section>`;
 }
 
@@ -4179,11 +4198,11 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
   return faktakort('kort-ram', 'Förbrukning mot ram',
     chip(l.avtal.length === 1 ? '1 avtal' : `${String(l.avtal.length)} avtal`, 'muted'),
     kropp,
+    // Story 6.1, kriterium 3: tröskelns tid per avtal ur avtalets egen
+    // cacherad, aldrig de sammanslagna avtalens. En rad som inte bär är oläst.
     farskhetsrad([
       direktFarskhet(l.farskhet.forbrukning, idag),
-      l.farskhet.troskel === null
-        ? 'tröskeln: svepet har inte kört för uppdraget'
-        : `tröskeln läst av svepet ${farskhetstid(l.farskhet.troskel.last_nar, idag)}`,
+      ...l.avtal.map((a, i) => troskelnsFarskhet(l.varden.avtal[i]!.troskel, idag, flera ? a.contract_name : null)),
     ]));
 }
 
@@ -4434,9 +4453,10 @@ function anteckningsformular(companyId: string, l: Uppdragslage): Raw {
   </form>`;
 }
 
-function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Anteckningsrad[]): Raw {
+function ovrigtpanelen(companyId: string, l: Uppdragslage, anteckningar: Lasvarde<readonly Anteckningsrad[]>, idag: string): Raw {
   const flera = l.avtal.length > 1;
   const avtalsnamn = new Map(l.avtal.map((a): [string, string] => [a.contract_id, a.contract_name]));
+  const rader = anteckningar.varde ?? [];
   const utanfor = rader.reduce((n, r) => n + (r.utanfor_avtal ? 1 : 0), 0);
   return html`<section class="panel" aria-labelledby="kort-ovrigt" style="margin-top:16px">
     <div class="panel__head"><h2 id="kort-ovrigt">Övrigt</h2>${utanforRakning(utanfor)}</div>
@@ -4452,6 +4472,7 @@ function ovrigtpanelen(companyId: string, l: Uppdragslage, rader: readonly Antec
             ${rader.map((r) => anteckningspost(r, avtalsnamn.get(r.contract_id), flera))}
           </div>`}
       ${anteckningsformular(companyId, l)}
+      ${lasvardesFarskhet(anteckningar, 'anteckningarna', idag)}
     </div>
   </section>`;
 }
@@ -4513,7 +4534,7 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
 
 function lagessida(
   req: Request, companyId: string, l: Uppdragslage,
-  anteckningar: readonly Anteckningsrad[], idag: string,
+  anteckningar: Lasvarde<readonly Anteckningsrad[]>, idag: string,
 ): Raw {
   const p = l.uppdrag;
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Läget</h1>
@@ -4524,7 +4545,7 @@ function lagessida(
         <a class="btn btn--ghost btn--sm" href="/app/c/${companyId}/uppdrag/lista">← Uppdragen</a></div></div>
     ${subnav(companyId, p.project_id, 'laget')}
     ${felNotis(req)}
-    ${handgreppsband(companyId, l)}
+    ${handgreppsband(companyId, l, idag)}
     ${/* Fem kort, alltid alla fem, i FR-18:s ordning. Rutnätet ligger i en
           inline-stil och inte i en ny klass: överlämningen namnger `.farskhet`
           och `.subnav` som de enda nya, och husets `.panel` bär korten. */ ''}
@@ -4535,7 +4556,7 @@ function lagessida(
       ${kortSignaler(companyId, l, idag)}
       ${kortKoposter(companyId, l, idag)}
     </div>
-    ${ovrigtpanelen(companyId, l, anteckningar)}
+    ${ovrigtpanelen(companyId, l, anteckningar, idag)}
     ${beslutspanelen(companyId, l, idag)}
     ${/* Story 2.6: scopelinjen sist, en panel per avtal — samma panel som på
           Kontraktet, med sin egen färskhetsrad. Gränsen läses när en signal
@@ -4562,9 +4583,9 @@ viewRouter.get('/c/:companyId/projects/:projectId/laget', page(async (req, res) 
     const lage = await lasUppdragslage(client, companyId, { project_id: projectId });
     // Anteckningarna hör till uppdragets avtal, och avtalen slås upp ur
     // uppdragsläget som rutten redan läst — ingen egen avtalsfråga här.
-    const anteckningar = await listaUppdragsanteckningar(
+    const anteckningar = last(await listaUppdragsanteckningar(
       client, companyId, lage.avtal.map((a) => a.contract_id),
-    );
+    ), KALLA_REDOVISNING, new Date().toISOString());
     return { name: company.name, body: lagessida(req, companyId, lage, anteckningar, idag) };
   });
   res.type('html').send(layout({
@@ -4931,7 +4952,7 @@ viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läg
 interface Leveransavtal {
   contractId: string;
   namn: string;
-  rader: Leverabelrad[];
+  rader: Registerrad[];
   parter: LastaKontraktsparter;
 }
 
@@ -4995,9 +5016,9 @@ function faltinnehall(rad: Leverabelrad, falt: Leverabelfalt): Raw {
  * kolumn får aldrig kunna svälja en rad i tysthet) hamnar sist i stället för att
  * försvinna; `statusChip` renderar då värdet som sig självt.
  */
-function grupperaPerLage(rader: readonly Leverabelrad[]): Map<string, Leverabelrad[]> {
-  const karta = new Map<string, Leverabelrad[]>(
-    LEVERABELLAGEN.map((lage): [string, Leverabelrad[]] => [lage, []]),
+function grupperaPerLage<R extends Leverabelrad>(rader: readonly R[]): Map<string, R[]> {
+  const karta = new Map<string, R[]>(
+    LEVERABELLAGEN.map((lage): [string, R[]] => [lage, []]),
   );
   for (const r of rader) {
     const kolumn = karta.get(r.status);
@@ -5126,7 +5147,10 @@ function leverabelhandgrepp(bas: string, contractId: string, r: Leverabelrad, pa
 }
 
 /** En statuskolumn: läget i huvudet, leverablerna som kort under det. */
-function bradkolumn(bas: string, contractId: string, lage: string, rader: readonly Leverabelrad[], parter: LastaKontraktsparter, epost: string): Raw {
+function bradkolumn(
+  bas: string, contractId: string, lage: string, rader: readonly Registerrad[], parter: LastaKontraktsparter,
+  epost: string, idag: string,
+): Raw {
   const id = `kol-${lage}-${contractId}`;
   return html`<div class="brada__kol"><section class="panel" aria-labelledby="${id}">
     <div class="panel__head"><h2 id="${id}">${statusChip(lage)}</h2>
@@ -5136,7 +5160,10 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
         ? html`<p class="muted" style="margin:10px 14px 12px;font-size:13px">Ingen leverabel står här.</p>`
         : html`<ul style="list-style:none;margin:0;padding:2px 14px 12px">
             ${rader.map((r) => leverabelkort(bas, contractId, r, parter, epost))}
-          </ul>`}
+          </ul>
+          ${/* Story 6.1: alla rader i ett svar har samma källa och lästid, så
+                kolumnens rad står en gång, efter listan och inte i ett kort. */ ''}
+          ${lasvardesFarskhet(rader[0]!, 'registret', idag)}`}
     </div>
   </section></div>`;
 }
@@ -5149,9 +5176,9 @@ function bradkolumn(bas: string, contractId: string, lage: string, rader: readon
  * designkontraktet, och en komponent som bara finns som en attributsträng går
  * varken att peka på eller mäta.
  */
-function bradlage(bas: string, a: Leveransavtal, epost: string): Raw {
+function bradlage(bas: string, a: Leveransavtal, epost: string, idag: string): Raw {
   return html`<div class="brada">
-    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost))}
+    ${[...grupperaPerLage(a.rader)].map(([lage, rader]) => bradkolumn(bas, a.contractId, lage, rader, a.parter, epost, idag))}
   </div>`;
 }
 
@@ -5164,7 +5191,7 @@ function bradlage(bas: string, a: Leveransavtal, epost: string): Raw {
  * varje ruta sitt eget fält med sin egen etikett, utan att något hamnar utanför
  * skärmen.
  */
-function tabellage(a: Leveransavtal): Raw {
+function tabellage(a: Leveransavtal, idag: string): Raw {
   return html`<div class="table-wrap" style="margin-top:14px"><table>
       <thead><tr>${LEVERABELFALT.map(({ rubrik }) => html`<th>${rubrik}</th>`)}</tr></thead>
       ${/* Saknastexten kommer ur lib i båda lägena, aldrig en tom ruta. */ ''}
@@ -5172,7 +5199,7 @@ function tabellage(a: Leveransavtal): Raw {
         falt === 'dagar_i_laget'
           ? html`<td class="num">${faltinnehall(r, falt)}</td>`
           : html`<td>${faltinnehall(r, falt)}</td>`)}</tr>`)}
-      </tbody></table></div>
+      </tbody></table>${lasvardesFarskhet(a.rader[0]!, 'registret', idag)}</div>
     <p class="muted" style="margin:8px 2px 14px;font-size:12.5px">Namn, klausul, acceptanskriterium,
       uppföljningsmått och läsväg läses ur leveranskontraktet. Revision och mottagare läses ur den senaste
       registrerade överlämningen och överlämningsdatumet ur överlämningshandlingen. Inget av fälten skrivs här,
@@ -5197,7 +5224,7 @@ const tomtRegister = (bas: string): Raw =>
     Avtalet har inget leverabelregister ännu — det fylls när leveranskontraktet läses in, och hittas aldrig på här.
     <a href="${bas}/avtal">Läs in kontraktet</a>, så står leverablerna i både brädan och tabellen.</div>`;
 
-function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean): Raw {
+function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean, idag: string): Raw {
   const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   const flera = u.avtal.length > 1;
   const totalt = u.avtal.reduce((n, a) => n + a.rader.length, 0);
@@ -5222,7 +5249,7 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean)
         ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
           ${a.rader.length === 0 ? tomtRegister(bas) : html`
             <p class="muted" id="mottagarpart-${a.contractId}">${mottagarpartlage(a.parter, a.parter.lage !== 'ej_inlast').text}</p>
-            ${tabell ? tabellage(a) : bradlage(bas, a, u.epost)}`}`)}`}`;
+            ${tabell ? tabellage(a, idag) : bradlage(bas, a, u.epost, idag)}`}`)}`}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -5286,7 +5313,8 @@ viewRouter.get('/c/:companyId/projects/:projectId/leveranserna', pageFor('projec
     // Okänt värde ger brädan. En parameter någon skrivit fel ska landa i
     // default-läget, aldrig i en tom sida.
     const tabell = req.query.lage === 'tabell';
-    return leveransersida(companyId, await leveransunderlag(client, companyId, projectId, getUserId(req)), tabell);
+    const idag = new Date().toLocaleDateString('sv-SE');
+    return leveransersida(companyId, await leveransunderlag(client, companyId, projectId, getUserId(req)), tabell, idag);
   }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
@@ -5394,7 +5422,10 @@ function rampanel(a: Avtalspengar, bas: string, idag: string): Raw {
     <div class="panel__body">
       ${rambilder(a).map((b) => ramblock(b))}
       <div style="padding:4px 16px 4px">${prognosplatsHtml(a.prognos, { bas, contractId: a.contract_id, idag })}</div>
+      ${/* Story 6.1: ramens tal är lästa ur redovisningen och bär sin egen del i
+            panelens enda färskhetsrad, före prognosens. */ ''}
       ${farskhetsrad([
+        `ramen ${direktFarskhet({ kalla: a.ramvarde.kalla, last_nar: a.ramvarde.last_nar! }, idag)}`,
         a.prognos.last_nar === null
           ? 'prognosen: svepet har inte kört för uppdraget'
           : `prognosen läst av svepet ${farskhetstid(a.prognos.last_nar, idag)}`,
@@ -5458,7 +5489,13 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
       <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</p>`;
   }
   const total = a.kostnadstotal.varde;
-  return html`<div class="table-wrap" style="margin-top:14px"><table>
+  const id = `kostnader-${a.contract_id}`;
+  // Story 6.1: tabellen, totalen och deras färskhetsrader är ett värdeblock i
+  // husets panel — inget tal står utanför ett block, och raderna står vid talen.
+  return html`<section class="panel" aria-labelledby="${id}" style="margin-top:14px">
+    <div class="panel__head"><h2 id="${id}">Kostnaderna</h2></div>
+    <div class="panel__body">
+    <div class="table-wrap" style="margin:10px 0 4px"><table>
       <thead><tr><th>Datum</th><th>Leverantör</th><th>Avtalsdel</th><th class="num">Belopp</th><th>Läst</th></tr></thead>
       <tbody>${bundna.map((k) => html`<tr class="pengarad">
         <td class="code">${k.datum}</td>
@@ -5472,20 +5509,22 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
         <td class="num">${beloppForKostnad(k)}</td><td>${lastText(a.obundna_kostnader)}</td></tr>`)}
       </tbody></table></div>
     ${bundna.length > 0 ? farskhetsrad([a.kostnader.last_nar === null ? 'bundna kostnader: lästid saknas' : `bundna kostnader ${lastText(a.kostnader)}`]) : ''}
-    ${total ? html`<p>Kostnader totalt, bokfört: ${amount(total.bokfort_ore)}, varav obundet ${amount(total.varav_obundet_ore)}.
+    ${total ? html`<p style="margin:8px 16px 4px">Kostnader totalt, bokfört: ${amount(total.bokfort_ore)}, varav obundet ${amount(total.varav_obundet_ore)}.
       ${total.ej_bokforda > 0 ? `${total.ej_bokforda} ${total.ej_bokforda === 1 ? 'kostnad är' : 'kostnader är'} ej bokförd${total.ej_bokforda === 1 ? '' : 'a'} och ingår inte i summan.` : ''}
-      ${a.kostnadstotal.last_nar === null ? 'Kostnadstotalen: lästid saknas' : `kostnadstotalen ${direktFarskhet({ kalla: a.kostnadstotal.kalla, last_nar: a.kostnadstotal.last_nar }, idag)}`}.</p>` : html`<p>Kostnadstotalen kunde inte läsas.</p>`}
+      ${a.kostnadstotal.last_nar === null ? 'Kostnadstotalen: lästid saknas' : `kostnadstotalen ${direktFarskhet({ kalla: a.kostnadstotal.kalla, last_nar: a.kostnadstotal.last_nar }, idag)}`}.</p>` : html`<p style="margin:8px 16px 4px">Kostnadstotalen kunde inte läsas.</p>`}
     ${bundna.some((k) => k.oplanerad)
       // Samma mening som kvittolistan bär: en chip ingen kan tyda är ingen
       // märkning, och två olika förklaringar vore två olika märkningar.
-      ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
+      ? html`<p class="muted" style="font-size:12.5px;margin:8px 16px 4px">Oplanerad = kostnaden fanns inte i uppdragets avtalade omfattning när den bands till avtalsdelen. Den räknas separat, aldrig som planerad.</p>`
       : ''}
     ${obundna.length > 0
-      ? html`<p class="muted" style="font-size:12.5px;margin-top:8px">Obunden = kostnaden är föreslagen för uppdraget, men ingen bindning till en avtalsdel är godkänd. Den ingår i uppdragets kostnader utan avtalsdel.</p>
+      ? html`<p class="muted" style="font-size:12.5px;margin:8px 16px 4px">Obunden = kostnaden är föreslagen för uppdraget, men ingen bindning till en avtalsdel är godkänd. Den ingår i uppdragets kostnader utan avtalsdel.</p>
         ${farskhetsrad([a.obundna_kostnader.last_nar === null
           ? 'obundna kostnader: lästid saknas'
           : `obundna kostnader ${direktFarskhet({ kalla: a.obundna_kostnader.kalla, last_nar: a.obundna_kostnader.last_nar }, idag)}`])}`
-      : ''}`;
+      : ''}
+    </div>
+  </section>`;
 }
 
 function pengasida(companyId: string, u: Uppdragspengar, idag: string): Raw {
@@ -5571,7 +5610,7 @@ function bedomningspost(b: Bedomningsrad & { avtalsnamn: string }, flera: boolea
   </div>`;
 }
 
-function rapportersida(companyId: string, u: Bedomningshistorik): Raw {
+function rapportersida(companyId: string, u: Bedomningshistorik, idag: string): Raw {
   const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   const flera = u.avtal.length > 1;
   const senaste = u.historik[u.historik.length - 1];
@@ -5596,6 +5635,9 @@ function rapportersida(companyId: string, u: Bedomningshistorik): Raw {
               källorna än ändras efteråt. Raderna går bara att lägga till: databasen ger varken ändra eller ta bort på
               dem. En ny bedömning sätts på <a href="${bas}/bedomning">Bedömning</a>.</p>
             <section class="log" aria-label="Bedömningar i kronologisk ordning">
+              ${/* Story 6.1: lästiden står FÖRST i blocket och inte sist: en rad
+                    efter den sista posten hade lästs som en del av den. */ ''}
+              ${lasvardesFarskhet(u.varde, 'bedömningarna', idag)}
               ${u.historik.map((b) => bedomningspost(b, flera))}
             </section>`
     }`;
@@ -5604,7 +5646,8 @@ function rapportersida(companyId: string, u: Bedomningshistorik): Raw {
 viewRouter.get('/c/:companyId/projects/:projectId/rapporterna', pageFor('projects', 'Rapporterna',
   async (client, companyId, req) => {
     const projectId = parseApprovalId(req.params.projectId);
-    return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId));
+    const idag = new Date().toLocaleDateString('sv-SE');
+    return rapportersida(companyId, await bedomningshistorik(client, companyId, projectId), idag);
   }, uppdragsmarkering(true)));
 
 // ---------------------------------------------------------------------------
