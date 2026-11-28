@@ -420,7 +420,7 @@ describe('(d) de tre lägena har identisk friktion', () => {
 describe('(e) tomt och stängt', () => {
   it('tom historik säger vad tomheten betyder och pekar till Bedömningssidan', async () => {
     const main = huvud(await rapporterna(tomtProjekt));
-    expect(main).toContain('class="empty"');
+    expect(main).toContain('data-tomlage="rapporterna_ingen_bedomning"');
     expect(main).toContain('Ingen bedömning satt ännu');
     expect(main).toContain('inte att det gör det');
     expect(main).toContain(`/projects/${tomtProjekt}/bedomning`);

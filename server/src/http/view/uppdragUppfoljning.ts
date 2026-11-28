@@ -30,6 +30,7 @@ import type { Avtalsrytm, Kalenderreferens } from '../../services/uppdragBedomni
 import type { Mattrad } from '../../services/uppdragLage.js';
 import { chip, direktFarskhet, farskhetsrad, farskhetstid, html, type Raw } from './html.js';
 import { timlarmtext } from './uppdragTroskel.js';
+import { saknasIUnderlaget } from './uppdragTomhet.js';
 
 /** Läsvägarnas etiketter. En ny läsväg i `MATTLASVAGAR` fäller typkontrollen tills den har sin. */
 export const LASVAGSETIKETT: Record<Mattlasvag, string> = {
@@ -227,7 +228,11 @@ export function uppfoljningspanel(
     <div class="panel__head"><h2 id="uppfoljning-${contractId}">Uppföljning och rytm${avtalsnamn ? html` — ${avtalsnamn}` : ''}</h2></div>
     <div class="panel__body">
       ${matt.length === 0
-        ? html`<p class="muted" style="margin:8px 16px 12px">${INGA_MATT}</p>`
+        // Story 6.3: måtten saknas i underlaget; vägen är handlingen de läses ur.
+        ? saknasIUnderlaget('matt_inga', {
+          mening: INGA_MATT,
+          vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${projectId}`, sida: 'dokumenten', text: 'Öppna Dokumenten' },
+        }, 'kort')
         : html`<ul style="list-style:none;margin:0;padding:0 16px">${matt.map((m, i) => mattrad(m, idag, i === 0))}</ul>`}
       <div style="padding:12px 16px 14px;border-top:1px solid var(--line)">
         <h3 style="margin:0 0 6px">Bedömningsrytmen</h3>

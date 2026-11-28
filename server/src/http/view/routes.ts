@@ -42,7 +42,8 @@ import { listaScopefraser, listaSignaler, type AvgorSignalSvar, type Scopeavgora
   type Signalrad } from '../../services/uppdragSignal.js';
 import { signalorsak, TILLAGGSORSAK_MAX } from '../../lib/scopeavgorande.js';
 import { listaReferenser, tillReferensvisning } from '../../services/uppdragReferens.js';
-import { lasLeverabelregister, type Leverabelrad, type Registerrad } from '../../services/uppdragRegister.js';
+import { lasLeverabelregister, lasRegistertomhet, type Leverabelrad, type Registerrad } from '../../services/uppdragRegister.js';
+import type { Registertomhet } from '../../lib/registertomhet.js';
 import { LEVERABELFALT, faltvarde, type Leverabelfalt } from '../../lib/leverabelfalt.js';
 import { NASTA_TEXT, type Nastaleverans } from '../../lib/nastaLeverans.js';
 import { GODKANNANDEKANALER, type Godkannandekanal } from '../../services/uppdragStatus.js';
@@ -121,6 +122,7 @@ import { rytmpanel, TAK_INTE_LAST, takstatusChipYta, uppfoljningspanel } from '.
 import { lasvardesdel, lasvardesFarskhet, nivapanel, ofordeladUppdrag, svepvardesFarskhet } from './uppdragForbrukning.js';
 import { golvmarkering, troskelnsFarskhet, troskelregel, utanEgenRamLista } from './uppdragTroskel.js';
 import { prognosplatsHtml } from './uppdragPrognos.js';
+import { ofullstandigtUnderlag, registretsTomlage, saknasIUnderlaget, verifieratTomt } from './uppdragTomhet.js';
 import { kostnadstackning } from './kostnadstackning.js';
 
 // En väg in för varje fångstmening i tomlägen och hintar (FR-31): de fem ytorna
@@ -2677,10 +2679,6 @@ async function bedomningsunderlag(
   };
 }
 
-/** En rad i rapporten som saknas: sagt rakt ut, aldrig gissat (FR-32). */
-const saknasText = (text: string): Raw =>
-  html`<p class="muted" style="margin:2px 16px 12px;font-size:12.5px">${text}</p>`;
-
 /**
  * Rapporten ovanför formuläret (S4.2, FR-16/FR-20/FR-32).
  *
@@ -2696,6 +2694,9 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
   const f = r.frysta;
   const delar = f.delar;
   const avSort = (sort: Scopelinje['sort']): Scopelinje[] => u.scopelinje.filter((s) => s.sort === sort);
+  // Story 6.3: en rad i rapporten som saknas sägs rakt ut, aldrig gissat (FR-32),
+  // och vägen pekar dit underlaget läses — aldrig till en handling.
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   return html`<section class="panel" style="margin-top:16px" aria-labelledby="underlag-rubrik">
     <div class="panel__head"><h2 id="underlag-rubrik">Underlaget för perioden</h2>
       <span class="code" style="font-size:12.5px">${f.period_start} – ${f.period_slut}</span></div>
@@ -2711,7 +2712,10 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
             hade gjort en trygg siffra av ett missförstånd. */ ''}
       <h3 style="margin:16px 16px 4px">Förbrukning mot tak <span class="muted" style="font-weight:400;font-size:12.5px">· hela avtalet</span></h3>
       ${delar.length === 0
-        ? saknasText('Avtalet har inga delar ännu — utan baseline finns inget tak att mäta mot.')
+        ? saknasIUnderlaget('bedomning_inga_delar', {
+          mening: 'Avtalet har inga delar ännu — utan baseline finns inget tak att mäta mot.',
+          vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+        }, 'kort')
         : html`<div class="table-wrap" style="margin:4px 16px 12px">
             <table><thead><tr><th scope="col">Kod</th><th scope="col">Del</th>
               <th scope="col" class="num">Förbrukat</th><th scope="col" class="num">Belopp</th>
@@ -2729,7 +2733,10 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
 
       <h3 style="margin:16px 16px 4px">Leverabelrörelser i perioden</h3>
       ${f.leverabelrorelser.length === 0
-        ? saknasText('Ingen leverabel bytte läge i perioden.')
+        ? verifieratTomt('bedomning_inga_rorelser', {
+          mening: 'Ingen leverabel bytte läge i perioden.',
+          vag: { mal: 'sida', bas, sida: 'leveranserna', text: 'Leveranserna' },
+        }, 'kort')
         : html`<ul style="margin:4px 16px 12px;padding-left:20px">
             ${f.leverabelrorelser.map((h) => html`<li style="margin-bottom:3px">
               <span class="code">${h.kod}</span> ${h.fran ?? '—'} → <b>${h.till}</b>
@@ -2741,10 +2748,12 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
             sitt källsystem (FR-26). Saknas de sägs det rakt ut — en tom lista
             utan förklaring läses som "inget hände". */ ''}
       ${r.handelser.length === 0
-        ? html`<p class="muted" style="margin:2px 16px 12px;font-size:12.5px">Inga kalenderposter eller mejl är länkade
-            till avtalet i perioden. Underlag fästs när en fras tänds under
-            <a href="/app/c/${companyId}/projects/${u.projekt.id}/signaler">Signaler</a> — rapporten hittar aldrig på
-            en händelse som ingen länkat.</p>`
+        // Story 6.3 (FR-32): svepet länkar händelserna; David ombeds aldrig länka dem för hand.
+        ? verifieratTomt('bedomning_inga_handelser', {
+          mening: 'Inga kalenderposter eller mejl är länkade till avtalet i perioden.',
+          forklaring: 'Rapporten tar bara med händelser som svepet har länkat, och den hittar aldrig på en händelse.',
+          vag: { mal: 'sida', bas, sida: 'rapporterna', text: 'Rapporterna' },
+        }, 'kort')
         : html`<ul style="margin:4px 16px 12px;padding-left:20px">
             ${r.handelser.map((h) => html`<li style="margin-bottom:3px">
               ${referensvisning(tillReferensvisning(h), idag)}</li>`)}
@@ -2752,7 +2761,11 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
 
       <h3 style="margin:16px 16px 4px">Vad avtalet lovade</h3>
       ${u.scopelinje.length === 0
-        ? saknasText('Avtalet har inga scopelinjer ännu. De läses ur leveranskontraktets text och skrivs aldrig här.')
+        ? saknasIUnderlaget('bedomning_inga_scopelinjer', {
+          mening: 'Avtalet har inga scopelinjer ännu.',
+          forklaring: 'De läses ur leveranskontraktets text och skrivs aldrig här.',
+          vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+        }, 'kort')
         : html`${scopegrupp('Innanför uppdraget', chip('Ingår', 'ok', '✓'), avSort('innanfor'),
             'Avtalet räknar inte upp något som uttryckligen ingår.')}
           ${scopegrupp('Utanför uppdraget', chip('Ingår inte', 'info', '→'), avSort('utanfor'),
@@ -2767,9 +2780,16 @@ function bedomningsrapport(companyId: string, u: Bedomningsunderlag, idag: strin
           : ''}.</p>
       <h3>Oplanerade kostnader i perioden</h3>
       ${u.oplanerade?.lage !== 'last'
-        ? html`<p>Periodens kostnader kunde inte läsas.</p>`
+        ? ofullstandigtUnderlag('bedomning_kostnader_olast', {
+          mening: 'Periodens kostnader kunde inte läsas.',
+          kalla: 'redovisningen', senast: u.oplanerade?.last_nar ?? null, idag,
+          vag: { mal: 'sida', bas, sida: 'pengarna', text: 'Pengarna' },
+        }, 'kort')
         : (u.oplanerade.varde ?? []).length === 0
-          ? html`<p>Inga oplanerade kostnader i perioden.</p>`
+          ? verifieratTomt('bedomning_inga_oplanerade', {
+            mening: 'Inga oplanerade kostnader i perioden.',
+            vag: { mal: 'sida', bas, sida: 'pengarna', text: 'Pengarna' },
+          }, 'kort')
           : html`<div class="table-wrap"><table><thead><tr>
               <th scope="col">Datum</th><th scope="col">Leverantör</th><th scope="col">Avtalsdel</th><th scope="col" class="num">Belopp</th>
             </tr></thead><tbody>${u.oplanerade.varde!.map((k) => html`<tr>
@@ -2893,9 +2913,14 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, 
     ${felNotis(req)}
     ${
       u.avtal.length === 0
-        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-            Bedömningen sätts mot avtalet — det är där det står vad som lovats.
-            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        // Story 6.3: historikens tomläge pekar på #satt-bedomningen i båda
+        // grenarna. Utan avtal är platsen där bedömningen sätts det här blocket:
+        // det säger varför ingen kan sättas än, och nästa Tab når dess väg.
+        ? html`<div id="satt-bedomningen">${saknasIUnderlaget('inget_avtal', {
+          mening: 'Uppdraget har inget avtal ännu.',
+          forklaring: 'Bedömningen sätts mot avtalet — det är där det står vad som lovats.',
+          vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${u.projekt.id}`, sida: 'avtal', text: 'Läs in avtalet' },
+        }, 'sida')}</div>`
         : html`${/* Story 2.3: rytmen först, för den säger vilken period som
                 bedöms — eller varför ingen period räknas och vägen vidare. */ ''}
           ${u.rytm ? rytmpanel(companyId, u.projekt.id, u.avtal[0]!.id, u.rytm, u.kalenderref, u.idag,
@@ -2909,7 +2934,11 @@ function bedomningsSida(req: Request, companyId: string, u: Bedomningsunderlag, 
     <h2 style="margin-top:18px">Historik</h2>
     ${
       u.historik.length === 0
-        ? html`<p class="muted">Ingen bedömning satt ännu — den första du sätter blir uppdragets utgångsläge.</p>`
+        ? verifieratTomt('bedomning_ingen_historik', {
+          mening: 'Ingen bedömning satt ännu.',
+          forklaring: 'Den första du sätter blir uppdragets utgångsläge.',
+          vag: { mal: 'ankare', id: 'satt-bedomningen', text: 'Sätt bedömningen' },
+        }, 'sida')
         : html`<div class="table-wrap"><table>
             <thead><tr><th scope="col">Period</th>${flera ? html`<th scope="col">Avtal</th>` : ''}<th scope="col">Läge</th>
               <th scope="col">Kommentar</th><th scope="col">Underlaget då</th><th scope="col">Satt</th></tr></thead>
@@ -3246,6 +3275,7 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy, idag:
   const oppna = u.signaler.filter((s) => s.avgjord === null);
   const avgjorda = u.signaler.filter((s) => s.avgjord !== null);
   const flera = u.avtal.length > 1;
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Signaler</h1>
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
         Fraserna står i kontraktet; en människa tänder dem och en människa avgör vad de betydde.
@@ -3260,33 +3290,44 @@ function signalsida(req: Request, companyId: string, u: Signalunderlagsvy, idag:
     ${felNotis(req)}
     ${
       u.avtal.length === 0
-        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-            Signalfraserna står i leveranskontraktet — utan avtal finns ingen scopelinje att bevaka.
-            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        ? saknasIUnderlaget('inget_avtal', {
+          mening: 'Uppdraget har inget avtal ännu.',
+          forklaring: 'Signalfraserna står i leveranskontraktet — utan avtal finns ingen scopelinje att bevaka.',
+          vag: { mal: 'sida', bas, sida: 'avtal', text: 'Läs in avtalet' },
+        }, 'sida')
         : html`
           ${/* Öppna först: en obesvarad scopefråga som läses sist blir ett ja. */ ''}
           <div class="panel" style="margin-top:16px">
             <div class="panel__head"><h2>Öppna signaler</h2>${oppna.length > 0 ? chip(String(oppna.length), 'warn') : ''}</div>
             ${oppna.length === 0
-              ? html`<div class="panel__body"><p class="muted" style="margin:0">Inget obesvarat.
-                  En tänd fras står kvar här tills någon avgjort om den låg innanför eller utanför uppdraget —
-                  den försvinner aldrig av sig själv.</p></div>`
+              ? html`<div class="panel__body">${verifieratTomt('signaler_inget_obesvarat', {
+                  mening: 'Inget obesvarat.',
+                  forklaring: 'En tänd fras står kvar här tills någon avgjort om den låg innanför eller utanför '
+                    + 'uppdraget — den försvinner aldrig av sig själv.',
+                  vag: { mal: 'sida', bas, sida: 'laget', text: 'Läget' },
+                }, 'kort')}</div>`
               : html`<div>${oppna.map((s) => oppenSignal(companyId, u, s, idag))}</div>`}
           </div>
 
           <div class="panel" style="margin-top:14px">
             <div class="panel__head"><h2>Fraser ur kontraktet</h2>${u.fraser.length > 0 ? chip(String(u.fraser.length), 'muted') : ''}</div>
             ${u.fraser.length === 0
-              ? html`<div class="panel__body"><p class="muted" style="margin:0">Kontraktet har inga signalfraser ännu.
-                  De läses in ur leveranskontraktets text (åtgärden <span class="code">importera_leveranskontrakt</span>) —
-                  och de hittas aldrig på här: en fras som står i koden gäller för fel kund nästa gång.</p></div>`
+              ? html`<div class="panel__body">${saknasIUnderlaget('signaler_inga_fraser', {
+                  mening: 'Kontraktet har inga signalfraser ännu.',
+                  forklaring: 'De läses in ur leveranskontraktets text — och de hittas aldrig på här: en fras som '
+                    + 'står i koden gäller för fel kund nästa gång.',
+                  vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+                }, 'kort')}</div>`
               : html`<div>${u.fraser.map((f) => frasrad(companyId, u, f))}</div>`}
           </div>`
     }
     <h2 style="margin-top:18px">Avgjorda</h2>
     ${
       avgjorda.length === 0
-        ? html`<p class="muted">Ingen signal är avgjord ännu.</p>`
+        ? verifieratTomt('signaler_ingen_avgjord', {
+          mening: 'Ingen signal är avgjord ännu.',
+          vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Scopelinjen står på Kontraktet' },
+        }, 'sida')
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Fras</th>${flera ? html`<th>Avtal</th>` : ''}<th>Klausul</th><th>Avgjord</th><th>Av och när</th><th>Underlag</th><th>Tänd</th></tr></thead>
             <tbody>${avgjorda.map((s) => {
@@ -3484,7 +3525,7 @@ function tidslinjerad(plan: Plan, rad: Planrad): Raw {
 }
 
 /** Datumlistan som ersätter tidslinjen på smal skärm (1D §4.2). */
-function datumlista(u: Planunderlag): Raw {
+function datumlista(u: Planunderlag, bas: string): Raw {
   const grupper = grupperaEfterSlut(u.plan.rader, u.idag);
   const avsnitt: { rubrik: string; rader: Planrad[] }[] = [
     { rubrik: 'Försenat', rader: grupper.forsenat },
@@ -3502,8 +3543,11 @@ function datumlista(u: Planunderlag): Raw {
               — <span class="code">${visaDatum(r.stapel!.end_date, r.stapel!.precision)}</span>
               ${r.stapel!.arvd ? html` ${chip(`Ärvd från ${r.stapel!.kalla_kod}`, 'muted', '↳')}` : ''}</li>`)}
           </ul>`)
-      : html`<p class="muted" style="margin:0">Ingen avtalsdel har någon period ännu — läs in leveranskontraktet
-          så får strömmarna sina datum.</p>`}
+      : saknasIUnderlaget('planen_inga_perioder', {
+        mening: 'Ingen avtalsdel har någon period ännu.',
+        forklaring: 'Strömmarna får sina datum när leveranskontraktet läses in.',
+        vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+      }, 'sida')}
   </div>`;
 }
 
@@ -3533,6 +3577,7 @@ function plansida(companyId: string, u: Planunderlag, dag: string): Raw {
   const spann = p.forsta_manad && p.sista_manad
     ? (p.forsta_manad === p.sista_manad ? p.forsta_manad : `${p.forsta_manad} – ${p.sista_manad}`)
     : null;
+  const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   return html`<div class="page-head"><div>${eyebrow('Uppdrag')}<h1>Planen</h1>
       <p class="lede">Uppdrag ${String(u.projekt.number)} · ${entityLink(companyId, 'project', u.projekt.id, u.projekt.name)}.
         Vad är avtalat, och när landar det? Perioderna står som de skrevs i avtalet — en del som saknar datum
@@ -3542,23 +3587,28 @@ function plansida(companyId: string, u: Planunderlag, dag: string): Raw {
     ${subnav(companyId, u.projekt.id, 'planen')}
     ${
       u.avtal.length === 0
-        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-            Planen ritas ur avtalets delar — utan avtal finns ingen period att visa.
-            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtalet</a> först.</div>`
+        ? saknasIUnderlaget('inget_avtal', {
+          mening: 'Uppdraget har inget avtal ännu.',
+          forklaring: 'Planen ritas ur avtalets delar — utan avtal finns ingen period att visa.',
+          vag: { mal: 'sida', bas, sida: 'avtal', text: 'Läs in avtalet' },
+        }, 'sida')
         : html`<div class="panel" style="margin-top:16px">
             <div class="panel__head"><h2>Tidslinje</h2>${spann ? chip(`${String(p.kolumner)} mån`, 'muted') : ''}</div>
             <div class="panel__body" style="padding:0">
               <div style="padding:10px 16px 14px">
               ${p.kolumner === 0
-                ? html`<p class="muted" style="margin:0">Ingen avtalsdel har både start och slut ännu, så det
-                    finns inget att rita. Datumen läses in med leveranskontraktet — de gissas aldrig fram här.</p>`
+                ? saknasIUnderlaget('planen_inga_datum', {
+                  mening: 'Ingen avtalsdel har både start och slut ännu, så det finns inget att rita.',
+                  forklaring: 'Datumen läses in med leveranskontraktet — de gissas aldrig fram här.',
+                  vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+                }, 'sida')
                 : html`${/* Grafiken. Varje rad speglar en rad i tabellen nedan, i
                             samma ordning, och innehåller inget som inte står där. */ ''}
                   ${p.rader.map((rad) => tidslinjerad(p, rad))}
                   <p class="muted" style="margin:10px 0 0;font-size:12.5px">Rutnätet är hela månader
                     (${spann}). Streckad stapel = perioden är ärvd från en överliggande del.
                     Grafiken är en bild av tabellen nedan — den bär inga egna värden.</p>`}
-              ${datumlista(u)}
+              ${datumlista(u, bas)}
               </div>
               ${farskhet}
             </div>
@@ -3571,7 +3621,11 @@ function plansida(companyId: string, u: Planunderlag, dag: string): Raw {
       <div class="panel__body">
     ${
       p.rader.length === 0
-        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga aktiva delar ännu.</p>`
+        ? saknasIUnderlaget('planen_inga_delar', {
+          mening: 'Avtalet har inga aktiva delar ännu.',
+          forklaring: 'Delarna läses in med leveranskontraktet.',
+          vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+        }, 'kort')
         : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
             <thead><tr><th>Kod</th><th>Del</th><th>Start</th><th>Slut</th><th>Precision</th></tr></thead>
             <tbody>${p.rader.map((rad) => html`<tr>
@@ -3683,10 +3737,13 @@ function dokumentpanel(companyId: string, y: Kontraktsyta, idag: string): Raw {
       ${tomt ? chip('Ingen pekare', 'warn', '!') : chip(String(d.referenser.length + (d.source_file_id ? 1 : 0)), 'muted')}</div>
     <div class="panel__body">
       ${tomt
-        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har varken en handling i dokumentarkivet eller en
-            pekare till en fil i Drive. Läs in avtalet under
-            <a href="/app/c/${companyId}/projects/${y.contract.project_id}/avtal">Läs in avtal</a> — handlingen hamnar
-            då i dokumentarkivet och avtalet får sin väg dit. Utan pekare är avtalet en fil någon minns var den ligger.</p>`
+        // Story 6.3: avtalet finns redan, så vägen går till Dokumenten — aldrig till att läsa in det igen.
+        ? saknasIUnderlaget('kontraktet_ingen_pekare', {
+          mening: 'Avtalet har varken en handling i dokumentarkivet eller en pekare till en fil i Drive.',
+          forklaring: 'Pekarna kommer med leveranskontraktet ur projektets Drive-mapp. Utan pekare är avtalet en fil '
+            + 'någon minns var den ligger.',
+          vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${y.contract.project_id}`, sida: 'dokumenten', text: 'Öppna Dokumenten' },
+        }, 'kort')
         : html`
           ${d.source_file_id
             ? html`<p style="margin:10px 16px 4px"><a href="/app/c/${companyId}/documents/${d.source_file_id}/download">Hämta
@@ -3729,8 +3786,11 @@ function gallandepanel(y: Kontraktsyta, idag: string): Raw {
             blir bindande först när det är läst i den och bekräftat.</p>`
         : ''}
       ${y.gallande.length === 0
-        ? html`<p class="muted" style="margin:8px 16px 12px">Avtalet har inga delar ännu. De läses in med
-            leveranskontraktets text — och hittas aldrig på här.</p>`
+        ? saknasIUnderlaget('kontraktet_inga_delar', {
+          mening: 'Avtalet har inga delar ännu.',
+          forklaring: 'De läses in med leveranskontraktets text — och hittas aldrig på här.',
+          vag: { mal: 'ankare', id: `dok-${y.contract.id}`, text: 'Vägen till dokumentet' },
+        }, 'kort')
         : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
             <thead><tr><th>Kod</th><th>Del</th><th>${utkast ? 'Föreslagen från' : 'Gäller från'}</th>
               <th>Tak</th><th>Taket läst</th></tr></thead>
@@ -3758,8 +3818,12 @@ function tillaggspanel(y: Kontraktsyta, idag: string): Raw {
       ${y.tillagg.length === 0 ? chip('Inga', 'muted', '○') : chip(String(y.tillagg.length), 'info', '±')}</div>
     <div class="panel__body">
       ${y.tillagg.length === 0
-        ? html`<p class="muted" style="margin:8px 16px 12px">Inga tillägg. Avtalet gäller i den version det skrevs, och
-            den första versionen av en kod behöver inget skäl — det finns ingenting den ändrar.</p>`
+        ? verifieratTomt('kontraktet_inga_tillagg', {
+          mening: 'Inga tillägg.',
+          forklaring: 'Avtalet gäller i den version det skrevs, och den första versionen av en kod behöver inget skäl '
+            + '— det finns ingenting den ändrar.',
+          vag: { mal: 'ankare', id: `gallande-${y.contract.id}`, text: 'Avtalets delar' },
+        }, 'kort')
         : html`<div class="table-wrap" style="margin:10px 0 4px"><table>
             <thead><tr><th>Kod</th><th>Gäller från</th><th>Tak</th><th>Orsak</th></tr></thead>
             <tbody>${y.tillagg.map((t) => html`<tr>
@@ -3829,8 +3893,17 @@ function scopelinjepanel(
       ${lage.markning === 'gallande' ? chip('Gällande', 'ok', '✓') : tillstandChip('utkast')}</div>
     <div class="panel__body">
       ${lage.lage === 'ej_inlast'
-        ? html`<p class="muted" style="margin:8px 16px 12px">${
-            lage.markning === 'utkast' ? SCOPE_UTKAST_EJ_INLAST : SCOPE_GALLANDE_EJ_INLAST}</p>`
+        // Story 6.3: ett utkast saknar underlaget; ett fryst avtal utan linje är
+        // en källa som inte är inläst. Utan lästid läses ingen dag.
+        ? (lage.markning === 'utkast'
+          ? saknasIUnderlaget('scopelinje_utkast', {
+            mening: SCOPE_UTKAST_EJ_INLAST,
+            vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${projectId}`, sida: 'dokumenten', text: 'Öppna Dokumenten' },
+          }, 'kort')
+          : ofullstandigtUnderlag('scopelinje_ej_inlast', {
+            mening: SCOPE_GALLANDE_EJ_INLAST, kalla: 'leveranskontraktet', senast: null, idag: '',
+            vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${projectId}`, sida: 'dokumenten', text: 'Öppna Dokumenten' },
+          }, 'kort'))
         : html`
           ${SCOPELINJESORTER.map((sort) => {
             const [rubrik, marke] = grupper[sort];
@@ -3854,7 +3927,10 @@ function parterpanel(y: Kontraktsyta, idag: string): Raw {
     <div class="panel__head"><h2 id="parter-${y.contract.id}">Parterna och luckorna</h2></div>
     <div class="panel__body">
       ${p.lage === 'ej_inlast'
-        ? html`<p class="muted" style="margin:8px 16px 12px">${mottagarpartlage(p, false).text}</p>`
+        ? ofullstandigtUnderlag('kontraktet_parter_ej_inlast', {
+          mening: mottagarpartlage(p, false).text, kalla: 'leveranskontraktet', senast: null, idag,
+          vag: { mal: 'ankare', id: `dok-${y.contract.id}`, text: 'Vägen till dokumentet' },
+        }, 'kort')
         : html`<dl style="margin:0;padding:10px 16px 4px;overflow-wrap:anywhere">
             <dt style="font-size:12.5px;color:var(--ink-3);margin-top:8px">Mottagarpart och godkännare</dt><dd style="margin:2px 0 0">${mottagarpartlage(p, true).text}</dd>
             <dt style="font-size:12.5px;color:var(--ink-3);margin-top:8px">Eskalering</dt><dd style="margin:2px 0 0">${p.godkannare_eskalering ?? saknatFalt('Eskalering saknas')}</dd>
@@ -3862,7 +3938,10 @@ function parterpanel(y: Kontraktsyta, idag: string): Raw {
             <dt style="font-size:12.5px;color:var(--ink-3);margin-top:8px">Källa</dt><dd style="margin:2px 0 0">${p.kalla ?? saknatFalt('källa saknas')}</dd>
           </dl>
           ${y.luckor.length === 0
-            ? html`<p class="muted" style="margin:8px 16px 12px">Inga luckor i de kontraktsburna fälten.</p>`
+            ? verifieratTomt('kontraktet_inga_luckor', {
+              mening: 'Inga luckor i de kontraktsburna fälten.',
+              vag: { mal: 'ankare', id: `dok-${y.contract.id}`, text: 'Vägen till dokumentet' },
+            }, 'kort')
             : html`<div style="margin:8px 16px 12px"><h3>${LUCKRUBRIK}</h3>
                 <ul>${y.luckor.map((l) => html`<li><strong>${l.vad}</strong><br>
                   ${l.var}<br><span class="muted">${l.ja_innebar}</span></li>`)}</ul></div>`}`}
@@ -3903,9 +3982,11 @@ function kontraktssida(companyId: string, u: Kontraktsunderlag, idag: string): R
     ${subnav(companyId, u.projekt.id, 'kontraktet')}
     ${
       en === undefined
-        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-            Kontraktsytan läser avtalets eget läge — utan avtal finns varken dokument, tak eller scopelinje att peka på.
-            <a href="/app/c/${companyId}/projects/${u.projekt.id}/avtal">Läs in avtal</a> först.</div>`
+        ? saknasIUnderlaget('inget_avtal', {
+          mening: 'Uppdraget har inget avtal ännu.',
+          forklaring: 'Kontraktsytan läser avtalets eget läge — utan avtal finns varken dokument, tak eller scopelinje att peka på.',
+          vag: { mal: 'sida', bas: `/app/c/${companyId}/projects/${u.projekt.id}`, sida: 'avtal', text: 'Läs in avtalet' },
+        }, 'sida')
         : u.ytor.map((y) => kontraktsavsnitt(companyId, y, flera, idag))
     }`;
 }
@@ -4014,14 +4095,6 @@ function subnav(companyId: string, projectId: string, aktuell: string): Raw {
 const uppdragsmarkering = (medUndermeny: boolean): { markering?: 'page' } =>
   (medUndermeny ? { markering: 'page' } : {});
 
-/**
- * Tomhetens grammatik i kortformat (FR-22): vad tomheten betyder, plus en väg
- * vidare. Aldrig ett räknat noll — det är ett databassvar, inte ett besked.
- */
-function tomtIKort(mening: string, vag: Raw): Raw {
-  return html`<p class="muted" style="margin:10px 16px 4px;font-size:13px">${mening} ${vag}</p>`;
-}
-
 /** Ett faktakort. Egen behållare så att `.panel + .panel` inte flyttar rutnätet. */
 function faktakort(id: string, rubrik: string, marke: Raw, kropp: Raw, farskhet: Raw): Raw {
   return html`<div><section class="panel" aria-labelledby="${id}">
@@ -4066,11 +4139,11 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
     const tomt = f.tak_minuter === null && f.tak_ore === null && f.minuter === 0 && f.belopp_ore === 0;
     return html`${avtalsrubrik(a.contract_name, flera)}
       ${tomt
-        ? tomtIKort(
-          'Avtalet har varken ett läst tak eller registrerad tid. Utan ram finns ingenting att mäta '
-          + 'mot — och ett tak som inte är inskrivet kan aldrig varna.',
-          html`<a href="${bas}/kontraktet">Läs kontraktet</a>.`,
-        )
+        ? saknasIUnderlaget('ram_saknas', {
+          mening: 'Avtalet har varken ett läst tak eller registrerad tid.',
+          forklaring: 'Utan ram finns ingenting att mäta mot — och ett tak som inte är inskrivet kan aldrig varna.',
+          vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Läs kontraktet' },
+        }, 'kort')
         : html`<div class="kpi-grid" style="padding:10px 16px 2px">
             ${kpiCell('Timmar', html`${hhmm(f.minuter)} av ${
               f.tak_minuter === null ? html`<span class="muted">${TAK_INTE_LAST}</span>` : html`${hhmm(f.tak_minuter)}`}`)}
@@ -4114,8 +4187,10 @@ function kortForbrukning(companyId: string, l: Uppdragslage, idag: string): Raw 
 function nastaLeveransblock(bas: string, contractId: string, n: Nastaleverans): Raw {
   if (n.lage === 'ingen') {
     if (n.orsak === 'tomt_register') return html``;
-    return html`<div data-nasta-leverans="${contractId}" style="margin:8px 16px 4px;font-size:13px">${
-      tomtIKort(n.text, html`<a href="${bas}/leveranserna">Öppna Leveranserna</a>.`)}</div>`;
+    // Story 6.3: formen `kort` bär marginalen, så omslaget har ingen egen stil här.
+    return html`<div data-nasta-leverans="${contractId}">${verifieratTomt('nasta_allt_overlamnat', {
+      mening: n.text, vag: { mal: 'sida', bas, sida: 'leveranserna', text: 'Öppna Leveranserna' },
+    }, 'kort')}</div>`;
   }
   return html`<div data-nasta-leverans="${contractId}" style="margin:8px 16px 4px;font-size:13px">
     <p style="margin:0;font-weight:550">${NASTA_TEXT.rubrik}</p>
@@ -4132,19 +4207,20 @@ function kortLeverabler(companyId: string, l: Uppdragslage, idag: string): Raw {
   const flera = l.avtal.length > 1;
   const bas = `/app/c/${companyId}/projects/${l.uppdrag.project_id}`;
   const totalt = l.avtal.reduce((n, a) => n + a.leverabler_totalt, 0);
-  const kropp = html`${l.avtal.map((a) => html`${avtalsrubrik(a.contract_name, flera)}
-    ${a.leverabler_totalt === 0
-      ? tomtIKort(
-        'Avtalet har inget leverabelregister ännu. Registret läses ur leveranskontraktets text '
-        + 'och hittas aldrig på här — utan det finns ingen leverans att följa.',
-        html`<a href="${bas}/avtal">Läs in avtalet</a>.`,
-      )
+  // Story 6.3: orsaken till ett tomt register kommer ur läsvägen, samma värde
+  // som MCP ser — aldrig ur vyn, och aldrig en väg till sidan Avtal.
+  const kropp = html`${l.avtal.map((a, i) => {
+    const tomhet = l.varden.avtal[i]!.registertomhet.varde;
+    return html`${avtalsrubrik(a.contract_name, flera)}
+    ${tomhet !== null
+      ? registretsTomlage(tomhet, { bas, bolag: companyId }, 'kort')
       : html`<div style="display:flex;flex-wrap:wrap;gap:6px 14px;padding:10px 16px 4px;font-size:13px">
           ${/* Uppräknade tillstånd, aldrig en procentsats (NFR-11): "70 % klart"
                 döljer vilka som står stilla. */ ''}
           ${a.leverabler.map((r) => html`<span style="display:inline-flex;align-items:baseline;gap:6px">${
             statusChip(r.lage)}<strong>${String(r.antal)}</strong></span>`)}
-        </div>${a.nasta_leverans.varde === null ? '' : nastaLeveransblock(bas, a.contract_id, a.nasta_leverans.varde)}`}`)}`;
+        </div>${a.nasta_leverans.varde === null ? '' : nastaLeveransblock(bas, a.contract_id, a.nasta_leverans.varde)}`}`;
+  })}`;
   return faktakort('kort-leverabler', 'Leverabler per läge',
     totalt === 0 ? chip('Inget register', 'warn', '!') : chip(`${String(totalt)} leverabler`, 'muted'),
     kropp, farskhetsrad([direktFarskhet(l.farskhet.leverabler, idag),
@@ -4224,14 +4300,18 @@ function kortSignaler(companyId: string, l: Uppdragslage, idag: string): Raw {
   const oppna = l.avtal.reduce((n, a) => n + a.oppna_signaler.length, 0);
   const kropp = html`${l.avtal.map((a) => html`${avtalsrubrik(a.contract_name, flera)}
     ${a.oppna_signaler.length === 0 && a.avgjorda_signaler === 0
-      ? tomtIKort(
-        'Ingen scopesignal har tänts. Fraserna att lyssna efter står i kontraktet, och en signal '
-        + 'tänds av en människa som hört en av dem — aldrig av en maskin.',
-        html`<a href="${bas}/signaler">Öppna signalerna</a>.`,
-      )
+      ? verifieratTomt('laget_signaler_inga', {
+        mening: 'Ingen scopesignal har tänts.',
+        forklaring: 'Fraserna att lyssna efter står i kontraktet, och en signal tänds av en människa som hört en '
+          + 'av dem — aldrig av en maskin.',
+        vag: { mal: 'sida', bas, sida: 'signaler', text: 'Öppna signalerna' },
+      }, 'kort')
       : html`${a.oppna_signaler.length === 0
-          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Inga öppna signaler.
-              ${String(a.avgjorda_signaler)} avgjorda står i historiken.</p>`
+          ? verifieratTomt('laget_signaler_inga_oppna', {
+            mening: 'Inga öppna signaler.',
+            forklaring: `${String(a.avgjorda_signaler)} avgjorda står i historiken.`,
+            vag: { mal: 'sida', bas, sida: 'signaler', text: 'Öppna signalerna' },
+          }, 'kort')
           : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
               ${/* Öppna först — en obesvarad signal är ett ärende, en avgjord är
                     historik, och en lista som blandar dem lär läsaren att inte titta. */ ''}
@@ -4324,7 +4404,7 @@ function anteckningsformular(companyId: string, l: Uppdragslage): Raw {
     <div style="padding:12px 16px 0">
       <label class="field" style="margin:0"><span>Anteckning
           <span class="muted" style="font-weight:400">· dina egna ord, en rad i taget</span></span>
-        <textarea name="text" rows="3" maxlength="2000" required
+        <textarea name="text" id="anteckning-text" rows="3" maxlength="2000" required
           placeholder="T.ex. Rättade ILT:s momskod på tre fakturor efter samtal med Karin, ca 40 min."></textarea></label>
     </div>
     ${/* Hela raden är träffyta, inte bara den lilla rutan — samma grepp som
@@ -4356,9 +4436,13 @@ function ovrigtpanelen(companyId: string, l: Uppdragslage, lasta: Lasvarde<reado
         av: ett samtal, ett småuppdrag, en fråga som var besvarad på tio minuter. Raderna går bara att lägga till —
         databasen ger varken ändra eller ta bort på dem — och de står här som underlag den dag ett tillägg ska skrivas.</p>
       ${rader.length === 0
-        ? html`<p class="muted" style="margin:0;padding:6px 16px 14px;font-size:13px">Ingen anteckning är skriven ännu.
-            Det som sägs i förbifarten — <em>”kan ni titta på det här också?”</em> — hamnar annars i mejlen och i
-            huvudet; den första raden du skriver är uppdragets första spår av det.</p>`
+        // Story 6.3: vägen är fältet nedan — ankaret skapar ingenting, och texten ber inte om en rad.
+        ? verifieratTomt('ovrigt_inga', {
+          mening: 'Ingen anteckning är skriven ännu.',
+          forklaring: 'Det som sägs i förbifarten — ”kan ni titta på det här också?” — hamnar annars i mejlen och i '
+            + 'huvudet; den första raden du skriver är uppdragets första spår av det.',
+          vag: { mal: 'ankare', id: 'anteckning-text', text: 'Fältet nedan' },
+        }, 'kort')
         : html`<div class="log" style="border:0;border-radius:0;box-shadow:none;border-top:1px solid var(--line)">
             ${rader.map((r) => anteckningspost(r, avtalsnamn.get(r.contract_id), flera))}
           </div>`}
@@ -4396,8 +4480,12 @@ function beslutspanelen(companyId: string, l: Uppdragslage, idag: string): Raw {
     <div class="panel__head"><h2 id="kort-beslut">Beslut och utkast</h2></div>
     <div class="panel__body" style="padding:0">
       ${registrerade.length === 0 && mottagna.length === 0
-        ? html`<p style="margin:0;padding:12px 16px;font-size:14px">Inga beslut är registrerade i uppdraget.
-            Förslag som väntar på ditt svar står i <a href="/app/c/${companyId}/approvals">Att göra</a>.</p>`
+        // Story 6.3 (FR-40): mandatfrågorna avgörs i undantagsvyn, aldrig via Att göra.
+        ? verifieratTomt('beslut_inga', {
+          mening: 'Inga beslut är registrerade i uppdraget.',
+          forklaring: 'Frågorna som kräver ditt mandat står överst på Läget och avgörs i undantagsvyn.',
+          vag: { mal: 'undantagsvyn', bolag: companyId, text: 'Undantagsvyn' },
+        }, 'kort')
         : html`<div class="log" style="border:0;border-radius:0;box-shadow:none">
           ${mottagna.map((b) => html`<div class="log-row" id="beslut-${b.approval_id}" style="align-items:start">
             <div class="log-when">${b.beslutad_nar.replace('T', ' ').slice(0, 16)}</div>
@@ -4778,10 +4866,12 @@ viewRouter.get('/c/:companyId/uppdrag/lista', pageFor(INGANGEN, 'Uppdragens läg
         bedömningen — en människas omdöme, aldrig en uträkning.</p></div></div>
     ${
       rader.length === 0
-        ? html`<div class="empty"><div class="big">Inga uppdrag ännu</div>
-            Ett projekt blir ett uppdrag när det får ett avtal med tak, leverabler och scopelinje.
-            Öppna ett projekt och <a href="/app/c/${companyId}/projects">läs in dess avtal</a> —
-            utan avtal finns varken ram eller leverans att följa.</div>`
+        ? verifieratTomt('uppdragslistan_inga_uppdrag', {
+          mening: 'Inga uppdrag ännu.',
+          forklaring: 'Ett projekt blir ett uppdrag när det får ett avtal med tak, leverabler och scopelinje — utan '
+            + 'avtal finns varken ram eller leverans att följa.',
+          vag: { mal: 'projekten', bolag: companyId, text: 'Projekten' },
+        }, 'sida')
         : html`<div class="table-wrap"><table>
             <thead><tr><th>Uppdrag</th><th>Kund</th><th class="num">Avtal</th><th>Läge</th><th>Färskhet</th><th></th></tr></thead>
             <tbody>${rader.map((r) => html`<tr>
@@ -4847,6 +4937,8 @@ interface Leveransavtal {
   namn: string;
   rader: Registerrad[];
   parter: LastaKontraktsparter;
+  /** Story 6.3: varför registret är tomt, eller null när det har rader — samma värde som Läget. */
+  tomhet: Registertomhet | null;
 }
 
 interface Leveransunderlag {
@@ -4873,8 +4965,12 @@ async function leveransunderlag(
       namn: String(a.name ?? ''),
       rader: await lasLeverabelregister(client, companyId, { contract_id: contractId }),
       parter: await lasKontraktsparter(client, companyId, contractId),
+      tomhet: null,
     });
   }
+  // Story 6.3: orsaken läses av samma funktion som Lägets läsväg, en gång för alla avtal.
+  const tomheter = await lasRegistertomhet(client, companyId, avtal.map((a) => a.contractId));
+  for (const a of avtal) a.tomhet = tomheter.get(a.contractId) ?? null;
   return { projekt, avtal, epost: (await getProfile(client, userId)).email };
 }
 
@@ -5111,12 +5207,6 @@ function lagesvaxel(bas: string, tabell: boolean): Raw {
       tabell ? 'Visa brädan' : 'Visa tabellen'}</a>`;
 }
 
-/** Ett avtal utan register: varför det är tomt, och var det fylls (KRAV-8). */
-const tomtRegister = (bas: string): Raw =>
-  html`<div class="empty" style="margin-top:14px"><div class="big">Registret är tomt</div>
-    Avtalet har inget leverabelregister ännu — det fylls när leveranskontraktet läses in, och hittas aldrig på här.
-    <a href="${bas}/avtal">Läs in kontraktet</a>, så står leverablerna i både brädan och tabellen.</div>`;
-
 function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean, idag: string): Raw {
   const bas = `/app/c/${companyId}/projects/${u.projekt.id}`;
   const flera = u.avtal.length > 1;
@@ -5130,9 +5220,11 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean,
         <a class="btn btn--ghost btn--sm" href="${bas}">← Uppdraget</a></div></div>
     ${subnav(companyId, u.projekt.id, 'leveranserna')}
     ${u.avtal.length === 0
-      ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-          Leverablerna står i leveranskontraktet — utan avtal finns inget register att visa.
-          <a href="${bas}/avtal">Läs in avtal</a> först.</div>`
+      ? saknasIUnderlaget('inget_avtal', {
+        mening: 'Uppdraget har inget avtal ännu.',
+        forklaring: 'Leverablerna står i leveranskontraktet — utan avtal finns inget register att visa.',
+        vag: { mal: 'sida', bas, sida: 'avtal', text: 'Läs in avtalet' },
+      }, 'sida')
       : html`<p class="muted" style="margin:0 0 4px;font-size:13px">${
           tabell
             ? html`Tabellen bär samma rader och samma fält som brädan, en rad per leverabel. Tabellen är den som läses upp av skärmläsare och skrivs ut.`
@@ -5140,7 +5232,8 @@ function leveransersida(companyId: string, u: Leveransunderlag, tabell: boolean,
           Påbörja, Registrera överlämning, Retur och Godkänn görs på brädans kort, där du själv utför handlingen.
           Överlämningen registreras ur handlingen — mejlet eller dokumentet — och dess datum läses ur handlingen.</p>
         ${u.avtal.map((a) => html`${flera ? html`<h2 style="margin:22px 0 0">${a.namn}</h2>` : ''}
-          ${a.rader.length === 0 ? tomtRegister(bas) : html`
+          ${/* Story 6.3 (KRAV-8): varför registret är tomt, med samma mening i brädan och tabellen. */ ''}
+          ${a.tomhet !== null ? registretsTomlage(a.tomhet, { bas, bolag: companyId }, 'sida') : html`
             <p class="muted" id="mottagarpart-${a.contractId}">${mottagarpartlage(a.parter, a.parter.lage !== 'ej_inlast').text}</p>
             ${tabell ? tabellage(a, idag) : bradlage(bas, a, u.epost, idag)}`}`)}`}`;
 }
@@ -5346,15 +5439,22 @@ function troskelpanel(a: Avtalspengar, idag: string): Raw {
     <div class="panel__body">
       ${utfall === null
         ? (t.last_nar === null
-          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Svepet har inte kört för
-              uppdraget, så inget tröskellarm är läst. Tomt betyder här "vi vet inte" — inte "ingen tröskel
-              passerad".</p>`
+          // Story 6.3: ett svep som inte kört är en oläst källa, aldrig "inga larm".
+          ? ofullstandigtUnderlag('troskel_ej_svept', {
+            mening: 'Svepet har inte kört för uppdraget, så inget tröskellarm är läst.',
+            forklaring: 'Tomt betyder här ”vi vet inte” — inte ”ingen tröskel passerad”.',
+            kalla: 'svepet', senast: null, idag,
+            vag: { mal: 'ankare', id: `niva-${a.contract_id}`, text: 'Förbrukning per nivå' },
+          }, 'kort')
           : html`<p class="tomt" data-falt="olast" style="margin:10px 16px 2px;padding:.6rem .8rem;font-size:13px">Svepets
               tröskelrad kunde inte läsas, så inget tröskellarm visas. Att inget larm står här betyder "vi vet
               inte", inte att avtalet ligger under sina trösklar.</p>`)
         : (larm.length === 0
-          ? html`<p class="muted" style="margin:10px 16px 2px;font-size:13px">Ingen av avtalets trösklar är
-              passerad. Trösklarna är avtalets egna och prövas av svepet, aldrig av den här sidan.</p>`
+          ? verifieratTomt('troskel_inga_larm', {
+            mening: 'Ingen av avtalets trösklar är passerad.',
+            forklaring: 'Trösklarna är avtalets egna och prövas av svepet, aldrig av den här sidan.',
+            vag: { mal: 'ankare', id: `niva-${a.contract_id}`, text: 'Förbrukning per nivå' },
+          }, 'kort')
           : html`<ul style="margin:10px 16px 2px;padding-left:20px;font-size:13px">
               ${larm.map((l) => html`<li style="margin-bottom:3px">${larmtext(l, utfall.trosklar)}</li>`)}
             </ul>`)}
@@ -5384,9 +5484,12 @@ function kostnadspanel(companyId: string, a: Avtalspengar, idag: string): Raw {
     ? 'kunde inte läsas'
     : (v.last_nar === null ? 'lästid saknas' : direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)));
   if (bundna.length === 0 && obundna.length === 0) {
-    return html`<p style="margin:14px 0 0;font-size:14px"><strong>Ingen kostnad är bunden till avtalet.</strong>
-      En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, efter ditt godkännande — aldrig på den här sidan.
-      <a href="/app/c/${companyId}/receipts">Öppna kvittona</a>.</p>`;
+    return verifieratTomt('kostnader_inga', {
+      mening: 'Ingen kostnad är bunden till avtalet.',
+      forklaring: 'En kostnad hamnar här när ett bokfört kvitto binds till en avtalsdel. Bindningen görs genom kön, '
+        + 'efter ditt godkännande — aldrig på den här sidan.',
+      vag: { mal: 'kvittona', bolag: companyId, text: 'Öppna kvittona' },
+    }, 'sida');
   }
   const total = a.kostnadstotal.varde;
   const id = `kostnader-${a.contract_id}`;
@@ -5520,14 +5623,19 @@ function rapportersida(companyId: string, u: Bedomningshistorik, idag: string): 
     ${subnav(companyId, u.projekt.id, 'rapporterna')}
     ${
       u.avtal.length === 0
-        ? html`<div class="empty"><div class="big">Uppdraget har inget avtal ännu</div>
-            Bedömningen sätts mot avtalet — det är där det står vad som lovats, och utan det finns ingen rapport att läsa.
-            <a href="${bas}/avtal">Läs in avtalet</a> först.</div>`
+        ? saknasIUnderlaget('inget_avtal', {
+          mening: 'Uppdraget har inget avtal ännu.',
+          forklaring: 'Bedömningen sätts mot avtalet — det är där det står vad som lovats, och utan det finns ingen '
+            + 'rapport att läsa.',
+          vag: { mal: 'sida', bas, sida: 'avtal', text: 'Läs in avtalet' },
+        }, 'sida')
         : u.historik.length === 0
-          ? html`<div class="empty"><div class="big">Ingen bedömning satt ännu</div>
-              Tomheten betyder att ingen ännu svarat på om uppdraget håller — inte att det gör det.
-              Den första bedömningen blir uppdragets utgångsläge och står här efteråt.
-              <a href="${bas}/bedomning">Sätt bedömningen</a>.</div>`
+          ? verifieratTomt('rapporterna_ingen_bedomning', {
+            mening: 'Ingen bedömning satt ännu.',
+            forklaring: 'Tomheten betyder att ingen ännu svarat på om uppdraget håller — inte att det gör det. Den '
+              + 'första bedömningen blir uppdragets utgångsläge och står här efteråt.',
+            vag: { mal: 'sida', bas, sida: 'bedomning', text: 'Bedömning' },
+          }, 'sida')
           : html`<p class="muted" style="margin:0 0 10px;font-size:13px">Äldst först — listan läses som en berättelse
               om uppdraget. Talen i varje post är de som frystes när bedömningen sattes; de räknas aldrig om, hur mycket
               källorna än ändras efteråt. Raderna går bara att lägga till: databasen ger varken ändra eller ta bort på
@@ -5680,11 +5788,18 @@ function dokumentsida(companyId: string, u: Dokumentunderlag, idag: string): Raw
               två olika besked, och en gemensam nolla hade sagt det senare om det
               första. */ ''}
         ${aldrigLast
-          ? tomtIKort('Förteckningen har inte lästs än — Hermes läser projektets mappar varje timme.', html``)
+          ? ofullstandigtUnderlag('dokumenten_aldrig_last', {
+            mening: 'Förteckningen har inte lästs än — Hermes läser projektets mappar varje timme.',
+            kalla: 'Drive', senast: null, idag,
+            vag: { mal: 'sida', bas, sida: 'kontraktet', text: 'Kontraktet' },
+          }, 'kort')
           : f.antal === 0
-            ? tomtIKort('Mappen är tom i Drive.', f.rot === null
-              ? html``
-              : html`<a href="${f.rot.lank}" target="_blank" rel="noopener">Öppna mappen i Drive</a> för att lägga dit underlagen.`)
+            ? verifieratTomt('dokumenten_tom_mapp', {
+              mening: 'Mappen är tom i Drive.',
+              vag: f.rot === null
+                ? { mal: 'sida', bas, sida: 'kontraktet', text: 'Kontraktet' }
+                : { mal: 'drive', lank: f.rot.lank, text: 'Öppna mappen i Drive' },
+            }, 'kort')
             : html`<p class="muted" style="margin:10px 16px 4px;font-size:13px">Senaste versionen står som rad;
                 äldre versioner av samma underlag ligger hopfällda under den. Länkarna öppnar handlingen i sitt
                 källsystem i en ny flik — appen visar aldrig innehållet, bara var det finns.</p>`}

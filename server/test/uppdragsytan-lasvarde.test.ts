@@ -431,15 +431,17 @@ function syntetisktAvtal(medBedomning = true): Avtalslage {
     scopelinje_lage: { lage: 'utkast' } as unknown as Avtalslage['scopelinje_lage'],
     matt: [],
     rytm: { lage: 'rytm_saknas', period: null, nasta: null } as unknown as Avtalslage['rytm'],
+    registertomhet: null,
   };
 }
 
 describe('LV3 Lägets värden (ren)', () => {
   const VARDEN = ['forbrukning', 'troskel', 'leverabler', 'nasta_leverans', 'prognos', 'bedomning',
-    'oppen_begaran', 'signaler', 'scopelinje', 'matt', 'rytm'] as const;
-  const DIREKTA = ['forbrukning', 'leverabler', 'bedomning', 'oppen_begaran', 'signaler', 'scopelinje', 'matt', 'rytm'] as const;
+    'oppen_begaran', 'signaler', 'scopelinje', 'matt', 'rytm', 'registertomhet'] as const;
+  const DIREKTA = ['forbrukning', 'leverabler', 'bedomning', 'oppen_begaran', 'signaler', 'scopelinje', 'matt', 'rytm',
+    'registertomhet'] as const;
 
-  it('LV3 a tolv nycklar i ordning, och varje värde är ett Lasvarde med redovisningens lästid', () => {
+  it('LV3 a tretton nycklar i ordning, och varje värde är ett Lasvarde med redovisningens lästid', () => {
     const v = avtalsvarden(syntetisktAvtal(), undefined, LASTID);
     expect(Object.keys(v)).toEqual(['contract_id', ...VARDEN]);
     for (const nyckel of VARDEN) expect(Object.keys(v[nyckel]).sort(), nyckel).toEqual(['kalla', 'lage', 'last_nar', 'varde']);

@@ -40,7 +40,8 @@ import type { PoolClient } from 'pg';
 import { NotFoundError } from '../lib/errors.js';
 import { listContracts, getContractUsage, type Delforbrukning, type Kontrakttillstand } from './contracts.js';
 import { arIgnorerad, listTimeEntries, type TimeEntryStatus } from './projects.js';
-import { lasLeverabelregister } from './uppdragRegister.js';
+import { lasLeverabelregister, lasRegistertomhet } from './uppdragRegister.js';
+import type { Registertomhet } from '../lib/registertomhet.js';
 import { lasKontraktsparter } from './uppdragKontrakt.js';
 import { nastaLeverans, type Nastaleverans } from '../lib/nastaLeverans.js';
 import { byggPlan, type Plandel } from '../lib/uppdragsplan.js';
@@ -184,6 +185,11 @@ export interface Avtalslage {
   matt: Mattrad[];
   /** Rytmen ur del 4 och dess läge för läsvägens dag — ur rytmregeln, aldrig ur vyn. */
   rytm: Avtalsrytm;
+  /**
+   * Story 6.3: null betyder att registret har rader; annars orsaken till att det
+   * är tomt, ur regeln i `lib/registertomhet` — samma värde som Leveranserna läser.
+   */
+  registertomhet: Registertomhet | null;
 }
 
 /**
@@ -238,6 +244,7 @@ export interface Avtalsvarden {
   scopelinje: Lasvarde<{ rader: Scopelinje[]; lage: Scopelinjelage }>;
   matt: Lasvarde<Mattrad[]>;
   rytm: Lasvarde<Avtalsrytm>;
+  registertomhet: Lasvarde<Registertomhet>;
 }
 
 /** Uppdragets värden som `Lasvarde`; `avtal` i samma ordning som `Uppdragslage.avtal`. */
@@ -517,6 +524,9 @@ export function avtalsvarden(
     scopelinje: last({ rader: a.scopelinje, lage: a.scopelinje_lage }, KALLA_REDOVISNING, lastNar),
     matt: last(a.matt, KALLA_REDOVISNING, lastNar),
     rytm: last(a.rytm, KALLA_REDOVISNING, lastNar),
+    // Story 6.3: ett register med rader är läst och har ingen orsak — `varde`
+    // null med läget `last`, samma form som `bedomning`.
+    registertomhet: last(a.registertomhet, KALLA_REDOVISNING, lastNar) as Lasvarde<Registertomhet>,
   };
 }
 
@@ -562,6 +572,9 @@ export async function lasUppdragslage(
   // begäran som aldrig besvarades är fortfarande obesvarad. Läsvägen säger
   // sanningen, och vyn avgör vad som visas.
   const oppnaBegaranden = await listaObesvaradeBegaranden(client, companyId, avtalsrader.map((r) => r.id as string));
+  // Story 6.3: varför ett register är tomt, en läsning för alla avtal och
+  // samma funktion som Leveranserna läser.
+  const tomheter = await lasRegistertomhet(client, companyId, avtalsrader.map((r) => r.id));
 
   for (const rad of avtalsrader) {
     const contractId = rad.id as string;
@@ -646,6 +659,7 @@ export async function lasUppdragslage(
       scopelinje_lage: scopelinjelage(rad.kontrakt_tillstand, scopelinje),
       matt,
       rytm,
+      registertomhet: tomheter.get(contractId) ?? null,
     };
     avtal.push(avtalslage);
     // Story 6.1: avtalets värden med sin egen cacherad och samma lästid som
