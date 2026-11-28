@@ -156,6 +156,8 @@ export interface Avtalspengar {
    */
   obundna_kostnader: Lasvarde<ObundenKostnad[]>;
   kostnadstotal: Lasvarde<Kostnadstotal>;
+  /** Story 6.1, FR-35: ramen med redovisningens källa och lästid; `ram` står kvar. */
+  ramvarde: Lasvarde<Pengaram>;
 }
 
 export interface Kostnadstotal { bokfort_ore: number; varav_obundet_ore: number; ej_bokforda: number }
@@ -561,16 +563,17 @@ export async function lasUppdragspengar(
     const prognosrad = cache.find((v) => v.nyckel === 'prognos');
     const kostnader = await kostnaderForAvtal(client, companyId, contractId);
     const obundna = await obundnaForAvtal(client, companyId, contractId);
+    const ram: Pengaram = {
+      tak_minuter: takminuter(rot?.cap_hours ?? null),
+      tak_ore: rot?.cap_amount_ore ?? null,
+      tak_status: rot?.cap_status ?? 'vet_ej',
+    };
 
     avtal.push({
       contract_id: contractId,
       contract_name: String(rad.name ?? ''),
       serie: rot === null ? [] : await byggSerie(client, companyId, versionerITradet(delar, rot)),
-      ram: {
-        tak_minuter: takminuter(rot?.cap_hours ?? null),
-        tak_ore: rot?.cap_amount_ore ?? null,
-        tak_status: rot?.cap_status ?? 'vet_ej',
-      },
+      ram,
       // Samma anrop med samma rad som Läget, så att de två aldrig svarar olika (FR-23).
       prognos: prognosplats(prognosrad === undefined ? null
         : { varde: prognosrad.varde, kalla: prognosrad.kalla, last_nar: prognosrad.last_nar.toISOString() }, PROGNOSREGEL),
@@ -579,6 +582,7 @@ export async function lasUppdragspengar(
       kostnader: last(kostnader, KALLA_REDOVISNING, lastNar),
       obundna_kostnader: last(obundna, KALLA_REDOVISNING, lastNar),
       kostnadstotal: last(kostnadstotal(kostnader, obundna), KALLA_REDOVISNING, lastNar),
+      ramvarde: last(ram, KALLA_REDOVISNING, lastNar),
     });
   }
 

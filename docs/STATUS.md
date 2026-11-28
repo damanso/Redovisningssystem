@@ -153,6 +153,43 @@ eller **den serverrenderade webbvyn** (`/app`, JS-fri HTML). Känsliga åtgärde
 
 ## Sessionslogg (nyaste överst — FYLL PÅ HÄR)
 
+- **2026-11-28 — Bygge: 6-1-varje-varde-i-ytorna-bar-sin-kalla-och-lastid.**
+  Varje värde i uppdragsytans tre läsvägar bär nu källa och lästid (FR-35,
+  FR-23). `lasUppdragslage` och `lasKontraktsyta` har fått det additiva fältet
+  `varden`. Det byggs av den rena `avtalsvarden` (elva värden per avtal plus
+  köposterna och besluten) respektive i `lasKontraktsyta` (åtta värden; Drive-
+  pekarna genom den rena `pekarvarde`, oläst tills svepet verifierat dem).
+  Varje rad ur `lasLeverabelregister` är själv ett `Lasvarde` genom
+  `registerrad`. Alla befintliga nycklar står kvar för Hermes läsare.
+  Tröskeln byggs av den nya rena `cachevarde` i `lib/lasvarde.ts` ur just det
+  avtalets cacherad, och Lägets kort skriver en tröskeldel per avtal
+  (`troskelnsFarskhet`, tre fasta former). Den sammanslagna `farskhet.troskel`
+  ritas inte längre, och en rad som inte bär visas som oläst, inte som läst.
+  Planens fråga flyttades ur vyn till `lasPlandelar`, så att vyns underlag för
+  Läget, Planen, Leveranserna och Kontraktet inte gör någon egen SQL.
+  Färskhetsraden står nu i varje värdeblock med ett tal på Läget, Planen,
+  Leveranserna, Pengarna, Rapporterna och Kontraktet. Planens tabell
+  Avtalsdelar och Pengarnas kostnader står i var sin `section.panel`, och
+  ingen sida har en global tidsstämpel. Ingen migration, rutt eller åtgärd
+  tillkom (talet över antalet åtgärder i rubrikstycket är oförändrat), och
+  inget beroende. `docs/ARKITEKTUR.md` har stycket «Lasvarden per varde»,
+  och `docs/MCP_ACTIONS.md` har en punkt per läsåtgärd. Prov: nya
+  `uppdragsytan-lasvarde` (LV1–LV12, F0–F6 med sidregeln härledd ur den
+  renderade sidan och planterade kontroller, N0–N4 med en spion på det
+  globala nätanropet; 47 fall). Omskrivna påståenden: laget-provets
+  färskhetsräkning (8 → 10), registerprovets nyckellista och
+  agentjämförelse (utan lästid) och, utöver berättelsens lista,
+  leveransprovets 4.1-B2. Det sista filtrerar nu bort läsvärdets fyra
+  nycklar, eftersom kriterium 1 kräver dem på varje rad. Körningar mot
+  testdatabasen 127.0.0.1:5433: delkörningarna 1–6 gröna och typkontrollen
+  utan fel efter varje uppgift; grinden: `uppdragsytan-lasvarde` och
+  dokumentproven 19 filer och 598 prov gröna, `npm run typecheck` utan fel
+  och hela `npm test` 224 filer och 4477 prov gröna, exit 0 (1120 s).
+  `npm run build` är inte kört (kedjan nekar
+  det). Inga RESTER. Rött utanför repot före bygget, orört av berättelsen:
+  bmadglidning och scope_grind (RÖDA) och modulprov och continuityvakt
+  (KUNDE_INTE) i provvaktens körning 2026-11-27.
+
 - **2026-11-28 — Bygge: 5-8-larmregeln-for-nedlagd-tid-mot-ram-enligt-davids-beslut.**
   Måttet ”Nedlagd tid mot ram” larmar nu på FR-3:s avvikelsetröskel enligt
   Davids beslut 2026-10-07 («Ersätt, skriv inte om»), med källan

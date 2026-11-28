@@ -34,6 +34,7 @@ import { listaReferenser, type Referensstatus } from './uppdragReferens.js';
 import { scopelinjelage, type Scopelinjelage, type Scopelinjesort } from '../lib/leveranskontrakt.js';
 import { kontraktsluckor, mottagarpartlage, type Kontraktsparter, type Lucka, type Mottagarpartlage } from '../lib/kontraktsluckor.js';
 import { lasLeverabelregister } from './uppdragRegister.js';
+import { KALLA_REDOVISNING, last, olast, type Lasvarde } from '../lib/lasvarde.js';
 
 export interface LastaKontraktsparter extends Kontraktsparter {
   lage: Mottagarpartlage['lage'];
@@ -143,6 +144,38 @@ export interface Kontraktsyta {
   scopelinje: Scopelinjerad[];
   /** Utkast eller gällande, och det som saknas — ur `scopelinjelage`, aldrig ur vyn (Story 2.6). */
   scopelinje_lage: Scopelinjelage;
+  /**
+   * Story 6.1: samma värden som `Lasvarde`, additivt. De befintliga nycklarna
+   * står kvar för Hermes läsare; ett svar tappar aldrig ett fält.
+   */
+  varden: Kontraktsvarden;
+}
+
+/** Story 6.1, FR-35: kontraktsytans värden som `Lasvarde`, en sluten lista. */
+export interface Kontraktsvarden {
+  kontrakt: Lasvarde<Kontraktsyta['contract']>;
+  parter: Lasvarde<LastaKontraktsparter>;
+  luckor: Lasvarde<Lucka[]>;
+  dokument: Lasvarde<{ source_file_id: string | null; utanfor_sparr: string[] }>;
+  /** En per pekare i `dokument.referenser`, i samma ordning. */
+  dokumentpekare: Lasvarde<Dokumentpekare>[];
+  gallande: Lasvarde<Gallandedel[]>;
+  tillagg: Lasvarde<Tillaggsversion[]>;
+  scopelinje: Lasvarde<{ rader: Scopelinjerad[]; lage: Scopelinjelage }>;
+}
+
+/**
+ * Drive-pekarens värde (Story 6.1, FR-35, FR-36). REN funktion.
+ *
+ * Pekaren är läst ur Drive först när svepet verifierat den. En pekare som
+ * aldrig verifierats, eller som väntar på verifiering, är oläst — aldrig
+ * nyverifierad (kriterium 6) — och bär den senaste verifieringens tid när
+ * en sådan finns.
+ */
+export function pekarvarde(p: Dokumentpekare): Lasvarde<Dokumentpekare> {
+  if (p.senast_verifierad === null) return olast('drive', null);
+  const lastNar = new Date(p.senast_verifierad).toISOString();
+  return p.status === 'overifierad' ? olast('drive', lastNar) : last(p, 'drive', lastNar);
 }
 
 /** Versionerna i tidsordning. Den första raden ÄR avtalet som det skrevs. */
@@ -234,23 +267,40 @@ export async function lasKontraktsyta(
 
   const parter = await lasKontraktsparter(client, companyId, input.contract_id);
   const register = await lasLeverabelregister(client, companyId, input);
+  const luckor = register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare });
+  const contract: Kontraktsyta['contract'] = {
+    id: avtal.id,
+    name: avtal.name,
+    project_id: avtal.project_id,
+    project_name: avtal.project_name,
+    customer_id: avtal.customer_id,
+    customer_name: avtal.customer_name,
+    kontrakt_tillstand: avtal.kontrakt_tillstand,
+    signed_date: avtal.signed_date,
+  };
+  const utanforSparr = drive.filter((r) => r.status === 'utanfor_sparr').map((r) => r.id);
+  const scopelinjeLage = scopelinjelage(avtal.kontrakt_tillstand, linjer.rows);
+  // Story 6.1: en lästid per anrop för det som lästes ur redovisningen; Drive-
+  // pekarna bär svepets verifiering, aldrig sidans tid.
+  const lastNar = new Date().toISOString();
   return {
     parter,
-    luckor: register.length === 0 ? [] : kontraktsluckor({ leverabler: register, mottagarpart: parter.godkannare }),
-    contract: {
-      id: avtal.id,
-      name: avtal.name,
-      project_id: avtal.project_id,
-      project_name: avtal.project_name,
-      customer_id: avtal.customer_id,
-      customer_name: avtal.customer_name,
-      kontrakt_tillstand: avtal.kontrakt_tillstand,
-      signed_date: avtal.signed_date,
-    },
-    dokument: { source_file_id: avtal.source_file_id, referenser, utanfor_sparr: drive.filter((r) => r.status === 'utanfor_sparr').map((r) => r.id) },
+    luckor,
+    contract,
+    dokument: { source_file_id: avtal.source_file_id, referenser, utanfor_sparr: utanforSparr },
     gallande,
     tillagg,
     scopelinje: linjer.rows,
-    scopelinje_lage: scopelinjelage(avtal.kontrakt_tillstand, linjer.rows),
+    scopelinje_lage: scopelinjeLage,
+    varden: {
+      kontrakt: last(contract, KALLA_REDOVISNING, lastNar),
+      parter: last(parter, KALLA_REDOVISNING, lastNar),
+      luckor: last(luckor, KALLA_REDOVISNING, lastNar),
+      dokument: last({ source_file_id: avtal.source_file_id, utanfor_sparr: utanforSparr }, KALLA_REDOVISNING, lastNar),
+      dokumentpekare: referenser.map(pekarvarde),
+      gallande: last(gallande, KALLA_REDOVISNING, lastNar),
+      tillagg: last(tillagg, KALLA_REDOVISNING, lastNar),
+      scopelinje: last({ rader: linjer.rows, lage: scopelinjeLage }, KALLA_REDOVISNING, lastNar),
+    },
   };
 }

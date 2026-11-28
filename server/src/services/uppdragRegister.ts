@@ -31,6 +31,7 @@
 import type { PoolClient } from 'pg';
 import { createHash } from 'node:crypto';
 import { NotFoundError } from '../lib/errors.js';
+import { KALLA_REDOVISNING, last, type Lasvarde } from '../lib/lasvarde.js';
 
 /** Bara registrets innehåll fryses; den härledda åldern hör till lästillfället. */
 export type Registerkopierad = Pick<Leverabelrad,
@@ -97,6 +98,18 @@ export interface Leverabelrad {
 }
 
 /**
+ * Story 6.1, FR-35: en registerrad som själv är ett `Lasvarde<Leverabelrad>`.
+ * Svaret är en lista som Hermes läser som platta objekt, så raden behåller
+ * sina tolv fält och bär dessutom `varde`, `kalla`, `last_nar` och `lage`.
+ */
+export interface Registerrad extends Leverabelrad, Lasvarde<Leverabelrad> {}
+
+/** Radens källa och lästid; `varde` bär exakt de tolv platta fälten. REN funktion. */
+export function registerrad(rad: Leverabelrad, lastNar: string): Registerrad {
+  return { ...rad, ...last(rad, KALLA_REDOVISNING, lastNar) };
+}
+
+/**
  * Avtalet måste finnas i BOLAGET. RLS och den sammansatta främmande nyckeln gör
  * att ett grannbolags avtal ändå aldrig kan ge rader — men en tom lista vore ett
  * svar som ser ut som "registret är tomt". Ett avtal man inte har tillgång till
@@ -120,11 +133,15 @@ async function kravAvtal(client: PoolClient, companyId: string, contractId: stri
  * join, samma nyckel som den främmande nyckeln i 0068 bär. RLS räcker, men en
  * subquery som bara matchar på id vore ett ställe där den dagen någon stänger av
  * RLS blir en tyst tenantläcka i stället för ett fel.
+ *
+ * Story 6.1: lästiden tas en gång per anrop, så alla rader i ett svar bär
+ * samma källa och lästid.
  */
 export async function lasLeverabelregister(
   client: PoolClient, companyId: string, input: LasLeverabelregisterInput,
-): Promise<Leverabelrad[]> {
+): Promise<Registerrad[]> {
   await kravAvtal(client, companyId, input.contract_id);
+  const lastNar = new Date().toISOString();
   const res = await client.query<Leverabelrad>(
     `SELECT l.contract_id, l.kod,
             NULLIF((SELECT p.name FROM contract_parts p
@@ -150,5 +167,5 @@ export async function lasLeverabelregister(
       ORDER BY l.kod`,
     [companyId, input.contract_id],
   );
-  return res.rows;
+  return res.rows.map((rad) => registerrad(rad, lastNar));
 }

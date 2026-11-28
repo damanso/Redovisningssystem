@@ -27,11 +27,13 @@ export const EJ_HARLEDD_TEXT: Record<EjHarleddOrsak, (p: EjHarledd) => string> =
   ingen_taxa: (p) => ingenTaxaText(p.minuter ?? 0),
 };
 
-function farskhet(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
+/** Story 6.1: ett läst värdes färskhetsrad; ett oläst värde ritas med `olastEllerSaknas`. */
+export function lasvardesFarskhet(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
   return farskhetsrad([v.last_nar === null ? `${namn}: lästid saknas` : `${namn} ${direktFarskhet({ kalla: v.kalla, last_nar: v.last_nar }, idag)}`]);
 }
 
-function olastEllerSaknas(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
+/** Story 6.1: den enda texten för ett oläst eller saknat värde; ingen länk, knapp eller formulär. */
+export function olastEllerSaknas(v: Lasvarde<unknown>, namn: string, idag: string): Raw {
   const kalla = v.kalla === 'redovisning' ? 'redovisningen' : v.kalla;
   return v.lage === 'olast'
     ? html`<p class="tomt" data-falt="olast">${namn} kunde inte läsas ur ${kalla} · senast läst ${v.last_nar === null ? 'aldrig' : farskhetstid(v.last_nar, idag)}</p>`
@@ -64,7 +66,7 @@ export function nivapanel(a: { contract_id: string; forbrukning: Lasvarde<Forbru
               : n.strommar.map((s) => nivarad(s, s.kod))}
             ${n.leverabler.map((l) => nivarad(l, l.kod))}</tbody></table>
           ${n.ej_harledda.length === 0 ? '' : html`<ul>${n.ej_harledda.map((p) => html`<li>${EJ_HARLEDD_TEXT[p.orsak](p)}</li>`)}</ul>`}
-          ${farskhet(v, 'förbrukningen', idag)}`}
+          ${lasvardesFarskhet(v, 'förbrukningen', idag)}`}
     </div></section>`;
 }
 
@@ -78,6 +80,6 @@ export function ofordeladUppdrag(o: Lasvarde<Ofordelad>, idag: string): Raw {
         ? html`<p class="tomt">Ingen förbrukande tid utan avtalsdel.</p>`
         : html`<p>${hhmm(o.varde.minuter)} och ${kronor(o.varde.oren)} i ${o.varde.poster} tidposter utan avtalsdel kan inte föras till något av avtalen och ingår därför inte i något avtals total.</p>
           ${o.varde.minuter_utan_taxa > 0 ? html`<p>${ingenTaxaText(o.varde.minuter_utan_taxa)}</p>` : ''}`}
-        ${farskhet(o, 'tiden utan avtalsdel', idag)}`}
+        ${lasvardesFarskhet(o, 'tiden utan avtalsdel', idag)}`}
     </div></section>`;
 }
